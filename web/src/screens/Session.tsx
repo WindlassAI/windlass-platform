@@ -35,6 +35,7 @@ import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
 import { allowanceState, useAllowance, useModels, type useSession } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
+import { machineLabel } from "../lib/machines";
 
 /** How long a turn waits for a machine that stopped answering before it ends: the grace of the runner's channel on the server. */
 const MACHINE_GRACE_MS = 10 * 60_000;
@@ -53,7 +54,7 @@ export function useSessionMachine(place: SandboxPlace | undefined): MachineSumma
 /** What the top bar shows for a session: the way back, its title and state. A work item's session is part of its item, and the way back is to the item. */
 export function SessionCrumb({ title, status, place, machine, item, harness }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"] }) {
 	const harnessName = acpHarnessName({ harness });
-	const machineName = machine ? machine.name : null;
+	const machineName = machine ? machineLabel(machine) : null;
 	return (
 		<nav className="crumb" aria-label="Where you are">
 			<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
@@ -83,7 +84,7 @@ export function SessionCrumb({ title, status, place, machine, item, harness }: {
  */
 function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false): { text: string; removed: boolean } | null {
 	if (reach?.state === "removed" || machine === null) return { removed: true, text: `This agent's machine was removed. Its files were there.${item ? "" : " Start a new agent to go on."}` };
-	const named = machine ? `Your machine "${machine.name}"` : "Your machine";
+	const named = machine ? `Your machine "${machineLabel(machine)}"` : "Your machine";
 	const back = reach != null && machine?.status === "online" && machine.since >= reach.since;
 	if (reach?.state === "not_answering" && !back) {
 		return { removed: false, text: `${named} is not answering since ${clockTime(reach.since, now)}. The turn goes on when it is back, or stops at ${clockTime(reach.since + MACHINE_GRACE_MS, now)}.` };
@@ -233,7 +234,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 				) : null}
 				{summary.harness === "claude" && machine ? (
 					<ClaudeSignIn machine={machine} className="banner session-signin">
-						Claude Code: not signed in on “{machine.name}”, so this agent cannot run a turn.
+						Claude Code: not signed in on “{machineLabel(machine)}”, so this agent cannot run a turn.
 					</ClaudeSignIn>
 				) : null}
 				<QuestionDock flow={flow} />

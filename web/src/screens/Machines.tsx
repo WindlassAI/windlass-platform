@@ -22,12 +22,14 @@ import { CopyButton } from "../components/Copy";
 import { ClaudeSignIn } from "../components/ClaudeSignIn";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, ChevronIcon, InfoIcon, Mark, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
+import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, signInWords } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
+import { machineHostNote, machineLabel } from "../lib/machines";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -291,13 +293,22 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const reported = machine.commandSandbox !== null;
 	const paired = relativeTime(machine.since, now);
 	const claude = machine.harnesses?.some((harness) => harness.id === "claude") ?? false;
+	const host = machineHostNote(machine);
 	return (
 		<li className="usage-kept-row machine-row">
 			<div className="usage-kept-main">
 				<div className="machine-name">
-					<h3 className="usage-kept-title">{machine.name}</h3>
-					<span className="chip">{machine.os}</span>
-					<span className="chip">{machine.arch}</span>
+					<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
+					{host === null ? (
+						<>
+							<span className="chip">{machine.os}</span>
+							<span className="chip">{machine.arch}</span>
+						</>
+					) : (
+						<span className="machine-host" title="The host name its runner reported: a Docker container's id, so the machine is called by its OS and architecture here.">
+							host {host}
+						</span>
+					)}
 				</div>
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
@@ -316,10 +327,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</p>
 			</div>
 			<MachineState machine={machine} now={now} />
-			<button type="button" className="button button-quiet button-small machine-remove" onClick={() => onRemove(machine)}>
+			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
 				<TrashIcon size={13} />
 				<span>
-					Remove<span className="visually-hidden"> {machine.name}</span>…
+					Remove<span className="visually-hidden"> {machineLabel(machine)}</span>…
 				</span>
 			</button>
 
@@ -469,7 +480,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 		return (
 			<Dialog
 				title="Add a machine"
-				lede={<>Connect “{claim.name}” to your account?</>}
+				lede={<>Connect “{machineLabel(claim)}” to your account?</>}
 				onClose={onClose}
 				dismissable={!busy}
 				footer={
@@ -488,7 +499,10 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<p className="eyebrow">What the machine says about itself</p>
 						<dl className="machine-claim">
 							<dt>Name</dt>
-							<dd>{claim.name}</dd>
+							<dd>
+								{claim.name || <span className="tone-faint">none reported</span>}
+								{machineHostNote(claim) === null ? null : <span className="field-note machine-claim-note">A Docker container's id: the page calls it “{machineLabel(claim)}”.</span>}
+							</dd>
 							<dt>OS</dt>
 							<dd>{claim.os}</dd>
 							<dt>Architecture</dt>
@@ -618,7 +632,7 @@ function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary
 
 	return (
 		<Dialog
-			title={`Remove “${machine.name}”?`}
+			title={`Remove “${machineLabel(machine)}”?`}
 			size="small"
 			onClose={onClose}
 			dismissable={!busy}
@@ -711,11 +725,7 @@ export function Machines({ adding }: { adding: boolean }) {
 							</button>
 						</div>
 					) : (
-						<div className="usage-loading" aria-busy="true" aria-label="Loading your machines">
-							<span className="skeleton skeleton-title" style={{ width: "34%" }} />
-							<span className="skeleton skeleton-meta" style={{ width: "100%" }} />
-							<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
-						</div>
+						<RowsSkeleton label="Loading your machines" rows={2} chips={2} />
 					)}
 				</section>
 			) : (

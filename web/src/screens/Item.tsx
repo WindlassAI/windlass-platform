@@ -40,6 +40,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { inSecondReview, ItemGlyph, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
+import { machineLabel } from "../lib/machines";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -947,7 +948,7 @@ export function Item({ page }: { page: ItemPage }) {
 							{repository.owner}/{repository.name}
 						</a>
 						<span className="repo-fact">into {view.task.base}</span>
-						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machine.name}”` : "on your machine"}</span> : null}
+						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : null}
 						{view.pullRequest ? (
 							<a className="repo-link" href={view.pullRequest.url} target="_blank" rel="noreferrer">
 								Pull request #{view.pullRequest.number}

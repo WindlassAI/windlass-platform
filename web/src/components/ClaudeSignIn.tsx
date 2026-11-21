@@ -28,6 +28,7 @@ import { Command } from "../screens/Machines";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { CheckIcon, ExternalIcon } from "./Icons";
+import { machineLabel } from "../lib/machines";
 
 /** The longest code the server takes (server/src/runner/protocol.ts, `approvalCode`). */
 export const MAX_CODE_CHARS = 2048;
@@ -228,7 +229,7 @@ export function ClaudeSignIn({ machine, children, className }: { machine: Machin
 				<div className="claude-signin-panel" role="group" aria-label="Sign Claude Code in">
 					{busy === "start" ? (
 						<p className="field-note" role="status">
-							Asking the runner on “{machine.name}” to start Claude Code's sign-in…
+							Asking the runner on “{machineLabel(machine)}” to start Claude Code's sign-in…
 						</p>
 					) : step === "ended" ? (
 						<>

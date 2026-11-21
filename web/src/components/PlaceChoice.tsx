@@ -15,6 +15,7 @@ import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
 import { MachineState } from "../screens/Machines";
 import { ClaudeSignIn } from "./ClaudeSignIn";
+import { machineLabel } from "../lib/machines";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -35,7 +36,7 @@ function PlaceCard({ machine, why, name, checked, now, purpose, onChoose }: { ma
 			<input id={id} className="profile-radio" type="radio" name={name} value={machine?.machineId ?? "platform"} checked={checked} disabled={why !== null} onChange={() => onChoose(machine?.machineId ?? null)} aria-describedby={why === null ? undefined : reasonId} />
 			<span className="profile-head">
 				<span className="profile-pick" aria-hidden="true" />
-				<span className="profile-name">{machine ? machine.name : "This platform"}</span>
+				<span className="profile-name">{machine ? machineLabel(machine) : "This platform"}</span>
 				{machine ? <MachineState machine={machine} now={now} /> : null}
 			</span>
 			<span className="profile-summary">
@@ -168,12 +169,12 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 /** What stands in the way of a harness on the machine, if anything: its container, or its sign-in. */
 function HarnessState({ harness, machine, hardened }: { harness: ReportedHarness; machine: MachineSummary; hardened: boolean }) {
 	const name = HARNESS_NAMES[harness.id];
-	if (!hardened) return <p className="field-note tone-warn">{name} runs only in the hardened container, which “{machine.name}” cannot make now.</p>;
-	if (harness.signIn === "unknown") return <p className="field-note">{name}: the runner on “{machine.name}” has not said whether it is signed in.</p>;
+	if (!hardened) return <p className="field-note tone-warn">{name} runs only in the hardened container, which “{machineLabel(machine)}” cannot make now.</p>;
+	if (harness.signIn === "unknown") return <p className="field-note">{name}: the runner on “{machineLabel(machine)}” has not said whether it is signed in.</p>;
 	// Signed in, this is the line that says it just was, or nothing.
 	return (
 		<ClaudeSignIn machine={machine} className="harness-login field-note">
-			{name}: not signed in on “{machine.name}”.
+			{name}: not signed in on “{machineLabel(machine)}”.
 			{machine.status === "online" ? null : (
 				<>
 					{" "}

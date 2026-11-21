@@ -55,6 +55,7 @@ import { HARNESS_PROFILE, HarnessChoice, PlaceCards, machineUnusable, offeredHar
 import { RepositoryPicker, type PickedRepository } from "./RepositoryPicker";
 import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
+import { machineLabel } from "../lib/machines";
 
 function ProfileCard({ profile, name, checked, claude = null, onChoose }: { profile: SandboxProfile; name: string; checked: boolean; claude?: ClaudeFacts | null; onChoose(id: SandboxProfileId): void }) {
 	const id = useId();
@@ -368,7 +369,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				? `The machine chosen can no longer be used, so this ${item ? "work item" : "agent"} runs on this platform.`
 				: lastMachine === null
 					? "The machine your last agent ran on is not one of yours any more, so this one runs on this platform."
-					: `Your last agent ran on “${lastMachine.name}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim();
+					: `Your last agent ran on “${machineLabel(lastMachine)}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	// Another harness runs in the hardened container only: without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
@@ -668,7 +669,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				value={
 					chosenMachine ? (
 						<>
-							{chosenMachine.name} <span className={`machine-state machine-state-${chosenMachine.status}`} aria-label={chosenMachine.status}>
+							{machineLabel(chosenMachine)} <span className={`machine-state machine-state-${chosenMachine.status}`} aria-label={chosenMachine.status}>
 								<span className="sandbox-state-dot" aria-hidden="true" />
 							</span>
 						</>
@@ -697,8 +698,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				/>
 				{item && chosenMachine ? (
 					<p className="field-note place-note">
-						It runs without asking on “{chosenMachine.name}”, inside its container, and costs no hosted time.{" "}
-						{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${chosenMachine.name}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
+						It runs without asking on “{machineLabel(chosenMachine)}”, inside its container, and costs no hosted time.{" "}
+						{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
 						{chosenMachine.profiles.find((candidate) => candidate.available)?.id === HARNESS_PROFILE ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}
 					</p>
 				) : null}
@@ -764,7 +765,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					<>
 						<p className="field-fixed">{other ? `${other}'s default model` : model || "Your default model"}</p>
 						<p className="field-note" aria-busy={models.reading}>
-							{other ? `“${chosenMachine?.name ?? "The machine"}”'s runner reports ${other}'s models once it has checked.` : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
+							{other ? `“${chosenMachine ? machineLabel(chosenMachine) : "The machine"}”'s runner reports ${other}'s models once it has checked.` : models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`}
 						</p>
 					</>
 				) : (
@@ -786,7 +787,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								);
 							})}
 						</div>
-						<p className="field-note">{other ? `The models “${chosenMachine?.name}”'s runner reported for ${other}.` : modelsNote(modelList)}</p>
+						<p className="field-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelsNote(modelList)}</p>
 					</>
 				)}
 				{ignored.model && !other ? <p className="field-note tone-warn">{ignored.model}</p> : null}
@@ -836,7 +837,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const sandboxChip = (
 		<Chip key="sandbox" label="sandbox" value={chosenProfile?.name ?? "none"} open={open === "sandbox"} changed={profileChanged} warn={sandboxWarn} onToggle={() => toggle("sandbox")} onClose={close}>
 			<span className="label">Sandbox</span>
-			{available.length === 0 ? <p className="field-note tone-warn">{chosenMachine ? `“${chosenMachine.name}” has no sandbox that can be used right now.` : "This deployment has no sandbox that can be used right now."}</p> : null}
+			{available.length === 0 ? <p className="field-note tone-warn">{chosenMachine ? `“${machineLabel(chosenMachine)}” has no sandbox that can be used right now.` : "This deployment has no sandbox that can be used right now."}</p> : null}
 			{chosenProfile ? (
 				<div className="sandbox-chosen">
 					<ChosenSandbox profile={chosenProfile} claude={claude} />
@@ -860,7 +861,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</div>
 			{unavailable.length > 0 ? (
 				<>
-					<p className="profiles-divider">{chosenMachine ? `Listed, but not usable on “${chosenMachine.name}”` : "Listed, but not usable on this deployment"}</p>
+					<p className="profiles-divider">{chosenMachine ? `Listed, but not usable on “${machineLabel(chosenMachine)}”` : "Listed, but not usable on this deployment"}</p>
 					<div className="profiles profiles-unavailable">
 						{unavailable.map((candidate) => (
 							<ProfileCard key={candidate.id} profile={candidate} name={ids.sandboxes} checked={false} onChoose={setProfile} />
@@ -994,7 +995,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			) : null}
 			{chosenMachine?.status === "offline" && !item ? (
 				<p className="field-note tone-warn start-line" role="status">
-					“{chosenMachine.name}” is offline since {clockTime(chosenMachine.since, now)}. The agent is created now, and a prompt sent before the machine is back fails. {task === "" ? "Write to it once the machine is online." : "Create it without sending the task, and the task waits in its composer."}
+					“{machineLabel(chosenMachine)}” is offline since {clockTime(chosenMachine.since, now)}. The agent is created now, and a prompt sent before the machine is back fails. {task === "" ? "Write to it once the machine is online." : "Create it without sending the task, and the task waits in its composer."}
 				</p>
 			) : null}
 			<div className="start-foot">

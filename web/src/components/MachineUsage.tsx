@@ -8,6 +8,7 @@ import { useNow } from "../state/hooks";
 import { linkProps } from "../lib/router";
 import { plural } from "../lib/format";
 import { MachineState, SandboxLine, useMachines } from "../screens/Machines";
+import { machineLabel } from "../lib/machines";
 
 export function MachineUsage() {
 	const { platform } = useApp();
@@ -38,7 +39,7 @@ export function MachineUsage() {
 					{list.map((machine) => (
 						<li key={machine.machineId} className="usage-kept-row machine-row">
 							<div className="usage-kept-main">
-								<h3 className="usage-kept-title">{machine.name}</h3>
+								<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
 								{machine.sandboxes.length === 0 ? (
 									<p className="agent-meta">no sandbox on it</p>
 								) : (

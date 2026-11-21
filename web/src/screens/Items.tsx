@@ -26,6 +26,7 @@ import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
+import { machineLabel } from "../lib/machines";
 
 export interface ItemsState {
 	/** Null until it was read, and when it could not be. */
@@ -456,8 +457,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 					<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="item" onChoose={setPlace}>
 						{chosenMachine ? (
 							<p className="field-note place-note">
-								It runs without asking on “{chosenMachine.name}”, inside its container, and costs no hosted time.{" "}
-								{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${chosenMachine.name}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
+								It runs without asking on “{machineLabel(chosenMachine)}”, inside its container, and costs no hosted time.{" "}
+								{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
 								{chosenMachine.profiles.find((profile) => profile.available)?.id === "docker-hardened" ? " This machine cannot sandbox each command, so the agent's commands can reach the machine's network and its access token." : ""}
 							</p>
 						) : null}
@@ -471,7 +472,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="check-means">
 							{start
 								? chosenMachine
-									? `It starts as soon as one of your factory turns is free and “${chosenMachine.name}” is online; until then it waits, and says for what.`
+									? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
 									: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
 								: "It is kept as a draft until you start it from its page."}
 						</span>

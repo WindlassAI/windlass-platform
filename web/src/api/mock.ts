@@ -191,10 +191,11 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * "clock" (its clock is minutes off), "key" (its key was used from a second place), "full" (as many
  * machines as an account may have), "unpublished" (no runner image is published yet, and no machine),
  * "stale" (the list is read once, then reading it again fails), "failed" (it cannot be read at all),
- * "loading" (it is never answered), and "off" (the deployment offers no machines). In the add dialog any
+ * "loading" (it is never answered), "off" (the deployment offers no machines), and "unnamed" (beside "nas",
+ * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -3110,6 +3111,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					}),
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
 					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
+				];
+			case "unnamed":
+				return [
+					nas({}),
+					// Its runner runs in a container, so the host name it reported is the container's id.
+					nas({ machineId: "m_container", name: "f892b469d6c5", arch: "x64", since: at - 2 * HOUR, agents: 0, sandboxes: [], freeDiskBytes: 118e9, harnesses: undefined }),
 				];
 			default:
 				return [nas({})];
