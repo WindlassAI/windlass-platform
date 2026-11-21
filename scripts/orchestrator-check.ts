@@ -113,7 +113,9 @@ test("planner inventory exposes capacity and validated owner text without sessio
 	assert.deepEqual(details.tags, ["big-build"]);
 	for (const tags of [["harness:claude"], ["arch"], ["screenshots"], ["x".repeat(25)], Array(13).fill("a")]) assert.throws(() => machineDetails({ ...details, tags }));
 	assert.throws(() => machineDetails({ ...details, whenToUse: "x".repeat(501) }));
-	const [entry] = plannerMachines([{ ...details, name: "Box", sandboxes: [{ state: "running", sessionId: "private" }], turns: { running: 1, queued: 2, max: 1 }, sendSecrets: true }] as never);
+	const [entry] = plannerMachines([{ ...details, name: "f892b469d6c5", os: "linux", arch: "arm64", egress: "restricted", sandboxes: [{ state: "running", sessionId: "private" }], turns: { running: 1, queued: 2, max: 1 }, sendSecrets: true }] as never);
+	assert.equal(entry.name, "Linux arm64 machine (f892b4)");
+	assert.equal(entry.egress, "restricted");
 	assert.equal(entry.turns!.queued, 2); assert.equal(entry.whenToUse, "Big builds");
 	assert.doesNotMatch(JSON.stringify(entry), /private|sendSecrets/);
 });

@@ -1,4 +1,4 @@
-import type { MachineDetails, MachineSummary } from "../contract.js";
+import { machineLabel, type MachineDetails, type MachineSummary } from "../contract.js";
 
 export function machineDetails(input: MachineDetails): MachineDetails {
 	if (typeof input?.whenToUse !== "string" || input.whenToUse.length > 500) throw new Error("Use at most 500 characters for when to use this machine.");
@@ -9,9 +9,9 @@ export function machineDetails(input: MachineDetails): MachineDetails {
 
 export function plannerMachines(machines: MachineSummary[]) {
 	return machines.map(m => ({
-		name: m.name, os: m.os, arch: m.arch, online: m.status === "online", tags: m.tags ?? [], whenToUse: m.whenToUse ?? "",
+		name: machineLabel(m), os: m.os, arch: m.arch, online: m.status === "online", tags: m.tags ?? [], whenToUse: m.whenToUse ?? "",
 		turns: m.turns, host: m.host, freeDiskBytes: m.freeDiskBytes, allowedProfiles: m.allowedProfiles, commandSandbox: m.commandSandbox,
-		screenshots: m.screenshots, harnesses: m.harnesses?.map(({ id, signIn }) => ({ id, signIn })),
+		egress: m.egress, screenshots: m.screenshots, harnesses: m.harnesses?.map(({ id, signIn }) => ({ id, signIn })),
 		sandboxes: { running: m.sandboxes.filter(s => s.state === "running").length, kept: m.sandboxes.length, maxRunning: m.maxRunning, maxSandboxes: m.maxSandboxes },
 	}));
 }

@@ -264,7 +264,8 @@ export class Executor extends MachineDocker {
 		return await this.probe() ? { ok: true } : { ok: false, reason: "Bubblewrap could not start in a sandbox on this machine." };
 	}
 	report(): Report {
-		return { kind: "report", egress: this.network.policy.mode, host: { cpus: availableParallelism(), sandboxCpus: runnerCpus(), memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null }, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+			host: { cpus: availableParallelism(), sandboxCpus: runnerCpus(), memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin ? { claudeLogin: true as const, claudeRelay: true as const, harnesses: [{ id: "claude" as const,
 				adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
