@@ -1,10 +1,11 @@
 // Run from server: pnpm exec tsx ../scripts/runner-egress-live.ts <base-image-id> <claude-image-id>
 // Uses the real runner bundle, a local pairing server and run-private Docker names.
+import { writeProofDocker } from "./runner-proof-docker.js";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -30,24 +31,7 @@ const env = { PATH: dir + delimiter + process.env.PATH, HOME: dir, WLP_RUNNER_ST
 const runnerImage = process.env.EGRESS_CHECK_RUNNER_IMAGE;
 if (runnerImage) assert.match(runnerImage, /^sha256:[0-9a-f]{64}$/);
 const serviceName = prefix + "runner";
-await writeFile(join(dir, "docker"), `#!/usr/bin/env node
-const {spawnSync} = require("node:child_process");
-const {readFileSync} = require("node:fs");
-const pairs=[["wlp-session-", "${prefix}agent-"], ["wlp-harness-claude-", "${prefix}login-"]];
-function names(value, reverse=false) {
-	for(const [a,b] of pairs) value=reverse ? value.replaceAll(b,a) : value.replaceAll(a,b);
-	return value;
-}
-const args=process.argv.slice(2).map(x=>names(x));
-const listing=args[0]==="ps" || (args[0]==="volume" && args[1]==="ls");
-const api=args[0]==="system" && args[1]==="dial-stdio";
-const child=spawnSync(${JSON.stringify(runnerImage ? "/usr/local/bin/docker" : realDocker)},args,{
-	stdio:[api?"pipe":"inherit",listing?"pipe":"inherit","inherit"],
-	...(api && {input:names(readFileSync(0,"utf8"))})
-});
-if(listing) process.stdout.write(names(child.stdout.toString(),true));
-process.exit(child.status ?? 1);
-`, { mode: 0o755 });
+await writeProofDocker(dir, prefix, runnerImage ? "/usr/local/bin/docker" : realDocker);
 let service: ReturnType<typeof spawn> | undefined;
 let output = "";
 async function start(extra: string[] = []) {
