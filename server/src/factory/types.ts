@@ -236,6 +236,7 @@ export type Fact =
  */
 export type Effect =
 	| { kind: "cancel_children"; key: string; ids: string[] }
+	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
 	| { kind: "describe_feature"; key: string }
 	| { kind: "dispatch"; key: string; at?: number }

@@ -52,7 +52,7 @@ import type { Effect as BlueprintEffect, Fact, FactoryItem } from "../factory/ty
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
-import { grantIsValid, sessionActor, userActor } from "./internal.js";
+import { grantIsValid, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
 
 /** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
@@ -165,7 +165,6 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		id: item.id,
 		mode: item.mode ?? "single",
 		parent: item.parent ?? null,
-		...(item.parent && item.state === "done" && item.head && { integratedHead: item.head }),
 		title: item.task.title,
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		place: item.place,
@@ -635,6 +634,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "notify_integrated") return item.state === "done" && item.head === effect.head;
 	if (effect.kind === "cancel_children") return true;
 	if (effect.kind === "issue_comment") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
@@ -721,6 +721,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "notify_integrated":
+			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, state:"done", integratedHead:effect.head });
+			return true;
 		case "cancel_children":
 			for (const child of effect.ids) await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
 			return true;
@@ -1015,7 +1018,7 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
-		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state" | "integratedHead">) => {
+		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }) => {
 			requireServiceFor(c, "call");
 			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
 		},

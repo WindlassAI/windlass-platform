@@ -203,7 +203,9 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 		assert.equal(advance(result.item,ci as never).item,result.item);
 		if (checks) {
 			const cancelling = advance(result.item, {kind:"cancel", at:5, by:"person"}).item;
-			const confirmed = advance(cancelling, {kind:"integrated", key:currentKey(cancelling)!, at:6}).item;
+			const receipt = advance(cancelling, {kind:"integrated", key:currentKey(cancelling)!, at:6});
+			assert.ok(receipt.effects.some(e => e.kind === "notify_integrated"), "the confirmed fast-forward needs a durable parent receipt");
+			const confirmed = receipt.item;
 			assert.equal(confirmed.state, "done", "record the verified commit even when cancellation raced the fast-forward");
 			const declined = advance(cancelling, {kind:"feature_problem", key:currentKey(cancelling)!, at:6, reason:"diverged", rebase:true}).item;
 			assert.equal(declined.state, "cancelled");
@@ -253,6 +255,8 @@ test("a child notice wakes a waiting feature and settles spend after cancellatio
 	const notice = {kind:"child_notice" as const, child:running.jobs![0].id, state:"done" as const, integratedHead:"b".repeat(40), spent:{...zero, tokens:120}, at:6};
 	const woke = advance(running, notice);
 	assert.ok(woke.effects.some(e => e.kind === "dispatch"));
+	const cancelledAfterNotice = advance(woke.item, {kind:"cancel", at:7, by:"person"}).item;
+	assert.equal(cancelledAfterNotice.head, notice.integratedHead);
 	const cancelled = advance(running, {kind:"cancel", at:7, by:"person"}).item;
 	const settled = advance(cancelled, notice);
 	assert.equal(settled.item.spent.tokens, 130);

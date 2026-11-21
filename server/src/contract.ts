@@ -1459,8 +1459,6 @@ export interface RoundCaps {
 
 /** An item as the user's index lists it. */
 export interface ItemSummary {
-	/** A child commit confirmed on the feature branch. */
-	integratedHead?: string;
 	mode?: ItemMode;
 	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;

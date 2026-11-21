@@ -184,10 +184,11 @@ function apply(c: Change, fact: Fact): boolean {
 			const job = item.jobs?.find(j => j.id === fact.child);
 			if (!job) return false;
 			const charged = chargeChild(item, job, fact.spent);
-			if (item.state === "cancelled" && fact.state === "done" && fact.integratedHead && job === item.jobs?.at(-1) && (job.state !== "done" || job.head !== fact.integratedHead)) {
+			if (fact.state === "done" && fact.integratedHead && job === item.jobs?.at(-1)) {
+				if (job.state === "done" && job.head === fact.integratedHead) return charged;
 				job.state = "done";
 				item.head = job.head = fact.integratedHead;
-				return true;
+				if (item.state === "cancelled") return true;
 			}
 			if (item.jobs?.at(-1) === job && item.run?.step.kind === "subtasks" && !item.question && item.state === "waiting") {
 				dispatchAgain(c);
@@ -319,7 +320,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "cancel_subtask" | "chi
 			const job = c.item.jobs?.at(-1);
 			if (fact.key !== key || step.kind !== "subtasks" || !job || job.id !== fact.child) return false;
 			const charged = chargeChild(c.item, job, fact.spent);
-			if (!charged && job.state === fact.state && job.report === fact.report && job.head === fact.head && (job.failure ?? null) === (fact.failure ?? null)) return false;
+			if (!FINAL.has(fact.state) && !charged && job.state === fact.state && job.report === fact.report && job.head === fact.head && (job.failure ?? null) === (fact.failure ?? null)) return false;
 			job.failure = fact.failure ?? null;
 			job.state = fact.state; job.report = fact.report; job.head = fact.head;
 			if (job.state === "done" && job.head) {
@@ -345,6 +346,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "cancel_subtask" | "chi
 		}
 		case "integrated":
 			if (fact.key !== key || !c.item.parent || step.kind !== "subtasks") return false;
+			c.effects.push({ kind: "notify_integrated", key, head: c.item.head! });
 			c.run.endedAt = c.at; c.state("done"); c.say("Fast-forwarded the feature branch to the verified child commit.");
 			return true;
 		case "feature_problem":
