@@ -256,7 +256,7 @@ export type TurnOutcome =
 	/** The platform could not run the turn at all (sandbox failure, Windlass crashed). */
 	| "error";
 
-export type HarnessId = "windlass" | "claude";
+export type HarnessId = "windlass" | "claude" | "opencode";
 
 export interface SessionMode {
 	id: string;
@@ -1058,7 +1058,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: "claude"; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1767,10 +1767,6 @@ export interface UserActions {
 	 * UserError with code `machine_not_found` for one that is not the user's. Answers with the list as it is then.
 	 */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
-	/** Owner-only control of this pairing's ten-minute Claude Code setup. expiresAt is Unix time in milliseconds. */
-	startClaudeLogin(input: { machineId: string }): Promise<{ url: string; expiresAt: number }>;
-	finishClaudeLogin(input: { machineId: string; code: string }): Promise<{ signedIn: true }>;
-	cancelClaudeLogin(input: { machineId: string }): Promise<{ cancelled: true }>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;

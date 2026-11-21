@@ -114,3 +114,14 @@ test("both platform clone paths hand only the runner proxy to clean Git", () => 
 		}
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("the restricted OpenCode broker refuses registry and login hosts before DNS, and retains repository egress", async () => {
+	// @ts-expect-error the standalone program also runs directly in the pinned sandbox image
+	const { selectAddress } = await import("../runner/src/egress-proxy.mjs");
+	const { providerHosts } = await import("../runner/src/opencode-providers.js");
+	const check = (host: string, policy: string[]) => selectAddress(host, [], async () => [{address:"8.8.8.8"}], {}, policy);
+	for (const host of ["OPENCODE.AI.","api.z.ai","open.bigmodel.cn","chatgpt.com","auth.openai.com","8.8.8.8"])
+		await assert.rejects(check(host,providerHosts),/blocked/);
+	assert.equal(await check("github.com",providerHosts),"8.8.8.8");
+	assert.equal(await check("opencode.ai",[]),"8.8.8.8");
+});

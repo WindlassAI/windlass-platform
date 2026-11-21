@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
@@ -12,6 +12,7 @@ import { generatedSessionTitle, type AcpUpdate, type CreateItemInput } from "../
 import type { RunTurnInput, SandboxHandle, SandboxLayer } from "../server/src/sandbox/api.js";
 import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/src/sandbox/provider.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
+import { modeSelection, optionsOf } from "../server/src/sandbox/acp-options.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 
 // Compile this consumer along with the server so changes to the wire contract cannot undo narrowing.
@@ -28,6 +29,16 @@ const fixture = fileURLToPath(new URL("../fixtures/acp-agent/agent.mjs", import.
 const openParams = { cwd: "/workspace", mcpServers: [] };
 const block = (text: string) => [{ type: "text", text }];
 const ok = (name: string) => console.log(`ok  ${name}`);
+
+const capture = new URL("../fixtures/opencode/handshake.jsonl", import.meta.url);
+const [init, opened] = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line).result);
+assert.equal(init.agentInfo.version, "1.19.6");
+assert.equal(opened.modes, undefined);
+const capturedModes = modeSelection(opened.modes, opened.configOptions);
+assert.deepEqual(capturedModes.modes.map(m => m.id), ["build", "plan"]);
+assert.equal(capturedModes.current, "build");
+const catalog = optionsOf(opened.configOptions).list;
+assert.ok(catalog && catalog.models.some(m => m.id === catalog.defaultModel && m.id.startsWith("openai/")));
 
 class Client {
 	private readonly lines: AsyncIterator<string>;
@@ -289,6 +300,8 @@ async function clientCheck(state: string) {
 	const { harnessOf } = await import("../server/src/sandbox/harness.js");
 	const machine = { machine: { name: "Bench" } } as SandboxLayer;
 	const harness = harnessOf(machine, "claude");
+	assert.equal(harnessOf(machine, "opencode").id, "opencode");
+	assert.throws(() => harnessOf({} as SandboxLayer, "opencode"), /OpenCode runs only on a machine/);
 	assert.throws(() => harnessOf({} as SandboxLayer, "claude"), /only on a machine/);
 	const secret = "value-held-only-for-redaction";
 	const redactor = new SecretRedactor([{ name: "FIXTURE", value: secret }]);
@@ -309,7 +322,9 @@ async function clientCheck(state: string) {
 	}
 	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
 
-	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" = "normal";
+	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" = "normal";
+	const configMode = (currentValue: string) => ({ id: "agent-mode", category: "mode", type: "select", currentValue,
+		options: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan", description: "Plan only" }] });
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
 	const updates: AcpUpdate[] = [];
@@ -344,6 +359,10 @@ async function clientCheck(state: string) {
 				if (variant === "adapter-default" && frame.result?.modes) frame.result.configOptions = [
 					{ id: "model", category: "model", type: "select", currentValue: "opus", options: [{ value: "opus", name: "Opus" }] },
 				];
+				if (frame.result?.modes && variant === "config-modes") {
+					delete frame.result.modes;
+					frame.result.configOptions.push(configMode("build"));
+				}
 				const update = frame.params?.update;
 				if (update?.sessionUpdate === "agent_message_chunk" && update.content.text === secret) {
 					for (const part of [secret.slice(0, 8), secret.slice(8)]) {
@@ -371,6 +390,11 @@ async function clientCheck(state: string) {
 				write(line: string) {
 					const frame = JSON.parse(line);
 					methods.push(frame.method);
+					if (variant === "config-modes" && frame.method === "session/set_config_option") {
+						assert.equal(frame.params.configId, "agent-mode");
+						emit({ jsonrpc: "2.0", id: frame.id, result: { configOptions: [configMode(frame.params.value)] } });
+						return true;
+					}
 					if (frame.method === "session/load") {
 						emit({ method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "old transcript" } } } });
 						frame.method = "session/resume";
@@ -473,6 +497,21 @@ async function clientCheck(state: string) {
 		assert.deepEqual(opened, ["plan", mode ?? "auto"]);
 	}
 	ok("absent auto and an unavailable requested mode both select the advertised current mode and report one fallback");
+	variant = "config-modes";
+	for (const mode of [undefined, "plan"]) {
+		methods.length = 0;
+		const selected: string[] = [];
+		const turn = await harness.runTurn(handle, { prompt: "plain", mode, windlassSessionId: first.windlassSessionId!,
+			onAcpModes: (id, choices) => {
+				assert.equal(choices[1]?.description, "Plan only");
+				selected.push(id);
+			} });
+		assert.equal(turn.failure, null);
+		assert.deepEqual(selected, [mode ?? "build"]);
+		assert(methods.includes("session/set_config_option"));
+		assert(!methods.includes("session/set_mode"));
+	}
+	ok("config-only modes use the reported current mode and reapply a saved mode on resume");
 	variant = "wrong-version";
 	methods.length = 0;
 	const wrongVersion = await harness.runTurn(handle, { prompt: "plain" });

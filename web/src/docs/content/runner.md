@@ -28,12 +28,13 @@ The runner takes one command. With none, it runs `run`.
 | Command | What it does |
 | --- | --- |
 | `run` | Runs the runner's service. This is the default. |
+| `setup` | Pairs in the foreground, offers terminal sign-in for each enabled agent, and prints the background service command. |
 | `pair` | Makes a new pairing code, for example after the code expired or after the machine was removed. |
-| `status` | Says whether the runner is connected, the limits in force, the sandboxes and data volume of each pairing, and whether Claude Code is signed in. |
+| `status` | Says whether the runner is connected, the limits in force, the sandboxes and data volume of each pairing, and each enabled agent’s sign-in status. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
 | `prune` | Removes all containers and data volumes of this runner's pairings. |
-| `login claude` | Signs Claude Code in on this machine. The machine must be paired first. |
-| `logout claude` | Signs Claude Code out, for this pairing and every earlier one. |
+| `login claude\| opencode` | Signs the selected agent in on this machine. The machine must be paired first. |
+| `logout claude\| opencode` | Signs the selected agent out, for this pairing and every earlier one. |
 
 ### Status
 
@@ -49,7 +50,7 @@ Running sandbox limit: no limit
 Kept sandbox limit: no limit
 ```
 
-After that it lists each pairing with its sandboxes, its data volume and, where Claude Code is offered, its sign-in.
+After that it lists each pairing with its sandboxes, its data volume and, the sign-in status of each enabled agent.
 
 ### Log
 
@@ -68,7 +69,7 @@ docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock \
 docker start windlass-runner
 ```
 
-> **Careful** `prune` removes the agents' files on this machine, and the Claude Code sign-in volume too. It cannot be undone.
+> **Careful** `prune` removes the agents' files on this machine, and the agent sign-in volumes too. It cannot be undone.
 
 ## Run options
 
@@ -81,10 +82,11 @@ These options go after the runner image, with the `run` command or with no comma
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
 | `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
-| `--egress MODE` | `restricted` for new pairings, `open` on first upgrade | Choose `restricted`, `open` or `none`. Claude keeps its session-local model relay in all three modes. |
+| `--egress MODE` | `restricted` for new pairings, `open` on first upgrade | Choose `restricted`, `open` or `none`. Claude Code and OpenCode keep their session-local model relay in all three modes. |
 | `--egress-allow HOST[,HOST]` | Empty | With `--egress restricted`, permit exact private DNS names through the proxy. Host interfaces, Docker bridge addresses and metadata stay blocked. |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
+| `--harness opencode` | Off | Offers OpenCode. Repeat `--harness` to offer both agents. |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |
 
 `N` is a positive whole number. A turn that would pass `--max-running` or `--max-sandboxes` ends with, for example, "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." The Machines page shows these limits under **Sandbox limit**, and says they are set on the machine, not there.

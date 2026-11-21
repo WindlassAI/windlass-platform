@@ -15,6 +15,13 @@ export const CLAUDE: AcpProfile = {
 	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
 };
 
+export const OPENCODE: AcpProfile = {
+	id: "opencode", name: "OpenCode", command: ["wlp-opencode-acp"], leftovers: "opencode",
+	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
+};
+
+export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE };
+
 export function initialHarnessModels(options?: HarnessOptions): ModelList {
 	if (options) return { source: "harness", defaultModel: options.defaultModel, models: options.models, fetchedAt: options.checkedAt };
 	return { source: "harness", defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }], fetchedAt: null };

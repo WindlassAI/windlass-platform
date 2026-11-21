@@ -20,7 +20,8 @@ const blocked = subnets(["0.0.0.0/8", "127.0.0.0/8", "100.64.0.0/10", "169.254.0
 	"192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
 	"224.0.0.0/4", "240.0.0.0/4", "fd00:ec2::/32", "fd20:ce::254/128", "2001::/23", "2001:db8::/32", "2002::/16"]);
 const globalV6 = subnets(["2000::/3"]);
-export async function selectAddress(host, allow, resolve = lookup, interfaces = networkInterfaces()) {
+export async function selectAddress(host, allow, resolve = lookup, interfaces = networkInterfaces(), denied = []) {
+	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase().replace(/\.$/, "")))) throw Error("blocked");
 	const answers = net.isIP(host) ? [{ address: host }] : await resolve(host, { all: true });
 	const hostAndBridges = new net.BlockList();
 	for (const [name, entries] of Object.entries(interfaces)) {
@@ -57,11 +58,11 @@ function headers(input) {
 		delete result[key];
 	return result;
 }
-function broker(allow) {
+function broker(allow, denied) {
 	const target = async url => {
 		const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
 		if (!host || url.username || url.password) throw Error("blocked");
-		return selectAddress(host, allow);
+		return selectAddress(host, allow, lookup, networkInterfaces(), denied);
 	};
 	const server = http.createServer(async (req, res) => {
 		try {
@@ -108,7 +109,7 @@ function broker(allow) {
 	rmSync(socket, { force: true });
 	server.listen(socket);
 }
-if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]));
+if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]), JSON.parse(process.argv[3] ?? "[]"));
 // Only the trusted forwarder mounts these sockets. Write its fixed-width identity before
 // connecting the agent byte stream so even a second HTTP request has the same identity.
 function forward(port, path, nonce) {

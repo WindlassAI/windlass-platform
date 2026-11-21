@@ -8,8 +8,9 @@ import { Refusal, RunnerError, type Identity } from "./state.js";
 
 declare const SANDBOX_IMAGE: string;
 declare const SHOTS_IMAGE_PIN: string;
-declare const HARNESS_IMAGES: Partial<Record<"claude", string>>;
-export const harnessImage = (id: "claude") => HARNESS_IMAGES[id];
+declare const HARNESS_IMAGES: Partial<Record<MachineHarness, string>>;
+export type MachineHarness = NonNullable<Args<"create">["harness"]>;
+export const harnessImage = (id: MachineHarness) => HARNESS_IMAGES[id];
 export const shotsImage = SHOTS_IMAGE_PIN;
 export const image = SANDBOX_IMAGE;
 export const bubblewrap = "docker-windlass-sandbox";
@@ -26,7 +27,7 @@ export function runnerCpus(): number {
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
 export type Limits = { maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
 // The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
-export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^claude-/, "")}`;
+export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^(?:claude|opencode)-/, "")}`;
 export function rawId(machine: string, id: string) {
 	const prefix = externalId(machine, "");
 	const raw = id.slice(prefix.length);
@@ -38,8 +39,10 @@ export class MachineDocker {
 	readonly labels: Record<string, string>;
 	readonly volume: string;
 	readonly claudeVolume: string;
+	readonly opencodeVolume: string;
 	constructor(readonly identity: Identity) {
 		this.labels = { [MACHINE_LABEL]: identity.machineId, [LABEL + ".uid"]: identity.uid };
+		this.opencodeVolume = "wlp-harness-opencode-" + identity.machineId;
 		this.claudeVolume = "wlp-harness-claude-" + identity.machineId;
 		this.volume = "wlp-machine-" + identity.machineId;
 	}

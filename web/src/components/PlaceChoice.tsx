@@ -14,7 +14,7 @@ import { useId, useState, type ReactNode } from "react";
 import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
 import { MachineState } from "../screens/Machines";
-import { ClaudeSignIn } from "./ClaudeSignIn";
+import { HarnessStatus } from "./HarnessStatus";
 import { machineLabel } from "../lib/machines";
 
 export type PlacePurpose = "agent" | "item";
@@ -170,17 +170,5 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 function HarnessState({ harness, machine, hardened }: { harness: ReportedHarness; machine: MachineSummary; hardened: boolean }) {
 	const name = HARNESS_NAMES[harness.id];
 	if (!hardened) return <p className="field-note tone-warn">{name} runs only in the hardened container, which “{machineLabel(machine)}” cannot make now.</p>;
-	if (harness.signIn === "unknown") return <p className="field-note">{name}: the runner on “{machineLabel(machine)}” has not said whether it is signed in.</p>;
-	// Signed in, this is the line that says it just was, or nothing.
-	return (
-		<ClaudeSignIn machine={machine} className="harness-login field-note">
-			{name}: not signed in on “{machineLabel(machine)}”.
-			{machine.status === "online" ? null : (
-				<>
-					{" "}
-					Run <code>windlass-runner login {harness.id}</code> there.
-				</>
-			)}
-		</ClaudeSignIn>
-	);
+	return <HarnessStatus harness={harness} />;
 }

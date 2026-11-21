@@ -16,30 +16,6 @@ import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
 import { type Assert, type Check, type Of, type Same, anything, boolean, count, either, integer, is, json, list, nil, nullable, object, oneOf, optional, plain, string, text } from "./check.js";
 
-// Pairing-wide operations travel on the control socket, never on an agent session's channel.
-export const CLAUDE_LOGIN_MS = 10 * 60_000;
-const requestId = is<string>(v => typeof v === "string" && v.length === 32 && !/[^a-f0-9]/.test(v));
-export const approvalCode = is<string>(v => text(2048)(v) && !/[^A-Za-z0-9._~#%+=/-]|sk-ant-oat01-/.test(v));
-// Only the public authorization parameters emitted by the pinned setup CLI can cross the socket.
-const authorizeParams = new Set(["code", "client_id", "response_type", "redirect_uri", "scope", "code_challenge", "code_challenge_method", "state"]);
-export const authorizeUrl = is<string>(v => {
-	if (!text(8192)(v) || !v.startsWith("https://claude.com/cai/oauth/authorize?") || /[^!-~]|[\\"<>#]/.test(v)) return false;
-	const params = new URL(v).searchParams;
-	for (const [name, value] of params) if (!authorizeParams.has(name) || value.includes("sk-ant-oat01-")) return false;
-	return !!params.get("code_challenge") && !!params.get("state");
-});
-export const loginCommand = either(
-	object({ kind: oneOf("harnessLogin.start", "harnessLogin.cancel"), requestId }),
-	object({ kind: oneOf("harnessLogin.finish"), requestId, code: approvalCode }),
-);
-export type LoginCommand = Of<typeof loginCommand>;
-const loginResult = either(
-	either(object({ url: authorizeUrl, expiresAt: is<number>(v => integer(v) && v > 0) }), object({ signedIn: oneOf(true) })),
-	either(object({ cancelled: oneOf(true) }), object({ error: is<string>(v => text(500)(v) && !/[\u0000-\u001f\u007f]|sk-ant-oat01-/.test(v)) })),
-);
-export type LoginResult = Of<typeof loginResult>;
-export const loginResultFrame = object({ kind: oneOf("harnessLogin.result"), requestId, result: loginResult });
-
 export const positiveLimit = is<number>(v => count(v) && v > 0);
 
 export const PROTOCOL_VERSION = 1;
@@ -73,7 +49,7 @@ export const MACHINE_PROFILES = ["docker-hardened", "docker-windlass-sandbox"] a
 export type MachineProfile = typeof MACHINE_PROFILES[number];
 export const machineProfile = oneOf(...MACHINE_PROFILES);
 export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
-const harness = optional(oneOf("claude"));
+const harness = optional(oneOf("claude", "opencode"));
 const sandbox = { id };
 const startOptions = { cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 

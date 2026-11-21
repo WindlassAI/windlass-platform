@@ -97,7 +97,7 @@ function Sandbox({ summary, profile }: { summary: SessionSummary; profile: Sandb
 				<SandboxState state={summary.sandbox} />
 			</h2>
 			<p className="panel-lede">{profile.name}</p>
-			<ProfileFacts profile={profile} claude={summary.harness === "claude" ? { mode: currentMode(summary, profile) } : null} />
+			<ProfileFacts profile={profile} claude={summary.harness && summary.harness !== "windlass" ? { opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null} />
 			<details className="panel-more">
 				<summary>
 					<ChevronIcon size={12} className="panel-more-chevron" />

@@ -37,10 +37,10 @@ import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMP
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
-import { HARNESS_NAMES } from "../lib/acp";
+import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
 import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
-import { CLAUDE_DEFAULT_MODE, OPEN_MODES, launchModes } from "../lib/modes";
+import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
@@ -56,7 +56,7 @@ import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoic
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
-import { ClaudeSignIn } from "./ClaudeSignIn";
+import { HarnessStatus } from "./HarnessStatus";
 import { KeyHints, Kbd } from "./ui/Kbd";
 import { Menu, MenuSheet, PickerPanel, type MenuGroup, type MenuItem, type MenuSpec, type TriggerProps } from "./ui/Menu";
 import { AgentGlyph, Pill } from "./ui/Pill";
@@ -89,10 +89,12 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 			: profile.approval === "auto"
 				? { text: "commands sandboxed", long: "runs what the sandbox contains, refuses the rest", open: false }
 				: { text: "runs every call", long: "runs every call without asking", open: true },
-		claude && profile.claudeRelay && !profile.commandNetwork && profile.available
-			? { text: "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
+		claude && (claude.opencode || profile.claudeRelay) && !profile.commandNetwork && profile.available
+			? { text: claude.opencode ? "OpenCode relay" : "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
 			: { text: profile.commandNetwork ? "network on" : "no network", long: commandNetworkFact(profile, claude), open: profile.commandNetwork },
-		claude
+		claude?.opencode
+			? { text: "credentials on machine", long: "Commands can use the OpenCode model relay. Provider credentials stay on the machine.", open: true }
+			: claude
 			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
 			: profile.commandsCanReadAccessToken
 				? { text: "token readable", long: "commands can read the session's access token", open: true }
@@ -192,7 +194,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [effortChoice, setEffort] = useState(draft?.effort ?? "");
 	// Where it runs: undefined until chosen; null is this platform.
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
-	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" ? draft.harness : null);
+	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
@@ -322,9 +324,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
 	// Claude Code's modes as its machine reported them, where it did.
-	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === CLAUDE_DEFAULT_MODE) ? CLAUDE_DEFAULT_MODE : (options.modes[0] as SessionMode).id } : launch;
+	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === launch.default) ? launch.default : (options.modes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
-	const claude: ClaudeFacts | null = harness === "claude" && mode ? { mode } : null;
+	const claude: ClaudeFacts | null = other ? { opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	// Saved defaults that differ from what is chosen, and those that cannot be used.
@@ -795,7 +797,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					return {
 						id: offered.id,
 						label: name,
-						note: `on ${machineLabel(chosenMachine)}`,
+						note: signInWords(offered),
 						items: !hardened
 							? [{ id: `${offered.id}:none`, label: name, icon: <AgentGlyph harness={name} />, description: `Runs only in the hardened container, which “${machineLabel(chosenMachine)}” cannot make now.`, disabled: true }]
 							: rows.length > 0
@@ -804,28 +806,24 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					};
 				})
 			: []),
-		// Offered elsewhere: said where, as a row that cannot be chosen from here.
-		...(!offersOther && mine.some((machine) => why(machine) === null && offeredHarnesses(machine).length > 0)
-			? [
-					{
-						id: "elsewhere",
-						label: "Claude Code",
-						note: "on your machines",
-						items: [
-							{
-								id: "claude:elsewhere",
-								label: "Claude Code",
-								icon: <AgentGlyph harness="Claude Code" />,
-								description: `On ${mine
-									.filter((machine) => why(machine) === null && offeredHarnesses(machine).length > 0)
-									.map(machineLabel)
-									.join(", ")}: choose that machine first`,
-								disabled: true,
-							},
-						],
-					},
-				]
-			: []),
+		...(["claude", "opencode"] as const).flatMap(id => {
+			if (offeredHarnesses(chosenMachine).some(h => h.id === id)) return [];
+			const hosts = mine.filter(machine => why(machine) === null && offeredHarnesses(machine).some(h => h.id === id));
+			if (hosts.length === 0) return [];
+			const name = HARNESS_NAMES[id];
+			return [{
+				id: id + ":elsewhere",
+				label: name,
+				note: "on your machines",
+				items: [{
+					id: id + ":elsewhere",
+					label: name,
+					icon: <AgentGlyph harness={name} />,
+					description: `On ${hosts.map(machineLabel).join(", ")}: choose that machine first`,
+					disabled: true,
+				}],
+			}];
+		}),
 	];
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
@@ -837,24 +835,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			offersOther || (!other && ignored.model) ? (
 				<>
 					{chosenMachine && offersOther
-						? offeredHarnesses(chosenMachine).map((offered) =>
-								// Signed in, ClaudeSignIn draws nothing, or the line that says it just was.
-								hardened && offered.signIn !== "unknown" ? (
-									<ClaudeSignIn key={offered.id} machine={chosenMachine} className="harness-login">
-										{HARNESS_NAMES[offered.id]}: not signed in on “{machineLabel(chosenMachine)}”.
-										{chosenMachine.status === "online" ? null : (
-											<>
-												{" "}
-												Run <code>windlass-runner login {offered.id}</code> there.
-											</>
-										)}
-									</ClaudeSignIn>
-								) : hardened && offered.signIn === "unknown" ? (
-									<p key={offered.id}>
-										{HARNESS_NAMES[offered.id]}: the runner on “{machineLabel(chosenMachine)}” has not said whether it is signed in.
-									</p>
-								) : null,
-							)
+						? <details className="agent-commands">
+								<summary>Terminal sign-in commands</summary>
+								{offeredHarnesses(chosenMachine).map(offered => <HarnessStatus key={offered.id} harness={offered} />)}
+							</details>
 						: null}
 					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
 				</>

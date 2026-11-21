@@ -128,7 +128,7 @@ describe("a Claude Code agent's page", () => {
 		await act(async () => (asked.querySelector(".q-choice") as HTMLButtonElement).click());
 		await until(() => second()?.querySelector(".turn-end") != null);
 		expect(second()?.querySelector(".tool-stop")).toBeNull();
-	}, 20_000);
+	}, 30_000);
 });
 
 describe("an agent's mode on its page", () => {

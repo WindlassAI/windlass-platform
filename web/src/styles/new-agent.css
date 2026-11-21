@@ -68,11 +68,17 @@
 	margin-bottom: 6px;
 }
 .harness-pick > .field-note,
-.harness-login {
+.machine-harness {
 	justify-self: stretch;
 	max-width: 68ch;
 }
-.harness-login .machine-command {
+.agent-commands summary {
+	cursor: pointer;
+}
+.agent-commands[open] .machine-harness {
+	margin-top: 8px;
+}
+.machine-harness .machine-command {
 	margin-top: 6px;
 }
 .segmented {

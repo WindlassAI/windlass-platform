@@ -744,6 +744,22 @@ timeline. Nothing on the machine needs to be reachable from outside. A session's
   only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the
   runner stopped between starting it and preparing it) is removed when its session next asks for a
   sandbox, and a fresh one is made.
+- **Pair and sign in from a terminal.** Build with `WLP_RUNNER_HARNESSES="claude opencode" scripts/runner-build.sh`. Run the interactive setup on the machine, using the runner image you built or its published digest.
+
+  ```sh
+  docker run -it --rm \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v windlass-runner:/var/lib/windlass-runner \
+    <image> setup --platform <url> --harness claude --harness opencode
+  ```
+
+  Enter the pairing code on the Machines page and choose **Connect**. Setup asks about each selected agent. Answer **n** to skip its sign-in. For OpenCode, enter a provider ID or search by name. Pick **opencode-go** for a Go subscription key or **opencode** for a Zen pay-as-you-go key. Paste the key at the hidden terminal prompt. **chatgpt** starts a separate OpenAI device login and **free** enables public OpenCode models.
+
+  To import existing API keys, add `-v ~/.local/share/opencode:/import/opencode:ro` **before the image name in the setup command**. On Linux and macOS, OpenCode 1.19.6 uses the XDG data directory. If you set `XDG_DATA_HOME`, use `-v "${XDG_DATA_HOME:-$HOME/.local/share}/opencode:/import/opencode:ro"`. The Machines page offers this optional mount. Setup reads `auth.json` once and asks about each provider. For a subscription with a refresh token it offers a separate runner-owned login. The final command starts the background runner with only the Docker socket and runner state mounted. Run it in your machine terminal. [OpenCode’s data directory](https://github.com/anomalyco/opencode/blob/v1.19.6/packages/core/src/global.ts)
+
+  Add another provider or renew a key with `docker exec -it windlass-runner windlass-runner login opencode`. To select Go directly, append `--provider opencode-go`. Use `logout opencode` to clear the machine’s OpenCode logins across pairings. ChatGPT and the OpenAI API key share the native `openai` slot. Public access and a Zen key share the `opencode` slot. Signing into either slot replaces its previous method. Go has its own slot.
+
+  OpenCode runs in personal hardened Docker sessions. The per-machine relay holds the credentials, refreshes ChatGPT tokens and checks each signed session placeholder. Agent commands can consume the quota of configured providers. Changing the login invalidates existing placeholders. Recreate affected sessions. Both open and restricted sessions send inference through the loopback relay. [Provider routes, source and coverage](sandbox/relay/README.md#opencode-1196)
 - **Claude Code on this machine.** Build the runner with `WLP_RUNNER_HARNESSES=claude scripts/runner-build.sh`
   and add `--harness claude` after the runner image in the pairing command. Only the hardened Docker
   profile offers Claude Code. To sign in, run `docker exec -it windlass-runner windlass-runner login claude`.

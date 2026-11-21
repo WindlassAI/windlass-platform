@@ -4,7 +4,7 @@
 set -eu
 harness=${1:?usage: build.sh claude [<sandbox image>]}
 case "$harness" in
-    claude) ;;
+    claude|opencode) ;;
     *) echo "Unknown harness: $harness" >&2; exit 2 ;;
 esac
 base=${2:-windlass-platform-sandbox:latest}

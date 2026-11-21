@@ -8,7 +8,6 @@ import { isMachineIdName, machineLabel, MACHINE_EXPIRY_MS, type MachineClaim, ty
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
 import { CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
-import { loginCommand, type LoginCommand, type LoginResult } from "../runner/protocol.js";
 import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
 
 const SEEN_INTERVAL = 3 * 60_000;
@@ -19,9 +18,8 @@ const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
  * arrives; a socket that never does would otherwise keep the actor awake until CONTROL_DEAD_MS.
  */
 const HELLO_WAIT_MS = 10_000;
-const offline = () => new UserError("The machine disconnected during sign-in. Start again when it is online.", { code: "machine_not_connected" });
-interface Socket { login(command: LoginCommand): Promise<LoginResult>; send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
-interface Live { maxTurns?: number; offset: number; offersClaude?: boolean; claudeLogin?: boolean; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
+interface Socket { send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
+interface Live { maxTurns?: number; offset: number; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
 /** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
 interface Vars { system?: { os: string; arch: string }; retryOnFrame: boolean; nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
@@ -205,7 +203,6 @@ export const machine = actor({
 		if (!controlPath(c.request)) { raw.close(1008, "Unknown path"); return; }
 		const [uid, id] = c.key;
 		const nonce = randomBytes(32).toString("base64url");
-		const loginReplies = new Map<string, (result: LoginResult | null) => void>();
 		let hello = false;
 		let closed = false;
 		let queued = 0;
@@ -213,25 +210,12 @@ export const machine = actor({
 		const gone = () => {
 			if (closed) return;
 			closed = true;
-			for (const reply of loginReplies.values()) reply(null);
 			clearTimeout(deadline);
 			clearInterval(heartbeat);
 			if (c.vars.greeting === ws) c.vars.greeting = null;
 			if (c.vars.live?.ws === ws) return ordered(c, () => disconnected(c, ws)).catch(error => machineError("machine disconnect", error));
 		};
 		const ws: Socket = {
-			login(command) {
-				return new Promise((resolve, reject) => {
-					const timer = setTimeout(() => done(null), 45_000);
-					function done(result: LoginResult | null) {
-						loginReplies.delete(command.requestId);
-						clearTimeout(timer);
-						if (result) resolve(result); else reject(offline());
-					}
-					loginReplies.set(command.requestId, done);
-					if (!ws.send(command)) done(null);
-				});
-			},
 			send(frame) {
 				if (!closed && raw.readyState === raw.OPEN) {
 					try { raw.send(JSON.stringify(frame)); return true; }
@@ -306,11 +290,8 @@ export const machine = actor({
 						live.savedAt = now;
 					}
 					if (frame.kind === "heartbeat" && c.vars.retryOnFrame) await tell(c, await record(c));
-					if (frame.kind === "harnessLogin.result") loginReplies.get(frame.requestId)?.(frame.result);
 					if (frame.kind === "removed") await c.db.execute("DELETE FROM pending WHERE sandbox = ?", frame.sandbox);
 					if (frame.kind === "report") {
-						live.offersClaude = frame.harnesses?.some(h => h.id === "claude");
-						live.claudeLogin = frame.claudeLogin;
 						const r = await record(c);
 						const report: Report = { ...frame, sandboxes: frame.sandboxes.map(s => ({ ...s, usedAt: Math.max(0, s.usedAt - r.offset) })) };
 						if (!r.report || !isDeepStrictEqual(JSON.parse(r.report), report)) {
@@ -360,18 +341,6 @@ export const machine = actor({
 				if (!admitted.length) return { retryAfter: Math.ceil(((minute + 1) * MINUTE_MS - now) / 1000) };
 			}
 			return "active";
-		},
-		internalClaudeLogin: async (c, command: LoginCommand): Promise<LoginResult> => {
-			requireServiceFor(c, "call");
-			if (!loginCommand(command)) throw new UserError("Invalid Claude sign-in request.", { code: "bad_input" });
-			const live = c.vars.live;
-			if (!live) throw offline();
-			if (!live.offersClaude) throw new UserError("This machine does not offer Claude Code.", { code: "claude_unavailable" });
-			if (!live.claudeLogin) throw new UserError("Update the runner to sign in to Claude Code from the page.", { code: "runner_outdated" });
-			const result = await live.ws.login(command);
-			// The page uses platform time. The runner enforces the lifetime on its own clock.
-			if ("expiresAt" in result) return { ...result, expiresAt: result.expiresAt - live.offset };
-			return result;
 		},
 		internalAttach: async (c, input: { sessionId: string; ticket: string }): Promise<Attachment> => {
 			requireServiceFor(c, "call");

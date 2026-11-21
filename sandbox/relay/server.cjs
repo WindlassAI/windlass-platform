@@ -14,29 +14,38 @@ const requestHeaders = new Set(['accept', 'content-type', 'anthropic-beta', 'ant
 function reject(res, status) {
 	res.writeHead(status, { 'content-type': 'application/json' });
 	res.end(JSON.stringify({ type: 'error', error: { type: status === 401 ? 'authentication_error' : 'api_error',
-		message: 'Claude credential relay refused the request.' } }));
+		message: 'Credential relay refused the request.' } }));
 }
 
 exports.createRelay = function createRelay({ publicKey, machine,
-	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request }) {
+	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
+	domain = 'windlass-claude-relay-v2', provider }) {
 	const sessions = new WeakMap();
 	const httpServer = http.createServer(async (req, res) => {
 		try {
-			if (req.headers.host !== '127.0.0.1:17892' || req.method !== 'POST' || !messages.has(req.url))
+			if (req.headers.host !== '127.0.0.1:17892' || req.method !== 'POST' || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
 				return reject(res, 403);
-			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(req.headers.authorization ?? '');
-			if (!match || !verify(null, Buffer.from('windlass-claude-relay-v2\n' + machine + '\n' + match[1]),
+			const bearer = provider ? provider.bearer(req.headers, req.url) : req.headers.authorization;
+			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? '');
+			if (!match || !verify(null, Buffer.from(domain + '\n' + machine + '\n' + match[1]),
 				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
 			if (sessions.get(req.socket) !== match[1]) return reject(res, 401);
-			const token = await readToken().catch(() => undefined);
-			if (!token || token.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(token)) return reject(res, 401);
+			let target;
+			if (provider) {
+				target = await provider.target(req.url, req.headers);
+				if (!target) return reject(res, 401);
+			} else {
+				const token = await readToken().catch(() => undefined);
+				if (!token || token.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(token)) return reject(res, 401);
 
-			const headers = { authorization: 'Bearer ' + token };
-			for (const [key, value] of Object.entries(req.headers)) {
-				if (requestHeaders.has(key) || key.startsWith('x-stainless-')) headers[key] = value;
+				const headers = { authorization: 'Bearer ' + token };
+				for (const [key, value] of Object.entries(req.headers)) {
+					if (requestHeaders.has(key) || key.startsWith('x-stainless-')) headers[key] = value;
+				}
+				target = { hostname: 'api.anthropic.com', path: req.url, headers };
 			}
 			if (res.destroyed) return;
-			const up = forward({ hostname: 'api.anthropic.com', port: 443, method: 'POST', path: req.url, headers }, reply => {
+			const up = forward({ ...target, port: 443, method: 'POST' }, reply => {
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					reject(res, reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502);
@@ -50,7 +59,12 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
 				reply.on('error', () => res.destroy());
 				res.on('close', () => reply.destroy());
-				reply.pipe(res);
+				const filter = provider?.responseFilter?.();
+				if (filter) {
+					filter.on('error', () => res.destroy());
+					res.on('close', () => filter.destroy());
+					reply.pipe(filter).pipe(res);
+				} else reply.pipe(res);
 			});
 			up.on('error', () => {
 				if (res.destroyed || res.writableEnded) return;

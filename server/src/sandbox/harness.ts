@@ -4,7 +4,7 @@ import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, Windlass } from "./api.js";
 import type { HarnessId } from "../contract.js";
 import { ACP_CAPABILITIES, AcpHarness } from "./acp-harness.js";
-import { CLAUDE } from "./harnesses.js";
+import { machineHarnesses } from "./harnesses.js";
 
 export type { HarnessId } from "../contract.js";
 
@@ -101,7 +101,8 @@ export class WindlassHarness implements Harness {
 /** Select a harness only where the platform can start its sandbox. */
 export function harnessOf(layer: SandboxLayer, id: HarnessId): Harness {
 	if (id === "windlass") return new WindlassHarness(layer.windlass);
-	if (id !== "claude") throw new Error(`Unknown harness: ${id}`);
-	if (!layer.machine) throw new Error("Claude Code runs only on a machine of yours.");
-	return new AcpHarness(CLAUDE, layer.machine.name);
+	const profile = machineHarnesses[id];
+	if (!profile) throw new Error(`Unknown harness: ${id}`);
+	if (!layer.machine) throw new Error(`${profile.name} runs only on a machine of yours.`);
+	return new AcpHarness(profile, layer.machine.name);
 }

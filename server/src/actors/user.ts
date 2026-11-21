@@ -133,7 +133,7 @@ import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, ver
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { initialHarnessModels } from "../sandbox/harnesses.js";
+import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -925,12 +925,12 @@ const KEYED = "agent";
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4]): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	const harness = input.harness === undefined ? "windlass" : input.harness;
-	if (harness !== "windlass" && harness !== "claude") throw new UserError("Choose an available harness.", { code: "bad_input" });
+	if (harness !== "windlass" && harness !== "claude" && harness !== "opencode") throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
 		if (item) throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
-		if (place.kind !== "machine") throw new UserError("Claude Code runs only on a machine of yours.", { code: "bad_input" });
-		if (input.profile !== "docker-hardened") throw new UserError("Claude Code requires the docker-hardened profile.", { code: "bad_input" });
-		if (input.publishUnasked) throw new UserError("Claude Code has no publish tool. Publish from the session panel.", { code: "bad_input" });
+		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
+		if (input.profile !== "docker-hardened") throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
+		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
 	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
 	const givenTitle = input.title === undefined || input.title === null ? null : cleanTitle(input.title);
@@ -977,7 +977,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
-		if (harness === "claude" && !offered) throw new UserError("This machine does not offer Claude Code.", { code: "bad_input" });
+		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -993,7 +993,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			modes.mode = input.mode;
 		}
 		const options = offered?.options;
-		const models = harness === "claude" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
+		const models = harness !== "windlass" ? initialHarnessModels(options) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
 		if (options) modes.availableModes = options.modes;
 
@@ -1285,9 +1285,6 @@ export const user = actor({
 		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
-		startClaudeLogin: (c, input: { machineId: string }) => machineActions.startClaudeLogin(c, input),
-		finishClaudeLogin: (c, input: { machineId: string; code: string }) => machineActions.finishClaudeLogin(c, input),
-		cancelClaudeLogin: (c, input: { machineId: string }) => machineActions.cancelClaudeLogin(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
@@ -1733,7 +1730,7 @@ export const user = actor({
 			const session = c.vars.sessions.get(id);
 			if (!session) return { project: null, secrets: [], checks: [], account: { secrets: [], servers: [] } };
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
-			const redactOnly = !send && session.harness === "claude";
+			const redactOnly = !send && !!session.harness && session.harness !== "windlass";
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			const account = {
 				secrets: kept.map((row) => ({ name: row.name, scope: row.scope === "agent" ? ("agent" as const) : ("setup" as const), sealed: row.sealed })),

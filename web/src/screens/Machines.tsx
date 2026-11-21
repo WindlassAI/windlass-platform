@@ -11,15 +11,13 @@
  *
  * `/machines/add` opens the dialog that pairs a machine: it is the address a runner prints with its code.
  *
- * A runner started with another harness (`--harness claude`) reports it with its adapter's version and
- * whether it is signed in there; each machine says so. Where Claude Code is not signed in, its line signs it in
- * from the page (components/ClaudeSignIn.tsx), with the command that does it on the machine beside it.
+ * Each machine shows its runner's last sign-in report and a copyable terminal command for each agent.
  */
 import { MAX_MACHINES, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
-import { ClaudeSignIn } from "../components/ClaudeSignIn";
+import { Command } from "../components/Command";
 import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
@@ -50,27 +48,14 @@ export function MachinesCrumb() {
 }
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
-function installCommand(info: MachinesInfo): string | null {
+function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
 	if (info.runnerImage === null) return null;
 	return [
-		"docker run -d --name windlass-runner --restart unless-stopped \\",
+		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		`  ${info.runnerImage} --platform ${info.platformUrl}`,
-	].join("\n");
-}
-
-/**
- * The command that sets a machine up from its terminal: it runs once, pairs the machine and signs its
- * agents in, asking as it goes. Null while no runner image is published.
- */
-function setupCommand(info: MachinesInfo): string | null {
-	if (info.runnerImage === null) return null;
-	return [
-		"docker run -it --rm \\",
-		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
-		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		`  ${info.runnerImage} setup --platform ${info.platformUrl}`,
+		...(agents.openCode && setup?.importKeys ? ['  -v "${XDG_DATA_HOME:-$HOME/.local/share}/opencode:/import/opencode:ro" \\'] : []),
+		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}`,
 	].join("\n");
 }
 
@@ -164,19 +149,6 @@ export function MachineState({ machine, now }: { machine: MachineSummary; now: n
 			<span className="sandbox-state-dot" aria-hidden="true" />
 			{word}
 		</span>
-	);
-}
-
-/** A command to run on the machine, with the way to copy it. */
-export function Command({ text, label }: { text: string; label: string }) {
-	return (
-		<div className="machine-command">
-			<pre tabIndex={0} aria-label={label}>
-				{/* A short word, a flag such as "--restart", is never split after its hyphens; a long one, a path or the image's digest, fills its lines. */}
-				{text.split(/(\s+)/).map((part, index) => (index % 2 === 0 && part.length <= 24 ? <span key={index}>{part}</span> : part))}
-			</pre>
-			<CopyButton text={text} label={`Copy ${label.toLowerCase()}`} />
-		</div>
 	);
 }
 
@@ -437,7 +409,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const details = useId();
 	const reported = machine.commandSandbox !== null;
 	const paired = relativeTime(machine.since, now);
-	const claude = machine.harnesses?.some((harness) => harness.id === "claude") ?? false;
+
 	const host = machineHostNote(machine);
 	return (
 		<li className={`usage-kept-row machine-row machine-row-${machine.warnings.some((warning) => warning.kind === "outdated") ? "outdated" : machine.status}`}>
@@ -486,9 +458,8 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</span>
 			</button>
 
-			{machine.status === "waiting" || machine.warnings.length > 0 || claude ? (
+			{machine.status === "waiting" || machine.warnings.length > 0 ? (
 				<div className="machine-notes">
-					{claude ? <ClaudeSignIn machine={machine}>Claude Code: not signed in.</ClaudeSignIn> : null}
 					{machine.status === "waiting" && machine.warnings.length === 0 ? (
 						<p className="usage-note">
 							Paired {paired === "now" ? "a moment ago" : paired}; its runner has not connected since. Check <code>docker logs windlass-runner</code> on the machine. A runner that lost its key before it connected never will: remove this machine and add it again.
@@ -566,8 +537,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 		start.current = element;
 	};
 	const ids = { form: useId(), code: useId(), codeNote: useId(), trust: useId() };
-	const setup = setupCommand(info);
-	const install = installCommand(info);
+	const [claude, setClaude] = useState(false);
+	const [openCode, setOpenCode] = useState(false);
+	const [importKeys, setImportKeys] = useState(false);
+	const agents = { claude, openCode };
+	const setup = installCommand(info, agents, { importKeys });
+	const install = installCommand(info, agents);
 	const complete = code.replace(/-/g, "").length === 8;
 
 	const shown = useRef(step.step);
@@ -736,6 +711,11 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 				{setup ? (
 					<div>
 						<p className="machine-step">Set it up</p>
+						<div className="machine-setup-agents">
+							<label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>
+							<label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>
+							{openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
+						</div>
 						<Command text={setup} label="The setup command" />
 						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name.</p>
 					</div>

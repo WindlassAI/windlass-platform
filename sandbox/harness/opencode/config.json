@@ -1,0 +1,10 @@
+{
+  "autoupdate": false,
+  "share": "disabled",
+  "permission": { "bash": "ask", "edit": "ask", "external_directory": "ask" },
+  "provider": {
+    "opencode": { "options": { "baseURL": "http://127.0.0.1:17892/free", "headers": { "x-wlp-session": "{env:WLP_SESSION_BEARER}" } } },
+    "openai": { "options": { "baseURL": "http://127.0.0.1:17892/openai" } },
+    "anthropic": { "options": { "baseURL": "http://127.0.0.1:17892/anthropic" } }
+  }
+}
