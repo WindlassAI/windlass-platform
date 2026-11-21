@@ -217,7 +217,10 @@ test("a stopped feature cannot turn its cap into a builder retry or lose child s
 	assert.equal(paused.question?.kind,"budget"); assert.equal(paused.jobs?.length,0);
 	assert.ok(paused.question!.choices.some(c => c.id === "revise"));
 	const revised = advance(paused,{kind:"answer",question:paused.question!.id,choice:"revise",by:"person",at:7});
-	assert.ok(revised.item.question?.kind === "budget" || revised.item.run?.step.kind === "refine");
+	assert.equal(revised.item.question?.kind, "budget");
+	assert.equal(revised.item.question!.choices.some(c => c.id === "retry"), false);
+	assert.equal(revised.effects.some(e => e.kind === "deliver"), false);
+	assert.deepEqual(revised.item.spent, next.spent);
 });
 test("a second re-plan can move only unused allocation and a third stop cannot dispatch a planner", () => {
 	let item = approved();
@@ -450,4 +453,34 @@ test("a quiet child costs at most 16 parent poll writes and one item revision in
 	assert.equal(revisions, 1);
 	const notice = advance(item, {kind:"child_notice", child:item.jobs![0].id, state:"done", spent:zero, at});
 	assert.equal(notice.effects.find(e => e.kind === "dispatch")?.at, at);
+});
+
+test("an exhausted child cannot raise even through an old stored question", () => {
+	const child = createItem({id:"i_child", task, budget:single, reviewer:{off:"deployment"}, place:{kind:"hosted"}});
+	child.parent = {itemId:"i_feature",key:"index",title:task.title};
+	child.spent = {...single};
+	const stopped = advance(child, {kind:"start", at:1, by:"person"}).item;
+	assert.equal(stopped.question!.kind, "budget");
+	assert.equal(stopped.question!.choices.some(c => c.id === "raise"), false);
+	stopped.question!.choices.push({id:"raise",label:"Raise"});
+	const forced = advance(stopped, {kind:"answer", question:stopped.question!.id, choice:"raise", budget:{tokens:single.tokens*2}, at:2, by:"person"});
+	assert.equal(forced.item, stopped);
+	assert.deepEqual(forced.item.budget, single);
+});
+test("a re-plan cannot edit completed work", () => {
+	let item = approved();
+	item = advance(item, {kind:"feature_ready", key:currentKey(item)!, head, pr, at:5}).item;
+	for (const state of ["done","failed"] as const) {
+		item = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs!.at(-1)!.id, state, spent:zero, head, report:"Result", at:6}).item;
+	}
+	const plan = proposal();
+	plan.subtasks[0].brief += " and change another file";
+	assert.throws(() => advance(item, {kind:"file_plan", key:currentKey(item)!, plan, at:8}), /Completed subtasks/);
+});
+test("a redelivered planner must file in its own attempt before approval", () => {
+	let item = proposed(proposal());
+	item = advance(item, {kind:"answer", choice:"revise", question:item.question!.id, at:4, by:"person"}).item;
+	item = advance(item, {kind:"turn_ended", key:currentKey(item)!, at:5, outcome:"succeeded", spend:{tokens:1,hostedSeconds:0}, report:null, changes:false, flags:[], verified:null}).item;
+	assert.match(item.question!.text, /without filing/);
+	assert.equal(advance(item, {kind:"approve_plan", version:item.featurePlan!.version, at:6, by:"person"}).item, item);
 });

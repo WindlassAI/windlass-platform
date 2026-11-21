@@ -1030,7 +1030,7 @@ const STOP_WORDS: Record<Exclude<StopCause, keyof ItemBudget>, (task: Task) => s
 
 function stop(c: Change, cause: StopCause, sentence: string, resume: TurnPlan): void {
 	const budget = cause === "tokens" || cause === "turns" || cause === "activeSeconds" || cause === "hostedSeconds";
-	ask(c, budget ? "budget" : "rounds", sentence, [...(!c.item.parent || !budget ? [choice("raise")] : []), ...(!c.item.jobs?.length ? [choice("retry")] : []), ...handOver(c.item), choice("give_up")], cause, resume);
+	ask(c, budget ? "budget" : "rounds", sentence, [...(!c.item.parent || !budget ? [choice("raise")] : []), ...(!c.item.approvedPlan && !c.item.jobs?.length ? [choice("retry")] : []), ...handOver(c.item), choice("give_up")], cause, resume);
 }
 
 function askRemoved(c: Change): void {
@@ -1056,7 +1056,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const note = fact.note?.trim() || null;
 	item.question = null;
 	c.say(`Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`);
-	if (item.jobs?.length && fact.choice === "retry") return false;
+	if ((item.approvedPlan || item.jobs?.length) && fact.choice === "retry") return false;
 	if (item.parent && fact.choice === "raise" && question.kind === "budget") return false;
 	if (item.parent && fact.choice === "hand_over") return false;
 	if (fact.choice === "give_up") {
