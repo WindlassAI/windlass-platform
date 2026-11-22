@@ -957,6 +957,10 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	const handoff = claudeOutcome ? effect(claudeOutcome, "handoff") : undefined;
 	const posted = handoff && claudeOutcome ? summaryOf(handoff.verdict, null, (claudeOutcome as Outcome).item.spent, (claudeOutcome as Outcome).item.budget, "https://wlp.invalid/items/i", itemAgent((claudeOutcome as Outcome).item)) : "";
 	expect("the windlass/verified summary says CI decides and the tokens Claude Code reported, not 0 of a budget", /The turn left no record of its checks; CI decides\./.test(posted) && /Spent: 33,500 tokens reported by Claude Code, not counted \(subscription\), 1 of 14 turns/.test(posted), posted.split("\n").filter(l => /Spent|CI decides/.test(l)).join(" | "));
+	expect("the windlass/verified summary names the agent that built the commit", posted.startsWith(`Claude Code at ${H(1).slice(0, 7)}: Ready for review.`), posted.split("\n", 1)[0]);
+	const windlassPosted = handoff && claudeOutcome ? summaryOf(handoff.verdict, null, (claudeOutcome as Outcome).item.spent, (claudeOutcome as Outcome).item.budget, "https://wlp.invalid/items/i", itemAgent(agentItem("windlass"))) : "";
+	const openCodePosted = handoff && claudeOutcome ? summaryOf(handoff.verdict, null, (claudeOutcome as Outcome).item.spent, (claudeOutcome as Outcome).item.budget, "https://wlp.invalid/items/i", itemAgent(agentItem("opencode"))) : "";
+	expect("a Windlass or OpenCode item's summary names that agent", windlassPosted.startsWith("Windlass at ") && openCodePosted.startsWith("OpenCode at "), [windlassPosted, openCodePosted].map(p => p.split("\n", 1)[0]).join(" | "));
 	const afterTurn = (item: FactoryItem, spend: ReturnType<typeof turnSpend>) => {
 		let o = advance(item, { kind: "start", at: T0, by: "person:u1" });
 		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });

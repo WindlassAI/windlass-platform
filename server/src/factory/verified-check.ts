@@ -2,6 +2,7 @@ import type { CheckConclusion, ItemAgent, ItemBudget, Verdict } from "../contrac
 import { tokenWords } from "./budget.js";
 import { spellSeconds } from "../usage.js";
 import { flagWords } from "../verified.js";
+import { harnessName } from "../sandbox/harnesses.js";
 import { commentText } from "./review.js";
 import type { CheckReview } from "./types.js";
 import { ciSentence, verdictHeadline } from "./verdict.js";
@@ -30,7 +31,8 @@ export function evidenceLine(itemUrl: string): string {
 /** The public output accepts only platform observations. Never interpolate a filing, diagnostic or acceptance criterion. */
 export function checkSummary(v: Verdict, review: CheckReview | null, spent: ItemBudget, budget: ItemBudget, itemUrl: string, agent?: ItemAgent): string {
 	const sha = commentText(v.head.slice(0, 7), 7);
-	const head = `Windlass at ${v.moved ? commentText(v.moved.slice(0, 7), 7) : sha}: ${checkTitle(v, review)}.`;
+	// Name the agent that built the commit: "Claude Code at abc1234", not the platform's own name.
+	const head = `${harnessName(agent?.harness ?? "windlass")} at ${v.moved ? commentText(v.moved.slice(0, 7), 7) : sha}: ${checkTitle(v, review)}.`;
 	// ci.said can include raw API or job output. Render the CI sentence without that diagnostic.
 	const ci = v.ci.state === "unread" && v.ci.said ? "GitHub returned only part of the CI listing." : ciSentence({ ...v.ci, said: null });
 	const header = [head, ...(v.moved ? [`The evidence below is for the agent's commit ${sha}.`] : []), commentText(ci, 600)].join("\n\n");

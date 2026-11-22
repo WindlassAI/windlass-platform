@@ -312,7 +312,8 @@ export class FakeHandle implements SandboxHandle {
 	private interpret(command: string): ExecResult {
 		const files = this.sandbox.files;
 		const head = process.env.WLP_FAKE_REVIEW_HEAD;
-		if (this.sandbox.privateData && command.includes("wlp_git clone --quiet --single-branch") && process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE && !this.sandbox.reviewCloneFailed) {
+		// A review's base clone, with or without the Git mirror's reference flags (git.ts cloneScript).
+		if (this.sandbox.privateData && /\bwlp_git\b[^\n]* clone --quiet [^\n]*--single-branch\b/.test(command) && process.env.WLP_FAKE_REVIEW_CLONE_503_ONCE && !this.sandbox.reviewCloneFailed) {
 			this.sandbox.reviewCloneFailed = true;
 			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
 		}

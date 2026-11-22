@@ -43,7 +43,7 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 
 | Class | Checks | Where |
 | --- | --- | --- |
-| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, repository, review, reviewer-task, runner-control, runner-protocol, secrets, setup, usage, verified, web-files, github, shot, sizing, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections) | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook` |
+| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, repository, review, reviewer-task, runner-control, runner-protocol, secrets, setup, git-config, usage, verified, web-files, github, shot, sizing, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections) | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook` |
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
 | (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
 | (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker` | CI heavy: `shots-docker` |
@@ -62,7 +62,7 @@ checkout; on CI that comparison is skipped and the rest runs.
    covers what you changed (`cd server && npx tsx ../scripts/<name>.ts`), nothing more. Leave the
    Docker checks, the e2e runs and the full suite to CI.
 2. **Push a `wip/<name>` branch** to `git@github.com:WindlassAI/windlass-platform.git`
-   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Both workflows run on it. The plan job's summary says which
+   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Both workflows run on it; on `wip/*` the CI workflow runs only typecheck and the secret scan, and CI heavy runs the tests. The plan job's summary says which
    groups ran and which changed file chose each one; each job's summary has a table of its checks with
    their times.
 3. **Read the result** with one call per look, no more than once a minute:
