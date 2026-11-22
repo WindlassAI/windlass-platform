@@ -62,18 +62,19 @@ import {
 	type VerdictRun,
 	type Waiting,
 } from "@contract";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
 
 /**
  * How the user's work items stand when the page loads (`?items=`): "all" (the default: every state,
  * wait, question and verdict, on three repositories), "few" (three questions on two repositories and
  * little else), "none" (no item and no API token), "full" (all of them, and as many API tokens as an
- * account may have), "features" ("few" and three orchestrated features: one whose plan waits for approval,
+ * account may have), "many" ("all" and 90 more ended items, for the Factory's pages of them), "features" ("few" and three orchestrated features: one whose plan waits for approval,
  * one running its subtasks, one whose subtask asks you), "loading" (nothing is ever answered), "failed" (nothing can be read) and "off"
  * (the deployment offers no work items: platform info has no `items`, and every call here but
  * `factoryLimits` is refused with `items_off`, as server/src/actors/user-items.ts refuses them without WLP_ITEMS).
  */
-export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "loading", "failed", "off"] as const;
+export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "many", "loading", "failed", "off"] as const;
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
@@ -546,7 +547,28 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
 	if (state === "few" || state === "features") return all.filter((seed) => [3, 18, 21, 22, 24].includes(seed.n));
+	if (state === "many") return [...all, ...onMachines(), ...manyEnded()];
 	return [...all, ...onMachines()];
+
+	/** Ended items of a long-used factory: done mostly, some failed or cancelled, one every few hours, the oldest weeks ago. */
+	function manyEnded(): Seed[] {
+		const titles = ["Bump the date library", "Trim the import log", "Rename the tide constants", "Cache the station list", "Drop the old chart colours", "Fix the flaky clock test", "Tidy the release notes", "Split the importer module", "Retry the feed download", "Lint the docs examples"];
+		const repos = [HARBOR, TIDES, DOCS];
+		return Array.from({ length: 90 }, (_, index): Seed => {
+			const state: ItemSummary["state"] = index % 11 === 5 ? "failed" : index % 13 === 7 ? "cancelled" : "done";
+			const filed = (40 + index * 5) * 60;
+			return {
+				n: 400 + index,
+				title: `${titles[index % titles.length]}${index >= titles.length ? ` (${Math.floor(index / titles.length) + 1})` : ""}`,
+				on: repos[index % repos.length] as typeof HARBOR,
+				state,
+				filed,
+				...(state === "done" ? { pr: 100 + index } : {}),
+				run: { n: 1, started: filed, ended: filed - 50, stopReason: state === "failed" ? "ci" : state === "cancelled" ? "cancelled" : null, rounds: { plan: 0, gate: 0, ci: state === "failed" ? 2 : 0, conflict: 0 }, step: { n: 6, kind: state === "done" ? "merged" : "implement", started: filed - 50 } },
+				spent: { tokens: 300_000 + (index % 7) * 110_000, turns: 1 + (index % 3), activeSeconds: (20 + (index % 9) * 5) * 60, hostedSeconds: (20 + (index % 9) * 5) * 60 },
+			};
+		});
+	}
 
 	/** The items on the user's machines: each on a machine of the list that fits it, and left out where none does. */
 	function onMachines(): Seed[] {
@@ -1547,9 +1569,18 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
-			async listItems() {
+			async listItems(page) {
 				await answer(240);
-				return listedItems(auth);
+				// As the server's: the whole list, or a page of it (server/src/item-pages.ts), with its refusal.
+				let clean: CleanPage | null;
+				try {
+					clean = cleanItemPage(page);
+				} catch (error) {
+					if (error instanceof ItemPageProblem) throw new PlatformError("user", error.message, { reason: "bad_input" });
+					throw error;
+				}
+				const list = listedItems(auth);
+				return clean === null ? list : itemPage(list, clean);
 			},
 			async item(id) {
 				await answer(220);

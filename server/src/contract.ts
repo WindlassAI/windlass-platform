@@ -1126,6 +1126,30 @@ export interface MachineClaim {
 }
 
 // --- Work items: the software factory (Plans "software factory") ------------------------------
+
+/** How many work items a page holds when it does not say, and at most (`listItems`). */
+export const ITEM_PAGE_DEFAULT = 25;
+export const ITEM_PAGE_MAX = 100;
+
+/** Where a page of work items starts: after this item, the last of the page before. Both never change. */
+export interface ItemCursor {
+	createdAt: number;
+	id: string;
+}
+
+/**
+ * A page of the user's work items (`listItems`), in the list's order: newest filed first. `ended`
+ * keeps done, failed and cancelled ones; `repository` and `source` keep one repository's and one way
+ * of filing's, as the Factory's filters do.
+ */
+export interface ItemListPage {
+	before?: ItemCursor | null;
+	/** `ITEM_PAGE_DEFAULT` when left out, at most `ITEM_PAGE_MAX`. */
+	limit?: number;
+	ended?: boolean;
+	repository?: GithubId | null;
+	source?: "web" | "api" | "github" | null;
+}
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
 // steps (the blueprint): an agent implements it, the user's checks gate it, the platform pushes the
@@ -1827,8 +1851,13 @@ export interface UserActions {
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
-	/** The user's work items, the newest first. */
-	listItems(): Promise<ItemSummary[]>;
+	/**
+	 * The user's work items, the newest first. With `page`, at most `page.limit` of them after
+	 * `page.before`, kept to ended ones, one repository or one way of filing where it says so
+	 * (`ItemListPage`); a page shorter than its limit is the last. Throws a UserError with code
+	 * `bad_input` for a page that is not one.
+	 */
+	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	itemAttachmentLinks(itemId: string): Promise<Array<{ id: string; url: string; expiresAt: number }>>;

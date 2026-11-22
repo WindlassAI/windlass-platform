@@ -28,6 +28,17 @@ either way, since `WLP_FACTORY_RUNNING_TURNS` is also the ceiling on a person's 
 with its steps while the switch is off, and turning it off and on again loses nothing. While it is off,
 nobody can file, read or act on an item.
 
+## The list, and its pages
+
+The `user` actor keeps every item's summary and sends the whole list to `listItems` without arguments
+and on the live feed (`UserEvents.items`) after any change. `listItems` also takes a page
+(`ItemListPage`, `server/src/item-pages.ts`): at most `limit` items (25 by default, 100 at most), newest
+filed first, after a cursor that is the last item of the page before (its `createdAt` and id, which never
+change, so no item is skipped or repeated when states change), kept to ended items, one repository or
+one way of filing where it says so. A page shorter than its limit is the last. The Factory page reads its
+ended items this way, a page at a time. The live feed still carries every item: a user with thousands
+would need the feed to carry only open items and the newest ended ones, with counts beside them.
+
 ## Where an item runs
 
 An item runs on a hosted sandbox by default. With `WLP_MACHINES=1`, it can run on a machine paired

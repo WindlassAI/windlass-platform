@@ -24,6 +24,7 @@ import type {
 	GithubRepositoryList,
 	GithubStatus,
 	ItemAction,
+	ItemListPage,
 	ItemSummary,
 	ItemView,
 	LiveDelta,
@@ -229,7 +230,8 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
-	listItems(): Promise<ItemSummary[]>;
+	/** With `page`, a page of them (`ItemListPage`); a page shorter than its limit is the last. */
+	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** One item's page. Throws with reason `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	/** Links to the item's kept screenshots, each working for ten minutes; a removed one has none. Throws with reason `item_not_found`. Never kept beyond the page's memory. */
