@@ -1,6 +1,7 @@
 import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
+ * Without a flag it runs --profiles-only and --harness-only first; --main-only leaves them out (CI runs them in a job of their own).
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
 import { writeProofDocker } from "./runner-proof-docker.js";
@@ -1288,7 +1289,7 @@ try {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle, shots], { cwd: root });
 		await check(image, shots);
 	} else {
-		if (!process.argv.includes("--real-machine")) {
+		if (!process.argv.includes("--real-machine") && !process.argv.includes("--main-only")) {
 			for (const suite of ["--profiles-only", "--harness-only"]) {
 				const focused = spawn(process.execPath, [...process.execArgv, process.argv[1]!, suite], { stdio: "inherit" });
 				assert.equal(await new Promise(resolve => focused.on("exit", resolve)), 0);

@@ -65,6 +65,7 @@ checkout; on CI that comparison is skipped and the rest runs.
    `gh run watch`: it uses up the shared API allowance.
 4. **Force a full run** when a change reaches further than its paths say (a new shared helper, say):
    `gh workflow run ci-heavy.yml --ref wip/<name> -f full=true`. Every push to `main` and the nightly
-   run are full runs already.
+   run are full runs already. On a branch stacked on another, `-f base=<parent branch or commit>` chooses
+   by the changes since that parent rather than since `main`.
 
 When you add a check, put it in a group of `scripts/ci-groups.json`, with the paths it covers.

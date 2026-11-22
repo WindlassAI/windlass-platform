@@ -309,10 +309,16 @@
       ],
       "shards": {
         "runner": { "only": ["runner"], "images": ["base", "shots"], "history": true },
+        "suites": { "only": ["runner-profiles", "runner-harness", "runner-sizing", "runner-snapshots", "runner-screenshots"], "images": ["base", "shots"], "history": true },
         "harness": { "only": ["claude-relay-docker", "opencode-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "harness"] }
       },
       "checks": {
-        "runner": "tsx ../scripts/runner-check.ts",
+        "runner": "tsx ../scripts/runner-check.ts --main-only",
+        "runner-profiles": "tsx ../scripts/runner-check.ts --profiles-only",
+        "runner-harness": "tsx ../scripts/runner-check.ts --harness-only",
+        "runner-sizing": "tsx ../scripts/runner-check.ts --sizing-only",
+        "runner-snapshots": "tsx ../scripts/runner-check.ts --snapshots-only",
+        "runner-screenshots": "tsx ../scripts/runner-check.ts --screenshots-only",
         "claude-relay-docker": "tsx ../scripts/claude-relay-docker-check.mjs \"$WLP_CI_CLAUDE_IMAGE\"",
         "opencode-docker": "tsx ../scripts/opencode-docker-check.mjs \"$WLP_CI_OPENCODE_IMAGE\"",
         "runner-egress-live": "tsx ../scripts/runner-egress-live.ts \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\"",

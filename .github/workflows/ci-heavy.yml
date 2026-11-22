@@ -14,6 +14,10 @@ on:
         type: boolean
         default: false
         description: Run every group, whatever changed
+      base:
+        type: string
+        default: ''
+        description: Choose by the changes since this ref instead of since main (a stacked branch's parent, say)
 
 permissions:
   contents: read
@@ -49,6 +53,7 @@ jobs:
       - id: select
         env:
           FULL: ${{ inputs.full }}
+          BASE_REF: ${{ inputs.base }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/ci-heavy.mjs select
 

@@ -71,7 +71,8 @@ function select(argv) {
 		if (event === "schedule" || ref === "refs/heads/main" || (event === "workflow_dispatch" && env.FULL === "true")) {
 			all = true; reason = event === "schedule" ? "nightly" : ref === "refs/heads/main" && event === "push" ? "push to main" : "full run";
 		} else {
-			const base = event === "pull_request" ? env.PR_BASE_SHA : git("merge-base", "origin/main", "HEAD");
+			if (env.BASE_REF?.startsWith("-")) throw new Error(`not a ref: ${env.BASE_REF}`);
+			const base = event === "pull_request" ? env.PR_BASE_SHA : git("merge-base", env.BASE_REF || "origin/main", "HEAD");
 			files = changedSince(base); reason = `changes since ${base.slice(0, 12)}`;
 		}
 	}
