@@ -27,7 +27,7 @@ import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Veri
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull, type Repository } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, hasMirror, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, hasMirror, saveMirrorAfterClone, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { refHead } from "./feature.js";
 import { outgoingCredentials, redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
@@ -144,18 +144,20 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 	let outcome: GitOutcome;
 	try {
 		const owner = uid && sandbox.profile.startsWith("docker-") ? mirrorOwner(uid, String(repository.id)) : undefined;
-		const attempt = (reference: boolean) => app.withToken(
+		const attempt = (reference: boolean, repair = false) => app.withToken(
 			resolved.installation.id,
 			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
 			async (token) => {
 				const clone = await cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name),
-					branch: repository.branch, directory: resolved.repository.name, work, signal, pinnedBase, mirror: owner ? { owner, reference } : undefined });
+					branch: repository.branch, directory: resolved.repository.name, work, signal, pinnedBase, mirror: owner ? { owner, reference, repair } : undefined });
 				return confirmBase(app, token, repository, resolved.repository, clone, work === undefined ? pinnedBase : undefined);
 			},
 			{ revokeAfter: true },
 		);
 		outcome = await attempt(!!owner && await hasMirror(sandbox, owner, signal));
-		if (outcome.failure === "mirror" && !signal?.aborted) outcome = await attempt(false);
+		if (outcome.failure === "mirror" && !signal?.aborted) outcome = await attempt(false, true);
+		// Only a clone whose base GitHub confirmed seeds the slot.
+		saveMirrorAfterClone(sandbox, outcome.ok && repository.baseSha && !signal?.aborted ? outcome : { ...outcome, ok: false });
 	} catch (error) {
 		throw problemOf(error, account, name);
 	}

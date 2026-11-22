@@ -515,6 +515,11 @@ class RunnerHandle implements TurnSandbox {
 		await this.link.again("removeFiles", { id: this.id, paths });
 	}
 
+	/** The runner installs it with its own helper container. Not repeated: a save lost with its conversation is skipped. */
+	saveMirror(stage: string, partial: boolean): Promise<boolean> {
+		return this.link.request("saveMirror", { id: this.id, stage, partial });
+	}
+
 	/**
 	 * Nothing, as on hosted Docker: the runner never stops a sandbox while its session's socket is
 	 * connected or anything runs in it, so a turn has nothing to vouch for.

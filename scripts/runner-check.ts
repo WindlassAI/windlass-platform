@@ -236,7 +236,15 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				}
 				const a = await session(sessionId, false), id = await a.create(4);
 				assert.equal((await a.channel.request("run", { id, command: `test ! -r ${slot} && test ! -w ${slot}` })).exitCode, 0);
-				assert.equal((await a.channel.request("run", { id, options: { gitUser: true }, command: `mountpoint -q ${slot} && touch ${slot}/runner-proof` })).exitCode, 0);
+				// The slot is read-only in the session. The runner's save helper writes it from a stage.
+				assert.notEqual((await a.channel.request("run", { id, options: { gitUser: true }, command: `mountpoint -q ${slot} && touch ${slot}/runner-proof` })).exitCode, 0);
+				const stage = randomBytes(16).toString("hex");
+				const staged = await a.channel.request("run", { id, options: { gitUser: true }, command: ["set -e", `dir=/tmp/wlp-transport-${stage}.mirror`, 'mkdir -m 700 "$dir"', 'cd "$dir"',
+					"git init -q --bare seed", "export GIT_DIR=seed", "tree=$(git mktree </dev/null)", 'commit=$(git -c user.name=r -c user.email=r@example.org commit-tree "$tree" -m proof)',
+					'echo "$commit refs/heads/main" > seed/packed-refs', 'echo "ref: refs/heads/main" > seed/HEAD', 'echo "$commit"'].join("\n") });
+				assert.equal(staged.exitCode, 0, staged.stderr);
+				const proof = staged.stdout.trim();
+				assert.equal(await a.channel.request("saveMirror", { id, stage, partial: false }), true);
 				assert.deepEqual(await limitsOf(containerName(id.slice(-12))), [1.5e9, 3 * 2 ** 30, 3 * 2 ** 30, 1536, 256, "3"]);
 				assert.equal((await a.channel.request("run", { id, command: "touch /workspace/build-output"})).exitCode, 0);
 				assert.equal(await a.channel.request("saveSnapshot", {id, source}), true);
@@ -246,7 +254,7 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				const next = { ...key, writer: false, attempt: randomBytes(16).toString("hex") };
 				const b = await session(srv.other, true, next), restored = await b.create(2);
 				const name = containerName(restored.slice(-12));
-				assert.equal((await b.channel.request("run", { id: restored, options: { gitUser: true }, command: `mountpoint -q ${slot} && test -f ${slot}/runner-proof` })).exitCode, 0);
+				assert.equal((await b.channel.request("run", { id: restored, options: { gitUser: true }, command: `mountpoint -q ${slot} && git --git-dir=${slot}/repo.git rev-parse HEAD` })).stdout.trim(), proof);
 				const limits = [1e9, 2 ** 31, 2 ** 31, 1024, 256, "2"];
 				assert.deepEqual(await limitsOf(name), limits);
 				// Reconnect must repair drift using the reader's size, even when its producer was clamped.

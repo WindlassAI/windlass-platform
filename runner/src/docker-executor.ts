@@ -14,6 +14,7 @@ import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
 import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
+import { saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
 import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
 import { localSizing } from "./sizing.js";
@@ -418,6 +419,10 @@ export class Executor extends MachineDocker {
 		}
 		this.publishReport?.();
 		return id;
+	}
+	async saveMirror(session: string, id: string, stage: string, partial: boolean) {
+		const box = this.running(id, session);
+		return saveSessionMirror(containerName(box.raw), stage, partial);
 	}
 	async saveSnapshot(session: string, id: string, source: SnapshotSource) {
 		const box = this.running(id, session);

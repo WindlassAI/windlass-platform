@@ -77,6 +77,8 @@ class Conversation {
 				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo); });
 			}
 			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
+			// Not serial: a save runs for minutes in its own helper container, outside the sandbox.
+			case "saveMirror": return o.saveMirror(this.session, op.args.id, op.args.stage, op.args.partial);
 			case "saveSnapshot": {
 				const { id, source } = op.args;
 				return o.serial(() => { this.requireActive(); return o.saveSnapshot(this.session, id, source); });

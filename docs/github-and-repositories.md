@@ -208,40 +208,67 @@ deletions. The transport checks the resulting clone with `git fsck --connectivit
 checks for alternates before copying it to the workspace. The session records the base through
 the same independent GitHub confirmation used by a plain clone.
 
-The check is for connectivity, not a rehash of every object, because a full fsck grows with the
-repository. For a 177 MiB clone it took 2–5 s on one CPU of a loaded 2-CPU host and 17 s at a
-tenth of a CPU, against 0.1–0.7 s for the connectivity check. It does not reduce what is trusted. Only the
-transport UID can write a slot. That UID runs only platform Git, and the mirror holds only
-objects from clones of GitHub, which Git verified on receipt. `--dissociate` copies what the
-clone uses into its own pack, and pack reuse checks the CRC of each copied object. The clone
-must have no alternates afterwards. A slot that is missing objects fails the connectivity check,
-and the clone falls back to the plain path.
+**What is trusted.** A clone takes objects from the mirror by their SHA-1 names, so the mirror
+must hold no object whose content differs from its name. Two rules give that:
+
+- Every session mounts its slot read-only. No process in a session container, the agent or
+  the Git transport UID (65534), can write, rename or remove anything in a slot.
+- Only a save helper outside every session writes a slot, and it rehashes every object first.
+  The helper takes the clone's staged refs and objects as a tar stream from `docker cp`.
+  It keeps only HEAD, packed-refs, packs with their indexes, and loose objects. It writes them
+  under fresh names with its own config, so no alternates, hooks or other settings. It runs
+  `git fsck --full` on the result and installs it only if that passes.
+
+So a forged object under a genuine SHA, staged by anything that controls the session's
+transport UID, fails the full fsck. It never reaches a later clone, and setup never runs on it.
+That leaves two things a session can do to its own slot. It can put in valid but unneeded
+objects or refs, up to the 512 MiB cap; a later clone only takes the objects GitHub's
+negotiation asks for. It can also keep a mirror small or stale, which only makes later clones
+slower. What remains trusted is Git's SHA-1 object naming with collision detection, as for any
+fetch, plus the Docker daemon and the sandbox image's `git`. The reference clone's
+connectivity-only check is enough under these rules: the objects were rehashed when they were
+installed, and nothing in a session can change them afterwards. A slot missing objects fails
+that check, and the clone falls back to the plain path.
 
 A Docker daemon keeps up to 16 slots of 512 MiB each in `wlp-git-mirrors-v1`. Each slot is
 keyed by deployment, machine, platform user and immutable GitHub repository ID. Hosted Docker
-uses the snapshot deployment identity even when snapshots are disabled. A runner uses its
-paired machine identity and user. A session gets just its slot as a volume subpath. UID 65534
-owns that directory with mode 0700. The volume stays out of prepared images. E2B sessions have
-no shared Docker volume and clone directly.
+keeps the mirrors' deployment identity in its own file in the state directory
+(`git-mirror-deployment`), so mirrors work with snapshots disabled and never create the snapshot
+identity that turns snapshot sweeps on. A runner uses its paired machine identity and user. A session gets just
+its slot, read-only, as a volume subpath. UID 65534 owns that directory with mode 0700. The
+volume stays out of prepared images. E2B sessions have no shared Docker volume and clone directly.
 
 A short-lived allocator with networking disabled mounts the store and admits a slot. It waits
 up to 3 s for another admission. It evicts the least recently used slot that is unlocked and
-that no container names. Stopped containers count, because Docker resolves the subpath again on
-every start. Neither is a slot admitted in the last two minutes evicted, since its container may
-not exist yet. When every slot is in use, the session clones without a mirror. A slot that a
-container already names is mounted without running the allocator. Should a stopped container's
-slot be gone anyway, its start puts back an empty slot and tries again. Below the free-space
-floor that snapshots keep (15 GB), the allocator admits nothing and evicts unused slots.
+that no session container names. Stopped containers count, because Docker resolves the subpath
+again on every start. Neither is a slot admitted in the last two minutes evicted, since its
+container may not exist yet. When every slot is in use, the session clones without a mirror. A
+slot that a container already names is mounted without running the allocator. Should a stopped
+container's slot be gone anyway, its start puts back an empty slot and tries again. Below the
+free-space floor that snapshots keep (15 GB), the allocator admits nothing and evicts unused slots.
 
-Refresh happens on demand. After a successful private clone, the transport stages its refs and
-hard links to its objects. It then copies them into the slot in a separate process that holds
-the slot lock, so the session does not wait. Nothing is saved below the free-space floor. A
-single-branch review clone only seeds an empty slot and never replaces a full mirror. A busy or
-missing mirror takes the plain clone path. A reference attempt that receives nothing from
-GitHub for 8 seconds is abandoned. Its token is revoked and a plain clone gets a fresh
-repository-scoped read token. The deadline does not cover local work, so a large repository
-does not fall back for being large. A runner advertises mirror support under either session
-protocol. A runner or Docker daemon without support takes the plain clone path.
+Refresh happens on demand. After a successful clone whose base GitHub confirmed, the transport
+stages its refs and hard links to its objects in its own private directory in the session's
+`/tmp`. It skips this when the refs match the slot's mirror. The server, or the runner on a
+machine, then starts the save helper without waiting for it: networking disabled, UID 65534,
+no capabilities, one save per process at a time. The stage is removed afterwards, and any stage
+left by an interrupted save is removed at the start of the next clone. A save needs the
+free-space floor plus 512 MiB free, because the old and new copies coexist until the swap. It
+copies to `incoming.<n>` and waits for readers, which share the slot lock. Then it renames
+`repo.git` to `old.<n>` and `incoming.<n>` to `repo.git`, and removes `old.*`. A save killed
+between the two renames is repaired by the next one. A session's per-turn process sweep cannot
+touch a save, since nothing of it runs in the session. A failed or killed save leaves the
+previous mirror in place. A single-branch review clone only seeds an empty slot and never
+replaces a full mirror.
+
+A busy or missing mirror takes the plain clone path. A reference attempt that receives nothing
+from GitHub for 8 seconds is abandoned. So is one whose mirror fails the lock, config,
+alternates or connectivity check. Its token is revoked and a plain clone gets a fresh
+repository-scoped read token. Any other failure (a timeout, a refused token, a missing
+repository or branch) is reported as it is, without a second clone. The deadline does not cover
+local work, so a large repository does not fall back for being large. A runner advertises
+mirror support under either session protocol. A runner or Docker daemon without support takes
+the plain clone path.
 
 ### Enable the Factory check on GitHub
 

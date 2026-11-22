@@ -1,12 +1,13 @@
 // Docker owns the index as well as the layers. Tags record last use across process restarts.
 // Every operation names a local image ID; a session request can never select a Docker image.
-import { MIRROR_ROOT, MIRROR_VOLUME, mirrorOwner, mirrorSlot } from "./git-mirrors.js";
+import { mirrorOwner, mirrorSlot } from "./git-mirrors.js";
+import { MIRROR_ROOT, MIRROR_VOLUME, snapshotLimits } from "./store-limits.js";
 import { docker, LABEL, DATA_DIR, NO_LOGS, randomId } from "./docker.js";
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotKey, type SnapshotRequest, type SnapshotSource } from "./snapshot-key.js";
 
 const S = LABEL + ".snapshot";
 const TTL = 14 * 86_400_000;
-export const snapshotLimits = { machine: 10_000_000_000, user: 2_000_000_000, free: 15_000_000_000 };
+export { snapshotLimits };
 type Labels = Record<string, string>;
 type Image = { Id: string; Size: number; Os: string; Architecture: string; Variant?: string; Config: { Labels: Labels; Env: string[] }; RepoTags?: string[] };
 type Row = { tag: string; uid: string; repo: string; used: number; bytes: number; image: Image };
@@ -61,7 +62,7 @@ const validScope = (key: SnapshotKey) => /^[1-9]\d{0,19}$/.test(key.repo) && HAS
 const valid = (key: SnapshotKey) => validScope(key) && HASH.test(key.inputs);
 export class DockerSnapshots {
 	private readonly namespace: string;
-	constructor(readonly machine: string, readonly base: string, readonly network?: { mode: string; env: Record<string, string> }, private readonly limits = snapshotLimits, private readonly screenshots = false, private readonly deployment = machine) {
+	constructor(readonly machine: string, readonly base: string, readonly network?: { mode: string; env: Record<string, string> }, private readonly limits = snapshotLimits, private readonly screenshots = false, private readonly deployment = machine, private readonly mirrorScope = deployment) {
 		if (!deployment) throw new Error("Missing snapshot deployment identity");
 		// The persisted pairing id already namespaces a runner. Preserve its tags across upgrades.
 		this.namespace = "wlp-prepared-" + digest(machine === deployment ? [machine] : [deployment, machine]).slice(0, 24);
@@ -224,7 +225,7 @@ export class DockerSnapshots {
 			const mirrorPath = MIRROR_ROOT + "/" + mirrorOwner(uid, source.repo);
 			const mirror = box.HostConfig.Mounts?.some((m: {Type: string; Source: string; Target: string; VolumeOptions?: { Subpath?: string }}) =>
 				m.Type === "volume" && m.Source === MIRROR_VOLUME && m.Target === mirrorPath &&
-				m.VolumeOptions?.Subpath === mirrorSlot(this.deployment, this.machine, uid, source.repo));
+				m.VolumeOptions?.Subpath === mirrorSlot(this.mirrorScope, this.machine, uid, source.repo));
 			const mounts = box.Mounts.filter((m: {Type: string; Name: string; Destination: string}) =>
 				!(mirror && m.Type === "volume" && m.Name === MIRROR_VOLUME && m.Destination === mirrorPath));
 			if (box.Image !== base.Id || (labels[S+".candidate"] !== key && labels[S+".candidate"] !== this.coldKey(source, uid, profile)) || labels[S+".attempt"] !== source.attempt || labels[LABEL+".uid"] !== uid ||

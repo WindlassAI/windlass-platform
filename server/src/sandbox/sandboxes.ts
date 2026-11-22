@@ -28,7 +28,7 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
-import { gitMirrorMount, type MirrorStore, restoreGitMirror } from "./git-mirrors.js";
+import { gitMirrorMount, type MirrorStore, restoreGitMirror, saveSessionMirror } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
 import type { SnapshotSource } from "./snapshot-key.js";
 
@@ -113,6 +113,10 @@ export class DockerSandboxHandle implements TurnSandbox {
 
 	get container(): string {
 		return containerName(this.id);
+	}
+
+	saveMirror(stage: string, partial: boolean): Promise<boolean> {
+		return saveSessionMirror(this.container, stage, partial);
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -413,7 +417,10 @@ export async function removeRunningTokenFiles(uid: string, machine: string, file
 
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
+	/** The snapshot store's deployment identity. Left out where snapshots were never on. */
 	deployment?: string;
+	/** Scopes Git mirror slots to this deployment, whether or not snapshots are on. */
+	mirrorScope?: string;
 	cpus?: number;
 	slots?: MachineSlotCapacity;
 	network?: { name: string; env: Record<string, string>; mode: string };
@@ -524,7 +531,7 @@ export class DockerSandboxes implements Sandboxes {
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
 		const id = (harness ? harness + "-" : "") + randomId(6);
 		const name = containerName(id);
-		const scope = this.options.deployment ?? this.machine;
+		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(base, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
 		const relay = await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
@@ -582,8 +589,12 @@ export class DockerSandboxes implements Sandboxes {
 		return id;
 	}
 
+	private get mirrorScope() {
+		return this.options.mirrorScope ?? this.options.deployment ?? this.machine;
+	}
+
 	private snapshots(base = this.image, screenshots = false) {
-		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment);
+		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment, this.mirrorScope);
 	}
 
 	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
