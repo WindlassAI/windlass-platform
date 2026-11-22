@@ -13,7 +13,7 @@
 import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, ReviewRecommendation } from "../contract.js";
-import type { AgentReport } from "../agent-publish.js";
+import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { ReviewerTaskInput } from "./reviewer-task.js";
 import type { CiReading, CiState } from "../github/ci.js";
@@ -72,6 +72,8 @@ export interface Run extends ItemRun {
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: RunReview | null;
+	/** Questions the builder asked the person in this run (`ask_person`, at most `RULES.asks`). Absent on runs stored before the tool: none. */
+	asks?: number;
 }
 
 /** A blocking finding of a review, as the next round's reviewer must answer it (`earlier` blocks). */
@@ -329,6 +331,8 @@ export type Fact =
 			changes: boolean;
 			/** What the agent filed. A string can arrive from a session outbox written before structured reports. */
 			report: AgentReport | string | null;
+			/** The question the builder asked its person in the turn (`ask_person`), cleaned by the session. */
+			asked?: AgentAsk | null;
 			/** A push made by the host tool can precede the item's publish step. */
 			pushedHead?: string | null;
 			/**
@@ -378,7 +382,7 @@ export type Effect =
 	| { kind: "describe_feature"; key: string }
 	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }

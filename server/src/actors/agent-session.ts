@@ -205,9 +205,9 @@ import { serverSealer } from "../signin/seal.js";
 import { agentTurn, turnTokens } from "../factory/budget.js";
 import { reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
-import type { AgentReport } from "../agent-publish.js";
+import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
-import { REPORT_TAKEN } from "../agent-publish.js";
+import { REPORT_TAKEN, askPerson } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
@@ -527,7 +527,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
 }
 
 /**
@@ -3760,6 +3760,15 @@ fi`, { signal, timeoutMs: 5000 });
 					filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
 					return tracked(filings);
 				} : undefined,
+				// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
+				// and only on a delivery that says how many the run has left.
+				onAsk: item && !planner && !reviewer && typeof item.row.asksLeft === "number" && platformTool("ask_person") ? (request, withdrawn) => {
+					if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+					const taken = askPerson(request.arguments, { already: !!item.asked, left: item.row.asksLeft ?? 0 }, held.redactor);
+					if (taken.asked) item.asked = taken.asked;
+					note(c, turn, taken.asked ? "info" : "warn", taken.said);
+					return taken.told;
+				} : undefined,
 				script: meta.demo ? layer.windlass.demoScript(text, turn) : undefined,
 				onEvent: (event) => {
 					if (!open) return;
@@ -4438,7 +4447,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
 	}
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (attachmentStore()) {
@@ -4512,7 +4521,10 @@ export const agentSession = actor({
 			`);
 			await db.execute("CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), files TEXT NOT NULL, diff TEXT NOT NULL)");
 			for (const table of INBOX_TABLES) await db.execute(table);
-			if (!(await db.execute<{ name: string }>("PRAGMA table_info(inbox)")).some(col => col.name === "checkout")) await db.execute("ALTER TABLE inbox ADD COLUMN checkout TEXT");
+			const inboxColumns = await db.execute<{ name: string }>("PRAGMA table_info(inbox)");
+			if (!inboxColumns.some(col => col.name === "checkout")) await db.execute("ALTER TABLE inbox ADD COLUMN checkout TEXT");
+			// Rows from before `ask_person` have none: their turns are not offered it.
+			if (!inboxColumns.some(col => col.name === "asks_left")) await db.execute("ALTER TABLE inbox ADD COLUMN asks_left INTEGER");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 		},
 	}),

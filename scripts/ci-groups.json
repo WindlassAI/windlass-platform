@@ -154,7 +154,7 @@
       ],
       "shards": {
         "1": { "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
-        "2": { "env": { "FACTORY_ONLY": "api,on,ci,person,gate,handoff,sleep,deploy,creation" } },
+        "2": { "env": { "FACTORY_ONLY": "api,on,ci,ask,person,gate,handoff,sleep,deploy,creation" } },
         "3": { "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off" } }
       },
       "checks": {

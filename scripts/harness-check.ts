@@ -25,6 +25,48 @@ const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = t
 assert.equal(itemHasHarness, true);
 assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
 
+// ask_person (agent-publish.ts): which harness and which turn is offered it, how it is declared, and what a call comes to.
+{
+	const { ASK_AGAIN, ASK_LIMITS, ASK_NONE_LEFT, ASK_TAKEN, ASK_TOOL, askPerson, platformTools } = await import("../server/src/agent-publish.js");
+	const { turnHostTools, hostToolsMeta } = await import("../server/src/sandbox/turn.js");
+	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
+	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
+	for (const acp of ["claude", "opencode"] as const) assert.equal(capabilitiesOf(acp).platformTools.length, 0, `${acp} is given no platform tool, ask_person neither`);
+	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
+	const declared = builder.find(tool => tool.name === ASK_TOOL);
+	assert.ok(declared && declared.effect === "read" && declared.untrustedResult === false && declared.timeoutSeconds === 30, "ask_person is declared read, its result trusted, 30 s");
+	assert.ok(declared.description.split(". ")[0]!.length <= 160, "ask_person's first sentence fits Windlass's list");
+	for (const [who, offer] of [["planner", { plan: true, publish: false, report: true, push: false, ask: true }], ["reviewer", { review: true, publish: false, report: false, push: false, ask: true }], ["a person's session", { publish: true, report: false, push: true, ask: true }], ["a builder without the flag", { publish: false, report: true, push: true }]] as const) {
+		assert.ok(!platformTools(offer, 60_000).some(tool => tool.name === ASK_TOOL), `${who} is not offered ask_person`);
+	}
+	const call = () => "";
+	assert.deepEqual([...turnHostTools({ onReport: call, onAsk: call, onPush: call, onFetchBase: call } as never).keys()], ["report", ASK_TOOL, "push", "fetch_base"]);
+	assert.ok(hostToolsMeta(turnHostTools({ onReport: call, onAsk: call } as never)).hostTools.some(tool => tool.name === ASK_TOOL), "a builder's turn declares ask_person");
+	for (const [who, input] of [["planner", { onPlan: call, onReport: call, onAsk: call }], ["reviewer", { onReview: call, onAsk: call }], ["no report", { onAsk: call, onPush: call, onFetchBase: call }], ["publish", { onPublish: call, onReport: call, onAsk: call }]] as const) {
+		const tools = turnHostTools(input as never);
+		assert.ok(!tools.has(ASK_TOOL) && !hostToolsMeta(tools).hostTools.some(tool => tool.name === ASK_TOOL), `${who}: ask_person is not mapped`);
+	}
+
+	const redactor = new SecretRedactor([{ name: "STORE_TOKEN", value: "s3cr3t-value-123" }]);
+	const fresh = { already: false, left: 3 };
+	const taken = askPerson({ question: "Use\u0000 the ‮right‬ store?​ With s3cr3t-value-123 in it.\n\n\n\nSay which.", options: ["SQLite", " SQLite ", "Post⁦gres"] }, fresh, redactor);
+	assert.equal(taken.told, ASK_TAKEN);
+	assert.ok(taken.asked && !/[\u0000‮‬​⁦]/.test(taken.asked.text + taken.asked.options.join("")), "NUL, bidi and zero-width characters are taken out");
+	assert.ok(!taken.asked.text.includes("s3cr3t-value-123") && !taken.said.includes("s3cr3t-value-123"), "a saved secret is taken out");
+	assert.equal(taken.asked.text.split("\n").filter(line => line === "").length, 1, "runs of blank lines are one");
+	assert.deepEqual(taken.asked.options, ["SQLite", "Postgres"], "options are one line each, without repeats");
+	assert.deepEqual(askPerson({ question: "Again?" }, { already: true, left: 3 }, redactor), { asked: null, told: ASK_AGAIN, said: "The agent asked a second question in one turn, and was told to end its turn." });
+	assert.equal(askPerson({ question: "One more?" }, { already: false, left: 0 }, redactor).told, ASK_NONE_LEFT);
+	assert.equal(askPerson({ question: "One more?" }, { already: false, left: 0 }, redactor).asked, null);
+	const long = askPerson({ question: "x".repeat(ASK_LIMITS.questionChars + 1) }, fresh, redactor);
+	assert.ok(long.asked === null && long.told.includes(`${ASK_LIMITS.questionChars + 1} characters long and the limit is ${ASK_LIMITS.questionChars}`), long.told);
+	assert.ok(askPerson({ question: "x".repeat(ASK_LIMITS.questionChars) }, fresh, redactor).asked !== null, "a question at the limit is taken");
+	for (const given of [{}, { question: 7 }, { question: " ‮ " }, { question: "Which?", options: "SQLite" }, { question: "Which?", options: ["a", "b", "c", "d", "e"] }, { question: "Which?", options: ["x".repeat(ASK_LIMITS.optionChars + 1)] }, { question: "Which?", options: [3] }]) {
+		assert.equal(askPerson(given, fresh, redactor).asked, null, `refused: ${JSON.stringify(given)}`);
+	}
+	console.log("ok  ask_person: Windlass builders only, declared read, one per turn, three per run, cleaned and capped");
+}
+
 // Claude Code's task tools keep their list in the adapter's process, which lives one turn: a task finished
 // in a later turn never reached the plan. Its TodoWrite list sends the whole list with every change.
 const claudeWrapper = readFileSync(new URL("../sandbox/harness/claude/wlp-claude-acp", import.meta.url), "utf8");

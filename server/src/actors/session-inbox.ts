@@ -18,6 +18,7 @@
  * is harmless.
  */
 
+import type { AgentAsk } from "../agent-publish.js";
 import { ownsPath } from "../factory/feature-plan.js";
 import type { TokenReceipt } from "../usage.js";
 import type { RawAccess } from "rivetkit/db";
@@ -44,6 +45,7 @@ export const INBOX_TABLES = [
 		max_steps INTEGER NOT NULL,
 		fetch_base TEXT,
 		checkout TEXT,
+		asks_left INTEGER,
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -79,6 +81,11 @@ export interface Delivery {
 	fetchBase: string | null;
 	/** The first turn of a run: the review cap holds those back (factory/budget.ts `admit`). */
 	startsRun: boolean;
+	/**
+	 * A builder's turn: how many questions its run may still ask the person (`ask_person`). Absent (null
+	 * in the row) for every other turn, and for rows stored before the tool: those are not offered it.
+	 */
+	asksLeft?: number | null;
 }
 
 export interface InboxRow extends Delivery {
@@ -121,13 +128,13 @@ interface InboxCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, starts_run, state, turn, slot, ended FROM inbox";
 
 export async function inboxRow(db: RawAccess, key: string): Promise<InboxRow | null> {
 	const [row] = await db.execute<Row>(`${SELECT} WHERE key = ?`, key);
@@ -150,7 +157,8 @@ export function deliveryOf(input: unknown): Delivery | null {
 	if (!key || !itemId || body === null || (body.trim() === "" && !given.checkout) || typeof given.maxSteps !== "number" || !Number.isInteger(given.maxSteps) || given.maxSteps < 1) return null;
 	const checkout = given.checkout as ReviewDelivery | undefined;
 	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
-	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true };
+	const asksLeft = typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0 ? given.asksLeft : null;
+	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft };
 }
 
 /** Writes the delivery's row, in one statement. False when a row of that key was there: the delivery came before. */
@@ -158,7 +166,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -167,6 +175,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		delivery.maxSteps,
 		delivery.fetchBase,
 		delivery.checkout ? JSON.stringify(delivery.checkout) : null,
+		delivery.asksLeft ?? null,
 		delivery.startsRun ? 1 : 0,
 		now,
 	);
@@ -327,8 +336,8 @@ export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, 
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */
-export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null, agent?: AgentTurn): Extract<Fact, { kind: "turn_ended" }> {
-	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, spend: turnSpend(usage, agent) };
+export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null, agent?: AgentTurn, asked?: AgentAsk | null): Extract<Fact, { kind: "turn_ended" }> {
+	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, ...(asked ? { asked } : {}), spend: turnSpend(usage, agent) };
 }
 
 export type EndedFact = Extract<Fact, { kind: "turn_ended" | "review_ended" }>;

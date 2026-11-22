@@ -1438,7 +1438,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question";
+export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1449,8 +1449,9 @@ export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_ref
  *   wait        keep waiting for CI
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
+ *   reply       "Answer the agent" (an `agent_ask` question): the note is the answer, and is needed
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1460,6 +1461,12 @@ export interface ItemQuestion {
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
 	askedAt: number;
+	/**
+	 * An `agent_ask` question's own words, as the builder wrote them (`ask_person`): untrusted text, which
+	 * the agent may have been steered to write by what it read. Shown quoted, as the agent's, in plain
+	 * text; never Markdown, never in `text`, never posted anywhere. `options`: answers it suggests.
+	 */
+	asked?: { text: string; options: string[] };
 }
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */

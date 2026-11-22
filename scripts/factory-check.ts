@@ -709,6 +709,82 @@ print("\n== R4: the second review sends the builder back");
 	drive("R4 10: feedback held during an approving review waits for the handoff", reviewerOn(), [...reviewing, held, refresh(endReview({ review: filing("approve") })),
 		{ fact: freshCi, state: "queued", effects: ["handoff", "verified_check", "poll_pr", "verified_check", "deliver", "check_turn"], also: o => holds(o.item.run?.n === 2 && effect(o, "handoff")?.review === publishedVerdict, "the approval was not handed over before the feedback") },
 	]);
+
+	// ask_person in a review fix: the builder's turn is offered it; the question offers the pushed head's handover, and the answer resumes the fix.
+	drive("ask_person: a review fix asks, can hand over what was pushed, and the answer resumes the fix", reviewerOn(), [...reviewing,
+		{ ...sentBack, also: o => sentBack.also!(o) ?? holds(effect(o, "deliver")?.asksLeft === 3, `the fix turn has ${effect(o, "deliver")?.asksLeft} questions left`) },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: askedEnd("succeeded", PASSED), state: "waiting", wait: "person", effects: ["ask"], also: o =>
+			holds(o.item.question?.kind === "agent_ask" && o.item.question.choices.map(c => c.id).join() === "reply,hand_over,give_up" && o.item.question.resume?.kind === "review_fix" && o.item.question.resume.charge === null, `asked ${JSON.stringify(o.item.question)}`) },
+		{ fact: answer("reply", { note: "Keep the end out of the range." }), state: "working", effects: ["deliver", "check_turn"], also: o =>
+			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 1 && deliverIs(o, t => t.includes("Keep the end out of the range.")) && effect(o, "deliver")?.asksLeft === 2, "the answer did not resume the same fix without a round") },
+	]);
+}
+
+print("\n== ask_person: the builder asks its person");
+
+/** A builder's turn that asked its person (`ask_person`), as the session reports it: the question cleaned, and the turn otherwise as `ended`. */
+function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped", evidence: Verified | null, more: { changes?: boolean; tokens?: number } = {}): Row["fact"] {
+	return (k) => ({ ...(ended(outcome, evidence, more)(k) as Extract<Fact, { kind: "turn_ended" }>), asked: { text: "Which store should the readings go in? With SQLite I add a migration.", options: ["SQLite", "Postgres"] } });
+}
+
+{
+	const deliverOf = (o: Outcome) => effect(o, "deliver");
+	const start: Row = { fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: o => holds(deliverOf(o)?.asksLeft === 3, `the first builder turn has ${deliverOf(o)?.asksLeft} questions left`) };
+	const turn: Row = { fact: started(), state: "working", effects: ["check_turn"] };
+	const asks = (n: number): Row => ({ fact: askedEnd("succeeded", PASSED), state: "waiting", wait: "person", effects: ["ask"], also: o => {
+		const q = o.item.question;
+		if (q?.kind !== "agent_ask") return `asked ${q?.kind}`;
+		if (q.asked?.text !== "Which store should the readings go in? With SQLite I add a migration." || q.asked.options.join() !== "SQLite,Postgres") return `the agent's words are ${JSON.stringify(q.asked)}`;
+		if (q.text.includes("SQLite") || o.item.wait?.sentence.includes("SQLite") || o.events.some(e => e.said.includes("SQLite"))) return "the agent's words reached the platform's sentence, the wait or the log";
+		if (q.choices.map(c => `${c.id}:${c.label}`).join() !== "reply:Answer the agent,give_up:Give up") return `choices ${q.choices.map(c => c.id).join()}`;
+		if (o.item.run?.gate !== null || o.item.run.step.kind !== "implement") return "the gate read a turn that asked";
+		return holds(o.item.run.asks === n && q.resume?.newStep === false && q.resume.kind === "implement", `run.asks ${o.item.run.asks}, resume ${JSON.stringify(q.resume)}`);
+	} });
+	const replies = (left: number, note = "Use Postgres"): Row => ({ fact: answer("reply", { note }), state: "working", effects: ["deliver", "check_turn"], also: o => {
+		const d = deliverOf(o);
+		if (!d?.text.startsWith("The person answered your question:\n\n" + note) || !d.text.endsWith("Go on with the task.")) return `delivered ${JSON.stringify(d?.text)}`;
+		return holds(d.asksLeft === left && o.item.run?.step.kind === "implement" && o.item.run.step.n === 1 && o.item.run.step.attempt === 2 + (3 - left - 1), `asksLeft ${d.asksLeft}, step ${JSON.stringify(o.item.run?.step)}`);
+	} });
+
+	// 4, 5
+	drive("ask_person 4-5: a question, no gate; an answer without words is refused; the answer resumes the same step", newItem(), [start, turn, asks(1),
+		{ fact: answer("reply"), state: "waiting", wait: "person", effects: [], unchanged: true },
+		{ fact: answer("reply", { note: "   " }), state: "waiting", wait: "person", effects: [], unchanged: true },
+		replies(2),
+		turn,
+		{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+	]);
+
+	// 6
+	drive("ask_person 6: three questions in a run, and the next delivery has none left; a fourth is not asked", newItem(), [start, turn, asks(1), replies(2), turn, asks(2), replies(1), turn, asks(3), replies(0), turn,
+		{ fact: askedEnd("succeeded", PASSED), state: "working", effects: ["publish"], also: o => holds(o.item.question === null && o.item.run?.asks === 3, "a fourth question was asked") },
+	]);
+
+	// 7
+	drive("ask_person 7: a turn cut short after asking is the question, not the interruption's retry", newItem(), [start, turn,
+		{ fact: askedEnd("interrupted", null), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.kind === "agent_ask" && o.item.run?.step.interruptions === 0, `asked ${o.item.question?.kind}, ${o.item.run?.step.interruptions} interruptions`) },
+		replies(2),
+	]);
+
+	// 8
+	drive("ask_person 8: out of budget when the person answers: the budget question keeps the answer for the turn it resumes", newItem({ budget: { turns: 1 } }), [start, turn, asks(1),
+		{ fact: answer("reply", { note: "Use Postgres" }), state: "waiting", wait: "budget", effects: ["ask"], also: o =>
+			holds(o.item.question?.kind === "budget" && o.item.question.resume?.text.includes("Use Postgres") === true && o.item.question.asked === undefined, `asked ${JSON.stringify(o.item.question)}`) },
+		{ fact: answer("raise", { budget: { turns: 3 } }), state: "working", effects: ["deliver", "check_turn"], also: o =>
+			holds(deliverOf(o)?.text.startsWith("The person answered your question:\n\nUse Postgres") === true && deliverOf(o)?.asksLeft === 2, `delivered ${JSON.stringify(deliverOf(o)?.text)}`) },
+	]);
+
+	drive("ask_person: the planner's turn is not offered it, and a plan turn that says it asked is a plan", newItem({ plan: "approve" }), [
+		{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: o => holds(deliverOf(o)?.agent === "planner" && deliverOf(o)?.asksLeft === undefined, "the planner has questions to ask") },
+		turn,
+		{ fact: askedEnd("succeeded", null), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.kind === "plan_approval" && o.item.run?.asks === undefined, `asked ${o.item.question?.kind}`) },
+		{ fact: answer("approve"), state: "working", effects: ["deliver", "check_turn"], also: o => holds(deliverOf(o)?.agent === null && deliverOf(o)?.asksLeft === 3, "the builder after the plan has no questions") },
+	]);
+
+	drive("ask_person: Give up ends the run with the question's kind", newItem(), [start, turn, asks(1),
+		{ fact: answer("give_up"), state: "failed", effects: [], also: o => holds(o.item.run?.stopReason === "agent_ask", `stopped for ${o.item.run?.stopReason}`) },
+	]);
 }
 
 print("\n== blueprint (continued)");

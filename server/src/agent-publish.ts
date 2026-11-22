@@ -56,6 +56,13 @@ export const REPORT_TOOL = "report";
 export const PUSH_TOOL = "push";
 /** The tool that fetches the session's base branch into the workspace, so that the agent can rebase onto it and push again. */
 export const FETCH_BASE_TOOL = "fetch_base";
+/**
+ * The tool by which a work item's builder asks its person a question it cannot go on without. The call
+ * is answered at once; the question is the item's, on its page ("Needs you"), and the person's answer
+ * is the next turn's message. Offered with `report`, and only to a builder (never the planner, the
+ * summary or the reviewer).
+ */
+export const ASK_TOOL = "ask_person";
 
 /** The longest commit message a request may carry. */
 export const MAX_PUBLISH_COMMIT_CHARS = 4_000;
@@ -96,6 +103,28 @@ const FETCH_BASE_DESCRIPTION = [
 	"Fetch the branch this session started from, as it is at GitHub now, into the workspace as `origin/<that branch>`, and the session's own branch as `origin/<your branch>` once it is at GitHub (to merge what someone else pushed there). Nobody is asked.",
 	"It changes neither your working tree nor your branch: rebase or merge onto it yourself, then call `push`.",
 ].join(" ");
+
+/** What a question of the agent's may hold. */
+export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120, perRun: 3 } as const;
+
+const ASK_DESCRIPTION = [
+	"Ask the person who owns this work item a question you cannot go on without, then end your turn: their answer comes as your next message.",
+	"Ask only for a decision the task leaves open and that you cannot settle from the repository, the task or its acceptance criteria.",
+	"Do not ask for permission, for anything you can find out yourself, or to have your work checked: decide, and say in your report's concerns what you decided.",
+	"Write the question plainly, say what you will do with each answer, and give up to 4 short options when the answer is one of a few.",
+	"The call is answered at once. The question waits on the item's page for as long as the person takes, which can be days; your work stays as it is meanwhile. End your turn right after asking.",
+	`At most one question per turn and ${ASK_LIMITS.perRun} per run.`,
+].join(" ");
+
+const ASK_SCHEMA = {
+	type: "object",
+	properties: {
+		question: { type: "string", minLength: 1, maxLength: ASK_LIMITS.questionChars, description: `The question, in plain text (not Markdown), at most ${ASK_LIMITS.questionChars} characters: what you need decided, and what you will do with each answer.` },
+		options: { type: "array", maxItems: ASK_LIMITS.options, items: { type: "string", minLength: 1, maxLength: ASK_LIMITS.optionChars }, description: `Up to ${ASK_LIMITS.options} short answers the person can pick, each at most ${ASK_LIMITS.optionChars} characters. Left out when the answer is open.` },
+	},
+	required: ["question"],
+	additionalProperties: false,
+};
 
 const REPORT_SCHEMA = {
 	type: "object",
@@ -150,6 +179,8 @@ export interface PlatformToolOffer {
 	push: boolean;
 	review?: boolean;
 	screenshots?: boolean;
+	/** `ask_person`: a work item's builder only. */
+	ask?: boolean;
 }
 
 /**
@@ -161,6 +192,10 @@ export interface PlatformToolOffer {
  * outside the sandbox:
  *
  *   report      hands text to the platform and changes nothing anywhere. Answered at once.
+ *   ask_person  hands a question to the platform for the item's person, and changes nothing anywhere.
+ *               Answered at once, with the platform's own sentence; the person's answer comes as the
+ *               next turn's message, not as the call's result. Declared anything but `read`, Windlass
+ *               would refuse it in an item's unattended turn, which is the only place it is offered.
  *   push        changes one branch at GitHub: the session's own, which the platform names, to what is
  *               in the workspace, which any command of the agent's can already change; under a lease
  *               it can replace only the platform's own last push (github/git.ts). A call made by a
@@ -218,6 +253,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 	return [
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
 		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
+		...(offer.report && offer.ask ? [tool(ASK_TOOL, ASK_DESCRIPTION, ASK_SCHEMA, 30)] : []),
 		...(offer.push ? [tool(PUSH_TOOL, PUSH_DESCRIPTION, PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, FETCH_BASE_DESCRIPTION, { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];
 }
@@ -245,6 +281,68 @@ export const REPORT_TAKEN = "Your report was filed. The platform publishes your 
 
 /** What is taken out of the agent's text besides line breaks and tabs: a terminal, or a page, should not act on it. */
 export const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g;
+/** Characters that change how text around them reads without being seen: direction overrides and isolates, zero-width marks, the byte-order mark. */
+export const INVISIBLE = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g;
+
+// ---------------------------------------------------------------------------------------------
+// The agent's question to the person (`ask_person`)
+// ---------------------------------------------------------------------------------------------
+
+/** A question of the agent's, cleaned: plain text, never Markdown, shown to the person quoted as the agent's. */
+export interface AgentAsk {
+	text: string;
+	options: string[];
+}
+
+/** What the agent is told when its question was recorded. */
+export const ASK_TAKEN = "Recorded as a question to the person. End your turn now; their answer will come as your next message.";
+/** A second question in one turn. */
+export const ASK_AGAIN = "You already asked in this turn. End your turn; the answer comes as your next message.";
+/** No question left in the run. */
+export const ASK_NONE_LEFT = `You have used this run's ${ASK_LIMITS.perRun} questions. Decide yourself, say what you decided in your report's concerns, and go on.`;
+
+/** What a call of `ask_person` comes to: the question to record (null when none is), what the agent is told, and the timeline's line. */
+export interface AskTaken {
+	asked: AgentAsk | null;
+	told: string;
+	said: string;
+}
+
+/**
+ * A call of `ask_person`, checked. Its text is the model's, and may have been steered by whatever the
+ * agent read (the repository, an issue): saved secrets are taken out, control and invisible characters
+ * go (a direction override could make the question read as something it is not), and what is past the
+ * limits is refused with the limit, so that the agent can ask again. `already`: this turn has asked;
+ * `left`: what the run has left. Neither of those records anything.
+ */
+export function askPerson(given: Record<string, unknown>, state: { already: boolean; left: number }, redactor: Redactor): AskTaken {
+	const refuse = (told: string, said: string): AskTaken => ({ asked: null, told, said });
+	if (state.already) return refuse(ASK_AGAIN, "The agent asked a second question in one turn, and was told to end its turn.");
+	if (state.left <= 0) return refuse(ASK_NONE_LEFT, `The agent asked a question with none of this run's ${ASK_LIMITS.perRun} left, and was told to decide itself.`);
+	const clean = (value: string) => redactor.text(value).replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "");
+	if (typeof given.question !== "string") return refuse(`Not recorded. The question has to be text. Call ${ASK_TOOL} again.`, "The agent asked a question that is not text, so it was not recorded.");
+	const text = clean(given.question).replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+	if (text === "") return refuse(`Not recorded. The question is empty. Call ${ASK_TOOL} again with your question.`, "The agent asked an empty question, so it was not recorded.");
+	if (text.length > ASK_LIMITS.questionChars) {
+		return refuse(
+			`Not recorded. The question is ${text.length} characters long and the limit is ${ASK_LIMITS.questionChars}. Shorten it and call ${ASK_TOOL} again.`,
+			`The agent asked a question of ${text.length} characters, and the limit is ${ASK_LIMITS.questionChars}, so it was not recorded.`,
+		);
+	}
+	const listed = given.options;
+	if (listed !== undefined && listed !== null && !Array.isArray(listed)) return refuse(`Not recorded. The options have to be a list of short texts. Call ${ASK_TOOL} again.`, "The agent asked with options that are not a list, so the question was not recorded.");
+	const options: string[] = [];
+	for (const option of (listed ?? []) as unknown[]) {
+		if (typeof option !== "string") return refuse(`Not recorded. Each option has to be text. Call ${ASK_TOOL} again.`, "The agent asked with an option that is not text, so the question was not recorded.");
+		const one = clean(option).replace(/\s+/g, " ").trim();
+		if (one === "") continue;
+		if (one.length > ASK_LIMITS.optionChars) return refuse(`Not recorded. An option is ${one.length} characters long and the limit is ${ASK_LIMITS.optionChars}. Shorten it and call ${ASK_TOOL} again.`, `The agent asked with an option of ${one.length} characters, and the limit is ${ASK_LIMITS.optionChars}, so the question was not recorded.`);
+		if (!options.includes(one)) options.push(one);
+	}
+	if (options.length > ASK_LIMITS.options) return refuse(`Not recorded. Give at most ${ASK_LIMITS.options} options. Call ${ASK_TOOL} again.`, `The agent asked with ${options.length} options, and the limit is ${ASK_LIMITS.options}, so the question was not recorded.`);
+	// The line is the platform's, which the session's timeline labels so and turns addresses into links: the agent's words are not in it. Its call, beside it, has them as the agent's.
+	return { asked: { text, options }, told: ASK_TAKEN, said: "The agent asked you a question. It waits under Needs you, on the item's page, until you answer." };
+}
 
 export type PublishRequest =
 	/** What the platform would publish with. */

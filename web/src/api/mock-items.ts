@@ -140,6 +140,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	hand_over: "Hand it over as it is",
 	give_up: "Give up",
 	fix: "Have the agent change it",
+	reply: "Answer the agent",
 };
 const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
 
@@ -183,7 +184,7 @@ interface Seed {
 	/** Left out: hosted. */
 	place?: SandboxPlace;
 	wait?: { reason: Waiting["reason"]; sentence: string; since: number; retryAt: number | null };
-	question?: Omit<ItemQuestion, "id" | "askedAt"> & { asked: number };
+	question?: Omit<ItemQuestion, "id" | "askedAt" | "asked"> & { asked: number; /** An `agent_ask` question's own words (`ItemQuestion.asked`). */ asked_?: ItemQuestion["asked"] };
 	pr?: number;
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"]; interruptions?: number } };
 	/** Where its second review is (`ItemSummary.review`); null when left out. */
@@ -443,6 +444,31 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[12, "Started.", undefined, true],
 				[11, `Asked: The agent's turn could not start. ${OLD_SANDBOX}`, [1, 1, "implement"]],
 			],
+		},
+		// The builder asked its person (`ask_person`): the platform's sentence, and the agent's own words beside it.
+		{
+			n: 79,
+			title: "Store the tide readings",
+			body: "Keep each station's readings so that the chart can show the last 30 days.",
+			on: TIDES,
+			state: "waiting",
+			filed: 40,
+			question: {
+				kind: "agent_ask",
+				text: "The agent stopped to ask you a question before it goes on.",
+				choices: choices("reply", "give_up"),
+				asked: 7,
+				asked_: {
+					text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
+					options: ["SQLite", "Postgres", "One JSON file per station"],
+				},
+			},
+			run: { n: 1, started: 39, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 39 } },
+			events: [
+				[40, "Started.", undefined, true],
+				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"]],
+			],
+			spent: { tokens: 380_000, turns: 1, activeSeconds: 32 * 60, hostedSeconds: 32 * 60 },
 		},
 		// In review: each verdict, and each state of CI.
 		review(24, "Show the upload's checksum in the log", HARBOR, 61, { body: "After each upload, log the artefact's SHA-256 next to its name.", acceptance: ["The log has each uploaded artefact's SHA-256, next to its name."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
@@ -1083,7 +1109,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		acceptance: seed.acceptance ?? [],
 	})) as Verdict[];
 	const last = verdicts[verdicts.length - 1];
-	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked) } : null;
+	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }) } : null;
 	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
 	const run: ItemView["run"] = seed.run
 		? {
@@ -1723,6 +1749,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const picked = question.choices.find((option) => option.id === action.choice);
 				if (!picked) throw conflict("That is not one of the question's answers.");
 				const note = action.note?.trim() || null;
+				if (action.choice === "reply" && note === null) throw new PlatformError("user", "Write your answer to the agent.", { reason: "bad_input" });
 				const said = `Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`;
 				// A subtask that could not be placed (blueprint.ts, `askPlacement`): the planner files the rest again, the approved places are checked again, or the subtask is given up and the rest re-planned.
 				if (question.kind === "placement_refused" && plan) {

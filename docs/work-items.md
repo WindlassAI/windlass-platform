@@ -88,7 +88,9 @@ or hand over the commit the run already pushed.
   app never approves, merges or dismisses a review. The person merges at GitHub, or sends the work back
   from the item's page with a note, which starts a new run.
 - **Turns are unattended.** An item's turn has nobody to ask: a tool call that would ask is refused at once,
-  and the model is told so. On a machine using `docker-hardened`, Windlass runs shell commands unasked
+  and the model is told so. A Windlass builder can instead ask the item's person with `ask_person`, which
+  is answered at once, makes the item's question when the turn ends (`agent_ask`, at most 3 a run, 1 a
+  turn), and resumes the step with the person's answer; Claude Code and OpenCode items cannot ask. On a machine using `docker-hardened`, Windlass runs shell commands unasked
   inside the runner's container. There is no per-command sandbox. Those commands can reach the machine's
   local network and read the session's access token. A turn takes at most 60 steps. The agent is not given `publish`, since the
   platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a

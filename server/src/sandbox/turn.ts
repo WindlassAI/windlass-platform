@@ -104,7 +104,7 @@
  */
 
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
-import { FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
+import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
 import { config } from "../config.js";
 import { reportedModelUsage } from "../usage.js";
 import type { TurnUsage, WindlassEvent } from "../contract.js";
@@ -130,7 +130,10 @@ export function turnHostTools(input: RunTurnInput) {
 		return tools;
 	}
 	if (input.onPublish) tools.set(PUBLISH_TOOL, input.onPublish);
-	else if (input.onReport) tools.set(REPORT_TOOL, input.onReport);
+	else if (input.onReport) {
+		tools.set(REPORT_TOOL, input.onReport);
+		if (input.onAsk) tools.set(ASK_TOOL, input.onAsk);
+	}
 	if (input.onPush && input.onFetchBase) {
 		tools.set(PUSH_TOOL, input.onPush);
 		tools.set(FETCH_BASE_TOOL, input.onFetchBase);
@@ -149,7 +152,7 @@ export function turnAgentMeta(restrictedAgent: string | null, clearPlanner?: boo
 }
 
 export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean) {
-	return { hostTools: platformTools({ plan: tools.has("file_plan"), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), screenshots }, config.questionTimeoutMs) };
+	return { hostTools: platformTools({ plan: tools.has("file_plan"), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots }, config.questionTimeoutMs) };
 }
 
 /** The key of Windlass's extensions in `_meta` and in an error's `data`, and the prefix of its methods. */
