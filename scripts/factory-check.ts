@@ -782,6 +782,19 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 		{ fact: answer("approve"), state: "working", effects: ["deliver", "check_turn"], also: o => holds(deliverOf(o)?.agent === null && deliverOf(o)?.asksLeft === 3, "the builder after the plan has no questions") },
 	]);
 
+	// Claude Code and OpenCode builders get ask_person and report too (over MCP, platform-tools.ts): the item's flow is the same.
+	for (const harness of ["claude", "opencode"] as const) {
+		const agentBuilder = createItem({
+			id: "i_00000000000000aa", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
+			reviewer: { off: "deployment" }, place: { kind: "machine", machineId: "m1" }, budget: FACTORY_DEFAULTS.item, agent: { harness, model: "default" },
+		});
+		const report = { screenshots: [], title: "Fix the sign in add()", description: "add() subtracted.", lookAt: "src/add.ts", concerns: "" };
+		// On a machine the resumed turn waits for the machine's slot (`queued`) where a hosted one is working at once.
+		drive(`ask_person and report: a ${harness} builder asks, the answer resumes the step, and its report is the item's`, agentBuilder, [start, turn, asks(1), { ...replies(2), state: "queued" }, turn,
+			{ fact: ended("succeeded", PASSED, { report }), state: "working", effects: ["publish"] },
+		]);
+	}
+
 	drive("ask_person: Give up ends the run with the question's kind", newItem(), [start, turn, asks(1),
 		{ fact: answer("give_up"), state: "failed", effects: [], also: o => holds(o.item.run?.stopReason === "agent_ask", `stopped for ${o.item.run?.stopReason}`) },
 	]);

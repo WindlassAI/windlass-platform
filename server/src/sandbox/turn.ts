@@ -74,8 +74,8 @@
  *
  * The opener supplies the user's required checks on every turn. The engine's evidence identifies their origin.
  *
- * The platform's own tools (agent-publish.ts: `publish`, `report`, `push`, `fetch_base`) are
- * declared to the engine when the session is opened (`hostTools`), those the turn has a callback for
+ * The platform's own tools (platform-tools.ts: `publish`, `report`, `ask_person`, `push`, `fetch_base`, and
+ * the planner's and the reviewer's filing tools) are declared to the engine when the session is opened (`hostTools`), those the turn has a callback for
  * (`RunTurnInput.onPublish`, ...). A call arrives as the engine's
  * request `_windlass/host_call` on this turn's connection, which lives with the turn's engine process:
  * it is answered for this turn's session, while the turn runs, for a tool the turn declared, and with
@@ -103,9 +103,9 @@
  * stays as Windlass reported it.
  */
 
-import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import { untrustedSource } from "../factory/untrusted.js";
-import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
+import { callArguments } from "../agent-publish.js";
+import { CALL_AFTER_TURN, CALL_UNKNOWN, platformToolDeclarations, runPlatformTool, turnPlatformTools, type PlatformToolHandler } from "../platform-tools.js";
 import { config } from "../config.js";
 import { reportedModelUsage } from "../usage.js";
 import type { TurnUsage, WindlassEvent } from "../contract.js";
@@ -120,27 +120,8 @@ import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, ha
 import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
-export function turnHostTools(input: RunTurnInput) {
-	const tools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>>();
-	if (input.onPlan) {
-		tools.set("file_plan", input.onPlan);
-		return tools;
-	}
-	if (input.onReview) {
-		tools.set(REVIEW_TOOL, input.onReview);
-		return tools;
-	}
-	if (input.onPublish) tools.set(PUBLISH_TOOL, input.onPublish);
-	else if (input.onReport) {
-		tools.set(REPORT_TOOL, input.onReport);
-		if (input.onAsk) tools.set(ASK_TOOL, input.onAsk);
-	}
-	if (input.onPush && input.onFetchBase) {
-		tools.set(PUSH_TOOL, input.onPush);
-		tools.set(FETCH_BASE_TOOL, input.onFetchBase);
-	}
-	return tools;
-}
+/** The platform's tools of a turn (platform-tools.ts): Windlass takes every one as a host tool. */
+export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
 
 export function sessionOpenParams(cwd: string, meta: Record<string, unknown>) {
 	return { cwd, mcpServers: [], _meta: { windlass: meta } };
@@ -152,8 +133,8 @@ export function turnAgentMeta(restrictedAgent: string | null, clearPlanner?: boo
 	return clearPlanner ? { agent: "none" } : {};
 }
 
-export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean, crossRepo?: boolean) {
-	return { hostTools: platformTools({ plan: tools.has("file_plan"), ...(crossRepo && tools.has("file_plan") && { crossRepo: true }), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots }, config.questionTimeoutMs) };
+export function hostToolsMeta(tools: ReadonlyMap<string, unknown>, screenshots?: boolean, crossRepo?: boolean) {
+	return { hostTools: platformToolDeclarations(tools, { screenshots, crossRepo }) };
 }
 
 /** The key of Windlass's extensions in `_meta` and in an error's `data`, and the prefix of its methods. */
@@ -225,8 +206,6 @@ const SERVER_START_WAIT_MS = 5000;
 /** How long reading a server's definition, and asking which variables are set, may take. */
 const DEFINITION_TIMEOUT_MS = 10_000;
 
-/** What the agent is told when the platform's own handling of a call of one of its tools failed. */
-const CALL_NOT_HANDLED = "The platform could not handle this call. Tell the user; do not try another way to do it.";
 
 /** The events whose text arrives in pieces, as the session passes them on to browsers while a turn runs. */
 const STREAMED = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
@@ -466,7 +445,7 @@ class Turn {
 	/** Takes the repository's saved secrets out of what the engine sends (`RunTurnInput.secrets`). */
 	private readonly redactor: Redactor;
 	/** The platform's tools this turn declares, by name, each with its callback. */
-	private hostTools = new Map<string, (call: TurnPublishRequest, signal: AbortSignal) => Promise<string> | string>();
+	private hostTools: ReadonlyMap<string, PlatformToolHandler> = new Map();
 	/** True while this turn has servers of its own in that file: they are taken out when it ends. */
 	private configWritten = false;
 	/** What Windlass had for checks when its session was opened; null until the file was dealt with. */
@@ -1093,8 +1072,8 @@ class Turn {
 	private async hostCall(params: Record<string, unknown>): Promise<unknown> {
 		const refused = (output: string) => ({ status: "error", output });
 		const run = typeof params.name === "string" ? this.hostTools.get(params.name) : undefined;
-		if (params.sessionId !== this.session || this.over || this.cancelSent) return refused("The turn this call was made in has ended, so the platform did nothing with it.");
-		if (run === undefined) return refused("This session has no such tool of the platform's.");
+		if (params.sessionId !== this.session || this.over || this.cancelSent) return refused(CALL_AFTER_TURN);
+		if (run === undefined) return refused(CALL_UNKNOWN);
 		// Windlass names a call `<messageId>/<callId>`, as the turn's events name it apart.
 		const id = typeof params.toolCallId === "string" ? params.toolCallId : "";
 		const at = id.indexOf("/");
@@ -1104,10 +1083,8 @@ class Turn {
 		this.hostCalls.get(key)?.abort();
 		this.hostCalls.set(key, controller);
 		try {
-			const text = await run(call, controller.signal);
-			return { status: "success", output: typeof text === "string" && text !== "" ? text : CALL_NOT_HANDLED };
-		} catch {
-			return refused(CALL_NOT_HANDLED);
+			const done = await runPlatformTool(run, call, controller.signal);
+			return done.ok ? { status: "success", output: done.output } : refused(done.output);
 		} finally {
 			if (this.hostCalls.get(key) === controller) this.hostCalls.delete(key);
 		}

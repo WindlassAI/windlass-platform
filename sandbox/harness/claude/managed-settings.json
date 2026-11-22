@@ -1,5 +1,5 @@
 {
   "disableAllHooks": true,
   "allowManagedMcpServersOnly": true,
-  "allowedMcpServers": []
+  "allowedMcpServers": [{ "serverUrl": "http://127.0.0.1:*/mcp-d2luZGxhc3MtcGxhdGZvcm0" }]
 }

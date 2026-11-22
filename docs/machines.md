@@ -163,8 +163,12 @@ personal sessions as in work items (`agent-session.ts`, `usage`; `promptUsage` i
 `sandbox/acp-harness.ts`). Its conversation stays in the machine’s sandbox
 across turns and sleeps. Removing the sandbox removes that conversation.
 
-Publish from the session panel. The adapter receives no platform tools, saved secrets or user MCP
-servers. Individual tool-call cancellation, required checks and conversation
+Publish from the session panel. In a person's session the adapter receives no platform tools, saved
+secrets or user MCP servers; a work item's builder gets `report` and `ask_person` over MCP
+([The platform's tools for every agent](work-items.md#the-platforms-tools-for-every-agent)), which
+needs the harness images of this version (Claude Code's managed policy allows the platform's endpoint,
+and OpenCode's image runs `wlp-acp-mcp`). The platform's notes about the workspace (a prepared image, a
+new sandbox, a setup that did not finish) go before the next prompt in either. Individual tool-call cancellation, required checks and conversation
 backups are unavailable for Claude Code. A personal session's reported tokens are recorded, not
 counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Reviewers and hosted sessions use Windlass. A Quick work item
 filed on the machine can run Claude Code or OpenCode where it is signed in there; see

@@ -58,6 +58,9 @@ export class FixturePeer {
 		this.sessions = new Map();
 		this.turns = new Map();
 		this.permissions = new Map();
+		// MCP-over-ACP: the `acp` servers each session was opened with, and the `mcp/message` requests waiting for the client.
+		this.servers = new Map();
+		this.mcpCalls = new Map();
 	}
 
 	input(chunk) {
@@ -101,6 +104,11 @@ export class FixturePeer {
 
 	handle({ method, id, params = {}, result, error }) {
 		if (!method) {
+			const asked = this.mcpCalls.get(id);
+			if (asked) {
+				this.mcpCalls.delete(id);
+				return this.advance(asked, error ? { error } : result);
+			}
 			const turn = this.permissions.get(id);
 			if (turn) {
 				this.permissions.delete(id);
@@ -123,12 +131,14 @@ export class FixturePeer {
 			const key = randomUUID();
 			const session = { mode: "default", model: "default", effort: "default", resumes: 0 };
 			this.save(key, session);
+			this.servers.set(key, params.mcpServers ?? []);
 			return reply({ sessionId: key, ...choices(session) });
 		}
 		if (method === "session/resume") {
 			const session = this.resume(sessionId);
 			if (!session) return unknown();
 			this.save(sessionId, { ...session, resumes: session.resumes + 1 });
+			this.servers.set(sessionId, params.mcpServers ?? []);
 			return reply({ sessionId, ...choices(session) });
 		}
 
@@ -196,6 +206,16 @@ export class FixturePeer {
 				this.permissions.set(turn.permissionId, turn);
 				this.send({ id: turn.permissionId, method: "session/request_permission", params: { sessionId: turn.sessionId, ...value.permission } });
 				return;
+			} else if (value.mcp) {
+				// The session's `acp` server, as an adapter calls it: one MCP request in an `mcp/message` request to the client.
+				const server = (this.servers.get(turn.sessionId) ?? []).find((s) => s?.type === "acp");
+				const requestId = randomUUID();
+				this.mcpCalls.set(requestId, turn);
+				this.send({ id: requestId, method: "mcp/message", params: {
+					serverId: value.mcp.serverId ?? server?.serverId ?? "none", requestId, method: value.mcp.method,
+					params: { ...value.mcp.params, _meta: { "io.modelcontextprotocol/protocolVersion": value.mcp.version ?? "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} } },
+				} });
+				return;
 			} else if (value.steer) {
 				turn.steer = value.steer;
 				return;
@@ -214,6 +234,8 @@ export class FixturePeer {
 		for (const turn of this.turns.values()) clearTimeout(turn.timer);
 		this.turns.clear();
 		this.permissions.clear();
+		this.mcpCalls.clear();
+		this.servers.clear();
 		this.sessions.clear();
 		this.buffer = "";
 	}

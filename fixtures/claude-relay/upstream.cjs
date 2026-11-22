@@ -21,7 +21,25 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 			'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-utilization': '1.0' });
 		return res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'fixture limit' } }));
 	}
-	const {model} = JSON.parse(body);
+	const request = JSON.parse(body);
+	const {model} = request;
+	// A prompt that asks for the platform's tools, offered over MCP: a call of report, then of ask_person, then a closing text.
+	if (body.includes('Platform tool check.') && (request.tools ?? []).some(tool => tool.name === 'mcp__windlass_platform__report')) {
+		const results = (request.messages ?? []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(block => block.type === 'tool_result');
+		const told = results.map(r => (Array.isArray(r.content) ? r.content : [{ text: r.content }]).map(c => c.text).join('')).join(' | ');
+		console.log('platform tools', 'results=' + results.length, 'told=' + JSON.stringify(told));
+		const next = [['mcp__windlass_platform__report', { title: 'Relay tool report', description: 'Checked the tools.' }],
+			['mcp__windlass_platform__ask_person', { question: 'Which store?', options: ['SQLite', 'Postgres'] }]][results.length];
+		res.writeHead(200, { 'content-type': 'text/event-stream' });
+		const block = next ? { type: 'tool_use', id: 'toolu_' + results.length, name: next[0], input: {} } : { type: 'text', text: '' };
+		const delta = next ? { type: 'input_json_delta', partial_json: JSON.stringify(next[1]) } : { type: 'text_delta', text: 'platform tools passed' };
+		for (const event of [
+			{type:'message_start',message:{id:'msg_tools',type:'message',role:'assistant',model,content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:5,output_tokens:0}}},
+			{type:'content_block_start',index:0,content_block:block}, {type:'content_block_delta',index:0,delta}, {type:'content_block_stop',index:0},
+			{type:'message_delta',delta:{stop_reason:next ? 'tool_use' : 'end_turn',stop_sequence:null},usage:{output_tokens:3}}, {type:'message_stop'},
+		]) res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
+		return res.end();
+	}
 	// A prompt that asks for a warning gets a normal reply with the 5-hour window nearly used.
 	res.writeHead(200, { 'content-type': 'text/event-stream', ...(body.includes('Rate warning check.') && {
 		'anthropic-ratelimit-unified-status': 'allowed_warning', 'anthropic-ratelimit-unified-reset': '4102444800',

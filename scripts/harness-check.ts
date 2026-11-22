@@ -31,7 +31,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { turnHostTools, hostToolsMeta } = await import("../server/src/sandbox/turn.js");
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
-	for (const acp of ["claude", "opencode"] as const) assert.equal(capabilitiesOf(acp).platformTools.length, 0, `${acp} is given no platform tool, ask_person neither`);
+	for (const acp of ["claude", "opencode"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL], `${acp} can be given report and ask_person, and no other platform tool`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
 	const declared = builder.find(tool => tool.name === ASK_TOOL);
 	assert.ok(declared && declared.effect === "read" && declared.untrustedResult === false && declared.timeoutSeconds === 30, "ask_person is declared read, its result trusted, 30 s");
@@ -68,7 +68,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	for (const given of [{}, { question: 7 }, { question: " ‮ " }, { question: "Which?", options: "SQLite" }, { question: "Which?", options: ["a", "b", "c", "d", "e"] }, { question: "Which?", options: ["x".repeat(ASK_LIMITS.optionChars + 1)] }, { question: "Which?", options: [3] }]) {
 		assert.equal(askPerson(given, fresh, redactor).asked, null, `refused: ${JSON.stringify(given)}`);
 	}
-	console.log("ok  ask_person: Windlass builders only, declared read, one per turn, three per run, cleaned and capped");
+	console.log("ok  ask_person: builders only, declared read, one per turn, three per run, cleaned and capped");
 }
 
 // Claude Code's task tools keep their list in the adapter's process, which lives one turn: a task finished
@@ -365,7 +365,7 @@ async function clientCheck(state: string) {
 		{ secrets: { ...secrets, env: { FIXTURE: secret } } }, { secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
 		{ script: { responses: [] } }, { maxSteps: 0 }, { reportScreenshots: true },
 		{ onEvent() {} }, { onUnasked() {} }, { onServerApproved() {} }, { onServers() {} },
-		{ onServerQuestion: async () => false }, { onPublish: async () => "" }, { onReport: () => "" },
+		{ onServerQuestion: async () => false }, { onPublish: async () => "" }, { onPlan: () => "" },
 		{ onReview: async () => "" }, { onPush: async () => "" }, { onFetchBase: async () => "" },
 	];
 	for (const guard of guards) {
@@ -693,6 +693,200 @@ async function clientCheck(state: string) {
 	ok("Codex is refused for work items, its unattended turn never starts, and item auto-approval never answers for it");
 }
 
+/**
+ * The platform's tools over MCP (platform-tools.ts): a builder's item turn of an ACP agent is given report and
+ * ask_person, served on the agent's own connection, with the handlers and limits a Windlass turn has; nothing else.
+ */
+async function platformToolsCheck(state: string) {
+	const { harnessOf } = await import("../server/src/sandbox/harness.js");
+	const { turnHostTools } = await import("../server/src/sandbox/turn.js");
+	const tools = await import("../server/src/platform-tools.js");
+	const { ASK_AGAIN, ASK_TAKEN, REPORT_TAKEN, askPerson } = await import("../server/src/agent-publish.js");
+	const { fileReport } = await import("../server/src/factory/review.js");
+	const harness = harnessOf({ machine: { name: "Bench" } } as SandboxLayer, "claude");
+	assert.deepEqual([...tools.SANDBOX_TOOLS], ["report", "ask_person"], "only report and ask_person may be served from the sandbox");
+	for (const tool of ["publish", "push", "fetch_base", "file_plan", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
+
+	// The Claude image's managed policy allows exactly the endpoint its adapter makes for this server, and OpenCode's runs the bridge.
+	const route = `mcp-${Buffer.from(tools.PLATFORM_MCP_SERVER_ID, "utf8").toString("base64url")}`;
+	const policy = JSON.parse(readFileSync(new URL("../sandbox/harness/claude/managed-settings.json", import.meta.url), "utf8"));
+	assert.deepEqual(policy.allowedMcpServers, [{ serverUrl: `http://127.0.0.1:*/${route}` }]);
+	assert.equal(policy.allowManagedMcpServersOnly, true);
+	assert.match(readFileSync(new URL("../sandbox/harness/opencode/wlp-opencode-acp", import.meta.url), "utf8"), /^exec node \/usr\/local\/bin\/wlp-acp-mcp\.mjs opencode acp /m);
+
+	const opened: unknown[] = [];
+	const lateReplies: unknown[] = [];
+	let variant: { acp: boolean; late: boolean } = { acp: true, late: false };
+	const sandbox = {
+		profile: "docker-hardened", cwd: "/workspace",
+		async stopLeftovers() { return 0; },
+		async sweep() { return 0; },
+		start(_argv: string[], opts: StartOptions) {
+			let finish!: (end: ProcessEnd) => void;
+			const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
+			const emit = (frame: unknown) => opts.onStdout!(JSON.stringify(frame) + "\n");
+			const agent = new FakeAcpAgent(line => {
+				const frame = JSON.parse(line);
+				if (frame.result?.agentCapabilities && !variant.acp) delete frame.result.agentCapabilities.mcpCapabilities.acp;
+				emit(frame);
+				// A process of the sandbox that calls the server once the turn's prompt has been answered.
+				if (frame.result?.stopReason && variant.late) emit({ jsonrpc: "2.0", id: "late", method: "mcp/message", params: {
+					serverId: tools.PLATFORM_MCP_SERVER_ID, requestId: "late", method: "tools/call",
+					params: { name: "report", arguments: { title: "Late" }, _meta: { "io.modelcontextprotocol/protocolVersion": tools.MCP_PROTOCOL_VERSION, "io.modelcontextprotocol/clientCapabilities": {} } },
+				} });
+			}, state);
+			return {
+				tag: "fixture", ended, hasEnded: false,
+				write(line: string) {
+					const frame = JSON.parse(line);
+					if (frame.method === "session/new" || frame.method === "session/resume") opened.push(frame.params.mcpServers);
+					if (frame.id === "late") { lateReplies.push(frame); return true; }
+					agent.input(line + "\n");
+					return true;
+				},
+				closeStdin() { agent.stop(); finish({ code: 0, signal: null, error: null }); },
+			};
+		},
+	};
+	markTurnSandbox(sandbox);
+	const handle = sandbox as unknown as SandboxHandle;
+	const said = (updates: AcpUpdate[]) => updates.flatMap(u => u.sessionUpdate === "agent_message_chunk" && u.content.type === "text" ? [u.content.text as string] : []).join("");
+
+	// A builder's item turn: the same handlers a Windlass turn is given (agent-session.ts builds them once).
+	const redactor = new SecretRedactor([{ name: "STORE_TOKEN", value: "s3cr3t-value-123" }]);
+	const filed: unknown[] = [];
+	let asked: { text: string; options: string[] } | null = null;
+	let afterTurn = 0;
+	let open = true;
+	const builder: Partial<RunTurnInput> = {
+		unattended: true, mode: "bypassPermissions",
+		onReport: request => {
+			if (!open) { afterTurn++; return "The report call ended. File it again."; }
+			return fileReport(request.arguments, redactor, report => { filed.push(report); });
+		},
+		onAsk: request => {
+			if (!open) { afterTurn++; return "The call ended. Nothing was recorded."; }
+			const taken = askPerson(request.arguments, { already: !!asked, left: 3 }, redactor);
+			if (taken.asked) asked = taken.asked;
+			return taken.told;
+		},
+	};
+	assert.equal(turnHostTools(builder as RunTurnInput).get("report"), tools.turnPlatformTools(builder as RunTurnInput, "sandbox").get("report"), "one handler for both transports");
+	const updates: AcpUpdate[] = [];
+	const notes: string[] = [];
+	variant = { acp: true, late: true };
+	const turn = await harness.runTurn(handle, { prompt: "platformtools", ...builder, onAcpUpdate: u => updates.push(u), onAcpNote: n => notes.push(n) });
+	open = false;
+	assert.equal(turn.failure, null, JSON.stringify(turn.failure));
+	assert.deepEqual(opened.at(-1), [tools.PLATFORM_MCP_SERVER], "the builder's session is opened with the platform's server");
+	const lines = said(updates).split("\n");
+	assert.equal(lines[0], "Tools: report,ask_person.");
+	assert.equal(lines[1], `Report: ${REPORT_TAKEN}`);
+	assert.deepEqual(filed, [{ screenshots: [], title: "Fixture report", description: "Changed the fixture.", lookAt: "", concerns: "None." }], "the report lands as a Windlass one does");
+	assert.equal(lines[2], `Ask: ${ASK_TAKEN}`);
+	assert.deepEqual(asked, { text: "Which store?", options: ["SQLite", "Postgres"] });
+	assert.equal(lines[3], `Again: ${ASK_AGAIN}`, "a second question in the turn is refused");
+	assert.equal(lines[4], `Push: ${tools.CALL_UNKNOWN}`, "a tool the turn was not given is refused");
+	assert.equal(lines[5], "Other: No such server on this connection.");
+	assert.equal(lines[6], "Old: Unsupported protocol version");
+	assert.deepEqual(notes, []);
+	assert.equal(lateReplies.length, 1);
+	assert.ok((lateReplies[0] as { error?: unknown }).error, "a call after the prompt was answered gets an error");
+	assert.equal(afterTurn, 0, "and reaches no handler");
+	ok("an ACP builder's item turn gets report and ask_person over MCP: same handlers, same limits, nothing after the turn");
+
+	// Before the prompt, and after it, a call is refused by the server itself; listing is answered (an adapter lists as it opens the session).
+	let live = false;
+	let ran = 0;
+	const server = new tools.PlatformMcpServer(new Map([["report", () => { ran++; return "taken"; }]]), tools.platformToolDeclarations(new Map([["report", 0]]), { screenshots: false }), () => live);
+	const meta = { "io.modelcontextprotocol/protocolVersion": tools.MCP_PROTOCOL_VERSION, "io.modelcontextprotocol/clientCapabilities": {} };
+	const callReport = () => server.handle({ serverId: tools.PLATFORM_MCP_SERVER_ID, requestId: "r", method: "tools/call", params: { name: "report", arguments: { title: "x" }, _meta: meta } }, new AbortController().signal);
+	assert.deepEqual(await callReport(), { result: { content: [{ type: "text", text: tools.CALL_AFTER_TURN }], isError: true } });
+	const listing = await server.handle({ serverId: tools.PLATFORM_MCP_SERVER_ID, method: "tools/list", params: { _meta: meta } }, new AbortController().signal) as { result: { tools: Array<Record<string, unknown>> } };
+	assert.deepEqual(listing.result.tools.map(t => t.name), ["report"]);
+	assert.deepEqual(listing.result.tools[0]!._meta, { "anthropic/alwaysLoad": true });
+	assert.ok(!JSON.stringify(listing).includes("screenshots") && !JSON.stringify(listing).includes("`push`"), "the report's declaration names neither screenshots nor push");
+	live = true;
+	assert.deepEqual(await callReport(), { result: { content: [{ type: "text", text: "taken" }], isError: false } });
+	assert.equal(ran, 1);
+	ok("the server refuses calls outside the running prompt and lists its tools to load at once");
+
+	// A person's session, and an adapter that takes no `acp` server: no server, and the latter says so.
+	variant = { acp: true, late: false };
+	assert.equal((await harness.runTurn(handle, { prompt: "plain" })).failure, null);
+	assert.deepEqual(opened.at(-1), [], "a plain session gets no platform server");
+	variant = { acp: false, late: false };
+	const older: string[] = [];
+	assert.equal((await harness.runTurn(handle, { prompt: "plain", ...builder, onAcpNote: n => older.push(n) })).failure, null);
+	assert.deepEqual(opened.at(-1), []);
+	assert.match(older.join(""), /cannot take the platform's tools, so this turn has no report or ask_person/);
+	// The planner's and the reviewer's filing tools are never served from the sandbox: such a turn is refused.
+	for (const guard of [{ onPlan: () => "" }, { onReview: async () => "" }, { onPush: async () => "", onFetchBase: async () => "" }]) {
+		const refused = await harness.runTurn(handle, { prompt: "plain", ...builder, ...guard });
+		assert.match(refused.failure?.message ?? "", /which it does not take here/);
+	}
+	ok("plain sessions, planner, reviewer and host-only tools get no server; an older adapter is noted");
+}
+
+/** sandbox/harness/opencode/wlp-acp-mcp.mjs with a stand-in agent that takes MCP servers by URL, as OpenCode does. */
+async function bridgeCheck() {
+	const bridge = fileURLToPath(new URL("../sandbox/harness/opencode/wlp-acp-mcp.mjs", import.meta.url));
+	// The stand-in: on a prompt it calls the first http server it was given, with and without its token, and reports what came back.
+	const agentScript = `
+const lines = require("node:readline").createInterface({ input: process.stdin });
+let server;
+const send = m => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\\n");
+const post = (body, auth = true) => fetch(server.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(auth ? { authorization: server.headers[0].value } : {}) }, body: JSON.stringify(body) });
+lines.on("line", async line => {
+  const m = JSON.parse(line);
+  if (m.method === "initialize") return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true, sse: true } } } });
+  if (m.method === "session/new") { server = m.params.mcpServers.find(s => s.type === "http"); return send({ id: m.id, result: { sessionId: "s1", seen: m.params.mcpServers } }); }
+  if (m.method === "session/prompt") {
+    const out = {};
+    out.noToken = (await post({ jsonrpc: "2.0", id: 1, method: "tools/list" }, false)).status;
+    out.get = (await fetch(server.url, { headers: { authorization: server.headers[0].value } })).status;
+    out.init = (await (await post({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "x", version: "1" } } })).json()).result.protocolVersion;
+    out.note = (await post({ jsonrpc: "2.0", method: "notifications/initialized" })).status;
+    out.list = (await (await post({ jsonrpc: "2.0", id: 3, method: "tools/list" })).json()).result;
+    out.call = (await (await post({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "report", arguments: { title: "t" } } })).json()).result;
+    return send({ id: m.id, result: { stopReason: "end_turn", _meta: out } });
+  }
+});`;
+	const child = spawn(process.execPath, [bridge, process.execPath, "-e", agentScript], { stdio: ["pipe", "pipe", "inherit"] });
+	const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+	const send = (m: object) => child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+	const asked: Array<Record<string, unknown>> = [];
+	const next = async (id: number) => {
+		for (;;) {
+			const { value, done } = await lines.next();
+			assert.ok(!done, "the bridge ended");
+			const m = JSON.parse(value);
+			if (m.method === "mcp/message") {
+				asked.push(m.params);
+				send({ id: m.id, result: m.params.method === "tools/list" ? { result: { tools: [{ name: "report" }] } } : { result: { content: [{ type: "text", text: "filed" }] } } });
+				continue;
+			}
+			if (m.id === id) return m.result;
+		}
+	};
+	send({ id: 1, method: "initialize", params: { protocolVersion: 1 } });
+	assert.deepEqual((await next(1)).agentCapabilities.mcpCapabilities, { http: true, sse: true, acp: true }, "the bridge says the agent takes acp servers");
+	send({ id: 2, method: "session/new", params: { cwd: "/w", mcpServers: [{ type: "acp", name: "windlass_platform", serverId: "windlass-platform" }] } });
+	const seen = (await next(2)).seen;
+	assert.equal(seen.length, 1);
+	assert.match(seen[0].url, /^http:\/\/127\.0\.0\.1:\d+\/mcp-d2luZGxhc3MtcGxhdGZvcm0$/);
+	assert.match(seen[0].headers[0].value, /^Bearer [A-Za-z0-9_-]{43}$/);
+	send({ id: 3, method: "session/prompt", params: { sessionId: "s1", prompt: [] } });
+	const out = (await next(3))._meta;
+	assert.deepEqual(out, { noToken: 401, get: 405, init: "2025-06-18", note: 202, list: { tools: [{ name: "report" }] }, call: { content: [{ type: "text", text: "filed" }] } });
+	assert.deepEqual(asked.map(a => [a.serverId, a.method, (a.params as { _meta: Record<string, unknown> })._meta["io.modelcontextprotocol/protocolVersion"]]),
+		[["windlass-platform", "tools/list", "2026-07-28"], ["windlass-platform", "tools/call", "2026-07-28"]], "only token-bearing requests reach the client");
+	child.stdin!.end();
+	const [code] = await once(child, "exit");
+	assert.equal(code, 0);
+	ok("wlp-acp-mcp serves an acp server to an agent that takes URLs: token required, requests only, and it ends with the agent");
+}
+
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));
 try {
 	const id = await withProcess(state, async (client) => {
@@ -727,6 +921,8 @@ try {
 		output.end();
 	}
 	await clientCheck(state);
+	await platformToolsCheck(state);
+	await bridgeCheck();
 } finally {
 	rmSync(state, { recursive: true, force: true });
 }

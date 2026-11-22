@@ -6,4 +6,5 @@ export OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_MODELS_FETCH=true O
 export OPENCODE_PURE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_LSP_DOWNLOAD=true
 export XDG_CONFIG_HOME=/etc/wlp-opencode
 : "${OPENCODE_CONFIG_CONTENT:?missing runner provider configuration}"
-exec opencode acp --hostname 127.0.0.1 --no-mdns
+# OpenCode takes MCP servers by URL only: wlp-acp-mcp serves it the ones the platform declares over ACP.
+exec node /usr/local/bin/wlp-acp-mcp.mjs opencode acp --hostname 127.0.0.1 --no-mdns

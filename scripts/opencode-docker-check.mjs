@@ -72,6 +72,63 @@ async function turn(first, proxyEnv, scan, model) {
 	if (scan) await checkIsolation(first, cmd, token, 'opencode', '/run/wlp-harness/opencode/login.json');
 	child.stdin.end();
 }
+// A builder's turn with the platform's tools over MCP (platform-tools.ts), through the image's wlp-acp-mcp: the platform's
+// handlers answer, and a process of the sandbox without the bridge's token is refused.
+async function toolsTurn(name, model) {
+	const { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations } = await import('../server/src/platform-tools.ts');
+	const { askPerson, ASK_TAKEN, REPORT_TAKEN } = await import('../server/src/agent-publish.ts');
+	const { fileReport } = await import('../server/src/factory/review.ts');
+	const { NO_REDACTION } = await import('../server/src/repo-secrets.ts');
+	const filed = [], asked = [], probes = [];
+	let running = false;
+	const handlers = new Map([
+		['report', request => fileReport(request.arguments, NO_REDACTION, report => { filed.push(report); })],
+		['ask_person', async request => {
+			probes.push(await cmd(['exec', name, 'node', '-e', `const lines=require('fs').readFileSync('/proc/net/tcp','utf8').split('\\n').slice(1);
+				const ports=lines.map(l=>l.trim().split(/\\s+/)).filter(f=>f[1]&&f[1].startsWith('0100007F:')&&f[3]==='0A').map(f=>parseInt(f[1].split(':')[1],16)).filter(p=>p!==17891&&p!==17892);
+				Promise.all(ports.map(p=>fetch('http://127.0.0.1:'+p+'/mcp-d2luZGxhc3MtcGxhdGZvcm0',{method:'POST',headers:{'content-type':'application/json'},body:'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'}).then(async r=>[p,r.status,/ask_person/.test(await r.text())],()=>[p,0,false]))).then(s=>console.log(JSON.stringify(s)))`]));
+			const taken = askPerson(request.arguments, { already: asked.length > 0, left: 3 }, NO_REDACTION);
+			if (taken.asked) asked.push(taken.asked);
+			return taken.told;
+		}],
+	]);
+	const server = new PlatformMcpServer(handlers, platformToolDeclarations(handlers, { screenshots: false }), () => running);
+	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	child.stderr.resume();
+	let reply = '';
+	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
+		async request(method, params, withdrawn) {
+			if (method === 'mcp/message') return server.handle(params, withdrawn);
+			if (method === 'session/request_permission') return { outcome: { outcome: 'selected', optionId: params.options.find(o => o.kind === 'allow_once').optionId } };
+			throw Error('No other client requests in fixture: ' + method);
+		},
+		notification(method, params) { if (method === 'session/update' && params.update.sessionUpdate === 'agent_message_chunk') reply += params.update.content.text; },
+	}, '');
+	const lines = new LineSplitter(line => rpc.receive(line));
+	child.stdout.setEncoding('utf8').on('data', s => lines.push(s));
+	child.on('close', () => rpc.end('Adapter closed'));
+	const call = (method, params) => rpc.request(method, params, { timeoutMs:45000 });
+	const initialized = await call('initialize', {protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false}});
+	assert.equal(initialized.agentCapabilities.mcpCapabilities.acp, true, 'wlp-acp-mcp did not say the agent takes acp servers');
+	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[PLATFORM_MCP_SERVER]});
+	await call('session/set_config_option',{sessionId:opened.sessionId,configId:'mode',value:'build'});
+	await call('session/set_config_option',{sessionId:opened.sessionId,configId:'model',value:model});
+	running = true;
+	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:'Platform tool check.'}]});
+	running = false;
+	child.stdin.end();
+	await new Promise(done => child.once('close', done));
+	assert.equal(result.stopReason,'end_turn'); assert.equal(reply,'platform tools passed');
+	assert.deepEqual(filed, [{ screenshots: [], title: 'Relay tool report', description: 'Checked the tools.', lookAt: '', concerns: '' }]);
+	assert.deepEqual(asked, [{ text: 'Which store?', options: ['SQLite', 'Postgres'] }]);
+	const answered = JSON.parse(probes[0] ?? '[]');
+	// The adapter's endpoint answers 401 without the token; no listener of the sandbox hands out the platform's tools.
+	const endpoint = answered.filter(([, status]) => status === 401).map(([port]) => port);
+	assert.ok(endpoint.length === 1 && !answered.some(([, , tools]) => tools), 'a process without the token reached the tools: ' + probes[0]);
+	assert.ok((await cmd(['logs',upstream])).includes('platform tools results=2 told=' + JSON.stringify(REPORT_TAKEN + ' | ' + ASK_TAKEN)), 'the model was not told what the handlers said');
+	const port = endpoint[0].toString(16).toUpperCase().padStart(4, '0');
+	assert.equal(await cmd(['exec', name, 'sh', '-c', `grep -c '0100007F:${port} .* 0A ' /proc/net/tcp || true`]), '0', 'the endpoint outlived its adapter');
+}
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
 try {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
@@ -181,6 +238,8 @@ try {
 	assert.match(log,/authorized opencode.ai \/inference\/go\/openai\/v1\/chat\/completions/);
 	assert.match(log,/authorized api.z.ai \/api\/coding\/paas\/v4\/chat\/completions/);
 	await turn(both, [], true, 'opencode-go/kimi-k3');
+	await toolsTurn(both, 'opencode-go/kimi-k3');
+	ok('A builder turn through wlp-acp-mcp reached report and ask_person over MCP; a process without the token was refused.');
 	ok('Two stored providers, native Go and GLM streaming in one restricted sandbox, blocked direct CONNECT, placeholder scans.');
 	await storeProvider(owner);
 	} catch (error) {

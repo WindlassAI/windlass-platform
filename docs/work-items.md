@@ -88,9 +88,9 @@ or hand over the commit the run already pushed.
   app never approves, merges or dismisses a review. The person merges at GitHub, or sends the work back
   from the item's page with a note, which starts a new run.
 - **Turns are unattended.** An item's turn has nobody to ask: a tool call that would ask is refused at once,
-  and the model is told so. A Windlass builder can instead ask the item's person with `ask_person`, which
+  and the model is told so. A builder (Windlass, Claude Code or OpenCode) can instead ask the item's person with `ask_person`, which
   is answered at once, makes the item's question when the turn ends (`agent_ask`, at most 3 a run, 1 a
-  turn), and resumes the step with the person's answer; Claude Code and OpenCode items cannot ask. On a machine using `docker-hardened`, Windlass runs shell commands unasked
+  turn), and resumes the step with the person's answer ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)). On a machine using `docker-hardened`, Windlass runs shell commands unasked
   inside the runner's container. There is no per-command sandbox. Those commands can reach the machine's
   local network and read the session's access token. A turn takes at most 60 steps. The agent is not given `publish`, since the
   platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a
@@ -155,7 +155,9 @@ its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `bui
 harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
 agent still asks for is allowed once. The reviewer stays Windlass and runs only hosted, so these
 items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
-snapshot), and no platform tools: the PR body is the item's, and CI decides the verdict.
+snapshot), and of the platform's tools `report` and `ask_person`, over MCP
+([The platform's tools for every agent](#the-platforms-tools-for-every-agent)); never `push` or `fetch_base`,
+so the item's publish step pushes everything. CI decides the verdict.
 `ItemSummary.agent` holds the harness, the model and what the agent reported: tokens counted against
 the budget (`itemTokens: "budget"`), shown but not counted for a subscription, or "not reported";
 the conversation's cost; Claude Code's 5h window at the first and latest turn, which it reports only
@@ -173,6 +175,61 @@ orchestrated one starts with a planner ([Feature orchestration](#feature-orchest
 cd server && npx tsx ../scripts/factory-check.ts                          # the sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
 cd server && npx tsx ../scripts/factory-e2e.ts                          # items through the real actors, on fake sandboxes and the GitHub stand-in
 ```
+
+### The platform's tools for every agent
+
+One layer holds the platform's tools for every agent (`server/src/platform-tools.ts`): which a turn is
+offered (`turnPlatformTools`, by the callbacks the session gives it), their declarations (`platformTools`
+in `agent-publish.ts`), how a call runs (`runPlatformTool`), and where each may be served from
+(`TOOL_REACH`). The handlers are the session's (`onReport`, `onAsk` in `agent-session.ts`), built once for
+any agent, with the same cleaning and limits (`askPerson`, `fileReport`). Only the transport differs:
+
+- **Windlass** takes every tool as a host tool (`_meta.windlass.hostTools`, `_windlass/host_call` on the
+  engine's connection). Windlass 0.6.0 ignores the MCP servers a client passes in `session/new`, and an MCP
+  tool's result taints its session, after which an unattended turn's calls that send data out are refused.
+  A host tool declared `read` with a trusted result runs in every approval mode, after taint, on every
+  profile, so Windlass keeps host tools for these two as well.
+- **Claude Code and OpenCode** are given one MCP server, `windlass_platform`, declared `"type": "acp"` in
+  `session/new` (MCP over ACP): each MCP request comes back as an `mcp/message` request on the agent's own
+  ACP connection, which the platform answers (`PlatformMcpServer`). Claude Code's adapter (0.109.0) takes
+  such a server itself and serves it to the CLI on a loopback HTTP endpoint with a per-connection bearer
+  token; the image's managed policy allows exactly that endpoint (`allowedMcpServers` by `serverUrl`, the
+  server's fixed id in the path), and the tools say to load at once (`anthropic/alwaysLoad`) rather than
+  behind tool search. OpenCode (1.19.6) takes MCP servers only by URL, so its image runs it under
+  `wlp-acp-mcp` (`sandbox/harness/opencode/`), which does the same: it tells the platform the agent takes
+  `acp` servers, swaps each for a loopback HTTP endpoint with an HMAC bearer token, and sends each request
+  on as `mcp/message`. An adapter that takes no `acp` server (an older image) gets none, and the timeline
+  says the turn has no `report` or `ask_person`.
+
+Only a builder's item turn is given them: not a person's session, not the planner, the summary or the
+reviewer (the same turns a Windlass builder gets `ask_person` in). A call is answered only while the
+turn's prompt runs; one before it or after it reaches no handler.
+
+**Why only these two go over MCP.** A Windlass host tool is called by the model through Windlass. The MCP
+endpoint is in the container, and any process there may be able to call it: the repository's setup
+script, a test, a command the agent was talked into running. Its token is in the agent's memory only
+(Claude Code's adapter hands it to the CLI over stdin; `wlp-acp-mcp` in the session's parameters), and
+never on disk or on a command line, but a process of the same user could read it from that memory. OpenCode
+also runs its own HTTP API on 127.0.0.1:4096 in the container, without a password, through which any
+process there can drive the agent, and so reach these tools the same way. So each tool served this way
+has to be harmless when such a process calls it:
+
+- `report` files text for the person, which is a claim and never the verdict: whether the work is ready is
+  decided from the checks and CI. The worst is a wrong report, which the agent's own later call replaces.
+- `ask_person` puts one question to the person, with Windlass's limits (one a turn, 3 a run, the same
+  redaction and hidden-character stripping). The worst is one wrong question a run's limit already counts.
+  The person's answer is the next turn's message and stays trusted (`factory/untrusted.ts`).
+
+Neither grants anything: no credential and no token reaches the container, and nothing changes outside
+the platform's own record of the turn. The endpoint lives as long as the adapter process, which is one
+turn, so its token is worth nothing afterwards, and it reaches only these two tools.
+
+`publish`, `push`, `fetch_base`, `file_plan` and `file_review` stay host tools (`TOOL_REACH` says what
+each would need to move): `publish` would have to ask the person every time, as it does where commands are
+not sandboxed; `push` and `fetch_base` would need their branch, lease and token handling (the token never
+enters the sandbox) plus a limit per turn and a timeline line that says a process may have made the call;
+a rogue `file_plan` or `file_review` would reach the owner's approval or a pull request's verdict as the
+agent's.
 
 ## Feature orchestration
 

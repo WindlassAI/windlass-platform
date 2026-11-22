@@ -1422,7 +1422,7 @@ function megabytes(bytes: number): string {
  * a sandbox nobody restores again, and it is a matter of seconds. Never throws.
  */
 /**
- * Put before the user's prompt, for Windlass alone, on the first turn it takes after its memory was
+ * Put before the user's prompt, for any agent, on the first turn it takes after its memory was
  * restored into a new sandbox. It remembers the files it made, and the new workspace has none of them:
  * unless it is told, it acts on what is no longer there. Only then: a sandbox that was paused has its
  * files, and a Windlass session that starts anew remembers none. The timeline keeps the prompt as the
@@ -1446,12 +1446,18 @@ async function itemSignInRefusal(c: Ctx, meta: SessionMeta): Promise<string | nu
 	return itemSignInMessage(machine, facts.name, offered.signIn);
 }
 
-/** The platform's notes before an item's ACP prompt, as the Windlass turn has them, and how to mark them told. */
-function acpItemNotes(meta: SessionMeta): { text: string; told(): void } {
+/**
+ * The platform's notes before a turn's prompt, for any agent, in a person's session and an item's alike:
+ * that the workspace was made from a prepared image, that it is a new one, that the setup command did
+ * not succeed in it, or that the setup ran on the base. Each is told once, with the first prompt the
+ * agent takes after it became true (`told`). A reviewer is told only of the prepared image: its brief
+ * says what it needs of the workspace.
+ */
+function platformNotes(meta: SessionMeta, reviewer: boolean): { text: string; told(): void } {
 	const prepared = meta.snapshotCommit ?? null;
-	const fresh = meta.freshWorkspace === true;
-	const unfinished = meta.setupUnfinished ?? null;
-	const onBase = meta.setupOnBase ?? null;
+	const fresh = !reviewer && meta.freshWorkspace === true;
+	const unfinished = reviewer ? null : meta.setupUnfinished ?? null;
+	const onBase = reviewer ? null : meta.setupOnBase ?? null;
 	return {
 		text: (prepared ? snapshotPrompt(prepared) : "") + (fresh ? FRESH_WORKSPACE : "") + (unfinished ? setupNote(unfinished) : "") + (onBase ? setupOnBaseNote(onBase) : ""),
 		told() {
@@ -3643,15 +3649,56 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				void persist(c);
 			},
 		};
+		const item = active.item;
+		const held = active.secrets;
+		const planning = item?.row.agent === "planner";
+		const planner = planning || item?.row.agent === "summary";
+		// Told once, to whichever agent takes the next prompt: what setup left, and whether the workspace is a new one.
+		const notes = platformNotes(meta, reviewer);
+		const store = item ? attachmentStore() : null;
+		// A builder can reconnect to a sandbox created before a setting changed.
+		const browser = !!item && caps.reportScreenshots && held.screenshots
+			&& (meta.place.kind !== "machine" || sandbox.runnerScreenshots === true)
+			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
+		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
+		let filings = Promise.resolve("");
+		// A builder's platform tools (platform-tools.ts): the same handlers for every agent, which takes them by host tools (Windlass) or MCP (the others).
+		// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
+		const onReport: RunTurnInput["onReport"] = item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
+			const file = async () => {
+				if (!open || withdrawn.aborted) return "The report call ended. File it again.";
+				if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
+				const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
+				const owner = { by: "builder" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
+				return fileReport(request.arguments, held.redactor, (filed, answer) => {
+					if (!open || withdrawn.aborted) throw new Error("The report call ended.");
+					item.report = filed;
+					meta.report = { ...filed, run: Number(item.row.key.split(":")[1]) };
+					note(c, turn, "info", `The agent filed its report: “${filed.title}”.${answer === REPORT_TAKEN ? "" : " " + answer}`);
+				}, store && browser ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null);
+			};
+			filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
+			return tracked(filings);
+		} : undefined;
+		// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
+		// and only on a delivery that says how many the run has left.
+		const onAsk: RunTurnInput["onAsk"] = item && !planner && !reviewer && typeof item.row.asksLeft === "number" && platformTool("ask_person") ? (request, withdrawn) => {
+			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+			const taken = askPerson(request.arguments, { already: !!item.asked, left: item.row.asksLeft ?? 0 }, held.redactor);
+			if (taken.asked) item.asked = taken.asked;
+			note(c, turn, taken.asked ? "info" : "warn", taken.said);
+			return taken.told;
+		} : undefined;
 		if (!signal.aborted && caps.events === "acp") {
-			// An item's agent is told what Windlass is told of its workspace: what setup left and whether it is a new one. Told once.
-			const notes = active.item ? acpItemNotes(meta) : null;
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
 			if (untrusted.length) unmarked(agentUnmarkedNote(machineHarnesses[meta.harness as keyof typeof machineHarnesses]?.name ?? "This agent", untrusted));
 			result = await harness.runTurn(sandbox, {
 				...common,
-				...(notes && { prompt: notes.text + text, unattended: true }),
-				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: active.secrets.redactor },
+				prompt: notes.text + text,
+				...(item && { unattended: true }),
+				onReport,
+				onAsk,
+				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: held.redactor },
 				harnessModels: meta.harnessModels,
 				onAcpNote: text => {
 					if (open) note(c, turn, "warn", text);
@@ -3669,25 +3716,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				},
 			});
 			// The agent took the prompt once it answered it.
-			if (notes && result.acp?.stopReason) notes.told();
+			if (result.acp?.stopReason) notes.told();
 		} else if (!signal.aborted) {
-			// Told once: with the first prompt Windlass takes in the new sandbox.
-			const prepared = meta.snapshotCommit;
-			const fresh = meta.freshWorkspace === true;
-			// And once: that the repository's setup command did not succeed in this sandbox.
-			const unfinished = meta.setupUnfinished ?? null;
-			// And once: that the setup ran on the base before the workspace was put on the session's branch.
-			const onBase = meta.setupOnBase ?? null;
 			// What the question about a project's server has to say depends on where this session runs.
 			const profile = layer.sandboxes.profile(meta.profile);
-			const held = active.secrets;
-			const planning = active.item?.row.agent === "planner";
-			const planner = planning || active.item?.row.agent === "summary";
 			// Resume keeps a named agent until explicitly switched. The inbox also records planners from before this handoff was supported.
 			const clearPlanner = !!(resumed && active.item && !planner && !reviewer &&
 				(await c.db.execute("SELECT 1 FROM inbox WHERE agent IN ('planner', 'summary') AND turn IS NOT NULL LIMIT 1")).length);
 			const tools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
-			const item = active.item;
 			const servers: ServerQuestionContext = {
 				profile,
 				demo: meta.demo,
@@ -3701,12 +3737,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			};
 			// What the panel says of the account's secrets goes by this sandbox, as the list of the repository's does.
 			meta.accountSecrets = accountSecretsNote(profile);
-			const store = item ? attachmentStore() : null;
-			// A builder can reconnect to a sandbox created before a setting changed.
-			const browser = !!item && held.screenshots
-				&& (meta.place.kind !== "machine" || sandbox.runnerScreenshots === true)
-				&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
-			const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
 			const screenshots = browser && !!store;
 			const listed: ReviewRecord[] = [];
 			const commands = new ReviewCommands(held.redactor);
@@ -3753,7 +3783,6 @@ fi`, { signal, timeoutMs: 5000 });
 				storedBrief = held.redactor.text(itemPrompt(item.row));
 				text = brief;
 			}
-			let filings = Promise.resolve("");
 			let calls = 0;
 			// Told of no source there (above): the timeline says once that the text went labelled only.
 			if (hardened && untrusted.length) unmarked(hardenedUnmarkedNote(untrusted));
@@ -3770,7 +3799,7 @@ fi`, { signal, timeoutMs: 5000 });
 				onUnasked: (call) => {
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
 				},
-				prompt: (prepared ? snapshotPrompt(prepared) : "") + (reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`),
+				prompt: notes.text + text,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				...(untrusted.length && !hardened && { untrusted, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(untrusted)); } }),
 				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
@@ -3805,36 +3834,12 @@ fi`, { signal, timeoutMs: 5000 });
 					filings = filings.then(file, file).catch(() => "The platform could not finish filing this review. Try again.");
 					return tracked(filings);
 				} : undefined,
-				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
 				planner,
 				clearPlanner,
 				crossRepoPlan: planning && item?.crossRepoPlan === true,
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
-				onReport: item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
-					const file = async () => {
-						if (!open || withdrawn.aborted) return "The report call ended. File it again.";
-						if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
-						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
-						const owner = { by: "builder" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
-						return fileReport(request.arguments, held.redactor, (filed, answer) => {
-							if (!open || withdrawn.aborted) throw new Error("The report call ended.");
-							item.report = filed;
-							meta.report = { ...filed, run: Number(item.row.key.split(":")[1]) };
-							note(c, turn, "info", `The agent filed its report: “${filed.title}”.${answer === REPORT_TAKEN ? "" : " " + answer}`);
-						}, store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null);
-					};
-					filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
-					return tracked(filings);
-				} : undefined,
-				// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
-				// and only on a delivery that says how many the run has left.
-				onAsk: item && !planner && !reviewer && typeof item.row.asksLeft === "number" && platformTool("ask_person") ? (request, withdrawn) => {
-					if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
-					const taken = askPerson(request.arguments, { already: !!item.asked, left: item.row.asksLeft ?? 0 }, held.redactor);
-					if (taken.asked) item.asked = taken.asked;
-					note(c, turn, taken.asked ? "info" : "warn", taken.said);
-					return taken.told;
-				} : undefined,
+				onReport,
+				onAsk,
 				script: meta.demo ? layer.windlass.demoScript(text, turn) : undefined,
 				onEvent: (event) => {
 					if (!open) return;
@@ -3888,10 +3893,7 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 			});
 			// Windlass took the prompt if it said anything at all; a turn that never reached it is told again.
-			if (fresh && events > 0) meta.freshWorkspace = false;
-			if (unfinished && events > 0 && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
-			if (prepared && events > 0 && meta.snapshotCommit === prepared) meta.snapshotCommit = null;
-			if (onBase && events > 0 && meta.setupOnBase === onBase) meta.setupOnBase = null;
+			if (events > 0) notes.told();
 		}
 	} catch (error) {
 		const failure = checkout && meta.repo && error instanceof GithubError ? problemOf(error, meta.repo.owner, meta.repo.name) : error;

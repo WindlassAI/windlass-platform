@@ -27,7 +27,10 @@
  * request is put to the user, whoever made it. docs/github-and-repositories.md, "The agent's own tools", says the same.
  *
  * This file has what is the same everywhere: the tools' declarations, what a request may hold, and
- * the words of the question, of the timeline's lines and of what the agent is told.
+ * the words of the question, of the timeline's lines and of what the agent is told. Windlass takes the
+ * tools as host tools, as above; Claude Code and OpenCode take `report` and `ask_person` only, over MCP
+ * on their ACP connection. platform-tools.ts maps a turn's callbacks to the tools for either transport,
+ * and says why the others are never served from inside the sandbox.
  */
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
@@ -85,9 +88,9 @@ const DESCRIPTION = [
 	"The result says what was published and gives the pull request's address, or says why nothing was published. Tell the user what it says, and do not try another way to publish.",
 ].join(" ");
 
-const reportDescription = (screenshots: boolean) => [
+const reportDescription = (screenshots: boolean, push: boolean) => [
 	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, where the reader should look, and what you are unsure of.",
-	"Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes whatever you did not push with `push`.",
+	`Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes ${push ? "whatever you did not push with `push`" : "your work"}.`,
 	screenshots ? "Screenshots: files you saved with `wlp-shot` under `.wlp-shots/`; they are shown on the item's page to the person, labelled as yours." : "Screenshots are unavailable in this sandbox. File your report without them.",
 	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
 ].join(" ");
@@ -261,7 +264,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 	const { screenshots, ...textFields } = REPORT_SCHEMA.properties;
 	return [
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
-		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
+		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false, offer.push), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
 		...(offer.report && offer.ask ? [tool(ASK_TOOL, ASK_DESCRIPTION, ASK_SCHEMA, 30)] : []),
 		...(offer.push ? [tool(PUSH_TOOL, PUSH_DESCRIPTION, PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, FETCH_BASE_DESCRIPTION, { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];

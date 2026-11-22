@@ -7,12 +7,15 @@ import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHa
 import type { Harness, HarnessCapabilities } from "./harness.js";
 import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
+import { ASK_TOOL, REPORT_TOOL } from "../agent-publish.js";
+import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 
 import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, sandboxEscapeNote } from "./codex-modes.js";
 
 export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
-	platformTools: Object.freeze([]), restrictedReview: false, userServers: "none", projectServerApproval: false,
+	// Over MCP: only the tools that may be served from inside the sandbox (platform-tools.ts, `TOOL_REACH`).
+	platformTools: Object.freeze([REPORT_TOOL, ASK_TOOL] as const), reportScreenshots: false, restrictedReview: false, userServers: "none", projectServerApproval: false,
 	checks: "none", envLists: false, sessionHome: false, usage: "context", models: "harness",
 	signIn: "machine", backups: false, stepLimit: false, demo: false,
 });
@@ -22,7 +25,8 @@ function unsupported(input: RunTurnInput): string | undefined {
 	if (input.servers?.length) return "servers";
 	if (input.secrets && (Object.keys(input.secrets.env).length || input.secrets.withholdEnv.length || input.secrets.passEnv.length)) return "saved environment variables";
 	if (input.reportScreenshots) return "report screenshots";
-	return (["script", "maxSteps", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onReport", "onReview", "onPush", "onFetchBase"] as const)
+	// A tool that must not be served from inside the sandbox is refused, not left out: the turn would run without what its caller counts on.
+	return (["script", "maxSteps", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onPlan", "onReview", "onPush", "onFetchBase"] as const)
 		.find(key => input[key] !== undefined);
 }
 
@@ -196,6 +200,9 @@ export class AcpHarness implements Harness {
 		}
 		const redactor = input.secrets?.redactor ?? NO_REDACTION;
 		const questions = new AbortController();
+		// The platform's tools this turn is given, served over this connection (MCP over ACP), and only while its prompt runs.
+		const tools = turnPlatformTools(input, "sandbox");
+		const mcp = tools.size ? new PlatformMcpServer(tools, platformToolDeclarations(tools, { screenshots: false }), () => phase === "running") : null;
 		const stream = updateStream(redactor, update => input.onAcpUpdate?.(update));
 		const stderr = new RedactingStream(redactor);
 		const keepError = (piece: string) => { result.stderrTail = (result.stderrTail + piece).slice(-4096); };
@@ -264,6 +271,7 @@ export class AcpHarness implements Harness {
 				stream.push(isKnownUpdate(update) ? update : { ...update, sessionUpdate: "unknown", originalSessionUpdate: update.sessionUpdate });
 			},
 			request: async (method, params, withdrawn) => {
+				if (method === "mcp/message" && mcp && phase !== "ended") return mcp.handle(params, AbortSignal.any([questions.signal, withdrawn]));
 				if (method !== "session/request_permission") throw new MethodNotFound(method);
 				if (phase !== "running" || params.sessionId !== result.windlassSessionId) return { outcome: { outcome: "cancelled" } };
 				if (profile.id === "codex" && refusesSandboxEscape(handle.profile)) {
@@ -301,7 +309,10 @@ export class AcpHarness implements Harness {
 			if (profile.id === "codex") await request("providers/set", {providerId:"openai", apiType:"openai", baseUrl:"http://127.0.0.1:17892/codex/v1", headers:{}});
 			const caps = object(init.agentCapabilities);
 			const canSteer = object(object(init._meta).steering).supported === true;
-			const settings = { cwd: handle.cwd, mcpServers: [] };
+			// An adapter that takes no `acp` server gets none: the turn runs without the tools, and says so.
+			const served = mcp !== null && object(caps.mcpCapabilities).acp === true;
+			if (mcp && !served) input.onAcpNote?.(`${profile.name} here cannot take the platform's tools, so this turn has no ${[...tools.keys()].join(" or ")}. A newer harness image on the machine has them.`);
+			const settings = { cwd: handle.cwd, mcpServers: served ? [PLATFORM_MCP_SERVER] : [] };
 			const prior = input.windlassSessionId;
 			// Enable updates synchronously at the open reply. Replay preceding a load reply is
 			// ignored, while updates in the very same stdout read after that reply are live.

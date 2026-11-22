@@ -85,6 +85,24 @@ export const scenarios = {
 		yield message(`Answered: ${edit.optionId ?? edit.outcome}, ${test.optionId ?? test.outcome}.`);
 		return { stopReason: "end_turn", usage: { inputTokens: 1000, outputTokens: 400, thoughtTokens: 100, cachedReadTokens: 30000, cachedWriteTokens: 2000, totalTokens: 33500 } };
 	},
+	// A builder's turn with the platform's tools (MCP over ACP): list them, file a report, ask twice, try a tool it was not given, and a wrong server.
+	*platformtools() {
+		const said = (outcome) => outcome?.result?.content?.[0]?.text ?? JSON.stringify(outcome);
+		const listed = yield { mcp: { method: "tools/list" } };
+		yield message(`Tools: ${(listed?.result?.tools ?? []).map((tool) => tool.name).join(",") || "none"}.\n`);
+		const report = yield { mcp: { method: "tools/call", params: { name: "report", arguments: { title: "Fixture report", description: "Changed the fixture.", concerns: "None." } } } };
+		yield message(`Report: ${said(report)}\n`);
+		const asked = yield { mcp: { method: "tools/call", params: { name: "ask_person", arguments: { question: "Which store?", options: ["SQLite", "Postgres"] } } } };
+		yield message(`Ask: ${said(asked)}\n`);
+		const again = yield { mcp: { method: "tools/call", params: { name: "ask_person", arguments: { question: "And the port?" } } } };
+		yield message(`Again: ${said(again)}\n`);
+		const push = yield { mcp: { method: "tools/call", params: { name: "push", arguments: {} } } };
+		yield message(`Push: ${said(push)}\n`);
+		const other = yield { mcp: { serverId: "someone-else", method: "tools/list" } };
+		yield message(`Other: ${other?.error?.message ?? JSON.stringify(other)}\n`);
+		const old = yield { mcp: { version: "2025-06-18", method: "tools/list" } };
+		yield message(`Old: ${old?.error?.message ?? JSON.stringify(old)}\n`);
+	},
 	*usage() {
 		yield { sessionUpdate: "usage_update", used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } };
 	},

@@ -1,6 +1,7 @@
 /** A session chooses its harness once. Its capabilities govern turn inputs, sign-in and storage. */
 import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
+import type { PlatformTool } from "../platform-tools.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, Windlass } from "./api.js";
 import type { HarnessId } from "../contract.js";
 import { ACP_CAPABILITIES, AcpHarness } from "./acp-harness.js";
@@ -8,8 +9,7 @@ import { machineHarnesses } from "./harnesses.js";
 
 export type { HarnessId } from "../contract.js";
 
-/** One of the platform's tools (agent-publish.ts, and the reviewer's `file_review`). */
-export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL;
+export type { PlatformTool } from "../platform-tools.js";
 
 export interface HarnessCapabilities {
 	/** What the timeline stores for its turns. */
@@ -22,8 +22,14 @@ export interface HarnessCapabilities {
 	cancelCall: boolean;
 	/** Questions to whoever has the session open. */
 	questions: boolean;
-	/** Which of the platform's tools this harness can be given. Empty: none, and the person publishes from the side panel. */
+	/**
+	 * Which of the platform's tools this harness can be given (platform-tools.ts), by whichever transport it
+	 * takes them: Windlass's host tools, or MCP over ACP for those that may be served from the sandbox.
+	 * Without `publish`, the person publishes from the side panel.
+	 */
 	platformTools: readonly PlatformTool[];
+	/** Screenshots with a builder's report (`RunTurnInput.reportScreenshots`, `wlp-shot`). */
+	reportScreenshots: boolean;
 	/** The reviewer's restricted session: no subagents, an agent profile of the platform's, required checks, host tools. */
 	restrictedReview: boolean;
 	/** How the user's own MCP servers reach it. */
@@ -64,6 +70,7 @@ const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	cancelCall: true,
 	questions: true,
 	platformTools: Object.freeze([PUBLISH_TOOL, REPORT_TOOL, ASK_TOOL, PUSH_TOOL, FETCH_BASE_TOOL, REVIEW_TOOL] as const),
+	reportScreenshots: true,
 	restrictedReview: true,
 	userServers: "config-file",
 	projectServerApproval: true,
