@@ -252,7 +252,9 @@ The Factory page lists your items by what you must do:
 - **Ready for you**: items in review.
 - **In progress**: working, queued or waiting.
 - **Drafts**.
-- **Ended**: done, failed or cancelled, folded away. Unfolded, they show 25 at a time, the newest first. Choose **Show 25 more** for the next ones.
+- **Ended**: done, failed or cancelled, folded away. Unfolded, they show 25 at a time, the newest filed first, each with the day it was filed. Choose **Show 25 more** for the next ones.
+
+A repository's page shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
 Filter it with **repo** and **from**: filed from the web, the API or a GitHub issue. The filters are kept in the address, as `?repository=` and `?from=`.
 

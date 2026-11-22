@@ -8,7 +8,7 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import { MAX_TITLE_CHARS, type AccountDefaults, type LastStart, type GithubId, type HarnessId, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
+import { MAX_TITLE_CHARS, type AccountDefaults, type LastStart, type GithubId, type HarnessId, type ItemFeed, type ItemSummary, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -133,6 +133,46 @@ export const shownLimit = (groups: number) => (groups <= 1 ? LONE_GROUP_SHOWN : 
 
 /** "owner/name". */
 export const repositoryName = (repository: Pick<SessionRepository, "owner" | "name">) => `${repository.owner}/${repository.name}`;
+
+// ---- the work items' counts -------------------------------------------------------------------------
+
+/** What a list of work items is kept to: one repository, one way of filing (the Factory's filters). */
+export interface FeedFilters {
+	repository?: GithubId;
+	from?: ItemSummary["source"];
+}
+
+/**
+ * How many work items the user has under the filters, by where they stand, from the live feed's counts
+ * (`ItemFeed.counts`): the feed carries only the newest ended items, so the ended ones are never
+ * counted by its rows. Zero everywhere until the feed is read.
+ */
+export function feedCounts(feed: ItemFeed | null, filters: FeedFilters = {}): { open: number; done: number; failed: number; cancelled: number; ended: number; total: number } {
+	const sum = { open: 0, done: 0, failed: 0, cancelled: 0, ended: 0, total: 0 };
+	for (const row of feed?.counts.byRepository ?? []) {
+		if (filters.repository !== undefined && String(row.repository) !== String(filters.repository)) continue;
+		if (filters.from !== undefined && row.source !== filters.from) continue;
+		sum.open += row.open;
+		sum.done += row.done;
+		sum.failed += row.failed;
+		sum.cancelled += row.cancelled;
+	}
+	sum.ended = sum.done + sum.failed + sum.cancelled;
+	sum.total = sum.open + sum.ended;
+	return sum;
+}
+
+/** The repositories that have work items, by name, with how many each has: from the feed's counts, so one whose items have all ended long ago is among them. */
+export function feedRepositories(feed: ItemFeed | null): Array<{ id: GithubId; name: string; items: number }> {
+	const found = new Map<string, { id: GithubId; name: string; items: number }>();
+	for (const row of feed?.counts.byRepository ?? []) {
+		const key = String(row.repository);
+		const held = found.get(key) ?? { id: row.repository, name: `${row.owner}/${row.name}`, items: 0 };
+		held.items += row.open + row.done + row.failed + row.cancelled;
+		found.set(key, held);
+	}
+	return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
 
 /** The user's sessions on one repository, their work items' among them (`ownAgents` leaves those out), the most recently used first. */
 export function sessionsOn(sessions: readonly SessionSummary[], repositoryId: GithubId): SessionSummary[] {

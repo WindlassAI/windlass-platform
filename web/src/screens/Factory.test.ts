@@ -4,7 +4,7 @@
  * what asks, its groups and filters, filing a work item from it without leaving, the first visit, and
  * a deployment without the second review.
  */
-import { ITEM_PAGE_DEFAULT, type AuthResult, type CreateItemInput, type ItemListPage, type ItemSummary } from "@contract";
+import { ITEM_FEED_ENDED, ITEM_PAGE_DEFAULT, type AuthResult, type CreateItemInput, type ItemListPage, type ItemSummary } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -253,6 +253,62 @@ describe("the Factory page's groups and filters", () => {
 		await settle(4);
 		expect(location.search).toBe("");
 		expect(rows().length).toBeGreaterThan(0);
+	});
+});
+
+describe("the live feed's ended items beyond its first page", () => {
+	const isEnded = (item: ItemSummary) => ["done", "failed", "cancelled"].includes(item.state);
+	const byFiling = (list: ItemSummary[]) => list.slice().sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+
+	it("dates the Factory's ended rows by when each was filed, the order they stand in", async () => {
+		await show("/factory", { items: "many" });
+		const ended = byFiling((await listed()).filter((item) => item.question === null && isEnded(item)));
+		act(() => button(`Show ${ended.length} ended items`).click());
+		await settle();
+		const times = [...host.querySelectorAll(".factory-group")].find((group) => group.querySelector(".agent-group-name")?.textContent === "Ended")?.querySelectorAll(".agent-time") ?? [];
+		expect(times.length).toBe(ITEM_PAGE_DEFAULT);
+		const first = ended[0] as ItemSummary;
+		expect(times[0]?.getAttribute("dateTime")).toBe(new Date(first.createdAt).toISOString());
+		expect(times[0]?.textContent).toMatch(/^filed \d{1,2} [A-Z][a-z]{2}/);
+		expect([...times].some((time) => time.textContent?.includes("ago"))).toBe(false);
+	});
+
+	it("on a repository's page: the fold is said from the counts, and unfolded reads a page at a time", async () => {
+		await show("/repositories/7101", { items: "many" });
+		const ended = byFiling((await listed()).filter((item) => !item.parent && item.repository.id === 7101 && isEnded(item)));
+		expect(ended.length).toBeGreaterThan(ITEM_FEED_ENDED);
+		// The feed carries fewer of them than there are: the fold's words are the counts'.
+		const feed = await client.user(ada).itemFeed();
+		expect(feed.ended.filter((item) => item.repository.id === 7101).length).toBeLessThan(ended.length);
+		const of = (state: string) => ended.filter((item) => item.state === state).length;
+		const words = ["done", "failed", "cancelled"].filter((state) => of(state) > 0).map((state) => `${of(state)} ${state}`).join(", ");
+		const section = () => host.querySelector('section[aria-labelledby="repo-items"]') as HTMLElement;
+		expect(section().querySelector(".items-fold")?.textContent).toContain(words);
+		expect(paged).toEqual([]);
+		act(() => button(`Show ${ended.length} ended items`).click());
+		await settle();
+		const endedRows = () => [...section().querySelectorAll(".items-group")].find((group) => group.querySelector(".items-group-head")?.firstChild?.textContent === "Ended")?.querySelectorAll(".agent-title") ?? [];
+		const titles = () => [...endedRows()].map((title) => title.firstChild?.textContent ?? "");
+		expect(paged).toEqual([{ ended: true, before: null, limit: ITEM_PAGE_DEFAULT, repository: 7101, source: null }]);
+		expect(titles()).toEqual(ended.slice(0, ITEM_PAGE_DEFAULT).map((item) => item.title));
+		expect(section().textContent).toContain(`${ITEM_PAGE_DEFAULT} of ${ended.length}`);
+		act(() => button(`Show ${ITEM_PAGE_DEFAULT} more`).click());
+		await settle();
+		const last = ended[ITEM_PAGE_DEFAULT - 1] as ItemSummary;
+		expect(paged[1]).toMatchObject({ ended: true, repository: 7101, before: { createdAt: last.createdAt, id: last.id } });
+		expect(titles()).toEqual(ended.slice(0, 2 * ITEM_PAGE_DEFAULT).map((item) => item.title));
+	});
+
+	it("on the usage page: a row for each item the feed carries, and how many older ended ones there are", async () => {
+		await show("/usage", { items: "many" });
+		const feed = await client.user(ada).itemFeed();
+		expect(feed.counts.ended).toBeGreaterThan(feed.ended.length);
+		const table = host.querySelector(".factory-cost") as HTMLElement;
+		expect(table.querySelectorAll("tbody tr").length).toBe(feed.open.length + feed.ended.length);
+		const older = feed.counts.ended - feed.ended.length;
+		const note = host.querySelector(".factory-cost-older") as HTMLElement;
+		expect(note.textContent).toBe(`And ${older} older ended items, listed under Ended on the Factory page.`);
+		expect(note.querySelector("a")?.getAttribute("href")).toBe("/factory");
 	});
 });
 
