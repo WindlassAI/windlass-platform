@@ -795,6 +795,82 @@ for (const field of ["tokens", "turns", "activeSeconds"] as const) {
 	expect(`on a machine the ${field} limit still applies`, budgetStop(machineItem.budget, { ...machineItem.spent, [field]: machineItem.budget[field] }, machineItem.place)?.cause === field);
 }
 expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { kind: "spent", at: T0, hostedSeconds: 90 }).item === machineItem);
+
+// A Claude Code or OpenCode item: what the agent reported of each turn, and a budget only it can trip.
+{
+	const { agentTurn, itemAgent, tokenWords, turnSpend } = await import("../server/src/factory/budget.js");
+	const { checkSummary: summaryOf } = await import("../server/src/factory/verified-check.js");
+	const agentItem = (harness: "claude" | "opencode" | "windlass", budget: Partial<FactoryItem["budget"]> = {}) => createItem({
+		id: "i_00000000000000aa", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
+		reviewer: { off: "profile" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness, model: harness === "claude" ? "sonnet" : "default" },
+	});
+	const usage = { inputTokens: 33_000, cachedInputTokens: 30_000, outputTokens: 500, reasoningTokens: 100 };
+	const claudeTurn = agentTurn("claude", usage, { cost: null, fiveHourUsedPct: 41 }, 38);
+	const openCodeTurn = agentTurn("opencode", usage, { cost: { amount: 0.42, currency: "USD" } });
+	expect("Claude Code's reported tokens are shown, not counted (subscription), with the 5h window at the turn's start and end",
+		isDeepStrictEqual(turnSpend(usage, claudeTurn), { tokens: 0, hostedSeconds: 0, agent: { reported: 33_500, counted: false, cost: null, fiveHour: { start: 38, end: 41 } } }), JSON.stringify(turnSpend(usage, claudeTurn)));
+	expect("OpenCode's reported tokens count against the budget, with its cost", turnSpend(usage, openCodeTurn).tokens === 33_500 && openCodeTurn?.cost?.amount === 0.42);
+	expect("Windlass has no agent report: its tokens count as before", agentTurn("windlass", usage) === undefined && turnSpend(usage).tokens === 33_500 && turnSpend(usage).agent === undefined);
+	const silent = agentTurn("claude", null, null);
+	expect("an agent that reported no tokens is 'not reported', never 0 tokens", silent?.reported === null && itemAgent(agentItem("claude")).tokens === "not_reported" && tokenWords({ tokens: 0 }, FACTORY_DEFAULTS.item, itemAgent(agentItem("claude"))) === "tokens not reported by Claude Code");
+	const agentEnded = (turn: ReturnType<typeof agentTurn>): Row["fact"] => k => ({ kind: "turn_ended", key: k.key, outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: turnSpend(turn?.reported === null ? null : usage, turn) });
+	let claudeOutcome: Outcome | null = null;
+	drive("a Claude Code item: CI decides, its tokens are reported and not counted", agentItem("claude", { tokens: 1000 }), [
+		{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: agentEnded(claudeTurn), state: "working", effects: ["publish"], also: o => holds(o.item.spent.tokens === 0 && o.item.agent?.tokens === "subscription" && o.item.agent.reportedTokens === 33_500 && isDeepStrictEqual(o.item.agent.fiveHour, { first: 38, latest: 41 }), "a 1,000-token budget is not tripped by a subscription's 33,500 reported tokens") },
+		{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+		{ fact: ci(H(1), ciRead([{ name: "build", state: "passed" }])), after: 60_000, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o => {
+			claudeOutcome = o;
+			const check = effect(o, "verified_check");
+			return holds(check?.conclusion === "success" && /The turn left no record of its checks; CI decides\./.test(effect(o, "handoff")?.words ?? ""), "CI green hands it over with the CI-decides gate sentence");
+		} },
+	]);
+	const handoff = claudeOutcome ? effect(claudeOutcome, "handoff") : undefined;
+	const posted = handoff && claudeOutcome ? summaryOf(handoff.verdict, null, (claudeOutcome as Outcome).item.spent, (claudeOutcome as Outcome).item.budget, "https://wlp.invalid/items/i", itemAgent((claudeOutcome as Outcome).item)) : "";
+	expect("the windlass/verified summary says CI decides and the tokens Claude Code reported, not 0 of a budget", /The turn left no record of its checks; CI decides\./.test(posted) && /Spent: 33,500 tokens reported by Claude Code, not counted \(subscription\), 1 of 14 turns/.test(posted), posted.split("\n").filter(l => /Spent|CI decides/.test(l)).join(" | "));
+	const afterTurn = (item: FactoryItem, spend: ReturnType<typeof turnSpend>) => {
+		let o = advance(item, { kind: "start", at: T0, by: "person:u1" });
+		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });
+		return advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key: currentKey(o.item)!, outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend }).item;
+	};
+	const openCode = afterTurn(agentItem("opencode", { tokens: 30_000 }), turnSpend(usage, openCodeTurn));
+	expect("an OpenCode item's reported tokens trip its token budget, with its cost kept", openCode.spent.tokens === 33_500 && openCode.agent?.tokens === "counted" && openCode.agent.cost?.amount === 0.42 && budgetStop(openCode.budget, openCode.spent, openCode.place)?.cause === "tokens", JSON.stringify(openCode.agent));
+	// An OpenCode turn that reports no tokens stops the item: its budget could not be enforced, and the turn is never taken as 0.
+	const silentOpenCode = afterTurn(agentItem("opencode"), turnSpend(null, agentTurn("opencode", null, { cost: null })));
+	expect("an OpenCode turn that reports no tokens stops the item with the reason, offering no way to go on unbounded",
+		silentOpenCode.state === "waiting" && silentOpenCode.question?.kind === "budget" && silentOpenCode.question.text === "OpenCode did not report token use, so the item's budget can't be enforced."
+		&& isDeepStrictEqual(silentOpenCode.question.choices.map(choice => choice.id), ["give_up"]) && silentOpenCode.agent?.tokens === "not_reported", JSON.stringify(silentOpenCode.question));
+	const silentClaude = afterTurn(agentItem("claude"), turnSpend(null, agentTurn("claude", null, null)));
+	expect("a Claude Code turn that reports no tokens goes on: its tokens are not counted", silentClaude.question === null && silentClaude.agent?.tokens === "not_reported", JSON.stringify(silentClaude.question));
+	{
+		// The machine is removed while a turn runs: the turn's closing report is still the item's.
+		let o = advance(agentItem("opencode"), { kind: "start", at: T0, by: "person:u1" });
+		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });
+		const key = currentKey(o.item)!;
+		o = advance(o.item, { kind: "machine_removed", at: T0 + 1 });
+		const closed = advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key, outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: turnSpend(usage, openCodeTurn) }).item;
+		expect("a turn that ends after its machine was removed keeps what the agent reported", closed.spent.tokens === 33_500 && closed.spent.turns === 1
+			&& closed.agent?.tokens === "counted" && closed.agent.reportedTokens === 33_500 && closed.agent.cost?.amount === 0.42 && closed.run?.step.turn === null, JSON.stringify({ spent: closed.spent, agent: closed.agent }));
+	}
+	{
+		// An item's effort is held against what its agent reported (account-models.ts, `checkItemEffort`).
+		const { checkItemEffort } = await import("../server/src/account-models.js");
+		const takes = (list: Parameters<typeof checkItemEffort>[0], model: string, effort: unknown, harness: boolean) => { try { checkItemEffort(list, model, effort, harness); return true; } catch { return false; } };
+		const windlass = { source: "account" as const, defaultModel: "sol", fetchedAt: null, models: [{ id: "sol", name: null, efforts: ["low", "high"] }, { id: "luna", name: null, efforts: [] }] };
+		const claude = { source: "harness" as const, defaultModel: "default", fetchedAt: null, models: [{ id: "default", name: null, efforts: ["default", "high"] }, { id: "sonnet", name: null, efforts: [] }] };
+		expect("an item's effort is one its model offers; an unknown one, or any for a model that takes none, is refused",
+			takes(windlass, "sol", "high", false) && !takes(windlass, "sol", "ultra", false) && !takes(windlass, "luna", "high", false) && !takes(windlass, "nonesuch", "high", false) && !takes(windlass, "sol", 7, false));
+		expect("a machine agent's model whose efforts come only on selection takes an effort the agent reported for another",
+			takes(claude, "default", "high", true) && takes(claude, "sonnet", "high", true) && !takes(claude, "sonnet", "ultra", true) && !takes({ ...claude, models: [{ id: "default", name: null, efforts: [] }] }, "default", "high", true));
+	}
+	const later = { ...structuredClone(openCode) };
+	const { noteAgentTurn } = await import("../server/src/factory/budget.js");
+	noteAgentTurn(later, { ...openCodeTurn!, cost: { amount: 0.9, currency: "USD" } });
+	expect("the conversation's cost so far replaces the earlier one, tokens add up", later.agent?.cost?.amount === 0.9 && later.agent.reportedTokens === 67_000);
+	const claude = afterTurn(agentItem("claude", { tokens: 1000, turns: 1 }), turnSpend(usage, claudeTurn));
+	expect("a Claude Code item is bounded by its turns and active time, never by tokens", claude.spent.tokens === 0 && budgetStop(claude.budget, claude.spent, claude.place)?.cause === "turns" && budgetStop({ ...claude.budget, turns: 9 }, claude.spent, claude.place) === null);
+}
 drive("removal while a machine item is still a draft", machineItem, [
 	{ fact: () => ({ kind: "machine_removed" }), state: "waiting", wait: "person", effects: ["ask"] },
 	{ fact: answer("give_up"), state: "failed", effects: [] },

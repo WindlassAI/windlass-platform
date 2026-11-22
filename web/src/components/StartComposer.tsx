@@ -30,7 +30,8 @@
  * Where the deployment offers work items and the page asks for it (`switchable`, the Factory page), a
  * switch turns it to filing one ("Work item"): the text's first line is the item's title and the rest
  * what to do (`itemOf`), a repository of the GitHub connection is required, and the pills are the
- * repository, where it runs and its acceptance criteria; an item keeps its profile's mode and runs Windlass. Enter files and starts it,
+ * repository, where it runs, its agent and model and its acceptance criteria. An item runs Windlass in its profile's mode unless an agent
+ * its machine is signed into is chosen (`itemHarnesses`), which runs Quick and without asking. Its effort, one its agent offers for the model, runs every turn of the item. Enter files and starts it,
  * the launch menu files a draft, and the page stays where it is: filing several in a row is the
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
@@ -54,7 +55,7 @@ import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../
 import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
-import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoice";
+import { HARNESS_PROFILE, itemHarnesses, machineUnusable, offeredHarnesses } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
@@ -143,7 +144,7 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 }
 
 /** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
-function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
+export function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const machineId = machine?.machineId;
@@ -335,15 +336,17 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	// Another harness runs in the hardened container only: without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
-	const wantedHarness = harnessChoice ?? started.harness ?? "windlass";
-	const harness: HarnessId = wantedHarness !== "windlass" && hardened && offeredHarnesses(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
+	// A work item starts on Windlass unless chosen otherwise, and only on an agent its machine is signed into.
+	const wantedHarness = harnessChoice ?? (item ? "windlass" : (started.harness ?? "windlass"));
+	const harnessesHere = (machine: MachineSummary | null) => (item ? itemHarnesses(machine) : offeredHarnesses(machine));
+	const harness: HarnessId = wantedHarness !== "windlass" && hardened && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
 	// The agent the last one was, where it cannot be this one's: said in the agent's picker.
 	const harnessProblem =
 		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
 			? null
 			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "runs only on a machine of yours"}, so this one is ${HARNESS_NAMES[harness]}.`;
-	const catalogs = { claude: useCatalog(item ? null : chosenMachine, "claude"), opencode: useCatalog(item ? null : chosenMachine, "opencode") };
+	const catalogs = { claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
 	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
 	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
 	const lastOf = last.of[harness] ?? null;
@@ -355,7 +358,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Another harness's "" is its own default model, the one its runner reported as that: nothing is sent for it, so the adapter starts on its own.
 	const reportedDefault = other && modelList !== null && modelList.models.length > 0 ? modelList.defaultModel : null;
 	const harnessModel = (id: string) => (offers(id) ? (id === reportedDefault ? "" : id) : null);
-	const model = other ? (harnessModel(modelChoice) ?? (lastOf ? harnessModel(lastOf.model) : null) ?? "") : startingModel(modelChoice, defaults, models.list, last.of.windlass?.model ?? null);
+	// A work item's agent starts on its own default model unless one is chosen here: not on the last agent's.
+	const model = other ? (harnessModel(modelChoice) ?? (lastOf && !item ? harnessModel(lastOf.model) : null) ?? "") : startingModel(modelChoice, defaults, models.list, last.of.windlass?.model ?? null);
 	const efforts = effortsOf(modelList, model === "" && reportedDefault !== null ? reportedDefault : model);
 	const effort = efforts.includes(effortChoice) ? effortChoice : "";
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
@@ -450,11 +454,16 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title: filing.title,
-			mode: info?.items?.orchestrate ? itemMode : "single",
+			mode: info?.items?.orchestrate && !other ? itemMode : "single",
 			body: filing.body,
 			acceptance,
 			start: now,
 			...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}),
+			// The agent and its model: Windlass on the account's model unless one was chosen here.
+			...(other ? { harness } : {}),
+			...(model && (other || modelChoice !== "") ? { model } : {}),
+			// Every turn of the item runs at it; left out, at the agent's default.
+			...(effort && effort !== "default" ? { effort } : {}),
 		};
 		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
 		asked.current = submissionOf(JSON.stringify(input), asked.current);
@@ -825,7 +834,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			};
 		});
 	};
-	const offersOther = chosenMachine !== null && offeredHarnesses(chosenMachine).length > 0;
+	const offersOther = chosenMachine !== null && harnessesHere(chosenMachine).length > 0;
 	const windlassList = models.list;
 	const agentGroups: MenuGroup[] = [
 		{
@@ -838,7 +847,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					: modelRows("windlass", windlassList),
 		},
 		...(chosenMachine && offersOther
-			? offeredHarnesses(chosenMachine).map((offered) => {
+			? harnessesHere(chosenMachine).map((offered) => {
 					const options = harnessOptions(chosenMachine, offered.id, catalogs[offered.id].options);
 					const name = HARNESS_NAMES[offered.id];
 					const rows = modelRows(offered.id, options.models);
@@ -855,8 +864,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				})
 			: []),
 		...(["claude", "opencode"] as const).flatMap(id => {
-			if (offeredHarnesses(chosenMachine).some(h => h.id === id)) return [];
-			const hosts = mine.filter(machine => why(machine) === null && offeredHarnesses(machine).some(h => h.id === id));
+			if (harnessesHere(chosenMachine).some(h => h.id === id)) return [];
+			const hosts = mine.filter(machine => why(machine) === null && harnessesHere(machine).some(h => h.id === id));
 			if (hosts.length === 0) return [];
 			const name = HARNESS_NAMES[id];
 			return [{
@@ -899,7 +908,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: agentGroups,
 		footer: (
 			<>
-				{other === "Claude Code" ? <p className="ui-menu-note">Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's. It does not run this repository's checks, so CI decides, and there is no second reviewer on a machine.</p> : null}
+				{!item && other === "Claude Code" ? <p className="ui-menu-note">Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
 				<p className="ui-menu-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
 				{modelChanged ? (
 					<button type="button" className="ui-menu-action start-back" onClick={() => setModel("")}>
@@ -910,7 +920,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		),
 	};
 	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
-	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${effort ? ` · ${effort}` : ""}`;
+	const shownEffort = effort;
+	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`;
 	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
 	const agentPill = (props: TriggerProps) => (
 		<Pill
@@ -918,7 +929,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			data-picker="agent"
 			data-value={agentValue}
 			icon={<AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />}
-			secondary={`· ${agentModel}${effort ? ` · ${effort}` : ""}`}
+			secondary={`· ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`}
 			dot={agentWarn ? "warn" : modelChanged ? "changed" : null}
 			dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined}
 			className={modelChanged ? "ui-pill-changed" : undefined}
@@ -948,9 +959,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	// ---- how a work item runs: plan first or quick ------------------------------------
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
-	const orchestrating = orchestrateOffered && itemMode === "orchestrate";
+	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !other;
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
-	const itemModeControl = orchestrateOffered ? <ItemModePicker costId={ids.kind + "-cost"} value={itemMode} onChange={setItemMode} disabled={busy !== null} /> : null;
+	const itemModeControl = orchestrateOffered ? <ItemModePicker costId={ids.kind + "-cost"} value={other ? "single" : itemMode} onChange={setItemMode} disabled={busy !== null || other !== null} /> : null;
 
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
@@ -1014,7 +1025,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const anyOpen = facts.some((fact) => fact.open);
 
 	// ---- the phone: one summary row, a sheet of settings --------------------------------------------------
-	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
+	const summary = [item && !other ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
 	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null || orchestrateWarn !== null;
 	const settingsSpec: MenuSpec = {
 		label: "Settings",
@@ -1022,7 +1033,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			{
 				id: "settings",
 				items: [
-					...(!item ? [{ id: "agent", label: "Agent & model", icon: <AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />, description: agentValue, tone: agentWarn ? ("warn" as const) : undefined, submenu: agentSpec }] : []),
+					{ id: "agent", label: "Agent & model", icon: <AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />, description: agentValue, tone: agentWarn ? ("warn" as const) : undefined, submenu: agentSpec },
 					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
 					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
 					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
@@ -1130,7 +1141,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 									</button>
 								</Tooltip>
 							) : null}
-							{!item ? <Menu spec={agentSpec} open={open === "agent"} onOpenChange={openOnly("agent")} trigger={agentPill} surface="popover" /> : null}
+							<Menu spec={agentSpec} open={open === "agent"} onOpenChange={openOnly("agent")} trigger={agentPill} surface="popover" />
 							{showWhere && (mine.length > 0 || !item) ? <Menu spec={whereSpec} open={open === "where"} onOpenChange={openOnly("where")} trigger={wherePill} surface="popover" /> : null}
 							{repoSpec ? (
 								<Menu spec={repoSpec} open={open === "repo"} onOpenChange={openOnly("repo")} trigger={repoPill} surface="popover" />

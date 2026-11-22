@@ -242,6 +242,22 @@ export function chosenModel(list: ModelList, asked: unknown): string {
 	return asked as string;
 }
 
+/**
+ * A work item's effort, held against what its agent reported. A machine harness reports a model's
+ * efforts only once it is selected, so for such a model with none listed, any effort the agent reported
+ * for one of its models is taken; the turn says so where the model then runs at its default instead.
+ */
+export function checkItemEffort(list: ModelList, model: string, effort: unknown, harness: boolean): void {
+	const listed = list.models.find((candidate) => candidate.id === model)?.efforts ?? [];
+	if (harness && listed.length === 0 && model !== list.defaultModel) {
+		const any = [...new Set(list.models.flatMap((candidate) => candidate.efforts))];
+		if (typeof effort === "string" && any.includes(effort)) return;
+		throw new ModelProblem("bad_effort", any.length === 0 ? `${model} takes no reasoning effort. Leave the effort at its default.` : `The effort must be one of: ${any.join(", ")}`);
+	}
+	if (listed.length === 0) throw new ModelProblem("bad_effort", `${model} takes no reasoning effort. Leave the effort at its default.`);
+	checkEffort(list, model, effort);
+}
+
 /** Holds an effort against the ones `model` accepts. A model the list does not have is Windlass's to refuse: the list says nothing of it. */
 export function checkEffort(list: ModelList, model: string, effort: unknown): void {
 	const efforts = list.models.find((candidate) => candidate.id === model)?.efforts;

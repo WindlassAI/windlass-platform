@@ -100,12 +100,18 @@ adapter's default model. Later prompts can select a model and reasoning effort i
 
 The session streams messages, reasoning, tool calls and permission questions over ACP v1. You
 can stop a turn and send a follow-up during a turn when the adapter offers steering. The turn
-reports context use and cost when available. Its conversation stays in the machine’s sandbox
+reports context use and cost when available. The tokens the adapter answers a prompt with
+(`session/prompt` `usage`) are recorded on the turn's end for Claude Code and OpenCode turns, in
+personal sessions as in work items (`agent-session.ts`, `usage`; `promptUsage` in
+`sandbox/acp-harness.ts`). Its conversation stays in the machine’s sandbox
 across turns and sleeps. Removing the sandbox removes that conversation.
 
 Publish from the session panel. The adapter receives no platform tools, saved secrets or user MCP
-servers. Individual tool-call cancellation, required checks, token accounting and conversation
-backups are unavailable for Claude Code. Work items, reviewers and hosted sessions use Windlass.
+servers. Individual tool-call cancellation, required checks and conversation
+backups are unavailable for Claude Code. A personal session's reported tokens are recorded, not
+counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Reviewers and hosted sessions use Windlass. A Quick work item
+filed on the machine can run Claude Code or OpenCode where it is signed in there; see
+[Work items](work-items.md#the-items-agent).
 
 ### What the platform keeps
 

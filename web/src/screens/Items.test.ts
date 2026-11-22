@@ -125,6 +125,44 @@ describe("filing a work item", () => {
 		expect(sent[0]?.mode).toBe(mode);
 	});
 
+	it("files the model and effort chosen for the item's agent, offering only the efforts its model takes", async () => {
+		const choose = (label: string, value: string) => {
+			const select = [...host.querySelectorAll("label")].find((one) => one.textContent === label)?.control as HTMLSelectElement;
+			act(() => {
+				Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(select, value);
+				select.dispatchEvent(new Event("change", { bubbles: true }));
+			});
+		};
+		const efforts = () => [...((([...host.querySelectorAll("label")].find((one) => one.textContent === "Effort")?.control as HTMLSelectElement | null)?.options) ?? [])].map((one) => one.value);
+		await start("online");
+		// Windlass on this platform: the account's models, and the efforts of the chosen one.
+		expect(efforts()).toEqual(["", "low", "medium", "high", "xhigh"]);
+		choose("Model", "gpt-6-luna");
+		expect(efforts()).toEqual(["", "low", "medium"]);
+		choose("Effort", "medium");
+		typeTitle("Cache the station list");
+		await file();
+		expect(sent[0]).toMatchObject({ model: "gpt-6-luna", effort: "medium" });
+		// Claude Code on the machine: the models its runner reported, where only some take an effort.
+		act(() => root.unmount());
+		host.replaceChildren();
+		root = createRoot(host);
+		client.dispose();
+		sent = [];
+		await start("online");
+		act(() => radio("m_nas")?.click());
+		act(() => radio("claude")?.click());
+		await wait();
+		expect(efforts()).toEqual([]);
+		expect(text()).toContain("This model takes no reasoning effort.");
+		choose("Model", "opus");
+		expect(efforts()).toEqual(["", "low", "high", "max"]);
+		choose("Effort", "high");
+		typeTitle("Cache the station list");
+		await file();
+		expect(sent[0]).toMatchObject({ harness: "claude", model: "opus", effort: "high", mode: "single" });
+	});
+
 	it("says an offline machine makes the item wait", async () => {
 		await start("full");
 		act(() => radio("m_workshop")?.click());

@@ -128,8 +128,11 @@ Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-r
 **"… requires the docker-hardened profile."**\
 Claude Code and OpenCode run only on your machines, and only in **Hardened Docker on your machine "…"**. Choose both under **on** and **sandbox**.
 
-**"Work items and their reviewers run only with Windlass."**\
-Work items cannot use Claude Code or OpenCode. File it with Windlass, or start an agent instead.
+**"… runs only on a machine of yours."** or **"Plan first runs only with Windlass."**\
+A work item runs Claude Code or OpenCode only on your machine, and only Quick. Choose the machine and **Quick**, or Windlass. See [Choose the agent](/docs/factory#choose-the-agent).
+
+**"A work item's reviewer runs only with Windlass."**\
+The second reviewer always runs Windlass, on hosted sandboxes.
 
 **"… has no publish tool. Publish from the session panel."**\
 Claude Code and OpenCode cannot open a pull request themselves. Open it from the session panel.

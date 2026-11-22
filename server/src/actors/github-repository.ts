@@ -7,12 +7,10 @@ import { actor } from "rivetkit";
 import { db } from "rivetkit/db";
 import { githubIdKey } from "../github/events.js";
 import { internalConnection, requireServiceFor } from "../auth.js";
-import { githubApp, GithubError } from "../github/app.js";
+import { githubApp } from "../github/app.js";
 
 type Item = { itemId: string; uid: string; installationId?: GithubId; issue?: number; generation?: number; pr?: number; head?: string; moved?: string | null; live?: boolean };
 type Match = { itemId: string; uid: string; issue: number | null; generation: number | null; pr: number | null; head: string | null };
-type Level = "admin" | "write" | "read" | "none";
-type Permission = { installationId: GithubId; owner: string; name: string; userId: GithubId; login: string; associations: string };
 const TTL = 10 * 60_000;
 
 export type IssueClaim = { generation: number; uid: string; itemId: string; installation: string; pending: number; subject: string }
@@ -31,7 +29,7 @@ export const githubRepository = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_claims (issue INTEGER PRIMARY KEY, generation INTEGER NOT NULL, uid TEXT NOT NULL, itemId TEXT NOT NULL, installation TEXT NOT NULL, pending INTEGER NOT NULL, subject TEXT NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))");
-		await db.execute("CREATE TABLE IF NOT EXISTS access (github_user_id INTEGER PRIMARY KEY, level TEXT NOT NULL, at INTEGER NOT NULL)");
+		await db.execute("DROP TABLE IF EXISTS access");
 	} }),
 	actions: {
 		internalIssuePermission: async (c, installation: GithubId, user: GithubUser): Promise<"write" | "read" | "none"> => {
@@ -99,26 +97,6 @@ export const githubRepository = actor({
 			const installation = key.installationId === undefined ? null : String(key.installationId);
 			return await c.db.execute<Match>(`SELECT item_id AS itemId, uid, issue, generation, pr, head FROM items
 				WHERE live = 1 AND ${column === "head" ? "(head = ? OR moved = ?)" : column + " = ?"} AND (? IS NULL OR installation = ?) ORDER BY item_id`, value, ...(column === "head" ? [value] : []), installation, installation);
-		},
-		internalPermission: async (c, input: Permission): Promise<Level> => {
-			requireServiceFor(c, "call");
-			if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(input.associations)) return "none";
-			const now = Date.now();
-			const [cached] = await c.db.execute<{ level: Level }>("SELECT level FROM access WHERE github_user_id = ? AND at > ?", input.userId, now - TTL);
-			if (cached) return cached.level;
-			const app = githubApp();
-			if (!app) throw new Error("The GitHub App is unavailable.");
-			let level: Level;
-			try {
-				level = await app.withToken(input.installationId, { repositoryId: githubId(c.key[0])!, permissions: { metadata: "read" } },
-					token => app.permission(token, input.owner, input.name, input.login));
-			} catch (error) {
-				if (!(error instanceof GithubError) || error.status !== 404) throw error;
-				level = "none";
-			}
-			await c.db.execute("DELETE FROM access WHERE at <= ?", now - TTL);
-			await c.db.execute("INSERT OR REPLACE INTO access VALUES (?, ?, ?)", input.userId, level, now);
-			return level;
 		},
 	},
 });

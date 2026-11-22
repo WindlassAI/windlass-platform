@@ -65,7 +65,8 @@ test("both harness providers construct the same runner-owned network configurati
 	const { Executor } = await import("../runner/src/docker-executor.js");
 	for (const mode of ["restricted", "none", "open"] as const) {
 		const owner = new Executor({ uid: "u_fixture", machineId: "m_fixture" }, {}, false, true, ["docker-hardened"], { mode, allow: [] });
-		const frame = { ...owner.report(), name: "Build runner" };
+		// The wire form: JSON drops a field the report left undefined, such as a signed-out loginGeneration.
+		const frame = JSON.parse(JSON.stringify({ ...owner.report(), name: "Build runner" }));
 		assert.equal(frame.egress, mode);
 		assert.equal(frame.claudeRelay, true);
 		assert.ok(frame.host && frame.host.cpus > 0 && frame.host.memoryBytes > 0);

@@ -944,15 +944,19 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(code === "bad_input", String(code));
 				return code;
 			});
-			await check("work items and their builder and reviewer sessions refuse Claude", async () => {
-				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" };
-				const item = await refusal(user.createItem(raw));
+			await check("a Claude Code work item runs on the machine without asking; hosted, Plan first and reviewers stay Windlass", async () => {
+				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" as const };
+				const hosted = await refusal(user.createItem(raw));
+				const planFirst = await refusal(user.createItem({ ...raw, place, mode: "orchestrate" }));
 				const { createSessionActor } = await import("../server/src/actors/internal.js");
-				const roles = await Promise.all((["builder", "reviewer"] as const).map(role =>
-					refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role, itemId: "i_fixture" } }))
-				));
-				assert([item, ...roles].every(code => code === "bad_input"), `item, builder, reviewer: ${[item, ...roles].join(", ")}`);
-				return "item, builder, reviewer refused";
+				const reviewer = await refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role: "reviewer", itemId: "i_fixture" } }));
+				assert([hosted, planFirst, reviewer].every(code => code === "bad_input"), `hosted, plan first, reviewer: ${[hosted, planFirst, reviewer].join(", ")}`);
+				const item = await user.createItem({ ...raw, place, mode: "single", profile: "docker-windlass-sandbox" });
+				const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
+				assert(item.agent?.harness === "claude" && builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions",
+					JSON.stringify({ agent: item.agent, harness: builder?.harness, profile: builder?.profile, mode: builder?.mode }));
+				await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
+				return "hosted, plan first and reviewer refused; the builder is Claude Code in bypassPermissions";
 			});
 			await check("Claude bounds the serialized item, live deltas and reconnect text", async () => {
 				const { id } = await acpSession();

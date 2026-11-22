@@ -92,6 +92,42 @@ describe("the mock's work items", () => {
 		mock.dispose();
 	});
 
+	it("files an item for Claude Code or OpenCode only on a machine signed into it, Quick, in the hardened container", async () => {
+		const online = make(undefined, "online");
+		const user = online.user(auth);
+		const task = { repository: { id: 7101 }, title: "Log the release's checksum", body: "", mode: "single" as const };
+		await expect(user.createItem({ ...task, harness: "claude" })).rejects.toMatchObject({ reason: "bad_input" });
+		await expect(user.createItem({ ...task, harness: "claude", mode: "orchestrate", place: { kind: "machine", machineId: "m_nas" } })).rejects.toMatchObject({ reason: "bad_input" });
+		const claude = await user.createItem({ ...task, harness: "claude", place: { kind: "machine", machineId: "m_nas" } });
+		expect(claude.agent).toMatchObject({ harness: "claude", tokens: "not_reported", reportedTokens: 0 });
+		expect((await user.listSessions()).find((session) => session.id === claude.sessionId)).toMatchObject({ harness: "claude", profile: "docker-hardened" });
+		const windlass = await user.createItem(task);
+		expect(windlass.agent).toMatchObject({ harness: "windlass", tokens: "counted" });
+		online.dispose();
+		const fresh = make(undefined, "fresh");
+		const there = { ...task, place: { kind: "machine" as const, machineId: "m_workshop" } };
+		await expect(fresh.user(auth).createItem({ ...there, harness: "claude" })).rejects.toMatchObject({ reason: "harness_signed_out" });
+		expect((await fresh.user(auth).createItem({ ...there, harness: "opencode" })).agent?.harness).toBe("opencode");
+		fresh.dispose();
+	});
+
+	it("files an item's effort only where its agent offers it for the item's model", async () => {
+		const online = make(undefined, "online");
+		const user = online.user(auth);
+		const task = { repository: { id: 7101 }, title: "Log the release's checksum", body: "", mode: "single" as const };
+		const nas = { kind: "machine" as const, machineId: "m_nas" };
+		const windlass = await user.createItem({ ...task, effort: "high" });
+		expect(windlass.agent).toMatchObject({ harness: "windlass", effort: "high" });
+		expect((await user.createItem(task)).agent?.effort).toBeUndefined();
+		await expect(user.createItem({ ...task, effort: "ultra" })).rejects.toMatchObject({ reason: "bad_effort" });
+		const claude = await user.createItem({ ...task, harness: "claude", place: nas, model: "opus", effort: "high" });
+		expect(claude.agent).toMatchObject({ harness: "claude", model: "opus", effort: "high" });
+		await expect(user.createItem({ ...task, harness: "claude", place: nas, model: "opus", effort: "ultra" })).rejects.toMatchObject({ reason: "bad_effort" });
+		// Claude Code's default model takes no effort here.
+		await expect(user.createItem({ ...task, harness: "claude", place: nas, effort: "high" })).rejects.toMatchObject({ reason: "bad_effort" });
+		online.dispose();
+	});
+
 	it("answers an item's page with its log and verdicts, and refuses one that is not the user's", async () => {
 		const mock = make();
 		const user = mock.user(auth);
