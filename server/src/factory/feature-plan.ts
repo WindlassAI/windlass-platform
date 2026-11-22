@@ -4,9 +4,9 @@ import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE
 
 export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
 export const emptyBudget = (): ItemBudget => ({ tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
-export function featureCap(single: ItemBudget): ItemBudget {
+export function featureCap(single: ItemBudget, multiplier = 3): ItemBudget {
 	const cap = emptyBudget();
-	for (const key of dimensions) cap[key] = 3 * single[key];
+	for (const key of dimensions) cap[key] = multiplier * single[key];
 	return cap;
 }
 

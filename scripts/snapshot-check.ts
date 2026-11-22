@@ -1,5 +1,6 @@
 // Run with tsx from server/. --docker adds the real Docker index and isolation checks.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,10 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { canReuseSnapshot, canSaveSnapshot, dependencyHash, digest, snapshotPrompt, type TreeEntry } from "../server/src/sandbox/snapshot-key.js";
 import { attemptLabel, candidateLabel, DockerSnapshots, evictions, relieveDiskPressure, snapshotLimits, sourceFromLabels } from "../server/src/sandbox/snapshots.js";
 import { DATA_DIR, docker, LABEL } from "../server/src/sandbox/docker.js";
+import { runSetupCommand } from "../server/src/sandbox/setup.js";
+import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
+import { tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { DockerWindlass } from "../server/src/sandbox/windlass.js";
 import { imageId } from "./check-image.js";
 
 const docs = readFileSync(new URL("../docs/configuration.md", import.meta.url), "utf8").split("## Docker setup snapshots")[1];
@@ -57,7 +62,7 @@ if (process.argv.includes("--docker")) {
 	assert.notEqual(snapshotDeployment(join(directory, "other")), deployment);
 	const source = { attempt: randomBytes(16).toString("hex"), repo: "123", generation: digest(["settings"]), inputs: digest([expected, "npm ci"]), commit, created: Date.now() };
 	const other = { ...source, inputs: digest([expected, "npm ci --offline"]) };
-	const container = "snapshot-check-" + machine, volume = container + "-data", consumer = container + "-read";
+	const fixture = "snapshot-check-" + machine, volume = fixture + "-data", consumer = fixture + "-read";
 	const checked = async (...args: string[]) => (await docker(args, { check: true })).stdout.trim();
 	const producer = async (name: string, request: typeof source) => {
 		const selected = await cache.select(request, uid, profile);
@@ -67,16 +72,36 @@ if (process.argv.includes("--docker")) {
 			"--label", attemptLabel+"="+request.attempt, "--label", candidateLabel+"="+selected.key, "-v", volume+":"+DATA_DIR, base);
 		return selected;
 	};
-	const bigBox = container + "-large", alias = container + ":alias";
+	const bigBox = fixture + "-large", alias = fixture + ":alias";
+	const sandboxes = new DockerSandboxes({ image: base, machine, dataVolume: async () => volume });
+	const containers = [consumer, bigBox];
 	try {
-		const selected = await producer(container, source);
-		await checked("exec", container, "sh", "-c", "touch /workspace/installed && echo data-only > "+DATA_DIR+"/volume-secret");
+		const producerId = await sandboxes.create({ uid, profile, sessionId: "producer", fromSnapshot: { ...source, writer: true } });
+		const container = containerName(producerId);
+		containers.push(container);
+		const writer = await sandboxes.connect(producerId);
+		assert.ok(writer);
+		const selected = await cache.select(source, uid, profile);
+		assert.equal(selected.hit, false);
+		const setup = await runSetupCommand(writer, {
+			cwd: writer.cwd, timeoutMs: 10_000,
+			command: [
+				`touch installed && echo data-only > ${DATA_DIR}/volume-secret`,
+				"setsid env -i sh -c 'echo $$ > /tmp/setup-sleeper; exec /bin/sleep 610' </dev/null >/dev/null 2>&1 &",
+				"while [ ! -s /tmp/setup-sleeper ]; do sleep 0.01; done",
+			].join("\n"),
+		});
+		assert.equal(setup.state, "succeeded");
+		await checked("exec", container, "sh", "-ec", 'pid=$(cat /tmp/setup-sleeper); test ! -e "/proc/$pid"');
 		const noSpace = new DockerSnapshots(machine, base, undefined, { ...snapshotLimits, free: Number.MAX_SAFE_INTEGER });
 		assert.equal(await noSpace.save(container, uid, profile, source), false);
 		assert.equal(await cache.save(container, uid, profile, { ...source, attempt: randomBytes(16).toString("hex") }), false);
 		await checked("exec", "--user", "65534", container, "mkdir", "/tmp/wlp-transport-fixture");
 		await checked("exec", container, "touch", "/tmp/wlp-stage-fixture");
-		assert.equal(await cache.save(container, uid, profile, source), true);
+		const producerToken = tokenFilePath(producerId);
+		await checked("exec", container, "sh", "-ec", 'test "$(stat -f -c %T /dev/shm)" = tmpfs; echo fake-snapshot-token > "$1"', "sh", producerToken);
+		assert.equal(await sandboxes.saveSnapshot(producerId, source), true);
+		await checked("exec", container, "test", "-s", producerToken);
 		await checked("exec", container, "touch", "/workspace/after-turn");
 		for (const mismatch of [
 			await new DockerSnapshots(machine, base, undefined, undefined, true).select(source, uid, profile),
@@ -95,6 +120,37 @@ if (process.argv.includes("--docker")) {
 		const hit = await cache.select(source, uid, profile);
 		assert.equal(hit.hit, true);
 		assert.equal((await new DockerSnapshots(machine, hit.image).select(source, uid, profile)).hit, false);
+		const restored = await sandboxes.create({ uid, profile, sessionId: "restored", fromSnapshot: { ...source, writer: false } });
+		try {
+			const box = await sandboxes.connect(restored);
+			assert.deepEqual(box?.snapshot, source);
+			assert.ok(box);
+			assert.equal(await checked("inspect", "--format", "{{.HostConfig.IpcMode}}", box.container), "private");
+			// Export the underlying rootfs so a fresh /dev/shm mount cannot hide an image-layer leak.
+			const archive = join(directory, "restored.tar");
+			await checked("export", "-o", archive, box.container);
+			const entries = execFileSync("tar", ["-tf", archive], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).split("\n");
+			assert.ok(entries.includes("workspace/installed"));
+			assert.ok(!entries.includes(producerToken.slice(1)));
+			rmSync(archive);
+
+			await checked("network", "disconnect", "bridge", box.container);
+			await checked("exec", "-d", box.container, "/bin/sleep", "610");
+			const sleepers = () => box.ask(["pgrep", "-fx", "/bin/sleep 610"]);
+			assert.equal((await sleepers())?.code, 0);
+			await box.writeTextFile("/tmp/restore-turn.json", JSON.stringify({ responses: [[{ type: "text", text: "Done." }, { type: "finish", reason: "stop" }]] }));
+			const windlass = new DockerWindlass({ current: async () => {
+				assert.equal((await sleepers())?.code, 1, "restored sandbox still had a sleeper at token handoff");
+				return { accessToken: "fake-restored-token", expiresAt: Date.now() + 3_600_000 };
+			} }, { image: base, engineCommand: ["sh", "-ec",
+				'test -s "$WINDLASS_ACCESS_TOKEN_FILE"; test "$(stat -f -c %T "$WINDLASS_ACCESS_TOKEN_FILE")" = tmpfs; WINDLASS_ACP_SCRIPT=/tmp/restore-turn.json exec windlass acp'] });
+			const turn = await windlass.runTurn(box, { prompt: "Check restored token handoff" });
+			assert.equal(turn.failure, null);
+			assert.equal(turn.summary?.outcome, "succeeded");
+			console.log("PASS committed rootfs excludes the tmpfs token, and a restored turn sweeps before handoff on its private tmpfs");
+		} finally {
+			await sandboxes.destroy(restored);
+		}
 		await checked("run", "-d", "--pull", "never", "--name", consumer, "--label", LABEL+".session=consumer", "--label", attemptLabel+"="+source.attempt, hit.image);
 		const [a] = JSON.parse(await checked("container", "inspect", consumer));
 		const [b] = JSON.parse(await checked("image", "inspect", base));
@@ -154,7 +210,7 @@ if (process.argv.includes("--docker")) {
 		assert.notEqual((await docker(["image", "inspect", last.image])).code, 0, "released untagged layer survived the sweep");
 		console.log("PASS Docker admission, refusal memory, deployment isolation, unknown owners, transport cleanup, disk pressure, pinned layers and re-pairing");
 	} finally {
-		await docker(["rm", "-fv", container, consumer, bigBox]);
+		await docker(["rm", "-fv", ...containers]);
 		await cache.drop(uid);
 		await docker(["image", "rm", alias]);
 		await docker(["volume", "rm", volume]);

@@ -1002,6 +1002,9 @@ export interface UsagePrice {
 
 /** What the usage page shows. */
 export interface UsageView extends UsageNumbers {
+	/** Model usage reported by requests using the platform credential on this UTC day. */
+	usedModelTokens: number;
+	factoryLimits: FactoryLimits;
 	/** Today's sandbox time by agent, the most first; an agent whose sandbox runs now is among them. */
 	today: UsageSession[];
 	/** The last USAGE_HISTORY_DAYS days, the oldest first and today last. */
@@ -1257,8 +1260,13 @@ export interface ItemBudget {
 	hostedSeconds: number;
 }
 
-/** The factory's limits for a user: the deployment's settings (WLP_FACTORY_*), which its owner sets; a user cannot raise them. */
+/** Effective account limits after applying the operator’s overrides to the deployment defaults. */
 export interface FactoryLimits {
+	dailyTokens: number | null;
+	featureMultiplier: number;
+	githubItemsPerDay: number;
+	githubDrafts: number;
+	attachments: { bytes: number; perItem: number; accountBytes: number; days: number };
 	/** All factory turns and the person's own hosted turns count toward this ceiling. */
 	runningTurns: number;
 	/** Of those, the factory's: the rest are always free for the person's own prompts. */

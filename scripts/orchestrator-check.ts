@@ -664,6 +664,20 @@ test("placement preserves the editable proposal and bounds its reason, needs and
 		assert.throws(() => proposed({ ...p, subtasks: [{ ...p.subtasks[0], ...invalid }, p.subtasks[1]] } as FeaturePlanEdit));
 	assert.throws(() => proposed({ ...p, overflow: "yes" } as never));
 });
+test("a daily token cap waits on hosted and machine routes, including approved overflow", () => {
+	const machines = [machineReport()];
+	for (const [prefer, allow] of [["hosted", ["Mac"]], ["Mac", ["hosted"]]] as const) {
+		const item = placementFeature(machines, {}, [...allow], true, prefer);
+		const wait = "Your daily model token cap has been reached until 00:00 UTC.";
+		const waiting = advance(item, { kind: "place_child", at: 6, key: currentKey(item)!,
+			inventory: { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"], dailyTokenWait: wait } }).item;
+		assert.equal(waiting.wait?.reason, "capacity");
+		assert.equal(waiting.wait?.sentence, wait);
+		assert.equal(waiting.question, null);
+		assert.equal(waiting.jobs!.at(-1)!.placement, undefined);
+		assert.ok(dispatch(waiting, machines).jobs!.at(-1)!.placement);
+	}
+});
 test("placement 1 binds the approved Mac by id and keeps the reason after a rename", () => {
 	const mac = machineReport();
 	const item = placementFeature([mac]);
@@ -826,7 +840,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 	const parent = { internalChildRequest: async () => request, internalFact: async (fact: typeof facts[number]) => facts.push(fact) };
 	const childActor = { internalSummary: async () => ({ ...child, title: "Child", createdAt: 1, sessionId: "s_child" }), internalView: async () => child, internalAct: async () => child };
 	const ctx = { key: [owner], conn: { params: serviceParams() }, broadcast() {}, log: { error() {}, warn() {} },
-		vars: { items: { items: itemIndex }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
+		vars: { usage: { modelTokens: () => 0 }, items: { items: itemIndex, limits: { id: 0, overrides: {} } }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
 		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
 		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
 			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
@@ -910,6 +924,20 @@ test("fresh placement retries the soonest approved wait and caps a long provider
 		const result = place(overflow, reset);
 		assert.equal(result.item.wait?.retryAt, at + delay);
 		assert.equal(result.effects.find(e => e.kind === "dispatch")?.at, at + delay);
+	}
+});
+
+test("provider placement rechecks at UTC rollover when the daily cap also holds", () => {
+	const machines = [machineReport()];
+	const item = placementFeature(machines);
+	const midnight = Date.UTC(2026, 10, 23), at = midnight - 1000, providerUntil = midnight + 3600_000;
+	const key = currentKey(item)!;
+	const inventory = { machines: plannerMachines(machines), hostedProfiles: [], dailyTokenWait: "Daily tokens used.",
+		limited: [{ machineId: "*", harness: "windlass", limitedUntil: providerUntil }] };
+	for (const result of [advance(item, { kind: "place_child", key, at, inventory }),
+		advance(item, { kind: "placement_wait", key, child: item.jobs![0].id, at, dailyCap: true, providerUntil, sentence: "Waiting." })]) {
+		assert.equal(result.item.wait?.retryAt, midnight);
+		assert.equal(result.effects.find(e => e.kind === "dispatch")?.at, midnight);
 	}
 });
 

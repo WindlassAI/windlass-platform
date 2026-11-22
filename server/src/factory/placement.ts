@@ -1,5 +1,6 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
 import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
+import { nextUtcDay, usesPlatformModel } from "../usage.js";
 import { sandboxSlots } from "../contract.js";
 import type { ChildPlacement, FeaturePlanEdit, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
@@ -8,6 +9,7 @@ import { retryAt, slotWait } from "./budget.js";
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
+	dailyTokenWait?: string | null;
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
 	defaultProfile?: SandboxProfileId;
@@ -52,7 +54,11 @@ export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boo
  * profile). Approval refuses only a subtask whose every allowed place is permanently refused. A busy or
  * offline machine is a wait, never a refusal.
  */
-type Candidate = { refused: string; permanent: boolean } | { wait: string; retryAt?: number; accountKey?: string } | { decision: ChildPlacement; score: number };
+type Candidate = { refused: string; permanent: boolean } | { wait: string; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number };
+export function placementRetryAt(at: number, providerUntil?: number, dailyCap?: boolean) {
+	return Math.min(providerUntil ?? retryAt(at, 0), dailyCap ? nextUtcDay(at) : Infinity, at + MAX_PROVIDER_WAIT);
+}
+
 export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "host">) {
 	if (machine.slots) return machine.slots;
 	// A disconnected runner loses its hello max. Its busy count is still reported.
@@ -78,19 +84,22 @@ function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 
 function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
 	const needs = task.needs ?? {};
+	const tokenWait = usesPlatformModel(place, needs.harness) ? inventory.dailyTokenWait : null;
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	const limited = inventory.limited?.find(a => limitApplies(a, placeKey(place)) && a.harness === (needs.harness ?? "windlass"));
-	const waiting = (name: string) => {
-		const until = limited?.limitedUntil === undefined ? undefined : Math.min(limited.limitedUntil, at + MAX_PROVIDER_WAIT);
-		return { wait: until === undefined ? `Waiting for the ${needs.harness ?? "windlass"} usage limit on ‘${name}’ to reset.`
-			: providerWait(limited!.harness, name, until).sentence, retryAt: until, accountKey: limited?.accountKey };
+	const waiting = (limit: NonNullable<typeof limited>, name: string) => {
+		const dailyCap = !!tokenWait;
+		const wait = limit.limitedUntil === undefined ? `Waiting for the ${limit.harness} usage limit on ‘${name}’ to reset.`
+			: providerWait(limit.harness, name, placementRetryAt(at, limit.limitedUntil, dailyCap)).sentence;
+		return { wait, providerUntil: limit.limitedUntil, accountKey: limit.accountKey, dailyCap };
 	};
 	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place!.prefer}’`;
 	if (place.kind === "hosted") {
 		if (!inventory.hostedProfiles.length || (needs.profile && !inventory.hostedProfiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (needs.harness && needs.harness !== "windlass" || needs.tags?.length || needs.egress || needs.cpus || needs.memoryGiB)
 			return { refused: "hosted does not report the required machine capabilities", permanent: true };
-		if (limited) return waiting("hosted");
+		if (limited) return waiting(limited, "hosted");
+		if (tokenWait) return { wait: tokenWait, dailyCap: true };
 		const profile = needs.profile ?? inventory.hostedProfiles.find(p => p === inventory.defaultProfile);
 		return { decision: { name: "hosted", place, units: 1, reason, sendSecrets: true, profile }, score: bonus };
 	}
@@ -109,7 +118,8 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const reported = m.online || m.egress !== undefined;
 	const incapable = reported ? capabilityFit(m, needs) : null;
 	if (incapable) return never(incapable);
-	if (limited) return waiting(m.name);
+	if (limited) return waiting(limited, m.name);
+	if (tokenWait) return { wait: tokenWait, dailyCap: true };
 	if (!m.online) return { wait: `Waiting for ‘${m.name}’ to come back online.` };
 	if (needs.cpus && slots.unit.cpus <= 0) return notNow("per-slot CPU capacity is unknown");
 	if ((m.freeDiskBytes ?? 0) < 5 * GiB) return notNow("at least 5 GiB of reported free disk is required");
@@ -132,9 +142,9 @@ export function choosePlacement(task: PlanSubtask, route: PlacementRoute, invent
 	const ready = candidates.filter(c => "decision" in c).sort((a, b) => b.score - a.score)[0];
 	if (ready) return { decision: ready.decision } as const;
 	const waits = candidates.filter(c => "wait" in c);
-	const deadline = (wait: typeof waits[number]) => wait.retryAt ?? retryAt(at, 0);
+	const deadline = (wait: typeof waits[number]) => placementRetryAt(at, wait.providerUntil, wait.dailyCap);
 	const waiting = waits.sort((a, b) => deadline(a) - deadline(b))[0];
-	if (waiting) return { wait: waiting.wait, retryAt: waiting.retryAt, accountKey: waiting.accountKey } as const;
+	if (waiting) return { ...waiting, retryAt: deadline(waiting) } as const;
 	const refusals = candidates.flatMap(c => "refused" in c ? [c] : []);
 	return { refused: refusals.map(c => c.refused).join(" "), permanent: refusals.every(c => c.permanent) } as const;
 }

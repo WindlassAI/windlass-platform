@@ -528,9 +528,9 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 
 async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
-	const [machines, limited] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts()]);
+	const [machines, limited, dailyTokenWait] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait()]);
 	const hostedProfiles = (await getLayer()).sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, limited };
+	return { machines, hostedProfiles, limited, dailyTokenWait };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {

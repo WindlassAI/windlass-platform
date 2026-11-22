@@ -4,7 +4,7 @@
  *
  *   docker exec -i -w /workspace -e WINDLASS_WAKE=off -e WINDLASS_ACP_LOG=warn \
  *     -e WINDLASS_ACP_SCRIPT=/tmp/.wlp-script-<random>.json                                        a scripted (demo) turn
- *     -e WINDLASS_ACCESS_TOKEN_FILE=/home/agent/.local/share/windlass/access-token-<id>.json       any other turn
+ *     -e WINDLASS_ACCESS_TOKEN_FILE=<session-private path>/access-token-<id>.json       any other turn
  *     wlp-session-<id> wlp-run exec <tag> windlass acp
  *
  * The turn's access token is written with

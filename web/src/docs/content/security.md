@@ -1,8 +1,8 @@
 ## The rule that holds everywhere
 
-Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For each turn of a Windlass agent, it hands the sandbox a short-lived access token in a file instead. That token lasts about an hour and cannot be renewed. It is replaced during the turn and removed when the turn ends.
+Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, it hands the sandbox a short-lived access token in a file. A demo turn receives no token. Each token expires about an hour after issue. The platform replaces it during a long turn and removes the file when the turn ends. A copy remains usable until its own expiry. A process that can read the file during the turn can read each replacement.
 
-Whether the agent's commands can read that token depends on the sandbox. Each sandbox says so when you choose it.
+Whether the agent's commands can read that token depends on the sandbox. Setup runs before handoff. The platform clears leftover processes after setup and before handing the next turn a token. Docker keeps the file on the container's private tmpfs. E2B keeps it on the session microVM's own disk. Other sessions cannot open that file. An approved MCP server started locally by Windlass runs outside the command sandbox and can read it. If the server runs code from the workspace, changes to that code can take effect under the existing approval.
 
 ## Signing out on all devices
 
@@ -34,22 +34,26 @@ On a machine, the runner uses only the images pinned in its own build. The platf
 
 - commands have no network;
 - they can write only in the workspace and in a home of the session's own;
-- credentials are hidden from them, so the session's access token is out of their reach.
+- Windlass hides the session's access token from the agent's commands.
+
+An approved local MCP server runs outside this command sandbox and can read the current token. Repository setup also runs outside it, but setup finishes and its processes are cleared before the turn receives a token.
 
 So that Windlass's bubblewrap sandbox can work inside it, the container runs under a seccomp filter that is Docker's default plus the namespace and mount calls bubblewrap needs, without Docker's AppArmor profile, and with the system paths unmasked. The isolation of each command then comes from Windlass's sandbox. Its Windlass modes are **Ask** and **Auto**.
 
 ### Docker, hardened
 
-`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s access token. Its Windlass modes are **Ask** and **Full**. Claude Code runs only in this profile.
+`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s access token. Its Windlass modes are **Ask** and **Full**. Claude Code and OpenCode run only in this profile.
 
 | | Docker + Windlass sandbox | Docker, hardened |
 | --- | --- | --- |
 | Commands sandboxed again | Yes, by Windlass | No |
 | Network for commands | No | Follows the container’s network policy |
 | Commands can read the access token | No | Yes |
+| Setup can read the token | No, setup ends before handoff | No, setup ends before handoff |
+| Approved local MCP servers can read the token during the turn | Yes | Yes |
 | Your ChatGPT sign-in in the container | Never | Never |
 | Windlass modes | Ask, Auto | Ask, Full |
-| Claude Code | No | Yes |
+| Claude Code and OpenCode | No | Yes |
 
 > **Note** A repository’s setup command uses the container’s network policy in both profiles.
 
@@ -57,7 +61,7 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 
 On a platform that runs on E2B, each sandbox is a microVM of its own, hosted by E2B, where commands run as a non-root user. Which E2B sandboxes are offered depends on the platform, and each one's description says what it promises:
 
-- **E2B + Windlass sandbox**: every command is sandboxed again by Windlass, with no network and the access token out of reach.
+- **E2B + Windlass sandbox**: every command is sandboxed again by Windlass, so the agent's commands have no network and cannot read the access token.
 - **E2B**: nothing is promised inside the microVM. A command may have network and may read the access token. Windlass asks before any command it cannot sandbox.
 - **E2B, microVM only**: no sandbox inside the microVM. Commands run without asking, can reach any host and can read the access token.
 
@@ -75,7 +79,7 @@ See [Network access](/docs/machines#network-access) for the details.
 
 ### Agent logins stay on the machine
 
-An agent's login is never inside its container. Claude Code's setup token lives in a login volume that no session mounts. A relay container on the machine reads it, and forwards each session's model requests to Anthropic with it. The session gets only a placeholder, signed for that one session, and the relay's address. Claude sessions keep their relay in every network mode. See [Your Claude login stays out of the container](/docs/machines#your-claude-login-stays-out-of-the-container).
+An agent's login is never inside its container. Claude Code's setup token and OpenCode's provider logins live in login volumes that no session mounts. A relay container on the machine reads them, and forwards each session's model requests to the provider. The session gets only a placeholder, signed for that one session, and the relay's address. Claude Code and OpenCode sessions keep their relay in every network mode. In `restricted` mode, an OpenCode session's commands cannot reach any model provider's host directly. See [Agent logins stay out of the container](/docs/machines#agent-logins-stay-out-of-the-container).
 
 ### What the platform can do there
 
@@ -86,7 +90,9 @@ The platform can ask the runner only for what its protocol names. In short, it c
 - run commands in a sandbox, and start, signal and stop its processes;
 - read and write text files in a sandbox, and write secret files there.
 
-> **Careful** The platform can run any command in the containers the runner made, Claude Code's containers included. In a Claude Code container, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the setup token.
+It cannot sign an agent in or out. That is done only in a terminal on the machine.
+
+> **Careful** The platform can run any command in the containers the runner made, Claude Code's and OpenCode's included. In those containers, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the Claude setup token.
 
 ### What the platform cannot do there
 
@@ -96,7 +102,7 @@ The platform cannot reach your machine except through its runner. It does not co
 
 ### How the runner proves who it is
 
-The runner makes an Ed25519 key pair when it pairs. The private key stays on the machine. Every connection is signed with it. A session's connection also needs a ticket that is good once and for one minute. If the machine's clock is more than a minute off, the platform tells the runner, and the Machines page warns you.
+The runner makes an Ed25519 key pair when it pairs. The private key stays on the machine. Every connection is signed with it. The platform signs its side too: the runner keeps the platform's key from pairing, prints its fingerprint, and checks every connection against it. A session's connection also needs a ticket that is good once and for one minute. If the machine's clock is more than a minute off, the platform tells the runner, and the Machines page warns you.
 
 ## Secrets
 
@@ -113,7 +119,7 @@ A secret reaches the sandbox as an environment variable, never on a command line
 - Where a repository has a secret of the same name as an account secret, its agents get the repository's.
 - In a sandbox that does not sandbox the agent's commands, such as **Docker, hardened**, secrets meant only for MCP servers are not passed at all. A server that needs one does not start there.
 - On your machine, secrets go only while **Send saved secrets to this machine** is on.
-- Claude Code sessions get no saved secrets.
+- Claude Code and OpenCode sessions get no saved secrets.
 
 > **Careful** Whatever the agent's commands can read, a manipulated agent could send out once a command has network access. Give a secret to the agent's commands only when it needs it.
 

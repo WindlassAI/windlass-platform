@@ -25,6 +25,11 @@ const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = f
 assert.equal(itemHasHarness, false);
 assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
 
+// Claude Code's task tools keep their list in the adapter's process, which lives one turn: a task finished
+// in a later turn never reached the plan. Its TodoWrite list sends the whole list with every change.
+const claudeWrapper = readFileSync(new URL("../sandbox/harness/claude/wlp-claude-acp", import.meta.url), "utf8");
+assert.match(claudeWrapper, /^export CLAUDE_CODE_ENABLE_TASKS=false$/m, "wlp-claude-acp must keep Claude Code on its TodoWrite list");
+
 const fixture = fileURLToPath(new URL("../fixtures/acp-agent/agent.mjs", import.meta.url));
 const openParams = { cwd: "/workspace", mcpServers: [] };
 const block = (text: string) => [{ type: "text", text }];

@@ -190,7 +190,7 @@ Once a subtask has its item, its row says where it **ran on** and why, for examp
 
 ### Budgets
 
-A feature may spend three times what one item may: by default 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Before each planning turn, the factory checks a planning allowance of 25% of a Quick item across all planning turns. Part of the feature budget, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
+By default a feature may spend three times what one item may, giving it 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Before each planning turn, the factory checks a planning allowance of 25% of a Quick item across all planning turns. Part of the feature budget, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
 
 When a feature reaches its budget, it stops and asks you. **Raise the limit and go on** may raise each figure by at most one item's allowance at a time.
 
@@ -236,10 +236,12 @@ Filter it with **repo** and **from**: filed from the web, the API or a GitHub is
 
 ## Limits
 
-Limits make items wait. They never refuse them. (Approving a feature's plan can be refused, but that is a requirement of the repository, not a limit. See [What you need first](#what-you-need-first).) A waiting item says what it waits for. The platform sets these, and the **Work items** section of the **Usage** page shows them. By default:
+When a Factory turn reaches a capacity limit, the item waits and shows the reason. GitHub intake checks its filing limits before it creates an item. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
+| Daily model tokens across items and interactive sessions | Unlimited |
+| Feature budget | 3× the per-item budget |
 | Factory turns at once | 5, out of 6 agents working at once |
 | Hosted sandboxes at once | 3 |
 | Items in review before new ones wait | 6 |
@@ -250,4 +252,6 @@ Limits make items wait. They never refuse them. (Approving a feature's plan can 
 | Items filed from GitHub per day | 20 |
 | Drafts from GitHub waiting | 20 |
 
-When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens." A feature's budget is three times an item's. See [Budgets](#budgets).
+When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens." The operator’s item budget and feature multiplier apply to newly created items. See [Budgets](#budgets).
+
+When you reach your daily model token cap, admitted turns finish their current Factory step. The next turn waits until 00:00 UTC. This also applies to Windlass on paired machines because it uses the same model sign-in. See [Daily model tokens](/docs/settings#daily-model-tokens).

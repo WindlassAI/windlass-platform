@@ -610,6 +610,29 @@ drive("a deploy in the middle of the implement step", newItem(), [
 
 const usage = (left: number): UsageNumbers => ({ at: T0, day: "2026-11-19", resetsAt: MIDNIGHT, allowanceSeconds: 8 * 3600, usedSeconds: 8 * 3600 - left, heldSeconds: 0, leftSeconds: left, startSeconds: 30, sandboxes: { kept: 4, limit: 20 } });
 const hosted = (left: number) => ({ kind: "hosted" as const, usage: usage(left), running: 0, needsSandbox: false, deploymentFull: null });
+
+{
+	const { dailyTokenWait, recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn, usesPlatformModel } = await import("../server/src/usage.js");
+	const sqlite = new DatabaseSync(":memory:");
+	sqlite.exec(TOKEN_USAGE_TABLE);
+	const db = { execute: async (query: string, ...args: SQLInputValue[]) => sqlite.prepare(query).all(...args) } as never;
+	const tokenWait = async (at: number) => dailyTokenWait(await tokensOn(db, at), 100);
+	const admission = async (at: number) => admit({ at, dailyTokenWait: await tokenWait(at), limits: FACTORY_DEFAULTS,
+		turns: { running: 0, factory: [] }, inReview: 0, startsRun: false, place: hosted(3600), attempt: 0 });
+	const receipt = { seq: 8, at: MIDNIGHT - 1, tokens: 40 };
+	await recordTurnTokens(db, "interactive", receipt);
+	await recordTurnTokens(db, "interactive", receipt);
+	expect("a retried token receipt counts once", await tokensOn(db, receipt.at) === 40);
+	await recordTurnTokens(db, "item", { ...receipt, tokens: 60 });
+	const held = await admission(MIDNIGHT - 1);
+	expect("a personal session and an item reach one cap and the Factory schedules the exact UTC reset",
+		!held.ok && held.wait.reason === "capacity" && held.wait.sentence.includes("100") && held.wait.retryAt === MIDNIGHT);
+	expect("the next day grants the waiting turn with a fresh balance", (await admission(MIDNIGHT)).ok && await tokensOn(db, MIDNIGHT) === 0);
+	const machine = { kind: "machine", machineId: "mine" } as const;
+	expect("Windlass counts in both places and machine-local subscriptions are exempt", usesPlatformModel({ kind: "hosted" }) &&
+		usesPlatformModel(machine) && !usesPlatformModel(machine, "claude") && !usesPlatformModel(machine, "opencode"));
+	sqlite.close();
+}
 const allowance = admit({ at: T0 + 3 * MINUTE, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: hosted(0), attempt: 0 });
 // One running turn in all: it is the person's, and factory work has none, whatever its own share says.
 const onlyOne = admit({ at: T0, limits: { ...FACTORY_DEFAULTS, runningTurns: 1, factoryTurns: 1 }, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: hosted(8 * 3600), attempt: 0 });

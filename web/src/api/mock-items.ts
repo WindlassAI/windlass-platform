@@ -62,6 +62,7 @@ import {
 	type VerdictRun,
 	type Waiting,
 } from "@contract";
+import { FACTORY_DEFAULTS } from "../../../server/src/factory/budget";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
 
@@ -103,13 +104,7 @@ export interface MockItemsDeps {
 }
 
 /** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`). */
-export const MOCK_FACTORY_LIMITS: FactoryLimits = {
-	runningTurns: 6,
-	factoryTurns: 5,
-	hostedRunning: 3,
-	reviewCap: 6,
-	item: { tokens: 6_000_000, turns: 14, activeSeconds: 4 * 3600, hostedSeconds: 2 * 3600 },
-};
+export const MOCK_FACTORY_LIMITS: FactoryLimits = structuredClone(FACTORY_DEFAULTS);
 
 /** The rounds a run allows (server/src/factory/blueprint.ts, `RULES`), as the server sends them in `ItemView.run.caps`. */
 const ROUND_CAPS: RoundCaps = { plan: 3, gate: 2, ci: 2, conflict: 1 };

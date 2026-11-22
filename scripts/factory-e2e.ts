@@ -219,6 +219,67 @@ const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "write", statuses: "read", actions: "read" };
 
+if (!only.length || only.some(name => name.startsWith("user-limits"))) {
+	const server = new Server();
+	try {
+		await check("user-limits: the operator changes one account; charged turns finish and further turns wait", async () => {
+			const { config } = await import("../server/src/config.js");
+			const { issueServiceToken } = await import("../server/src/tokens.js");
+			const { limitsSubject } = await import("../server/src/user-limits.js");
+			const { user, client, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_DAILY_TOKENS: "9000000" });
+			try {
+				const uid = auth.profile.uid, operator = "test-operator";
+				const second = await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+				const other = client.user.getOrCreate([second.profile.uid], { params: { token: second.token } });
+				const params = { token: issueServiceToken(limitsSubject(uid, operator)) };
+				const admin = client.user.get([uid], { params });
+				const change = { operator, key: "dailyTokens", value: 1 };
+				await refused(() => user.internalSetLimit(change), "forbidden");
+				await refused(() => user.internalLimitHistory(operator), "forbidden");
+				await refused(() => client.user.get([second.profile.uid], { params }).internalSetLimit(change), "forbidden");
+				await refused(() => admin.internalSetLimit({ ...change, value: 1.5 }), "bad_input");
+				await admin.internalSetLimit(change);
+				await admin.internalSetLimit(change); // Retry after a lost reply.
+				await admin.internalSetLimit({ ...change, key: "featureMultiplier", value: 2 });
+				await admin.internalSetLimit({ ...change, key: "item.tokens", value: 123456 });
+				const history = await admin.internalLimitHistory(operator);
+				assert(history.length === 3 && history[2].operator === operator && history[2].old_value === 9000000 && history[2].new_value === 1 && history[2].at > 0, "wrong audit trail");
+				assert((await other.factoryLimits()).dailyTokens === 9000000 && (await other.usage()).usedModelTokens === 0, "one account changed another");
+				const ownSession = await other.createSession({ profile: "docker-hardened" });
+				const own = client.agentSession.get([second.profile.uid, ownSession.id], { params: { token: second.token } });
+				await own.prompt({ text: "Run two parallel tool calls." });
+				const ownEnd = await waitFor("the other user's interactive turn", async () =>
+					(await own.snapshot()).timeline.find(e => e.kind === "turn.ended"), 60_000);
+				assert(ownEnd.usage && ownEnd.usage.inputTokens > 0, "the fixture reported no model usage");
+				await other.deleteSession(ownSession.id);
+				assert((await other.usage()).usedModelTokens === ownEnd.usage.inputTokens + ownEnd.usage.outputTokens, "deleting an interactive session lost its usage");
+				assert((await user.usage()).usedModelTokens === 0, "another user's turn spent this user's tokens");
+				const filing = { repository: { id: harbor.id }, title: "Write notes", body: "Run two parallel tool calls." };
+				const feature = await user.createItem({ ...filing, mode: "orchestrate", start: false });
+				assert(feature.budget.tokens === 246912, "new feature did not receive the effective item budget and multiplier");
+				const item = await user.createItem({ ...filing, mode: "single", start: true });
+				const session = client.agentSession.get([uid, item.sessionId], { params: { token: auth.token } });
+				const finished = await waitFor("the admitted Factory step to finish", async () =>
+					(await session.snapshot()).timeline.find(e => e.kind === "turn.ended"), 60_000);
+				assert(finished.outcome === "succeeded" && (finished.steps ?? 0) >= 2 && finished.usage, "the cap interrupted the granted multi-request turn");
+				const usage = await user.usage();
+				assert(usage.usedModelTokens === finished.usage.inputTokens + finished.usage.outputTokens && usage.factoryLimits.dailyTokens === 1, "the Usage total disagrees with the turn report");
+				const personal = await user.createSession({ profile: "docker-hardened" });
+				const agent = client.agentSession.get([uid, personal.id], { params: { token: auth.token } });
+				assert((await refused(() => agent.prompt({ text: "Continue." }), "daily_token_cap")).includes("00:00 UTC"), "missing reset time on prompt refusal");
+				const next = await user.createItem({ ...filing, title: "Second item", mode: "single", start: true });
+				const waiting = await untilItem(user, next.id, "a daily token wait", v => v.wait?.sentence.includes("daily model token") === true);
+				assert(waiting.wait?.reason === "capacity" && waiting.wait.retryAt === usage.resetsAt && !waiting.question, "the cap was not a transient wait until midnight");
+				await admin.internalSetLimit({ ...change, value: "default" });
+				await untilItem(user, next.id, "the waiting turn after restoring the deployment cap", v => v.spent.turns > 0);
+				assert((await user.factoryLimits()).dailyTokens === 9000000, "removing the override did not restore the default");
+				return "one account, an audited reset, accurate input/output and a resumed Factory turn";
+			} finally { await client.dispose(); }
+		});
+	} finally { await server.stop(); server.remove(); }
+	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
+}
+
 if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const singleServer = new Server();
 	try {
@@ -950,13 +1011,15 @@ async function memoryChecks(): Promise<void> {
 		for (const table of INBOX_TABLES) await db.execute(table);
 		const alarms = new Map<string, number>();
 		let next = 0;
-		let calls = 0;
+		let calls = 0, receipts = 0;
+		let releasedEarly = false;
 		const jobs: Promise<unknown>[] = [];
 		const c = {
 			key: ["u", "s"],
 			db,
 			log: { warn: () => undefined },
-			client: () => ({ user: { get: () => ({ internalTurnDone: async () => (calls += 1) === 1 ? Promise.reject(new Error("not now")) : undefined }) } }),
+			client: () => ({ user: { get: () => ({ internalRecordTurnTokens: async () => { if (++receipts === 1) throw new Error("not now"); },
+				internalTurnDone: async () => { if (receipts < 2) releasedEarly = true; if (++calls === 1) throw new Error("not now"); } }) } }),
 			keepAwake<P>(promise: Promise<P>) {
 				jobs.push(promise);
 				return promise;
@@ -967,6 +1030,7 @@ async function memoryChecks(): Promise<void> {
 		let now = T;
 		Date.now = () => now;
 		try {
+			await queueMessage(db as never, { to: "tokens", receipt: { seq: 1, at: now, tokens: 100 } });
 			await queueMessage(db as never, { to: "user", done: { slot: "t_1", key: "i_memory:1:1:1" } });
 			await flushOutbox(c as never, "u");
 			await drained(jobs);
@@ -982,7 +1046,7 @@ async function memoryChecks(): Promise<void> {
 		}
 		const left = raw.prepare("SELECT COUNT(*) AS n FROM outbox").get() as { n: number };
 		raw.close();
-		assert(left.n === 0 && calls === 2, `rows left ${left.n}, sends ${calls}`);
+		assert(left.n === 0 && calls === 2 && receipts === 2 && !releasedEarly, `rows left ${left.n}, sends ${calls}`);
 		return "sent on its retry after the safety alarm found nothing due";
 	});
 
@@ -1139,6 +1203,29 @@ async function memoryChecks(): Promise<void> {
 		};
 	};
 
+	await check("memory: a daily token wait keeps an admitted slot and the midnight schedule grants the next", async () => {
+		const clock = Date.now;
+		const midnight = (Math.floor(clock() / 86_400_000) + 1) * 86_400_000;
+		let now = midnight - 1000;
+		Date.now = () => now;
+		try {
+			const q = await queue({ dailyTokens: 100 });
+			try {
+				const admitted = await q.request("a");
+				assert(admitted.granted, "first turn did not start");
+				q.c.vars.usage.noteModelTokens(now, 110);
+				assert(!(await q.request("b")).granted, "a new turn started after the cap");
+				assert(q.c.vars.items.slots.has(admitted.slot), "crossing the cap cancelled the running turn");
+				await q.release("a", admitted.slot);
+				const fire = q.c.vars.items.queueAt;
+				assert(fire?.at === midnight && !q.grants.includes("b"), "the next turn did not wait for the UTC reset");
+				now = midnight;
+				await itemActions.internalTurnQueue({ ...q.c, scheduledFire: { id: fire.id, scheduledAt: midnight, firedAt: now } } as never);
+				assert(q.grants.includes("b"), "the midnight schedule did not grant the waiting turn");
+				return "held its slot, then waited through 23:59:59 and started at 00:00:00 UTC";
+			} finally { q.close(); }
+		} finally { Date.now = clock; }
+	});
 	await check("memory: a waiting turn that is given the freed slot survives a stop between the two writes, and its grant is sent on wake", async () => {
 		const q = await queue({ factoryTurns: 1 });
 		try {
@@ -1423,8 +1510,8 @@ function checkHandoff(pull: StandinPull, view: ItemView) {
 }
 
 await memoryChecks();
-// The in-memory cases alone need no server: FACTORY_ONLY=memory stops here.
-if (only.length > 0 && only.every((name) => name.startsWith("memory"))) {
+// All selected memory and per-user limit checks have run.
+if (only.length > 0 && only.every(name => name.startsWith("memory") || name.startsWith("user-limits"))) {
 	await standin.stop();
 	console.log(failed === 0 ? "\nall passed" : `\n${failed} failed`);
 	process.exit(failed === 0 ? 0 : 1);

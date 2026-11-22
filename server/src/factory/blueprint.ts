@@ -35,7 +35,7 @@
 import { MAX_ITEM_BODY_CHARS, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { approveRoutes, choosePlacement, placeKey, type PlacementInventory } from "./placement.js";
+import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
@@ -85,6 +85,7 @@ export interface NewItem {
 	reviewer: NonNullable<FactoryItem["reviewer"]>;
 	place: FactoryItem["place"];
 	budget: ItemBudget;
+	featureMultiplier?: number;
 }
 
 /** A new item, in "draft": a `start` fact queues it. */
@@ -101,7 +102,7 @@ export function createItem(input: NewItem): FactoryItem {
 		place: input.place,
 		machineRemoved: false,
 		singleBudget: input.budget,
-		budget: input.mode === "orchestrate" ? featureCap(input.budget) : input.budget,
+		budget: input.mode === "orchestrate" ? featureCap(input.budget, input.featureMultiplier) : input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 		workingSince: null,
 		run: null,
@@ -343,6 +344,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 			let providerUntil: number | undefined;
 			let accountKey: string | undefined;
 			let sentence: string;
+			let dailyCap: boolean | undefined;
 			if (fact.kind === "place_child") {
 				if (!job.route || job.placement) return false;
 				const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm, c.at);
@@ -353,17 +355,19 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 				}
 				if (fit.refused !== undefined) return askPlacement(c, fit.refused);
 				sentence = fit.wait;
-				providerUntil = fit.retryAt;
+				providerUntil = fit.providerUntil;
 				accountKey = fit.accountKey;
+				dailyCap = fit.dailyCap;
 			} else {
 				if (job.id !== fact.child) return false;
 				if (fact.refused) return askPlacement(c, fact.sentence);
 				sentence = fact.sentence;
-				providerUntil = fact.providerUntil === undefined ? undefined : Math.min(fact.providerUntil, c.at + MAX_PROVIDER_WAIT);
+				providerUntil = fact.providerUntil;
 				accountKey = fact.accountKey;
+				dailyCap = fact.dailyCap;
 			}
-			const retry = providerUntil ?? retryAt(c.at, 0);
-			c.state("waiting", { reason: providerUntil !== undefined ? "provider" : "machine", accountKey, sentence, retryAt: retry });
+			const retry = placementRetryAt(c.at, providerUntil, dailyCap);
+			c.state("waiting", { reason: providerUntil !== undefined ? "provider" : dailyCap ? "capacity" : "machine", accountKey, sentence, retryAt: retry });
 			dispatchAgain(c, retry);
 			return true;
 		}

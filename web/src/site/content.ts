@@ -22,7 +22,7 @@ export interface Agent {
 export const AGENTS: Agent[] = [
 	{ name: "Windlass", state: "available", where: "Hosted sandboxes and your own machines. The platform's own agent, a coding agent for the terminal." },
 	{ name: "Claude Code", state: "available", where: "On a machine of your own, signed in there with your own Claude account." },
-	{ name: "OpenCode", state: "planned", where: "Planned. Not available yet." },
+	{ name: "OpenCode", state: "available", where: "On a machine of your own, with any API-key provider OpenCode supports or its free models." },
 	{ name: "Codex", state: "planned", where: "Planned. Not available yet." },
 ];
 
@@ -71,7 +71,7 @@ export const FAQ: Faq[] = [
 	{
 		question: "Which coding agents can it run?",
 		answer:
-			"Two today: Windlass, on hosted sandboxes and on your own machines, and Claude Code, on a machine of your own where it is signed in with your Claude account. OpenCode and Codex are planned and not available yet.",
+			"Three today: Windlass, on hosted sandboxes and on your own machines; Claude Code, on a machine of your own where it is signed in with your Claude account; and OpenCode, on a machine of your own with any API-key provider it supports or its free models. Codex is planned and not available yet.",
 	},
 	{
 		question: "Where does the agent's code run?",

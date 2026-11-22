@@ -39,7 +39,7 @@
  *
  * No sign-in is made or used, nothing is sent anywhere but the one connection the server's `reach`
  * tool tries (1.1.1.1:53, as sandbox-check.ts probes the network), and everything created here is
- * removed at the end. The file put into Windlass's data directory to stand for a turn's access token
+ * removed at the end. The session-private file in /dev/shm standing in for a turn's access token
  * holds the word "placeholder" and no token.
  */
 
@@ -53,6 +53,7 @@ import { NO_REDACTION } from "../server/src/repo-secrets.js";
 import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js";
 import { unaskedNote } from "../server/src/personal-servers.js";
 import type { RunTurnInput, RunTurnResult, ScriptedModel, TurnPersonalServer, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "../server/src/sandbox/api.js";
+import { sweepSessionProcesses } from "../server/src/sandbox/provider.js";
 import { DATA_DIR, IMAGE, LABEL_ARG, docker, randomId } from "../server/src/sandbox/docker.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
@@ -473,12 +474,13 @@ async function checkOtherServers(): Promise<void> {
 		expect("a session that folds these keeps the definition the server was approved with", kept.length === 1 && kept[0]?.state === "running" && kept[0].tools === 2 && kept[0].fingerprint === first.question.fingerprint && kept[0].subject === "python3 tools/harbor_mcp.py", JSON.stringify(kept));
 		approvedPrint = first.question.fingerprint;
 
-		// A later message: not asked again, and the tool is there.
-		await handle.run(`printf placeholder > ${DATA_DIR}/access-token-mcp-check.json`);
+		// A new harness starts approved servers after the same boundary sweep used for token-bearing turns.
+		await sweepSessionProcesses(handle);
+		await handle.run("umask 077; printf placeholder > /dev/shm/access-token-mcp-check.json");
 		const later = await turn(
 			handle,
 			"And what can the server reach?",
-			scripted(mcp("l1", "reach"), call("l2", "shell", { command: `if timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/53' 2>/dev/null; then echo NET_OK; else echo NET_BLOCKED; fi; ls ${DATA_DIR} >/dev/null 2>&1 && echo DATA_READABLE || echo DATA_HIDDEN` }), say("Done.")),
+			scripted(mcp("l1", "reach"), call("l2", "shell", { command: `if timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/53' 2>/dev/null; then echo NET_OK; else echo NET_BLOCKED; fi; ls ${DATA_DIR} >/dev/null 2>&1 && echo DATA_READABLE || echo DATA_HIDDEN; test -r /dev/shm/access-token-mcp-check.json && echo TOKEN_READABLE || echo TOKEN_HIDDEN` }), say("Done.")),
 			{ windlassSessionId: sessionId, server: () => true },
 		);
 		expect("a later message does not ask again: Windlass remembers the approval", later.asked.length === 0 && later.outcomes.length === 0);
@@ -487,12 +489,13 @@ async function checkOtherServers(): Promise<void> {
 		const reach = outputOf(later, "l1");
 		const command = outputOf(later, "l2");
 		expect(
-			"the server uses the network and reads Windlass's data directory, where a turn's access token file is",
-			reach.includes("network: reachable") && reach.includes("data directory: readable") && reach.includes("access token file: present"),
+			"the server can read both Windlass's data directory and the session-private token fixture",
+			reach.includes("data directory: readable") && reach.includes("access token file: present"),
 			reach.split("\n").slice(1, 4).join(" | "),
 		);
-		expect("a command the agent runs in the same turn has no network and cannot see that directory", command.includes("NET_BLOCKED") && command.includes("DATA_HIDDEN"), command.trim().split("\n").join(" | "));
-		await handle.run(`rm -f ${DATA_DIR}/access-token-mcp-check.json`);
+		expect("the approved server can reach the network", reach.includes("network: reachable"));
+		expect("a command in the same turn has no network and cannot see the data directory or the token fixture", command.includes("NET_BLOCKED") && command.includes("DATA_HIDDEN") && command.includes("TOKEN_HIDDEN"), command.trim().split("\n").join(" | "));
+		await handle.run(`rm -f /dev/shm/access-token-mcp-check.json`);
 	});
 
 	await section("docker-windlass-sandbox: a changed definition, and a variable that is not set", async () => {
