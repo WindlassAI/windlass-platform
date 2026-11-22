@@ -1,10 +1,36 @@
 ## Do I need a ChatGPT account?
 
-Yes. You sign in with ChatGPT, and Windlass agents call the model through your ChatGPT account. The models you can choose are the ones your plan offers.
+Yes. You sign in with ChatGPT, and Windlass agents call the model through your ChatGPT account. The models you can choose are the ones your plan offers. Claude Code and OpenCode, on your machines, use the logins you give them there.
 
 ## Can I use Claude Code?
 
-Yes, on one of your own machines. Start its runner with `--harness claude`, run `windlass-runner login claude` in the runner terminal, then choose the machine under **on** and **Claude Code** under **agent**. Claude Code runs with your Claude subscription. See [Claude Code on your machine](/docs/machines#claude-code-on-your-machine).
+Yes, on one of your own machines. Start its runner with `--harness claude`, and sign Claude in on the machine:
+
+```sh
+docker exec -it windlass-runner windlass-runner login claude
+```
+
+Then choose the machine under **on** and **Claude Code** under **agent**. Claude Code runs with your Claude subscription. See [Agents on your machine](/docs/machines#agents-on-your-machine).
+
+## Can I use OpenCode, or another model provider?
+
+Yes, on one of your own machines. Start its runner with `--harness opencode`, then run `login opencode` on the machine and choose a provider. See [OpenCode](/docs/machines#opencode).
+
+## Which providers work with OpenCode?
+
+OpenCode Go, OpenCode Zen, ChatGPT, OpenAI, Anthropic, Google, OpenRouter, Z.AI, Zhipu AI and close to 300 more, each with its own API key or account. `login opencode` searches them all. Providers the runner has no fixed route for are not offered, for example Amazon Bedrock, Azure, Google Vertex, GitHub Copilot and models on your own computer, such as LM Studio.
+
+## Can I use OpenCode without a provider account?
+
+Yes. Choose `free` in `login opencode` for OpenCode's free public models. Their allowance is small, and OpenCode counts it by your machine's public IP address, so everyone behind that address shares it. When it runs out, the turn says "The provider's usage or rate limit was reached." Wait, or sign in with a provider of your own.
+
+## Where do I sign Claude Code or OpenCode in?
+
+Only in a terminal on the machine, with `windlass-runner login` and the agent's name. The Machines page shows whether each agent is signed in, and the command to copy. See [Sign agents in](/docs/machines#sign-agents-in).
+
+## Which keys stay on my machine?
+
+All of them. Your Claude token, your OpenCode API keys and your ChatGPT login for OpenCode stay in a login volume on the machine, and the runner never sends them to the platform. No agent's container has them either: a relay on the machine adds them to the agent's model requests. Commands in a session can still use that relay, and so your quota. See [Agent logins stay out of the container](/docs/machines#agent-logins-stay-out-of-the-container).
 
 ## Does the agent get my ChatGPT password or sign-in?
 

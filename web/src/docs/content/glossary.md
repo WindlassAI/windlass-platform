@@ -35,7 +35,7 @@ An orchestrated work item: a planner splits it into subtasks you approve, and th
 The Windlass App you install on your GitHub accounts. The platform acts as its installation to clone, push and open pull requests.
 
 ### Harness
-Which agent runs: Windlass or Claude Code.
+Which agent runs: Windlass, Claude Code or OpenCode.
 
 ### Machine
 A Linux machine of yours with Docker, paired with your account, where agents can run.
@@ -44,7 +44,10 @@ A Linux machine of yours with Docker, paired with your account, where agents can
 A program that gives an agent more tools. You can add your own in **Settings**. A repository can name its own, and the agent asks before it starts one.
 
 ### Mode
-What the agent may do without asking you: for Windlass, **Ask**, **Auto** or **Full**; for Claude Code, its own modes.
+What the agent may do without asking you: for Windlass, **Ask**, **Auto** or **Full**; for Claude Code and OpenCode, their own modes.
+
+### OpenCode
+An open-source coding agent. On Windlass it runs only on your own machines, with the model providers you sign it in with.
 
 ### Pairing code
 The `XXXX-XXXX` code the runner prints, which you enter on the Machines page to pair the machine. It lasts ten minutes.

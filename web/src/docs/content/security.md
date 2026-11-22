@@ -40,7 +40,7 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 
 ### Docker, hardened
 
-`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s access token. Its Windlass modes are **Ask** and **Full**. Claude Code runs only in this profile.
+`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s access token. Its Windlass modes are **Ask** and **Full**. Claude Code and OpenCode run only in this profile.
 
 | | Docker + Windlass sandbox | Docker, hardened |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 | Commands can read the access token | No | Yes |
 | Your ChatGPT sign-in in the container | Never | Never |
 | Windlass modes | Ask, Auto | Ask, Full |
-| Claude Code | No | Yes |
+| Claude Code and OpenCode | No | Yes |
 
 > **Note** A repository’s setup command uses the container’s network policy in both profiles.
 
@@ -75,7 +75,7 @@ See [Network access](/docs/machines#network-access) for the details.
 
 ### Agent logins stay on the machine
 
-An agent's login is never inside its container. Claude Code's setup token lives in a login volume that no session mounts. A relay container on the machine reads it, and forwards each session's model requests to Anthropic with it. The session gets only a placeholder, signed for that one session, and the relay's address. Claude sessions keep their relay in every network mode. See [Your Claude login stays out of the container](/docs/machines#your-claude-login-stays-out-of-the-container).
+An agent's login is never inside its container. Claude Code's setup token and OpenCode's provider logins live in login volumes that no session mounts. A relay container on the machine reads them, and forwards each session's model requests to the provider. The session gets only a placeholder, signed for that one session, and the relay's address. Claude Code and OpenCode sessions keep their relay in every network mode. In `restricted` mode, an OpenCode session's commands cannot reach any model provider's host directly. See [Agent logins stay out of the container](/docs/machines#agent-logins-stay-out-of-the-container).
 
 ### What the platform can do there
 
@@ -86,7 +86,9 @@ The platform can ask the runner only for what its protocol names. In short, it c
 - run commands in a sandbox, and start, signal and stop its processes;
 - read and write text files in a sandbox, and write secret files there.
 
-> **Careful** The platform can run any command in the containers the runner made, Claude Code's containers included. In a Claude Code container, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the setup token.
+It cannot sign an agent in or out. That is done only in a terminal on the machine.
+
+> **Careful** The platform can run any command in the containers the runner made, Claude Code's and OpenCode's included. In those containers, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the Claude setup token.
 
 ### What the platform cannot do there
 
@@ -96,7 +98,7 @@ The platform cannot reach your machine except through its runner. It does not co
 
 ### How the runner proves who it is
 
-The runner makes an Ed25519 key pair when it pairs. The private key stays on the machine. Every connection is signed with it. A session's connection also needs a ticket that is good once and for one minute. If the machine's clock is more than a minute off, the platform tells the runner, and the Machines page warns you.
+The runner makes an Ed25519 key pair when it pairs. The private key stays on the machine. Every connection is signed with it. The platform signs its side too: the runner keeps the platform's key from pairing, prints its fingerprint, and checks every connection against it. A session's connection also needs a ticket that is good once and for one minute. If the machine's clock is more than a minute off, the platform tells the runner, and the Machines page warns you.
 
 ## Secrets
 
@@ -113,7 +115,7 @@ A secret reaches the sandbox as an environment variable, never on a command line
 - Where a repository has a secret of the same name as an account secret, its agents get the repository's.
 - In a sandbox that does not sandbox the agent's commands, such as **Docker, hardened**, secrets meant only for MCP servers are not passed at all. A server that needs one does not start there.
 - On your machine, secrets go only while **Send saved secrets to this machine** is on.
-- Claude Code sessions get no saved secrets.
+- Claude Code and OpenCode sessions get no saved secrets.
 
 > **Careful** Whatever the agent's commands can read, a manipulated agent could send out once a command has network access. Give a secret to the agent's commands only when it needs it.
 
