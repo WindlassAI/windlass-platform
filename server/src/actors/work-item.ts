@@ -228,6 +228,8 @@ export const CHECKS_TABLE = "CREATE TABLE IF NOT EXISTS checks (sha TEXT PRIMARY
 export const REVIEWS_TABLE = "CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
 /** The report and its reference snapshots share one JSON value and one transaction with the turn. */
+/** The verdict comment's id on each pull request the item handed over on (`writeMarkedComment`). */
+export const VERDICT_COMMENT_TABLE = "CREATE TABLE IF NOT EXISTS verdict_comment(pr INTEGER PRIMARY KEY, id TEXT NOT NULL)";
 export const REPORTS_TABLE = "CREATE TABLE IF NOT EXISTS reports (key TEXT PRIMARY KEY, run INTEGER NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
 export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryItem, sessionId: string, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
@@ -893,13 +895,35 @@ async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<vo
 	));
 }
 
-async function writeMarkedComment(app: GithubApp, token: string, owner: string, name: string, pr: number, item: string, body: string) {
+/**
+ * Posts the item's verdict comment on its pull request, or edits the one posted before. The comment's id
+ * is kept on the item when it is first posted or found, and edited by that id afterwards: a pull request
+ * with more comments than are listed (ten pages) is never searched again, so it gets no second comment.
+ * Without a kept id (posted before ids were kept, or the reply to the post was lost) the platform looks
+ * for its marker, and refuses rather than post again when the list is cut short.
+ */
+async function writeMarkedComment(c: Ctx, app: GithubApp, token: string, owner: string, name: string, pr: number, item: string, body: string) {
+	const [kept] = await c.db.execute<{ id: string }>("SELECT id FROM verdict_comment WHERE pr=?", pr);
+	if (kept) {
+		try {
+			await app.updateIssueComment(token, owner, name, kept.id, body);
+			return;
+		} catch (error) {
+			// Deleted on GitHub: ours is gone, so posting it again makes no second one.
+			if (!(error instanceof GithubError && error.status === 404)) throw error;
+			await c.db.execute("DELETE FROM verdict_comment WHERE pr=? AND id=?", pr, kept.id);
+			const id = await app.createIssueComment(token, owner, name, pr, body);
+			if (id) await c.db.execute("INSERT OR REPLACE INTO verdict_comment VALUES(?,?)", pr, id);
+			return;
+		}
+	}
 	const marker = `<!-- windlass-item:${item} -->`;
 	const comments = await app.issueComments(token, owner, name, pr, true);
 	const own = comments.find(c => c.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && c.body.split("\n", 1)[0] === marker);
-	if (!own) await app.createIssueComment(token, owner, name, pr, body);
-	else if (!own.id) throw new Error("GitHub returned an invalid verdict comment id");
-	else await app.updateIssueComment(token, owner, name, own.id, body);
+	if (own && !own.id) throw new Error("GitHub returned an invalid verdict comment id");
+	const id = own?.id ?? await app.createIssueComment(token, owner, name, pr, body);
+	if (own?.id) await app.updateIssueComment(token, owner, name, own.id, body);
+	if (id) await c.db.execute("INSERT OR REPLACE INTO verdict_comment VALUES(?,?)", pr, id);
 }
 
 async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: Handoff, row: EffectRow): Promise<void> {
@@ -931,7 +955,7 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 			action = "post the verdict comment";
 			const [reviewRow] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id = ?", effect.review) : [];
 			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, owner, name });
-			await writeMarkedComment(app, token, owner, name, number, verdict.item, body);
+			await writeMarkedComment(c, app, token, owner, name, number, verdict.item, body);
 		});
 	} catch (error) {
 		const status = error instanceof GithubError && error.status ? ` (GitHub ${error.status})` : "";
@@ -1215,7 +1239,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
 							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name }, effect);
 					}
-					await writeMarkedComment(hub.app, token, hub.owner, hub.name, item.pr!.number, item.id, body);
+					await writeMarkedComment(c, hub.app, token, hub.owner, hub.name, item.pr!.number, item.id, body);
 				});
 			});
 			c.vars.handoff = update.catch(() => {});
@@ -1548,6 +1572,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS github_binding (id INTEGER PRIMARY KEY CHECK (id = 1), installation TEXT NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS issue_actions(subject TEXT PRIMARY KEY)");
 			await db.execute("CREATE TABLE IF NOT EXISTS issue_comment(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL)");
+			await db.execute(VERDICT_COMMENT_TABLE);
 			// Backfill items published before G2 on their next wake.
 			const stored = await load(db);
 			if (stored?.item.run?.step.kind === "review" && stored.item.pr && !ENDED.has(stored.item.state)) {

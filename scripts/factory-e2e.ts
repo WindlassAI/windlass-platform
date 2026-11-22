@@ -818,7 +818,7 @@ async function drained(jobs: Promise<unknown>[]): Promise<void> {
 async function memoryChecks(): Promise<void> {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
 	process.env.WLP_SANDBOX = "fake";
-	const { workItem, REPORTS_TABLE, REVIEWS_TABLE, CHECKS_TABLE, FEEDBACK_TABLE } = await import("../server/src/actors/work-item.js");
+	const { workItem, REPORTS_TABLE, REVIEWS_TABLE, CHECKS_TABLE, FEEDBACK_TABLE, VERDICT_COMMENT_TABLE } = await import("../server/src/actors/work-item.js");
 	const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -879,6 +879,7 @@ async function memoryChecks(): Promise<void> {
 		await db.execute(REPORTS_TABLE);
 		await db.execute(REVIEWS_TABLE);
 		await db.execute(FEEDBACK_TABLE);
+		await db.execute(VERDICT_COMMENT_TABLE);
 		await db.execute("CREATE TABLE issue_actions(subject TEXT PRIMARY KEY)");
 		await db.execute("CREATE TABLE feedback_cursor(id INTEGER PRIMARY KEY,since INTEGER)");
 		const meta = { uid: "u", sessionId: "s", reviewerSessionId: answers.freeReviewer ? "review-session" : null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
@@ -1251,6 +1252,99 @@ async function memoryChecks(): Promise<void> {
 			await actor.drain();
 			assert(posted === 0 && edited === 1, `posted ${posted}, edited ${edited}`);
 			return "the comment at 101 was edited; nothing was posted";
+		} finally {
+			Object.assign(app, { call });
+		}
+	});
+
+	await check("memory: past the first 1,000 comments, the verdict comment's kept id is edited, without a listing or a second comment", async () => {
+		const marker = "<!-- windlass-item:i_memory -->";
+		const comments = Array.from({ length: 1100 }, (_, index) => ({ id: index + 1, user: { login: "person" }, body: "Discussion" }));
+		let posted = 0;
+		let listed = 0;
+		const edited: string[] = [];
+		const call = (app as unknown as { call: unknown }).call;
+		Object.assign(app, {
+			call: async (request: { path: string; method?: string; query?: { page?: number } }) => {
+				if (request.path.endsWith("/comments") && request.method === "POST") {
+					posted += 1;
+					comments.push({ id: 5000 + posted, user: { login: "memory[bot]" }, body: `${marker}\nA verdict` });
+					return { status: 201, body: { id: 5000 + posted }, next: false };
+				}
+				if (request.path.includes("/issues/comments/") && request.method === "PATCH") edited.push(request.path.split("/").pop()!);
+				else if (request.path.endsWith("/comments")) {
+					listed += 1;
+					const from = ((request.query?.page ?? 1) - 1) * 100;
+					return { status: 200, body: comments.slice(from, from + 100), next: from + 100 < comments.length };
+				} else throw new Error(`no such call in memory: ${request.path}`);
+				return { status: 200, body: {}, next: false };
+			},
+		});
+		try {
+			const handOver = async (actor: Awaited<ReturnType<typeof itemActor>>, handoff: { key: string }) => {
+				await actor.db.execute("DELETE FROM effects");
+				await actor.db.execute("INSERT INTO effects VALUES (?, ?, 0, 0)", `handoff:${handoff.key}`, JSON.stringify(handoff));
+				actor.c.scheduledFire = { id: "handoff", scheduledAt: Date.now(), firedAt: Date.now() };
+				await actions.internalDue(actor.c);
+				await actor.drain();
+			};
+			const m = machine();
+			m.send({ kind: "start" });
+			m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
+			m.send({ kind: "published", webhooks: false, head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+			const handed = m.send({ kind: "ci_read", webhooks: false, prHead: null, head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], logs: [], truncated: false }, mergeable: true, openItems: 1 });
+			const handoff = { ...(handed.effects.find((effect) => effect.kind === "handoff") as object), reviewDone: true } as unknown as { key: string };
+			const actor = await itemActor(m.item);
+			withGithub(actor, true);
+			// Without a kept id, a list cut short is refused: the platform cannot tell whether its comment is past it.
+			await handOver(actor, handoff);
+			assert(posted === 0 && edited.length === 0 && listed === 10, `refused: posted ${posted}, edited ${edited.length}, pages ${listed}`);
+			// Kept once posted, as it is when the list was complete at the first handoff.
+			await actor.db.execute("INSERT INTO verdict_comment VALUES (1, '777')");
+			listed = 0;
+			await handOver(actor, handoff);
+			await handOver(actor, handoff);
+			assert(posted === 0 && edited.join() === "777,777" && listed === 0, `posted ${posted}, edited ${edited.join()}, pages ${listed}`);
+			const [kept] = await actor.db.execute("SELECT id FROM verdict_comment WHERE pr = 1") as Array<{ id: string }>;
+			assert(kept?.id === "777", `kept ${kept?.id}`);
+			return "refused without an id; with one, edited twice by id with no listing and nothing posted";
+		} finally {
+			Object.assign(app, { call });
+		}
+	});
+
+	await check("memory: the verdict comment's id is kept when it is first posted", async () => {
+		let posted = 0;
+		const edited: string[] = [];
+		const call = (app as unknown as { call: unknown }).call;
+		Object.assign(app, {
+			call: async (request: { path: string; method?: string; query?: { page?: number } }) => {
+				if (request.path.endsWith("/comments") && request.method === "POST") {
+					posted += 1;
+					return { status: 201, body: { id: 4242 }, next: false };
+				}
+				if (request.path.includes("/issues/comments/") && request.method === "PATCH") edited.push(request.path.split("/").pop()!);
+				else if (request.path.endsWith("/comments")) return { status: 200, body: [], next: false };
+				else throw new Error(`no such call in memory: ${request.path}`);
+				return { status: 200, body: {}, next: false };
+			},
+		});
+		try {
+			const m = machine();
+			m.send({ kind: "start" });
+			m.send({ kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
+			m.send({ kind: "published", webhooks: false, head: HEAD, pr: { number: 1, url: "local" }, openItems: 1 });
+			const handed = m.send({ kind: "ci_read", webhooks: false, prHead: null, head: HEAD, reading: { kind: "read", head: HEAD, runs: [{ name: "build", app: "ci", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], logs: [], truncated: false }, mergeable: true, openItems: 1 });
+			const handoff = { ...(handed.effects.find((effect) => effect.kind === "handoff") as object), reviewDone: true } as unknown as { key: string };
+			const actor = await itemActor(m.item);
+			withGithub(actor, true);
+			await actor.db.execute("INSERT INTO effects VALUES (?, ?, 0, 0)", `handoff:${handoff.key}`, JSON.stringify(handoff));
+			actor.c.scheduledFire = { id: "handoff", scheduledAt: Date.now(), firedAt: Date.now() };
+			await actions.internalDue(actor.c);
+			await actor.drain();
+			const [kept] = await actor.db.execute("SELECT id FROM verdict_comment WHERE pr = 1") as Array<{ id: string }>;
+			assert(posted === 1 && edited.length === 0 && kept?.id === "4242", `posted ${posted}, edited ${edited.join()}, kept ${kept?.id}`);
+			return "posted once, id 4242 kept";
 		} finally {
 			Object.assign(app, { call });
 		}

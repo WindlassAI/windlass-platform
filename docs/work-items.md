@@ -77,7 +77,9 @@ or hand over the commit the run already pushed.
   the pull request, as the GitHub login of their connection, unless they are asked already, and posts the
   verdict in one comment: the verdict at the pushed commit, its sentence, and the acceptance criteria
   left to the person. The comment is the item's own (its first line is `<!-- windlass-item:<id> -->`), and
-  each later handoff of the item edits it instead of adding another. A review request GitHub refuses is
+  each later handoff of the item edits it instead of adding another: the item keeps the comment's id once
+  it has posted or found it, so a pull request with more than 1,000 comments gets no second one. A comment
+  deleted on GitHub is posted again. A review request GitHub refuses is
   written in the item's log ("GitHub refused the review request (422).") and the comment is posted all the
   same; a request or a comment that does not get through otherwise is written there too ("Could not post
   the verdict comment (GitHub 502). The platform will try again.") and tried again later. Either way the
