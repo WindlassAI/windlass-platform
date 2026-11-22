@@ -3367,10 +3367,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				machinesOn();
 				await latency(420);
 				lookUp(auth, code);
-				return { name: "workstation", os: "Linux", arch: "x64", runnerVersion: MOCK_RUNNER_VERSION };
+				return { name: "workstation", os: "Linux", arch: "x64", runnerVersion: MOCK_RUNNER_VERSION, keyFingerprint: "K7Q2M-XR4TD", keyPrinted: true };
 			},
-			async confirmMachine({ code }) {
+			async confirmMachine({ code, keyConfirmed }) {
 				machinesOn();
+				if (keyConfirmed !== true) throw new PlatformError("user", "Check that the machine's terminal shows the same machine key, then connect it.", { reason: "key_not_confirmed" });
 				await latency(520);
 				const set = machinesOf(auth);
 				const clean = lookUp(auth, code);

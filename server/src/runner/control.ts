@@ -35,6 +35,7 @@
  * field of that protocol is used here. A frame that does not pass is null: the actor refuses the socket
  * ("bad-frame"), the runner drops the socket and connects again.
  */
+import { createHash, createPublicKey } from "node:crypto";
 import { endpointShape, helloFields, removalFields, welcomeFields } from "./frame-auth.js";
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
 import { MACHINE_PROFILES, machineProfile, type MachineProfile, positiveLimit } from "./protocol.js";
@@ -70,6 +71,37 @@ export const PAIRING_CODE = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
 export const PAIRING_TTL_MS = 10 * 60_000;
 /** How often a runner asks whether its code was confirmed. */
 export const PAIRING_POLL_MS = 2_000;
+
+/**
+ * The machine key's fingerprint, as the runner prints it while it pairs and the Machines page shows it
+ * before Connect: the first 50 bits of SHA-256 over the key's SPKI DER, in base32 (RFC 4648), in two
+ * groups of five ("K7Q2M-XR4TD"). Both sides compute it from the key itself, so it is never sent. A
+ * person who compares them sees that the code they typed is the one of the machine in front of them.
+ * `key` is the PEM the runner sends or the base64 SPKI DER the platform keeps. Null for anything else.
+ */
+export function machineKeyFingerprint(key: string): string | null {
+	let der: Buffer;
+	try {
+		const parsed = key.startsWith("-----BEGIN PUBLIC KEY-----") ? createPublicKey(key) : createPublicKey({ key: Buffer.from(key, "base64"), format: "der", type: "spki" });
+		if (parsed.asymmetricKeyType !== "ed25519") return null;
+		der = parsed.export({ type: "spki", format: "der" });
+	} catch {
+		return null;
+	}
+	const hash = createHash("sha256").update(der).digest();
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+	// 50 bits: the first 7 bytes give 56, of which the top 50 are read five at a time.
+	const bits = hash.subarray(0, 7).reduce((value, byte) => (value << 8n) | BigInt(byte), 0n) >> 6n;
+	let out = "";
+	for (let shift = 45n; shift >= 0n; shift -= 5n) out += alphabet[Number((bits >> shift) & 31n)];
+	return `${out.slice(0, 5)}-${out.slice(5)}`;
+}
+/**
+ * The first runner release that prints the machine key's fingerprint while it pairs. Older runners print
+ * only the code: the confirm step then asks the person to vouch for the machine another way. Raise it if
+ * the release that ships the print is another.
+ */
+export const PRINTS_KEY_RUNNER_VERSION = "0.3.2";
 
 // ---- Versions ----
 

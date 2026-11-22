@@ -61,7 +61,9 @@ Choose **Enter the code**, type the code and choose **Check code**. Case, spaces
 
 ### 3. Connect it
 
-The page shows what the machine says about itself: its name, OS, architecture and runner version. Nobody has checked these. Connect it only if it is the machine you started the runner on. Then choose **Connect**.
+The page shows the **machine key**, a short fingerprint of the machine's key like `K7Q2M-XR4TD`. The runner prints the same one under the code: `Machine key: K7Q2M-XR4TD`. Check that they match, then tick **The runner's terminal shows the same machine key**. If they differ, or someone gave you the code to enter, choose **Back**: the code is of their machine, and connecting it would send your agents' work there. A runner older than 0.3.2 prints no machine key. The page then asks you to tick that you started the runner yourself in the last few minutes instead.
+
+The page also shows what the machine says about itself: its name, OS, architecture and runner version. Nobody has checked these. Connect it only if it is the machine you started the runner on. Then choose **Connect**.
 
 The runner then prints the platform's key fingerprint, and whose account it joined: `Paired with <your GitHub login>`. If that is not you, run `windlass-runner pair` again.
 

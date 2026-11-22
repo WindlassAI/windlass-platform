@@ -1312,6 +1312,13 @@ export interface MachineClaim {
 	os: string;
 	arch: string;
 	runnerVersion: string;
+	/**
+	 * The fingerprint of the key the machine paired with ("K7Q2M-XR4TD"), worked out by the platform from
+	 * the key itself. A runner that prints it (`keyPrinted`) shows the same in its terminal.
+	 */
+	keyFingerprint?: string;
+	/** Whether this runner's version prints the key's fingerprint while it pairs. Older ones show only the code. */
+	keyPrinted?: boolean;
 }
 
 // --- Work items: the software factory (Plans "software factory") ------------------------------
@@ -2300,9 +2307,11 @@ export interface UserActions {
 	/**
 	 * Pairs the machine of a code this user looked up. Its runner is told the GitHub login of the
 	 * account it joined (none when GitHub is not connected), prints it, and connects. Asked again for the
-	 * same code, it answers with the same machine. Throws as `claimMachine` does.
+	 * same code, it answers with the same machine. Throws as `claimMachine` does. `keyConfirmed`: the
+	 * person said the machine's terminal shows the claim's `keyFingerprint` (or, for a runner that does not
+	 * print it, that they started it themselves); without it the platform refuses with `key_not_confirmed`.
 	 */
-	confirmMachine(input: { code: string }): Promise<MachineSummary>;
+	confirmMachine(input: { code: string; keyConfirmed: true }): Promise<MachineSummary>;
 	/**
 	 * Removes a machine: its key stops working at once, and its agents keep their conversations and can
 	 * no longer run. With `removeSandboxes`, its runner also removes the agents' sandboxes on it and

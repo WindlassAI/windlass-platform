@@ -60,7 +60,7 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 			].join("\n"));
 		const code = await until("pairing code", () => /enter (\w{4}-\w{4})/.exec(output)?.[1]);
 		await user.claimMachine({ code });
-		({ machineId } = await user.confirmMachine({ code }));
+		({ machineId } = await user.confirmMachine({ code, keyConfirmed: true }));
 		const labels = ["--label", LABEL + "=1", "--label", MACHINE_LABEL + "=" + machineId, "--label", LABEL + ".uid=" + uid];
 		const login = prefix + "login-" + machineId;
 		await docker("volume", "create", ...labels, login);

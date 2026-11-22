@@ -115,7 +115,10 @@ async function realMachine(runnerImage: string) {
 		service.stdout!.on("data", chunk => { output = (output + chunk).slice(-8192); });
 		await until(() => /enter [A-Z0-9]{4}-[A-Z0-9]{4}/.test(output), "Real platform did not start pairing.");
 		const code = /enter ([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(output)![1];
-		await user.claimMachine({ code }); const machine = await user.confirmMachine({ code });
+		const claim = await user.claimMachine({ code });
+		// The runner prints the machine key's fingerprint, and the page is shown the same one, worked out from the key it paired with.
+		await until(() => output.includes(`Machine key: ${claim.keyFingerprint}.`), `The runner did not print the machine key the page shows (${claim.keyFingerprint}).`);
+		const machine = await user.confirmMachine({ code, keyConfirmed: true });
 		await until(async () => {
 			const current = (await user.machines()).find(m => m.machineId === machine.machineId);
 			health = current?.commandSandbox?.ok === false ? current.commandSandbox.reason : "";
@@ -151,7 +154,7 @@ async function realMachine(runnerImage: string) {
 			await until(() => /enter [A-Z0-9]{4}-[A-Z0-9]{4}/.test(output), "The local pair command did not start a fresh pairing.");
 			const code = /enter ([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(output)![1];
 			await user.claimMachine({ code });
-			const paired = await user.confirmMachine({ code });
+			const paired = await user.confirmMachine({ code, keyConfirmed: true });
 			assert.match((await pairing).stdout, /Paired with/);
 			await until(async () => (await user.machines()).some(m => m.machineId === paired.machineId && m.status === "online"),
 				"The new pairing did not reconnect.");

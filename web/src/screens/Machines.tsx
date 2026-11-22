@@ -624,6 +624,8 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	const [codex, setCodex] = useState(false);
 	const [openCode, setOpenCode] = useState(false);
 	const [importKeys, setImportKeys] = useState(false);
+	/** The person says the runner's terminal shows the same machine key (or, for a runner that prints none, that they started it). */
+	const [keyMatches, setKeyMatches] = useState(false);
 	const offersCodex = info.runnerHarnesses?.includes("codex") === true;
 	const offersOpenCode = info.runnerHarnesses?.includes("opencode") === true;
 	const offersClaude = info.runnerHarnesses?.includes("claude") ?? true;
@@ -651,6 +653,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 		setError(null);
 		try {
 			const claim = await client.user(auth).claimMachine({ code });
+			setKeyMatches(false);
 			setStep({ step: "confirm", claim });
 		} catch (failure) {
 			setError(explain(failure));
@@ -661,10 +664,11 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	};
 
 	const connect = async () => {
+		if (!keyMatches) return;
 		setBusy(true);
 		setError(null);
 		try {
-			onAdded(await client.user(auth).confirmMachine({ code }));
+			onAdded(await client.user(auth).confirmMachine({ code, keyConfirmed: true }));
 			onClose();
 		} catch (failure) {
 			setError(explain(failure));
@@ -692,13 +696,34 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<button type="button" className="button button-quiet" onClick={() => go({ step: "code" })} disabled={busy}>
 							Back
 						</button>
-						<button type="button" className="button button-primary" onClick={connect} disabled={busy} aria-describedby={ids.trust} ref={aim}>
+						<button type="button" className="button button-primary" onClick={connect} disabled={busy || !keyMatches} aria-describedby={ids.trust}>
 							{busy ? "Connecting…" : "Connect"}
 						</button>
 					</>
 				}
 			>
 				<div className="machine-dialog">
+					<div className="machine-key">
+						<p className="eyebrow">Machine key</p>
+						<p className="machine-key-value">{claim.keyFingerprint ?? <span className="tone-faint">not known</span>}</p>
+						<label className={`check${keyMatches ? " check-on" : ""}`}>
+							<input className="check-input" type="checkbox" checked={keyMatches} disabled={busy} onChange={(event) => setKeyMatches(event.target.checked)} ref={aim} />
+							<span className="check-box" aria-hidden="true" />
+							<span className="check-text">
+								{claim.keyPrinted ? (
+									<>
+										<span className="check-name">The runner's terminal shows the same machine key</span>
+										<span className="check-means">The runner prints it under the code. If it shows another key, or someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+									</>
+								) : (
+									<>
+										<span className="check-name">I started this runner myself, in the last few minutes</span>
+										<span className="check-means">Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer runner prints it under the code. If someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+									</>
+								)}
+							</span>
+						</label>
+					</div>
 					<div>
 						<p className="eyebrow">What the machine says about itself</p>
 						<dl className="machine-claim">

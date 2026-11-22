@@ -5,7 +5,7 @@ import { internalConnection, requireServiceFor, serviceParams } from "../auth.js
 import { config, signedRunnerEndpoint } from "../config.js";
 import { keyedDigest } from "../signatures.js";
 import type { MachineClaim } from "../contract.js";
-import { PAIRING_TTL_MS, type PairStatus } from "../runner/control.js";
+import { machineKeyFingerprint, PAIRING_TTL_MS, PRINTS_KEY_RUNNER_VERSION, versionAtLeast, type PairStatus } from "../runner/control.js";
 import { grantIsValid, isActorGone } from "./internal.js";
 
 export const pairingGone = () => new UserError("That code was not found. Check the code on the machine or start pairing again.", { code: "pairing_not_found" });
@@ -62,9 +62,12 @@ export const machinePairing = actor({
 	actions: {
 		internalClaim: async (c, uid: string): Promise<MachineClaim> => {
 			requireServiceFor(c, "call");
-			const [row] = await c.db.execute<{ details: string }>("UPDATE pairing SET uid = ? WHERE (uid IS NULL OR uid = ?) AND expires > ? RETURNING details", uid, uid, Date.now());
+			const [row] = await c.db.execute<{ details: string; public_key: string }>("UPDATE pairing SET uid = ? WHERE (uid IS NULL OR uid = ?) AND expires > ? RETURNING details, public_key", uid, uid, Date.now());
 			if (!row) throw pairingGone();
-			return JSON.parse(row.details);
+			const details: MachineClaim = JSON.parse(row.details);
+			const keyFingerprint = machineKeyFingerprint(row.public_key);
+			// Worked out from the key, never taken from what the machine says of itself.
+			return { ...details, ...(keyFingerprint && { keyFingerprint }), keyPrinted: versionAtLeast(details.runnerVersion, PRINTS_KEY_RUNNER_VERSION) };
 		},
 		internalClaimed: async (c, uid: string): Promise<ClaimedMachine> => {
 			requireServiceFor(c, "call");

@@ -325,6 +325,13 @@
 	font-size: var(--size-mono);
 	overflow-wrap: anywhere;
 }
+/* The machine key's fingerprint, to compare with the runner's terminal, and the box that says it matches. */
+.machine-key-value {
+	margin: 6px 0 10px;
+	font-family: var(--font-mono);
+	font-size: var(--text-14);
+	letter-spacing: 0.08em;
+}
 .machine-remove-check {
 	margin-top: 14px;
 }

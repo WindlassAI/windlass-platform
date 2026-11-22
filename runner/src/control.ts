@@ -6,7 +6,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import {
 	MAX_CONTROL_FRAME_BYTES, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, PAIRING_POLL_MS, PAIRING_TTL_MS, REFUSED_RETRY_MS, REPORT_MS,
 	RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, controlProof, sessionProof,
-	parseConnection, parseConnectionRefusal, parsePairStarted, parsePairStatus, parseServerFrame, refuse, reportFor,
+	machineKeyFingerprint, parseConnection, parseConnectionRefusal, parsePairStarted, parsePairStatus, parseServerFrame, refuse, reportFor,
 	type Capability, type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame, type ServerFrame,
 } from "../../server/src/runner/control.js";
 import type { MachineProfile } from "../../server/src/runner/protocol.js";
@@ -76,6 +76,8 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 		return { idle: `Pairing was refused (HTTP ${response.status}), so ${again}` };
 	const poll = { pairing: started.pairing, pollSecret: started.pollSecret };
 	say(`Open ${platform}/machines/add and enter ${started.code}`);
+	// The page shows the same before Connect, worked out from the key this runner sent: a code someone else gave the person is of another key.
+	say(`Machine key: ${machineKeyFingerprint(request.publicKey)}. Check that the page shows the same before you connect. If someone gave you a code to enter, stop.`);
 	while (!deadline.aborted) {
 		await wait(PAIRING_POLL_MS, undefined, { signal: deadline }).catch(() => {});
 		if (deadline.aborted) break;

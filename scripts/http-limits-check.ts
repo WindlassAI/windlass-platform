@@ -147,7 +147,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			assert.deepEqual(await other.json(), { state: "waiting" });
 		});
 		await user.claimMachine({ code: pair.code });
-		const { machineId } = await user.confirmMachine({ code: pair.code });
+		const { machineId } = await user.confirmMachine({ code: pair.code, keyConfirmed: true });
 		const id = { uid: auth.profile.uid, machineId };
 		await t.test("a paired runner connects until the configured address limit", async () => {
 			for (let i = 0; i < 2; i++) assert.equal((await runner.connection(primary, id)).status, 200);
@@ -164,7 +164,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 			await limited(await runner.connection(peer, id));
 			const otherPair = await other.pair(peer);
 			await user.claimMachine({ code: otherPair.code });
-			const otherId = await user.confirmMachine({ code: otherPair.code });
+			const otherId = await user.confirmMachine({ code: otherPair.code, keyConfirmed: true });
 			assert.equal((await other.connection(peer, { uid: id.uid, machineId: otherId.machineId })).status, 200);
 		});
 		await t.test("one trailing webhook summary for five refusals, then the address budget recovers", async () => {

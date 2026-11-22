@@ -177,8 +177,11 @@ export const machineActions = {
 		if (n >= MAX_MACHINES) throw full();
 		return (await pairing(c, input)).internalClaim(uid).catch(asPairingError);
 	},
-	async confirmMachine(c: Ctx, input: { code: string }): Promise<MachineSummary> {
+	async confirmMachine(c: Ctx, input: { code: string; keyConfirmed: true }): Promise<MachineSummary> {
 		const { uid } = requireUser(c); enabled();
+		// The person compares the machine key's fingerprint with the runner's terminal before Connect: a code
+		// someone else gave them is of that person's machine, whose key their own terminal does not show.
+		if (input?.keyConfirmed !== true) throw new UserError("Check that the machine's terminal shows the same machine key, then connect it.", { code: "key_not_confirmed" });
 		const claim = await (await pairing(c, input)).internalClaimed(uid).catch(asPairingError);
 		const { machineId: id, details, expires } = claim;
 		const now = Date.now();

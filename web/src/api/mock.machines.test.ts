@@ -166,10 +166,10 @@ describe("the mock's machines", () => {
 		const close = user.watch({ onSessions: () => undefined, onMachines: (list) => heard.push(list) });
 		await tick();
 		expect(await user.claimMachine({ code: "wxyz-12lo" })).toMatchObject({ name: "workstation", os: "Linux", arch: "x64" });
-		const made = await user.confirmMachine({ code: "WXYZ 1210" });
+		const made = await user.confirmMachine({ code: "WXYZ 1210", keyConfirmed: true });
 		expect(made.status).toBe("waiting");
 		// Asked again for the same code, it is the same machine.
-		expect((await user.confirmMachine({ code: "WXYZ-1210" })).machineId).toBe(made.machineId);
+		expect((await user.confirmMachine({ code: "WXYZ-1210", keyConfirmed: true })).machineId).toBe(made.machineId);
 		await tick();
 		expect(heard.at(-1)?.map((machine) => machine.status)).toEqual(["online"]);
 		close();

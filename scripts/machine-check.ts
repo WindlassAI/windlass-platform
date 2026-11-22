@@ -12,7 +12,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { MachineHostUpdate, MachineSummary } from "../server/src/contract.js";
 import type { Registry } from "../server/src/client.js";
-import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, parseServerFrame, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
+import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, machineKeyFingerprint, parseConnection, parseServerFrame, PRINTS_KEY_RUNNER_VERSION, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
 
 const refused = (p: Promise<unknown>, code: string) => assert.rejects(p, e => (e as { code?: string }).code === code);
@@ -154,7 +154,7 @@ async function check() {
 		assert.deepEqual(await runner.poll(origin, pair), { state: "waiting" });
 		assert.deepEqual(await runner.poll(origin, { ...pair, pollSecret: randomBytes(32).toString("base64url") }), { state: "gone" });
 		const code = { code: pair.code.toLowerCase().replace("-", " ") };
-		await refused(accounts[0].user.confirmMachine(code), "pairing_not_found");
+		await refused(accounts[0].user.confirmMachine({ ...code, keyConfirmed: true }), "pairing_not_found");
 		const race = await Promise.allSettled(accounts.map(a => a.user.claimMachine(code)));
 		assert.equal(race.filter(r => r.status === "fulfilled").length, 1);
 		const winner = race.findIndex(r => r.status === "fulfilled");
@@ -162,7 +162,16 @@ async function check() {
 		const { uid, user } = accounts[winner];
 		const other = accounts[1-winner].user;
 		await user.githubComplete(issueTicket(uid, { user: { id: 7, login: "machine-check" }, installations: [] }));
-		const [first, repeat] = await Promise.all([user.confirmMachine(code), user.confirmMachine(code)]);
+		// The machine key's fingerprint is worked out from the key that paired, and Connect needs the person to say it matches.
+		const claimed = (race[winner] as PromiseFulfilledResult<Awaited<ReturnType<typeof user.claimMachine>>>).value;
+		const printed = machineKeyFingerprint(runner.details.publicKey);
+		assert.match(printed ?? "", /^[A-Z2-7]{5}-[A-Z2-7]{5}$/);
+		assert.equal(claimed.keyFingerprint, printed);
+		// The fake runner reports the oldest version the platform takes, which prints no fingerprint.
+		assert.equal(claimed.keyPrinted, false); assert.notEqual(runner.details.runnerVersion, PRINTS_KEY_RUNNER_VERSION);
+		assert.notEqual(machineKeyFingerprint(new FakeRunner().details.publicKey), printed);
+		await refused(user.confirmMachine({ ...code } as Parameters<typeof user.confirmMachine>[0]), "key_not_confirmed");
+		const [first, repeat] = await Promise.all([user.confirmMachine({ ...code, keyConfirmed: true }), user.confirmMachine({ ...code, keyConfirmed: true })]);
 		const machineId = first.machineId;
 		const id = { uid, machineId };
 		assert.deepEqual(first.profiles, []); assert.equal(first.status, "waiting"); assert.equal(repeat.machineId, machineId);
@@ -191,7 +200,7 @@ async function check() {
 			console.warn = warn;
 		}
 		console.log("ok   session creation grant, kind isolation and one redacted refusal");
-		await refused(other.confirmMachine(code), "pairing_not_found");
+		await refused(other.confirmMachine({ ...code, keyConfirmed: true }), "pairing_not_found");
 		await refused(other.setMachineSecrets({ machineId, send: false }), "machine_not_found");
 		await refused(other.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } }), "machine_not_found");
 		// Paired, but its runner has not reported yet: told so, not that the sandbox does not exist.
@@ -396,7 +405,7 @@ async function check() {
 		assert.equal((await wrong.connection(origin, id)).status, 403);
 		const stranger = await wrong.connect(conn, id);
 		await eventually(() => stranger.frames.some(f => f.kind === "refused" && f.reason === "unknown"));
-		await refused(user.confirmMachine(code), "pairing_not_found"); assert.equal((await user.machines()).length, 0);
+		await refused(user.confirmMachine({ ...code, keyConfirmed: true }), "pairing_not_found"); assert.equal((await user.machines()).length, 0);
 		await observer.dispose();
 		step("three slots under concurrent confirmation and five code lookups per account");
 		const more = await Promise.all(Array.from({ length: 4 }, () => {
@@ -405,7 +414,7 @@ async function check() {
 			return fixture.pair(origin);
 		}));
 		await Promise.all(more.map(p => user.claimMachine({ code: p.code })));
-		const confirmed = await Promise.allSettled(more.map(p => user.confirmMachine({ code: p.code })));
+		const confirmed = await Promise.allSettled(more.map(p => user.confirmMachine({ code: p.code, keyConfirmed: true })));
 		assert.equal(confirmed.filter(r => r.status === "fulfilled").length, 3);
 		assert(confirmed.some(r => r.status === "rejected" && r.reason.code === "too_many_machines"));
 		// Each machine actor fails the logout: forgetting the sign-in still succeeds.
@@ -424,14 +433,14 @@ async function check() {
 			publicKey: publicSpki(runner.details.publicKey)!, pollHash: digest(pollSecret), expires: Date.now() + 15_000 } });
 		await claimant.user.claimMachine({ code: expCode });
 		await eventually(async () => (await runner.poll(origin, { pairing: pairingId, pollSecret }))?.state === "gone");
-		await refused(claimant.user.confirmMachine({ code: expCode }), "pairing_not_found");
+		await refused(claimant.user.confirmMachine({ code: expCode, keyConfirmed: true }), "pairing_not_found");
 		assert.equal((await claimant.user.machines()).length, 0);
 		const idle = new FakeRunner();
 		idle.details.name = "Old machine fixture";
 		const started = await idle.pair(origin);
 		const idleCode = { code: started.code };
 		await claimant.user.claimMachine(idleCode);
-		const aged = await claimant.user.confirmMachine(idleCode);
+		const aged = await claimant.user.confirmMachine({ ...idleCode, keyConfirmed: true });
 		const agedId = { uid: claimant.uid, machineId: aged.machineId };
 		const idleMachine = client.machine.get([claimant.uid, aged.machineId], { params });
 		await refused(idleMachine.expire(), "forbidden");
@@ -473,7 +482,7 @@ async function check() {
 		await start(http, false);
 		assert.equal((await post(origin, RUNNER_PAIR_PATH, {})).status, 404);
 		assert(!(await (await fetch(origin + "/platform/info")).json()).machines);
-		await Promise.all([user.machines(), user.claimMachine(code), user.confirmMachine(code),
+		await Promise.all([user.machines(), user.claimMachine(code), user.confirmMachine({ ...code, keyConfirmed: true }),
 			user.removeMachine({ machineId, removeSandboxes: false }), user.setMachineSecrets({ machineId, send: true })].map(action => refused(action, "machines_off")));
 		console.log("ok   " + stage);
 	} catch (error) {

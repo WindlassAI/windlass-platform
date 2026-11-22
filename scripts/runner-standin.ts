@@ -170,10 +170,10 @@ export class StandInRunner {
 	offline = false;
 	removed = false;
 
-	async pair(user: { claimMachine(input: { code: string }): Promise<unknown>; confirmMachine(input: { code: string }): Promise<{ machineId: string }> }): Promise<void> {
+	async pair(user: { claimMachine(input: { code: string }): Promise<unknown>; confirmMachine(input: { code: string; keyConfirmed: true }): Promise<{ machineId: string }> }): Promise<void> {
 		const pairing = await this.fake.pair(this.origin);
 		await user.claimMachine({ code: pairing.code });
-		await user.confirmMachine({ code: pairing.code });
+		await user.confirmMachine({ code: pairing.code, keyConfirmed: true });
 		const status = await this.fake.poll(this.origin, pairing);
 		assert(status?.state === "approved", `pairing ended ${status?.state ?? "without status"}`);
 		this.id = { uid: status.uid, machineId: status.machineId };
