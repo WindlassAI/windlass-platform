@@ -134,6 +134,14 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 	return result;
 }
 
+export function subtaskMinimum(single: ItemBudget): ItemBudget {
+	return {
+		tokens: Math.max(1000, Math.ceil(single.tokens / 10)), turns: 2,
+		activeSeconds: Math.max(60, Math.ceil(single.activeSeconds / 10)),
+		hostedSeconds: Math.max(60, Math.ceil(single.hostedSeconds / 10)),
+	};
+}
+
 export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget): FeaturePlanEdit {
 	const p = record(value), spec = record(p.spec);
 	requirePlan(p.overflow === undefined || typeof p.overflow === "boolean", "Choose yes or no for placement overflow.");
@@ -145,11 +153,7 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 	});
 	unique(questions.map(q => q.id));
 	requirePlan(Array.isArray(p.subtasks) && (singleSuggested && p.subtasks.length === 0 || p.subtasks.length >= 2 && p.subtasks.length <= 6), "Propose two to six subtasks or suggest one single item.");
-	const minimum = {
-		tokens: Math.max(1000, Math.ceil(single.tokens / 10)), turns: 2,
-		activeSeconds: Math.max(60, Math.ceil(single.activeSeconds / 10)),
-		hostedSeconds: Math.max(60, Math.ceil(single.hostedSeconds / 10)),
-	};
+	const minimum = subtaskMinimum(single);
 	const total = emptyBudget();
 	const subtasks: PlanSubtask[] = p.subtasks.map(raw => {
 		const s = record(raw), asked = record(s.budget), budget = emptyBudget();

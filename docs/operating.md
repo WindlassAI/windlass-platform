@@ -260,7 +260,7 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Setup URL | none. GitHub takes none while the setting above is selected |
 | Enable Device Flow | not selected |
 | Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
-| Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request (installation events come by themselves) |
+| Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment (installation events come by themselves) |
 | Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
 | Organization and account permissions | none |
 | Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |

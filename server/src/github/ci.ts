@@ -121,7 +121,7 @@ const record = (value: unknown): Record<string, unknown> => (typeof value === "o
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /** Strips what a terminal would interpret and anything that is not printable text. */
-function plain(value: string): string {
+export function plain(value: string): string {
 	return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 const short = (value: string, max: number) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
