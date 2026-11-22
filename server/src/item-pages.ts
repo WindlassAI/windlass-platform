@@ -9,10 +9,13 @@
  * so a page is never skipped or repeated by an item that changed its state. One filed since comes at
  * the top of the list, where the live list already has it.
  *
- * This file has no actor in it: the `user` actor's `listItems` calls it, and the web app's mock does too.
+ * The live feed (`itemFeed`) carries the open items and only the first page of the ended ones, with
+ * counts beside them, so that what it sends stays small however many items a user has filed.
+ *
+ * This file has no actor in it: the `user` actor's `listItems` and `itemFeed` call it, and the web app's mock does too.
  */
 
-import { type GithubId, type ItemCursor, type ItemSummary, ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX } from "./contract.js";
+import { type GithubId, type ItemCount, type ItemCursor, type ItemFeed, type ItemSummary, ITEM_FEED_ENDED, ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX } from "./contract.js";
 import { isGithubId } from "./github/ids.js";
 
 /** Thrown for a page that cannot be read; `message` is fit to show. */
@@ -82,3 +85,38 @@ export function nextCursor(page: readonly ItemSummary[], limit: number): ItemCur
 	return page.length < limit || !last ? null : { createdAt: last.createdAt, id: last.id };
 }
 
+
+/**
+ * The user's list from every item held: top-level items, and a feature's child while it asks a
+ * question (titled "<feature> — <child>"), newest filed first.
+ */
+export function listedItems(items: Iterable<ItemSummary>): ItemSummary[] {
+	return [...items]
+		.filter((item) => !item.parent || item.question)
+		.map((item) => (item.parent ? { ...item, title: item.parent.title + " — " + item.title } : item))
+		.sort(byFiling);
+}
+
+/** What the live feed carries of a list (`listedItems`, any order): every open item, the first page of ended ones, and the counts. */
+export function itemFeed(list: readonly ItemSummary[]): ItemFeed {
+	const sorted = [...list].sort(byFiling);
+	const open: ItemSummary[] = [];
+	const ended: ItemSummary[] = [];
+	let endedCount = 0;
+	const rows = new Map<string, ItemCount>();
+	for (const item of sorted) {
+		const key = `${item.repository.id}|${item.source}`;
+		let row = rows.get(key);
+		// The newest filed comes first: the row takes its repository's owner and name.
+		if (!row) rows.set(key, (row = { repository: item.repository.id, owner: item.repository.owner, name: item.repository.name, source: item.source, open: 0, done: 0, failed: 0, cancelled: 0 }));
+		if (item.state === "done" || item.state === "failed" || item.state === "cancelled") {
+			row[item.state] += 1;
+			endedCount += 1;
+			if (ended.length < ITEM_FEED_ENDED) ended.push(item);
+		} else {
+			row.open += 1;
+			open.push(item);
+		}
+	}
+	return { open, ended, counts: { ended: endedCount, byRepository: [...rows.values()] } };
+}

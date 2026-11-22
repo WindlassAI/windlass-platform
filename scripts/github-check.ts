@@ -353,7 +353,10 @@ await section("connect: a user with an installation", async () => {
 		back.ticket?.installations.map((installation) => `${installation.account.login} (${installation.account.type})`).join(", "),
 	);
 	const calls = standin.requests.slice(before).map((request) => `${request.method} ${request.path.split("?")[0]} as ${request.auth}`);
-	expect("GitHub was asked four things: the exchange, who, which installations, and to delete the token", calls.join("; ") === "POST /login/oauth/access_token as none; GET /api/v3/user as user; GET /api/v3/user/installations as user; DELETE /api/v3/applications/Iv23standin0client/token as basic" || calls.length === 4, calls.join("; "));
+	expect("connect exchanges the code, reads identity and installations, and revokes the token",
+		calls[0] === "POST /login/oauth/access_token as none" && calls.includes("GET /api/v3/user as user") &&
+		calls.includes("GET /api/v3/user/installations as user") && calls[3] === `DELETE /api/v3/applications/${standin.clientId}/token as basic` && calls.length === 4);
+	expect("the ticket carries only connection metadata", Object.keys(back.ticket ?? {}).sort().join(",") === "exp,installations,k,nonce,uid,user");
 	const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
 	expect("no user access token is left alive: the platform keeps no credential of the user's", userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)));
 	const forged = state.verifyTicket(`${back.location.slice(back.location.indexOf("=") + 1, -4)}AAAA`);

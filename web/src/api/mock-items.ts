@@ -5,8 +5,9 @@ import { plannerMachines } from "../../../server/src/machines/details.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
- * "Work items", and `UserActions.listItems` to `revokeApiToken`), and pushes the list to the user's
- * live feeds (`UserFeed.onItems`) after every change, as `UserEvents.items` is.
+ * "Work items", and `UserActions.listItems` to `revokeApiToken`), and pushes the feed (`ItemFeed`: open
+ * items, the newest ended ones, the counts) to the user's live feeds (`UserFeed.onItems`) after every
+ * change, as `UserEvents.items` is.
  *
  * Every sentence an item shows is the server's (server/src/factory/blueprint.ts, budget.ts and
  * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. A verdict's
@@ -65,7 +66,7 @@ import {
 	type Waiting,
 } from "@contract";
 import { FACTORY_DEFAULTS } from "../../../server/src/factory/budget";
-import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../../../server/src/item-pages";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
 
 /**
@@ -1432,8 +1433,9 @@ export function createMockItems(deps: MockItemsDeps) {
 	}
 
 	function changed(auth: AuthResult): void {
-		const list = listedItems(auth);
-		for (const feed of deps.feeds(auth)) feed.onItems?.(list);
+		// As the server's live feed: the open items, the newest ended ones and the counts (`ItemFeed`).
+		const sent = itemFeed(listedItems(auth));
+		for (const feed of deps.feeds(auth)) feed.onItems?.(sent);
 	}
 
 	function itemOf(auth: AuthResult, id: string): ItemView {
@@ -1697,7 +1699,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		return view;
 	}
 
-	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
+	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "itemFeed" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems(page) {
 				await answer(240);
@@ -1711,6 +1713,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				}
 				const list = listedItems(auth);
 				return clean === null ? list : itemPage(list, clean);
+			},
+			async itemFeed() {
+				await answer(240);
+				return itemFeed(listedItems(auth));
 			},
 			async item(id) {
 				await answer(220);

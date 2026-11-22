@@ -43,8 +43,12 @@ export function machineDetailsProblem(whenToUse: string, tags: string[]): string
 	return null;
 }
 
-/** Network reach of a process outside a per-command sandbox, including repository setup. */
-export function workspaceNetwork(egress?: EgressMode): string {
+/** Network reach of a process outside a per-command sandbox, including repository setup. `hosted`: a hosted sandbox of a deployment with a network mode (`PlatformInfo.hostedEgress`). */
+export function workspaceNetwork(egress?: EgressMode, hosted = false): string {
+	if (hosted) switch (egress) {
+		case "restricted": return "The workspace can reach only the model API, GitHub and the hosts this deployment allows.";
+		case "none": return "The workspace can reach only the model API.";
+	}
 	switch (egress) {
 		case "open": return "The workspace can reach the internet and the local network.";
 		case "restricted": return "The workspace can reach public sites and hosts allowed by the owner through the web proxy.";

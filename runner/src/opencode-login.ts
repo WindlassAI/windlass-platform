@@ -91,7 +91,7 @@ try {
 process.stdout.write(JSON.stringify(Object.keys(records))); `;
 
 		const stored = await runHelper([...helperFlags(name, "none"), ...m.pairingLabelFlags, "--pull", "never",
-			"--log-driver", "none", "--user", "0", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+			"--user", "0", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
 			"--mount", `type=volume,src=${m.opencodeVolume},dst=/login,volume-nocopy`], name,
 			["sh", "-c", script, "store-opencode", merge], { image, stdin: JSON.stringify({ ...credential, ...login }) });
 		if (stored.code !== 0) throw new RunnerError("Could not store the OpenCode login on this machine.");

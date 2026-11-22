@@ -103,6 +103,7 @@ interface Token {
 	repositories?: number[];
 	permissions?: Permissions;
 	user?: number;
+	refreshToken?: string;
 	expiresAt: number;
 	revoked: boolean;
 }
@@ -647,8 +648,9 @@ export class GithubStandin {
 			if (!code || code.used || !verifierOk) return answer(200, { error: "bad_verification_code", error_description: "The code passed is incorrect or expired." });
 			code.used = true;
 			const value = `ghu_${randomBytes(18).toString("hex")}`;
-			this.tokens.set(value, { kind: "user", value, user: code.user, expiresAt: Date.now() + 8 * 3600_000, revoked: false });
-			return answer(200, { access_token: value, expires_in: 28800, refresh_token: `ghr_${randomBytes(18).toString("hex")}`, refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
+			const refreshToken = `ghr_${randomBytes(18).toString("hex")}`;
+			this.tokens.set(value, { kind: "user", value, refreshToken, user: code.user, expiresAt: Date.now() + 8 * 3600_000, revoked: false });
+			return answer(200, { access_token: value, expires_in: 28800, refresh_token: refreshToken, refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
 		}
 
 		if (path === "/api/graphql" && request.method === "POST") {
@@ -687,6 +689,12 @@ export class GithubStandin {
 				return answer(202, {});
 			}
 			return answer(405, { message: "Method not allowed" });
+		}
+		const target = /^\/app\/installations\/(\d+)$/.exec(api);
+		if (target && method === "GET") {
+			if (!auth.raw || !this.verifyJwt(auth.raw)) return answer(401, { message: "Bad credentials" });
+			const installation = this.installations.get(Number(target[1]));
+			return installation ? answer(200, this.installationJson(installation)) : answer(404, { message: "Not Found" });
 		}
 		const mint = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(api);
 		if (mint && method === "POST") {

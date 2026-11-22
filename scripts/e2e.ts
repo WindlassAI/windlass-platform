@@ -3,6 +3,7 @@
  * and of its HTTP routes (`/platform/info`, `/platform/connection`, `/health`).
  *
  *   cd server && npx tsx ../scripts/e2e.ts                 starts a server on fresh state
+ *   cd server && npx tsx ../scripts/e2e.ts --github-only   the GitHub scenarios on a fresh fake server
  *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a running server (HTTP on the
  *                                                         same host, port 6440, or at WLP_E2E_API)
  *
@@ -60,6 +61,8 @@ const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
 const identityOnly = args.includes("--identity-only");
+const githubOnly = args.includes("--github-only");
+if (githubOnly && (!OWN_SERVER || !FAKE || identityOnly)) throw new Error("--github-only requires a local fake server");
 if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
 const idleOnly = args.includes("--idle-only");
 if (idleOnly && !OWN_SERVER) throw new Error("--idle-only requires a server of its own");
@@ -726,6 +729,14 @@ async function main(server: Server | null): Promise<void> {
 		demoUids.push(result.profile.uid);
 		return result;
 	};
+
+	if (githubOnly && server) {
+		try {
+			const info = await (await platformInfo()).json() as import("../server/src/contract.js").PlatformInfo;
+			await githubChecks(server, client, demoSignIn, info.profiles.find(p => p.available)!.id);
+		} finally { await client.dispose(); }
+		return;
+	}
 
 	// --- platform ---------------------------------------------------------------------------------
 
@@ -4543,7 +4554,7 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
-		if (FAKE && !idleOnly) {
+		if (FAKE && !idleOnly && !githubOnly) {
 			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {

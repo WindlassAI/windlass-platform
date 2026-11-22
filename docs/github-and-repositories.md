@@ -65,6 +65,17 @@ lasts ten minutes, and works once. Since a state alone would let someone start a
 finish it, the callback route records nothing itself: it hands the browser a signed ticket in the fragment,
 which only the `user` actor of the named user takes, from a caller signed in as that user, once.
 
+Signed `installation.created`, `installation.new_permissions_accepted`, `installation.unsuspend`, and
+`installation_repositories.added` deliveries can add an installation after connect. The platform reads its
+current account and suspension state from GitHub. It attaches an active installation to connections whose
+stored GitHub user ID matches the sender, or the owner of a personal installation. Repository permission
+checks still apply. Repeated deliveries with the same GUID share one inbox entry.
+
+An uninstall, suspension, or `installation_repositories.removed` drops the installation from every linked
+user, even when only one repository was removed. **Reload** in the picker reads the repositories and
+permissions of the user's known installations with installation tokens. **Reconnect GitHub** discovers
+other installations the user can reach, including an organization installation someone else made.
+
 ### Who may do what
 
 GitHub lists an installation for anyone who can open one of its repositories, so an organization member or a
@@ -159,7 +170,7 @@ is asked for.
 | Pull request review | feedback: a submitted review that requests changes (with its line comments), or a comment-only review addressed to the App; an approval adds a line to the item's log |
 | Pull request review comment | feedback: a line comment addressed to the App |
 | Check run, Check suite, Status | the item notices CI ending at once |
-| `installation`, `installation_repositories` | logged. GitHub sends them to every App; they are not subscribed |
+| `installation`, `installation_repositories` | update [installation access](#whose-installation-it-is). GitHub sends them to every App |
 
 Feedback counts only from the item's own person (the GitHub account linked to the item's Windlass account) and
 from people GitHub reports as having write access. The association in the payload is checked first: a sender

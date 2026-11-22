@@ -28,6 +28,7 @@ import { isGithubId } from "./ids.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 
+export const MAX_GITHUB_ACCOUNTS = 30;
 export const STATE_TTL_MS = 10 * 60 * 1000;
 export const TICKET_TTL_MS = 5 * 60 * 1000;
 

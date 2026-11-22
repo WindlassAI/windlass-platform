@@ -84,7 +84,7 @@ import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
-import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
+import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -130,12 +130,12 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { setGithubInstallations, updateGithubAccount } from "./github-account.js";
+import { syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
-import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
-import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
+import { GithubProblem, type StoredConnection, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
+import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
@@ -160,6 +160,7 @@ import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
+import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -397,8 +398,7 @@ async function rememberProfile(c: UserCtx, profile: UserProfile): Promise<void> 
 // GitHub
 // ---------------------------------------------------------------------------------------------
 
-/** How many accounts one connection keeps, and how many connections may be begun and left unfinished. */
-const MAX_GITHUB_ACCOUNTS = 30;
+/** How many connections may be begun and left unfinished. */
 const MAX_GITHUB_PENDING = 20;
 
 /** The deployment's GitHub App, or a UserError: without one there is nothing to connect. */
@@ -411,19 +411,6 @@ function requireGithub(): GithubApp {
 function requireConnection(c: { vars: UserVars }): StoredConnection {
 	if (!c.vars.github) throw new UserError("GitHub is not connected. Connect GitHub first.", { code: "github_not_connected" });
 	return c.vars.github;
-}
-
-function saveGithubConnection(c: UserCtx & { client(): any }, uid: string, next: StoredConnection | null) {
-	const write = c.vars.githubWriting.then(() => updateGithubAccount(c, uid, c.vars.github, next, async () => {
-		if (next) {
-			await c.db.execute("INSERT OR REPLACE INTO github (id, connection, updated_at) VALUES (1, ?, ?)", JSON.stringify(next), next.connectedAt);
-		} else {
-			await c.db.execute("DELETE FROM github");
-		}
-		c.vars.github = next;
-	}));
-	c.vars.githubWriting = write.catch(() => {});
-	return write;
 }
 
 function githubStatus(vars: UserVars): GithubStatus {
@@ -722,7 +709,7 @@ async function accountView(db: RawAccess): Promise<AccountSettings> {
 		defaults,
 		lastStart,
 		servers: servers.map((server) => listedServer(server, secrets)),
-		serverReach: personalServerReach(sandboxes.profiles()),
+		serverReach: personalServerReach(sandboxes.profiles(), sandboxes.egress?.()),
 		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
 	};
 }
@@ -1015,6 +1002,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
 		if (size > 1 && !machine?.slots) throw new UserError("Choose a machine reporting slots for a large sandbox.", { code: "bad_input" });
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
+		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
@@ -1218,6 +1206,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			await db.execute("DROP TABLE IF EXISTS github_grant");
 			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
 			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
 			await db.execute(`
@@ -1398,8 +1387,7 @@ export const user = actor({
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
 			try {
-				if (connection.webhookLinked) await setGithubInstallations(c, c.key[0], connection.installations.map(i => i.id));
-				else await saveGithubConnection(c, c.key[0], { ...connection, webhookLinked: true });
+				await syncGithubWebhooks(c, c.key[0]);
 			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
 		}
 		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
@@ -1501,6 +1489,7 @@ export const user = actor({
 		itemAttachmentLinks: (c, input: string) => itemActions.itemAttachmentLinks(c, input),
 		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
 		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
+		itemFeed: (c): ItemFeed => itemActions.itemFeed(c),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
@@ -1752,7 +1741,7 @@ export const user = actor({
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
-			await saveGithubConnection(c, profile.uid, connection);
+			await replaceGithubConnection(c, profile.uid, connection);
 			c.vars.reached = true;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
@@ -1766,7 +1755,7 @@ export const user = actor({
 			// on the list until they would have expired: one of them must not bring the connection back.
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			const wasConnected = c.vars.github !== null;
-			await saveGithubConnection(c, profile.uid, null);
+			await replaceGithubConnection(c, profile.uid, null);
 			await dropHostedSnapshots(profile.uid);
 			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
@@ -1779,8 +1768,7 @@ export const user = actor({
 			if (typeof query !== "string" || query.length > 200) throw new UserError("Search for part of a repository's name.", { code: "bad_input" });
 			try {
 				// Asked for anew: somebody who has just added a repository at GitHub wants to see it.
-				if (fresh === true) forgetGithubCaches();
-				return await listRepositories(app, connection, query);
+				return await listRepositories(app, fresh === true ? { ...connection, refreshedAt: Date.now() } : connection, query);
 			} catch (error) {
 				throw githubError(c.log, error, "The repositories could not be listed. Try again.");
 			}
@@ -2201,6 +2189,11 @@ export const user = actor({
 			const nonce = newNonce();
 			await rememberPending(c, nonce, null);
 			return { state: issueState(c.key[0]!, nonce, String(origin)) };
+		},
+
+		internalUpdateGithubInstallation: async (c, change: InstallationChange) => {
+			requireServiceFor(c, "call");
+			await updateGithubInstallation(c, c.key[0], change);
 		},
 
 		/** The connection, for a session that is about to clone or push. */
