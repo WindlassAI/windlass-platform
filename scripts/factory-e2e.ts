@@ -1297,7 +1297,8 @@ async function memoryChecks(): Promise<void> {
 							lost = false;
 							throw new Error("the reply was lost");
 						}
-						return { id: made?.id, title: made?.task.title, place: made?.place, createdAt: T, revision: 0 };
+						// The live feed groups by repository and source (item-pages.ts, `itemFeed`).
+						return { id: made?.id, title: made?.task.title, place: made?.place, createdAt: T, revision: 0, state: "draft", source: "web", repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main", private: true, url: "" } };
 					},
 				}),
 			},
