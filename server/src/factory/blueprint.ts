@@ -149,7 +149,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 		f.awaiting = null;
 	}
 	change.item.revision += 1;
-	return { item: change.item, effects: change.effects, events: change.events, ...(change.feedback.length && { feedback: change.feedback }), ...(change.storeVerdict && { storeVerdict: change.storeVerdict }) };
+	return { item: change.item, effects: change.effects, events: change.events, ...(change.feedback.length && { feedback: change.feedback }), ...(change.storeVerdict && { storeVerdict: change.storeVerdict }), ...(change.tookReview && { tookReview: change.tookReview }) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -158,6 +158,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 
 class Change {
 	storeVerdict?: Outcome["storeVerdict"];
+	tookReview?: string;
 	readonly effects: Effect[] = [];
 	readonly events: ItemEvent[] = [];
 	readonly feedback: FeedbackDecision[] = [];
@@ -1169,6 +1170,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	const words = { approve: "approves", changes_requested: `asks for changes (${blocking} blocking)`, needs_person: "needs you" };
 	c.say(`The second review of ${shortSha(pending.head)}: ${words[filed.recommendation]}.`);
 	const assessment = { recommendation: filed.recommendation, blocking };
+	c.tookReview = filed.id;
 	pending.filed = { id: filed.id, ...assessment };
 	pending.open = open;
 	// A feature's review stays advisory: its findings go to the person with the handover.

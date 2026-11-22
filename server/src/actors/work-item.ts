@@ -350,8 +350,10 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 		stored.meta.reviewBase = null;
 	}
 	if (outcome.storeVerdict && baseSha && /^[0-9a-f]{40}$/.test(baseSha)) stored.meta.reviewBase = { head: outcome.storeVerdict.verdict.head, sha: baseSha };
-	const filing = fact.kind === "review_ended" && fact.review?.id === outcome.item.run?.ci?.secondReview?.review ? fact.review : null;
-	if (filing) stored.meta.handoffReview = { recommendation: filing.recommendation, reason: null };
+	const handedFiling = fact.kind === "review_ended" && fact.review?.id === outcome.item.run?.ci?.secondReview?.review ? fact.review : null;
+	if (handedFiling) stored.meta.handoffReview = { recommendation: handedFiling.recommendation, reason: null };
+	// Every filing the blueprint took is kept, the rounds that sent the builder back too: the page shows each round.
+	const filing = handedFiling ?? (fact.kind === "review_ended" && fact.review && fact.review.id === outcome.tookReview ? fact.review : null);
 	if (handoff && before.run?.n === outcome.item.run?.n) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
 	// The item, its revision and its data are taken from this decision now: a later decision, made while this
 	// one waits for its write, changes `stored` and must not be written beside this one's data.

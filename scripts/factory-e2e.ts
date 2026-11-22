@@ -556,7 +556,9 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review loop", body: "Change the homepage. (review-loop)", start: true });
 			const view = await untilItem(user, item.id, "the second round's handoff", v => v.state === "review" && v.reviews.length === 2 && v.verifiedCheck?.state === "completed", 2 * CI_WAIT_MS).catch(async (error) => {
 				const now = await user.item(item.id);
-				throw new Error(`${error instanceof Error ? error.message : String(error)}: ${stateOf(now)}, step ${now.run?.step.kind}, ${now.reviews.length} reviews; ${said(now).slice(-6).join(" | ")}`);
+				const replies = now.reviewerSessionId ? (await client.agentSession.get([auth.profile.uid, now.reviewerSessionId], { params: { token: auth.token } }).snapshot()).timeline
+					.flatMap(e => e.kind === "windlass" && e.event.type === "fake.review_reply" ? [JSON.stringify(e.event.data).slice(0, 300)] : e.kind === "user" ? [`prompt: ${e.text.slice(0, 120)}`] : []) : [];
+				throw new Error(`${error instanceof Error ? error.message : String(error)}: ${stateOf(now)}, step ${now.run?.step.kind}, ${now.reviews.length} reviews; ${said(now).slice(-6).join(" | ")}; reviewer: ${replies.join(" | ")}`);
 			});
 			const [first, second] = view.reviews;
 			assert(first.recommendation === "changes_requested" && first.round === 1 && first.blocks.some(b => b.kind === "finding" && b.id === "r1.f1" && b.severity === "blocking"), `round 1: ${first.recommendation} ${first.round}`);

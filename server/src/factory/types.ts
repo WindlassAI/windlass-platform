@@ -399,6 +399,8 @@ export interface Outcome {
 	feedback?: FeedbackDecision[];
 	/** The same object as given when the fact changed nothing. */
 	item: FactoryItem;
+	/** The id of the review filing this fact's review turn filed and the blueprint took (any round, handed over or not): the actor keeps it with the item. */
+	tookReview?: string;
 	/** Store beside the item before performing the outbox. This effect never goes to GitHub. */
 	storeVerdict?: VerdictEffect;
 	effects: Effect[];

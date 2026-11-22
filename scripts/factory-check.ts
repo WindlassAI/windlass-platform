@@ -517,6 +517,7 @@ print("\n== R4: the second review sends the builder back");
 		if (o.item.run?.step.kind !== "review_fix" || !d || d.to !== undefined || d.agent !== null) return "the fix is not a builder turn of its own step";
 		if (!deliverIs(o, t => t.includes("r1.f1: Finding r1.f1") && t.includes("Fix r1.f1.") && t.includes("src/add.ts, lines 3–4") && t.includes("concerns"))) return "the fix turn lacks the finding";
 		if (o.item.run.rounds.review !== 1) return `rounds.review is ${o.item.run.rounds.review}`;
+		if (!o.tookReview?.endsWith(":1:5:1")) return `the filing was not taken for the page (${o.tookReview})`;
 		return holds(check?.key === reviewHead && check.state === "in_progress" && check.title === "Second review asked for changes; round 2 is being worked on" && o.item.pendingChecks?.find(p => p.sha === reviewHead)?.reviewRound === 1, "H(1)'s check does not say round 2 is being worked on");
 	} };
 	const fixed = (head: string): Row[] => [
