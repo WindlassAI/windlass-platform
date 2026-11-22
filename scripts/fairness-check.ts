@@ -97,18 +97,19 @@ esac
 }
 
 test("a resumed sandbox adopts this runner's CPU policy", async t => {
-	const docker = mockInspect(t, "exited", "update|start) exit 0 ;;");
+	const docker = mockInspect(t, "exited", "update|start|exec) exit 0 ;;");
 	const options = { machine: identity.machineId, dataVolume: async () => "fixture", slots: { max: 2, unit: { cpus: 0.75, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } } };
 	assert.ok(await new DockerSandboxes(options).connect(sandboxId));
 	assert.deepEqual(docker.calls(), [
 		`update --memory 1536m --memory-swap 1536m --cpu-shares 256 --cpus 0.75 --pids-limit 512 ${sandboxName}`,
 		`start ${sandboxName}`,
+		`exec ${sandboxName} /bin/sh -c /bin/rm -f -- /home/agent/.local/share/windlass/access-token-*.json /home/agent/.local/share/windlass/access-token-*.json.tmp`,
 	]);
 });
 
 test("a daemon refusal to lower memory leaves the running session usable", async t => {
 	const docker = mockInspect(t, "running", `
-		pause|unpause) exit 0 ;;
+		pause|unpause|exec) exit 0 ;;
 		system) cat >/dev/null; printf 'HTTP/1.0 200 OK\\r\\n\\r\\n{"memory_stats":{"usage":4096}}' ;;
 		update) echo 'memory limit is below current usage' >&2; exit 1 ;;
 	`);
@@ -119,6 +120,7 @@ test("a daemon refusal to lower memory leaves the running session usable", async
 		`pause ${sandboxName}`, "system dial-stdio",
 		`update --memory 1024m --memory-swap 1024m --cpu-shares 256 --cpus 1 --pids-limit 512 ${sandboxName}`,
 		`unpause ${sandboxName}`,
+		`exec ${sandboxName} /bin/sh -c /bin/rm -f -- /home/agent/.local/share/windlass/access-token-*.json /home/agent/.local/share/windlass/access-token-*.json.tmp`,
 	]);
 });
 
