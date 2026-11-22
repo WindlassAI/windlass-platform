@@ -153,26 +153,25 @@ export function ciSentence(ci: Verdict["ci"]): string {
 }
 
 /** The verdict in plain sentences, for the item page and the line on the pull request. */
+export function verdictHeadline(verdict: Verdict): string {
+	switch (verdict.result) {
+		case "fail": return "Failing.";
+		case "incomplete": return "Incomplete: the last turn did not finish.";
+		case "unverified": return verdict.moved ? "Not verified: the pull request has a newer commit." : "Not verified.";
+		case "pass":
+			if (verdict.flags.length) return "Needs a look.";
+			switch (verdict.ci.state) {
+				case "unread":
+				case "not_permitted": return "Your checks passed; CI has not been read.";
+				case "timed_out": return "Your checks passed; CI had not finished.";
+				case "not_run": return "Your checks passed; CI did not start.";
+				default: return "Ready for review.";
+			}
+	}
+}
+
 export function verdictWords(verdict: Verdict, gate: GateEvidence | null): string {
-	const head =
-		verdict.result === "pass"
-			? verdict.flags.length > 0
-				? "Needs a look."
-				: // A pass on the person's checks while CI has not spoken: the first words say both halves, not "ready".
-					verdict.ci.state === "unread"
-					? "Your checks passed; CI has not been read."
-					: verdict.ci.state === "timed_out"
-						? "Your checks passed; CI had not finished."
-						: verdict.ci.state === "not_run"
-							? "Your checks passed; CI did not start."
-							: "Ready for review."
-			: verdict.result === "fail"
-				? "Failing."
-				: verdict.result === "incomplete"
-					? "Incomplete: the last turn did not finish."
-					: verdict.moved !== null
-						? "Not verified: the pull request has a newer commit."
-						: "Not verified.";
+	const head = verdictHeadline(verdict);
 	// No checks set is no shortcoming: checks are the person's choice, and CI decides without them.
 	const gateSaid =
 		!gate?.verified ? "The turn left no record of its checks; CI decides." : gate.verified.state === "none_set" ? "No checks are set for this repository; CI decides." : verifiedHeadline(gate.verified);

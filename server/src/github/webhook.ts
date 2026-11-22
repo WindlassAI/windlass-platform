@@ -104,7 +104,7 @@ export async function webhookRoute(request: Request): Promise<Response | null> {
 	} catch {
 		return refuse(request, 400, "bad_json", "The delivery body must be JSON.");
 	}
-	const delivery = edge(event, payload, { slug: app.slug, guid, at: Date.now() });
+	const delivery = edge(event, payload, { slug: app.slug, appId: app.appId, guid, at: Date.now() });
 	if (!delivery) {
 		if (event === "ping") console.log(`github.webhook.ping delivery=${guid}`);
 		return json(202, { taken: false });

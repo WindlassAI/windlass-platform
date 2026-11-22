@@ -482,7 +482,7 @@ Only hosted sandboxes, the layer `WLP_SANDBOX` chooses, are counted. A session s
 or one of its user's machines ([Machines of your own](machines.md)). The platform's limits do not hold a machine's
 sessions (`hostedLimitsApply`): their sandboxes take no sandbox time and no kept place and have no price,
 and their turns do not count towards the hosted limit on agents working at once. Each runner has its own
-`--max-turns` limit (default 2). Its owner can also cap running and kept containers with `--max-running`
+machine-sized slot limit (`--slots`, also accepted as `--max-turns`). Its owner can also cap running and kept containers with `--max-running`
 and `--max-sandboxes`. The usage page lists a machine's sandboxes apart, under "On your machines": "Not counted
 against your daily sandbox time, running agents or kept sandboxes."
 

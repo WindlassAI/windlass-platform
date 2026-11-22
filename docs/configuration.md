@@ -59,6 +59,8 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_TURN_TIMEOUT_MS` | how long one turn may run (default 45 minutes). The durations that keep its access token fresh are constants and hold for a turn of any length |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_SERVER_APPROVAL_TTL_MS` | how long an approval of a project's MCP server is remembered for its user (default and most: 30 days, which is how long Windlass keeps its own). A shorter time is for the checks |
+| `WLP_SNAPSHOTS` | `on` enables post-setup snapshots for Docker Windlass sessions. Defaults to `off`. |
+| `WLP_SNAPSHOT_MIN_SETUP_MS` | Minimum successful setup duration for saving a snapshot. Defaults to 30000 and can be raised. |
 | `WLP_SETUP_TIMEOUT_MS` | how long a repository's setup command may run in a new sandbox before the platform stops it (default 10 minutes) |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
@@ -183,3 +185,13 @@ Read at build time (Vite) unless a row says otherwise.
 Actor data is in `.data/.rivetkit`; stop the server and remove that directory to start from nothing.
 `sandbox/cleanup.sh --keep-image` removes every container and volume this project made; the sign-ins in the
 users' actors go with the actor data.
+
+## Docker setup snapshots
+
+A snapshot lives on the Docker daemon that ran setup. Windlass keeps one image per user and repository there. The cache key includes the image ID, OS and architecture, sandbox profile, screenshots variant, network mode, setup text, lockfile contents and toolchain pins. Every `package.json` and recognized dependency file contributes its Git blob ID. A hosted deployment keeps its index identity in `snapshot-deployment` under `RIVETKIT_STORAGE_PATH`. Preserve that directory when replacing the server. If the tree has no recognized lockfile or GitHub cannot provide a complete tree, the session uses the ordinary setup path. Editing setup or reconnecting GitHub changes the settings generation. A new session verifies access and the fetched revision before it skips setup.
+
+Each machine allows 10 GB of incremental image storage, with a 2 GB share per user. Eviction removes the least recently used images first. Sweeps and new saves evict oldest-first when the Docker filesystem has less than 15 GB free. Images expire after 14 days unused. An evicted image still counts toward both caps until its last container releases it.
+
+Machine snapshots require signed runner connections. Create and save use the authenticated protocol 2 session. The runner verifies each retention answer with the certified online platform key against its paired root. Protocol 1 sessions start cold. Connected runners check retention every 15 minutes and retire images from previous pairings. Hosted Docker uses the server's local index.
+
+To measure startup on a development host, run `WLP_SANDBOX=docker pnpm --filter @windlass-platform/server exec tsx ../scripts/e2e.ts --snapshot-benchmark` from the repository root. It uses a small local fixture repository served by a GitHub App stand-in and runs three alternating pairs of scripted turns with snapshots off and on. Each row reports elapsed time from sandbox creation to the first Windlass event, setup duration and their difference in milliseconds.

@@ -35,6 +35,7 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../item-pages.js";
 import { API_TOKEN_WINDOW_MS, API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { attachmentKey } from "../factory/attachments.js";
@@ -861,10 +862,19 @@ export const itemActions = {
 		if (!link) throw new UserError("That item or attachment does not exist.", { code: "item_not_found" });
 		return link.url;
 	},
-	listItems: (c: ItemsCtx): ItemSummary[] => {
+	listItems: (c: ItemsCtx, page?: unknown): ItemSummary[] => {
 		requireUser(c);
 		enabled();
-		return itemList(c.vars.items);
+		// Without a page, the whole list, as the live feed sends it; with one, a page of it (item-pages.ts).
+		let clean: CleanPage | null;
+		try {
+			clean = cleanItemPage(page);
+		} catch (error) {
+			if (error instanceof ItemPageProblem) throw new UserError(error.message, { code: "bad_input" });
+			throw error;
+		}
+		const list = itemList(c.vars.items);
+		return clean === null ? list : itemPage(list, clean);
 	},
 
 	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {

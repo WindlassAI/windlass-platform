@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 import { performance } from "node:perf_hooks";
 import { ServerChannel, RunnerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
 import { controlProof, parseRunnerFrame, parseServerFrame, sessionProof } from "../server/src/runner/control.js";
-import { certify, machineStatement, platformWelcome, readPlatformKey, runnerHandshake, signRemoval, verifyRemoval, type Trust } from "../server/src/runner/frame-auth.js";
+import { certify, machineStatement, platformWelcome, readPlatformKey, runnerHandshake, signRemoval, verifyRemoval, retentionRequest, signRetention, verifyRetention, type Trust } from "../server/src/runner/frame-auth.js";
 import { stub, until } from "./runner-stub-server.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 import type { Executor } from "../runner/src/docker-executor.js";
@@ -328,6 +328,36 @@ async function benchmark() {
 try {
 	if (!selected || ["1","2","5","6"].includes(selected)) await controlChecks();
 	await sessions(); await oldRunner(); await startup();
+	await check(12, "retention answer requires the paired root, request nonce, generation list and current serial", () => {
+		const request = retentionRequest(who.uid, who.machineId, Date.now(), "fixture-nonce");
+		const answer = signRetention(request, ["f".repeat(64)], identity);
+		const pin = trust();
+		assert.throws(() => verifyRetention(request + "x", answer, pin), /signature/);
+		assert.throws(() => verifyRetention(request, { ...answer, generations: [] }, pin), /signature/);
+		const other = readPlatformKey(certify(generateKeyPairSync("ed25519").privateKey, 1, untilExpiry));
+		assert.throws(() => verifyRetention(request, signRetention(request, [], other), pin), /certificate/);
+		verifyRetention(request, answer, pin);
+		pin.pin.maxSerial++;
+		assert.throws(() => verifyRetention(request, answer, pin), /serial/);
+	});
+	await check(13, "protocol 1 refuses prepared creation and saving before dispatch", async () => {
+		const c = channels(false);
+		try {
+			const wire = c.connect();
+			const key = { repo: "1", attempt: "a".repeat(32), inputs: "b".repeat(64), generation: "c".repeat(64) };
+			const ops = [
+				() => c.server.request("create", { profile: "docker-hardened", prepared: { ...key, writer: true, privateData: false } }),
+				() => c.server.request("saveSnapshot", { id: "box", source: { ...key, commit: "d".repeat(40), created: 1 } }),
+			];
+			for (const op of ops) {
+				const rejected = assert.rejects(op, /authenticated session/);
+				wire.r.receive(wire.s.out.shift()!);
+				wire.s.receive(wire.r.out.shift()!);
+				await rejected;
+			}
+			assert.equal(c.ops(), 0);
+		} finally { c.close(); }
+	});
 	await check(10, "offline removal binds machine, request nonce and pruning policy", () => {
 		const pin = trust(), nonce = randomBytes(32).toString("base64url");
 		const answer = signRemoval(who.uid, who.machineId, nonce, false, identity);
@@ -339,17 +369,19 @@ try {
 	});
 	await check(11, "directional keys, strict schemas, catalog/report/host and counter gaps", () => {
 		const ctx = { uid: who.uid, machineId: who.machineId, challenge: randomBytes(32).toString("base64url") };
-		const runner = runnerHandshake(ctx, { kind: "hello", epoch: "fixture-epoch" }, machine.privateKey);
+		const slots = { max: 3, unit: { cpus: 2, memoryBytes: 8 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: 4 * 2 ** 30 } };
+		const runner = runnerHandshake(ctx, { kind: "hello", epoch: "fixture-epoch", slots, runnerVersion: "0.2.0", time: Date.now() }, machine.privateKey);
+		assert.deepEqual(parseRunnerFrame(JSON.stringify(runner.hello)), runner.hello);
 		const server = platformWelcome(ctx, runner.hello, { kind: "welcome", idleSuspendMs: 60_000 }, identity);
 		assert.throws(() => runner.finish({ ...server.welcome, ...{ idleSuspendMs: 0 } }, trust(), endpoint), /signature/);
 		const rx = runner.finish(server.welcome, trust(), endpoint);
 		const options = { models: [{ id: "one", name: "One", efforts: [] }], modes: [], defaultModel: "one", checkedAt: 1 };
 		for (const frame of [{ kind: "catalog", id: "opencode", options }, { kind: "host", host: null },
-			{ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
+			{ kind: "report", slots, docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
 			const text = rx.seal(frame);
 			const fields = JSON.parse(text);
 			assert.throws(() => server.auth.open(JSON.stringify({ ...fields, unknown: "fixture" }), 131072), /mac/);
-			assert.equal(parseRunnerFrame(server.auth.open(text, 131072))?.kind, frame.kind);
+			assert.deepEqual(parseRunnerFrame(server.auth.open(text, 131072)), frame);
 		}
 		const text = server.auth.seal({ kind: "heartbeat" });
 		const peer = runner.finish(server.welcome, trust(), endpoint);

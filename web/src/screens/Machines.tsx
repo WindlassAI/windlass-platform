@@ -316,6 +316,22 @@ function sandboxLimit(machine: MachineSummary): string {
 	return caps.length === 0 ? "no limit" : caps.join(", ");
 }
 
+function machineCapacity({ slots, turns, host }: MachineSummary) {
+	const parts: string[] = [];
+	if (slots) {
+		const memory = Number((slots.unit.memoryBytes / 2 ** 30).toFixed(2));
+		parts.push(`${slots.max} slot${slots.max === 1 ? "" : "s"} × ${slots.unit.cpus} CPU · ${memory} GB`);
+		parts.push(`${slots.busy} busy${slots.queued ? `, ${slots.queued} queued` : ""}`);
+	} else if (turns) {
+		parts.push(`${turns.running} of ${turns.max ?? "any number of"} turns running${turns.queued ? `, ${turns.queued} queued` : ""}`);
+	}
+	if (host) {
+		const cpus = slots ? `${host.cpus} CPUs` : `${host.sandboxCpus} of ${host.cpus} CPUs for sandboxes`;
+		parts.push(`${cpus}, ${diskSize(host.memoryFreeBytes)} of ${diskSize(host.memoryBytes)} memory free`);
+	}
+	return parts.join(" · ");
+}
+
 export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: number }) {
 	return (
 		<li>
@@ -327,6 +343,7 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 				</a>
 			)}
 			<SandboxState state={sandbox.state} />
+			{sandbox.resizePending && <span>resized at next restart</span>}
 			<span className="machine-used" title={absoluteTime(sandbox.usedAt)}>
 				used {relativeTime(sandbox.usedAt, now)}
 			</span>
@@ -555,14 +572,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dt>Commands sandboxed by Windlass</dt>
 						<dd>{machine.commandSandbox === null ? <span className="tone-faint">not reported yet</span> : machine.commandSandbox.ok ? "yes" : <>no: {machine.commandSandbox.reason}</>}</dd>
 					</div>
-					{machine.turns || machine.host ? (
+					{machine.slots || machine.turns || machine.host ? (
 						<div>
 							<dt>Capacity</dt>
-							<dd>
-								{machine.turns ? `${machine.turns.running} of ${machine.turns.max ?? "any number of"} turns running${machine.turns.queued ? `, ${machine.turns.queued} queued` : ""}` : null}
-								{machine.turns && machine.host ? " · " : null}
-								{machine.host ? `${machine.host.sandboxCpus} of ${machine.host.cpus} CPUs for sandboxes, ${diskSize(machine.host.memoryFreeBytes)} of ${diskSize(machine.host.memoryBytes)} memory free` : null}
-							</dd>
+							<dd>{machineCapacity(machine)}</dd>
 						</div>
 					) : null}
 					<div>

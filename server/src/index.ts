@@ -11,10 +11,15 @@
  * See config.ts for the variables.
  */
 
+import { createClient, type Registry } from "./client.js";
+import { serviceParams } from "./auth.js";
+import { isActorGone } from "./actors/internal.js";
+import { RETENTION_PATH } from "./runner/frame-auth.js";
+
 import { runnerResponse } from "./runner-routes.js";
 import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
-import { config, githubConfig } from "./config.js";
+import { config, githubConfig, ownEngineEndpoint } from "./config.js";
 import { DEFAULT_ENDPOINT, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
 import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
@@ -58,6 +63,19 @@ if (config.browsers.tokens) {
 } else {
 	console.log(`[wlp] browsers: ${config.browsers.endpoint ?? "the endpoint the web app was built with"}, with no token (RIVET_ADMIN_TOKEN is not set)`);
 }
+if (layer.sandboxes.sweepSnapshots) {
+	let client: ReturnType<typeof createClient<Registry>> | undefined;
+	const sweep = () => layer.sandboxes.sweepSnapshots!(async uid => {
+		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
+		try {
+			const generations = await client.user.get([uid], { params: serviceParams() }).internalSnapshotGenerations();
+			return new Set(config.snapshots ? generations : []);
+		}
+		catch (error) { if (isActorGone(error)) return null; throw error; }
+	}).catch(() => console.warn("[wlp] snapshot expiry deferred"));
+	void sweep();
+	setInterval(sweep, 60 * 60_000).unref();
+}
 const signIns = await getSignIns();
 console.log(`[wlp] sign-in commands run in ${signIns.describe}`);
 const windlassProblem = (await layer.windlass.problem()) ?? (await signIns.check());
@@ -93,7 +111,7 @@ if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
 async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);
-	if ([RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
+	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	const api = await apiRoute(request);
 	if (api) return api;

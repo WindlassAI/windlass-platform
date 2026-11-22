@@ -43,6 +43,10 @@ async function testNode() {
 	};
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
 	Object.assign(workItem.config.actions!, {
+		checkPendingWrites: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			return (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE 'verified_check:%' LIMIT 1")).length > 0;
+		},
 		checkIssuePending: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
 			return (await c.db.execute("SELECT 1 FROM effects WHERE id='check_issue:pending'")).length > 0;
@@ -101,6 +105,10 @@ async function testNode() {
 		checkPlanning: (c: Ctx, enabled: boolean) => {
 			requireServiceFor(c, "call");
 			process.env.WLP_FACTORY_ORCHESTRATE = enabled ? "1" : "0";
+		},
+		checkCiTimeout: (c: Ctx, timeout: number) => {
+			requireServiceFor(c, "call");
+			Object.assign(CI_POLLING, { timeoutMs: timeout });
 		},
 		checkFallback: (c: Ctx, ms: number | null) => {
 			requireServiceFor(c, "call");
@@ -177,7 +185,7 @@ async function run() {
 		}
 	};
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
-		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
+		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_MAX_KEPT_SANDBOXES: "unlimited", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
 	});
 	let logs = "";
 	child.stdout.on("data", b => { logs += b.toString(); });
@@ -234,7 +242,7 @@ async function run() {
 			const poll = () => (handle() as unknown as { checkPoll(): Promise<{ id: string; due_at: number; effect: string } | null> }).checkPoll();
 			const published = await until("registered push", async () => {
 				const view = await g2User.item(item.id);
-				if (view.head && view.pullRequest && (await directory().internalFind({ head: view.head, installationId: installation.id })).some(r => r.itemId === item.id)) return { head: view.head, pr: view.pullRequest.number };
+				if (view.head && view.pullRequest && view.verifiedCheck && (await directory().internalFind({ head: view.head, installationId: installation.id })).some(r => r.itemId === item.id)) return { head: view.head, pr: view.pullRequest.number };
 			}, 45_000);
 			return { ...published, id: item.id, handle, poll, view: () => g2User.item(item.id) };
 		};
@@ -249,6 +257,135 @@ async function run() {
 		};
 		const countReads = (head: string) => standin.requests.filter(r => r.path.includes("/commits/" + head + "/check-runs")).length;
 		const ci = (head: string, state: string) => projectG2.ci.set(head, { runs: [], statuses: [{ context: "required", state }] });
+		const waitForWrites = async (id: string) => {
+			const probe = client.workItem.get([uid, id], service()) as unknown as { checkPendingWrites(): Promise<boolean> };
+			await until("finished check writes", async () => !(await probe.checkPendingWrites()));
+		};
+		const stop = async (id: string) => {
+			await g2User.actOnItem({ id, action: { kind: "cancel" } });
+			await waitForWrites(id);
+		};
+		await check("verified completions never wake a waiting item", async () => {
+			const item = await push();
+			const before = await item.poll();
+			const taken = [];
+			for (const event of ["check_run", "check_suite"]) {
+				const res = await standin.deliver(web, event, { installation: { id: installation.id }, repository: { id: projectG2.id },
+					action: "completed", [event]: { head_sha: item.head, app: { id: standin.appId, slug: "old-slug" } } }, { secret });
+				taken.push(await res.json());
+			}
+			assert.deepEqual(taken, [{ taken: false }, { taken: false }]);
+			assert.deepEqual(await item.poll(), before);
+			await stop(item.id);
+		});
+		await check("verified publication, recovery after a lost POST reply, and a foreign push", async () => {
+			standin.appPermissions.checks = "write";
+			standin.checkFault = "lose_reply";
+			const item = await push();
+			try {
+				const onHead = () => standin.checks.filter(r => r.repository === projectG2.id && r.head_sha === item.head);
+				await until("adopted pending check", async () => (await item.view()).verifiedCheck?.state === "in_progress", 30_000);
+				assert.equal(onHead().length, 1);
+				const pending = onHead()[0];
+				assert.equal(pending.name, "windlass/verified");
+				assert.equal(pending.status, "in_progress");
+				assert.equal(pending.external_id, "pending:" + item.id + ":1");
+				assert.ok(standin.requests.some(r => r.method === "PATCH" && r.path.endsWith("/check-runs/" + pending.id)));
+				assert.ok(standin.minted.some(t => t.repositoryIds?.join() === String(projectG2.id) && JSON.stringify(t.permissions) === JSON.stringify({ metadata: "read", checks: "write" })));
+				ci(item.head, "success");
+				await delivered("status", { sha: item.head, state: "success" });
+				await until("successful check", async () => (await item.view()).verifiedCheck?.conclusion === "success", 25_000);
+				const v = await item.view();
+				assert.equal(onHead().length, 1);
+				assert.equal(pending.external_id, v.verdicts.at(-1)?.id);
+				assert.equal(pending.details_url, origin + "/items/" + item.id);
+				assert.match(pending.output.summary, /Ready for review/);
+				assert.ok(!JSON.stringify(pending.output).includes(v.task.title));
+				const original = structuredClone(pending);
+				const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+				const foreign = "d".repeat(40);
+				pull.headSha = foreign;
+				await delivered("pull_request", { action: "synchronize", pull_request: { number: item.pr, merged: false, head: { sha: foreign } } });
+				await until("foreign head explicitly blocked", async () => (await item.view()).verifiedCheck?.conclusion === "action_required", 25_000);
+				assert.ok(standin.checks.some(r => r.head_sha === foreign && r.conclusion === "action_required"));
+				assert.deepEqual(onHead(), [original]);
+				assert.ok((await directory().internalFind({ head: foreign, installationId: installation.id })).some(r => r.itemId === item.id));
+				pull.headSha = item.head;
+				await delivered("pull_request", { action: "synchronize", pull_request: { number: item.pr, merged: false, head: { sha: item.head } } });
+				await until("original commit verified again", async () => {
+					const view = await item.view();
+					return view.verifiedCheck?.sha === item.head && view.verifiedCheck.conclusion === "success" && view.verdicts.at(-1)?.moved === null && pending.completed_at !== original.completed_at;
+				}, 25_000);
+				await g2User.actOnItem({ id: item.id, action: { kind: "send_back", note: "Private owner feedback" } });
+				await until("handed check reopened for rework", async () => standin.requests.some(r => r.method === "PATCH" && r.path.endsWith("/check-runs/" + pending.id) &&
+					(r.body as { output?: { title: string } }).output?.title === "Sent back: being reworked in run 2"));
+				await stop(item.id);
+				await until("cancelled check", async () => standin.checks.some(r => r.head_sha === item.head && r.conclusion === "cancelled"));
+			} finally {
+				if ((await item.view()).state !== "cancelled") await stop(item.id);
+				standin.checkFault = null;
+				standin.appPermissions.checks = "read";
+			}
+		});
+		await check("verified read-only installation still hands over and logs once after two pushes", async () => {
+			installation.permissions = { ...standin.appPermissions, checks: "read" };
+			standin.appPermissions.checks = "write";
+			const item = await push();
+			try {
+				const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+				ci(item.head, "failure");
+				await delivered("status", { sha: item.head, state: "failure" });
+				await until("second push", async () => (await item.view()).events.filter(e => e.said.startsWith("Pushed ")).length === 2, 35_000);
+				ci(item.head, "success");
+				await delivered("status", { sha: item.head, state: "success" });
+				await until("handoff without Checks write", async () => pull.requestedReviewers.includes(owner) && pull.comments.some(c => c.body.startsWith("<!-- windlass-item:" + item.id + " -->")), 25_000);
+				const view = await item.view();
+				assert.equal(view.verdict?.result, "pass");
+				assert.equal(view.verifiedCheck?.state, "not_posted");
+				assert.equal(view.events.filter(e => e.said === view.verifiedCheck?.said).length, 1);
+				assert.equal(logs.split(`github.verified_check.not_permitted installation=${installation.id} item=${item.id}`).length - 1, 1);
+				assert.ok(!standin.checks.some(r => r.external_id.includes(item.id)));
+			} finally {
+				await stop(item.id);
+				delete installation.permissions;
+				standin.appPermissions.checks = "read";
+			}
+		});
+		await check("verified permission refusals on token and create finish the effect", async () => {
+			standin.appPermissions.checks = "write";
+			try {
+				for (const [step, status] of [["token", 403], ["create", 403], ["create", 422]] as const) {
+					standin.checkTokenFault = step === "token" ? status : null;
+					standin.checkFault = step === "create" ? status : null;
+					const item = await push();
+					await until("refused pending check", async () => (await item.view()).verifiedCheck?.state === "not_posted");
+					await stop(item.id);
+					const view = await item.view();
+					assert.equal(view.events.filter(e => e.said === view.verifiedCheck?.said).length, 1);
+					assert.ok(!standin.checks.some(r => r.external_id.includes(item.id)));
+				}
+			} finally { standin.checkTokenFault = null; standin.checkFault = null; standin.appPermissions.checks = "read"; }
+		});
+		await check("verified Re-run reads finished CI after a pending handover", async () => {
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkCiTimeout(ms: number): Promise<void> };
+			await settings.checkCiTimeout(0);
+			standin.appPermissions.checks = "write";
+			const item = await push();
+			try {
+				ci(item.head, "pending");
+				await delivered("status", { sha: item.head, state: "success" });
+				const q = await until("CI timeout question", async () => (await item.view()).question, 25_000);
+				await g2User.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "hand_over" } });
+				await until("unfinished handover check", async () => (await item.view()).verifiedCheck?.conclusion === "action_required");
+				const run = standin.checks.find(r => r.head_sha === item.head)!;
+				const external = run.external_id;
+				ci(item.head, "success");
+				await delivered("check_run", { action: "rerequested", check_run: run });
+				await until("Re-run observed finished CI", async () => (await item.view()).verifiedCheck?.conclusion === "success");
+				assert.equal(run.external_id, external);
+				assert.equal(standin.checks.filter(r => r.head_sha === item.head).length, 1);
+			} finally { await stop(item.id); await settings.checkCiTimeout(90 * 60_000); standin.appPermissions.checks = "read"; }
+		});
 		await check("G2 signed CI and PR nudges, coalescing, installation isolation and live readings", async () => {
 			const item = await push();
 			const first = await item.poll(); assert.ok(first);
@@ -739,7 +876,7 @@ async function run() {
 			const subject = { id: 7, user, author_association: "OWNER", body: "@windlass-fk4w fix", commit_id: HEAD, path: "src/a", line: 9 };
 			const p = { ...shaPayload, action: "created", sender: user, issue: { number: 3, user, author_association: "OWNER" },
 				pull_request: { number: 4, head: { sha: HEAD }, merged: false }, review: { ...subject, state: "changes_requested" }, comment: subject };
-			const meta = { guid: randomUUID(), at: 42, slug: standin.slug };
+			const meta = { guid: randomUUID(), at: 42, appId: standin.appId, slug: standin.slug };
 			const take = (event: string, changes: object) => edge(event, { ...p, ...changes }, meta);
 			for (const action of ["labeled", "unlabeled", "closed", "reopened", "edited", "deleted", "transferred"]) {
 				assert.equal(take("issues", { action, label: { name: "windlass" } })?.event, "issues", action);
@@ -761,6 +898,10 @@ async function run() {
 				assert.deepEqual(take(event, { action: "completed", [event]: { head_sha: HEAD } })?.data, { head: HEAD });
 				assert.equal(take(event, { action: "created", [event]: { head_sha: HEAD } }), null);
 			}
+			const rerun = { id: "9007199254740993", name: "windlass/verified", head_sha: HEAD, app: { id: standin.appId } };
+			assert.deepEqual(take("check_run", { action: "rerequested", check_run: rerun })?.data, { head: HEAD, runId: rerun.id });
+			for (const other of [{ ...rerun, name: "other" }, { ...rerun, app: { id: 123, slug: standin.slug } }])
+				assert.equal(take("check_run", { action: "rerequested", check_run: other }), null);
 			for (const state of ["success", "failure", "error"]) assert.deepEqual(take("status", { state })?.data, { head: HEAD });
 			assert.equal(take("status", { state: "pending" }), null);
 			for (const event of ["installation", "installation_repositories"])
@@ -1009,7 +1150,9 @@ async function run() {
 			});
 		}
 		await check("sweep posts the exact 19-digit delivery id once and skips known GUIDs", async () => {
-			// Only these two failures belong to this scenario. Both are real signed HTTP attempts.
+			// A scheduled sweep may have already redelivered failures from earlier scenarios.
+			const firstRequest = standin.requests.length;
+			const attempts = () => standin.requests.slice(firstRequest).filter(r => r.method === "POST" && r.path.endsWith("/attempts"));
 			standin.deliveries.length = 0;
 			const existing = randomUUID(), missing = randomUUID(), unlinked = 96666;
 			assert.equal((await send(shaPayload, existing)).status, 202);
@@ -1024,7 +1167,7 @@ async function run() {
 			const failedId = standin.deliveries.find(d => d.guid === missing)!.id;
 			assert.notEqual(String(Number(failedId)), failedId);
 			await hooks.internalSweep();
-			assert.deepEqual(standin.requests.filter(r => r.method === "POST" && r.path.endsWith("/attempts")).map(r => r.path),
+			assert.deepEqual(attempts().map(r => r.path),
 				[`/api/v3/app/hook/deliveries/${failedId}/attempts`]);
 			assert.deepEqual(standin.deliveries.filter(d => d.redelivery).map(d => [d.guid, d.status_code]), [[missing, 202]]);
 			assert.equal(await known(missing), true);
@@ -1033,7 +1176,7 @@ async function run() {
 			await fixture(91234).checkFixture("expire", missing);
 			await inbox(91234).internalDue();
 			await hooks.internalSweep();
-			assert.equal(standin.requests.filter(r => r.path.endsWith("/attempts")).length, 1);
+			assert.equal(attempts().length, 1);
 			assert.ok(standin.requests.some(r => r.auth === "jwt" && r.path.includes("status=failure") && r.path.includes("per_page=100")));
 		});
 		await check("sweep shares 50 attempts across installations and resumes its three-page scan", async () => {

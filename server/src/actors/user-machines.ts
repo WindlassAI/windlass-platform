@@ -74,7 +74,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
 			profiles: report ? machineProfiles(machineLabel(row), report) : [], sendSecrets: !!row.send, agents: sessions.length,
-			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
+			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt, resizePending }) => ({ sessionId, state, usedAt, resizePending, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
 			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
 			...(report && { egress: report.egress ?? "open", allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
@@ -112,7 +112,7 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${minimum} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
 	if (!report) throw new UserError(`"${name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
-	return { name, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
+	return { name, slots: report.slots, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
 }
 
 /**

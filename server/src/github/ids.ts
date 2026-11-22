@@ -27,6 +27,11 @@ export function githubId(value: unknown): GithubId | null {
 	return Number.isSafeInteger(n) ? n : id;
 }
 
+/** GitHub may omit the id on older records. A present id takes precedence over the slug. */
+export function ownApp(app: { id?: unknown; slug?: unknown }, settings: { appId?: string; slug: string }): boolean {
+	return app.id != null ? decimalId(app.id) === settings.appId : typeof app.slug === "string" && app.slug.toLowerCase() === settings.slug.toLowerCase();
+}
+
 export function isGithubId(value: unknown): value is GithubId {
 	return value != null && githubId(value) === value;
 }

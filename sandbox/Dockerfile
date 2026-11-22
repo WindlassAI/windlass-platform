@@ -56,6 +56,7 @@ RUN set -eu; cd /tmp; \
 # told, in its own configuration file, to keep its cache under /tmp/.cache, which a command can write
 # with the sandbox and without it.
 RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
+ && install -d -o agent -g agent /tmp/.cache \
  && mkdir -p /workspace /home/agent/.local/share/windlass /home/agent/.config/pnpm /etc/uv /usr/local/etc \
  && chmod 700 /home/agent/.local/share/windlass \
  && printf 'cache=/tmp/.cache/npm\nupdate-notifier=false\n' > /usr/local/etc/npmrc \
@@ -117,7 +118,7 @@ RUN set -eu; cd /tmp; \
     printf 'export WLP_BROWSER=%s\n' "$WLP_BROWSER" > /etc/profile.d/wlp-browser.sh; \
     npm install -g --no-fund --no-audit "playwright-core@${PLAYWRIGHT_CORE_VERSION}"; \
     wlp-headless-shell --version; \
-    npm cache clean --force; rm -rf /root/.npm; find /var/lib/apt/lists /tmp -mindepth 1 -delete
+    npm cache clean --force; rm -rf /root/.npm; find /var/lib/apt/lists /tmp -mindepth 1 -delete; install -d -o agent -g agent /tmp/.cache
 COPY --chmod=0755 wlp-shot /usr/local/bin/wlp-shot
 USER agent
 ENV HOME=/home/agent

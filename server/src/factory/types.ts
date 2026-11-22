@@ -12,7 +12,7 @@
 
 import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
-import type { ChildPlacement } from "../contract.js";
+import type { CheckConclusion, ChildPlacement, ReviewRecommendation } from "../contract.js";
 import type { AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { ReviewerTaskInput } from "./reviewer-task.js";
@@ -94,6 +94,9 @@ export interface FeatureJob {
 }
 
 export interface FactoryItem {
+	/** Checks opened by this run, including a handed head reopened for rework. */
+	pendingChecks?: { sha: string; existingOnly: boolean }[];
+	lastReverifyAt?: number;
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
@@ -150,7 +153,8 @@ export interface Question extends ItemQuestion {
 /** base is the target branch. The actor supplies its pinned SHA to reviewerTask. */
 export type ReviewCheckout = { head: string; base: string; pr: number };
 export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "earlier"> & { verdictId: string };
-export type HandoffReview = { review: string; reviewNone: null } | { review: null; reviewNone: string };
+export type CheckReview = { recommendation: ReviewRecommendation; blocking: number };
+export type HandoffReview = { review: string; reviewNone: null; assessment?: CheckReview } | { review: null; reviewNone: string };
 
 /** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
@@ -188,6 +192,7 @@ export interface TurnSpend {
 }
 
 export type Fact =
+	| { kind: "reverify"; at: number; head: string }
 	| { kind: "feature_seed"; at: number; key: string; sha: string }
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
@@ -252,7 +257,21 @@ export type Fact =
  * the actor stores the effects with the state in one write and performs each by its key, so one that
  * is performed again after a crash or a deploy is the same request (§2.5). `at`: not before then.
  */
+export type VerifiedCheckEffect = {
+	kind: "verified_check";
+	key: string;
+	run: number;
+	step: NonNullable<ItemEvent["step"]>;
+	startedAt: number;
+	changedAt: number;
+	verdictId: string | null;
+	title: string;
+	summary: string;
+	existingOnly?: boolean;
+} & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
+
 export type Effect =
+	| VerifiedCheckEffect
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }

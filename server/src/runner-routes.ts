@@ -1,4 +1,4 @@
-import { signRemoval } from "./runner/frame-auth.js";
+import { RETENTION_PATH, retentionRequest, signRetention, signRemoval } from "./runner/frame-auth.js";
 import { randomBytes } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { createGrant, isActorGone } from "./actors/internal.js";
@@ -84,7 +84,10 @@ export async function runnerResponse(request: Request): Promise<Response> {
 		const now = Date.now();
 		if (Math.abs(now - input.time) > CLOCK_TOLERANCE_MS) return json(403, { reason: "clock", serverTime: now });
 		const { uid, machineId, signature, time } = input;
-		const result = await client.machine.get([uid, machineId], { params }).internalConnection(connectionProof(uid, machineId, time, input.nonce), signature, address === null)
+		const retention = pathname === RETENTION_PATH;
+		if (retention && (!input.nonce || !config.machines.identity)) return json(403, { code: "signed_runner_required" });
+		const statement = retention ? retentionRequest(uid, machineId, time, input.nonce!) : connectionProof(uid, machineId, time, input.nonce);
+		const result = await client.machine.get([uid, machineId], { params }).internalConnection(statement, signature, address === null)
 			.catch(error => { if (isActorGone(error)) return "unknown" as const; throw error; });
 		if (result === "unknown") return refusedConnection(json(403, { reason: "unknown" }));
 		if (typeof result === "object" && "retryAfter" in result) return rateLimited(result.retryAfter, "This machine has reached its connection limit. Try again later.");
@@ -92,6 +95,12 @@ export async function runnerResponse(request: Request): Promise<Response> {
 			const identity = config.machines.identity;
 			return json(410, identity && input.nonce ? signRemoval(uid, machineId, input.nonce, result.removeSandboxes, identity)
 				: { reason: "removed", removeSandboxes: result.removeSandboxes });
+		}
+		if (retention) {
+			const generations = config.snapshots ? await client.user.get([uid], { params }).internalSnapshotGenerations().catch(error => {
+				if (isActorGone(error)) return []; throw error;
+			}) : [];
+			return json(200, signRetention(statement, generations, config.machines.identity!));
 		}
 		const connection = await platformConnection();
 		const endpoint = config.machines.identity ? signedRunnerEndpoint(config.machines.publicUrl)

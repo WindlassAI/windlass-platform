@@ -2,12 +2,12 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** Map logical runner names to throwaway Docker resources, including archive requests. */
-export async function writeProofDocker(dir: string, prefix: string, realDocker: string, fixture?: { adapter: string; scenarios: string; lan: string }) {
+export async function writeProofDocker(dir: string, prefix: string, realDocker: string, fixture?: { adapter: string; scenarios: string; lan: string }, extraPrefixes: string[] = []) {
 	await writeFile(join(dir, "package.json"), '{"type":"commonjs"}\n');
 	await writeFile(join(dir, "docker"), `#!/usr/bin/env node
 const {spawnSync} = require("node:child_process");
 const {readFileSync} = require("node:fs");
-const pairs=[["wlp-session-", "${prefix}agent-"], ["wlp-harness-claude-", "${prefix}login-"]];
+const pairs=[["wlp-session-", "${prefix}agent-"], ["wlp-harness-claude-", "${prefix}login-"], ...${JSON.stringify(extraPrefixes.map((name, i) => [name, prefix + i + "-"]))}];
 function names(value, reverse=false) {
 	for(const [a,b] of pairs) value=reverse ? value.replaceAll(b,a) : value.replaceAll(a,b);
 	return value;

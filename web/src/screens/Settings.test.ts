@@ -57,3 +57,33 @@ it.each([true, false])("keeps the session on cancel and signs out with revoke AP
 		localStorage.clear();
 	}
 }, 15_000);
+
+it("says where the last agent started, with its agent and mode, and forgets it", async () => {
+	const client = createMockClient({ pace: 0 });
+	const auth = { token: "mock:chatgpt:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };
+	await client.user(auth).createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
+	saveAuth("mock", auth);
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	const settle = async () => {
+		for (let step = 0; step < 12; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
+	};
+	try {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		await settle();
+		const line = () => host.querySelector('[data-testid="last-start"]')?.textContent ?? "";
+		expect(line()).toContain("Claude Code");
+		expect(line()).toContain("Plan");
+		expect(line()).toMatch(/nas/i);
+		const forget = Array.from(host.querySelectorAll("button")).find((one) => one.textContent === "Forget");
+		await act(async () => forget!.click());
+		await settle();
+		expect(line()).toBe("Nothing remembered yet");
+		expect((await client.user(auth).account()).lastStart).toBeNull();
+	} finally {
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		localStorage.clear();
+	}
+}, 15_000);

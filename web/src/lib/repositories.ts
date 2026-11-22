@@ -8,7 +8,7 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import { MAX_TITLE_CHARS, type AccountDefaults, type GithubId, type HarnessId, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
+import { MAX_TITLE_CHARS, type AccountDefaults, type LastStart, type GithubId, type HarnessId, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -284,6 +284,24 @@ export function lastUsed(sessions: readonly SessionSummary[] | null, repositoryI
 		of,
 		repository: newest?.repository ? { kind: "github", repository: newest.repository } : newest?.repoUrl ? { kind: "address", url: newest.repoUrl } : null,
 	};
+}
+
+/** Where a new agent starts, with which agent, and in which mode, where none is chosen. */
+export interface StartedOn {
+	place: SandboxPlace | null;
+	harness: HarnessId | null;
+	/** That agent's mode: it is used only while the same agent is chosen. */
+	mode: string | null;
+}
+
+/**
+ * Where the user's next agent starts, per user: the start the server remembered
+ * (`AccountSettings.lastStart`), which outlives a deleted agent and follows the user to any browser.
+ * Only that: the list of agents is not asked, so forgetting it in Settings is what it says. A work
+ * item's agent never makes one. Nothing before the first agent, or once forgotten.
+ */
+export function startedOn(remembered: LastStart | null): StartedOn {
+	return remembered ? { place: remembered.place, harness: remembered.harness, mode: remembered.mode } : { place: null, harness: null, mode: null };
 }
 
 /**

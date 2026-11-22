@@ -62,18 +62,19 @@ import {
 	type VerdictRun,
 	type Waiting,
 } from "@contract";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
 
 /**
  * How the user's work items stand when the page loads (`?items=`): "all" (the default: every state,
  * wait, question and verdict, on three repositories), "few" (three questions on two repositories and
  * little else), "none" (no item and no API token), "full" (all of them, and as many API tokens as an
- * account may have), "features" ("few" and three orchestrated features: one whose plan waits for approval,
+ * account may have), "many" ("all" and 90 more ended items, for the Factory's pages of them), "features" ("few" and three orchestrated features: one whose plan waits for approval,
  * one running its subtasks, one whose subtask asks you), "loading" (nothing is ever answered), "failed" (nothing can be read) and "off"
  * (the deployment offers no work items: platform info has no `items`, and every call here but
  * `factoryLimits` is refused with `items_off`, as server/src/actors/user-items.ts refuses them without WLP_ITEMS).
  */
-export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "loading", "failed", "off"] as const;
+export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "many", "loading", "failed", "off"] as const;
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
@@ -546,7 +547,28 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
 	if (state === "few" || state === "features") return all.filter((seed) => [3, 18, 21, 22, 24].includes(seed.n));
+	if (state === "many") return [...all, ...onMachines(), ...manyEnded()];
 	return [...all, ...onMachines()];
+
+	/** Ended items of a long-used factory: done mostly, some failed or cancelled, one every few hours, the oldest weeks ago. */
+	function manyEnded(): Seed[] {
+		const titles = ["Bump the date library", "Trim the import log", "Rename the tide constants", "Cache the station list", "Drop the old chart colours", "Fix the flaky clock test", "Tidy the release notes", "Split the importer module", "Retry the feed download", "Lint the docs examples"];
+		const repos = [HARBOR, TIDES, DOCS];
+		return Array.from({ length: 90 }, (_, index): Seed => {
+			const state: ItemSummary["state"] = index % 11 === 5 ? "failed" : index % 13 === 7 ? "cancelled" : "done";
+			const filed = (40 + index * 5) * 60;
+			return {
+				n: 400 + index,
+				title: `${titles[index % titles.length]}${index >= titles.length ? ` (${Math.floor(index / titles.length) + 1})` : ""}`,
+				on: repos[index % repos.length] as typeof HARBOR,
+				state,
+				filed,
+				...(state === "done" ? { pr: 100 + index } : {}),
+				run: { n: 1, started: filed, ended: filed - 50, stopReason: state === "failed" ? "ci" : state === "cancelled" ? "cancelled" : null, rounds: { plan: 0, gate: 0, ci: state === "failed" ? 2 : 0, conflict: 0 }, step: { n: 6, kind: state === "done" ? "merged" : "implement", started: filed - 50 } },
+				spent: { tokens: 300_000 + (index % 7) * 110_000, turns: 1 + (index % 3), activeSeconds: (20 + (index % 9) * 5) * 60, hostedSeconds: (20 + (index % 9) * 5) * 60 },
+			};
+		});
+	}
 
 	/** The items on the user's machines: each on a machine of the list that fits it, and left out where none does. */
 	function onMachines(): Seed[] {
@@ -847,7 +869,7 @@ export function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "f
 		verdict.result === "pass"
 			? verdict.flags.length > 0
 				? "Needs a look."
-				: verdict.ci.state === "unread"
+				: verdict.ci.state === "unread" || verdict.ci.state === "not_permitted"
 					? "Your checks passed; CI has not been read."
 					: verdict.ci.state === "timed_out"
 						? "Your checks passed; CI had not finished."
@@ -940,6 +962,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		head,
 		events,
 		verdicts,
+		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
 		reviewNone: place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
@@ -1231,7 +1254,7 @@ function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
 }
 
-const summaryOf = ({ plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
+const summaryOf = ({ plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -1307,6 +1330,8 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** One change of an item, as the step machine makes it: the revision goes up, and the log says what happened. */
 	function change(auth: AuthResult, item: ItemView, patch: Partial<ItemView>, said: string[], by: "person" | "platform"): void {
 		const at = deps.now();
+		if (item.verifiedCheck?.state === "in_progress" && (patch.state === "cancelled" || patch.state === "failed"))
+			item.verifiedCheck = { ...item.verifiedCheck, state: "completed", conclusion: "cancelled", said: "Stopped before it was verified" };
 		Object.assign(item, patch);
 		const run = item.run;
 		const step = run === null ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt };
@@ -1367,6 +1392,8 @@ export function createMockItems(deps: MockItemsDeps) {
 		const at = deps.now();
 		const before = item.run;
 		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
+		if (item.state === "review" && item.verifiedCheck?.state === "completed")
+			item.verifiedCheck = { ...item.verifiedCheck, state: "in_progress", conclusion: null, said: `Sent back: being reworked in run ${run.n}` };
 		if (item.mode === "orchestrate") {
 			run.step.kind = "refine"; run.step.turn = null; run.rounds.plan = 1;
 			const version = (item.plan?.version ?? 0) + 1;
@@ -1445,7 +1472,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
 					place: fit.decision.place, placement: fit.decision };
 				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
@@ -1547,9 +1574,18 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
-			async listItems() {
+			async listItems(page) {
 				await answer(240);
-				return listedItems(auth);
+				// As the server's: the whole list, or a page of it (server/src/item-pages.ts), with its refusal.
+				let clean: CleanPage | null;
+				try {
+					clean = cleanItemPage(page);
+				} catch (error) {
+					if (error instanceof ItemPageProblem) throw new PlatformError("user", error.message, { reason: "bad_input" });
+					throw error;
+				}
+				const list = listedItems(auth);
+				return clean === null ? list : itemPage(list, clean);
 			},
 			async item(id) {
 				await answer(220);
@@ -1627,6 +1663,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					head: null,
 					events: [],
 					verdicts: [],
+					verifiedCheck: null,
 					report: null,
 					review: place.kind === "machine" || deps.reviewer === false ? { state: "off", recommendation: null } : null,
 					reviews: [],

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { availableParallelism } from "node:os";
+import type { MachineSlotCapacity } from "../../server/src/contract.js";
 import type { Args } from "../../server/src/runner/protocol.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
@@ -17,17 +17,9 @@ export const image = SANDBOX_IMAGE;
 export const imagePins = () => ({ sandbox: image, "sandbox-shots": shotsImage, ...HARNESS_IMAGES });
 export const bubblewrap = "docker-windlass-sandbox";
 export type Profile = Args<"create">["profile"];
-export function runnerCpus(): number {
-	const setting = process.env.WLP_RUNNER_CPUS;
-	if (setting === undefined) return Math.max(0.5, availableParallelism() / 2);
-	const value = Number(setting);
-	if (!/^\d+(?:\.\d{1,9})?$/.test(setting) || !Number.isFinite(value) || value < 0.01)
-		throw new RunnerError("Give WLP_RUNNER_CPUS a CPU count of at least 0.01.");
-	return value;
-}
 
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
-export type Limits = { maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
+export type Limits = { slots?: MachineSlotCapacity | null; maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
 // The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
 export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^(?:claude|opencode)-/, "")}`;
 export function rawId(machine: string, id: string) {

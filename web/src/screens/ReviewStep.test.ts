@@ -115,6 +115,7 @@ describe("pages rendered with the mock", () => {
 			expect(strip.querySelector(".item-verdict") === null, title).toBe(reviewing);
 			expect(strip.querySelector(".item-verdict-head")?.textContent?.startsWith(reviewing ? "being reviewed" : "Ready for review"), title).toBe(true);
 			expect(strip.textContent?.includes("Its word is given when the second review is filed and the work is handed over."), title).toBe(reviewing);
+			if (!reviewing) expect(strip.textContent).toContain("On GitHub as windlass/verified: Success");
 			// The facts the verdict rests on are there either way.
 			expect(strip.querySelector(".item-facts"), title).not.toBeNull();
 		}
