@@ -55,6 +55,10 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	assert.ok(!taken.asked.text.includes("s3cr3t-value-123") && !taken.said.includes("s3cr3t-value-123"), "a saved secret is taken out");
 	assert.equal(taken.asked.text.split("\n").filter(line => line === "").length, 1, "runs of blank lines are one");
 	assert.deepEqual(taken.asked.options, ["SQLite", "Postgres"], "options are one line each, without repeats");
+	// A secret split by an invisible character is still taken out, and hidden text never reaches an option.
+	const split = askPerson({ question: "Is s3cr\u200b3t-value-123 the key? And s3cr\u{e0041}3t-value-123?", options: ["Postgres\u{e0049}\u{e0067}\u{e006e}", "My\u00adSQL\ufe0f"] }, fresh, redactor);
+	assert.ok(split.asked && !split.asked.text.includes("s3cr3t-value-123"), "a split secret is redacted");
+	assert.deepEqual(split.asked?.options, ["Postgres", "MySQL"], "tag characters, soft hyphens and variation selectors are stripped");
 	assert.deepEqual(askPerson({ question: "Again?" }, { already: true, left: 3 }, redactor), { asked: null, told: ASK_AGAIN, said: "The agent asked a second question in one turn, and was told to end its turn." });
 	assert.equal(askPerson({ question: "One more?" }, { already: false, left: 0 }, redactor).told, ASK_NONE_LEFT);
 	assert.equal(askPerson({ question: "One more?" }, { already: false, left: 0 }, redactor).asked, null);

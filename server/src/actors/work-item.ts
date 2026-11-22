@@ -28,6 +28,7 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
 import { batchText, feedbackWords, fingerprint, fits, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
@@ -1261,7 +1262,9 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 				budget[name] = value;
 			}
 			// An answer to the agent's question is the note: without words there is nothing to send it.
-			const answerNote = action.choice === "reply" && typeof action.note === "string" && action.note.trim() === "" ? undefined : action.note;
+			// A note that answers the agent goes to it as the person's words: nothing hidden in it may ride along.
+			const replyNote = action.choice === "reply" && typeof action.note === "string" ? action.note.replace(HIDDEN, "") : action.note;
+			const answerNote = action.choice === "reply" && typeof replyNote === "string" && replyNote.trim() === "" ? undefined : replyNote;
 			if (action.choice === "reply" && answerNote === undefined) throw bad("Write your answer to the agent.");
 			return { kind: "answer", at, by, question: action.question, choice: action.choice, note: note(answerNote, false), budget, ...agentsOf(action.agents) };
 		}

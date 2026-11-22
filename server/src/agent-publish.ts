@@ -283,6 +283,12 @@ export const REPORT_TAKEN = "Your report was filed. The platform publishes your 
 export const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g;
 /** Characters that change how text around them reads without being seen: direction overrides and isolates, zero-width marks, the byte-order mark. */
 export const INVISIBLE = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g;
+/**
+ * Every format character (Unicode Cf: soft hyphens, tag characters, joiners, direction marks), variation
+ * selectors and the fillers that render as nothing. Text made of these reads as nothing to the person but
+ * still reaches the agent, so an option could carry hidden words that the person then sends as their own.
+ */
+export const HIDDEN = /[\p{Cf}\u034f\u115f\u1160\u180e\u3164\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu;
 
 // ---------------------------------------------------------------------------------------------
 // The agent's question to the person (`ask_person`)
@@ -319,7 +325,8 @@ export function askPerson(given: Record<string, unknown>, state: { already: bool
 	const refuse = (told: string, said: string): AskTaken => ({ asked: null, told, said });
 	if (state.already) return refuse(ASK_AGAIN, "The agent asked a second question in one turn, and was told to end its turn.");
 	if (state.left <= 0) return refuse(ASK_NONE_LEFT, `The agent asked a question with none of this run's ${ASK_LIMITS.perRun} left, and was told to decide itself.`);
-	const clean = (value: string) => redactor.text(value).replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "");
+	// Invisible characters go before secrets are taken out, so a secret split by one cannot slip past and be rejoined.
+	const clean = (value: string) => redactor.text(value.replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "").replace(HIDDEN, ""));
 	if (typeof given.question !== "string") return refuse(`Not recorded. The question has to be text. Call ${ASK_TOOL} again.`, "The agent asked a question that is not text, so it was not recorded.");
 	const text = clean(given.question).replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
 	if (text === "") return refuse(`Not recorded. The question is empty. Call ${ASK_TOOL} again with your question.`, "The agent asked an empty question, so it was not recorded.");
