@@ -331,7 +331,7 @@ export class Executor extends MachineDocker {
 			signIn: !this.dockerHealth.ok ? "unknown" : this.opencodeLogin ? "token" : "none",
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", gitMirrors: true, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
@@ -383,7 +383,7 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }) {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string) {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
@@ -394,7 +394,7 @@ export class Executor extends MachineDocker {
 		await this.network.prepare();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
-		const input = { uid: this.identity.uid, sessionId, profile, size };
+		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
 		const raw = harness ? await withLoginVolume(this, () => (harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });

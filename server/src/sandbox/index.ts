@@ -62,7 +62,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 			image,
 			shotsImage: options.shotsImage,
 			machine: null,
-			deployment: snapshotDeployment(config.storagePath, config.snapshots),
+			deployment: snapshotDeployment(config.storagePath),
 			dataVolume: async (uid) => {
 				await ensureUserData(uid);
 				return userVolume(uid);

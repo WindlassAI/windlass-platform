@@ -28,6 +28,7 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
+import { gitMirrorMount } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
 import type { SnapshotSource } from "./snapshot-key.js";
 
@@ -498,6 +499,8 @@ export class DockerSandboxes implements Sandboxes {
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
 		const id = (harness ? harness + "-" : "") + randomId(6);
 		const name = containerName(id);
+		const scope = this.options.deployment ?? this.machine;
+		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(base, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
 		const relay = await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
@@ -527,6 +530,7 @@ export class DockerSandboxes implements Sandboxes {
 					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
 				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, "--log-driver", "none", ...relay.env] : []),
+				...(mirror ? ["--mount", mirror] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],
@@ -535,6 +539,8 @@ export class DockerSandboxes implements Sandboxes {
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
 			const message = result.stderr.trim();
+			// Eviction can race docker run. Older daemons also lack volume-subpath.
+			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message)) return this.create({ ...input, mirrorRepo: undefined });
 			if (selected && /No such image|not found/i.test(message)) return this.create({ ...input, fromSnapshot: undefined });
 			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);

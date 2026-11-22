@@ -1,5 +1,6 @@
 // Docker owns the index as well as the layers. Tags record last use across process restarts.
 // Every operation names a local image ID; a session request can never select a Docker image.
+import { MIRROR_ROOT, MIRROR_VOLUME, mirrorOwner, mirrorSlot } from "./git-mirrors.js";
 import { docker, LABEL, DATA_DIR, randomId } from "./docker.js";
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotKey, type SnapshotRequest, type SnapshotSource } from "./snapshot-key.js";
 
@@ -218,9 +219,17 @@ export class DockerSnapshots {
 			const box = await inspect("container", container);
 			const labels: Labels = box.Config.Labels;
 			const key = this.key(source, base, uid, profile);
+			// The optional mirror is excluded from docker commit like the data volume. Match
+			// both the destination and the actual subpath supplied to the daemon.
+			const mirrorPath = MIRROR_ROOT + "/" + mirrorOwner(uid, source.repo);
+			const mirror = box.HostConfig.Mounts?.some((m: {Type: string; Source: string; Target: string; VolumeOptions?: { Subpath?: string }}) =>
+				m.Type === "volume" && m.Source === MIRROR_VOLUME && m.Target === mirrorPath &&
+				m.VolumeOptions?.Subpath === mirrorSlot(this.deployment, this.machine, uid, source.repo));
+			const mounts = box.Mounts.filter((m: {Type: string; Name: string; Destination: string}) =>
+				!(mirror && m.Type === "volume" && m.Name === MIRROR_VOLUME && m.Destination === mirrorPath));
 			if (box.Image !== base.Id || (labels[S+".candidate"] !== key && labels[S+".candidate"] !== this.coldKey(source, uid, profile)) || labels[S+".attempt"] !== source.attempt || labels[LABEL+".uid"] !== uid ||
 				labels[LABEL+".profile"] !== profile || (labels[LABEL+".machine"] ?? "") !== this.machine ||
-				labels[LABEL+".harness"] || box.Mounts.length !== 1 || box.Mounts[0].Type !== "volume" || box.Mounts[0].Destination !== DATA_DIR) return false;
+				labels[LABEL+".harness"] || mounts.length !== 1 || mounts[0].Type !== "volume" || mounts[0].Destination !== DATA_DIR) return false;
 			// Commit merges container Config. Refuse extra labels or env (including Docker client proxy credentials).
 			const allowed = new Set([...Object.keys(base.Config.Labels ?? {}), LABEL, LABEL+".uid", LABEL+".session", LABEL+".profile", LABEL+".machine", LABEL+".egress", LABEL+".slots", LABEL+".requested-slots", S+".candidate", S+".attempt", variantLabel]);
 			const env = [...base.Config.Env, ...Object.entries(this.network?.env ?? {}).map(([k,v]) => k+"="+v)];

@@ -101,6 +101,8 @@ export interface CreateSandboxInput {
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
 	fromSnapshot?: SnapshotSelection;
+	/** Immutable GitHub repository ID for a transport-owned Docker mirror. */
+	mirrorRepo?: string;
 	/** Machine-only. The default harness uses the ordinary Windlass image. */
 	harness?: Exclude<HarnessId, "windlass">;
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */

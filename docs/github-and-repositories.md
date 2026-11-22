@@ -130,6 +130,30 @@ directory, token pipe and scanned objects are protected by Unix permissions. Thi
 on the sandbox keeping the agent unprivileged and its Git executable and system trust store under
 platform control. Machine runners must support the transport-user execution option.
 
+### Docker clone mirrors
+
+For connected GitHub repositories, the first successful clone can seed a bare Git mirror.
+On later clones Git negotiates with GitHub using the mirror as a local object reference
+(`--reference-if-able --dissociate`). GitHub supplies the current refs, including branch
+deletions. The transport checks the resulting clone with full fsck and checks for alternates
+before copying it to the workspace. The session records the base through the same independent
+GitHub confirmation used by a plain clone.
+
+A Docker daemon keeps up to 16 slots of 512 MiB each in `wlp-git-mirrors-v1`. Each slot is
+keyed by deployment, machine, platform user and immutable GitHub repository ID. Hosted Docker
+uses the snapshot deployment identity even when snapshots are disabled. A runner uses its
+paired machine identity and user. A short-lived allocator with networking disabled mounts the
+store, reserves space and evicts the least recently used unlocked slot. A session gets just its
+slot as a volume subpath. UID 65534 owns that directory with mode 0700. The volume stays out of
+prepared images. E2B sessions have no shared Docker volume and clone directly.
+
+Refresh happens on demand. The transport copies objects and refs from a successful private
+clone before handing it to the workspace. This costs at most five seconds of local cache work.
+A busy or missing mirror takes the plain clone path. A failed or stalled reference attempt has
+an eight-second deadline, after which its token is revoked and a plain clone gets a fresh
+repository-scoped read token. A runner advertises mirror support under either session protocol.
+A runner or Docker daemon without support takes the plain clone path.
+
 ### Enable the Factory check on GitHub
 
 1. Open **Settings → Developer settings → GitHub Apps → *your App* → Edit → Permissions & events**.
