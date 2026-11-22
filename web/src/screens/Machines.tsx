@@ -801,7 +801,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<div className="machine-setup-agents">
 							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
 							{offersCodex && <label><input type="checkbox" checked={codex} onChange={e => setCodex(e.target.checked)} /> Enable Codex</label>}
-						{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
 							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						</div>
