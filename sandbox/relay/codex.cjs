@@ -3,6 +3,7 @@ const { createPublicKey, randomUUID } = require('node:crypto');
 const { readFile, rename, rm, writeFile } = require('node:fs/promises');
 const { rmSync } = require('node:fs');
 const { Transform } = require('node:stream');
+const { StringDecoder } = require('node:string_decoder');
 const { providerFor } = require('./opencode.cjs');
 const { createRelay } = require('./server.cjs');
 
@@ -75,15 +76,17 @@ function codexProvider(provider, generation, options = {}) {
 			return target;
 		},
 		catalogFilter() {
+			// A model id's UTF-8 bytes may be split across chunks.
+			const decoder = new StringDecoder('utf8');
 			let body = '';
 			return new Transform({
 				transform(chunk, enc, done) {
-					body += chunk;
+					body += decoder.write(chunk);
 					done(body.length > 4 * 1024 * 1024 ? Error('Catalog too large') : undefined);
 				},
 				flush(done) {
 					try {
-						const catalog = JSON.parse(body);
+						const catalog = JSON.parse(body + decoder.end());
 						const ids =
 							provider === 'chatgpt'
 								? catalog.models.filter((m) => m.visibility !== 'hide').map((m) => m.slug)

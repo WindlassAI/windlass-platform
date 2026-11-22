@@ -5,6 +5,8 @@ import { mkdtemp, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { Readable } from 'node:stream';
+import { text } from 'node:stream/consumers';
 import { codexProvider, persist } from '../sandbox/relay/codex.cjs';
 
 test('Codex allows only the Responses and versioned model-list routes', async () => {
@@ -149,4 +151,10 @@ test('interleaved Responses deltas scrub a split credential and preserve other o
 	assert.ok(content.includes('hello'));
 	assert.ok(!content.includes(key.slice(0, 8)));
 	assert.ok(!content.includes(key.slice(8)));
+});
+test('the catalog filter keeps model ids whose UTF-8 bytes are split across chunks', async () => {
+	const auth = codexProvider('openai', 'g', { load: async () => ({ provider: 'openai', generation: 'g', key: 'sk-x' }) });
+	const bytes = Buffer.from(JSON.stringify({ data: [{ id: 'gpt-é-π-模型' }, { id: 'plain' }] }));
+	const out = await text(Readable.from(Array.from(bytes, (b) => Buffer.from([b]))).pipe(auth.catalogFilter()));
+	assert.deepEqual(JSON.parse(out), { data: [{ id: 'gpt-é-π-模型' }, { id: 'plain' }] });
 });
