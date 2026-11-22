@@ -295,16 +295,13 @@ export interface StartedOn {
 }
 
 /**
- * Where the user's next agent starts, per user: the newer of the start the server remembered
- * (`AccountSettings.lastStart`, which outlives a deleted agent and follows the user to any browser)
- * and the newest agent of theirs in the list (which is live, and covers a start the account was read
- * before). A work item's agent is neither. Nothing before the first agent.
+ * Where the user's next agent starts, per user: the start the server remembered
+ * (`AccountSettings.lastStart`), which outlives a deleted agent and follows the user to any browser.
+ * Only that: the list of agents is not asked, so forgetting it in Settings is what it says. A work
+ * item's agent never makes one. Nothing before the first agent, or once forgotten.
  */
-export function startedOn(remembered: LastStart | null, sessions: readonly SessionSummary[] | null): StartedOn {
-	const newest = ownAgents(sessions ?? []).sort(byLaunch)[0] ?? null;
-	if (remembered && (newest === null || remembered.startedAt >= newest.createdAt)) return { place: remembered.place, harness: remembered.harness, mode: remembered.mode };
-	if (newest) return { place: newest.place, harness: newest.harness ?? "windlass", mode: newest.mode };
-	return { place: null, harness: null, mode: null };
+export function startedOn(remembered: LastStart | null): StartedOn {
+	return remembered ? { place: remembered.place, harness: remembered.harness, mode: remembered.mode } : { place: null, harness: null, mode: null };
 }
 
 /**

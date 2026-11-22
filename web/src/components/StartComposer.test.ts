@@ -400,6 +400,16 @@ describe("what the start composer starts on", () => {
 		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
 	});
 
+	it("starts on the platform's own once the last start is forgotten, whatever the list of agents says", async () => {
+		await show({ before: async (mock) => (await lastOnNas(mock), void (await mock.user(ada).forgetLastStart())) });
+		created = [];
+		expect(value("on")).toBe("Hosted");
+		write("Look around");
+		await enter();
+		expect(created[0]?.place).toBeUndefined();
+		expect(created[0]?.harness).toBeUndefined();
+	});
+
 	it("falls back to a hosted Windlass agent when the last machine is gone, and says why", async () => {
 		await show({ before: claudeOnNasDeleted, machines: (list) => list.filter((machine) => machine.machineId !== "m_nas") });
 		created = [];

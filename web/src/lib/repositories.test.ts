@@ -314,24 +314,12 @@ describe("what is at work", () => {
 });
 
 describe("where a new agent starts, which agent, and its mode", () => {
-	const nas = { kind: "machine" as const, machineId: "m_nas" };
-	const agents = [session({ id: "a", createdAt: 100, harness: "windlass", mode: "ask" }), session({ id: "b", createdAt: 200, place: nas, harness: "claude", mode: "plan", repository: harbor }), session({ id: "item", createdAt: 300, item: { id: "i_1" } })];
-
-	it("is the remembered start when it is the newest, whatever the repository", () => {
+	it("is the start the server remembered, whatever the repository", () => {
 		const remembered = { place: { kind: "machine" as const, machineId: "m_box" }, harness: "opencode" as const, mode: "build", startedAt: 250 };
-		// Newer than every agent in the list (its agent was deleted since): it stands. A work item's agent is never a start.
-		expect(startedOn(remembered, agents)).toEqual({ place: remembered.place, harness: "opencode", mode: "build" });
-		expect(startedOn(remembered, null)).toEqual({ place: remembered.place, harness: "opencode", mode: "build" });
+		expect(startedOn(remembered)).toEqual({ place: remembered.place, harness: "opencode", mode: "build" });
 	});
 
-	it("is the newest agent in the list when that one is newer, or when nothing is remembered", () => {
-		const older = { place: { kind: "hosted" as const }, harness: "windlass" as const, mode: "auto", startedAt: 150 };
-		expect(startedOn(older, agents)).toEqual({ place: nas, harness: "claude", mode: "plan" });
-		expect(startedOn(null, agents)).toEqual({ place: nas, harness: "claude", mode: "plan" });
-	});
-
-	it("is nothing before the first agent", () => {
-		expect(startedOn(null, [])).toEqual({ place: null, harness: null, mode: null });
-		expect(startedOn(null, [session({ item: { id: "i_2" } })])).toEqual({ place: null, harness: null, mode: null });
+	it("is nothing before the first agent, or once forgotten: the list of agents is not asked", () => {
+		expect(startedOn(null)).toEqual({ place: null, harness: null, mode: null });
 	});
 });

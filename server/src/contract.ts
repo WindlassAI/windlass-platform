@@ -815,9 +815,9 @@ export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
  * Where the user's newest agent was started, with which agent and in which mode, as the server
  * remembered it when that agent was made (account-defaults.ts). Not a saved default: every agent the
  * user starts replaces it, a work item's sessions never do, and it outlives the agent it came from.
- * The start composer starts from it where nothing is chosen (or from the newest agent in the list,
- * when that one is newer); a machine that cannot be used now, or an agent it does not offer, leaves
- * the composer on this platform with Windlass, and it says so.
+ * The start composer starts where it runs, the agent and the mode from it where nothing is chosen; a
+ * machine that cannot be used now, or an agent it does not offer, leaves the composer on this
+ * platform with Windlass, and it says so. Forgotten (`forgetLastStart`), they start on the platform's.
  */
 export interface LastStart {
 	place: SandboxPlace;

@@ -317,7 +317,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
 	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", item ? "item" : "agent");
 	// A work item starts on this platform, as filing one always has; an agent where the last one ran.
-	const started = startedOn(account.settings?.lastStart ?? null, sessions);
+	const started = startedOn(account.settings?.lastStart ?? null);
 	const lastMachineId = !item && started.place?.kind === "machine" ? started.place.machineId : null;
 	const wantedMachine = placeChoice !== undefined ? placeChoice : lastMachineId;
 	// A machine that was removed or can no longer be chosen leaves the agent on this platform, which its chip says.

@@ -932,7 +932,7 @@ user's API tokens, with which a script files them ([Work items](work-items.md)).
 - **Where the last agent started.** Not a saved default: the place, the agent and the mode of the newest
   agent the user started, which the server writes in a row of its own when it makes that agent
   (`AccountSettings.lastStart`; a work item's agents never do). The launch form starts those three
-  from it, or from the newest agent in the list when that one is newer (`startedOn`); a machine that
+  from it, and from nothing else (`startedOn`), so forgetting it is what it says; a machine that
   cannot be used, or an agent it no longer offers, leaves it hosted with Windlass, and the form says
   so. `forgetLastStart` removes it.
 
