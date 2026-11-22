@@ -163,6 +163,7 @@ export function MachineState({ machine, now }: { machine: MachineSummary; now: n
 
 /** What the runner reported that needs the user, each only while it holds. */
 function Warning({ warning, machine, info, now }: { warning: MachineWarning; machine: MachineSummary; info: MachinesInfo; now: number }) {
+	if (warning.kind === "signing-disabled") return <p className="callout callout-warn" role="status"><WarnIcon />This runner requires signed connections. Ask the platform operator to enable them.</p>;
 	if (warning.kind === "outdated") {
 		const install = installCommand(info);
 		return (
@@ -171,7 +172,7 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 				<div>
 					<p className="callout-text">
 						This machine's runner is {machine.runnerVersion}; the platform needs {info.minRunnerVersion} or later, so it cannot connect.{" "}
-						{install ? "Update it on the machine: its volume keeps the key, so it stays paired." : "No newer runner is published yet."}
+						{install ? info.platformFingerprint ? "Update it on the machine and pair again to pin the platform key." : "Update it on the machine: its volume keeps the key, so it stays paired." : "No newer runner is published yet."}
 					</p>
 					{install ? <Command text={`docker rm -f windlass-runner\n${install}`} label="The update command" /> : null}
 				</div>

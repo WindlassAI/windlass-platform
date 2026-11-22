@@ -29,6 +29,32 @@ in-app docs ([Use your own machine](../web/src/docs/content/machines.md#add-a-ma
   the listing on its next report.
 - The Machines page names the image in `WLP_RUNNER_IMAGE` and the address in `WLP_PUBLIC_URL`.
 
+### Signed runner connections
+
+`WLP_REQUIRE_SIGNED_RUNNER` defaults to `0`. In this mode the server continues to accept protocol 1,
+advertises its original minimum of 0.1.0 and requires no platform identity key. Keep the current runner
+image advertised until cutover. With `WLP_REQUIRE_SIGNED_RUNNER=1` the minimum is 0.2.0. Both sockets
+require protocol 2. Update and re-pair each runner to obtain a new pairing with the platform root and
+gateway origin. Compare the fingerprint printed by the runner with the owner's offline copy.
+
+Pairing establishes initial trust over TLS. A signed runner checks the online certificate against the
+stored Ed25519 root, its expiry and the highest serial already seen on either socket. The runner signs
+its ephemeral X25519 key, nonce and hello fields. The certified platform key signs the corresponding
+welcome, including resume state and idle policy. On the session socket the one-use random attach ticket
+from the authenticated control socket serves as the platform challenge. Each connection derives fresh
+directional HMAC keys. A counter starts at zero in each direction. Verification precedes dispatch for
+control, catalog, report, host, session data and acknowledgments. A resumed conversation retains its
+message sequence and authenticates each retransmission under the new connection keys.
+
+The pinned endpoint is the gateway origin advertised at pairing. To move the gateway, certify the next serial with a
+root-signed endpoint statement. Discovery supplies the authorization before the runner sends a gateway
+token to the new origin. The verified welcome confirms the change before the runner saves it.
+An offline removal response binds the pruning instruction to a fresh signed discovery nonce. A removed machine receives no gateway lease.
+
+The transport can still be observed or interrupted by an edge terminating TLS. The platform identity
+protects message authenticity and ordering. The operator keeps the offline root separate from the
+platform's token-signing, sealing and backup keys. [Self-hosted cutover and rotation](../deploy/selfhost/README.md#enable-signed-runner-connections)
+
 ### Profiles allowed on this machine
 
 The `--allow-profile` rules are in the [runner reference](../web/src/docs/content/runner.md#allowed-profiles).
@@ -60,8 +86,7 @@ resumes it.
 The launch form lists the user's machines beside the platform's own sandboxes, each
 with its state. A machine whose runner has not reported yet cannot be chosen ("“nas” has not connected
 yet. Start its runner, and once the Machines page shows it online, start the agent again."), nor one
-whose runner is older than the platform takes ("The runner on “nas” is older than this platform takes:
-update it to 0.1.0 or later, then start the agent again."). A machine offers the two Docker profiles,
+whose runner is below the deployment’s minimum. The form names the required release. A machine offers the two Docker profiles,
 `docker-windlass-sandbox` and `docker-hardened`, as its runner last reported them: the first only where
 the owner allows it and bubblewrap starts in a container there.
 
@@ -341,6 +366,8 @@ asked.
 |---|---|
 | `WLP_MACHINES` | `1`: every user of the deployment may pair machines. Off (the default): the runner's routes answer 404, the machine actions refuse with `machines_off`, and platform info has no `machines`. The machines and their tables stay, so turning it off and on again loses nothing |
 | `WLP_PUBLIC_URL` | the platform's address as a machine outside reaches it: an `https://` origin, or `http://` on a loopback address, with no path. Required with `WLP_MACHINES=1` and a remote engine; with the local one, `http://localhost:<WLP_HTTP_PORT>` |
+| `WLP_REQUIRE_SIGNED_RUNNER` | `0` (default) serves protocol 1. `1` requires protocol 2 on both sockets. |
+| `WLP_PLATFORM_KEY` | certified online key required when machines and signed connections are enabled. |
 | `WLP_RUNNER_IMAGE` | the runner image the Machines page tells users to start, pinned by digest (`<name>@sha256:<64 hex>`). Unset: the page says that it cannot be installed yet. Set to anything else, the server does not start |
 
 ## Building the runner

@@ -3,6 +3,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
 import { validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { pairingTrust } from "./state.js";
 import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
@@ -156,7 +157,7 @@ async function main() {
 		let platform = origin(values.platform ?? paired?.platform ?? "");
 		let name = await resolveMachineName(values.name);
 		const launch = command === "setup" ? await setupImageAndMounts() : undefined;
-		let needsPair = command === "setup" || command === "pair" || !paired?.key;
+		let needsPair = command === "setup" || command === "pair" || !paired?.key || !paired?.pin;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;
 		function saveStatus(connection: string, idleSuspendMs?: number) {
@@ -236,7 +237,7 @@ async function main() {
 				let removed: string | undefined;
 				try {
 					removed = await control(owner, paired.key, platform, active, saveStatus,
-						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined, name);
+						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined, name, pairingTrust(paired));
 				} finally { connection.abort(); }
 				const request = await local;
 				if (request && !abort.signal.aborted) {

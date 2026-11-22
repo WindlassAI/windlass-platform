@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { spawn, execFileSync } from 'node:child_process';
@@ -14,6 +15,7 @@ for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'dec
 	const dir = await mkdtemp(join(root, '.setup-check-'));
 	const pin = 'sha256:'+'1'.repeat(64), id = 'm_'+'a'.repeat(16);
 	const asked = [];
+	const platformRoot = generateKeyPairSync("ed25519").publicKey.export({format:"der",type:"spki"}).toString("base64");
 	let refuseSetup = false;
 	const server = createServer(async (req,res) => {
 		let body=''; for await(const c of req) body+=c;
@@ -21,7 +23,7 @@ for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'dec
 		if (refuseSetup) { res.writeHead(403); res.end("{}"); return; }
 		res.setHeader('content-type','application/json');
 		res.end(JSON.stringify(req.url === '/runner/pair' ? {code:'ABCD-EFGH',pairing:'a'.repeat(43),pollSecret:'b'.repeat(43)}
-			: {state:'approved',uid:'fixture',machineId:id,githubLogin:'fixture-owner'}));
+			: {state:'approved',uid:'fixture',machineId:id,githubLogin:'fixture-owner',platformRoot,endpoint:'http://127.0.0.1:'+server.address().port}));
 	});
 	try {
 		await new Promise(done=>server.listen(0,'127.0.0.1',done));

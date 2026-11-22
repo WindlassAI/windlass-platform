@@ -1,11 +1,12 @@
+import { authFailure, authorizeEndpoint, endpointChanged, fingerprint, FrameAuthError, runnerHandshake, verifyRemoval, type FrameAuth, type Trust } from "../../server/src/runner/frame-auth.js";
 import { reportPublisher } from "../../server/src/runner/catalog.js";
-import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign, type KeyObject } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import {
-	CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, PAIRING_POLL_MS, PAIRING_TTL_MS, REFUSED_RETRY_MS, REPORT_MS,
+	MAX_CONTROL_FRAME_BYTES, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, PAIRING_POLL_MS, PAIRING_TTL_MS, REFUSED_RETRY_MS, REPORT_MS,
 	RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, controlProof, sessionProof,
 	parseConnection, parseConnectionRefusal, parsePairStarted, parsePairStatus, parseServerFrame, refuse,
-	type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame,
+	type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame, type ServerFrame,
 } from "../../server/src/runner/control.js";
 import type { MachineProfile } from "../../server/src/runner/protocol.js";
 import { audit, safeSentence } from "./audit.js";
@@ -24,6 +25,7 @@ function proof(key: KeyObject, statement: string) {
 
 // Error messages from fetch and the gateway can include a credential-bearing URL.
 export function category(error: unknown): string {
+	if (error instanceof FrameAuthError) return error.category === "endpoint" ? endpointChanged : error.message;
 	if (error instanceof RunnerError) return error.message;
 	for (let e = error; e instanceof Error; e = e.cause) {
 		const code = (e as NodeJS.ErrnoException).code ?? "";
@@ -52,7 +54,7 @@ async function post(platform: string, path: string, body: PairRequest | PairPoll
 export async function pair(platform: string, signal: AbortSignal, say: (message: string) => void, name: string, profiles?: MachineProfile[], setup = false) {
 	const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(PAIRING_TTL_MS)]);
-	const request: PairRequest = { publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+	const request: PairRequest = { protocol: 2, publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
 		name, os: process.platform, arch: process.arch, runnerVersion: VERSION };
 	const again = setup ? "re-run the setup command to get a new code." : "restart the container or run `windlass-runner pair` to get a new code.";
 	let response;
@@ -66,6 +68,8 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 		say("Pairing could not start yet. Trying again.");
 		await wait(PAIRING_POLL_MS, undefined, { signal: deadline }).catch(() => {});
 	}
+	if (response.status === 409 && (response.value as { code?: unknown } | null)?.code === "signing_disabled")
+		return { idle: "This runner needs signed runner connections enabled on the platform. Ask the operator to enable them, then pair again." };
 	const started = parsePairStarted(response.value);
 	if (response.status < 200 || response.status >= 300 || !started)
 		return { idle: `Pairing was refused (HTTP ${response.status}), so ${again}` };
@@ -82,7 +86,12 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 			return { idle: `Pairing was refused (HTTP ${response.status}), so ${again}` };
 		if (status.state === "gone") break;
 		if (status.state === "approved") {
-			const paired = storePair({ machineId: status.machineId, uid: status.uid }, privateKey, platform, profiles);
+			if (!status.platformRoot || !status.endpoint) return { idle: "This runner needs signed runner messages enabled on the platform. Pair again after the operator enables them." };
+			const endpoint = origin(status.endpoint);
+			if (platform.startsWith("https:") && !endpoint.startsWith("https:")) throw new RunnerError("The gateway needs HTTPS.");
+			say("Platform key fingerprint: " + fingerprint(status.platformRoot));
+			const paired = storePair({ machineId: status.machineId, uid: status.uid }, privateKey, platform, profiles,
+				{ endpoint, platformRoot: status.platformRoot, maxSerial: 0 });
 			say(`Paired with ${safeSentence(status.githubLogin ?? "an account without a GitHub login")}. If that is not you, run \`windlass-runner pair\` again.`);
 			return { paired };
 		}
@@ -110,7 +119,7 @@ async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {
 	});
 }
 
-export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, saveStatus: (connection: string, idleSuspendMs?: number) => void, initialIdle: number | undefined, name: string) {
+export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, saveStatus: (connection: string, idleSuspendMs?: number) => void, initialIdle: number | undefined, name: string, trust: Trust | null) {
 	// Gateway diagnostics can contain the access URL. Only our categorised errors go to the owner.
 	process.env.RIVET_LOG_LEVEL = "silent";
 	const { createClient } = await import("rivetkit/client");
@@ -153,6 +162,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 		sessions.clear();
 	}
 	try {
+		if (trust) console.log("Platform key fingerprint: " + fingerprint(trust.pin.platformRoot));
 		status("Connecting");
 		while (!signal.aborted) {
 			let refusal: Refusal | undefined;
@@ -162,12 +172,13 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 			const attempt = new AbortController();
 			const active = AbortSignal.any([signal, attempt.signal]);
 			try {
-				async function connectGateway(purpose: "connect" | "renew", correctClock = true): Promise<{ refreshAt: number; client: ReturnType<typeof createClient> }> {
+				async function connectGateway(purpose: "connect" | "renew", correctClock = true): Promise<{ endpoint: string; refreshAt: number; client: ReturnType<typeof createClient> }> {
 					// The lease ages even while a laptop is asleep. Apply server clock
 					// correction only to the signed timestamp, not to its relative lifetime.
 					const started = Date.now();
 					const time = started + offset;
-					const response = await post(platform, RUNNER_CONNECTION_PATH, { uid, machineId, time, signature: proof(key, connectionProof(uid, machineId, time)) }, active, CONNECT_TIMEOUT_MS);
+					const nonce = trust ? randomBytes(32).toString("base64url") : undefined;
+					const response = await post(platform, RUNNER_CONNECTION_PATH, { uid, machineId, time, nonce, signature: proof(key, connectionProof(uid, machineId, time, nonce)) }, active, CONNECT_TIMEOUT_MS);
 					if (response.status !== 200) {
 						const r = parseConnectionRefusal(response.value);
 						if (response.status === 403 && r?.reason === "clock" && correctClock) {
@@ -175,8 +186,14 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							audit(null, null, "control", "HTTP 403; signing with corrected time");
 							if (purpose === "connect") return connectGateway(purpose, false);
 						}
-						if (response.status === 410 && r?.reason === "removed") refusal = refuse("removed", r);
-						else if (response.status === 403 && r?.reason === "unknown") refusal = refuse("unknown");
+						if (response.status === 410 && r?.reason === "removed") {
+							if (trust) {
+								if (!nonce || !("sig" in r)) throw new FrameAuthError("signature");
+								verifyRemoval(uid, machineId, nonce, r, trust);
+							}
+							refusal = refuse("removed", r);
+						}
+						else if (!trust && response.status === 403 && r?.reason === "unknown") refusal = refuse("unknown");
 						if (purpose === "connect" && response.status >= 400 && response.status < 500) slow = true;
 						throw new RunnerError(`HTTP ${response.status}`);
 					}
@@ -184,7 +201,15 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					if (!info) throw new RunnerError("Invalid HTTP connection answer.");
 					const endpoint = origin(info.endpoint ?? platform);
 					if (platform.startsWith("https:") && !endpoint.startsWith("https:")) throw new RunnerError("The gateway needs HTTPS.");
-					return { refreshAt: info.token ? started + info.token.validForMs * 0.8 : Infinity,
+					if (trust) {
+						authorizeEndpoint(trust.pin, endpoint, info.endpointChange);
+						if (purpose === "renew" && endpoint !== trust.pin.endpoint) {
+							reason = "Reconnecting to confirm the signed gateway change.";
+							attempt.abort();
+							throw new RunnerError(reason);
+						}
+					}
+					return { endpoint, refreshAt: info.token ? started + info.token.validForMs * 0.8 : Infinity,
 						client: createClient({ endpoint, namespace: info.namespace, token: info.token?.token, disableMetadataLookup: true }) };
 				}
 				let gateway = await connectGateway("connect");
@@ -197,7 +222,9 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					return gateway.client;
 				}
 				const ws = await openSocket(gateway.client.machine.get([uid, machineId]).webSocket("control"), active);
-				const send = (f: RunnerFrame) => ws.send(JSON.stringify(f));
+				let auth: FrameAuth | undefined;
+				let exchange: ReturnType<typeof runnerHandshake> | undefined;
+				const send = (f: RunnerFrame) => ws.send(auth ? auth.seal(f) : JSON.stringify(f));
 				let phase: "challenge" | "welcome" | "online" = "challenge";
 				let heard = Date.now();
 				let reportReady = false;
@@ -210,7 +237,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					lastSent = Date.now();
 				};
 				const attaching = new Map<string, string>();
-				const disconnect = () => ws.close();
+				let closing = false;
+				const disconnect = () => { closing = true; ws.close(); };
 				const closed = new Promise<void>(resolve => ws.addEventListener("close", e => {
 					if (e.code === 1008 || e.code >= 4000 && e.code < 5000) slow = true;
 					reason += ` (socket close ${e.code})`; resolve();
@@ -220,9 +248,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					else if (phase === "online" && ws.readyState === 1) send({ kind: "heartbeat" });
 				}, CONTROL_HEARTBEAT_MS);
 				active.addEventListener("abort", disconnect);
-				const message = async (data: unknown) => {
-					const f = parseServerFrame(data);
-					if (!f || refusal) { disconnect(); return; }
+				const message = async (f: ServerFrame) => {
 					heard = Date.now();
 					if (f.kind === "refused") {
 						mayMaintain = false; refusal = f;
@@ -231,15 +257,23 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					}
 					if (phase === "challenge" && f.kind === "challenge") {
 						phase = "welcome";
-						send({ kind: "hello", maxTurns: owner.maxTurns, runnerVersion: VERSION, epoch, time: Date.now(), signature: proof(key, controlProof(uid, machineId, f.nonce)) });
+						const base = { kind: "hello" as const, maxTurns: owner.maxTurns, runnerVersion: VERSION, epoch, time: Date.now() };
+						if (trust) {
+							const started = runnerHandshake({ uid, machineId, challenge: f.nonce }, base, key);
+							exchange = started;
+							send(started.hello);
+						} else send({ ...base, signature: proof(key, controlProof(uid, machineId, f.nonce)) });
 					} else if (phase === "welcome" && f.kind === "welcome") {
+						if (trust) {
+							if ("refusal" in f && f.refusal) { refusal = f.refusal; mayMaintain = false; discarding = stopSessions(); disconnect(); return; }
+						}
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000;
 						mayMaintain = true;
 						status("Online");
 						lastRefresh = Date.now();
 						policyReady = owner.checkAuthenticatedNetwork();
 						await policyReady;
-						if (active.aborted) return;
+						if (active.aborted || ws.readyState !== 1 || refusal) return;
 						await owner.welcome(active);
 						reportReady = !active.aborted;
 						if (!active.aborted) owner.publishReport?.();
@@ -260,7 +294,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 								session = new Session(f.sessionId, owner, () => { if (sessions.get(f.sessionId) === session) sessions.delete(f.sessionId); });
 								sessions.set(f.sessionId, session);
 							}
-							session.attach(socket, { machineId, runnerVersion: VERSION, ticket: f.ticket, signature: proof(key, sessionProof(uid, f.sessionId, machineId, f.ticket)) });
+							session.attach(socket, { machineId, runnerVersion: VERSION, ticket: f.ticket, signature: trust ? "" : proof(key, sessionProof(uid, f.sessionId, machineId, f.ticket)) },
+								trust ? { uid, sessionId: f.sessionId, machine: key, trust, endpoint: gateway.endpoint } : undefined);
 						} catch (error) {
 							audit(f.sessionId, null, "attach", category(error));
 							if (refusal) { reason = category(error); disconnect(); }
@@ -275,7 +310,31 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					} else if (f.kind === "logout") { await owner.serial(() => owner.logout()); audit(null, null, "logout", "done"); }
 					else if (f.kind !== "heartbeat") { reason = "Unexpected control frame"; disconnect(); }
 				};
-				ws.addEventListener("message", e => { void message(e.data).catch(error => { reason = category(error); disconnect(); }); });
+				const failed = (error: unknown) => {
+					reason = category(error);
+					if (error instanceof FrameAuthError) audit(null, null, "control", authFailure(error));
+					disconnect();
+				};
+				ws.addEventListener("message", ({ data }) => {
+					if (closing || active.aborted || refusal || ws.readyState !== 1) return;
+					try {
+						const f = parseServerFrame(auth ? auth.open(data, MAX_CONTROL_FRAME_BYTES) : data, !!trust);
+						if (!f) {
+							if (trust) throw new FrameAuthError("schema");
+							disconnect(); return;
+						}
+						if (trust && !auth) {
+							if (f.kind === "refused" && f.reason === "signing-disabled") throw new RunnerError("This runner requires signed connections. Check the platform setting with its operator.");
+							if (f.kind !== phase) throw new FrameAuthError("handshake");
+						}
+						if (trust && auth && (f.kind === "welcome" || f.kind === "challenge")) throw new FrameAuthError("schema");
+						if (trust && f.kind === "welcome") {
+							if (phase !== "welcome" || !exchange || !("platformEph" in f)) throw new FrameAuthError("handshake");
+							auth = exchange.finish(f, trust, gateway.endpoint);
+						}
+						void message(f).catch(failed);
+					} catch (error) { failed(error); }
+				});
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
@@ -283,7 +342,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;
-				await (discarding ?? stopSessions());
+				if (refusal || !trust) await (discarding ?? stopSessions());
 				if (refusal?.reason === "removed") {
 					removed = true;
 					audit(null, null, "control", reason);

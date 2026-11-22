@@ -92,7 +92,7 @@ async function realRunner() {
 	const owner = new Executor(id, { maxRunning: 1, maxSandboxes: 1 });
 	// The connection's state in status.json, as runner/src/main.ts keeps it: the check reads "key-in-use" there.
 	const saveStatus = (connection: string, idleSuspendMs?: number) => save("status.json", { machineId: id.machineId, connection, idleSuspendMs: idleSuspendMs ?? null });
-	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined, "Test machine");
+	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined, "Test machine", null);
 }
 
 async function check() {

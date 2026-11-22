@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db } from "rivetkit/db";
 import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
+import { config, signedRunnerEndpoint } from "../config.js";
 import { keyedDigest } from "../signatures.js";
 import type { MachineClaim } from "../contract.js";
 import { PAIRING_TTL_MS, type PairStatus } from "../runner/control.js";
@@ -79,7 +80,8 @@ export const machinePairing = actor({
 			// The user's confirmed row is the approval. A reservation, or a removed machine, cannot issue one.
 			const approval: { login: string | null } | null = await c.client().user.get([r.uid], { params: serviceParams() }).internalMachineApproval(r.machine_id);
 			if (r.expires <= Date.now()) return { state: "gone" };
-			return approval ? { state: "approved", uid: r.uid, machineId: r.machine_id, githubLogin: approval.login } : { state: "waiting" };
+			return approval ? { state: "approved", uid: r.uid, machineId: r.machine_id, githubLogin: approval.login, ...(config.machines?.identity && { platformRoot: config.machines.identity.root,
+				endpoint: signedRunnerEndpoint(config.machines.publicUrl) }) } : { state: "waiting" };
 		},
 		expire: c => {
 			if (!c.scheduledFire) throw pairingGone();

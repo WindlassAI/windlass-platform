@@ -71,11 +71,66 @@ The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,0
 | Project, ports, data and release | `COMPOSE_PROJECT_NAME`, `SELFHOST_HTTP_PORT`, `SELFHOST_GATEWAY_PORT`, `SELFHOST_VOLUME`, `SELFHOST_RELEASE`, `SELFHOST_SERVER_TARGET`, `SELFHOST_SERVER_ENV_FILE` |
 | Public origins and canonical issuer | `WLP_PUBLIC_URL`, `WLP_PUBLIC_ENDPOINT`, `SELFHOST_ENGINE_ORIGIN`, `SELFHOST_ISSUER_GENERATION` |
 | Credentials and node version | `WLP_SECRET`, `RIVET_ADMIN_TOKEN`, `RIVET_NODE_VERSION` |
-| Application modes | `WLP_DEMO`, `WLP_SANDBOX`, `WLP_SIGNIN_RUNNER` |
+| Application modes | `WLP_DEMO`, `WLP_SANDBOX`, `WLP_SIGNIN_RUNNER`, `WLP_REQUIRE_SIGNED_RUNNER` |
 | Set by Compose for the server | `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL`, `WLP_TOKEN_ENDPOINT`, `WLP_WEB_ORIGINS`, `WLP_MACHINES`, `WLP_HTTP_PORT` |
-| Optional server settings | `WLP_SECRET_KEYS`, `WLP_SIGNIN_KEYS`, `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_BUCKET_*` |
+| Optional server settings | `WLP_SECRET_KEYS`, `WLP_SIGNIN_KEYS`, `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_RUNNER_CAPABILITIES`, `WLP_PLATFORM_KEY`, `WLP_BUCKET_*` |
 
 The default optional server env file is `.data/selfhost/<compose-project>.server.env`. An explicit relative path is resolved from the Compose file's directory. Stack settings listed under `environment` in Compose take precedence over this file. Avoid printing expanded Compose configuration or unfiltered container inspections.
+
+### Enable signed runner connections
+
+Leave `WLP_REQUIRE_SIGNED_RUNNER=0` in the stack env file for the initial server deployment. This is the
+default for existing stacks as well. Protocol-1 runners can keep their current image and pairing.
+Switch every server node together when the owner is ready to update and re-pair the machines.
+
+1. On the **owner's laptop**, in a checkout of this release with dependencies installed, run the following
+   commands. Use a private directory on owner-controlled offline storage for the root. The output file
+   for the certified **online** key is a deployment secret. The root command refuses to overwrite a file.
+
+   ```sh
+   umask 077
+   root=/path/on/offline-storage/wlp-platform-root.pem
+   pnpm --filter @windlass-platform/server exec tsx ../scripts/platform-key.ts root --out "$root"
+   pnpm --filter @windlass-platform/server exec tsx ../scripts/platform-key.ts fingerprint --root "$root"
+   pnpm --filter @windlass-platform/server exec tsx ../scripts/platform-key.ts certify --root "$root" --serial 1 --days 90 > /path/to/private-transfer/platform-online.env
+   ```
+
+2. Keep the root and its backup offline. Record its public fingerprint independently. Transfer only
+   `platform-online.env` through the deployment's secret channel. Install its single `WLP_PLATFORM_KEY`
+   line in the mode-600 optional server env file (live default `.data/selfhost/wlp-live.server.env`).
+   Keep both the env file and generated key material outside Git, images, logs and chat.
+3. Stage the **0.2.0** runner at a new immutable digest. Keep the old setup command available until cutover. Set the new pinned `WLP_RUNNER_IMAGE` and matching
+   `WLP_RUNNER_CAPABILITIES` in that server env file. To obtain the capabilities JSON, export the new
+   `WLP_RUNNER_IMAGE` digest reference and run `docker run --rm --network none -e WLP_RUNNER_IMAGE "$WLP_RUNNER_IMAGE" capabilities`.
+   Set `WLP_REQUIRE_SIGNED_RUNNER=1` in
+   `.data/selfhost/live.env`. Recreate the server and check health.
+
+   ```sh
+   docker compose --env-file .data/selfhost/live.env -f deploy/selfhost/compose.yaml up -d --no-deps --force-recreate --wait server
+   curl -fsS http://127.0.0.1:26440/health
+   ```
+
+4. On each runner host, stop and remove the old runner container (`docker rm -f windlass-runner` for the
+   default name), retaining its named state volume. On the Machines page choose **Add a machine**, run
+   its setup command with the same volume and approve the new pairing. Compare the printed fingerprint
+   with the offline fingerprint. Run the background command printed by setup and
+   confirm it appears online and completes a turn. Each new pairing has a new machine id. Old pairings
+   and their workspaces stay associated with their original ids.
+
+Schedule renewal before the certificate expires. Expiry prevents new handshakes, including reconnects.
+
+For renewal or a leaked online key, run `certify` again under the same root with the next unused serial.
+Replace the online env line on every server and recreate the services. Reconnect each runner so it
+records the higher serial. A disconnected runner can still accept its previous unexpired certificate
+until it sees the newer serial. For a gateway move, also pass `--endpoint https://new-gateway.example`
+to `certify` and update `WLP_PUBLIC_ENDPOINT` together with that certificate. Include the same gateway
+origin on subsequent certificates until every runner has recorded the move. A lost root requires a new
+root and a fresh pairing on every runner. Reverting the server switch restores protocol 1 for old runners.
+Pinned runners require a signed platform on their next connection.
+
+For the public origins, the owner should enable hardware-key 2FA and auditing on the Cloudflare account,
+use scoped API tokens, enable DNSSEC for `parthg.dev` and restrict CAA to the CA used for the edge
+certificate. Check `dig CAA parthg.dev` after edge certificate renewal. The deployment does not verify CAA.
 
 ### Migrate existing sign-ins at cutover
 

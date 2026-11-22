@@ -216,6 +216,7 @@
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
+import { readPlatformKey, type PlatformIdentity } from "./runner/frame-auth.js";
 import { configuredKeys, type Keyring } from "./keyring.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -259,6 +260,7 @@ export interface BrowserConnectionConfig {
 
 /** WLP_MACHINES and what goes with it; `Config.machines` is null when the feature is off. */
 export interface MachinesConfig {
+	identity?: PlatformIdentity;
 	runnerHarnesses?: MachinesInfo["runnerHarnesses"];
 	runnerImage: string | null;
 	/** WLP_PUBLIC_URL as an origin, without a trailing slash. */
@@ -344,6 +346,11 @@ export function ownEngineEndpoint(): string {
 	if (named) return named;
 	const port = Number(process.env.RIVET_RUN_ENGINE_PORT);
 	return `http://127.0.0.1:${Number.isInteger(port) && port > 0 && port < 65_536 ? port : 6420}`;
+}
+
+/** The same gateway origin must be advertised at pairing and signed runner discovery. */
+export function signedRunnerEndpoint(publicUrl: string): string {
+	return config.browsers.endpoint ?? (config.engine.remote ? publicUrl : ownEngineEndpoint());
 }
 
 /**
@@ -667,6 +674,14 @@ export function publishedHarnesses(image: string, raw?: string): MachinesInfo["r
 	} catch { return undefined; }
 }
 
+function platformIdentity() {
+	const mode = process.env.WLP_REQUIRE_SIGNED_RUNNER ?? "0";
+	if (mode === "0") return;
+	if (mode !== "1") { unusable.push("WLP_REQUIRE_SIGNED_RUNNER must be 0 or 1"); return; }
+	try { return readPlatformKey(process.env.WLP_PLATFORM_KEY); }
+	catch { unusable.push("WLP_PLATFORM_KEY needs a valid, unexpired certified online key"); }
+}
+
 function readMachines(httpPort: number): MachinesConfig | null {
 	if (process.env.WLP_MACHINES !== "1") return null;
 	const image = (process.env.WLP_RUNNER_IMAGE ?? "").trim();
@@ -688,7 +703,7 @@ function readMachines(httpPort: number): MachinesConfig | null {
 		if (fit) publicUrl = url!.origin;
 		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
 	}
-	return { runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
+	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
 }
 
 function readAccountEmails(): ReadonlyMap<string, string> {

@@ -508,6 +508,30 @@ describe("the start composer's agent picker", () => {
 	}
 });
 
+it("shows the update and re-pair instructions for an old runner on a signed platform", async () => {
+	const { Machines } = await import("../screens/Machines");
+	const host = document.createElement("div");
+	document.body.append(host);
+	const root = createRoot(host);
+	const client = make("outdated");
+	const info = await client.info();
+	vi.spyOn(client, "info").mockResolvedValue({ ...info, machines: { ...info.machines!, platformFingerprint: "fixture" } });
+	saveAuth("mock", auth);
+	try {
+		act(() => root.render(createElement(AppProvider, { client, children: createElement(Machines, { adding: false }) })));
+		for (let i = 0; i < 50 && !host.querySelector(".machine-row-outdated"); i++) await act(async () => { await tick(); });
+		const row = host.querySelector(".machine-row-outdated");
+		expect(row?.textContent).toContain("Needs an update");
+		expect(row?.textContent).toContain("pair again to pin the platform key");
+		expect(row?.querySelector('pre[aria-label="The update command"]')?.textContent).toContain(info.machines!.runnerImage);
+	} finally {
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		saveAuth("mock", null);
+	}
+});
+
 it.each([true, false])("offers OpenCode setup and import only for a runner image reporting support (%s)", async supported => {
 	HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
 	HTMLDialogElement.prototype.close ??= function () { this.open = false; };

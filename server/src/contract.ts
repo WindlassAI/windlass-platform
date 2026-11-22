@@ -99,12 +99,13 @@ export interface PlatformInfo {
  *     <runnerImage> --platform <platformUrl> [--name "Build host"]
  *
  * For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. To update, the same
- * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
+ * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired across updates within a protocol. The first upgrade to signed connections requires a new pairing.
  * The runner prints its pairing code in `docker logs windlass-runner`.
  */
 export interface MachinesInfo {
+	platformFingerprint?: string;
 	/**
-	 * The oldest runner release this platform serves, "0.1.0". A machine whose runner is older is
+	 * The oldest runner release this deployment serves in its current protocol mode. A machine whose runner is older is
 	 * refused until it is updated (`MachineWarning` "outdated"); a newer one is served.
 	 */
 	minRunnerVersion: string;
@@ -1011,6 +1012,7 @@ export type MachineProbe = { ok: true } | { ok: false; reason: string };
 
 /** Something the Machines page warns about. Each is listed only while it holds. */
 export type MachineWarning =
+	| { kind: "signing-disabled" }
 	/** The runner is older than `MachinesInfo.minRunnerVersion`, so it is refused; its version is `MachineSummary.runnerVersion`. */
 	| { kind: "outdated" }
 	/** The runner cannot reach Docker on its machine; `reason` is what Docker said, as the runner reported it. */
