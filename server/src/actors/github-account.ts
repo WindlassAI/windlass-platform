@@ -54,21 +54,28 @@ export const githubAccount = actor({
 	},
 });
 
-export async function setGithubInstallations(c: { client(): any }, uid: string, ids: GithubId[]) {
-	await c.client().githubHooks.getOrCreate(["app"], { params: serviceParams() }).internalSetInstallations(uid, ids);
+/** Returns the ids linked: an installation removed since `readAt` (or at all, without it) is left out. */
+export async function setGithubInstallations(c: { client(): any }, uid: string, ids: GithubId[], readAt?: number): Promise<GithubId[]> {
+	return await c.client().githubHooks.getOrCreate(["app"], { params: serviceParams() }).internalSetInstallations(uid, ids, readAt);
 }
 
 /** Revoke removed installations before committing the user's change and admit new ones only after.
- * An interrupted grant is repaired from the saved connection on wake. */
-export async function updateGithubAccount(c: { client(): any }, uid: string, previous: StoredConnection | null, next: StoredConnection | null, save?: () => Promise<void>, refresh = false) {
-	const ids = next?.webhookLinked ? next.installations.map(i => i.id) : [];
+ * An interrupted grant is repaired from the saved connection on wake. Returns the installations the
+ * directory refused because they were removed, which the caller drops from the connection. */
+export async function updateGithubAccount(c: { client(): any }, uid: string, previous: StoredConnection | null, next: StoredConnection | null, save?: () => Promise<void>, refresh = false, readAt?: number): Promise<GithubId[]> {
+	let ids = next?.webhookLinked ? next.installations.map(i => i.id) : [];
 	if (previous?.webhookLinked) {
 		const retained = previous.installations.filter(i => ids.includes(i.id));
 		if (retained.length !== previous.installations.length || !next?.webhookLinked)
 			await setGithubInstallations(c, uid, retained.map(i => i.id));
 	}
 	await save?.();
-	if (next?.webhookLinked) await setGithubInstallations(c, uid, ids);
+	let dropped: GithubId[] = [];
+	if (next?.webhookLinked) {
+		const accepted = new Set((await setGithubInstallations(c, uid, ids, readAt)).map(String));
+		dropped = ids.filter(id => !accepted.has(String(id)));
+		ids = ids.filter(id => accepted.has(String(id)));
+	}
 	const account = (id: GithubId) => c.client().githubAccount.getOrCreate([String(id)], { params: serviceParams() });
 	if (previous?.webhookLinked && (!next?.webhookLinked || previous.user.id !== next.user.id)) {
 		try { await account(previous.user.id).internalUnlink(uid); }
@@ -83,4 +90,5 @@ export async function updateGithubAccount(c: { client(): any }, uid: string, pre
 			console.warn(`github.account.link_failed github=${next.user.id} uid=${uid}`);
 		}
 	}
+	return dropped;
 }
