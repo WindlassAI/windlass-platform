@@ -1,2 +1,4 @@
 # The GitHub App test asserts that a runtime-generated key starts with a PEM header.
 9696cb0352e2e2c95ab3bf07fbadaa3a8392372d:scripts/github-check.ts:private-key:250
+# The Codex relay check plants a fake API key and asserts it never leaves the relay.
+795c1baa88880bad574f1adaabc4a91c9f05b0ec:scripts/codex-relay-check.mjs:generic-api-key:129
