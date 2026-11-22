@@ -20,6 +20,8 @@ against the merge base (the pull request's base, or `main` for a branch) and pic
 - documentation (`docs/**`, any `*.md`) runs nothing, and neither does a file no group lists;
 - a push to `main`, the nightly run and a dispatch with `full` run every group.
 
+So while a branch changes a core file, every push to it runs everything.
+
 The Docker groups load the sandbox images from the Actions cache. The `images` job builds each image
 once per run, with `docker buildx` and the GHA cache, so an unchanged Dockerfile builds nothing. The
 runners are `ubuntu-24.04` (x86-64): every image, the Windlass release and the engine have an x86-64
