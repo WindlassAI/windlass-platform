@@ -1738,6 +1738,15 @@ await mirrorSection("mirror-benchmark: a large repository", "mirror-large", asyn
 	const fsck = { full: await timed("git fsck --full --no-dangling --no-progress >/dev/null"), connectivity: await timed("git fsck --connectivity-only --no-dangling --no-progress >/dev/null") };
 	console.log(`${size} MiB fixture clone (ms and HTTP Git bytes)`, JSON.stringify({ baseline, fill, warm1: trials[0], plain2: trials[1], warm2: trials[2] }));
 	console.log("fsck of that clone (ms)", JSON.stringify(fsck));
+	// A busy machine: the local work of a warm clone takes well over the stall deadline,
+	// while GitHub answers at once. The mirror must still be used.
+	await cli("update", "--cpus", "0.1", bench.container);
+	const busy = await clone(bench, uid);
+	const busyFsck = await timed("git fsck --full --no-dangling --no-progress >/dev/null");
+	await cli("update", "--cpus", "1", bench.container);
+	console.log("Warm clone at 0.1 CPU (ms and HTTP Git bytes)", JSON.stringify(busy), "full fsck there (ms)", busyFsck);
+	assert.ok(busy.hit, "slow local work made the warm clone fall back");
+	assert.ok(busy.ms > 8000, "the throttled clone was too quick to test the deadline");
 	console.log("Mirror slot allocation (ms)", JSON.stringify(allocations));
 	assert.ok(!fill.hit && fill.tokens === 1, "expected a cold mirror");
 	assert.ok(trials[0]!.hit && trials[2]!.hit && trials[0]!.bytes < baseline.bytes / 100, "the warm clone did not use the mirror");

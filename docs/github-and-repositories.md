@@ -198,7 +198,8 @@ checks for alternates before copying it to the workspace. The session records th
 the same independent GitHub confirmation used by a plain clone.
 
 The check is for connectivity, not a rehash of every object, because a full fsck grows with the
-repository (22.5 s for 176 MiB on a 2-CPU host). It does not reduce what is trusted. Only the
+repository. For a 177 MiB clone it took 2–5 s on one CPU of a loaded 2-CPU host and 17 s at a
+tenth of a CPU, against 0.1–0.7 s for the connectivity check. It does not reduce what is trusted. Only the
 transport UID can write a slot. That UID runs only platform Git, and the mirror holds only
 objects from clones of GitHub, which Git verified on receipt. `--dissociate` copies what the
 clone uses into its own pack, and pack reuse checks the CRC of each copied object. The clone
@@ -353,7 +354,7 @@ what is known of GitHub's, not copied from a run.
 ```sh
 cd server && npx tsx ../scripts/github-check.ts           # the GitHub code and real git against the stand-in; also the agent's requests, tool declarations, publishWork and the agent's push
 cd server && npx tsx ../scripts/github-check.ts --docker  # the git commands again in a container of the sandbox image
-cd server && WLP_CHECK_SECTIONS=mirror pnpm exec tsx ../scripts/github-check.ts --docker --mirror-benchmark  # the mirror sections, and a 176 MiB repository
+cd server && WLP_CHECK_SECTIONS=mirror pnpm exec tsx ../scripts/github-check.ts --docker --mirror-benchmark  # the mirror sections, and a 177 MiB repository
 cd server && pnpm e2e                                     # its last section: the route and the actors, on the fake layer
 ```
 
