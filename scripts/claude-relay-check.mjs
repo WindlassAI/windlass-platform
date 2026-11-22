@@ -82,12 +82,12 @@ test('a successful upstream response cannot echo the setup token across chunks',
 	for (const type of ['application/json', 'text/event-stream']) {
 		reset();
 		upstream.headers['content-type'] = type;
-		upstream.first = 'before ' + token.slice(0, 17);
-		upstream.last = token.slice(17) + ' after';
+		upstream.first = (type === 'application/json' ? '{"text":"' : '') + 'before ' + token.slice(0, 17);
+		upstream.last = token.slice(17) + ' after' + (type === 'application/json' ? '"}' : '');
 		const res = await call();
 		let body = '';
 		for await (const chunk of res) body += chunk;
-		assert.ok(body === 'before [redacted] after');
+		assert.equal(type === 'application/json' ? JSON.parse(body).text : body, 'before [redacted] after');
 	}
 });
 test('the Claude filter scrubs decoded provider responses', async () => {
@@ -100,6 +100,32 @@ test('the Claude filter scrubs decoded provider responses', async () => {
 	for await (const chunk of res) body += chunk;
 	assert.equal(res.statusCode, 200);
 	assert.ok(body === 'before [redacted] after');
+});
+
+test('decoded JSON and interleaved content blocks scrub model text across SSE events', async () => {
+	const event = (index, s) => 'data: ' + JSON.stringify({type:'content_block_delta', index, delta:{type:'text_delta',text:s}}) + '\r\n\r\n';
+	reset();
+	upstream.first = event(2, 'one ' + token.slice(0, 11)).replace('sk-ant', '\\u0073k-ant') + event(3, 'separate');
+	upstream.last = event(2, token.slice(11) + ' two') + 'data: {"type":"content_block_stop","index":2}\n\n';
+	const stream = await call(); let body = '';
+	for await (const part of stream) body += part;
+	const events = body.split(/\r?\n/).filter(s => s.startsWith('data:')).map(s => JSON.parse(s.slice(5)));
+	assert.equal(events.filter(e => e.index === 2).map(e => e.delta?.text ?? '').join(''), 'one [redacted] two');
+	assert.equal(events.find(e => e.index === 3).delta.text, 'separate');
+	reset(); upstream.headers['content-type'] = 'application/json';
+	upstream.first = JSON.stringify({text:token}).replace('sk-ant', '\\u0073k-ant'); upstream.last = '';
+	const response = await call(); body = ''; for await (const part of response) body += part;
+	assert.deepEqual(JSON.parse(body), {text:'[redacted]'});
+});
+
+test('a chunk ending with a complete shorter secret waits for the longer one', async () => {
+	const { scrubStream } = await import('../sandbox/relay/server.cjs');
+	for (const secrets of [['fixture', 'fixture-long'], ['fixture-long', 'fixture']]) {
+		const stream = scrubStream(secrets);
+		stream.write('fixture'); stream.end('-long fixture.');
+		let body = ''; for await (const part of stream) body += part;
+		assert.equal(body, '[redacted] [redacted].');
+	}
 });
 
 test('foreign target, method and unapproved endpoint never reach upstream', async () => {

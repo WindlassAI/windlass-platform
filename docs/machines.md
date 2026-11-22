@@ -149,6 +149,12 @@ relay looks up the current key on each request. A full `logout opencode` or a ne
 placeholders, and affected sessions must be recreated. Open and restricted sessions both send inference
 through the loopback relay. See [the relay's provider routes](../sandbox/relay/README.md#opencode-1196).
 
+The credential relay checks decoded JSON strings in successful responses. For Anthropic Messages
+streams it joins text deltas by content-block index and holds a possible credential prefix across
+events. Other provider event formats are checked one JSON event at a time. A credential divided
+between those events or encoded as model output in another representation can pass this check.
+The relay closes the response on malformed JSON or an oversized JSON document or SSE event.
+
 Machines report each agent's models, efforts and modes at startup, after each login or logout, and every
 six hours. The composer fetches a catalog by digest only when it changes; host load and memory travel
 separately.

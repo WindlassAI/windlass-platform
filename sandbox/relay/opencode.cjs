@@ -92,7 +92,7 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		})().finally(() => { refresh = undefined; });
 	}
 	return {
-		responseFilter: () => secrets.size ? scrubStream(secrets) : undefined,
+		responseFilter: type => secrets.size ? scrubStream(secrets, type) : undefined,
 		accepts: url => Boolean(endpointFor(allowed, url)),
 		bearer(h, url) {
 			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;

@@ -16,15 +16,14 @@ const requestHeaders = new Set(['accept', 'content-type', 'anthropic-beta', 'ant
 	'anthropic-dangerous-direct-browser-access', 'x-client-request-id', 'x-claude-code-session-id']);
 
 // Filter at the credential boundary, before any result can enter an agent file, log or ACP stream.
-function scrubStream(secrets) {
-	const decoder = new StringDecoder('utf8');
+function matcher(secrets) {
 	let pending = '';
-	function consume(text, final) {
+	return function consume(text, final) {
 		const input = pending + text;
 		pending = '';
 		let result = '', start = 0;
 		while (start < input.length) {
-			let at = input.length, size = 0;
+			let at = input.length, size = 0, partial = input.length;
 			for (const secret of secrets) {
 				let i = input.indexOf(secret[0], start);
 				while (i >= 0 && i <= at) {
@@ -32,23 +31,120 @@ function scrubStream(secrets) {
 						if (i < at || secret.length > size) { at = i; size = secret.length; }
 						break;
 					}
-					if (!final && secret.startsWith(input.slice(i))) {
-						if (i < at) { at = i; size = 0; }
+					if (!final && input.length - i < secret.length && secret.startsWith(input.slice(i))) {
+						partial = Math.min(partial, i);
 						break;
 					}
 					i = input.indexOf(secret[0], i + 1);
 				}
 			}
+			if (partial <= at && partial < input.length) { at = partial; size = 0; }
 			result += input.slice(start, at);
 			if (!size) { pending = input.slice(at); break; }
 			result += '[redacted]';
 			start = at + size;
 		}
 		return result;
-	}
+	};
+}
+
+function scrubStream(secrets, type) {
+	const decoder = new StringDecoder('utf8');
+	const consume = matcher(secrets);
+	if (type === 'text/event-stream' || type === 'application/json') return structuredStream(secrets, type);
 	return new Transform({
 		transform(chunk, encoding, done) { done(null, consume(decoder.write(chunk), false)); },
 		flush(done) { done(null, consume(decoder.end(), true)); },
+	});
+}
+// Decode provider strings before comparing them to credentials. Keep only a possible secret
+// suffix between deltas in the same block, so ordinary model text is delivered immediately.
+function structuredStream(secrets, type) {
+	const decoder = new StringDecoder('utf8');
+	const scalar = matcher(secrets);
+	const blocks = new Map();
+	const limit = 16 * 1024 * 1024;
+	let buffer = '', data = [], frameSize = 0, fields = [], skipLF = false;
+	const clean = value => {
+		if (typeof value === 'string') return scalar(value, true);
+		if (Array.isArray(value)) return value.map(clean);
+		if (value && typeof value === 'object') {
+			return Object.fromEntries(Object.entries(value).map(([key, v]) => [scalar(key, true), clean(v)]));
+		}
+		return value;
+	};
+	function endBlock(index, output) {
+		const block = blocks.get(index);
+		if (!block) return;
+		blocks.delete(index);
+		const text = block('', true);
+		if (text) output('event: content_block_delta\ndata: ' + JSON.stringify({
+			type:'content_block_delta', index, delta:{type:'text_delta', text},
+		}) + '\n\n');
+	}
+	function frame(output) {
+		let body = data.join('\n');
+		if (body.trim() && body.trim() !== '[DONE]') {
+			const event = JSON.parse(body);
+			if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && typeof event.delta.text === 'string') {
+				if (!Number.isSafeInteger(event.index)) throw Error('Invalid content block');
+				if (!blocks.has(event.index)) {
+					if (blocks.size >= 256) throw Error('Too many open content blocks');
+					blocks.set(event.index, matcher(secrets));
+				}
+				event.delta.text = blocks.get(event.index)(event.delta.text, false);
+			}
+			if (event?.type === 'content_block_stop') endBlock(event.index, output);
+			if (event?.type === 'message_stop') for (const index of blocks.keys()) endBlock(index, output);
+			body = JSON.stringify(clean(event));
+		}
+		for (const field of fields) output(scalar(field, true) + '\n');
+		if (data.length) output('data: ' + body + '\n');
+		output('\n');
+		data = []; fields = []; frameSize = 0;
+	}
+	function line(value, output) {
+		if (!value) return frame(output);
+		if (value === 'data' || value.startsWith('data:')) data.push(value.slice(5).replace(/^ /, ''));
+		else if (/^(event|id|retry)(:|$)/.test(value)) fields.push(value);
+		else { output(scalar(value, true) + '\n'); return; } // comments and ignored SSE fields
+		frameSize += value.length + 1;
+		if (frameSize > limit) throw Error('Provider event too large');
+	}
+	function receive(text, final, output) {
+		if (!text && !final) return;
+		if (type === 'application/json') {
+			buffer += text;
+			if (buffer.length > limit) throw Error('Provider response too large');
+			if (final) output(JSON.stringify(clean(JSON.parse(buffer))));
+			return;
+		}
+		if (skipLF && text.startsWith('\n')) text = text.slice(1);
+		skipLF = text.endsWith('\r');
+		let start = 0;
+		for (const m of text.matchAll(/\r\n|[\r\n]/g)) {
+			line(buffer + text.slice(start, m.index), output);
+			buffer = ''; start = m.index + m[0].length;
+		}
+		buffer += text.slice(start);
+		if (buffer.length + frameSize > limit) throw Error('Provider event too large');
+		if (final) {
+			if (buffer) {
+				// Preserve the final unterminated line of non-event diagnostic text.
+				if (!data.length && !fields.length && !/^(data|event|id|retry)(:|$)/.test(buffer)) output(scalar(buffer, true));
+				else line(buffer, output);
+			}
+			if (data.length || fields.length) frame(output);
+			for (const index of blocks.keys()) endBlock(index, output);
+		}
+	}
+	return new Transform({
+		transform(chunk, encoding, done) {
+			try { receive(decoder.write(chunk), false, s => this.push(s)); done(); } catch (e) { done(e); }
+		},
+		flush(done) {
+			try { receive(decoder.end(), true, s => this.push(s)); done(); } catch (e) { done(e); }
+		},
 	});
 }
 exports.scrubStream = scrubStream;
@@ -120,7 +216,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 					if (!decode) { reject(res, 502); reply.destroy(); return; }
 					stages.push(decode());
 				}
-				const filter = claudeToken ? scrubStream([claudeToken]) : provider?.responseFilter?.();
+				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type);
 				if (filter) stages.push(filter);
 				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});
