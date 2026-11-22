@@ -27,6 +27,9 @@ build. Those jobs set `kernel.apparmor_restrict_unprivileged_userns=0` first: Ub
 unconfined processes out of user namespaces, so bubblewrap cannot start in a container of the Windlass
 profile (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`) until it is off.
 
+A full run takes about a quarter of an hour. Its longest job is `runner-docker/runner` (about 15
+minutes, most of it the outage cases' wall time); a change to one area runs a few jobs of 3 to 9 minutes.
+
 To see what a change would run, before you push:
 
 ```sh
@@ -42,7 +45,8 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
 | (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
 | (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker` | CI heavy: `shots-docker` |
-| (b) Docker, base and screenshots, runner and Claude images it builds itself | runner-check | CI heavy: `runner-docker/runner` |
+| (b) Docker, base image; builds its own runner and Claude images | runner-check `--main-only` (the five-minute outage and two-minute sleep are wall time) | CI heavy: `runner-docker/runner` |
+| (b) Docker, base and screenshots images | runner-check `--profiles-only`, `--harness-only`, `--sizing-only`, `--snapshots-only`, `--screenshots-only` | CI heavy: `runner-docker/suites` |
 | (b) Docker, Claude and OpenCode images built on base (`sandbox/harness/build.sh`) | claude-relay-docker, opencode-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |
 | (c) Real services, local only | e2b-check, e2b-backup-check, e2b-template (except `--print`), e2b-cleanup (an E2B account); backup-check `--bucket` (a real bucket); connection-check's `cluster` section and runner-socket-probe with `WLP_CHECK_ENGINE` (a real engine and its admin token) | your machine |
 | (c) A running self-hosted stack, local only | selfhost-csp, selfhost-ingress (with cloudflared), selfhost-load | the loopback demo stack of `deploy/selfhost` |
@@ -56,7 +60,7 @@ checkout; on CI that comparison is skipped and the rest runs.
    covers what you changed (`cd server && npx tsx ../scripts/<name>.ts`), nothing more. Leave the
    Docker checks, the e2e runs and the full suite to CI.
 2. **Push a `wip/<name>` branch** to `git@github.com:WindlassAI/windlass-platform.git`
-   (`git push origin HEAD:wip/<name>`). Both workflows run on it. The plan job's summary says which
+   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Both workflows run on it. The plan job's summary says which
    groups ran and which changed file chose each one; each job's summary has a table of its checks with
    their times.
 3. **Read the result** with one call per look, no more than once a minute:

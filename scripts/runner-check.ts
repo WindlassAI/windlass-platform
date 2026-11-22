@@ -889,7 +889,10 @@ require("node:module").syncBuiltinESMExports();`);
 			const attempts = srv.state.connectionRequests - connectionRequests;
 			const restored = performance.now();
 			srv.restore();
-			await until(() => srv.state.connections > connections, "Runner took over 20s to reconnect.", 20_000);
+			// The longest wait the runner allows itself (runner/src/control.ts): an attempt begun just before the
+			// restore runs out its CONNECT_TIMEOUT_MS of 5 s, then waits at most MAX_BACKOFF_MS of 15 s; and a
+			// few seconds for the handshake.
+			await until(() => srv.state.connections > connections, "Runner took over 25s to reconnect.", 25_000);
 			assert.ok(attempts >= 3 && attempts <= 5, `Made ${attempts} attempts during the cut.`);
 			ok(`Runner reconnected ${((performance.now() - restored) / 1000).toFixed(2)}s after a 30s ${link} cut, with ${attempts} attempts during the cut.`);
 		}
