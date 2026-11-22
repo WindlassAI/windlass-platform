@@ -1660,6 +1660,40 @@ test("cross-repo: a pass leads to the summary, both descriptions, and a hand-ove
 	assert.equal(read(item, "cli", "draft", sha("f")).item.integration!.state, "stale");
 });
 
+test("cross-repo: a PR the platform lost access to asks the person, sections stop once the feature ends, and a sibling's webhook wakes only its own poll", async () => {
+	const { live, lostAccess, siblingWakes } = await import("../server/src/actors/work-item.js");
+	const { GithubError } = await import("../server/src/github/app.js");
+	const { GithubProblem } = await import("../server/src/github/repos.js");
+	let item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "77", url: null }).item;
+	const integrating = item;
+	item = step(item, { kind: "integration_read", attempt: 1, state: "passed", url: null, said: null, seconds: 1 }).item;
+	const report = { title: "Feature", description: "Done", look_at: "", concerns: "", screenshots: [] };
+	const described = step(step(item, { kind: "turn_started" }).item, { kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: false, report, spend: { tokens: 1, hostedSeconds: 1 } });
+	const handed = step(described.item, { kind: "published", head: sha("8"), pr: described.item.pr, openItems: 1, webhooks: true }).item;
+	const lost = advance(handed, { kind: "repo_pr_lost", key: `${currentKey(handed)}/cli`, repo: "cli", said: "ada/cli is archived on GitHub, so nothing can be pushed to it.", at: 60 }).item;
+	assert.equal(lost.question!.kind, "integration");
+	assert.match(lost.question!.text, /ada\/cli#1 cannot be read any more: ada\/cli is archived/);
+	const resumed = advance(lost, { kind: "answer", question: lost.question!.id, choice: "wait", by: "person", at: 70 });
+	assert.equal(resumed.item.state, "review");
+	assert.deepEqual(resumed.effects.filter(e => e.kind === "poll_repo_pr").map(e => (e as { repo: string }).repo), ["platform", "cli"]);
+	// Denied, gone and archived are not tried again; a rate limit or an outage is.
+	assert.ok(lostAccess(new GithubProblem("github_denied", "archived")) && lostAccess(new GithubProblem("github_gone", "gone")));
+	assert.ok(lostAccess(new GithubError(404, "Not Found", "read")) && lostAccess(new GithubError(403, "Repository was archived so is read-only.", "write")));
+	assert.ok(!lostAccess(new GithubError(500, "", "read")) && !lostAccess(new GithubError(429, "", "read")) && !lostAccess(new GithubProblem("github_unreachable", "later")));
+	// The managed sections are written while the feature runs, never after it ended.
+	assert.ok(live(handed, { kind: "link_prs", key: currentKey(handed)! }));
+	const ended = advance(lost, { kind: "answer", question: lost.question!.id, choice: "give_up", by: "person", at: 80 }).item;
+	assert.equal(ended.state, "failed");
+	assert.ok(!live(ended, { kind: "link_prs", key: currentKey(handed)! }), "an ended feature still writes its PR sections");
+	// The CLI's webhook: its own PR's poll once handed over, never the primary's poll (both are PR #1) before.
+	const cli = handed.repos![1];
+	const nudge = { kind: "pr" as const, pr: 1, installationId: cli.installationId, repositoryId: cli.repositoryId };
+	assert.ok(siblingWakes(handed, cli, nudge));
+	assert.ok(!siblingWakes(integrating, cli, nudge), "a sibling's webhook woke a poll before the hand-over");
+	assert.ok(!siblingWakes(handed, cli, { ...nudge, installationId: 999 }));
+	assert.ok(!siblingWakes(handed, cli, { kind: "ci", head: sha("7"), installationId: cli.installationId, repositoryId: cli.repositoryId }));
+});
+
 test("cross-repo: feedback on its PRs is declined, and one implementer leaves the sibling out", () => {
 	const item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "1", url: null }).item;
 	const declined = advance(item, { kind: "github_feedback", at: 70, ids: ["c1"], text: "fix", fingerprint: "f", others: false, by: "github:ada", writers: ["ada"] });
@@ -1713,12 +1747,66 @@ test("cross-repo: the Windlass CLI's CI on main and PRs only is refused by name,
 			if (path.includes("/contents/")) { assert.equal(query?.ref, sha("2"), "the workflow was not read at the base's commit"); return { body: {} }; }
 			throw new Error("unexpected " + path);
 		},
-		fileAt: async (_t: string, _o: string, _r: string, path: string, at: string) => { assert.match(at, /^[0-9a-f]{40}$/); return path.endsWith("ci.yml") ? any : "on: workflow_dispatch\n"; },
+		fileAt: async (_t: string, _o: string, _r: string, path: string, at: string) => { assert.match(at, /^[0-9a-f]{40}$/); return path.endsWith("ci.yml") ? any : integrationText; },
 	}) as never;
+	const reference = readFileSync(new URL("../.github/workflows/windlass-integration.yml", import.meta.url), "utf8");
+	let integrationText = reference;
 	const runs = { ...input, runsIntegration: true };
 	assert.deepEqual(await repositoryAdmission(workflow("active"), "t", "ada", "platform", runs), []);
+	// The workflow at that commit may hold at most a read of the repository, no secret, and run on workflow_dispatch alone: each refusal says why.
+	const { integrationWorkflowRefusal } = await import("../server/src/github/integration.js");
+	assert.equal(integrationWorkflowRefusal(reference), null, "the reference workflow is refused");
+	const job = "jobs:\n  t:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n";
+	for (const [what, text, reason] of [
+		["pull_request_target", "on:\n  workflow_dispatch: {}\n  pull_request_target: {}\npermissions:\n  contents: read\n" + job, /pull_request_target/],
+		["a push trigger", "on: [workflow_dispatch, push]\npermissions:\n  contents: read\n" + job, /runs on push/],
+		["a schedule", "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 0 * * *'\npermissions: {}\n" + job, /runs on schedule/],
+		["write permissions", "on: workflow_dispatch\npermissions:\n  contents: write\n" + job, /top-level permissions grant contents: write/],
+		["write-all", "on: workflow_dispatch\npermissions: write-all\n" + job, /are write-all/],
+		["read-all", "on: workflow_dispatch\npermissions: read-all\n" + job, /are read-all/],
+		["another scope", "on: workflow_dispatch\npermissions:\n  contents: read\n  actions: read\n" + job, /grant actions: read/],
+		["no top-level permissions", "on: workflow_dispatch\n" + job, /sets no top-level permissions/],
+		["a job's write permission", "on: workflow_dispatch\npermissions:\n  contents: read\njobs:\n  t:\n    permissions:\n      pull-requests: write\n    runs-on: x\n    steps: []\n", /job t's permissions grant pull-requests: write/],
+		["a secret", "on: workflow_dispatch\npermissions:\n  contents: read\n" + job + "        env:\n          T: ${{ secrets.TOKEN }}\n", /references secrets/],
+		["inherited secrets", "on: workflow_dispatch\npermissions:\n  contents: read\njobs:\n  t:\n    uses: a/b/.github/workflows/c.yml@main\n    secrets: inherit\n", /references secrets/],
+	] as const) {
+		assert.match(integrationWorkflowRefusal(text) ?? "", reason, what);
+		integrationText = text;
+		const [problem] = await repositoryAdmission(workflow("active"), "t", "ada", "platform", runs);
+		assert.match(problem ?? "", /^ada\/platform: \.github\/workflows\/windlass-integration\.yml at 2222222 is refused: /, what);
+		assert.match(problem, reason, what);
+	}
+	integrationText = reference;
 	assert.match((await repositoryAdmission(workflow(null), "t", "ada", "platform", runs))[0], /needs \.github\/workflows\/windlass-integration\.yml/);
 	assert.match((await repositoryAdmission(workflow("disabled_manually"), "t", "ada", "platform", runs))[0], /windlass-integration/);
+});
+
+test("cross-repo: a combined run is the platform's only by its name, head, workflow file and the App's bot", async () => {
+	const { findIntegrationRun, readIntegrationRun, runName, ForeignRun } = await import("../server/src/github/integration.js");
+	const head = sha("8");
+	const own = { id: 5, display_title: runName("i_cross", 1), name: "windlass-integration", path: ".github/workflows/windlass-integration.yml", head_sha: head, triggering_actor: { login: "windlass[bot]", type: "Bot" }, status: "queued", conclusion: null, html_url: "u" };
+	const app = (runs: object[]) => ({
+		settings: { slug: "windlass", appId: "1" },
+		call: async ({ path }: { path: string }) => {
+			if (path.endsWith("/actions/workflows/windlass-integration.yml/runs")) return { body: { workflow_runs: runs } };
+			if (path.endsWith("/actions/runs/5")) return { body: runs[0] };
+			throw new Error("unexpected " + path);
+		},
+	}) as never;
+	const find = (runs: object[]) => findIntegrationRun(app(runs), "t", "ada", "platform", "windlass/feature-i_cross", "i_cross", 1, head);
+	assert.equal((await find([own]))?.runId, "5");
+	for (const [what, run] of [
+		["another commit", { ...own, head_sha: sha("9") }],
+		["started by a person", { ...own, triggering_actor: { login: "mallory", type: "User" } }],
+		["another App's bot", { ...own, triggering_actor: { login: "other[bot]", type: "Bot" } }],
+		["another workflow with the same run name", { ...own, path: ".github/workflows/ci.yml" }],
+		["another attempt", { ...own, display_title: runName("i_cross", 2) }],
+	] as const) {
+		assert.equal(await find([run]), null, `a run on ${what} was taken for the platform's`);
+		// A run already named by its id is followed only while it is still the platform's run on that head.
+		if (what !== "another attempt") await assert.rejects(readIntegrationRun(app([run]), "t", "ada", "platform", "5", head), ForeignRun);
+	}
+	assert.equal((await readIntegrationRun(app([own]), "t", "ada", "platform", "5", head)).state, "queued");
 });
 
 test("cross-repo: the managed PR section links the counterpart by full URL, keeps the person's text and never closes the issue", async () => {

@@ -221,9 +221,10 @@ export function beginIntegration(f: Flow, retry = false): void {
 const FINISHED = new Set(["passed", "failed", "cancelled", "timed_out", "unavailable"]);
 
 /** A fact about the combined run or a PR of a cross-repo feature. False: it changed nothing. */
-export function crossFact(f: Flow, fact: Extract<Fact, { kind: "integration_started" | "integration_read" | "repo_pr_read" }>, plan: FinalIntegration | undefined): boolean {
+export function crossFact(f: Flow, fact: Extract<Fact, { kind: "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>, plan: FinalIntegration | undefined): boolean {
 	const { item, run } = f;
 	if (fact.kind === "repo_pr_read") return prRead(f, fact);
+	if (fact.kind === "repo_pr_lost") return prLost(f, fact);
 	const integration = item.integration;
 	if (!integration || run.step.kind !== "integration" || fact.key !== f.key || fact.attempt !== integration.attempt || FINISHED.has(integration.state)) return false;
 	if (fact.kind === "integration_started") {
@@ -351,6 +352,16 @@ function judgeOrder(f: Flow, repo: FeatureRepoState, read: string): boolean {
 /** "Keep watching", or, once every PR is merged and nothing is left to watch, accepting the merges as they are. */
 const watchChoices = (item: FactoryItem): { id: ChoiceId; label: string }[] =>
 	[{ id: "wait", label: item.repos!.every(r => r.prState === "merged") ? "Accept the merges as they are" : "Keep watching" }, { id: "give_up", label: "Give up" }];
+
+/** A handed-over PR the platform cannot read any more: the person is asked, never polled again on its own. */
+function prLost(f: Flow, fact: Extract<Fact, { kind: "repo_pr_lost" }>): boolean {
+	const { item, run } = f;
+	if (run.step.kind !== "merged" || item.state !== "review" || fact.key !== `${f.key}/${fact.repo}`) return false;
+	const repo = repoOf(item, fact.repo);
+	if (!repo.pr || repo.prState === "merged") return false;
+	f.ask("integration", `${repo.owner}/${repo.name}#${repo.pr.number} cannot be read any more: ${fact.said} Restore the GitHub App's access, then keep watching, or give up.`, [{ id: "wait", label: "Keep watching" }, { id: "give_up", label: "Give up" }]);
+	return true;
+}
 
 function prRead(f: Flow, fact: Extract<Fact, { kind: "repo_pr_read" }>): boolean {
 	const { item, run } = f;

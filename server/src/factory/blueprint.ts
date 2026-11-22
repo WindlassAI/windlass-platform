@@ -371,6 +371,7 @@ function apply(c: Change, fact: Fact): boolean {
 		case "integration_started":
 		case "integration_read":
 		case "repo_pr_read":
+		case "repo_pr_lost":
 			return item.run !== null && crossRepo(item) && crossFact(flow(c), fact, item.approvedPlan?.finalIntegration);
 		case "spent":
 			// The ledger only grows: an older figure that arrives late says nothing new.
@@ -383,7 +384,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;

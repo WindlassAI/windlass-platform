@@ -1,0 +1,52 @@
+name: Windlass integration self-test
+
+# The combined run of .github/workflows/windlass-integration.yml, on this commit and the Windlass CLI's
+# main, so the two repositories are tested together before any feature relies on it. A workflow of its
+# own: the platform dispatches windlass-integration.yml only while it runs on workflow_dispatch alone.
+on:
+  push:
+    branches: [main, 'wip/**']
+    paths:
+      - .github/workflows/windlass-integration.yml
+      - .github/workflows/windlass-integration-self-test.yml
+      - scripts/cross-repo-integration.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windlass-integration-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  together:
+    name: Test this commit with the Windlass CLI's main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: run-from
+          persist-credentials: false
+      - name: Check out the Windlass CLI's main
+        run: |
+          set -euo pipefail
+          sha=$(git ls-remote https://github.com/WindlassAI/windlass refs/heads/main | cut -f1)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git init -q inputs/cli
+          git -C inputs/cli fetch -q --depth=1 https://github.com/WindlassAI/windlass "$sha"
+          git -C inputs/cli checkout -q --detach FETCH_HEAD
+          echo "WLP_INPUT_PLATFORM=$GITHUB_WORKSPACE/run-from" >> "$GITHUB_ENV"
+          echo "WLP_INPUT_CLI=$GITHUB_WORKSPACE/inputs/cli" >> "$GITHUB_ENV"
+          echo "WLP_INPUTS=$(jq -cn --arg self "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg cli "$sha" '{platform: {repository: $self, sha: $sha}, cli: {repository: "WindlassAI/windlass", sha: $cli}}')" >> "$GITHUB_ENV"
+          echo "cli: WindlassAI/windlass at $sha"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+      - run: corepack enable pnpm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Run the Windlass recipe
+        working-directory: run-from
+        run: timeout --kill-after=30s 60m bash scripts/cross-repo-integration.sh

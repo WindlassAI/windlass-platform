@@ -43,7 +43,7 @@ import { hasPushCi, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
-import { dispatchIntegration, findIntegrationRun, readIntegrationRun } from "../github/integration.js";
+import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import { recentSubject, type IssueBinding } from "../factory/intake.js";
@@ -624,6 +624,15 @@ async function feedbackReady(c: Ctx) {
 		text: batchText(taken, { pr: item.pr!.number, run: (item.run?.n ?? 0) + 1, head: item.run?.ci?.moved ?? item.head }), others: taken.some(e => e.access !== "owner") }, { overflow });
 }
 
+/**
+ * Whether a delivery from a cross-repo feature's other repository wakes anything: only its own PR's poll
+ * once the feature is handed over (`merged`), through the installation bound to it at filing. Never the
+ * primary's polls, whose PR may have the same number.
+ */
+export function siblingWakes(item: FactoryItem, sibling: FeatureRepoState, input: GithubNudge): boolean {
+	return !ENDED.has(item.state) && item.run?.step.kind === "merged" && input.kind === "pr" && input.installationId === sibling.installationId && sibling.pr?.number === input.pr;
+}
+
 /** Under the item's write queue. A directory lookup may race a new push, a cancel, or a transfer. */
 async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
 	const stored = await load(c.db);
@@ -632,7 +641,7 @@ async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
 	// A cross-repo feature's other repository: its PR poll, woken only by a nudge from the installation bound to that repository at filing.
 	const sibling = crossRepo(item) && input.repositoryId !== meta.repository.id ? item.repos!.find(r => r.repositoryId === input.repositoryId) : undefined;
 	if (sibling) {
-		if (ENDED.has(item.state) || input.kind !== "pr" || input.installationId !== sibling.installationId || sibling.pr?.number !== input.pr) return false;
+		if (!siblingWakes(item, sibling, input)) return false;
 	} else if (ENDED.has(item.state) || input.repositoryId !== meta.repository.id || input.installationId !== await binding(c)) return false;
 	const repo = crossRepo(item) ? (sibling ?? item.repos![0]) : undefined;
 	const id = repo && item.run?.step.kind === "merged" && input.kind === "pr" ? `poll_repo_pr:${currentKey(item)}/${repo.alias}` : `poll_${input.kind}:${input.kind === "pr" ? prPollKey(item) : currentKey(item)}`;
@@ -963,7 +972,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * and again in the step that sends an effect, since a row read before a cancel may be performed after
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
-function live(item: FactoryItem, effect: Effect): boolean {
+export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
 	if (effect.kind === "notify_integrated") return item.state === "done" && item.head === effect.head;
@@ -973,8 +982,8 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
 	if (effect.kind === "register" && effect.repo) return !ENDED.has(item.state) && crossRepo(item) && repoOf(item, effect.repo).pr?.number === effect.pr;
 	if (effect.kind === "register") return !ENDED.has(item.state) && item.head === effect.head && item.pr?.number === effect.pr;
-	// The managed PR sections say where the feature stands, also once it ended.
-	if (effect.kind === "link_prs") return crossRepo(item) && item.state !== "draft";
+	// The managed PR sections say where the feature stands while it runs; an ended feature writes no more.
+	if (effect.kind === "link_prs") return crossRepo(item) && item.state !== "draft" && !ENDED.has(item.state);
 	if (effect.kind === "release_review" || effect.kind === "withdraw" || effect.kind === "ask") return true;
 	const run = item.run;
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
@@ -1046,17 +1055,35 @@ export function rescheduleChildPoll(db: Pick<RawAccess, "execute">, row: EffectR
 	return db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", retryAt(now, row.attempts + 1), row.id, row.effect);
 }
 
-/** Writes the managed section on each of a cross-repo feature's PRs, keeping what anyone else wrote there. */
+/**
+ * Whether `error` says the platform cannot reach a repository or PR any more (the App lost access, the
+ * repository was archived or removed, the PR is gone), so trying again changes nothing. A rate limit or an
+ * outage is not that: it is tried again.
+ */
+export function lostAccess(error: unknown): boolean {
+	if (error instanceof GithubProblem) return error.code === "github_denied" || error.code === "github_gone";
+	return error instanceof GithubError && !error.rateLimited && !error.unreachable && [401, 403, 404, 410, 422].includes(error.status);
+}
+
+/**
+ * Writes the managed section on each of a cross-repo feature's PRs, keeping what anyone else wrote there.
+ * A PR the platform cannot write to any more is left as it is: the section is a courtesy, never retried for ever.
+ */
 async function linkPrs(c: Ctx, meta: ItemMeta, item: FactoryItem): Promise<void> {
 	for (const repo of item.repos ?? []) {
 		if (!repo.pr) continue;
 		const pr = repo.pr.number;
-		await repoHub(c, meta, repo, "write", { pull_requests: "write" }, async ({ app, token, owner, name }) => {
-			const latest = c.vars.stored?.item ?? item;
-			const pull = await app.pull(token, owner, name, pr);
-			const body = withSection(pull.body, linkSection(latest, repo.alias));
-			if (body !== pull.body) await app.updatePull(token, owner, name, pr, { title: pull.title, body });
-		});
+		try {
+			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, async ({ app, token, owner, name }) => {
+				const latest = c.vars.stored?.item ?? item;
+				const pull = await app.pull(token, owner, name, pr);
+				const body = withSection(pull.body, linkSection(latest, repo.alias));
+				if (body !== pull.body) await app.updatePull(token, owner, name, pr, { title: pull.title, body });
+			});
+		} catch (error) {
+			if (!lostAccess(error)) throw error;
+			console.log(`[wlp] factory.cross_repo.link_dropped item=${item.id} repo=${repo.alias} said=${JSON.stringify(describeError(error))}`);
+		}
 	}
 }
 
@@ -1111,14 +1138,20 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 				if (state === "merged" || state === "closed")
 					return void await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: `${repo.owner}/${repo.name}#${repo.pr!.number} was ${state} before the repositories were tested together` });
 			}
+			// The workflow GitHub runs is the one at the dispatched commit: it is checked there, every time.
+			const refused = await repoHub(c, meta, from, "read", { actions: "read", contents: "read" }, ({ app, token, owner, name }) =>
+				integrationWorkflowProblem(app, token, owner, name, effect.heads[plan.runFrom]));
+			if (refused) return void await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: refused });
 			const heads = Object.fromEntries(item.repos!.filter(r => plan.inputs.includes(r.alias)).map(r => [r.alias, { repository: `${r.owner}/${r.name}`, sha: effect.heads[r.alias] }]));
 			const started = await repoHub(c, meta, from, "write", { actions: "write" }, ({ app, token, owner, name }) =>
 				dispatchIntegration(app, token, owner, name, { ref: featureBranch(item.id), item: item.id, attempt: effect.attempt, heads, runFrom: plan.runFrom, command: plan.command, timeoutSeconds: plan.timeoutSeconds }));
 			await take(c, { ...base, kind: "integration_started", runId: started?.runId ?? null, url: started?.url ?? null });
 			return;
 		}
+		// The run is the platform's only on the head of `runFrom` it was dispatched on.
+		const runHead = run.heads?.[plan.runFrom] ?? "";
 		const reading = await repoHub(c, meta, from, "read", { actions: "read" }, ({ app, token, owner, name }) =>
-			run.runId ? readIntegrationRun(app, token, owner, name, run.runId) : findIntegrationRun(app, token, owner, name, featureBranch(item.id), item.id, effect.attempt));
+			run.runId ? readIntegrationRun(app, token, owner, name, run.runId, runHead) : findIntegrationRun(app, token, owner, name, featureBranch(item.id), item.id, effect.attempt, runHead));
 		if (!reading) {
 			const lost = run.dispatchedAt !== null && Date.now() - run.dispatchedAt > 10 * 60_000;
 			await take(c, { ...base, kind: "integration_read", state: lost ? "unavailable" : "queued", url: null, said: lost ? "GitHub lists no run of the integration workflow for this attempt" : null });
@@ -1126,7 +1159,7 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 		else await take(c, { ...base, kind: "integration_read", state: reading.state, url: reading.url, said: reading.said, ...(reading.seconds !== undefined && { seconds: reading.seconds }) });
 	} catch (error) {
 		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
-		if (!denied && !(error instanceof GithubError && [403, 404, 422].includes(error.status))) throw error;
+		if (!denied && !(error instanceof ForeignRun) && !(error instanceof GithubError && [403, 404, 422].includes(error.status))) throw error;
 		await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: error.message });
 	}
 }
@@ -1209,8 +1242,16 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "poll_repo_pr": {
 			const repo = repoOf(item, effect.repo);
-			const pull = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ app, token, owner, name }) =>
-				app.call({ path: `/repos/${owner}/${name}/pulls/${effect.pr}`, auth: { bearer: token }, what: "read the feature pull request" }));
+			let pull: Awaited<ReturnType<GithubApp["call"]>>;
+			try {
+				pull = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ app, token, owner, name }) =>
+					app.call({ path: `/repos/${owner}/${name}/pulls/${effect.pr}`, auth: { bearer: token }, what: "read the feature pull request" }));
+			} catch (error) {
+				// Denied, gone or archived: polling again changes nothing, so the person is asked.
+				if (!lostAccess(error)) throw error;
+				await take(c, { kind: "repo_pr_lost", at: Date.now(), key: effect.key, repo: effect.repo, said: error instanceof GithubProblem ? error.message : describeError(error) });
+				return true;
+			}
 			const body = (pull.body ?? {}) as Record<string, unknown>;
 			const merged = body.merged === true;
 			const state = merged ? "merged" : body.state === "closed" ? "closed" : body.draft === true ? "draft" : "open";

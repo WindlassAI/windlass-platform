@@ -335,6 +335,8 @@ export type Fact =
 	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
 	| { kind: "integration_read"; at: number; key: string; attempt: number; state: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "unavailable"; url: string | null; said: string | null; seconds?: number }
 	/** A cross-repo feature's pull request in `repo`, as GitHub said it: whether it merged, into which commit. */
+	/** A cross-repo feature's pull request in `repo` cannot be read any more: the App lost access, or the repository or PR is gone. */
+	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }

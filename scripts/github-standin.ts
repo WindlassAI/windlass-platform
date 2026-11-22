@@ -90,6 +90,8 @@ export interface StandinPull {
 	merged: boolean;
 	/** The commit a merge made on the base: a squash or rebase merge's own commit, which a check sets with `merged`. */
 	mergeCommit?: string;
+	/** When it merged, as GitHub says it: set on the first reading after `merged`, unless a check sets it. */
+	mergedAt?: string;
 	mergeable: boolean | null;
 	draft: boolean;
 	requestedReviewers: string[];
@@ -186,7 +188,7 @@ export class GithubStandin {
 	readonly repositories = new Map<number, StandinRepository>();
 	readonly checks: StandinCheck[] = [];
 	/** Runs of a repository's integration workflow, as dispatched: a check finishes one by setting its status and conclusion. */
-	readonly integrationRuns: Array<{ id: number; repository: number; ref: string; inputs: Record<string, string>; status: string; conclusion: string | null; display_title: string; html_url: string; created_at: string; run_started_at: string; updated_at: string }> = [];
+	readonly integrationRuns: Array<{ id: number; repository: number; ref: string; inputs: Record<string, string>; head_sha: string; path: string; triggering_actor: { login: string; type: string }; status: string; conclusion: string | null; display_title: string; html_url: string; created_at: string; run_started_at: string; updated_at: string }> = [];
 	checkFault: 403 | 422 | "lose_reply" | null = null;
 	checkTokenFault: 403 | 422 | null = null;
 	readonly pulls: StandinPull[] = [];
@@ -586,7 +588,7 @@ export class GithubStandin {
 			requested_reviewers: pull.requestedReviewers.map((login) => ({ login })),
 			merged: pull.merged,
 			mergeable: pull.mergeable,
-			merged_at: pull.merged ? new Date().toISOString() : null,
+			merged_at: pull.merged ? (pull.mergedAt ??= new Date().toISOString()) : null,
 			merge_commit_sha: pull.merged ? pull.mergeCommit ?? null : null,
 			title: pull.title,
 			body: pull.body,
@@ -882,7 +884,8 @@ export class GithubStandin {
 					const fields = (body ?? {}) as { ref?: string; inputs?: Record<string, string> };
 					if (!fields.ref || !this.branchHead(repository, fields.ref)) return answer(422, { message: "No ref found for: " + fields.ref });
 					const id = ++this.nextId;
-					this.integrationRuns.push({ id, repository: repository.id, ref: fields.ref, inputs: fields.inputs ?? {}, status: "queued", conclusion: null,
+					this.integrationRuns.push({ id, repository: repository.id, ref: fields.ref, inputs: fields.inputs ?? {}, head_sha: this.branchHead(repository, fields.ref)!, path: file,
+						triggering_actor: { login: this.slug + "[bot]", type: "Bot" }, status: "queued", conclusion: null,
 						display_title: `windlass-integration ${fields.inputs?.feature} ${fields.inputs?.attempt}`, html_url: `${this.url}/${repository.owner}/${repository.name}/actions/runs/${id}`,
 						created_at: new Date().toISOString(), run_started_at: new Date().toISOString(), updated_at: new Date().toISOString() });
 					response.writeHead(204).end();

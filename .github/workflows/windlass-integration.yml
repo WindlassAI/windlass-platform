@@ -3,11 +3,13 @@ name: Windlass integration
 # A cross-repo feature's combined run (server/src/github/integration.ts, docs/factory "Cross-repo
 # features"): every repository of the feature at the commit the platform names, checked out side by side,
 # then the plan's approved command in this repository's checkout. The platform dispatches it on this
-# repository's feature branch and finds its run by the run name.
+# repository's feature branch and finds its run by the run name, the commit, this file and its own bot.
 #
-# A push that changes this workflow or the Windlass recipe runs it too, on this commit and the Windlass
-# CLI's main, so the two repositories are tested together before any feature relies on it.
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('windlass-integration {0} {1}', inputs.feature, inputs.attempt) || format('windlass-integration self-test {0}', github.sha) }}
+# The platform dispatches it only while it runs on workflow_dispatch alone, holds at most contents: read
+# and references no secret (server/src/github/integration.ts, integrationWorkflowRefusal): checked at
+# approval and again on the commit of every dispatch. The self-test on pushes is its own workflow,
+# windlass-integration-self-test.yml.
+run-name: windlass-integration ${{ inputs.feature }} ${{ inputs.attempt }}
 
 on:
   workflow_dispatch:
@@ -35,17 +37,12 @@ on:
       timeout_minutes:
         type: string
         default: '60'
-  push:
-    branches: [main, 'wip/**']
-    paths:
-      - .github/workflows/windlass-integration.yml
-      - scripts/cross-repo-integration.sh
 
 permissions:
   contents: read
 
 concurrency:
-  group: windlass-integration-${{ github.event_name == 'workflow_dispatch' && inputs.feature || github.ref }}
+  group: windlass-integration-${{ inputs.feature }}
   cancel-in-progress: false
 
 jobs:
@@ -60,19 +57,10 @@ jobs:
           persist-credentials: false
       - name: Check out every input at its commit
         env:
-          EVENT: ${{ github.event_name }}
           HEADS: ${{ inputs.heads }}
           RUN_FROM: ${{ inputs.run_from }}
-          SELF: ${{ github.repository }}
-          SELF_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT" != workflow_dispatch ]; then
-            # The self-test: this commit as "platform", the Windlass CLI's main as "cli".
-            cli=$(git ls-remote https://github.com/WindlassAI/windlass refs/heads/main | cut -f1)
-            HEADS=$(jq -cn --arg self "$SELF" --arg sha "$SELF_SHA" --arg cli "$cli" '{platform: {repository: $self, sha: $sha}, cli: {repository: "WindlassAI/windlass", sha: $cli}}')
-            RUN_FROM=platform
-          fi
           echo "$HEADS" | jq -e 'type == "object" and length >= 1 and length <= 2' >/dev/null
           [[ "$RUN_FROM" =~ ^[a-z][a-z0-9-]{0,15}$ ]]
           mkdir -p inputs
@@ -106,11 +94,9 @@ jobs:
       - name: Run the approved command
         working-directory: run-from
         env:
-          EVENT: ${{ github.event_name }}
           COMMAND: ${{ inputs.command }}
           MINUTES: ${{ inputs.timeout_minutes }}
         run: |
           set -euo pipefail
-          if [ "$EVENT" != workflow_dispatch ]; then COMMAND="bash scripts/cross-repo-integration.sh"; MINUTES=60; fi
           [[ "$MINUTES" =~ ^[0-9]{1,2}$ ]] && [ "$MINUTES" -le 60 ] || MINUTES=60
           timeout --kill-after=30s "${MINUTES}m" bash -c "$COMMAND"

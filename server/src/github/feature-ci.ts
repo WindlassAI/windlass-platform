@@ -3,7 +3,7 @@ import { parse } from "yaml";
 import { GithubError, type GithubApp } from "./app.js";
 import { ownApp } from "./ids.js";
 import { refHead } from "./feature.js";
-import { hasIntegrationWorkflow } from "./integration.js";
+import { integrationWorkflowProblem } from "./integration.js";
 
 const record = (v: unknown) => (v ?? {}) as Record<string, unknown>;
 
@@ -67,7 +67,8 @@ export async function hasPushCi(app: GithubApp, token: string, owner: string, re
  * What keeps one repository of a cross-repo feature from being approved, in sentences naming it: push CI
  * that does not run on the feature's actual branch names, a base that moved since the planner read it
  * (unless the person reconfirmed the new commit), and, for the repository the combined run starts from,
- * a missing integration workflow. Empty: this repository is ready.
+ * a missing integration workflow or one that may hold more than a read of the repository
+ * (`integrationWorkflowProblem`). Empty: this repository is ready.
  */
 export async function repositoryAdmission(app: GithubApp, token: string, owner: string, repo: string, input: {
 	alias: string; baseRef: string; ciBase: string; branches: string[]; planningBaseSha: string | null; reconfirmed?: string; runsIntegration: boolean; opened: boolean;
@@ -80,7 +81,10 @@ export async function repositoryAdmission(app: GithubApp, token: string, owner: 
 		if (now !== input.planningBaseSha && input.reconfirmed !== now)
 			problems.push(`${label}: ${input.baseRef} moved from ${input.planningBaseSha.slice(0, 7)} to ${now.slice(0, 7)} since the planner read it. Revise the plan on the new base, or reconfirm it (bases: {"${input.alias}": "${now}"}).`);
 	}
-	if (input.runsIntegration && !await hasIntegrationWorkflow(app, token, owner, repo, input.baseRef))
-		problems.push(`${label}: the combined run needs .github/workflows/windlass-integration.yml, enabled, on ${input.baseRef}.`);
+	if (input.runsIntegration) {
+		// Read at the commit the feature starts from: the base the planner read, or the one reconfirmed.
+		const problem = await integrationWorkflowProblem(app, token, owner, repo, input.opened ? input.ciBase : input.reconfirmed ?? input.planningBaseSha ?? input.baseRef);
+		if (problem) problems.push(`${label}: ${problem}.`);
+	}
 	return problems;
 }
