@@ -72,11 +72,11 @@ mkdirSync(join(home, "template", "hooks"), { recursive: true });
 writeFileSync(join(home, "template", "hooks", "post-commit"), `#!/bin/sh\nexec ${evil} template-hook\n`);
 chmodSync(join(home, "template", "hooks", "post-commit"), 0o755);
 
-function bash(script: string, cwd: string, stdin = ""): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function bash(script: string, cwd: string, stdin = "", timeout = 60_000): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
 		// As a sandbox's command gets it: the user's home, with nothing pointing git elsewhere.
 		const child = execFile("bash", ["-c", script.replaceAll("/tmp/wlp-", scratch + "/wlp-")], {
-			cwd, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: home, LANG: "C.UTF-8", XDG_CONFIG_HOME: join(home, ".config"), GIT_PAGER: "", PAGER: "" }, timeout: 60_000,
+			cwd, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: home, LANG: "C.UTF-8", XDG_CONFIG_HOME: join(home, ".config"), GIT_PAGER: "", PAGER: "" }, timeout,
 		}, (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === "number" ? error.code : null) : 0, stdout, stderr }));
 		child.stdin?.end(stdin);
 	});
@@ -161,8 +161,9 @@ try {
 
 	// The check itself: the same home makes a plain git run the program.
 	writeFileSync(join(workspace, ".git", "config"), workspaceConfig);
-	const plain = await bash("git status --porcelain >/dev/null; git -c user.name=x -c user.email=x@example.invalid commit -q --allow-empty -m x", workspace);
-	expect("the fixture is hostile: a plain git with this home runs its programs", plain.code === 0 && ran() !== "", ran());
+	// A newer git waits for the filter process to answer its protocol, which this program does not speak: what ran is enough.
+	await bash("git status --porcelain >/dev/null; git -c user.name=x -c user.email=x@example.invalid commit -q --allow-empty -m x", workspace, "", 10_000);
+	expect("the fixture is hostile: a plain git with this home runs its programs", ran() !== "", ran());
 } finally {
 	rmSync(root, { recursive: true, force: true });
 }
