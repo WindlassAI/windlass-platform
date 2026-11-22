@@ -1389,6 +1389,8 @@ export const user = actor({
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
 			try {
+				// A series whose next try was set and not stored would block every later one: wake starts afresh.
+				await c.db.execute("DELETE FROM github_sync");
 				await syncGithubWebhooks(c, c.key[0]);
 			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
 		}

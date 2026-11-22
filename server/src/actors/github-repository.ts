@@ -29,7 +29,7 @@ export const githubRepository = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_claims (issue INTEGER PRIMARY KEY, generation INTEGER NOT NULL, uid TEXT NOT NULL, itemId TEXT NOT NULL, installation TEXT NOT NULL, pending INTEGER NOT NULL, subject TEXT NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))");
-		await db.execute("CREATE TABLE IF NOT EXISTS access (github_user_id INTEGER PRIMARY KEY, level TEXT NOT NULL, at INTEGER NOT NULL)");
+		await db.execute("DROP TABLE IF EXISTS access");
 	} }),
 	actions: {
 		internalIssuePermission: async (c, installation: GithubId, user: GithubUser): Promise<"write" | "read" | "none"> => {

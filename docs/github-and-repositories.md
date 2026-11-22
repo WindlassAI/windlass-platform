@@ -75,7 +75,9 @@ checks still apply. Repeated deliveries with the same GUID share one inbox entry
 An uninstall or suspension drops the installation from every linked user. `installation_repositories.removed`
 keeps the installation and marks the user's connection refreshed, so every server discards its older lists
 and permission answers. The next read from GitHub no longer lists the removed repositories, and an
-installation token cannot reach them. **Reload** in the picker reads the repositories and permissions of the
+installation token cannot reach them. A session that already cloned one keeps its clone and local commits,
+but can no longer fetch or push it. A connection that is not linked in the webhook directory yet relies on
+its cached lists expiring instead. **Reload** in the picker reads the repositories and permissions of the
 user's known installations with installation tokens. **Reconnect GitHub** discovers other installations the
 user can reach, including an organization installation someone else made.
 
@@ -85,7 +87,9 @@ installations happens in the same actor and refuses one that is recorded as remo
 a ticket keeps an installation only when GitHub listed it more than a minute after its last recorded removal.
 So when a user connects while an uninstall is being delivered, the result does not depend on the order. If
 the removal is recorded first, the link refuses the installation and the user's connection drops it. If the
-link is made first, the removal finds the user and drops it.
+link is made first, the removal finds the user and drops it. A suspension is checked against GitHub's current
+state before it is recorded, so one delivered late, after its unsuspend, changes nothing. The order relies on
+the servers' clocks agreeing to within a minute; on one host they do.
 
 A user's connection is saved first and the directories are updated after. If a directory update fails after
 the save, for example while recording a removal, the `user` actor retries it on a schedule: after 15 seconds,

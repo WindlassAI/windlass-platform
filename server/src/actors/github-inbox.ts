@@ -61,6 +61,12 @@ async function refreshInstallation(d: Delivery, c: Ctx) {
 	let change: InstallationChange;
 	let users: Set<string>;
 	if (d.event === "installation" && ["suspend", "deleted"].includes(d.action)) {
+		// A missed suspension redelivered after its unsuspend would be received last. GitHub's current state decides.
+		const app = d.action === "suspend" ? githubApp() : null;
+		if (app && await app.activeInstallation(d.installationId)) {
+			await hooks.internalInstallationActive(d.installationId, d.at);
+			return;
+		}
 		change = { kind: "remove", installationId: d.installationId };
 		// One write records the removal and reads the linked users, so a connection linked after it is refused.
 		users = new Set(await hooks.internalInstallationRemoved(d.installationId, d.at));
