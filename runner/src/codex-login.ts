@@ -197,7 +197,7 @@ export async function storeCodexLogin(
 		)
 			throw new RunnerError("The machine pairing changed during Codex login.");
 		const previous = credential && codexLogin(m);
-		await removeRelay(m, "codex");
+		await removeRelay(m, "codex", !credential);
 		if (!credential) {
 			save(metadata(m), null);
 			await m.dropVolume(m.codexVolume);

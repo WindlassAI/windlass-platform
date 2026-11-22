@@ -5,7 +5,7 @@ const net = require('node:net');
 const { pipeline, Transform } = require('node:stream');
 const { StringDecoder } = require('node:string_decoder');
 const { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } = require('node:zlib');
-const { rmSync } = require('node:fs');
+const { existsSync, rmSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
 const http = require('node:http');
 const https = require('node:https');
@@ -171,7 +171,17 @@ function structuredStream(secrets, type, responses) {
 }
 exports.scrubStream = scrubStream;
 
-function reject(res, status) {
+/**
+ * The runner writes this into the socket volume before it stops a relay for a logout, and the next relay
+ * removes it. Without it a stopping or missing relay is being replaced (update, re-pair, new login): retryable.
+ */
+const SIGNED_OUT = '/workspace/signed-out';
+exports.SIGNED_OUT = SIGNED_OUT;
+/** A stopping relay starts no refresh: the request is refused as retryable, or as signed out after a logout. */
+class Stopping extends Error {}
+exports.Stopping = Stopping;
+
+function reject(res, status, restarting = false) {
 	let type = 'api_error', message = 'The provider rejected the request.';
 	if (status === 401) {
 		type = 'authentication_error';
@@ -182,6 +192,9 @@ function reject(res, status) {
 	} else if (status === 429) {
 		type = 'rate_limit_error';
 		message = "The provider's usage or rate limit was reached.";
+	} else if (restarting) {
+		message = 'The relay is restarting. Try again.';
+		res.setHeader('retry-after', '1');
 	} else if (status >= 500) {
 		message = "The provider failed or couldn't be reached.";
 	}
@@ -191,9 +204,12 @@ function reject(res, status) {
 
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider }) {
+	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT) }) {
 	const sessions = new WeakMap();
 	const httpServer = http.createServer(async (req, res) => {
+		// One request per connection: the session's forwarder then knows, for the request on a connection,
+		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
+		if (provider?.closeEachReply) res.setHeader('connection', 'close');
 		try {
 			if (req.headers.host !== '127.0.0.1:17892' || (provider?.methodFor ? req.method !== provider.methodFor(req.url) : req.method !== 'POST') || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
 				return reject(res, 403);
@@ -252,7 +268,12 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			res.on('close', () => up.destroy());
 			req.on('error', () => up.destroy());
 			req.pipe(up);
-		} catch { if (!res.headersSent) reject(res, 502); else res.destroy(); }
+		} catch (error) {
+			if (res.headersSent) res.destroy();
+			else if (!(error instanceof Stopping)) reject(res, 502);
+			else if (signedOut()) reject(res, 401);
+			else reject(res, 503, true);
+		}
 	});
 	// Consume exactly one identity before the HTTP parser sees this connection. The
 	// remainder may already contain HTTP bytes or may arrive in subsequent packets.

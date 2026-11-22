@@ -7,7 +7,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { Agent, createServer, request } from 'node:http';
 import { codexProvider, persist } from '../sandbox/relay/codex.cjs';
+import { createRelay, Stopping } from '../sandbox/relay/server.cjs';
+import { forward } from '../runner/src/egress-proxy.mjs';
 
 test('Codex allows only the Responses and versioned model-list routes', async () => {
 	const provider = codexProvider('openai', 'generation', {
@@ -209,6 +214,80 @@ test('a stopping relay starts no new refresh', async () => {
 		},
 	});
 	await auth.drain();
-	assert.equal(await auth.target('/codex/v1/responses', {}), undefined);
+	await assert.rejects(auth.target('/codex/v1/responses', {}), Stopping);
 	assert.equal(calls, 0);
+});
+
+/** A Codex relay on a Unix socket, as in the relay container, with the session's forwarder in front of it. */
+async function relayAndForwarder(t, { stopping = false } = {}) {
+	const dir = await mkdtemp(join(tmpdir(), 'codex-forward-'));
+	const socket = join(dir, 'relay.sock'), marker = join(dir, 'signed-out');
+	const held = [];
+	const origin = createServer((req, res) => {
+		if (req.url.endsWith('/responses')) return held.push(res);
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ data: [{ id: 'fixture' }] }));
+	});
+	await new Promise((done) => origin.listen(0, '127.0.0.1', done));
+	const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+	const nonce = 'c'.repeat(32);
+	const bearer = 'Bearer ' + nonce + '.' + sign(null, Buffer.from('test\nmachine\n' + nonce), privateKey).toString('base64url');
+	// A stopping relay still serves an API key; it refuses only a ChatGPT token that needs a refresh.
+	const provider = stopping
+		? codexProvider('chatgpt', 'g', { load: async () => ({ generation: 'g', provider: 'chatgpt', access: 'expired', refresh: 'r', expires: 1 }) })
+		: codexProvider('openai', 'g', { load: async () => ({ generation: 'g', provider: 'openai', key: 'sk-fixture' }) });
+	if (stopping) await provider.drain();
+	const relay = createRelay({ publicKey, machine: 'machine', domain: 'test', provider, signedOut: () => existsSync(marker),
+		forward: (options, cb) => request({ ...options, hostname: '127.0.0.1', port: origin.address().port }, cb) });
+	const sockets = new Set();
+	relay.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
+	await new Promise((done) => relay.listen(socket, done));
+	const forwarder = forward(0, socket, nonce, true);
+	await once(forwarder, 'listening');
+	const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+	const call = (method, path) => new Promise((ok, fail) => {
+		const req = request({ host: '127.0.0.1', port: forwarder.address().port, method, path, agent,
+			headers: { host: '127.0.0.1:17892', authorization: bearer, 'content-type': 'application/json' } }, (res) => {
+			res.resume();
+			res.on('end', () => ok({ status: res.statusCode, connection: res.headers.connection, reused: req.reusedSocket }));
+		});
+		req.on('error', fail);
+		req.end(method === 'POST' ? '{}' : undefined);
+	});
+	/** The relay process exits: its listener and every connection close, as at SIGTERM after drain. */
+	const exit = () => { relay.close(); for (const s of sockets) s.destroy(); };
+	t.after(async () => {
+		agent.destroy(); forwarder.close(); exit(); origin.closeAllConnections(); origin.close();
+		await rm(dir, { recursive: true, force: true });
+	});
+	return { call, exit, held, marker };
+}
+test('logout during a request on a warm connection still answers the signed-out status', { timeout: 10_000 }, async (t) => {
+	const relay = await relayAndForwarder(t);
+	const warm = await relay.call('GET', '/codex/v1/models');
+	assert.equal(warm.status, 200);
+	// The relay closes every connection after its reply, so the next request cannot reuse an answered one.
+	assert.equal(warm.connection, 'close');
+	const turn = relay.call('POST', '/codex/v1/responses');
+	while (!relay.held.length) await new Promise((r) => setTimeout(r, 10));
+	await writeFile(relay.marker, '');
+	relay.exit();
+	assert.deepEqual(await turn, { status: 401, connection: 'close', reused: false });
+});
+test('a relay that is being replaced answers retryable, and signed out only after a logout', { timeout: 10_000 }, async (t) => {
+	const stopping = await relayAndForwarder(t, { stopping: true });
+	const replacing = await stopping.call('POST', '/codex/v1/responses');
+	assert.equal(replacing.status, 503);
+	await writeFile(stopping.marker, '');
+	assert.equal((await stopping.call('POST', '/codex/v1/responses')).status, 401);
+	const gone = await relayAndForwarder(t);
+	gone.exit();
+	assert.equal((await gone.call('GET', '/codex/v1/models')).status, 503);
+	await writeFile(gone.marker, '');
+	assert.equal((await gone.call('GET', '/codex/v1/models')).status, 401);
+	const cut = await relayAndForwarder(t);
+	const pending = cut.call('POST', '/codex/v1/responses');
+	while (!cut.held.length) await new Promise((r) => setTimeout(r, 10));
+	cut.exit();
+	assert.equal((await pending).status, 503);
 });

@@ -114,12 +114,16 @@ if (process.argv[1] === "wlp-egress-device") broker([], [], true);
 if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]), JSON.parse(process.argv[3] ?? "[]"));
 // Only the trusted forwarder mounts these sockets. Write its fixed-width identity before
 // connecting the agent byte stream so even a second HTTP request has the same identity.
-function forward(port, path, nonce, signedOutOnDisconnect = false) {
+export function forward(port, path, nonce, signedOutOnDisconnect = false) {
+	const marker = path.replace(/[^/]+$/, "signed-out");
 	const server = net.createServer(client => {
 		const upstream = net.connect(path);
 		if (signedOutOnDisconnect) {
-			// The login volume and relay disappear at logout; the local endpoint survives.
-			const signedOut = () => client.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+			// The login volume and relay disappear at logout; the local endpoint survives. A relay that is
+			// replaced (update, re-pair, new login) also goes away for a moment: only a logout leaves the marker.
+			const signedOut = () => client.end(existsSync(marker)
+				? "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+				: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
 			client.on("error", () => upstream.destroy());
 			client.on("close", () => upstream.destroy());
 			upstream.once("error", signedOut);
@@ -127,7 +131,8 @@ function forward(port, path, nonce, signedOutOnDisconnect = false) {
 				upstream.write(nonce);
 				client.pipe(upstream);
 				// If logout closes an outstanding request before its HTTP response,
-				// the CLI can still receive the authentication status.
+				// the CLI can still receive the authentication status. The relay closes each connection after
+				// one reply, so no reply on this connection means none to the request on it.
 				let started = false;
 				upstream.on("data", () => { started = true; });
 				upstream.pipe(client, {end:false});
@@ -141,7 +146,7 @@ function forward(port, path, nonce, signedOutOnDisconnect = false) {
 		}
 	});
 	server.maxConnections = 128;
-	server.listen(port, "127.0.0.1");
+	return server.listen(port, "127.0.0.1");
 }
 if (process.argv[1] === "wlp-egress-forward") {
 	if (process.argv[2] === "restricted") forward(17891, socket);

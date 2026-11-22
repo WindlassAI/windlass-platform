@@ -55,9 +55,10 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 }
 
 // Call under the login lock, including logout from a standalone runner command.
-export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude") {
+/** `signedOut` for a logout: sessions are then told signed out, not to try again (sandbox/relay/server.cjs SIGNED_OUT). */
+export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude", signedOut = false) {
 	const box = await ownedRelay(m, harness);
-	if (box) await retireRelay(box.Id, harness);
+	if (box) await retireRelay(box.Id, harness, signedOut && box.State?.Running === true);
 }
 /**
  * A relay that refreshes a login saves a refresh already sent before it exits on SIGTERM, since that
@@ -65,7 +66,9 @@ export async function removeRelay(m: MachineDocker, harness: MachineHarness = "c
  * times out after 20 s, so give it that and the write before Docker kills it.
  */
 export const RELAY_STOP_SECONDS = 30;
-async function retireRelay(id: string, harness: MachineHarness) {
+async function retireRelay(id: string, harness: MachineHarness, signedOut = false) {
+	// Written by the relay's own user into its socket volume, before the relay stops answering.
+	if (signedOut && harness !== "claude") await docker(["exec", id, "touch", "/workspace/signed-out"], { timeoutMs: 15_000 });
 	if (harness !== "claude") await docker(["stop", "-t", String(RELAY_STOP_SECONDS), id], { timeoutMs: (RELAY_STOP_SECONDS + 15) * 1000 });
 	await docker(["rm", "-f", id], { check: true });
 }

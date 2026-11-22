@@ -5,7 +5,7 @@ const { rmSync } = require('node:fs');
 const { Transform } = require('node:stream');
 const { StringDecoder } = require('node:string_decoder');
 const { providerFor } = require('./opencode.cjs');
-const { createRelay, stopOnSignal } = require('./server.cjs');
+const { createRelay, stopOnSignal, SIGNED_OUT } = require('./server.cjs');
 
 const filename = '/run/wlp-harness/codex/login.json';
 const models = /^\/codex\/v1\/models(?:\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4})?$/;
@@ -63,6 +63,7 @@ function codexProvider(provider, generation, options = {}) {
 		methodFor: (url) => (models.test(url) ? 'GET' : url === responses ? 'POST' : undefined),
 		accepts: (url) => models.test(url) || url === responses,
 		bearer: (headers) => headers.authorization,
+		closeEachReply: true,
 		responseFilter: auth.responseFilter,
 		drain: auth.drain,
 		async target(url, headers) {
@@ -111,6 +112,7 @@ if (process.env.WLP_CODEX_RELAY_PUBLIC_KEY) {
 	});
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
+	rmSync(SIGNED_OUT, { force: true });
 	const provider = codexProvider(process.env.WLP_CODEX_PROVIDER, process.env.WLP_CODEX_GENERATION);
 	stopOnSignal(
 		createRelay({

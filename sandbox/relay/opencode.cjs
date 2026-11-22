@@ -2,7 +2,7 @@
 const { createPublicKey, randomUUID } = require('node:crypto');
 const { readFile, rename, unlink, writeFile } = require('node:fs/promises');
 const { rmSync } = require('node:fs');
-const { createRelay, scrubStream, stopOnSignal } = require('./server.cjs');
+const { createRelay, scrubStream, stopOnSignal, SIGNED_OUT, Stopping } = require('./server.cjs');
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
@@ -70,8 +70,8 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		if (!record) return;
 		remember(record);
 		if (provider !== 'chatgpt' || record.expires > Date.now() + 30000) return record;
-		// A stopping relay starts no refresh it might not live to save.
-		if (stopping && !refresh) return;
+		// A stopping relay starts no refresh it might not live to save. The relay answers 503, or 401 after a logout.
+		if (stopping && !refresh) throw new Stopping();
 		// Re-read inside the single flight: a concurrent request may have already rotated.
 		return refresh ??= (async () => {
 			const store = await load();
@@ -157,6 +157,7 @@ if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
+	rmSync(SIGNED_OUT, { force: true });
 	const provider = providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation);
 	stopOnSignal(createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider }).listen(socket), provider);
 }

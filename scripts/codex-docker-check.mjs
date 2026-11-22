@@ -77,6 +77,13 @@ const boxes = [];
 const boxName = (id) => 'wlp-session-codex-' + id.slice(-12);
 const probe =
 	"fetch('http://127.0.0.1:17892/codex/v1/models',{headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))";
+// One keep-alive socket: a model-list request warms it, then a Responses request the upstream holds.
+// Without a relay that closes each connection after its reply, the held request would reuse the
+// answered connection, and logout would end it without the signed-out status.
+const warmProbe = `const http=require('node:http');const agent=new http.Agent({keepAlive:true,maxSockets:1});
+const call=(method,path)=>new Promise((ok,no)=>{const req=http.request({host:'127.0.0.1',port:17892,method,path,agent,
+headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER,'content-type':'application/json'}},res=>{res.resume();res.on('end',()=>ok(res.statusCode+':'+req.reusedSocket))});req.on('error',e=>ok('error:'+e.code));req.end(method==='POST'?'{}':undefined)});
+(async()=>{console.log(await call('GET','/codex/v1/models'));console.log(await call('POST','/codex/v1/responses'))})();`;
 async function terminalLogin(hostileUrl) {
 	const child = spawn('script', ['-qef', '-c', 'exec node runner.cjs login codex', '/dev/null'], {
 		cwd: dir,
@@ -229,6 +236,7 @@ try {
 		await cmd(['exec', 'wlp-codex-relay-' + machineId, 'stat', '-c', '%a:%u', '/run/wlp-harness/codex/login.json']),
 		'400:1000',
 	);
+	assert.equal(await cmd(['inspect', '--format', '{{.HostConfig.LogConfig.Type}}', 'wlp-codex-relay-' + machineId]), 'none');
 	await runner.loginChanged(true);
 	const report = runner.report(),
 		entry = report.harnesses[0],
@@ -276,13 +284,17 @@ try {
 	);
 	await cmd(['exec', upstream, 'touch', '/tmp/hold']);
 	const turn = channelTurn(runner, 'second', boxes[1], undefined, undefined, { observe, signedOut: true });
-	await until(() => real('logs', upstream).split('\n').includes('holding'));
+	const holding = () => real('logs', upstream).split('\n').filter((line) => line === 'holding').length;
+	await until(() => holding() > 0);
+	const warmed = docker(['exec', boxName(boxes[1]), 'node', '-e', warmProbe], { timeoutMs: 60_000 });
+	await until(() => holding() > 1);
 	const loggingOut = Date.now();
 	observe(execFileSync(process.execPath, [join(dir, 'runner.cjs'), 'logout', 'codex'], { encoding: 'utf8' }));
 	// The relay exits on SIGTERM once no refresh is in flight, well before Docker's stop timeout.
 	assert.ok(Date.now() - loggingOut < 20_000, 'the relay ignored SIGTERM during logout');
 	assert.equal(await runner.ownedVolume(false, runner.codexVolume), false);
 	assert.equal(await cmd(['exec', first, 'node', '-e', probe]), '401');
+	assert.deepEqual((await warmed).stdout.trim().split('\n'), ['200:false', '401:false']);
 	await writeFile(join(dir, 'continue-probe'), '');
 	delete process.env.F3_PAUSE_PROBE;
 	await Promise.all([turn, probing]);

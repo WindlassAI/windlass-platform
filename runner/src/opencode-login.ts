@@ -54,7 +54,7 @@ export async function storeProvider(m: MachineDocker, credential?: Credential, a
 		// Stop the sole refresh writer before replacing or unlinking the credential.
 		if (!credential) {
 			save(metadata(m), null);
-			try { await removeRelay(m, "opencode"); }
+			try { await removeRelay(m, "opencode", true); }
 			finally { await m.dropVolume(m.opencodeVolume); }
 			return;
 		}
