@@ -21,9 +21,10 @@
  */
 
 import { MINUTE, providerWait } from "../provider-usage.js";
-import type { ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
+import type { HarnessId, ItemAgent, ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
+import { machineHarness } from "../sandbox/harnesses.js";
 import { nextUtcDay, spellSeconds, type UsageEntry } from "../usage.js";
-import type { FactoryLimits, ItemBudget, StopCause, Wait } from "./types.js";
+import type { AgentTurn, FactoryItem, FactoryLimits, ItemBudget, StopCause, TurnSpend, Wait } from "./types.js";
 
 export const FACTORY_DEFAULTS: FactoryLimits = {
 	dailyTokens: null,
@@ -50,6 +51,61 @@ export function retryAt(at: number, attempt: number): number {
 /** What a turn counts against an item's tokens: what went in and what came out (cached input and reasoning are parts of those). */
 export function turnTokens(usage: TurnUsage | null): number {
 	return usage === null ? 0 : usage.inputTokens + usage.outputTokens;
+}
+
+/** An item's agent before its first turn: Windlass's tokens are counted as they come, a machine harness has reported none. */
+export function newAgent(harness: HarnessId, model: string): ItemAgent {
+	return { harness, model, tokens: harness === "windlass" ? "counted" : "not_reported", reportedTokens: 0, cost: null, fiveHour: null };
+}
+
+/** The agent of an item, also of one filed before agents could be chosen. */
+export function itemAgent(item: Pick<FactoryItem, "agent" | "spent">): ItemAgent {
+	return item.agent ?? { ...newAgent("windlass", "default"), reportedTokens: item.spent.tokens };
+}
+
+/**
+ * What a machine harness reported of a turn, read from the turn's usage (the `session/prompt` answer) and
+ * its last ACP usage update. Its tokens count against the item's budget only where the harness bills by
+ * token (`itemTokens: "budget"`): a subscription's are shown, not counted. Undefined for Windlass.
+ */
+export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | null, context?: { cost: { amount: number; currency: string } | null; fiveHourUsedPct?: number } | null, fiveHourAtStart?: number): AgentTurn | undefined {
+	const machine = machineHarness(harness);
+	if (!machine) return undefined;
+	const end = context?.fiveHourUsedPct;
+	return {
+		reported: usage === null ? null : turnTokens(usage),
+		counted: machine.itemTokens === "budget",
+		cost: context?.cost ?? null,
+		fiveHour: end === undefined ? null : { start: fiveHourAtStart ?? end, end },
+	};
+}
+
+/** A turn's spend: its tokens count only where its agent's are counted. */
+export function turnSpend(usage: TurnUsage | null, agent?: AgentTurn): TurnSpend {
+	return { tokens: agent && !agent.counted ? 0 : turnTokens(usage), hostedSeconds: 0, ...(agent && { agent }) };
+}
+
+/** Adds a turn's report to the item's agent. The cost is the conversation's so far, so the latest replaces it. */
+export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
+	const agent = item.agent ?? itemAgent(item);
+	if (turn.reported !== null) {
+		agent.reportedTokens += turn.reported;
+		agent.tokens = turn.counted ? "counted" : "subscription";
+	}
+	if (turn.cost) agent.cost = turn.cost;
+	if (turn.fiveHour) agent.fiveHour = { first: agent.fiveHour?.first ?? turn.fiveHour.start, latest: turn.fiveHour.end };
+	item.agent = agent;
+}
+
+/**
+ * An item's tokens in words: "1,200 of 6,000,000 tokens" where they are counted, otherwise what its agent
+ * reported, never a 0 that was not measured.
+ */
+export function tokenWords(spent: Pick<ItemBudget, "tokens">, budget: Pick<ItemBudget, "tokens">, agent?: ItemAgent): string {
+	const name = agent ? machineHarness(agent.harness)?.name ?? "Windlass" : "Windlass";
+	if (!agent || agent.tokens === "counted") return `${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens`;
+	if (agent.tokens === "subscription") return `${agent.reportedTokens.toLocaleString("en-US")} tokens reported by ${name}, not counted (subscription)`;
+	return `tokens not reported by ${name}`;
 }
 
 /** Settled hosted seconds for all sessions belonging to the item. */

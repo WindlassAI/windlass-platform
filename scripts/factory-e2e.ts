@@ -1530,7 +1530,8 @@ if (only.length > 0 && only.every(name => name.startsWith("memory") || name.star
 
 async function machineChecks(): Promise<void> {
 	const server = new Server();
-	const runner = new StandInRunner(API, ENDPOINT);
+	// Its machine also offers a signed-in Claude Code, played by the fake ACP agent (fixtures/acp-agent).
+	const runner = new StandInRunner(API, ENDPOINT, { claude: true });
 	try {
 		const { user, client, auth } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
 		await runner.pair(user);
@@ -1625,6 +1626,40 @@ async function machineChecks(): Promise<void> {
 			assert(open?.approval === "full" && open.attended === false && open.unattended === "deny", "the hardened container was not opened in unattended full mode");
 			assert(review.verdicts.at(-1)?.attestedBy === `machine:${place.machineId}` && review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
 			return "overlapping turns, one machine-attested verdict, zero hosted seconds";
+		});
+
+		await check("machine: a Claude Code item runs in the hardened container without asking, publishes the platform's commit and CI decides", async () => {
+			const hosted = await refused(() => user.createItem({ ...task, place: undefined, harness: "claude" }), "bad_input");
+			const planFirst = await refused(() => user.createItem({ ...task, mode: "orchestrate", harness: "claude" }), "bad_input");
+			const unknown = await refused(() => user.createItem({ ...task, harness: "nonesuch" as never }), "bad_input");
+			const sent = runner.acpInput.length;
+			// "itemwork": the fake agent asks before an edit and before a test command, then reports its tokens.
+			const item = await user.createItem({ ...task, title: "Claude on my machine", body: "Fix the program (itemwork).", harness: "claude", start: true });
+			assert(item.agent?.harness === "claude" && item.agent.model === "default" && item.agent.tokens === "not_reported", JSON.stringify(item.agent));
+			const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
+			assert(builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions", JSON.stringify(builder && { harness: builder.harness, profile: builder.profile, mode: builder.mode }));
+			const pushed = await untilItem(user, item.id, "the Claude Code item's pull request", view => !!view.pullRequest);
+			const frames = runner.acpInput.slice(sent).join("").split("\n").filter(Boolean).map(line => JSON.parse(line));
+			const mode = frames.find(f => f.method === "session/set_mode" || (f.method === "session/set_config_option" && f.params?.configId === "mode"));
+			const answers = frames.filter(f => f.method === undefined && f.result?.outcome).map(f => f.result.outcome.optionId);
+			const prompt = frames.find(f => f.method === "session/prompt")?.params?.prompt?.[0]?.text ?? "";
+			assert((mode?.params?.modeId ?? mode?.params?.value) === "bypassPermissions", "the item's agent was not put in bypassPermissions: " + JSON.stringify(mode));
+			assert(answers.join() === "allow-once,allow-once", "the edit and the test command were not allowed once: " + answers.join());
+			assert(prompt.includes("Fix the program (itemwork)."), "the item's text did not reach the agent");
+			const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!;
+			setCi(harbor, pull.head, "success");
+			const review = await untilItem(user, item.id, "the Claude Code item in review", view => view.state === "review", CI_WAIT_MS);
+			assert(review.agent?.tokens === "subscription" && review.agent.reportedTokens === 33_500 && review.spent.tokens === 0 && review.spent.turns === 1, JSON.stringify({ agent: review.agent, spent: review.spent }));
+			// The stand-in runner has no git, so its pushed head is no commit id and no check run is posted on a machine here:
+			// the check's words for this item are factory-check's ("the windlass/verified summary says CI decides …").
+			assert(review.verdicts.at(-1)?.result === "pass" || review.verdict?.ci === "passed", "CI green did not decide the verdict: " + JSON.stringify(review.verdict));
+			// A Windlass item's model is the item's own choice from the account's list.
+			const windlass = await user.createItem({ ...task, title: "Windlass on a chosen model", model: "gpt-6-luna" });
+			const windlassSession = (await user.listSessions()).find(s => s.id === windlass.sessionId);
+			assert(windlass.agent?.harness === "windlass" && windlass.agent.model === "gpt-6-luna" && windlassSession?.model === "gpt-6-luna", JSON.stringify(windlass.agent));
+			await refused(() => user.createItem({ ...task, model: "gpt-nonesuch" }), "bad_model");
+			await user.actOnItem({ id: windlass.id, action: { kind: "cancel" } });
+			return `refused hosted (${hosted}), Plan first (${planFirst}), unknown (${unknown}); bypassPermissions, two allow-once answers, 33,500 tokens reported, CI decides`;
 		});
 
 		await check("machine: offline at launch waits without spend and resumes to review", async () => {

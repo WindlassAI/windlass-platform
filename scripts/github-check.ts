@@ -591,13 +591,25 @@ await section("publish: a pull request is opened, then the same branch is update
 	const third = await publish.publishWork({ ...input, pull: second.pull, pushed: second.head, message: { title: "unused", body: "" } });
 	expect("it is pushed as it is, with no commit of the platform's on top", third.committedFiles === 0 && standin.lastCommit(harbor, BRANCH).message === "The agent commits by itself" && !third.opened);
 
+	// Claude Code and OpenCode commit with trailers of their own, and may try to push: the platform's push takes the commit as it is.
+	const trailers = "Fix the sign\n\nGenerated with Claude Code\n\nCo-Authored-By: Claude <noreply@anthropic.invalid>";
+	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- add() adds\n- and says so\n- twice\n- with trailers\n");
+	await sandbox.run(`git commit --quiet -a -F - <<'MSG'\n${trailers}\nMSG`);
+	const ownPush = await sandbox.run(`GIT_TERMINAL_PROMPT=0 git push origin HEAD:${BRANCH} 2>&1; echo exit=$?`);
+	expect("an agent's own git push fails: the sandbox holds no GitHub credential", /exit=(?!0)/.test(ownPush.stdout) && standin.branchHead(harbor, BRANCH) === third.head, ownPush.stdout.trim().split("\n").slice(-1).join(""));
+	writeFileSync(join(sandbox.cwd, "src/sub.ts"), "export const sub = (a: number, b: number) => a - b\n");
+	const trailed = await publish.publishWork({ ...input, pull: third.pull, pushed: third.head, message: { title: "Add sub()", body: "" } });
+	const pushedLog = await sandbox.run(`git log --format=%B -n 2 ${trailed.head}`);
+	expect("the agent's commit with its trailers goes as it is, and what it left uncommitted in the platform's commit on top", trailed.committedFiles === 1 && standin.lastCommit(harbor, BRANCH).message === "Add sub()" && pushedLog.stdout.includes("Co-Authored-By: Claude") && pushedLog.stdout.includes("Generated with Claude Code") && standin.branchHead(harbor, BRANCH) === trailed.head, pushedLog.stdout.replace(/\n+/g, " | "));
+	const thirdHead = trailed;
+
 	// Merged at GitHub: the next push opens a new pull request from the same branch.
 	(standin.pulls[0] as (typeof standin.pulls)[number]).state = "closed";
 	(standin.pulls[0] as (typeof standin.pulls)[number]).merged = true;
-	const seen = await publish.refreshPull(app, adaConnection, repository, third.pull);
+	const seen = await publish.refreshPull(app, adaConnection, repository, thirdHead.pull);
 	expect("a pull request that was merged at GitHub is seen as merged", seen.state === "merged" && seen.number === 1);
 	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- more\n");
-	const fourth = await publish.publishWork({ ...input, pull: seen, pushed: third.head, message: { title: "More after the merge", body: "Follow-up." } });
+	const fourth = await publish.publishWork({ ...input, pull: seen, pushed: thirdHead.head, message: { title: "More after the merge", body: "Follow-up." } });
 	expect("after a merge, the next push opens a new pull request", fourth.opened && fourth.pull.number === 2 && fourth.pull.state === "open" && standin.pulls.length === 2);
 
 	// The pull request exists but the session lost track of it: GitHub's is taken up, not doubled.

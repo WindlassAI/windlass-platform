@@ -33,7 +33,7 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
-import { MAX_ITEM_BODY_CHARS, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
+import { MAX_ITEM_BODY_CHARS, type HarnessId, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
@@ -43,7 +43,7 @@ import type { FeedbackDecision, FeedbackInput } from "./types.js";
 import { subtaskMinimum, emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { refusalMessage } from "../provider-refusal.js";
-import { budgetStop, retryAt } from "./budget.js";
+import { budgetStop, newAgent, noteAgentTurn, retryAt } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -90,6 +90,7 @@ export interface NewItem {
 	place: FactoryItem["place"];
 	budget: ItemBudget;
 	featureMultiplier?: number;
+	agent?: { harness: HarnessId; model: string };
 }
 
 /** A new item, in "draft": a `start` fact queues it. */
@@ -108,6 +109,7 @@ export function createItem(input: NewItem): FactoryItem {
 		singleBudget: input.budget,
 		budget: input.mode === "orchestrate" ? featureCap(input.budget, input.featureMultiplier) : input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
+		...(input.agent && { agent: newAgent(input.agent.harness, input.agent.model) }),
 		workingSince: null,
 		run: null,
 		pr: null,
@@ -741,6 +743,7 @@ function spendTurn(c: Change, spend: TurnSpend, providerRefusal?: ItemProviderRe
 	if (!providerRefusal || !usageRefusal(providerRefusal.kind)) delete c.run.step.providerRetries;
 	c.run.step.turn = null;
 	c.item.spent.tokens += spend.tokens;
+	if (spend.agent) noteAgentTurn(c.item, spend.agent);
 	c.item.spent.turns += 1;
 	if (c.item.place.kind === "hosted") c.item.spent.hostedSeconds = Math.max(c.item.spent.hostedSeconds, spend.hostedSeconds);
 }

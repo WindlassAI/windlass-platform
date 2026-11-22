@@ -6,6 +6,10 @@ import type { ChildPlacement, FeaturePlanEdit, MachineSummary, PlacementNeeds, P
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
+import { harnessName } from "../sandbox/harnesses.js";
+
+/** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
+const HARNESS_PROFILE = "docker-hardened" as const;
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
@@ -75,8 +79,10 @@ function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 	if (needs.screenshots && !machine.screenshots) return "screenshots are unavailable";
 	if (machine.egress === "none" || (needs.egress && needs.egress !== machine.egress)) return "the egress policy does not support this repository task";
 	if (needs.harness && needs.harness !== "windlass") {
-		if (!machine.harnesses?.some(h => h.id === needs.harness && h.signIn === "token")) return `${needs.harness} is not signed in`;
-		return "work items currently require Windlass";
+		const name = harnessName(needs.harness);
+		if (!machine.harnesses?.some(h => h.id === needs.harness && h.signIn === "token")) return `${name} is not offered or not signed in`;
+		if (needs.profile && needs.profile !== HARNESS_PROFILE) return `${name} runs only in the ${HARNESS_PROFILE} profile`;
+		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${HARNESS_PROFILE} profile ${name} needs`;
 	}
 	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${needs.profile} profile`;
 	return null;
@@ -124,12 +130,14 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (needs.cpus && slots.unit.cpus <= 0) return notNow("per-slot CPU capacity is unknown");
 	if ((m.freeDiskBytes ?? 0) < 5 * GiB) return notNow("at least 5 GiB of reported free disk is required");
 	const allowed = m.availableProfiles.filter(p => m.allowedProfiles?.some(id => id === p));
-	const profile = needs.profile ? allowed.find(p => p === needs.profile) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
+	const machineHarness = needs.harness && needs.harness !== "windlass" ? needs.harness : null;
+	const wanted: SandboxProfileId | undefined = needs.profile ?? (machineHarness ? HARNESS_PROFILE : undefined);
+	const profile = wanted ? allowed.find(p => p === wanted) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
 	if (!profile) return notNow("no available owner-allowed profile matches");
 	// An older online runner may have no concurrency cap. Award only one known slot in that case.
 	const free = slots.max === null ? 1 : Math.max(0, slots.max - slots.busy);
 	if (free < units) return { wait: slotWait(m.name, units, free) };
-	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile },
+	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile, ...(machineHarness && { harness: machineHarness }) },
 		score: bonus + Math.min(free, 3) - slots.queued - m.personalRunning };
 }
 

@@ -139,7 +139,7 @@ import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, ver
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
+import { knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -963,9 +963,9 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
 	const size = item?.size ?? input.size ?? 1;
 	const harness = input.harness === undefined ? "windlass" : input.harness;
-	if (harness !== "windlass" && harness !== "claude" && harness !== "opencode") throw new UserError("Choose an available harness.", { code: "bad_input" });
+	if (knownHarness(harness) === null) throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
-		if (item) throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
+		if (item?.role === "reviewer") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
 		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
 		if (input.profile !== "docker-hardened") throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
 		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
@@ -1017,6 +1017,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
+		// A work item is not watched: one filed on a machine whose agent is signed out would only fail at its first turn.
+		if (item && harness !== "windlass" && offered?.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[harness], machine?.name ?? "your machine"), { code: "harness_signed_out" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });

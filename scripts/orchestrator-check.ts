@@ -963,9 +963,26 @@ test("hosted requires an approved route and a deployment profile", () => {
 		inventory: { machines: plannerMachines([mac]), hostedProfiles: [] } }), /hosted.*profile/);
 });
 
-test("a signed-in Claude installation cannot silently launch a Windlass child", () => {
-	const mac = machineReport("Mac", macId, { harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }] });
-	assert.throws(() => placementFeature([mac], { harness: "claude" }), /work items.*Windlass/i);
+test("a subtask that needs Claude Code or OpenCode is placed on a machine signed into it, in the hardened container", () => {
+	const both = [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }, { id: "opencode", adapter: "fixture", image: "fixture", signIn: "token" }] as const;
+	const mac = machineReport("Mac", macId, { harnesses: [...both], profiles: [{ id: "docker-windlass-sandbox", available: true }, { id: "docker-hardened", available: true }] as never, allowedProfiles: ["docker-windlass-sandbox", "docker-hardened"] });
+	for (const harness of ["claude", "opencode"] as const) {
+		const placed = dispatch(placementFeature([mac], { harness }), [mac]).jobs![0].placement;
+		assert.equal(placed?.harness, harness);
+		assert.equal(placed?.profile, "docker-hardened");
+	}
+	// Windlass children keep the machine's first allowed profile and name no harness.
+	const windlass = dispatch(placementFeature([mac]), [mac]).jobs![0].placement;
+	assert.equal(windlass?.harness, undefined);
+	const signedOut = machineReport("Mac", macId, { harnesses: [{ ...both[0], signIn: "none" }] });
+	assert.throws(() => placementFeature([signedOut], { harness: "claude" }), /Claude Code is not offered or not signed in/);
+	assert.throws(() => placementFeature([machineReport()], { harness: "opencode" }), /OpenCode is not offered or not signed in/);
+	assert.throws(() => placementFeature([mac], { harness: "claude", profile: "docker-windlass-sandbox" }), /Claude Code runs only in the docker-hardened profile/);
+	const p = proposal();
+	p.subtasks[0].needs = { harness: "opencode" };
+	assert.doesNotThrow(() => proposed(p));
+	p.subtasks[0].needs = { harness: "nonesuch" as never };
+	assert.throws(() => proposed(p), /supported harness/);
 });
 
 test("5c.5 a Windlass limit still gates every approved machine at child creation", async t => {
