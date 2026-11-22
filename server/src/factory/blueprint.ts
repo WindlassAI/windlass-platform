@@ -834,13 +834,13 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	const result = gateResult(fact.outcome, fact.verified);
-	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
-	// again on its own. The person is asked, with the session's own sentence.
 	// Refused on "Docker, hardened" for someone else's text: the person may run that very turn anyway, labelled only.
 	if (fact.refused && fact.untrustedRefusal?.sources.length) {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, ...fact.untrustedRefusal.retry, newStep: false };
 		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("run_anyway"), ...handOver(item), choice("give_up")], null, resume);
 	}
+	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
+	// again on its own. The person is asked, with the session's own sentence.
 	if (fact.refused) {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) };
 		// Two sentences: the session's own may be several, and starts with a capital.
