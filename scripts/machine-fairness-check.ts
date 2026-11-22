@@ -4,16 +4,57 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner, until } from "./runner-standin.js";
+import { DatabaseSync } from "node:sqlite";
+import { serviceParams } from "../server/src/auth.js";
+import { machine, machineTables, type MachineUpdate } from "../server/src/actors/machine.js";
+import type { MachineSlotCapacity } from "../server/src/contract.js";
+
+export async function weightedFifo(slots: MachineSlotCapacity, onGrant?: (name: string, size: number) => Promise<void>) {
+	const db = new DatabaseSync(":memory:");
+	const raw = { execute: async (q: string, ...params: (string | number | null)[]) => db.prepare(q).all(...params) } as Parameters<typeof machineTables>[0];
+	try {
+		db.exec("CREATE TABLE turn_slots (session TEXT, turn INTEGER, running INTEGER, PRIMARY KEY(session,turn)); INSERT INTO turn_slots VALUES ('first',1,1)");
+		await machineTables(raw);
+		db.exec("INSERT INTO machine (id,name,version,public_key,created) VALUES (1,'Mac','0.2.0','fixture',0)");
+		let update: MachineUpdate | undefined;
+		const c = { db: raw, key: ["owner", "machine"], conn: { params: serviceParams() },
+			vars: { live: { maxTurns: 3, slots }, work: Promise.resolve(), nextSlotCheck: Infinity },
+			client: () => ({ user: { get: () => ({ internalMachineChanged: (_: string, facts: MachineUpdate) => { update = facts; } }) } }) };
+		const actions = machine.config.actions!;
+		const request = async (name: string, size: number) => {
+			const answer = await actions.internalTurnSlot(c as never, name, 1, size);
+			if (answer.state === "granted") await onGrant?.(name, size);
+			return answer;
+		};
+		assert.equal((await request("second", 1)).state, "granted");
+		assert.equal((await request("large", 2)).state, "waiting");
+		assert.equal((await request("small", 1)).state, "waiting");
+		assert.deepEqual(update?.slots, { ...slots, busy: 2, queued: 3 });
+		c.vars.live = { maxTurns: 3, slots };
+		await actions.internalReleaseTurnSlot(c as never, "first", 1);
+		assert.equal((await request("small", 1)).state, "waiting");
+		assert.equal((await request("large", 2)).state, "granted");
+		assert.deepEqual(update?.slots, { ...slots, busy: 3, queued: 1 });
+		assert.equal((await request("large", 2)).state, "granted");
+	} finally { db.close(); }
+}
 
 type Check = (name: string, run: () => Promise<string>) => Promise<void>;
 export async function machineFairnessChecks(check: Check, client: ReturnType<typeof createClient<Registry>>, runner: StandInRunner, token: string, storage: string) {
 	const { uid, machineId } = runner.id;
 	const user = client.user.get([uid], { params: { token } });
-	for (const scenario of ["FIFO admission", "stop while waiting", "reconnect while waiting"]) {
+	for (const scenario of ["FIFO admission", "stop while waiting", "reconnect while waiting", "weighted FIFO admission"]) {
 		await check(scenario, async () => {
 			const sessions: string[] = [];
-			async function prompt(blocking: boolean) {
-				const s = await user.createSession({ place: { kind: "machine", machineId }, profile: "docker-hardened",
+			const weighted = scenario === "weighted FIFO admission";
+			const capacity = runner.fake.report.slots!;
+			if (weighted) {
+				runner.fake.report.slots = { ...capacity, max: 3 };
+				runner.report();
+				await until("three reported slots", async () => (await user.machines()).some(m => m.slots?.max === 3));
+			}
+			async function prompt(blocking: boolean, size?: 2) {
+				const s = await user.createSession({ place: { kind: "machine", machineId }, size, profile: "docker-hardened",
 					...(blocking ? { repoUrl: "https://example.com/org/slow-clone.git" } : {}) });
 				sessions.push(s.id);
 				const handle = client.agentSession.get([uid, s.id], { params: { token } });
@@ -25,13 +66,13 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 				await until("waiting before the first sandbox operation", async () => {
 					const snap = await s.handle.snapshot();
 					assert.ok(!runner.served.has(s.id), "waiting turn reached the runner");
-					return snap.timeline.some(i => i.kind === "platform" && i.text.includes("2 of 2 busy"));
+					return snap.timeline.some(i => i.kind === "platform" && i.text.includes(weighted ? "1 of 3 free" : "0 of 2 free"));
 				}, 8000);
 			}
 			try {
 				const first = await prompt(true), second = await prompt(true);
 				await until("both slots to be busy", () => active(first.id) && active(second.id));
-				const third = await prompt(true);
+				const third = await prompt(true, weighted ? 2 : undefined);
 				await queued(third);
 				if (scenario === "stop while waiting") {
 					await third.handle.stop();
@@ -44,9 +85,15 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 				}
 				const fourth = await prompt(false);
 				await queued(fourth);
+				if (weighted) {
+					const machine = (await user.machines()).find(m => m.machineId === machineId)!;
+					assert.deepEqual([machine.slots?.busy, machine.slots?.queued], [2, 3]);
+					assert((await third.handle.snapshot()).timeline.some(i => i.kind === "platform" && i.text.includes("Waiting for 2 free slots")));
+				}
 				await first.handle.stop();
 				if (scenario !== "stop while waiting") {
 					await until("the third turn to start first", () => active(third.id));
+					if (weighted) assert.equal([...runner.boxes.values()].find(box => box.sessionId === third.id)?.size, 2);
 					await queued(fourth);
 					await third.handle.stop();
 				}
@@ -56,6 +103,7 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 			} finally {
 				await Promise.all(sessions.map(id => client.agentSession.get([uid, id], { params: { token } }).stop()));
 				for (const id of sessions) await user.deleteSession(id);
+				if (weighted) { runner.fake.report.slots = capacity; runner.report(); }
 			}
 		});
 	}

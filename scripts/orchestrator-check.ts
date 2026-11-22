@@ -688,6 +688,11 @@ test("placement 3 measures requested CPU and memory in sandbox units", () => {
 	const sized = { ...mac, slots: { max: 3, busy: 1, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } };
 	const item = placementFeature([sized], { cpus: 8, memoryGiB: 8 });
 	assert.equal(dispatch(item, [sized]).jobs![0].placement?.units, 2);
+	// Three units use the four-slot size class, clamped to the configured capacity.
+	for (const max of [3, 4]) {
+		const roomy = { ...sized, slots: { ...sized.slots, busy: 0, max } };
+		assert.equal(dispatch(placementFeature([roomy], { cpus: 12 }), [roomy]).jobs![0].placement?.units, max);
+	}
 	const legacy = machineReport("Mac", macId, { host: { ...mac.host!, sandboxCpus: 4 } });
 	for (const needs of [{ cpus: 8 }, { memoryGiB: 2 }]) {
 		assert.throws(() => placementFeature([legacy], needs), /Mac.*sizing beyond one slot/i);

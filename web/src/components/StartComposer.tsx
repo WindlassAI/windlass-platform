@@ -12,7 +12,9 @@
  * What each choice starts on, field by field: the choice made here, then the chosen repository's saved
  * default, then the account's, then what the user's newest agent on that repository was launched with
  * (their newest of all where the repository has none, `lastUsed`), then the deployment's first. Only
- * the sandbox and the model have saved defaults. The repository itself starts on the page it was
+ * the sandbox and the model have saved defaults. Where it runs, the agent and its mode start where the
+ * user's last agent started, whatever the repository (`startedOn`): the server remembers that start
+ * (`AccountSettings.lastStart`), so it holds in any browser and after that agent is deleted. The repository itself starts on the page it was
  * opened from, else the newest agent's. A pill that differs from its saved default is drawn in the
  * accent, and its picker offers to go back to it; a saved default that cannot be used, a last
  * machine that cannot be used now, an open mode and an open sandbox fact are a warning dot on their
@@ -41,7 +43,7 @@ import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
 import { effortChoices, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
 import { OPEN_MODES, launchModes } from "../lib/modes";
-import { itemOf, lastUsed, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
+import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { clockTime, useMachines } from "../screens/Machines";
@@ -223,14 +225,19 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
 	const anchors = { repo: useRef<HTMLButtonElement>(null), plus: useRef<HTMLButtonElement>(null), criteria: useRef<HTMLButtonElement>(null), settings: useRef<HTMLButtonElement>(null) };
-	const search = useRepositorySearch(open === "repo" || open === "settings");
+	const search = useRepositorySearch(open === "repo" || open === "settings", github.status?.connection?.login ?? null);
 	const branches = useBranches();
 
-	// Back from GitHub: the repository's picker is open, where its user left.
+	// Back from GitHub: the repository's picker is open, where its user left. Connected from the popup, it
+	// opens again once the connection is there: its address form gives way to the list, and closes as it goes.
 	const returned = github.notice?.where === "launch" || github.busy === "finishing";
+	const nowConnected = github.status?.connection != null;
 	useEffect(() => {
-		if (returned) setOpen("repo");
-	}, [returned]);
+		if (!returned) return;
+		// After the swap has settled: the address form's focus going back to the pill closes the list as it opens.
+		const timer = setTimeout(() => setOpen((now) => (now === "settings" ? now : "repo")), 0);
+		return () => clearTimeout(timer);
+	}, [returned, nowConnected]);
 
 	useEffect(() => {
 		if (autoFocus) area.current?.focus();
@@ -310,7 +317,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
 	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", item ? "item" : "agent");
 	// A work item starts on this platform, as filing one always has; an agent where the last one ran.
-	const lastMachineId = !item && last.place?.kind === "machine" ? last.place.machineId : null;
+	const started = startedOn(account.settings?.lastStart ?? null);
+	const lastMachineId = !item && started.place?.kind === "machine" ? started.place.machineId : null;
 	const wantedMachine = placeChoice !== undefined ? placeChoice : lastMachineId;
 	// A machine that was removed or can no longer be chosen leaves the agent on this platform, which its chip says.
 	const chosenMachine = mine.find((machine) => machine.machineId === wantedMachine && why(machine) === null) ?? null;
@@ -327,9 +335,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	// Another harness runs in the hardened container only: without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
-	const wantedHarness = harnessChoice ?? last.harness ?? "windlass";
+	const wantedHarness = harnessChoice ?? started.harness ?? "windlass";
 	const harness: HarnessId = wantedHarness !== "windlass" && hardened && offeredHarnesses(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
+	// The agent the last one was, where it cannot be this one's: said in the agent's picker.
+	const harnessProblem =
+		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
+			? null
+			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "runs only on a machine of yours"}, so this one is ${HARNESS_NAMES[harness]}.`;
 	const catalogs = { claude: useCatalog(item ? null : chosenMachine, "claude"), opencode: useCatalog(item ? null : chosenMachine, "opencode") };
 	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
 	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
@@ -349,7 +362,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const launch = launchModes(harness, chosenProfile);
 	// Claude Code's modes as its machine reported them, where it did.
 	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === launch.default) ? launch.default : (options.modes[0] as SessionMode).id } : launch;
-	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
+	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? (started.harness === harness ? modes.modes.find((candidate) => candidate.id === started.mode) : undefined) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
 	const claude: ClaudeFacts | null = other ? { opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
@@ -543,7 +556,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				{github.busy === "finishing" ? (
 					"Finishing the GitHub connection…"
 				) : github.busy === "leaving" ? (
-					"Going to GitHub…"
+					"Opening GitHub…"
+				) : github.busy === "popup" ? (
+					<>
+						Finish connecting in the GitHub window.{" "}
+						<button type="button" className="link" onClick={() => github.connect({ where: "launch" })}>
+							Show it
+						</button>
+					</>
 				) : github.status === null && !github.error ? (
 					"Checking the GitHub connection…"
 				) : (
@@ -552,7 +572,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } })} disabled={busy !== null}>
 							Connect GitHub
 						</button>{" "}
-						to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
+						to choose one of your own repositories, private ones included, and get the work back as a pull request. It opens in a new window; what you wrote here stays.
 					</>
 				)}
 			</p>
@@ -857,7 +877,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		hints: { right: "effort" },
 		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
 		header:
-			offersOther || (!other && ignored.model) ? (
+			offersOther || (!other && ignored.model) || harnessProblem ? (
 				<>
 					{chosenMachine && offersOther
 						? <details className="agent-commands">
@@ -868,6 +888,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					{(["claude", "opencode"] as const).map(id => catalogs[id].error && <p key={id} role="status">
 						{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
 					</p>)}
+					{harnessProblem ? <p className="tone-warn" role="status">{harnessProblem}</p> : null}
 					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
 				</>
 			) : undefined,
@@ -886,7 +907,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	};
 	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
 	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${effort ? ` · ${effort}` : ""}`;
-	const agentWarn = !other && ignored.model !== null;
+	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
 	const agentPill = (props: TriggerProps) => (
 		<Pill
 			{...props}
@@ -895,7 +916,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			icon={<AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />}
 			secondary={`· ${agentModel}${effort ? ` · ${effort}` : ""}`}
 			dot={agentWarn ? "warn" : modelChanged ? "changed" : null}
-			dotLabel={agentWarn ? "the saved default cannot be used" : undefined}
+			dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined}
 			className={modelChanged ? "ui-pill-changed" : undefined}
 			aria-label={`Agent: ${agentValue}`}
 		>

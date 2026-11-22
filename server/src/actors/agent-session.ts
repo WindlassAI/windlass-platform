@@ -291,6 +291,7 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 // ---------------------------------------------------------------------------------------------
 
 interface SessionMeta {
+	size?: number;
 	uid: string;
 	sessionId: string;
 	demo: boolean;
@@ -3336,12 +3337,16 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			let announced = false;
 			for (;;) {
 				signal.throwIfAborted();
-				const slot = await machine.turnSlot(meta.sessionId, turn);
+				const slot = await machine.turnSlot(meta.sessionId, turn, meta.size ?? meta.origin?.size ?? 1);
 				signal.throwIfAborted();
 				if (slot.state === "granted") break;
+				if (slot.state === "unsupported") throw new TurnProblem("This runner does not support sizing beyond one slot.");
 				if (slot.state === "offline" || slot.state === "removed") throw runnerLink(c, meta.place.machineId).away(slot.state);
 				if (!announced && slot.state === "waiting") {
-					note(c, turn, "info", `Waiting for a free slot on your machine (${slot.busy} of ${slot.max} busy).`);
+					const size = slot.size ?? 1;
+					const waiting = slot.behind ? "Waiting behind an earlier turn" : `Waiting for ${size} free slot${size === 1 ? "" : "s"}`;
+					const free = slot.max === null ? "" : `; ${Math.max(0, slot.max - slot.busy)} of ${slot.max} free`;
+					note(c, turn, "info", `${waiting} on ${meta.machineName ? `‘${meta.machineName}’` : "your machine"}${free}.`);
 					announced = true;
 				}
 				await delay(1000, undefined, { signal });
@@ -4301,6 +4306,7 @@ export const agentSession = actor({
 				titleIsTyped: input.titleIsTyped === true,
 				place: input.place,
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
+				...(input.size && { size: input.size }),
 				harness: input.harness,
 				profile: input.profile,
 				...initialSessionModes(input.profile, input.harness, !!input.origin, input.harnessOptions?.modes),

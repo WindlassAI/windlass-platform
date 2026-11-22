@@ -218,7 +218,7 @@ export class DockerSnapshots {
 				labels[LABEL+".profile"] !== profile || (labels[LABEL+".machine"] ?? "") !== this.machine ||
 				labels[LABEL+".harness"] || box.Mounts.length !== 1 || box.Mounts[0].Type !== "volume" || box.Mounts[0].Destination !== DATA_DIR) return false;
 			// Commit merges container Config. Refuse extra labels or env (including Docker client proxy credentials).
-			const allowed = new Set([...Object.keys(base.Config.Labels ?? {}), LABEL, LABEL+".uid", LABEL+".session", LABEL+".profile", LABEL+".machine", LABEL+".egress", S+".candidate", S+".attempt", variantLabel]);
+			const allowed = new Set([...Object.keys(base.Config.Labels ?? {}), LABEL, LABEL+".uid", LABEL+".session", LABEL+".profile", LABEL+".machine", LABEL+".egress", LABEL+".slots", LABEL+".requested-slots", S+".candidate", S+".attempt", variantLabel]);
 			const env = [...base.Config.Env, ...Object.entries(this.network?.env ?? {}).map(([k,v]) => k+"="+v)];
 			if (Object.keys(labels).some(k => !allowed.has(k)) || JSON.stringify([...box.Config.Env].sort()) !== JSON.stringify(env.sort())) return false;
 			const marker = this.namespace + "-refused-" + key;
@@ -246,6 +246,10 @@ export class DockerSnapshots {
 				const tag = this.tag(), pending = tag.replace(":", ":pending-");
 				const metadata: Labels = { [LABEL+".session"]: "", [S+".candidate"]: "", [S+".attempt"]: "", [S]: "1", [S+".index"]: this.namespace, [S+".machine"]: this.machine, [S+".uid"]: uid,
 					[S+".repo"]: source.repo, [S+".inputs"]: source.inputs, [S+".generation"]: source.generation, [S+".key"]: key, [S+".commit"]: source.commit, [S+".created"]: String(source.created), [S+".base-size"]: String(base.Size), [S+".writable"]: String(writable) };
+				// Docker commit inherits container labels. A consumer must reconnect at its own requested size.
+				for (const label of [LABEL + ".slots", LABEL + ".requested-slots"]) {
+					if (label in labels) metadata[label] = "";
+				}
 				await docker(["commit", "--pause=false", ...Object.entries(metadata).flatMap(([k,v]) => ["-c", "LABEL "+k+"="+JSON.stringify(v)]), box.Id, pending], { check: true, timeoutMs: 10 * 60_000 });
 				// A crash during validation leaves only a pending tag. The next sweep can discard
 				// it without making a half-admitted image eligible for replacement or quota eviction.

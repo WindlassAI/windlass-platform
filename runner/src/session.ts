@@ -66,7 +66,6 @@ class Conversation {
 		switch (op.name) {
 			case "create": {
 				const { harness, profile, prepared } = op.args;
-				if ((op.args.size ?? 1) > 1) throw new Refusal("This runner does not support sizing beyond one slot.");
 				if (prepared && harness) throw new Refusal("This harness cannot use snapshots.");
 				if (harness) o.requireHarness(profile, harness);
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
@@ -75,7 +74,7 @@ class Conversation {
 				await o.ensureImage(); // The disk-space helper always uses the base pin.
 				if (harness) await o.prepareHarness(profile, harness);
 				if (screenshots) await o.ensureImage(shotsImage);
-				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, prepared); });
+				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, op.args.size, prepared); });
 			}
 			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
 			case "saveSnapshot": {

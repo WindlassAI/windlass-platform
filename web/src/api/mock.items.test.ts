@@ -6,6 +6,8 @@ import { MAX_API_TOKENS, type CheckStatus, type ItemSummary, type ReviewBlock, t
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX, type ItemCursor } from "@contract";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage, nextCursor } from "../../../server/src/item-pages";
 import type { GateEvidence } from "../../../server/src/factory/types";
 import { ciSentence as serverCiSentence, verdictOf, verdictWords } from "../../../server/src/factory/verdict";
 import { createMockClient, type MockMachineState } from "./mock";
@@ -519,4 +521,57 @@ it("lets a designer exercise the single suggestion and re-plan decisions", async
 		expect(revision.question?.kind).toBe("replan_approval");
 		expect(revision.budget).toEqual(view.budget);
 	} finally { mock.dispose(); }
+});
+
+describe("a page of work items", () => {
+	const item = (id: string, createdAt: number, state: ItemSummary["state"] = "done", repository = 7101): ItemSummary => ({ id, createdAt, state, repository: { id: repository }, source: "web" }) as unknown as ItemSummary;
+	const page = (raw: unknown) => cleanItemPage(raw) as CleanPage;
+
+	it("is the whole list without one, and refuses what is not a page, in the server's words", async () => {
+		expect(cleanItemPage(undefined)).toBeNull();
+		expect(cleanItemPage(null)).toBeNull();
+		for (const bad of [7, [], { limit: 0 }, { limit: ITEM_PAGE_MAX + 1 }, { limit: 2.5 }, { before: { createdAt: "1", id: "a" } }, { before: { createdAt: 1, id: "" } }, { ended: "yes" }, { repository: "acme/harbor" }, { source: "email" }]) {
+			expect(() => cleanItemPage(bad), JSON.stringify(bad)).toThrow(ItemPageProblem);
+		}
+		const mock = make();
+		const user = mock.user(auth);
+		await expect(user.listItems({ limit: 0 })).rejects.toMatchObject({ reason: "bad_input" });
+		expect((await user.listItems()).length).toBeGreaterThan(ITEM_PAGE_DEFAULT);
+		mock.dispose();
+	});
+
+	it("goes newest filed first, by id between equals, and a cursor never skips or repeats an item that changed", () => {
+		const list = [item("a", 10), item("c", 30), item("b", 30), item("d", 20, "working"), item("e", 5, "failed", 7102)];
+		const first = itemPage(list, page({ limit: 2 }));
+		expect(first.map((one) => one.id)).toEqual(["c", "b"]);
+		const cursor = nextCursor(first, 2);
+		expect(cursor).toEqual({ createdAt: 30, id: "b" });
+		// "c" ended meanwhile and "d" was reopened: the next page is what is after "b", whatever changed.
+		const second = itemPage(list, page({ limit: 2, before: cursor }));
+		expect(second.map((one) => one.id)).toEqual(["d", "a"]);
+		const third = itemPage(list, page({ limit: 2, before: nextCursor(second, 2) }));
+		expect(third.map((one) => one.id)).toEqual(["e"]);
+		expect(nextCursor(third, 2)).toBeNull();
+		// Ended only, one repository, one way of filing.
+		expect(itemPage(list, page({ ended: true })).map((one) => one.id)).toEqual(["c", "b", "a", "e"]);
+		expect(itemPage(list, page({ ended: true, repository: 7102 })).map((one) => one.id)).toEqual(["e"]);
+		expect(itemPage(list, page({ source: "api" }))).toEqual([]);
+	});
+
+	it("pages the mock's items as the server does", async () => {
+		const mock = make("many");
+		const user = mock.user(auth);
+		const all = await user.listItems();
+		const ended = all.filter((one) => ["done", "failed", "cancelled"].includes(one.state)).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+		const read: string[] = [];
+		let before: ItemCursor | null = null;
+		for (let guard = 0; guard < 20; guard++) {
+			const got = await user.listItems({ ended: true, before, limit: 40 });
+			read.push(...got.map((one) => one.id));
+			before = nextCursor(got, 40);
+			if (before === null) break;
+		}
+		expect(read).toEqual(ended.map((one) => one.id));
+		mock.dispose();
+	});
 });

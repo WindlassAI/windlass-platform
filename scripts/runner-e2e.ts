@@ -1036,6 +1036,7 @@ async function main(): Promise<void> {
 				defaultModel: "opus", modes: [{ id: "plan", name: "Plan", description: "Plan first" }], checkedAt: Date.now() };
 			runner.fake.report.harnesses![0]!.options = options;
 			runner.fake.maxTurns = 2;
+			runner.fake.report.slots = { max: 2, unit: { cpus: 1, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } };
 			await runner.connectControl();
 			await until("machine report", async () => (await user.machines()).some(m => m.commandSandbox));
 			await check("a fresh Claude session shows the machine catalog before turn one, then adopts the live ACP catalog", async () => {

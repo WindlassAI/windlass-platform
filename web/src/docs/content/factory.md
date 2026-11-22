@@ -142,7 +142,7 @@ The plan says what the feature is for, what it must do, what is left out of it a
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
-Current runners support one sandbox slot per subtask. Approval requires a ready placement.
+A subtask can request up to four slots on a runner that reports per-slot CPU and memory. Older runners support one slot per subtask. A feasible machine that is busy or offline can be approved, and the subtask waits for capacity.
 
 The planner may ask you questions with the plan. It may also say that one item is enough. The item shows the planner’s reason and offers **Approve for one implementer** or **Ask for subtasks**.
 
@@ -212,7 +212,7 @@ The Factory page lists your items by what you must do:
 - **Ready for you**: items in review.
 - **In progress**: working, queued or waiting.
 - **Drafts**.
-- **Ended**: done, failed or cancelled, folded away.
+- **Ended**: done, failed or cancelled, folded away. Unfolded, they show 25 at a time, the newest first. Choose **Show 25 more** for the next ones.
 
 Filter it with **repo** and **from**: filed from the web, the API or a GitHub issue. The filters are kept in the address, as `?repository=` and `?from=`.
 

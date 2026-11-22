@@ -347,6 +347,8 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 }
 
 export interface CreateSessionInput {
+	/** Machine sandbox size in slots. A personal session defaults to one. */
+	size?: 1 | 2 | 4;
 	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
 	mode?: string;
 	harness?: HarnessId;
@@ -813,6 +815,23 @@ export interface SavedRepository {
 export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
 
 /**
+ * Where the user's newest agent was started, with which agent and in which mode, as the server
+ * remembered it when that agent was made (account-defaults.ts). Not a saved default: every agent the
+ * user starts replaces it, a work item's sessions never do, and it outlives the agent it came from.
+ * The start composer starts where it runs, the agent and the mode from it where nothing is chosen; a
+ * machine that cannot be used now, or an agent it does not offer, leaves the composer on this
+ * platform with Windlass, and it says so. Forgotten (`forgetLastStart`), they start on the platform's.
+ */
+export interface LastStart {
+	place: SandboxPlace;
+	harness: HarnessId;
+	/** The mode the agent started in: one of that agent's own. */
+	mode: string;
+	/** When, ms since the epoch. */
+	startedAt: number;
+}
+
+/**
  * An MCP server of the user's own: Windlass starts it, or reaches it, in every session of theirs,
  * whatever the repository. It is never read from a repository. `definition` is what Windlass's own
  * configuration takes for one server (its docs/mcp.md, "The keys"): `command` with `args`, `cwd` and
@@ -864,6 +883,8 @@ export interface PersonalServerReach {
 /** The account's settings, as their page shows them. No value of a secret is among them: `accountSecrets` lists those. */
 export interface AccountSettings {
 	defaults: AccountDefaults;
+	/** Where the user's newest agent was started, its agent and its mode (`LastStart`); null before the first, or once forgotten. */
+	lastStart: LastStart | null;
 	/** By name. */
 	servers: PersonalServer[];
 	/** One entry for each sandbox this deployment can run. */
@@ -1024,6 +1045,7 @@ export type MachineWarning =
 
 /** An agent's sandbox on a machine, as its runner last reported it. */
 export interface MachineSandbox {
+	resizePending?: true;
 	sessionId: string;
 	/** Null when that agent was deleted and its sandbox is still there. */
 	title: string | null;
@@ -1055,10 +1077,21 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 /** Latest host sample for an already listed machine. */
 export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
 export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
+export interface MachineSlotCapacity {
+	max: number;
+	unit: { cpus: number; memoryBytes: number; pids: number };
+	reserve: { cpus: number; memoryBytes: number };
+}
+
+/** Large sandboxes use two or four slots, limited by the machine's configured capacity. */
+export function sandboxSlots(requested: number, max: number) {
+	return Math.min(max, requested > 2 ? 4 : requested > 1 ? 2 : 1);
+}
+
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
 	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
-	slots?: { max: number; busy: number; queued: number; unit: { cpus: number; memoryBytes: number; pids: number } };
+	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & { reserve?: MachineSlotCapacity["reserve"]; busy: number; queued: number };
 	personalRunning?: number;
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
@@ -1109,6 +1142,30 @@ export interface MachineClaim {
 }
 
 // --- Work items: the software factory (Plans "software factory") ------------------------------
+
+/** How many work items a page holds when it does not say, and at most (`listItems`). */
+export const ITEM_PAGE_DEFAULT = 25;
+export const ITEM_PAGE_MAX = 100;
+
+/** Where a page of work items starts: after this item, the last of the page before. Both never change. */
+export interface ItemCursor {
+	createdAt: number;
+	id: string;
+}
+
+/**
+ * A page of the user's work items (`listItems`), in the list's order: newest filed first. `ended`
+ * keeps done, failed and cancelled ones; `repository` and `source` keep one repository's and one way
+ * of filing's, as the Factory's filters do.
+ */
+export interface ItemListPage {
+	before?: ItemCursor | null;
+	/** `ITEM_PAGE_DEFAULT` when left out, at most `ITEM_PAGE_MAX`. */
+	limit?: number;
+	ended?: boolean;
+	repository?: GithubId | null;
+	source?: "web" | "api" | "github" | null;
+}
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
 // steps (the blueprint): an agent implements it, the user's checks gate it, the platform pushes the
@@ -1731,6 +1788,8 @@ export interface UserActions {
 	 * that is left out stays as it is; null saves none for it. Throws as `saveRepositoryDefaults` does.
 	 */
 	saveAccountDefaults(input: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	/** Forgets where the newest agent was started (`AccountSettings.lastStart`): the next agent starts on the platform's defaults. The next agent started is remembered again. */
+	forgetLastStart(): Promise<AccountSettings>;
 	/**
 	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is
 	 * replaced, and its setting with it; without, a new one is added. `unasked` is `PersonalServer.unasked`,
@@ -1808,8 +1867,13 @@ export interface UserActions {
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
-	/** The user's work items, the newest first. */
-	listItems(): Promise<ItemSummary[]>;
+	/**
+	 * The user's work items, the newest first. With `page`, at most `page.limit` of them after
+	 * `page.before`, kept to ended ones, one repository or one way of filing where it says so
+	 * (`ItemListPage`); a page shorter than its limit is the last. Throws a UserError with code
+	 * `bad_input` for a page that is not one.
+	 */
+	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	itemAttachmentLinks(itemId: string): Promise<Array<{ id: string; url: string; expiresAt: number }>>;

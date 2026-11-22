@@ -87,6 +87,7 @@ import {
 	type RepositoryChecks,
 	type Verified,
 	type AccountDefaults,
+	type LastStart,
 	type AccountSecrets,
 	type AccountSettings,
 	type AuthResult,
@@ -1261,6 +1262,8 @@ interface World {
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
 		defaults: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null;
+		/** Where the newest agent the user started ran, its agent and mode (`AccountSettings.lastStart`). */
+		lastStart: LastStart | null;
 		servers: Map<string, { definition: Record<string, unknown>; unasked: boolean; updatedAt: number }>;
 		secrets: Map<string, { scope: SecretScope; updatedAt: number }>;
 	};
@@ -1316,6 +1319,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	};
 	/** The time a request takes. */
 	const latency = (ms = 140) => new Promise<void>((resolve) => later(ms, resolve));
+	/** What `createSession` is asked for an item's agent. */
+	const itemStarts = new WeakSet<object>();
 	// Work items, API tokens and the factory's limits live in mock-items.ts; an item's agent is made here, as `createSession` makes one.
 	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
 	const items = createMockItems({
@@ -1325,7 +1330,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		latency,
 		later,
 		feeds: (auth) => worldOf(auth).feeds,
-		session: (auth, { profile, ...input }) => userApi(auth).createSession({ ...input, profile: profile ?? (profiles.find((candidate) => candidate.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" }),
+		session: (auth, { profile, ...input }) => {
+			const asked = { ...input, profile: profile ?? (profiles.find((candidate) => candidate.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" };
+			// An item's agent is not one the user started: it is not where their next agent starts.
+			itemStarts.add(asked);
+			return userApi(auth).createSession(asked);
+		},
 		seededSession: (auth, item) => seedItemSession(auth, item),
 		itemChanged: (auth, item) => {
 			const world = worldOf(auth);
@@ -1353,7 +1363,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -2958,6 +2968,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const servers = [...world.account.servers.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
 		return {
 			defaults: accountDefaultsOf(world),
+			lastStart: world.account.lastStart,
 			servers: servers.map(([name, server]): PersonalServer => {
 				const remote = typeof server.definition.url === "string";
 				const argv = remote ? [] : [String(server.definition.command ?? ""), ...(Array.isArray(server.definition.args) ? server.definition.args.map(String) : [])];
@@ -3164,6 +3175,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const at = realNow();
 		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
 		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
+		const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: Math.ceil(2.1 * 2 ** 30) } });
 		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({
 			machineId: "m_nas",
 			name: "nas",
@@ -3181,7 +3193,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			freeDiskBytes: 61.4e9,
 			egress: "open",
 			profiles: mockMachineProfiles(patch.name ?? "nas", {}, patch.egress),
-			sendSecrets: true, orchestrator: "yes", whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
+			slots: slots(2, 0),
+			sendSecrets: true, orchestrator: "yes", whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 2, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
 			harnesses: [claude],
 			...patch,
@@ -3203,9 +3216,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			case "claude-signed-out":
 				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
 			case "pairing":
-				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
+				return [nas({ status: "waiting", slots: undefined, since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
 			case "outdated":
-				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", warnings: [{ kind: "outdated" }] })];
+				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", slots: undefined, warnings: [{ kind: "outdated" }] })];
 			case "docker":
 				return [nas({ warnings: [{ kind: "docker", reason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }], profiles: mockMachineProfiles("nas", { docker: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }) })];
 			case "clock":
@@ -3237,7 +3250,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			// Feature placement (`?items=features` lists these by default): one machine of each policy. "studio" is
 			// the only one with screenshots, and both its slots are taken; "ci-box" takes no subtask of a feature.
 			case "placement": {
-				const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 512 } });
 				const allowed: MachineSummary["allowedProfiles"] = ["docker-windlass-sandbox", "docker-hardened"];
 				return [
 					nas({ allowedProfiles: allowed, slots: slots(2, 0) }),
@@ -3380,7 +3392,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency();
 				return listOf(world());
 			},
-			async createSession({ idempotencyKey, ...input }: CreateSessionInput) {
+			async createSession(asked: CreateSessionInput) {
+				const { idempotencyKey, ...input } = asked;
 				await latency(260);
 				// With a key, the agent its first attempt made, for as long as that agent exists.
 				const key = keyOf(idempotencyKey);
@@ -3388,6 +3401,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (made) return made.summary;
 				// On one of the user's machines, the sandboxes are the ones its runner last reported.
 				const machine = input.place?.kind === "machine" ? machineOf(auth, input.place.machineId) : null;
+				if (input.size !== undefined && ![1, 2, 4].includes(input.size)) throw new PlatformError("user", "Choose a sandbox size of 1, 2 or 4 slots.", { reason: "bad_input" });
+				if ((input.size ?? 1) > 1 && !machine?.slots) throw new PlatformError("user", "Choose a machine reporting slots for a large sandbox.", { reason: "bad_input" });
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
@@ -3431,6 +3446,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				setSummary(world(), session, {});
 				if (key !== null) world().created.set(key, { content: JSON.stringify(input), answer: session.summary.id });
+				if (!itemStarts.has(asked)) world().account.lastStart = { place: session.summary.place, harness, mode: session.summary.mode, startedAt: session.summary.createdAt };
 				return session.summary;
 			},
 			async renameSession(id: string, title: string) {
@@ -3552,6 +3568,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// The same rules as a repository's defaults.
 				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile));
 				return accountDefaultsOf(current);
+			},
+			async forgetLastStart(): Promise<AccountSettings> {
+				await latency(200);
+				world().account.lastStart = null;
+				return accountOf(world());
 			},
 			async savePersonalServer(server: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings> {
 				await latency(320);

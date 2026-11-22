@@ -6,6 +6,8 @@ Open the account menu and choose **Settings**. What you save here holds for ever
 
 Choose a default **Sandbox** and **Model**, or **No default**. They save as soon as you choose. A new agent starts from these where its repository has no default of its own. See [Defaults](/docs/start-an-agent#defaults) for the full order.
 
+**Where it runs, agent and mode** shows where your last agent started. A new agent starts there too. Choose **Forget** to start the next one on this platform with Windlass.
+
 ### MCP servers
 
 Add servers of your own with **Add…**. They give every agent of yours their tools, whatever the repository. Windlass starts them without asking first. Windlass asks before a call of an MCP tool. Tick **Run this server's tools without asking** to have the platform answer for you, in every agent of yours. Each call still shows in the timeline.

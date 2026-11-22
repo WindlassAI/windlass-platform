@@ -97,8 +97,8 @@ function GithubBlock({ github }: { github: ReturnType<typeof useGithub> }) {
 						))}
 					</ul>
 					<div className="gh-menu-actions">
-						<button type="button" className="button button-quiet button-small" onClick={() => github.connect({ where: "menu", install: true })} disabled={busy}>
-							{github.busy === "leaving" ? "Going to GitHub…" : "Add an account"}
+						<button type="button" className="button button-quiet button-small" onClick={() => github.connect({ where: "menu", install: true })} disabled={busy && github.busy !== "popup"}>
+							{github.busy === "leaving" ? "Opening GitHub…" : github.busy === "popup" ? "In the GitHub window…" : "Add an account"}
 						</button>
 						<button type="button" className="button button-quiet button-small" onClick={() => void github.disconnect()} disabled={busy}>
 							{github.busy === "disconnecting" ? "Disconnecting…" : "Disconnect"}
@@ -108,8 +108,8 @@ function GithubBlock({ github }: { github: ReturnType<typeof useGithub> }) {
 			) : (
 				<>
 					<p className="menu-note">Not connected. Connect it to launch agents on your own repositories, private ones included, and get their work as pull requests.</p>
-					<button type="button" className="button button-outline button-small gh-menu-connect" onClick={() => github.connect({ where: "menu" })} disabled={busy}>
-						{github.busy === "leaving" ? "Going to GitHub…" : "Connect GitHub"}
+					<button type="button" className="button button-outline button-small gh-menu-connect" onClick={() => github.connect({ where: "menu" })} disabled={busy && github.busy !== "popup"}>
+						{github.busy === "leaving" ? "Opening GitHub…" : github.busy === "popup" ? "In the GitHub window…" : "Connect GitHub"}
 					</button>
 				</>
 			)}

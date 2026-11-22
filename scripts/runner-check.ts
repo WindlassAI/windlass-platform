@@ -3,6 +3,7 @@ import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
+import { writeProofDocker } from "./runner-proof-docker.js";
 import { imageId } from "./check-image.js";
 import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
@@ -210,13 +211,17 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 		return { child, output: () => output };
 	}
 	async function cli(command: string, dir = state) { return (await exec(process.execPath, [bundle, command], { env: env(dir), timeout: 20_000 })).stdout; }
+	const limitsOf = async (name: string) => {
+		const [box] = JSON.parse((await docker(["inspect", name], { check: true })).stdout);
+		return [box.HostConfig.NanoCpus, box.HostConfig.Memory, box.HostConfig.MemorySwap, box.HostConfig.PidsLimit, box.HostConfig.CpuShares, box.Config.Labels["dev.windlass-platform.slots"]];
+	};
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
 		if (process.argv.includes("--snapshots-only")) {
-			const service = run();
+			const service = run(state, undefined, bundle, {}, { flags: ["--slots", "3", "--slot-cpus", "0.5", "--slot-memory", "1g"] });
 			try {
-				await until(() => !!srv.state.report, "Runner did not report");
+				await until(() => !!srv.state.report?.slots, "Runner did not report");
 				const key = { writer: true, attempt: randomBytes(16).toString("hex"), repo: "123", inputs: "a".repeat(64), generation: "c".repeat(64) };
 				const {writer: _writer, ...requestKey} = key;
 				const source = { ...requestKey, commit: "b".repeat(40), created: Date.now() };
@@ -224,17 +229,28 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				async function session(sessionId: string, privateData: boolean, request = key) {
 					await srv.attach(sessionId);
 					const channel = srv.channel(sessionId);
-					return { channel, create: () => channel.request("create", { profile, prepared: { ...request, privateData } }) };
+					return { channel, create: (size: number) => channel.request("create", { profile, size, prepared: { ...request, privateData } }) };
 				}
-				const a = await session(sessionId, false), id = await a.create();
+				const a = await session(sessionId, false), id = await a.create(4);
+				assert.deepEqual(await limitsOf(containerName(id.slice(-12))), [1.5e9, 3 * 2 ** 30, 3 * 2 ** 30, 1536, 256, "3"]);
 				assert.equal((await a.channel.request("run", { id, command: "touch /workspace/build-output"})).exitCode, 0);
 				assert.equal(await a.channel.request("saveSnapshot", {id, source}), true);
 				assert.equal(await a.channel.request("saveSnapshot", {id, source}), false);
 				await a.channel.request("run", { id, command: "touch /workspace/agent-wrote-this" });
 				await a.channel.request("destroy", { id });
 				const next = { ...key, writer: false, attempt: randomBytes(16).toString("hex") };
-				const b = await session(srv.other, true, next), restored = await b.create();
+				const b = await session(srv.other, true, next), restored = await b.create(2);
+				const name = containerName(restored.slice(-12));
+				const limits = [1e9, 2 ** 31, 2 ** 31, 1024, 256, "2"];
+				assert.deepEqual(await limitsOf(name), limits);
+				// Reconnect must repair drift using the reader's size, even when its producer was clamped.
+				await docker(["update", "--cpus", "0.5", "--pids-limit", "512", name], { check: true });
 				assert.deepEqual((await b.channel.request("connect", {id: restored}))?.snapshot, { ...source, attempt: next.attempt });
+				assert.deepEqual(await limitsOf(name), limits);
+				await until(() => reported(restored), "Restored sandbox missing from inventory");
+				assert.deepEqual(srv.state.report?.slots, srv.state.helloSlots);
+				assert.equal(srv.state.report?.slots?.max, 3);
+				ok("A snapshot restore gets its own two-slot limits and label, and reconnect repairs them using the consumer's size.");
 				assert.equal((await b.channel.request("run", {id: restored, command: "test -e build-output && test ! -e agent-wrote-this"})).exitCode, 0);
 				assert.equal(await b.channel.request("saveSnapshot", {id: restored, source}), false);
 				await b.channel.request("destroy", {id: restored});
@@ -259,6 +275,56 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				await new DockerSnapshots(machineId, image).drop(uid);
 				await docker(["network", "rm", "wlp-open-"+machineId]);
 			}
+			return;
+		}
+		if (process.argv.includes("--sizing-only")) {
+			for (const command of ["run", "setup"]) {
+				for (const [flag, value] of [["--slots", "65"], ["--slot-cpus", "999999"], ["--slot-memory", "512m"], ["--sandbox-memory", "1g"]]) {
+					await assert.rejects(exec(process.execPath, [bundle, command, flag, value], { env: env(state) }),
+						(e: { stderr?: string }) => !!e.stderr?.includes(flag));
+				}
+			}
+			const bin = join(tmp, "bin");
+			await mkdir(bin);
+			const prefix = "sizing-" + machineId + "-";
+			await writeProofDocker(bin, prefix, (await exec("which", ["docker"])).stdout.trim(), undefined,
+				["wlp-egress-", "wlp-claude-relay-", "wlp-opencode-relay-", "wlp-harness-opencode-"]);
+			const host = join(tmp, "two-cores.cjs");
+			await writeFile(host, 'const os = require("node:os"); os.availableParallelism = () => 2; os.totalmem = () => 12 * 2**30;');
+			const start = (flags: string[]) => run(state, host, bundle, { PATH: bin + ":" + process.env.PATH }, { flags });
+			let service = start([]);
+			try {
+				await until(() => !!srv.state.report?.slots, "Missing default sizing report");
+				await srv.attach(srv.other);
+				const kept = await srv.channel(srv.other).request("create", { profile: "docker-hardened" });
+				assert.deepEqual(await limitsOf(prefix + "agent-" + kept.slice(-12)), [1e9, 1.5 * 2 ** 30, 1.5 * 2 ** 30, 512, 256, "1"]);
+				srv.reset(srv.other);
+				await stop(service.child);
+				await until(() => !srv.online(), "Runner did not disconnect.");
+				service = start(["--max-turns", "3", "--slot-cpus", "0.75", "--slot-memory", "2g"]);
+				await until(() => srv.state.report?.slots?.max === 3, "Missing authenticated sizing report");
+				const slots = srv.state.report!.slots!;
+				assert.equal(slots.max, 3);
+				assert.deepEqual(slots.unit, { cpus: 0.75, memoryBytes: 2 ** 31, pids: 512 });
+				assert.deepEqual(srv.state.helloSlots, slots);
+				await srv.attach(srv.other);
+				await srv.channel(srv.other).request("connect", { id: kept });
+				assert.deepEqual(await limitsOf(prefix + "agent-" + kept.slice(-12)), [0.75e9, 2 ** 31, 2 ** 31, 512, 256, "1"]);
+				await srv.attach();
+				const { weightedFifo } = await import("./machine-fairness-check.js");
+				const created: string[] = [];
+				await weightedFifo(slots, async (turn, size) => {
+					const channel = srv.channel(turn === "large" ? sessionId : srv.other);
+					const id = await channel.request("create", { profile: "docker-hardened", size });
+					if (turn === "large") {
+						created.push(id);
+						assert.deepEqual(await limitsOf(prefix + "agent-" + id.slice(-12)), [1.5e9, 2 ** 32, 2 ** 32, 1024, 256, "2"]);
+					} else assert.equal(id, kept);
+				});
+				assert.equal(created.length, 2);
+				assert.equal(created[0], created[1]);
+				ok("Authenticated hello and inventory carry the same slots. Retried size-two create has one labelled container with twice the advertised limits.");
+			} finally { await stop(service.child); }
 			return;
 		}
 		if (process.argv.includes("--profiles-only")) {
@@ -1180,7 +1246,7 @@ const privateHarnessTag = "chk-" + randomUUID();
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (process.argv.includes("--profiles-only") || process.argv.includes("--snapshots-only")) {
+	if (process.argv.includes("--profiles-only") || process.argv.includes("--sizing-only") || process.argv.includes("--snapshots-only")) {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
 		await check(image);
 	} else if (process.argv.includes("--harness-only")) {
