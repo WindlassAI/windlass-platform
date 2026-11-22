@@ -19,7 +19,11 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 		return res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'fixture limit' } }));
 	}
 	const {model} = JSON.parse(body);
-	res.writeHead(200, { 'content-type': 'text/event-stream' });
+	// A prompt that asks for a warning gets a normal reply with the 5-hour window nearly used.
+	res.writeHead(200, { 'content-type': 'text/event-stream', ...(body.includes('Rate warning check.') && {
+		'anthropic-ratelimit-unified-status': 'allowed_warning', 'anthropic-ratelimit-unified-reset': '4102444800',
+		'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-utilization': '0.93',
+		'anthropic-ratelimit-unified-5h-reset': '4102444800', 'anthropic-ratelimit-unified-5h-surpassed-threshold': '0.9' }) });
 	const chunks = [
 		{type:'message_start',message:{id:'msg_check',type:'message',role:'assistant',model,content:[],stop_reason:null,
 			stop_sequence:null,usage:{input_tokens:5,output_tokens:0}}},

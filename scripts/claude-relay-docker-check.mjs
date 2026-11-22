@@ -69,9 +69,8 @@ async function turn(first, proxyEnv, scan) {
 	if (scan) await isolation(first);
 	child.stdin.end();
 }
-// The upstream refuses this prompt with a 429 and unified headers. The relay passes them through, so the
-// pinned harness reports the limit with its reset, as it does without a relay.
-async function limitedTurn(name) {
+// A turn whose upstream reply carries unified rate-limit headers: what the pinned harness reports from them.
+async function limitTurn(name, text) {
 	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	const events = [];
@@ -89,14 +88,10 @@ async function limitedTurn(name) {
 	await call('initialize', {protocolVersion:1,clientCapabilities:{}});
 	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[]});
 	await call('session/set_mode',{sessionId:opened.sessionId,modeId:opened.modes.currentModeId});
-	const refused = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:'Rate limit check.'}]}).then(() => undefined, error => error);
+	const refused = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text}]}).then(() => undefined, error => error);
 	child.stdin.end();
-	const reported = events.map(event => claudeLimit(event, Date.now())).find(event => event?.status === 'rejected');
-	const seen = `events=${JSON.stringify(events)} error=${refused?.message} limit=${JSON.stringify(refused?.limit)}`;
-	assert.ok(reported || refused?.limit, 'No rate-limit report: ' + seen);
-	if (reported) assert.equal(reported.window.resetsAt, 4102444800_000, seen);
-	if (refused?.limit) assert.equal(refused.limit.resetsAt, 4102444800_000, seen);
 	assert.ok(!JSON.stringify(events).includes('req_fixture'));
+	return { events, refused, seen: `events=${JSON.stringify(events)} error=${refused?.message} limit=${JSON.stringify(refused?.limit)}` };
 }
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
 try {
@@ -157,8 +152,15 @@ try {
 	assert.equal(limited.headers['retry-after'], '3600');
 	assert.equal(limited.headers['request-id'], undefined);
 	ok('The relay passes the upstream 429 rate-limit headers to the session, without its request id.');
-	await limitedTurn(first);
-	ok('A 429 with unified headers reached the pinned harness through the relay; it reported the limit with its reset.');
+	const warned = await limitTurn(first, 'Rate warning check.');
+	const warning = warned.events.map(event => claudeLimit(event, Date.now())).find(event => event?.window.resetsAt === 4102444800_000);
+	assert.ok(!warned.refused && warning && warning.status !== 'rejected' && warning.window.kind === '5h', warned.seen);
+	ok(`A reply with unified headers through the relay made the pinned harness report the 5-hour window (${warning.status}) with its reset.`);
+	// The pinned adapter attaches no rate-limit event to a refused turn, so the platform learns the limit, not its reset.
+	const limitedOut = await limitTurn(first, 'Rate limit check.');
+	assert.equal(limitedOut.refused?.limit?.reason, 'usage_limit', limitedOut.seen);
+	assert.match(limitedOut.refused.message, /2100/, limitedOut.seen);
+	ok('A 429 with unified headers through the relay ended the turn as a usage limit; the harness named its reset.');
 	const recorded = await cmd(['logs',upstream]);
 	assert.match(recorded,/POST \/v1\/messages\?beta=true bearerMatch=true beta=.*oauth-2025-04-20.*version=2023-06-01/);
 	assert.ok(!recorded.includes(token) && !recorded.includes('bearerMatch=false'));
