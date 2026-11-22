@@ -1,0 +1,163 @@
+name: CI heavy
+
+# The checks that are not in `pnpm test`, chosen by the files a change touches (scripts/ci-groups.json,
+# docs/testing.md). Main, the nightly run and a dispatch with `full` run every group.
+on:
+  push:
+    branches: [main, 'wip/**']
+  pull_request:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      full:
+        type: boolean
+        default: false
+        description: Run every group, whatever changed
+      base:
+        type: string
+        default: ''
+        description: Choose by the changes since this ref instead of since main (a stacked branch's parent, say)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-heavy-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+  DOCKER_BUILD_SUMMARY: 'false'
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      plain: ${{ steps.select.outputs.plain }}
+      plain-any: ${{ steps.select.outputs.plain-any }}
+      docker: ${{ steps.select.outputs.docker }}
+      docker-any: ${{ steps.select.outputs.docker-any }}
+      images: ${{ steps.select.outputs.images }}
+      images-any: ${{ steps.select.outputs.images-any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+          package-manager-cache: false
+      - id: select
+        env:
+          FULL: ${{ inputs.full }}
+          BASE_REF: ${{ inputs.base }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/ci-heavy.mjs select
+
+  # Each sandbox image once per run, into the Actions cache that the Docker jobs load it from.
+  images:
+    needs: plan
+    if: needs.plan.outputs.images-any == 'true'
+    strategy:
+      matrix:
+        variant: ${{ fromJSON(needs.plan.outputs.images) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - env:
+          WLP_SANDBOX_VARIANT: ${{ matrix.variant }}
+        run: sandbox/build.sh --context "$RUNNER_TEMP/context"
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ runner.temp }}/context
+          target: ${{ matrix.variant }}
+          outputs: type=cacheonly
+          cache-from: |
+            type=gha,scope=sandbox-base
+            type=gha,scope=sandbox-${{ matrix.variant }}
+          cache-to: type=gha,scope=sandbox-${{ matrix.variant }},mode=max
+
+  checks:
+    needs: plan
+    if: needs.plan.outputs.plain-any == 'true'
+    name: ${{ matrix.job }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.plain) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ matrix.depth }}
+          persist-credentials: false
+      - run: corepack enable pnpm
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/ci-heavy.mjs run "$JOB"
+        env:
+          JOB: ${{ matrix.job }}
+
+  docker:
+    needs: [plan, images]
+    if: ${{ !cancelled() && needs.plan.outputs.docker-any == 'true' && needs.images.result == 'success' }}
+    name: ${{ matrix.job }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.docker) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ matrix.depth }}
+          persist-credentials: false
+      - run: corepack enable pnpm
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Ubuntu 24.04 keeps unconfined processes from using user namespaces, so bubblewrap cannot start in a
+      # container of the Windlass profile ("bwrap: loopback: Failed RTM_NEWADDR"). Platform hosts allow them.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: contains(matrix.images, 'base') || contains(matrix.images, 'harness')
+        run: sandbox/build.sh --context "$RUNNER_TEMP/context-base"
+      - if: contains(matrix.images, 'base') || contains(matrix.images, 'harness')
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ runner.temp }}/context-base
+          target: base
+          load: true
+          tags: windlass-platform-sandbox:latest
+          labels: dev.windlass-platform=1
+          cache-from: type=gha,scope=sandbox-base
+      - if: contains(matrix.images, 'shots')
+        env:
+          WLP_SANDBOX_VARIANT: shots
+        run: sandbox/build.sh --context "$RUNNER_TEMP/context-shots"
+      - if: contains(matrix.images, 'shots')
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ runner.temp }}/context-shots
+          target: shots
+          load: true
+          tags: windlass-platform-sandbox:shots
+          labels: dev.windlass-platform=1
+          cache-from: |
+            type=gha,scope=sandbox-base
+            type=gha,scope=sandbox-shots
+      - run: node scripts/ci-heavy.mjs run "$JOB"
+        env:
+          JOB: ${{ matrix.job }}

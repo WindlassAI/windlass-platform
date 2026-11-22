@@ -1,6 +1,6 @@
 /**
  * `workItem`, key [uid, itemId]: one work item of the software factory (Plans "software factory" §1,
- * §2), and the run controller that carries it through the blueprint (factory/blueprint.ts).
+ * §2), and the run controller that carries it through the blueprint (server/src/factory/blueprint.ts).
  *
  * The whole loop is: a fact arrives (a person's action, the session's report of a turn, the answer of
  * a push or a poll); `advance` decides, as a pure function, what the item becomes and what is to be

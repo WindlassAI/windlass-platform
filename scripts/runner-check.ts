@@ -2,6 +2,7 @@ import { MIRROR_ROOT, mirrorOwner } from "../server/src/sandbox/git-mirrors.js";
 import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
+ * Without a flag it runs --profiles-only and --harness-only first; --main-only leaves them out (CI runs them in a job of their own).
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
 import { writeProofDocker } from "./runner-proof-docker.js";
@@ -27,6 +28,7 @@ import { optionsDigest } from "../server/src/runner/catalog.js";
 import { certify } from "../server/src/runner/frame-auth.js";
 import { ConversationLost, ServerChannel } from "../server/src/runner/channel.js";
 import { safeSentence } from "../runner/src/audit.js";
+import { localSizing } from "../runner/src/sizing.js";
 import { stub, until } from "./runner-stub-server.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -555,7 +557,10 @@ require("node:module").syncBuiltinESMExports();`);
 			const options = report()?.options;
 			assert.ok(options && options.defaultModel === "default" && options.models.find(m => m.id === "default")?.efforts.includes("high"));
 			assert.deepEqual(options.models.find(m => m.id === "sonnet")?.efforts, ["default", "low"]);
-			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
+			// Each login gets a generation of its own, which the platform reads to tell one login from the next.
+			const loginGeneration = report()?.loginGeneration;
+			assert.match(loginGeneration ?? "", /^[0-9a-f]{32}$/);
+			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token", loginGeneration });
 			clean(JSON.stringify(srv.state.report));
 			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
 			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);
@@ -898,7 +903,10 @@ require("node:module").syncBuiltinESMExports();`);
 			const attempts = srv.state.connectionRequests - connectionRequests;
 			const restored = performance.now();
 			srv.restore();
-			await until(() => srv.state.connections > connections, "Runner took over 20s to reconnect.", 20_000);
+			// The longest wait the runner allows itself (runner/src/control.ts): an attempt begun just before the
+			// restore runs out its CONNECT_TIMEOUT_MS of 5 s, then waits at most MAX_BACKOFF_MS of 15 s; and a
+			// few seconds for the handshake.
+			await until(() => srv.state.connections > connections, "Runner took over 25s to reconnect.", 25_000);
 			assert.ok(attempts >= 3 && attempts <= 5, `Made ${attempts} attempts during the cut.`);
 			ok(`Runner reconnected ${((performance.now() - restored) / 1000).toFixed(2)}s after a 30s ${link} cut, with ${attempts} attempts during the cut.`);
 		}
@@ -1055,8 +1063,10 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.equal(inspection.Config.Labels["dev.windlass-platform.uid"], uid);
 		assert.equal(inspection.Config.Labels["dev.windlass-platform.session"], sessionId);
 		assert.equal(inspection.Config.Image, image); assert.equal(inspection.Config.User, "agent");
-		assert.equal(inspection.HostConfig.Privileged, false); assert.equal(inspection.HostConfig.Memory, 1536 * 1024 ** 2);
-		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, 512);
+		// A slot's size follows this host's cores and memory (runner/src/sizing.ts): 1.5 GiB and 512 processes on two cores or fewer.
+		const slot = localSizing().unit;
+		assert.equal(inspection.HostConfig.Privileged, false); assert.equal(inspection.HostConfig.Memory, slot.memoryBytes);
+		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, slot.pids);
 		assert.equal(inspection.Mounts.length, 1); assert.equal(inspection.Mounts[0].Type, "volume");
 		assert.notEqual(inspection.Mounts[0].Name, "wlp-user-" + uid);
 		await until(() => reported(id), "Create did not promptly report the sandbox.", 5000);
@@ -1296,7 +1306,7 @@ try {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle, shots], { cwd: root });
 		await check(image, shots);
 	} else {
-		if (!process.argv.includes("--real-machine")) {
+		if (!process.argv.includes("--real-machine") && !process.argv.includes("--main-only")) {
 			for (const suite of ["--profiles-only", "--harness-only"]) {
 				const focused = spawn(process.execPath, [...process.execArgv, process.argv[1]!, suite], { stdio: "inherit" });
 				assert.equal(await new Promise(resolve => focused.on("exit", resolve)), 0);

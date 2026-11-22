@@ -47,9 +47,21 @@ const OFFLINE_WAIT_MS = 15_000;
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 let failed = 0;
+/** `promise`, or an error naming `what` once `ms` have passed: for calls that a restart can leave unanswered. */
+async function within<T>(what: string, promise: Promise<T>, ms: number): Promise<T> {
+	let timer: Parameters<typeof clearTimeout>[0];
+	const limit = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`timed out after ${ms / 1000} s waiting for ${what}`)), ms); });
+	return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+}
+
+/** A case that has not finished in this time fails by name, rather than holding the run until CI stops it. */
+const CHECK_MS = 5 * 60_000;
+
 async function check(name: string, body: () => Promise<string>): Promise<void> {
+	let timer: Parameters<typeof clearTimeout>[0];
+	const limit = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`did not finish in ${CHECK_MS / 1000} s`)), CHECK_MS); });
 	try {
-		console.log(`PASS  ${name}  (${await body()})`);
+		console.log(`PASS  ${name}  (${await Promise.race([body(), limit]).finally(() => clearTimeout(timer))})`);
 	} catch (error) {
 		failed += 1;
 		console.log(`FAIL  ${name}  -- ${error instanceof Error ? error.message : String(error)}`);
@@ -1307,22 +1319,27 @@ async function main(): Promise<void> {
 
 		await check("a server restart during a machine turn interrupts it, ends its engine and lets the next prompt run", async () => {
 			const watch = new Watch(client, uid, main.id, token);
+			let closed = false;
 			try {
 				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
 				const box = await until("the turn's engine to stream", () => watch.windlass(number) >= 3 && boxesOf(main.id).find((box) => box.engines.size === 1));
-				await server.stop();
-				await server.start();
+				// Close the watcher while its server is there: RivetKit's client can leave the dispose of a connection
+				// whose reconnect gave up across the restart unanswered. The turn goes on without it.
+				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+				closed = true;
+				await within("the server to stop", server.stop(), 90_000);
+				await within("the server to start again", server.start(), 90_000);
 				await machineIs("online");
 				// The server may have closed the turn while the watcher was disconnected.
-				const snapshot = await snapshotOf(client, uid, main.id, token);
+				const snapshot = await within("the session's snapshot after the restart", snapshotOf(client, uid, main.id, token), 30_000);
 				const cut = snapshot.timeline.find((item) => item.turn === number && item.kind === "turn.ended");
 				assert(cut?.kind === "turn.ended" && cut.outcome === "interrupted", `turn ${number} after restart: ${cut?.kind === "turn.ended" ? cut.outcome : "no ending"}`);
 				await until("the runner to end the interrupted turn's engine", () => box.engines.size === 0);
-				const { ended } = await turn(main.id, "Write the primes");
+				const { ended } = await within("the next turn", turn(main.id, "Write the primes"), 120_000);
 				assert(ended.outcome === "succeeded", `next turn ended ${ended.outcome}: ${ended.message}`);
 				return `turn ${number} interrupted, its engine stopped; turn ${ended.turn} succeeded`;
 			} finally {
-				await watch.conn.dispose();
+				if (!closed) await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
 			}
 		});
 
