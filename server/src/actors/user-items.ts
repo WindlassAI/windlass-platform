@@ -740,7 +740,7 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	if (!selected.decision) return selected;
 	if (pinned) {
 		if (pinned.units !== selected.decision.units || pinned.profile !== selected.decision.profile)
-			return { refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’." };
+			return { refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’.", permanent: true };
 		return { decision: pinned };
 	}
 	await c.db.execute("INSERT INTO child_launch VALUES (?,?)", id, JSON.stringify(selected.decision));
