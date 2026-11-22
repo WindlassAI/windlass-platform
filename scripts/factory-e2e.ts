@@ -1800,7 +1800,7 @@ async function subtaskAgentChecks(): Promise<void> {
 		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
 		await check("machine: a Plan-first plan with mixed agents is approved only with the owner's confirmation, and its Claude Code child starts on its own model", async () => {
-			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }, { id: "sonnet", name: "Sonnet", efforts: ["low", "high"] }], checkedAt: Date.now(), modes: [] };
+			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }, { id: "sonnet", name: "Sonnet", efforts: ["low"] }], checkedAt: Date.now(), modes: [] };
 			const harnesses = runner.fake.report.harnesses;
 			runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token", options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt }];
 			runner.report();
@@ -1817,7 +1817,7 @@ async function subtaskAgentChecks(): Promise<void> {
 				feature = filed;
 				const proposal = await untilItem(user, filed.id, "the planner's proposal", v => v.plan?.status === "proposed" && v.question?.kind === "plan_approval");
 				const plan = structuredClone(proposal.plan!);
-				plan.subtasks[0] = { ...plan.subtasks[0]!, place: { prefer: machineLabel(machine), reason: "Claude Code is signed in there" }, agent: { harness: "claude", model: "sonnet", effort: "high" } };
+				plan.subtasks[0] = { ...plan.subtasks[0]!, place: { prefer: machineLabel(machine), reason: "Claude Code is signed in there" }, agent: { harness: "claude", model: "sonnet", effort: "low" } };
 				// What the place does not offer is refused at approval with the reason: a model its catalog does not list.
 				const offPlan = structuredClone(plan);
 				offPlan.subtasks[0]!.agent = { harness: "claude", model: "opus" };
@@ -1834,7 +1834,7 @@ async function subtaskAgentChecks(): Promise<void> {
 				const running = await untilItem(user, filed.id, "the first child", v => v.children?.length === 1, 60_000);
 				// The index keeps no agent: the child's own page has it.
 				const child = await user.item(running.children![0]!.id);
-				assert(child.agent?.harness === "claude" && child.agent.model === "sonnet" && child.agent.effort === "high" && child.placement?.harness === "claude", JSON.stringify({ agent: child.agent, placement: child.placement }));
+				assert(child.agent?.harness === "claude" && child.agent.model === "sonnet" && child.agent.effort === "low" && child.placement?.harness === "claude", JSON.stringify({ agent: child.agent, placement: child.placement }));
 				const builder = (await user.listSessions()).find(s => s.id === child.sessionId);
 				assert(builder?.harness === "claude" && builder.model === "sonnet" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions", JSON.stringify(builder && { harness: builder.harness, model: builder.model, profile: builder.profile, mode: builder.mode }));
 				// Its first turn runs on Claude Code: the effort, then the subtask's brief as the prompt.
@@ -1844,7 +1844,7 @@ async function subtaskAgentChecks(): Promise<void> {
 				}, 60_000);
 				const prompt = frames.find(f => f.method === "session/prompt")?.params?.prompt?.[0]?.text ?? "";
 				assert(prompt.includes(plan.subtasks[0]!.brief), "the subtask's brief did not reach Claude Code");
-				assert(frames.some(f => f.method === "session/set_config_option" && f.params?.configId === "effort" && f.params?.value === "high"), "the subtask's effort was not set");
+				assert(frames.some(f => f.method === "session/set_config_option" && f.params?.configId === "effort" && f.params?.value === "low"), "the subtask's effort was not set");
 				return `approval refused without the owner's confirmation ("${unconfirmed}"); child on Claude Code ${builder.model} in ${builder.profile}`;
 			} finally {
 				if (feature) await user.actOnItem({ id: feature.id, action: { kind: "cancel" } }).catch(() => undefined);
