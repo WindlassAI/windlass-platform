@@ -1551,6 +1551,7 @@ await section("mirror: Docker scope, authenticated clone, fallback and eviction"
 		assert.ok(!plain.hit && !seed.hit && warm.hit && warm.bytes < plain.bytes);
 		console.log("Small fixture clone (ms and HTTP Git bytes)", JSON.stringify({ plain, seed, warm }));
 		assert.equal(await cli("exec", "--user", "65534", a.container, "stat", "-c", "%u:%a", path), "65534:700");
+		assert.equal(await cli("exec", "--user", "65534", a.container, "git", "--git-dir", path + "/repo.git", "rev-parse", "HEAD"), standin.branchHead(fixture, "main"));
 		assert.equal(await cli("exec", "--user", "65534", a.container, "find", path, "!", "-uid", "65534", "-print", "-quit"), "");
 		assert.equal(await cli("exec", "--user", "65534", a.container, "git", "--git-dir", path + "/repo.git", "config", "--local", "--list"), "core.bare=true\ncore.repositoryformatversion=0");
 		assert.notEqual((await dockerCli(["exec", a.container, "touch", path + "/from-agent"])).code, 0);
