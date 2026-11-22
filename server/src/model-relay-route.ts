@@ -11,7 +11,11 @@
  */
 
 import { createRequire } from "node:module";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { Readable, pipeline } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
+import * as zlib from "node:zlib";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "./actors/internal.js";
@@ -42,8 +46,13 @@ const { scrubStream, limitHeaders } = require("../../sandbox/relay/server.cjs") 
 const { errorBody, LEASE_ENDED } = require("../../sandbox/relay/windlass.cjs") as { errorBody: (status: number, text: string, secrets?: string[]) => string; LEASE_ENDED: string };
 
 export const MODEL_RELAY_PATHS = new Map([[`${RELAY_BASE_PATH}/models`, "GET"], [`${RELAY_BASE_PATH}/responses`, "POST"]]);
-/** The request headers Windlass sends besides its authorization, and the only ones passed on. */
+/** The request headers Windlass sends besides its authorization, and the only ones passed on (with `accept-encoding`, below). */
 const PASSED = ["content-type", "accept", "session-id", "user-agent"];
+/** The answers the relay can decode itself, in Windlass's order: what of the client's `accept-encoding` is passed on. */
+const DECODERS = new Map<string, () => NodeJS.ReadWriteStream>([
+	["gzip", createGunzip], ["deflate", createInflate], ["br", createBrotliDecompress],
+	...((typeof (zlib as { createZstdDecompress?: unknown }).createZstdDecompress === "function" ? [["zstd", (zlib as unknown as { createZstdDecompress: () => NodeJS.ReadWriteStream }).createZstdDecompress]] : []) as [string, () => NodeJS.ReadWriteStream][]),
+]);
 const UPSTREAM = "https://api.openai.com/v1";
 /** How long a token fetched from another server process's lease is used before it is asked again; also how often a request of such a lease looks whether it has ended. */
 const REMOTE_CACHE_MS = 5_000;
@@ -85,12 +94,57 @@ const defaults: RelayRouteDeps = {
 			throw error;
 		}
 	},
-	fetch: (input, init) => fetch(input, init),
+	fetch: (input, init) => upstreamFetch(String(input), init ?? {}),
 	limiter: new RelayLimiter({ ...ROUTE_LIMITS, totalRequests: config.modelRelay.requests }),
 	rate: new UserRate(),
 	bodies: new BodyBudget(),
 	now: () => Date.now(),
 };
+
+/**
+ * The request to api.openai.com as Windlass sends it there itself: the headers it is given and no others
+ * (fetch's own `sec-fetch-mode`, `accept-language` and `accept-encoding` are not added), the body with its
+ * length, and no redirect followed. The answer is decoded here when it was compressed, and comes back as a
+ * Response whose headers no longer name an encoding.
+ */
+export function upstreamFetch(url: string, init: RequestInit): Promise<Response> {
+	const target = new URL(url);
+	const body = init.body === undefined || init.body === null ? undefined : Buffer.from(init.body as Uint8Array);
+	const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
+	if (body !== undefined) headers["content-length"] = String(body.byteLength);
+	return new Promise<Response>((resolve, reject) => {
+		const send = target.protocol === "http:" ? httpRequest : httpsRequest;
+		const req = send(target, { method: init.method ?? "GET", headers, signal: init.signal ?? undefined }, (res) => {
+			const out = new Headers();
+			for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) out.append(res.rawHeaders[i]!, res.rawHeaders[i + 1]!);
+			const encoding = (res.headers["content-encoding"] ?? "").trim().toLowerCase();
+			let stream: Readable = res;
+			if (encoding !== "" && encoding !== "identity") {
+				const decode = DECODERS.get(encoding);
+				if (decode) {
+					stream = pipeline(res, decode(), () => undefined) as unknown as Readable;
+					out.delete("content-encoding");
+					out.delete("content-length");
+				}
+			}
+			const status = res.statusCode ?? 502;
+			const nullBody = [101, 204, 205, 304].includes(status) || init.method === "HEAD";
+			if (nullBody) res.resume();
+			resolve(new Response(nullBody ? null : (Readable.toWeb(stream) as unknown as ReadableStream), { status: status < 200 || status > 599 ? 502 : status, headers: out }));
+		});
+		req.on("error", reject);
+		req.end(body);
+	});
+}
+
+/** What a line about the provider's answer says of it: status, type, encoding, a redirect, and its ids. Never a token or a body. */
+function described(reply: Response): string {
+	const header = (name: string) => {
+		const value = reply.headers.get(name);
+		return value === null ? "none" : /^[A-Za-z0-9 ./;=_+:,-]{0,120}$/.test(value) ? value : "(unprintable)";
+	};
+	return `upstream ${reply.status}, content-type ${header("content-type")}, content-encoding ${header("content-encoding")}, location ${reply.headers.has("location") ? "present" : "none"}, x-request-id ${header("x-request-id")}, cf-ray ${header("cf-ray")}`;
+}
 
 const cached = new Map<string, { token: AccessToken; until: number }>();
 
@@ -288,6 +342,9 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (why: string
 			const value = request.headers.get(name);
 			if (value !== null) headers[name] = value;
 		}
+		// The client's own `accept-encoding` (Windlass: gzip, deflate, br, zstd), of what can be decoded here.
+		const accepted = (request.headers.get("accept-encoding") ?? "").split(",").map((part) => part.trim().split(";")[0]!.toLowerCase()).filter((name) => DECODERS.has(name));
+		if (accepted.length) headers["accept-encoding"] = [...new Set(accepted)].join(", ");
 		const signal = AbortSignal.any([request.signal, ended.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]);
 		// The body whole, counted as it is read, and sent with its length.
 		let upstreamBody: Uint8Array | undefined;
@@ -311,6 +368,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (why: string
 		}
 		const replyHeaders = Object.fromEntries(reply.headers.entries());
 		if (reply.status !== 200) {
+			note(`${method} ${url.pathname}: ${described(reply)}`);
 			const status = reply.status >= 400 && reply.status < 600 ? reply.status : 502;
 			const text = status === 502 ? "" : await reply.text().then((t) => t.slice(0, 65_536), () => "");
 			if (status === 502) await reply.body?.cancel().catch(() => undefined);
@@ -320,13 +378,19 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (why: string
 				headers: { ...([429, 503, 529].includes(status) ? limitHeaders(replyHeaders, secrets) : {}), "content-type": "application/json", "cache-control": "no-store" },
 			});
 		}
-		const type = reply.headers.get("content-type")?.split(";")[0];
-		if ((type !== "text/event-stream" && type !== "application/json") || reply.body === null) {
+		const given = (reply.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+		// Windlass reads a Responses answer as an event stream whatever its type says: one with no type, or a
+		// plain-text one, is passed on as the event stream it is. Anything else (a page, a download) is not a model's answer.
+		const type = given === "text/event-stream" || given === "application/json" ? given
+			: method === "POST" && (given === "" || given === "text/plain") ? "text/event-stream" : null;
+		if (type === null || reply.body === null) {
+			note(`${method} ${url.pathname}: a 200 that is no model answer: ${described(reply)}, body ${reply.body === null ? "none" : "present"}`);
 			await reply.body?.cancel().catch(() => undefined);
 			release();
-			return refusal(502, "The provider failed or couldn't be reached.");
+			return refusal(502, "The provider answered with something that is not a model's answer.");
 		}
-		// fetch has decoded the body already. Every token is taken out before a byte goes back.
+		if (type !== given) note(`${method} ${url.pathname}: content-type ${given || "none"} passed on as ${type}: ${described(reply)}`);
+		// The answer is decoded already. Every token is taken out before a byte goes back.
 		const scrubbed = scrubStream(secrets, type, true);
 		// One pipeline: the client going away stops the provider's stream too, and the slot is freed once either ends.
 		pipeline(Readable.fromWeb(reply.body as WebReadableStream<Uint8Array>), scrubbed, (error) => {

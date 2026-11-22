@@ -139,9 +139,17 @@ deployment ceiling and 16 in flight per user. It also has:
   flight across all requests. Past that, a 503 with `retry-after`. The body is then sent upstream whole,
   with its `content-length`, the way Windlass sends it to `api.openai.com` itself. The server's HTTP
   listener (RivetKit's) already holds the whole body before the route runs, so streaming it on saved no
-  memory. Every answer of the route that is not a 200 is a line `[wlp] model_relay.failed status=... path=...`
-  in the server's log, and a failure to reach `api.openai.com` or a stream that broke off is a
-  `model_relay.detail` line with undici's reason. There are at most 60 of these lines a minute.
+  memory. The request goes out with `node:https`, not fetch, carrying only Windlass's own headers
+  (`content-type`, `accept`, `session-id`, `user-agent`, and its `accept-encoding` of gzip, deflate, br and
+  zstd, which the route decodes itself), so it has none of fetch's `sec-fetch-mode` or `accept-language`.
+  A 200 to `POST /responses` with no content type, or `text/plain`, is passed on as an event stream,
+  because Windlass reads that answer as one whatever its type says. Any other type is a 502.
+
+  Every answer of the route that is not a 200 is a line `[wlp] model_relay.failed status=... path=...` in
+  the server's log. Each upstream answer the relay does not stream on is a `model_relay.detail` line with
+  the upstream status, `content-type`, `content-encoding`, whether there was a `location`, and the
+  `x-request-id` and `cf-ray`. So is a type passed on as an event stream, a failure to reach
+  `api.openai.com`, and a stream that broke off. There are at most 60 of these lines a minute.
 
 The E2B route's limits are those of one server process. A deployment of several processes has each limit
 once per process, so its real ceilings are that many times higher. The per-user limits bound how many

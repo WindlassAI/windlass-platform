@@ -11,7 +11,9 @@
 
 import { TokenFile, TokenFileError } from "../server/src/sandbox/token-file.js";
 import { BodyBudget, RelayLimiter, UserRate, leaseToken, openRelayLease, readPlaceholder } from "../server/src/sandbox/relay-leases.js";
-import { type RelayRouteDeps, type RemoteLease, modelRelayResponse, modelRelayRoute } from "../server/src/model-relay-route.js";
+import { type RelayRouteDeps, type RemoteLease, modelRelayResponse, modelRelayRoute, upstreamFetch } from "../server/src/model-relay-route.js";
+import { createServer } from "node:http";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { e2bModelRelay, e2bModelRelayOrigin, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
 import { parseModelRelayUrl } from "../server/src/model-relay-url.js";
 import { E2bSandboxHandle } from "../server/src/sandbox/e2b/sandboxes.js";
@@ -360,6 +362,57 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 		const hardened = sandboxes.profiles().find((p) => p.id === "docker-hardened")!;
 		expect(`hosted Docker with Windlass ${version}: the relay is ${on ? "on" : "off"}, and the profile says so`, ready === on && (hardened.modelRelay === true) === on && /off/.test(line) === !on, line);
 	}
+}
+
+{
+	// The request to api.openai.com is what Windlass sends there itself: its headers and no others, the body with its length.
+	const got: { headers: Record<string, string | string[] | undefined>; names: string[]; body: string; url: string }[] = [];
+	const recorder = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => (body += c));
+		req.on("end", () => {
+			got.push({ headers: req.headers, names: req.rawHeaders.filter((_, i) => i % 2 === 0).map((n) => n.toLowerCase()), body, url: req.url ?? "" });
+			const event = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","item_id":"i","output_index":0,"content_index":0,"delta":"relay ok"}\n\n';
+			if (req.url === "/v1/gzip") { res.writeHead(200, { "content-type": "text/event-stream", "content-encoding": "gzip" }); return res.end(gzipSync(event)); }
+			if (req.url === "/v1/br") { res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "content-encoding": "br" }); return res.end(brotliCompressSync(event)); }
+			if (req.url === "/v1/moved") { res.writeHead(307, { location: "https://example.com/" }); return res.end(); }
+			if (req.url === "/v1/untyped") { res.writeHead(200); return res.end(event); }
+			if (req.url === "/v1/page") { res.writeHead(200, { "content-type": "text/html", "x-request-id": "req_page" }); return res.end("<html>hi</html>"); }
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.end(event);
+		});
+	});
+	await new Promise<void>((r) => recorder.listen(0, "127.0.0.1", () => r()));
+	const base = `http://127.0.0.1:${(recorder.address() as { port: number }).port}`;
+	const windlass = { "content-type": "application/json", accept: "text/event-stream", "session-id": "s1", "user-agent": "Windlass/0.6.0", authorization: "Bearer x", "accept-encoding": "gzip, deflate, br" };
+	const plain = await upstreamFetch(`${base}/v1/responses`, { method: "POST", headers: windlass, body: new TextEncoder().encode('{"input":"hi"}') });
+	await plain.text();
+	const sent = got.at(-1)!;
+	expect("the upstream request carries Windlass's headers and its body's length, and none that fetch would add", plain.status === 200
+		&& sent.headers["content-length"] === "14" && sent.headers["transfer-encoding"] === undefined && sent.body === '{"input":"hi"}'
+		&& !sent.names.includes("sec-fetch-mode") && !sent.names.includes("accept-language") && sent.headers["accept-encoding"] === "gzip, deflate, br", JSON.stringify(sent.headers));
+	for (const kind of ["gzip", "br"]) {
+		const res = await upstreamFetch(`${base}/v1/${kind}`, { method: "POST", headers: windlass, body: new Uint8Array() });
+		expect(`a ${kind} answer is decoded, and no longer names its encoding`, (await res.text()).includes("relay ok") && res.headers.get("content-encoding") === null);
+	}
+	const moved = await upstreamFetch(`${base}/v1/moved`, { method: "GET", headers: {} });
+	expect("a redirect is not followed", moved.status === 307 && got.at(-1)!.url === "/v1/moved");
+
+	// Through the route: the client's accept-encoding goes on, a 200 with no type is passed on as the stream it is, a page is not.
+	const a = openRelayLease({ uid: "u1", sessionId: "wire", origin: "https://relay.example.com", ttlMs: 60_000 });
+	await a.hand({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 });
+	const via = (path: string) => deps(((_input: string, init: RequestInit) => upstreamFetch(`${base}/v1/${path}`, init)) as unknown as typeof globalThis.fetch);
+	const asked = call(a.placeholder, "/model-relay/v1/responses", { headers: { "accept-encoding": "gzip, deflate, br, zstd" } });
+	const through = await modelRelayResponse(asked, via("br"));
+	const throughText = await through.text();
+	expect("through the route, Windlass's accept-encoding reaches the provider, and its compressed answer comes back decoded", through.status === 200 && throughText.includes("relay ok")
+		&& String(got.at(-1)!.headers["accept-encoding"]).startsWith("gzip, deflate, br") && got.at(-1)!.headers.authorization === `Bearer ${REAL_A}`, `${through.status} ${got.at(-1)!.headers["accept-encoding"]}`);
+	const untyped = await modelRelayResponse(call(a.placeholder), via("untyped"));
+	expect("a 200 with no content type is passed on as an event stream", untyped.status === 200 && untyped.headers.get("content-type") === "text/event-stream" && (await untyped.text()).includes("relay ok"));
+	const page = await modelRelayResponse(call(a.placeholder), via("page"));
+	expect("a 200 that is a page, not a model's answer, is a 502 that says so", page.status === 502 && /not a model's answer/.test(await page.text()));
+	await a.close();
+	recorder.close();
 }
 
 // ---- the E2B network ----------------------------------------------------------------------------
