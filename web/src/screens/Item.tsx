@@ -141,8 +141,8 @@ export function useItem(id: string, enabled = true): ItemPage {
 		let connected = false;
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
-			onItems: (list) => {
-				const summary = list.find((item) => item.id === id);
+			onItems: (feed) => {
+				const summary = feed.open.find((item) => item.id === id) ?? feed.ended.find((item) => item.id === id);
 				if (summary && summary.revision > shown.current) reload();
 			},
 			onConnection: (connection) => {

@@ -37,7 +37,7 @@ import { isActorGone } from "../actors/internal.js";
 import { serviceParams } from "../auth.js";
 import { config, ownEngineEndpoint } from "../config.js";
 import { GithubApp, GithubError, githubApp } from "./app.js";
-import { type ConfirmedConnection, issueTicket, verifyState } from "./state.js";
+import { type ConfirmedConnection, MAX_GITHUB_ACCOUNTS, issueTicket, verifyState } from "./state.js";
 
 export const GITHUB_CALLBACK_PATH = "/github/callback";
 
@@ -156,7 +156,7 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 		let confirmed: ConfirmedConnection;
 		try {
 			const [user, installations] = await Promise.all([app.viewer(userToken), app.userInstallations(userToken)]);
-			confirmed = { user, installations: installations.filter((installation) => !installation.suspended).map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl })) };
+			confirmed = { user, installations: installations.filter((installation) => !installation.suspended).slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl })) };
 		} finally {
 			// Asked and answered: the platform acts as the installation from here on, never as the user.
 			await app.forgetUserToken(userToken);

@@ -3,6 +3,7 @@
  */
 import { recentSubject } from "../factory/intake.js";
 import { cleanFeedback } from "../factory/feedback.js";
+import type { InstallationChange } from "./user-github.js";
 import type { GithubUser } from "../github/app.js";
 import type { FeedbackEntry, GithubId } from "../contract.js";
 import { decimalId, githubId } from "../github/ids.js";
@@ -48,8 +49,43 @@ async function arm(c: Ctx, at: number | null, action: string) {
 }
 const TIMER = "CREATE TABLE IF NOT EXISTS timer (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), id TEXT NOT NULL, at INTEGER NOT NULL)";
 
-function logInstallation(d: Delivery) {
+async function refreshInstallation(d: Delivery, c: Ctx) {
 	console.log(`github.installation event=${d.event}.${d.action} installation=${d.installationId} delivery=${d.guid}`);
+	if (d.event !== "installation" && d.event !== "installation_repositories") return;
+	const params = { params: serviceParams() };
+	let change: InstallationChange;
+	let users: Set<string>;
+	const remove = d.event === "installation" ? ["suspend", "deleted"].includes(d.action) : d.action === "removed";
+	if (remove) {
+		change = { kind: "remove", installationId: d.installationId };
+		const hooks = c.client().githubHooks.getOrCreate(["app"], params);
+		users = new Set(await hooks.internalInstallationUsers(d.installationId));
+	} else {
+		const attach = d.event === "installation" ? ["created", "new_permissions_accepted", "unsuspend"].includes(d.action) : d.action === "added";
+		if (!attach) return;
+		const app = githubApp();
+		if (!app) throw new Error("GitHub App unavailable.");
+		const installation = await app.activeInstallation(d.installationId);
+		if (!installation) return;
+		const { id, account, htmlUrl } = installation;
+		const senderId = d.data.senderId ?? null;
+		change = { kind: "attach", installation: { id, account, htmlUrl }, senderId };
+		users = new Set();
+		for (const candidate of new Set([senderId, account.type === "User" ? account.id : null])) {
+			if (candidate === null) continue;
+			try {
+				const connected: string[] = await c.client().githubAccount.get([String(candidate)], params).internalUsers();
+				for (const uid of connected) users.add(uid);
+			} catch (error) { if (!missingActor(error)) throw error; }
+		}
+	}
+	// Each actor checks its current connection again, in case it was replaced since the lookup.
+	let retry = false;
+	for (const uid of users) {
+		try { await c.client().user.get([uid], params).internalUpdateGithubInstallation(change); }
+		catch (error) { if (!missingActor(error)) retry = true; }
+	}
+	if (retry) throw new Error("An installation refresh could not finish");
 }
 function missingActor(error: unknown): boolean {
 	const e = error as { group?: string; code?: string } | null;
@@ -201,8 +237,8 @@ export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c:
 	check_suite: nudgeItems,
 	status: nudgeItems,
 	pull_request: nudgeItems,
-	installation: logInstallation,
-	installation_repositories: logInstallation,
+	installation: refreshInstallation,
+	installation_repositories: refreshInstallation,
 };
 
 type Row = { guid: string; event: Delivery["event"]; action: string; repository: string | null; data: string; received_at: number; attempts: number };
@@ -457,6 +493,11 @@ export const githubHooks = actor({
 						AND NOT EXISTS (SELECT 1 FROM installation_links WHERE installation = ?)`, installation, installation);
 				}
 			});
+		},
+		internalInstallationUsers: async (c, installation: GithubId): Promise<string[]> => {
+			requireServiceFor(c, "call");
+			const rows = await c.db.execute<{ uid: string }>("SELECT uid FROM installation_links WHERE installation = ?", installation);
+			return rows.map(r => r.uid);
 		},
 		internalLinked: async (c, installation: GithubId) => {
 			requireServiceFor(c, "call");

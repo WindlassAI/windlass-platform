@@ -1,6 +1,6 @@
 // Docker owns the index as well as the layers. Tags record last use across process restarts.
 // Every operation names a local image ID; a session request can never select a Docker image.
-import { docker, LABEL, DATA_DIR, randomId } from "./docker.js";
+import { docker, LABEL, DATA_DIR, NO_LOGS, randomId } from "./docker.js";
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotKey, type SnapshotRequest, type SnapshotSource } from "./snapshot-key.js";
 
 const S = LABEL + ".snapshot";
@@ -68,7 +68,7 @@ export class DockerSnapshots {
 
 	// A daemon-local mutex also orders separate server processes. The sleeper releases it after a crash.
 	private async locked<T>(image: string, work: () => Promise<T>, busy: T) {
-		const lock = await docker(["run", "-d", "--rm", "--pull", "never", "--name", this.namespace + "-lock",
+		const lock = await docker(["run", "-d", "--rm", "--pull", "never", "--name", this.namespace + "-lock", ...NO_LOGS,
 			"--network", "none", "--cap-drop", "ALL", "--entrypoint", "/bin/sleep", image, "900"], { timeoutMs: 20_000 });
 		if (lock.code !== 0) return busy;
 		try { return await work(); }
@@ -126,7 +126,7 @@ export class DockerSnapshots {
 		await this.release({ ...row, tag });
 	}
 	private async free() {
-		const space = await docker(["run", "--rm", "--network", "none", "--pull", "never", "--cap-drop", "ALL",
+		const space = await docker(["run", "--rm", ...NO_LOGS, "--network", "none", "--pull", "never", "--cap-drop", "ALL",
 			"--entrypoint", "/bin/df", this.base, "-B1", "--output=avail", "/workspace"], { check: true });
 		const available = Number(space.stdout.trim().split(/\s+/).pop());
 		if (!Number.isSafeInteger(available) || available < 0) throw new Error("Invalid free space");

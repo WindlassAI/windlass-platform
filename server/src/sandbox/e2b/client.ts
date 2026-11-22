@@ -7,6 +7,8 @@
  * (read 2026-11-15, SDK 2.63.0).
  */
 
+import type { E2bNetworkConfig } from "./network.js";
+
 export type E2bState = "running" | "paused";
 
 /** `SandboxInfo` of the SDK, the fields this layer reads. Times are ms since the epoch. */
@@ -32,11 +34,15 @@ export interface E2bCreateInput {
 	/** Environment variables of every command in the sandbox. A template's own are only set during its build. */
 	envs: Record<string, string>;
 	onTimeout: "pause" | "kill";
+	/** `network`: what E2B lets out of the sandbox (network.ts). Absent: no option, E2B's default. https://docs.e2b.dev/network/internet-access.md */
+	network?: E2bNetworkConfig;
 }
 
 export interface E2bCommandOptions {
 	/** Run as the unprivileged transport user, outside the workspace. */
 	gitUser?: true;
+	/** Run as root: only the provider's own fixed scripts (the sandbox's name files, network.ts), never a command of a session's. */
+	root?: true;
 	cwd: string;
 	envs?: Record<string, string>;
 	/** Keep the command's standard input open for `sendStdin`. Without it the command reads nothing. */
@@ -100,6 +106,11 @@ export interface E2bClient {
 	 * running. https://docs.e2b.dev/sandbox/persistence.md ("Pausing sandbox", "When a pause is refused")
 	 */
 	pause(sandboxId: string): Promise<boolean>;
+	/**
+	 * `Sandbox.updateNetwork(id, network)`: replaces the whole egress configuration of a running sandbox;
+	 * null clears it (E2B's default, open). https://docs.e2b.dev/api-reference/sandboxes/update-sandbox-network.md
+	 */
+	updateNetwork(sandboxId: string, network: E2bNetworkConfig | null): Promise<void>;
 	/** `Sandbox.kill(id)`: running or paused, it is gone with its files. False when there was none. https://docs.e2b.dev/sandbox/persistence.md ("Removing paused sandboxes") */
 	kill(sandboxId: string): Promise<boolean>;
 }

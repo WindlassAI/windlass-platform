@@ -44,11 +44,11 @@ At cutover, replace any whole-host engine route with the allowlist and validate 
 
 The engine supports an expiring namespace JWT with the `node` resource and `create` operation for node registration. Its only static engine credential is the admin token. The current server also bootstraps namespaces and pools and mints browser and runner credentials, which requires a persistent management credential. Isolating that credential from the server requires moving those operations to a private service and renewing the node JWT before reconnects (maximum lifetime 24 hours). [Node registration](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/pegboard-envoy/src/routes.rs) · [Wire resource names](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/auth-policy/src/types.rs) · [Issuance](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/api-public-shim/src/tokens.rs) · [Engine auth configuration](https://github.com/rivet-dev/rivet/blob/v3.1.1/engine/packages/config/src/config/auth.rs)
 
-Before first live boot, run `deploy/selfhost/init-env.sh live`, stage the target architecture's Windlass binary using `server/stage-windlass.sh`, and select the live env file in the commands above. Edit the application and gateway origins to the intended HTTPS names. Set the engine's canonical origin to that gateway name **before initializing its volume**. A tunnel may be installed later. The server issues tokens over Compose DNS, so the public hostname need not resolve from inside its container.
+Before first live boot, run `SELFHOST_ENV_DIR=<private directory> deploy/selfhost/init-env.sh live` (see [Keep live env files outside the checkout](#keep-live-env-files-outside-the-checkout)), stage the target architecture's Windlass binary using `server/stage-windlass.sh`, and select the live env file in the commands above. Edit the application and gateway origins to the intended HTTPS names. Set the engine's canonical origin to that gateway name **before initializing its volume**. A tunnel may be installed later. The server issues tokens over Compose DNS, so the public hostname need not resolve from inside its container.
 
 The gateway URL clients dial (`WLP_PUBLIC_ENDPOINT`) and the engine's canonical leader URL (`SELFHOST_ENGINE_ORIGIN`) are separate settings. The latter determines the JWT issuer persisted in the signing ring. Keep it stable for the life of the data, including restores. For an existing loopback staging volume, keep its original canonical URL when assigning it a client-facing hostname. Changing the issuer of an existing ring can produce `503 auth.issuance_unavailable` even with correct admin credentials.
 
-The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for workloads on a separate machine. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, can go in a mode-600 server env file under `.data/selfhost/`. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
+The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for workloads on a separate machine. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, go in the mode-600 server env file the stack env file selects. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
 
 ## Agents never run on the platform host
 
@@ -68,14 +68,14 @@ The engine has 4,096 CPU shares and a 2,304 MiB memory limit. The server has 3,0
 
 | Purpose | Variables |
 |---|---|
-| Project, ports, data and release | `COMPOSE_PROJECT_NAME`, `SELFHOST_HTTP_PORT`, `SELFHOST_GATEWAY_PORT`, `SELFHOST_VOLUME`, `SELFHOST_RELEASE`, `SELFHOST_SERVER_TARGET`, `SELFHOST_SERVER_ENV_FILE` |
+| Project, ports, data and release | `COMPOSE_PROJECT_NAME`, `SELFHOST_HTTP_PORT`, `SELFHOST_GATEWAY_PORT`, `SELFHOST_VOLUME`, `SELFHOST_RELEASE`, `SELFHOST_SERVER_TARGET`, `SELFHOST_SERVER_ENV_FILE`, `SELFHOST_ENV_DIR` (initializer only) |
 | Public origins and canonical issuer | `WLP_PUBLIC_URL`, `WLP_PUBLIC_ENDPOINT`, `SELFHOST_ENGINE_ORIGIN`, `SELFHOST_ISSUER_GENERATION` |
 | Credentials and node version | `WLP_SECRET`, `RIVET_ADMIN_TOKEN`, `RIVET_NODE_VERSION` |
 | Application modes | `WLP_DEMO`, `WLP_SANDBOX`, `WLP_SIGNIN_RUNNER`, `WLP_REQUIRE_SIGNED_RUNNER` |
 | Set by Compose for the server | `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL`, `WLP_TOKEN_ENDPOINT`, `WLP_WEB_ORIGINS`, `WLP_MACHINES`, `WLP_HTTP_PORT` |
 | Optional server settings | `WLP_SECRET_KEYS`, `WLP_SIGNIN_KEYS`, `WLP_SIGNIN_KEY`, `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS`, `WLP_RUNNER_IMAGE`, `WLP_RUNNER_CAPABILITIES`, `WLP_PLATFORM_KEY`, `WLP_BUCKET_*` |
 
-The default optional server env file is `.data/selfhost/<compose-project>.server.env`. An explicit relative path is resolved from the Compose file's directory. Stack settings listed under `environment` in Compose take precedence over this file. Avoid printing expanded Compose configuration or unfiltered container inspections.
+`SELFHOST_SERVER_ENV_FILE` selects the optional server env file. A stack initialized with `SELFHOST_ENV_DIR` sets it to `<that directory>/<compose-project>.server.env`; otherwise the default is `.data/selfhost/<compose-project>.server.env`. An explicit relative path is resolved from the Compose file's directory. Stack settings listed under `environment` in Compose take precedence over this file. Avoid printing expanded Compose configuration or unfiltered container inspections.
 
 ### Enable signed runner connections
 
@@ -97,16 +97,16 @@ Switch every server node together when the owner is ready to update and re-pair 
 
 2. Keep the root and its backup offline. Record its public fingerprint independently. Transfer only
    `platform-online.env` through the deployment's secret channel. Install its single `WLP_PLATFORM_KEY`
-   line in the mode-600 optional server env file (live default `.data/selfhost/wlp-live.server.env`).
+   line in the mode-600 optional server env file (`SELFHOST_SERVER_ENV_FILE`).
    Keep both the env file and generated key material outside Git, images, logs and chat.
 3. Stage the **0.2.0** runner at a new immutable digest. Keep the old setup command available until cutover. Set the new pinned `WLP_RUNNER_IMAGE` and matching
    `WLP_RUNNER_CAPABILITIES` in that server env file. To obtain the capabilities JSON, export the new
    `WLP_RUNNER_IMAGE` digest reference and run `docker run --rm --network none -e WLP_RUNNER_IMAGE "$WLP_RUNNER_IMAGE" capabilities`.
    Set `WLP_REQUIRE_SIGNED_RUNNER=1` in
-   `.data/selfhost/live.env`. Recreate the server and check health.
+   the live stack env file. Recreate the server and check health.
 
    ```sh
-   docker compose --env-file .data/selfhost/live.env -f deploy/selfhost/compose.yaml up -d --no-deps --force-recreate --wait server
+   docker compose --env-file "$stack" -f deploy/selfhost/compose.yaml up -d --no-deps --force-recreate --wait server
    curl -fsS http://127.0.0.1:26440/health
    ```
 
@@ -167,7 +167,7 @@ Use a Linux amd64 or arm64 host with curl, GNU tar and coreutils, `flock`, Pytho
 | Encryption and recovery | `SELFHOST_BACKUP_AGE_RECIPIENT` (public key), `SELFHOST_BACKUP_AGE_IDENTITY` (identity file path at restore time) |
 | Retention and local directory backend | `SELFHOST_BACKUP_KEEP`, `SELFHOST_BACKUP_DIR` |
 
-Generate an age keypair on the recovery machine with `age-keygen -o windlass.agekey`. Keep the private identity off the platform host, with a protected recovery copy. Give the backup job only the public recipient (`age-keygen -y windlass.agekey`). The scripts download [age v1.3.2](https://github.com/FiloSottile/age/releases/tag/v1.3.2) for the host architecture and verify the release archive against its pinned SHA-256 before extracting the binary on each use. For offline operation, pre-stage the matching release tarball under `.data/selfhost/tools/`. Protect temporary plaintext tar files and allow space for both the gzip and encrypted archive.
+Generate an age keypair on the recovery machine with `age-keygen -o windlass.agekey`. Keep the private identity off the platform host, with a protected recovery copy. Give the backup job only the public recipient (`age-keygen -y windlass.agekey`). The scripts download [age v1.3.2](https://github.com/FiloSottile/age/releases/tag/v1.3.2) for the host architecture and verify the release archive against its pinned SHA-256 before extracting the binary on each use. For offline operation, pre-stage the matching release tarball in `tools/` beside the stack env file. Protect temporary plaintext tar files and allow space for both the gzip and encrypted archive.
 
 ```sh
 export SELFHOST_BACKUP_AGE_RECIPIENT='age1...'  # public recipient
@@ -177,7 +177,7 @@ export SELFHOST_BACKUP_AGE_IDENTITY=/secure/recovery/windlass.agekey
 fresh=$(deploy/selfhost/restore.sh "$stack" "$archive")
 ```
 
-Both services must be running before a backup. The script stops the server first so actors can finish shutdown, stops the engine, checks both exit statuses and archives the whole mounted volume. The engine CLI exposes storage operations but no whole-engine online snapshot command. Stopping all writers gives the log and object store a common point in time. The script restarts the services immediately after the local tar copy, then compresses, encrypts and publishes the archive. An interrupted copy triggers a restart attempt. Allow space under `.data/selfhost` for the uncompressed tar and archive. Downtime depends on graceful shutdown, data size and disk throughput. Check `dc ps` after recovery.
+Both services must be running before a backup. The script stops the server first so actors can finish shutdown, stops the engine, checks both exit statuses and archives the whole mounted volume. The engine CLI exposes storage operations but no whole-engine online snapshot command. Stopping all writers gives the log and object store a common point in time. The script restarts the services immediately after the local tar copy, then compresses, encrypts and publishes the archive. An interrupted copy triggers a restart attempt. The lock, the age cache and the uncompressed tar go in the stack env file's directory, so allow space there for the tar and archive. Downtime depends on graceful shutdown, data size and disk throughput. Check `dc ps` after recovery.
 
 Objects are stored at `<bucket>/<compose-project>/<archive-basename>`. After a successful upload, retention keeps the newest N timestamped snapshots for that project (default seven). Other object names and other projects' prefixes are preserved. On a versioned S3 bucket configure a bucket lifecycle for old versions and abandoned multipart uploads. For a local-only drill set `SELFHOST_BACKUP_DIR` to a private directory. It takes precedence over S3. Only a local directory accepts an explicit plaintext backup: unset the recipient and set `SELFHOST_BACKUP_PLAINTEXT=1`. Both backends can restore legacy `.tar.gz` objects. Retention counts those alongside `.tar.gz.age` snapshots. Existing plaintext objects and older bucket versions need a separate retirement decision after a verified encrypted restore.
 
@@ -215,6 +215,49 @@ dc logs -f server
 ```
 
 Docker rotates the services' JSON logs at 32 MiB with up to three files per service. Inspect the node's health and gateway token availability after restarts. Restrict access to raw logs.
+
+The platform and the runner name the log driver of every container they start, whatever the daemon's default. Session, relay, egress and helper containers use `--log-driver none`: nothing reads those logs, and an agent can write to its session container's main process output, so a default unbounded log would let it fill the host's disk. The runner's own container, started by setup's printed command or the Machines page, uses `--log-driver json-file --log-opt max-size=16m --log-opt max-file=3`, and `docker logs windlass-runner` still works. Containers created before that change keep the log settings they were created with until they are replaced.
+
+### Docker daemon settings
+
+On a platform host, set `live-restore` and a bounded default log in `/etc/docker/daemon.json`, for the containers that set none themselves (a tunnel connector, for example):
+
+```json
+{ "live-restore": true, "log-driver": "json-file", "log-opts": { "max-size": "16m", "max-file": "3" } }
+```
+
+Validate the file before anything reads it, because dockerd refuses to start with a bad one: `sudo dockerd --validate --config-file /etc/docker/daemon.json`. `sudo systemctl reload docker` applies `live-restore`. Log options apply only after a dockerd restart, and only to containers created after it. The next reboot does that restart. To do it sooner:
+
+1. Check `docker info --format '{{.LiveRestoreEnabled}}'` prints `true`. Without it the restart stops every container, and session containers (`restart=no`) do not come back.
+2. Check no turn is running: `docker exec windlass-runner windlass-runner status` lists no sandbox as `running`, and `docker ps --filter label=dev.windlass-platform.session --filter status=running -q` prints nothing. Keep the restart short: containers block once their output buffer fills while the daemon is down.
+3. Record `docker ps --format '{{.Names}} {{.RunningFor}}'`, run `sudo systemctl restart docker`, and run the same command again. Every container is still listed with the same age, which shows they kept running.
+4. Check the stack: `dc ps` shows both services healthy, `curl -fsS http://127.0.0.1:26440/health` succeeds, the public origin answers, and `windlass-runner status` shows the runner online.
+5. Check the new default on a container that is never started: `docker create --name wlp-log-default <any local image> true`, then `docker inspect -f '{{json .HostConfig.LogConfig}}' wlp-log-default` shows `json-file` with `max-size` 16m and `max-file` 3, then `docker rm wlp-log-default`.
+
+Never set `"debug": true` on a platform host: debug output can carry the values of secret environment variables.
+
+### Weekly conditional reboot
+
+Unattended upgrades install security fixes daily but do not reboot. [`reboot-if-required.sh`](reboot-if-required.sh) reboots only when `/var/run/reboot-required` exists. It first waits up to `WLP_REBOOT_WAIT_MINUTES` (90) for the host to be idle: the runner (`WLP_RUNNER_CONTAINER`, default `windlass-runner`) lists no sandbox as `running`, no session container runs on the daemon, and apt is not upgrading. The runner's `status` reports container state, not turns, so a sandbox that has not yet been suspended after its last turn also counts as busy. Next it runs the backup command (`WLP_REBOOT_BACKUP`) as `WLP_REBOOT_BACKUP_USER`, checks again that the host is idle, and reboots. A runner that cannot report, a busy host after the wait, or a failed backup skips the reboot until the next week. `--dry-run` runs the checks and stops before the backup.
+
+[`systemd/windlass-reboot.timer`](systemd/windlass-reboot.timer) runs it on Sundays at 04:00 UTC, and does not catch up on a missed run. The service runs a root-owned copy in `/usr/local/sbin`, never the file in a checkout that other users can write. `check-reboot.sh` exercises the script against stand-in commands. Install it from a checkout of the deployed release:
+
+```sh
+deploy/selfhost/check-reboot.sh
+sudo install -o root -g root -m 755 deploy/selfhost/reboot-if-required.sh /usr/local/sbin/windlass-reboot-if-required
+sudo install -o root -g root -m 644 deploy/selfhost/systemd/windlass-reboot.service deploy/selfhost/systemd/windlass-reboot.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now windlass-reboot.timer
+systemctl list-timers windlass-reboot.timer
+```
+
+Edit the service's `Environment=` lines for another backup command or user first. Read its runs with `journalctl -u windlass-reboot.service`. Compose services, the runner and the tunnel restart by their `unless-stopped` policies after the reboot. Session containers do not: the platform replaces them on the next turn. The reboot's backup counts toward `SELFHOST_BACKUP_KEEP`.
+
+### Keep live env files outside the checkout
+
+The stack env file and the server env file hold every deployment secret. Keep a live stack's two files in a mode-700 directory outside every Git checkout, so that a process working in a checkout or one of its worktrees never finds them. `SELFHOST_ENV_DIR` tells `init-env.sh` where to create them; it also writes `SELFHOST_SERVER_ENV_FILE` into the stack env file. Run `deploy/selfhost/check-env-files.sh "$stack"` after any change. It checks that both files are regular mode-600 files of the current user, in directories no other user can enter, outside every checkout, and that a stack without demo sign-in resolves an allowlist. It prints only verdicts.
+
+To move an existing stack, back it up, copy both files with `cp -p` into the new directory, set `SELFHOST_SERVER_ENV_FILE` in the copied stack env file to the copied server env file's absolute path, run the check, then recreate the server with the new `--env-file`. Update every job that names the old path, such as a backup cron entry. Delete the old copies only after the server is healthy. The server env file is optional to Compose, so a stack that silently loses it also loses its allowlist. The check refuses a missing one.
 
 1. Record the current Git revision, engine and server image tags, private configuration and volume name. Take a backup at a quiet point.
 2. Build the new revision under a new `SELFHOST_RELEASE` tag and increase `RIVET_NODE_VERSION`. Run `dc build` and test it in staging.

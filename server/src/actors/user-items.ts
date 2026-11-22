@@ -25,7 +25,7 @@ import { windlassAccountKey } from "../provider-usage.js";
 import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, HarnessId, PlanSubtask } from "../contract.js";
+import type { ChildPlacement, HarnessId, ItemFeed, PlanSubtask } from "../contract.js";
 import { harnessName, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
@@ -38,7 +38,7 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
-import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../item-pages.js";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage, listedItems } from "../item-pages.js";
 import { API_TOKEN_WINDOW_MS, API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { attachmentKey } from "../factory/attachments.js";
@@ -218,8 +218,11 @@ export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessi
 // ---------------------------------------------------------------------------------------------
 
 function itemList(state: ItemsState): ItemSummary[] {
-	return [...state.items.values()].filter(i => !i.parent || i.question).map(i => i.parent ? { ...i, title: i.parent.title + " — " + i.title } : i).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+	return listedItems(state.items.values());
 }
+
+/** What the live feed carries: open items, the newest ended ones, the counts (item-pages.ts). */
+const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state));
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
@@ -236,7 +239,7 @@ async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
 	await c.db.execute("UPDATE items SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
 	if (ended(summary)) await c.db.execute("UPDATE attachments SET ended_at=COALESCE(ended_at, ?) WHERE item=?", summary.updatedAt, summary.id);
 	else if (ended(held)) await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
-	c.broadcast("items", itemList(c.vars.items));
+	c.broadcast("items", feedOf(c.vars.items));
 }
 
 function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
@@ -376,7 +379,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 			throw error;
 		}
 	} else await index(c.db);
-	c.broadcast("items", itemList(c.vars.items));
+	c.broadcast("items", feedOf(c.vars.items));
 	console.log(`[wlp] item.created uid=${uid} item=${summary.id} session=${sessionId} source=${source}`);
 	if (summary.place.kind === "machine" && !c.vars.machines.has(summary.place.machineId)) {
 		await notifyRemovedMachines(c, summary.place.machineId);
@@ -775,11 +778,12 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	// A partial creation stays pinned, and must still pass current owner policy.
-	const profiles = (await getLayer()).sandboxes.profiles();
+	const { sandboxes } = await getLayer();
+	const profiles = sandboxes.profiles();
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.() };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {
@@ -911,7 +915,7 @@ export const itemActions = {
 	listItems: (c: ItemsCtx, page?: unknown): ItemSummary[] => {
 		requireUser(c);
 		enabled();
-		// Without a page, the whole list, as the live feed sends it; with one, a page of it (item-pages.ts).
+		// Without a page, the whole list, for API clients and scripts (the web app reads `itemFeed`); with one, a page of it (item-pages.ts).
 		let clean: CleanPage | null;
 		try {
 			clean = cleanItemPage(page);
@@ -921,6 +925,11 @@ export const itemActions = {
 		}
 		const list = itemList(c.vars.items);
 		return clean === null ? list : itemPage(list, clean);
+	},
+	itemFeed: (c: ItemsCtx): ItemFeed => {
+		requireUser(c);
+		enabled();
+		return feedOf(c.vars.items);
 	},
 
 	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {

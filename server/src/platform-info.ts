@@ -75,6 +75,9 @@ export async function platformInfo(): Promise<PlatformInfo> {
 		windlassVersion,
 		profiles: layer.sandboxes.profiles(),
 	};
+	// Left out where hosted sandboxes have no network mode, or it is `open`: the answer is then what it was before modes.
+	const hostedEgress = layer.sandboxes.egress?.();
+	if (hostedEgress !== undefined && hostedEgress !== "open") info.hostedEgress = hostedEgress;
 	// Left out without a GitHub App: the answer is then what it was before there could be one.
 	const app = githubInfo();
 	if (app) info.github = app;

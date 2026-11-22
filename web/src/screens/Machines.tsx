@@ -53,6 +53,7 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 	if (info.runnerImage === null) return null;
 	return [
 		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
+		...(setup ? [] : ["  --log-driver json-file --log-opt max-size=16m --log-opt max-file=3 \\"]),
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
 		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),

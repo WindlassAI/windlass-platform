@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { validHarnessOptions } from "../../server/src/runner/control.js";
 import { AcpConnection, LineSplitter, MethodNotFound } from "../../server/src/sandbox/acp.js";
 import { configChoices, modeSelection, objects, optionsOf, type Fields } from "../../server/src/sandbox/acp-options.js";
-import { LABEL_ARG, docker, tmpName } from "../../server/src/sandbox/docker.js";
+import { LABEL_ARG, NO_LOGS, docker, tmpName } from "../../server/src/sandbox/docker.js";
 import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { WORKSPACE } from "../../server/src/sandbox/provider.js";
@@ -31,7 +31,7 @@ async function openCodeEfforts(container: string) {
 export async function probeHarnessOptions(machine: MachineDocker, pin: string, provider?: string | string[]) {
 	const name = tmpName();
 	const child = spawn("docker", ["run", "--rm", "-i", "--name", name, "--label", LABEL_ARG,
-		...machine.pairingLabelFlags, "--pull", "never", "--log-driver", "none", ...commonRunFlags(1, "none"),
+		...machine.pairingLabelFlags, "--pull", "never", ...NO_LOGS, ...commonRunFlags(1, "none"),
 		...(provider ? projection(provider, "options-only") : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=options-only"]), ...PROFILE_RUN_FLAGS["docker-hardened"]!,
 		pin, provider ? "wlp-opencode-acp" : "wlp-claude-acp"], { stdio: ["pipe", "pipe", "ignore"] });
 	const rpc = new AcpConnection(line => child.stdin.write(line + "\n"), {

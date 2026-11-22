@@ -2,7 +2,7 @@
 import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
 import { nextUtcDay, usesPlatformModel } from "../usage.js";
 import { sandboxSlots } from "../contract.js";
-import type { ChildPlacement, FeaturePlanEdit, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
+import type { ChildPlacement, EgressMode, FeaturePlanEdit, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
@@ -16,6 +16,8 @@ export interface PlacementInventory {
 	dailyTokenWait?: string | null;
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
+	/** What hosted sandboxes may reach (`Sandboxes.egress`); `none` takes no repository work. */
+	hostedEgress?: EgressMode;
 	defaultProfile?: SandboxProfileId;
 	/** Account state from provider routing, when available. */
 	limited?: { machineId: string; harness: string; limitedUntil?: number; accountKey?: string }[];
@@ -102,6 +104,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place!.prefer}’`;
 	if (place.kind === "hosted") {
 		if (!inventory.hostedProfiles.length || (needs.profile && !inventory.hostedProfiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
+		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };
 		if (needs.harness && needs.harness !== "windlass" || needs.tags?.length || needs.egress || needs.cpus || needs.memoryGiB)
 			return { refused: "hosted does not report the required machine capabilities", permanent: true };
 		if (limited) return waiting(limited, "hosted");

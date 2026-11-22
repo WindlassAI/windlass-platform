@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { LABEL_ARG, docker, helperFlags, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
+import { LABEL_ARG, NO_LOGS, docker, helperFlags, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
 import { removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { image, harnessImage, type MachineDocker } from "./policy.js";
@@ -34,7 +34,7 @@ export async function retireClaudeRelay(machine: MachineDocker) {
 
 export function volumeFlags(machine: MachineDocker, readonly: boolean) {
 	return [...machine.pairingLabelFlags,
-		"--pull", "never", "--log-driver", "none", "--mount",
+		"--pull", "never", "--mount",
 		`type=volume,src=${machine.claudeVolume},dst=${loginDir},volume-nocopy${readonly ? ",readonly" : ""}`];
 }
 
@@ -48,7 +48,7 @@ export async function claudeSignIn(machine: MachineDocker): Promise<"none" | "to
 
 export async function loginFileState(machine: MachineDocker): Promise<"none" | "token" | "unknown"> {
 	if (!await machine.ownedVolume(false, machine.claudeVolume)) return "none";
-	const container = (await docker(["create", "--network", "none", "--label", LABEL_ARG,
+	const container = (await docker(["create", ...NO_LOGS, "--network", "none", "--label", LABEL_ARG,
 		...volumeFlags(machine, true), image, "true"], { check: true })).stdout.trim();
 	try {
 		const result = await docker(["system", "dial-stdio"], { timeoutMs: 15_000,
@@ -93,7 +93,7 @@ export async function pastedToken(signal: AbortSignal, provider?: string) {
 export const setupCli = "/opt/wlp-claude/node_modules/.bin/claude-agent-acp";
 
 export function setupFlags(machine: MachineDocker) {
-	return ["--log-driver", "none", "--pull", "never", "--label", LABEL_ARG, ...machine.pairingLabelFlags, ...COMMON_RUN_FLAGS];
+	return [...NO_LOGS, "--pull", "never", "--label", LABEL_ARG, ...machine.pairingLabelFlags, ...COMMON_RUN_FLAGS];
 }
 
 export async function changeClaudeLogin(machine: MachineDocker, login: boolean, signal: AbortSignal) {

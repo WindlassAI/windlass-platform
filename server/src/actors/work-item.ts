@@ -679,8 +679,9 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
 	const [machines, limited, dailyTokenWait] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait()]);
-	const hostedProfiles = (await getLayer()).sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, limited, dailyTokenWait };
+	const { sandboxes } = await getLayer();
+	const hostedProfiles = sandboxes.profiles().filter(p => p.available).map(p => p.id);
+	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {
