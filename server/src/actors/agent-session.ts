@@ -176,7 +176,7 @@ import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
-import { runSetupCommand, stopLeftoverSetup } from "../sandbox/setup.js";
+import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
 import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
@@ -639,6 +639,8 @@ interface SessionVars {
 	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
 	 */
 	runner: RunnerLink | null;
+	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
+	setupReap: Promise<void> | null;
 }
 
 /** What the helpers below need of an actor context; every hook's and action's `c` fits. */
@@ -1249,6 +1251,8 @@ async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
+	// A setup cut off with the server is being stopped: let it finish first, or it could stop this turn's processes.
+	await c.vars.setupReap;
 	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it.
 	if (secrets?.network !== undefined) meta.networkHosts = meta.place.kind === "hosted" && secrets.network.length > 0 ? secrets.network : undefined;
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, connectOptions(meta)) : undefined;
@@ -4567,6 +4571,7 @@ export const agentSession = actor({
 			sandboxGen: 0,
 			carried: null,
 			runner: null,
+			setupReap: null,
 		};
 	},
 
@@ -4630,7 +4635,15 @@ export const agentSession = actor({
 			// What that turn wrote to Windlass's session was not copied out of the sandbox: the copy is behind it.
 			if (meta.backup) meta.memoryTurn = turn;
 			// A setup run that was going then has no ending item, and is not run again: the agent is told.
-			if (meta.setupRunning) meta.setupUnfinished = { command: meta.setupRunning.command, state: "interrupted", exitCode: null, limitMs: meta.setupRunning.limitMs, output: "" };
+			if (meta.setupRunning) {
+				meta.setupUnfinished = { command: meta.setupRunning.command, state: "interrupted", exitCode: null, limitMs: meta.setupRunning.limitMs, output: "" };
+				// What it started is still running in the sandbox: stop it now, not at the next prompt.
+				const sandboxId = meta.sandboxId;
+				if (sandboxId) c.vars.setupReap = c.keepAwake(layerOf(c, meta).then(({ sandboxes }) => stopCutOffSetup(sandboxes, sandboxId)).then(
+					(swept) => { if (swept) console.log(`[wlp] setup.reaped session=${meta.sessionId} sandbox=${sandboxId}`); },
+					(error: unknown) => c.log.warn({ msg: "could not stop a setup cut off with the server; the next turn stops it", sandbox: sandboxId, error: describeError(error) }),
+				));
+			}
 			const taken = await rowOfTurn(c.db, turn);
 			if (taken) await closeCutTurn(c, meta, taken);
 			await persist(c);

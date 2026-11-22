@@ -29,7 +29,7 @@
  */
 
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
-import type { SandboxHandle } from "./api.js";
+import type { SandboxHandle, Sandboxes } from "./api.js";
 import { isTurnSandbox, sweepSessionProcesses } from "./provider.js";
 
 export interface SetupRun {
@@ -66,6 +66,22 @@ const MARK = "WLP_SETUP";
 /** Recover an interrupted setup before retrying work in this sandbox. */
 export async function stopLeftoverSetup(sandbox: SandboxHandle): Promise<void> {
 	if (isTurnSandbox(sandbox)) await sweepSessionProcesses(sandbox);
+}
+
+/**
+ * A setup cut off with its server (the actor found `setupRunning` when it woke) is still running in the
+ * sandbox: killing the `docker exec` client, or losing the E2B or runner connection, does not reach it.
+ * It is stopped as soon as the session wakes, not at the next prompt, which may never come: until then it
+ * runs with the network and the repository's secrets, outside every agent sandbox. A paused or missing
+ * sandbox runs nothing and is left alone (connecting would start it). True when the sandbox was swept.
+ * Throws when the sweep fails: the setup then stays "interrupted", and the next turn sweeps before it starts.
+ */
+export async function stopCutOffSetup(sandboxes: Pick<Sandboxes, "state" | "connect">, id: string): Promise<boolean> {
+	if (await sandboxes.state(id) !== "running") return false;
+	const sandbox = await sandboxes.connect(id);
+	if (!sandbox) return false;
+	await stopLeftoverSetup(sandbox);
+	return true;
 }
 
 /** Runs the command to its end, its time limit or a stop. Never throws. */

@@ -45,6 +45,7 @@ import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, hostedNetworkText, ne
 import { personalServerReach } from "../server/src/server-question.js";
 import { choosePlacement } from "../server/src/factory/placement.js";
 import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
+import { INIT_WORKSPACE } from "../server/src/github/git-flags.js";
 import { execFileSync } from "node:child_process";
 import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
@@ -184,7 +185,7 @@ await section("create", async () => {
 	const init = commands.find((entry) => entry.command.includes("git init"));
 	expect(
 		"the workspace gets an empty git repository, under wlp-run, in /workspace",
-		init !== undefined && /^wlp-run exec r[a-f0-9]{12} sh -c 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'$/.test(init.command) && init.options.cwd === "/workspace",
+		init !== undefined && /^wlp-run exec r[a-f0-9]{12} sh -c /.test(init.command) && init.command.endsWith(shellQuote(INIT_WORKSPACE + " && windlass --version")) && init.options.cwd === "/workspace",
 		init?.command,
 	);
 	expect("the Windlass in the template is noted from the first sandbox", versions.join() === "0.4.0+test");

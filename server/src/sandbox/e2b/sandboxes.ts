@@ -50,6 +50,7 @@
  * also not the token file of a turn of the same user.
  */
 
+import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
 import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
@@ -621,7 +622,7 @@ export class E2bSandboxes implements Sandboxes {
 		try {
 			// Before anything of the session's runs in it: from the first command on, only the allowed names resolve.
 			if (config !== null) await this.guestNetwork(connection, network);
-			const init = await handle.exec(["sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'], { timeoutMs: 60_000 });
+			const init = await handle.exec(["sh", "-c", INIT_WORKSPACE + " && windlass --version"], { timeoutMs: 60_000 });
 			if (init.exitCode !== 0) throw new Error(`could not set up the workspace: ${(init.stderr.trim() || init.stdout.trim() || `exit ${init.exitCode}`).slice(-500)}`);
 			// "Windlass 0.4.0 (linux-x64)"
 			const version = /^\S+\s+(\S+)/.exec(init.stdout.trim().split("\n").pop() ?? "")?.[1];

@@ -26,5 +26,8 @@ export function agentFacts(agent: ItemAgent | undefined): { label: string; value
 	const facts: { label: string; value: string }[] = [];
 	if (agent.cost) facts.push({ label: "Cost", value: `${agent.cost.amount.toLocaleString("en-US", { style: "currency", currency: agent.cost.currency, maximumFractionDigits: 2 })}, as ${HARNESS_NAMES[agent.harness] ?? agent.harness} reported it` });
 	if (agent.fiveHour) facts.push({ label: "5-hour window", value: `${Math.round(agent.fiveHour.first)}% used at the first turn, ${Math.round(agent.fiveHour.latest)}% after the latest` });
+	// Claude Code sends the share of the window used only with a usage warning (its rate_limit_event carries
+	// `utilization` only then), so most items never get one. Say so rather than leave the row out.
+	else if (agent.harness === "claude") facts.push({ label: "5-hour window", value: "Not reported: Claude Code sends it only with a usage warning" });
 	return facts;
 }
