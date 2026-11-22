@@ -156,11 +156,10 @@ approval. Cancel on the parent stops its children and keeps their branches. The 
 whole-feature review go on the one feature PR. The owner merges it.
 
 The user action `setMachineDetails` accepts `machineId`, `whenToUse` and `tags`. The planner sees
-this inventory and the available machine capacity. A subtask needs a ready, allowed placement at approval.
-Current runners support one sandbox slot per subtask. At dispatch, a busy or offline destination can wait.
+this inventory and the available machine capacity. A subtask needs a feasible, allowed placement at approval.
+Runners that report per-slot capacity support multi-slot subtasks. At dispatch, a busy or offline destination can wait.
 A removed or disallowed destination asks the owner to revise the placement, retry allowed places or give up the subtask.
-Update the server before runners so it can read the optional host report. Older runners can keep serving
-work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
+Update the server before runners so it accepts the optional slot fields in the hello and inventory report. Older runners can keep serving single-slot work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
 
 ## The second review
 

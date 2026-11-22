@@ -47,7 +47,7 @@ export class FakeRunner {
 				case "challenge":
 					signature = this.sign(controlProof(id.uid, id.machineId, frame.nonce));
 					await options.beforeHello;
-					send({ kind: "hello", maxTurns: this.maxTurns, signature: options.signature ?? signature, runnerVersion: options.version ?? MIN_RUNNER_VERSION, epoch: options.epoch ?? this.epoch, time: Date.now() + (options.offset ?? 0) });
+					send({ kind: "hello", maxTurns: this.maxTurns, slots: this.report.slots, signature: options.signature ?? signature, runnerVersion: options.version ?? MIN_RUNNER_VERSION, epoch: options.epoch ?? this.epoch, time: Date.now() + (options.offset ?? 0) });
 					break;
 				case "welcome": send(this.report); break;
 				case "heartbeat": send({ kind: "heartbeat" }); break;

@@ -1,4 +1,5 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
+import { sandboxSlots } from "../contract.js";
 import type { ChildPlacement, FeaturePlanEdit, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
@@ -88,10 +89,11 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const notNow = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: false });
 	if (m.orchestrator === "never" || m.orchestrator === "named" && !task.place) return never("owner placement policy is " + m.orchestrator);
 	const slots = machineSlots(m);
-	const units = Math.max(1, needs.cpus && slots.unit.cpus > 0 ? Math.ceil(needs.cpus / slots.unit.cpus) : 1,
+	const needed = Math.max(1, needs.cpus && slots.unit.cpus > 0 ? Math.ceil(needs.cpus / slots.unit.cpus) : 1,
 		needs.memoryGiB ? Math.ceil(needs.memoryGiB * GiB / slots.unit.memoryBytes) : 1);
-	if (units > 1 && !m.slots) return never("sizing beyond one slot is not supported by this runner (" + units + " slots required)");
-	if (units > 4 || (slots.max !== null && units > slots.max)) return never(`the task needs ${units} slots and exceeds the machine or four-slot limit`);
+	if (needed > 1 && !m.slots) return never("sizing beyond one slot is not supported by this runner (" + needed + " slots required)");
+	if (needed > 4 || (slots.max !== null && needed > slots.max)) return never(`the task needs ${needed} slots and exceeds the machine or four-slot limit`);
+	const units = sandboxSlots(needed, slots.max ?? 1);
 	// A machine that has never reported is judged when it connects. One that has keeps its last report.
 	const reported = m.online || m.egress !== undefined;
 	const incapable = reported ? capabilityFit(m, needs) : null;

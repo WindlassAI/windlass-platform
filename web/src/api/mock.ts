@@ -3164,6 +3164,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const at = realNow();
 		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
 		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
+		const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: Math.ceil(2.1 * 2 ** 30) } });
 		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({
 			machineId: "m_nas",
 			name: "nas",
@@ -3181,7 +3182,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			freeDiskBytes: 61.4e9,
 			egress: "open",
 			profiles: mockMachineProfiles(patch.name ?? "nas", {}, patch.egress),
-			sendSecrets: true, orchestrator: "yes", whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 4, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
+			slots: slots(2, 0),
+			sendSecrets: true, orchestrator: "yes", whenToUse: "Build and test", tags: ["big-build"], host: { cpus: 8, sandboxCpus: 2, memoryBytes: 16 * 2**30, memoryFreeBytes: 8 * 2**30, load1: 1 }, turns: { running: 0, queued: 0, max: 2 },
 			warnings: [],
 			harnesses: [claude],
 			...patch,
@@ -3203,9 +3205,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			case "claude-signed-out":
 				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
 			case "pairing":
-				return [nas({ status: "waiting", since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
+				return [nas({ status: "waiting", slots: undefined, since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
 			case "outdated":
-				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", warnings: [{ kind: "outdated" }] })];
+				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", slots: undefined, warnings: [{ kind: "outdated" }] })];
 			case "docker":
 				return [nas({ warnings: [{ kind: "docker", reason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }], profiles: mockMachineProfiles("nas", { docker: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" }) })];
 			case "clock":
@@ -3237,7 +3239,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			// Feature placement (`?items=features` lists these by default): one machine of each policy. "studio" is
 			// the only one with screenshots, and both its slots are taken; "ci-box" takes no subtask of a feature.
 			case "placement": {
-				const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 512 } });
 				const allowed: MachineSummary["allowedProfiles"] = ["docker-windlass-sandbox", "docker-hardened"];
 				return [
 					nas({ allowedProfiles: allowed, slots: slots(2, 0) }),
@@ -3388,6 +3389,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (made) return made.summary;
 				// On one of the user's machines, the sandboxes are the ones its runner last reported.
 				const machine = input.place?.kind === "machine" ? machineOf(auth, input.place.machineId) : null;
+				if (input.size !== undefined && ![1, 2, 4].includes(input.size)) throw new PlatformError("user", "Choose a sandbox size of 1, 2 or 4 slots.", { reason: "bad_input" });
+				if ((input.size ?? 1) > 1 && !machine?.slots) throw new PlatformError("user", "Choose a machine reporting slots for a large sandbox.", { reason: "bad_input" });
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
 				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());

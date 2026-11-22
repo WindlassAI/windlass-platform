@@ -257,7 +257,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					}
 					if (phase === "challenge" && f.kind === "challenge") {
 						phase = "welcome";
-						const base = { kind: "hello" as const, maxTurns: owner.maxTurns, runnerVersion: VERSION, epoch, time: Date.now() };
+						const base = { kind: "hello" as const, maxTurns: owner.maxTurns, slots: owner.slots, runnerVersion: VERSION, epoch, time: Date.now() };
 						if (trust) {
 							const started = runnerHandshake({ uid, machineId, challenge: f.nonce }, base, key);
 							exchange = started;

@@ -30,11 +30,11 @@
 
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import type { SandboxProfile, SandboxProfileId } from "../contract.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
+import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type SandboxProfileId } from "../contract.js";
+import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
-import { commonRunFlags, cpuFlags, findProfile, profilesFor } from "./profiles.js";
+import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 
@@ -85,6 +85,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly profile: SandboxProfileId,
 		/** The user whose data volume the container mounts, from the container's label. */
 		readonly uid: string,
+		readonly resizePending = false,
 	) {
 		markTurnSandbox(this);
 	}
@@ -346,7 +347,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 }
 
 interface Inspected {
-	cpuPolicyMatches: boolean;
+	memory: number;
+	resize?: MachineSlotCapacity["unit"];
 	status: string;
 	profile: SandboxProfileId;
 	uid: string;
@@ -371,6 +373,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
 	cpus?: number;
+	slots?: MachineSlotCapacity;
 	network?: { name: string; env: Record<string, string>; mode: string };
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
@@ -412,13 +415,22 @@ export class DockerSandboxes implements Sandboxes {
 		this.machine = options.machine ?? "";
 	}
 
+	private resources(size: number) {
+		const unit = this.options.slots?.unit ?? { cpus: this.options.cpus ?? 1, memoryBytes: 1536 * 2 ** 20, pids: 512 };
+		return { cpus: Math.round(unit.cpus * 1e9) * size / 1e9, memoryBytes: unit.memoryBytes * size, pids: unit.pids * size };
+	}
+
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{with index .Config.Labels "${MACHINE_LABEL}"}}{{.}}{{end}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{with index .Config.Labels "${MACHINE_LABEL}"}}{{.}}{{end}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{or (index .Config.Labels "${LABEL}.requested-slots") (index .Config.Labels "${LABEL}.slots") "1"}}`, containerName(id)]);
 		if (result.code !== 0) return null;
-		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos] = result.stdout.trim().split("|");
+		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos, memory, swap, pids, label] = result.stdout.trim().split("|");
 		if (ours !== "1" || machine !== this.machine) return null;
-		return { status, profile: profile as SandboxProfileId, uid, cpuPolicyMatches: shares === "256" && Number(nanos) === (this.options.cpus ?? 1) * 1e9 };
+		const size = sandboxSlots(/^[1-4]$/.test(label) ? Number(label) : 1, this.options.slots?.max ?? 1);
+		const unit = this.resources(size);
+		const matches = shares === "256" && Number(nanos) === Math.round(unit.cpus * 1e9) && Number(memory) === unit.memoryBytes
+			&& Number(swap) === unit.memoryBytes && Number(pids) === unit.pids;
+		return { status, profile: profile as SandboxProfileId, uid, memory: Number(memory), resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
@@ -473,6 +485,9 @@ export class DockerSandboxes implements Sandboxes {
 		const id = (harness ? harness + "-" : "") + randomId(6);
 		const name = containerName(id);
 		const relay = await this.options.sessionRelay?.();
+		const requested = sandboxSlots(input.size ?? 1, 4);
+		const size = Math.min(requested, this.options.slots?.max ?? 1);
+		const limits = this.resources(size);
 		const result = await docker(
 			[
 				"run",
@@ -490,7 +505,9 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
-				...commonRunFlags(this.options.cpus ?? 1, this.options.network?.name),
+				...(this.options.slots ? ["--label", `${LABEL}.slots=${size}`] : []),
+				...(this.options.slots && requested > size ? ["--label", `${LABEL}.requested-slots=${requested}`] : []),
+				...commonRunFlags(limits.cpus, this.options.network?.name, limits.memoryBytes, limits.pids),
 				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
 					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
@@ -514,18 +531,44 @@ export class DockerSandboxes implements Sandboxes {
 		return id;
 	}
 
-	async connect(id: string): Promise<SandboxHandle | undefined> {
+	private async reconcile(name: string, found: Inspected) {
+		if (!found.resize) return false;
+		const { cpus, memoryBytes, pids } = found.resize;
+		const shrinking = (found.memory === 0 || memoryBytes < found.memory) && ["running", "paused", "restarting"].includes(found.status);
+		if (shrinking && found.status === "restarting") return true;
+		// cgroup v2 can accept a shrink and OOM-kill the workload. Freeze it while
+		// measuring and applying the limit. A stopped sandbox needs no usage check.
+		const freeze = shrinking && found.status === "running";
+		if (freeze) await docker(["pause", name], { check: true });
+		try {
+			if (shrinking) {
+				const stats = await docker(["system", "dial-stdio"], { timeoutMs: 10_000,
+					stdin: `GET /containers/${name}/stats?stream=false&one-shot=true HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n` });
+				if (stats.code !== 0 || !/^HTTP\/1\.[01] 200 /.test(stats.stdout)) return true;
+				let used: number;
+				try { used = JSON.parse(stats.stdout.split("\r\n\r\n")[1]).memory_stats.usage; }
+				catch { return true; }
+				if (!Number.isSafeInteger(used) || used <= 0 || used >= memoryBytes) return true;
+			}
+			const result = await docker(["update", ...resourceFlags(cpus, memoryBytes, pids), name]);
+			if (result.code === 0) return false;
+			if (shrinking && /current (?:memory )?usage|memory usage|device or resource busy/i.test(result.stderr)) return true;
+			throw new Error("Could not update the sandbox limits: " + result.stderr.trim());
+		} finally {
+			if (freeze) await docker(["unpause", name], { check: true });
+		}
+	}
+
+	async connect(id: string): Promise<DockerSandboxHandle | undefined> {
 		const found = await this.inspect(id);
 		if (found === null || stateOf(found.status) === "none") return undefined;
-		if (this.options.cpus !== undefined && !found.cpuPolicyMatches) {
-			await docker(["update", ...cpuFlags(this.options.cpus), containerName(id)], { check: true });
-		}
+		const resizePending = await this.reconcile(containerName(id), found);
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
-		else if (found.status !== "running") {
+		else if (found.status !== "running" && found.status !== "restarting") {
 			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
 			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid);
+		return new DockerSandboxHandle(id, found.profile, found.uid, resizePending);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

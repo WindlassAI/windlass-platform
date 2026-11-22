@@ -23,6 +23,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
+	size?: number;
 	mode?: string;
 	harness?: HarnessId;
 	harnessOptions?: HarnessOptions;
@@ -47,9 +48,10 @@ export interface SessionCreateInput {
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "origin" | "harness">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
-	return { uid, sessionId, profile, ...(origin?.size && { size: origin.size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
+	const size = session.size ?? origin?.size;
+	return { uid, sessionId, profile, ...(size && { size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
