@@ -130,6 +130,10 @@ export interface FeatureRepoState extends FeatureRepository {
 	prState?: "open" | "draft" | "merged" | "closed" | null;
 	prHead?: string | null;
 	mergedCommit?: string | null;
+	/** When GitHub says the PR merged (`merged_at`, ms): the merge order is judged by these, not by when each was read. */
+	mergedAt?: number | null;
+	/** Set (the reading's time) while this merge's order waits on a fresh reading of a prerequisite not seen merged yet. */
+	orderPending?: number | null;
 }
 
 /** A cross-repo feature's combined run (`IntegrationView`). `charged`: its time is on the ledger. */
@@ -331,7 +335,7 @@ export type Fact =
 	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
 	| { kind: "integration_read"; at: number; key: string; attempt: number; state: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "unavailable"; url: string | null; said: string | null; seconds?: number }
 	/** A cross-repo feature's pull request in `repo`, as GitHub said it: whether it merged, into which commit. */
-	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null }
+	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }

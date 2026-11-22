@@ -1586,23 +1586,50 @@ test("cross-repo: a pass leads to the summary, both descriptions, and a hand-ove
 	assert.equal(item.run!.step.kind, "merged");
 	assert.ok(!handed.effects.some(e => e.kind === "handoff" || e.kind === "poll_ci"), "the one-PR hand-over ran on a cross-repo feature");
 	assert.deepEqual(handed.effects.filter(e => e.kind === "poll_repo_pr").map(e => (e as { repo: string }).repo), ["platform", "cli"]);
-	const read = (it: typeof item, repo: string, state: string, prHead: string | null, mergedCommit: string | null = null) =>
-		advance(it, { kind: "repo_pr_read", key: `${currentKey(it)}/${repo}`, repo, state, prHead, mergedCommit, at: 60 } as never);
+	const read = (it: typeof item, repo: string, state: string, prHead: string | null, mergedCommit: string | null = null, mergedAt: number | null = null, at = 60) =>
+		advance(it, { kind: "repo_pr_read", key: `${currentKey(it)}/${repo}`, repo, state, prHead, mergedCommit, mergedAt, at } as never);
 	// Nothing new: no revision.
 	assert.equal(read(item, "cli", "draft", sha("7")).item.repos![1].prState, "draft");
 	const same = read(item, "cli", "draft", sha("7")).item;
 	assert.equal(read(same, "cli", "draft", sha("7")).item, same);
-	// The platform merged before the CLI the order puts first: a question, nothing rolled back.
-	const early = read(item, "platform", "merged", sha("8"), sha("e")).item;
+	// The platform is read merged before the CLI the order puts first has been read again: the CLI is read now, nothing asked yet.
+	const platformFirst = read(item, "platform", "merged", sha("8"), sha("e"), 2_000);
+	assert.equal(platformFirst.item.question, null, "the merge order was judged by poll order");
+	assert.equal(platformFirst.item.repos![0].mergedCommit, sha("e"));
+	assert.equal(platformFirst.item.repos![0].mergedAt, 2_000);
+	assert.deepEqual(platformFirst.effects.filter(e => e.kind === "poll_repo_pr").map(e => [(e as { repo: string }).repo, (e as { at: number }).at]), [["cli", 60]]);
+	// GitHub merged the CLI first (both merged between two polls): in order, done.
+	const both = read(platformFirst.item, "cli", "merged", sha("7"), sha("c"), 1_000, 61).item;
+	assert.equal(both.question, null);
+	assert.equal(both.state, "done");
+	// The CLI merged after the platform: by GitHub's times, out of order, though the platform was read first.
+	const late = read(platformFirst.item, "cli", "merged", sha("7"), sha("c"), 3_000, 61).item;
+	assert.equal(late.question!.kind, "integration");
+	assert.match(late.question!.text, /before cli/);
+	assert.notEqual(late.state, "done");
+	// The CLI is still open on its fresh reading: the platform merged early.
+	const early = read(platformFirst.item, "cli", "draft", sha("7"), null, null, 61).item;
 	assert.equal(early.question!.kind, "integration");
 	assert.match(early.question!.text, /before cli/);
-	assert.equal(early.repos![0].mergedCommit, sha("e"));
+	// Read in the other order, with the CLI merged later than the platform: still early.
+	const cliRead = read(item, "cli", "merged", sha("7"), sha("c"), 3_000).item;
+	assert.equal(cliRead.state, "review");
+	assert.match(read(cliRead, "platform", "merged", sha("8"), sha("d"), 2_000).item.question!.text, /before cli/);
 	// In order: the CLI (squash-merged as its own commit), then the platform: done.
-	const cli = read(item, "cli", "merged", sha("7"), sha("c")).item;
+	const cli = read(item, "cli", "merged", sha("7"), sha("c"), 1_000).item;
 	assert.equal(cli.state, "review");
 	assert.equal(cli.repos![1].mergedCommit, sha("c"));
-	const done = read(cli, "platform", "merged", sha("8"), sha("d")).item;
+	const done = read(cli, "platform", "merged", sha("8"), sha("d"), 2_000).item;
 	assert.equal(done.state, "done");
+	// Merged at a commit other than the one tested together: stale, and a question, never done.
+	const movedMerge = read(cli, "platform", "merged", sha("a"), sha("d"), 2_000).item;
+	assert.equal(movedMerge.integration!.state, "stale");
+	assert.equal(movedMerge.question!.kind, "integration");
+	assert.match(movedMerge.question!.text, /merged at aaaaaaa, not at 8888888/);
+	assert.notEqual(movedMerge.state, "done");
+	// Accepting it once nothing is left to watch ends the feature.
+	const accepted = advance(movedMerge, { kind: "answer", question: movedMerge.question!.id, choice: "wait", by: "person", at: 70 }).item;
+	assert.equal(accepted.state, "done");
 	// Closed without merging: a question.
 	assert.match(read(item, "cli", "closed", sha("7")).item.question!.text, /closed without merging/);
 	// Someone pushed to a PR after the run: that result is stale.

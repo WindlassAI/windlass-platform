@@ -274,6 +274,13 @@ export function integrationAnswer(f: Flow, choice: ChoiceId, question: string): 
 	const { item, run } = f;
 	if (run.step.kind === "merged") {
 		if (choice !== "wait") return false;
+		if (item.repos!.every(r => r.prState === "merged")) {
+			// Nothing is left to watch: the person accepted the merges as they are.
+			f.say("Every pull request of the feature was merged.");
+			run.endedAt = f.at;
+			f.state("done");
+			return true;
+		}
 		f.state("review");
 		pollPrs(f);
 		return true;
@@ -307,12 +314,43 @@ function pollPrs(f: Flow): void {
 		f.effects.push({ kind: "poll_repo_pr", key: `${f.key}/${repo.alias}`, repo: repo.alias, pr: repo.pr.number, at: f.at + CROSS_POLLING.mergeMs });
 }
 
-/** Whether `repo` merged before every repository the merge order puts first. */
-function inOrder(item: FactoryItem, alias: string): string | null {
-	const step = item.approvedPlan?.mergeOrder?.find(m => m.repo === alias);
-	const missing = (step?.prerequisite ?? []).filter(p => repoOf(item, p).prState !== "merged");
-	return missing.length ? missing.join(", ") : null;
+/**
+ * Judges `repo`'s merge against the approved merge order, by the times GitHub recorded the merges (never
+ * by the order they were read in). A prerequisite not seen merged yet is read again first: `repo` waits
+ * (`orderPending`) until each has been read since. `read`: the repository whose reading this is. True
+ * when it asked the person.
+ */
+function judgeOrder(f: Flow, repo: FeatureRepoState, read: string): boolean {
+	const { item } = f;
+	const step = item.approvedPlan?.mergeOrder?.find(m => m.repo === repo.alias);
+	const early: string[] = [], unread: string[] = [];
+	for (const alias of step?.prerequisite ?? []) {
+		const before = repoOf(item, alias);
+		if (before.prState === "merged") {
+			if (before.mergedAt != null && repo.mergedAt != null && before.mergedAt > repo.mergedAt) early.push(alias);
+		} else if (repo.orderPending != null && alias === read) early.push(alias);
+		else unread.push(alias);
+	}
+	if (unread.length) {
+		if (repo.orderPending == null) {
+			repo.orderPending = f.at;
+			for (const alias of unread) {
+				const other = repoOf(item, alias);
+				if (other.pr) f.effects.push({ kind: "poll_repo_pr", key: `${f.key}/${alias}`, repo: alias, pr: other.pr.number, at: f.at });
+			}
+		}
+		if (!early.length) return false;
+	}
+	repo.orderPending = null;
+	if (!early.length) return false;
+	const pr = `${repo.owner}/${repo.name}#${repo.pr!.number}`;
+	f.ask("integration", `${pr} was merged before ${early.join(", ")}, which the approved merge order puts first. Nothing is rolled back. Fix forward, or prepare a revert yourself, then keep watching.`, watchChoices(item));
+	return true;
 }
+
+/** "Keep watching", or, once every PR is merged and nothing is left to watch, accepting the merges as they are. */
+const watchChoices = (item: FactoryItem): { id: ChoiceId; label: string }[] =>
+	[{ id: "wait", label: item.repos!.every(r => r.prState === "merged") ? "Accept the merges as they are" : "Keep watching" }, { id: "give_up", label: "Give up" }];
 
 function prRead(f: Flow, fact: Extract<Fact, { kind: "repo_pr_read" }>): boolean {
 	const { item, run } = f;
@@ -320,35 +358,42 @@ function prRead(f: Flow, fact: Extract<Fact, { kind: "repo_pr_read" }>): boolean
 	const repo = repoOf(item, fact.repo);
 	if (!repo.pr) return false;
 	const was = repo.prState, before = repo.prHead ?? null;
-	if (was === fact.state && before === fact.prHead) return false;
+	const changed = was !== fact.state || before !== fact.prHead;
+	// Merges whose order waits on a fresh reading of this repository.
+	const waiting = item.repos!.filter(r => r !== repo && r.orderPending != null && r.orderPending <= fact.at && (item.approvedPlan?.mergeOrder?.find(m => m.repo === r.alias)?.prerequisite ?? []).includes(fact.repo));
+	if (!changed && !waiting.length) return false;
 	repo.prState = fact.state;
 	repo.prHead = fact.prHead;
-	if (fact.state === "merged") repo.mergedCommit = fact.mergedCommit;
+	if (fact.state === "merged") {
+		repo.mergedCommit = fact.mergedCommit;
+		repo.mergedAt = fact.mergedAt ?? null;
+	}
 	const pr = `${repo.owner}/${repo.name}#${repo.pr!.number}`;
-	const moved = fact.state !== "merged" && fact.prHead !== null && !!repo.head && fact.prHead !== repo.head;
+	// Pushed by someone else after the run, or merged at another commit: what was tested together is not what is there.
+	const moved = changed && fact.prHead !== null && !!repo.head && fact.prHead !== repo.head;
 	if (moved && item.integration && item.integration.state === "passed") {
-		// Pushed by someone else after the run: what was tested together is not what is there.
 		item.integration.state = "stale";
-		f.say(`${pr} moved to ${fact.prHead!.slice(0, 7)} after the repositories were tested together: that result is stale.`);
+		f.say(`${pr} ${fact.state === "merged" ? "was merged at" : "moved to"} ${fact.prHead!.slice(0, 7)} after the repositories were tested together: that result is stale.`);
 		f.effects.push({ kind: "link_prs", key: f.key });
 	}
-	if (fact.state === "closed") {
+	if (changed && fact.state === "closed") {
 		f.ask("integration", `${pr} was closed without merging. Nothing is rolled back: ${item.repos!.filter(r => r.prState === "merged").map(r => r.alias).join(", ") || "no repository"} merged so far. Reopen it and keep watching, or give up.`, [{ id: "wait", label: "Keep watching" }, { id: "give_up", label: "Give up" }]);
 		return true;
 	}
-	if (fact.state === "merged" && was !== "merged") {
+	for (const other of waiting) if (judgeOrder(f, other, fact.repo)) return true;
+	if (changed && fact.state === "merged" && was !== "merged") {
 		f.say(`${pr} was merged${fact.mergedCommit ? " as " + fact.mergedCommit.slice(0, 7) : ""}.`);
-		const early = inOrder(item, fact.repo);
-		if (early) {
-			f.ask("integration", `${pr} was merged before ${early}, which the approved merge order puts first. Nothing is rolled back. Fix forward, or prepare a revert yourself, then keep watching.`, [{ id: "wait", label: "Keep watching" }, { id: "give_up", label: "Give up" }]);
+		if (fact.prHead !== null && repo.head && fact.prHead !== repo.head) {
+			f.ask("integration", `${pr} was merged at ${fact.prHead.slice(0, 7)}, not at ${repo.head.slice(0, 7)}, which was tested together with the other repositories: the combined result does not cover what was merged. Nothing is rolled back. Test the merged code yourself, then keep watching.`, watchChoices(item));
 			return true;
 		}
-		if (item.repos!.every(r => r.prState === "merged")) {
-			f.say("Every pull request of the feature was merged.");
-			run.endedAt = f.at;
-			f.state("done");
-			return true;
-		}
+		if (judgeOrder(f, repo, fact.repo)) return true;
+	}
+	if (item.repos!.every(r => r.prState === "merged") && !item.repos!.some(r => r.orderPending != null) && (changed || waiting.length)) {
+		f.say("Every pull request of the feature was merged.");
+		run.endedAt = f.at;
+		f.state("done");
+		return true;
 	}
 	if (repo.prState !== "merged") f.effects.push({ kind: "poll_repo_pr", key: fact.key, repo: fact.repo, pr: repo.pr!.number, at: f.at + CROSS_POLLING.mergeMs });
 	return true;

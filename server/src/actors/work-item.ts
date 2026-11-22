@@ -1215,7 +1215,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const merged = body.merged === true;
 			const state = merged ? "merged" : body.state === "closed" ? "closed" : body.draft === true ? "draft" : "open";
 			const head = ((body.head ?? {}) as Record<string, unknown>).sha;
-			const changed = await take(c, { kind: "repo_pr_read", at: Date.now(), key: effect.key, repo: effect.repo, state, prHead: typeof head === "string" ? head : null, mergedCommit: merged && typeof body.merge_commit_sha === "string" ? body.merge_commit_sha : null });
+			const changed = await take(c, { kind: "repo_pr_read", at: Date.now(), key: effect.key, repo: effect.repo, state, prHead: typeof head === "string" ? head : null, mergedCommit: merged && typeof body.merge_commit_sha === "string" ? body.merge_commit_sha : null, mergedAt: merged && typeof body.merged_at === "string" && Number.isFinite(Date.parse(body.merged_at)) ? Date.parse(body.merged_at) : null });
 			if (!changed && live(c.vars.stored!.item, effect)) {
 				await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
 				return "deferred";
