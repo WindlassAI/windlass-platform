@@ -491,8 +491,8 @@ async function run() {
 			console.log("PASS G2 open PR stayed in review; fetched merge ended item and removed its binding");
 		});
 		await check("G2 webhook fallback reaches review with zero deliveries", async () => {
-			const clock = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
-			await clock.checkFallback(3500);
+			const clock = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
+			await clock().checkFallback(3500);
 			try {
 				const sent = standin.deliveries.length;
 				projectG2.name = "factory";
@@ -504,7 +504,7 @@ async function run() {
 				await until("fallback read hands off", async () => (await item.view()).verdict?.ci === "passed", 12_000);
 				assert.equal(countReads(item.head), 1);
 				assert.equal(standin.deliveries.length, sent);
-			} finally { await clock.checkFallback(null); }
+			} finally { await clock().checkFallback(null); }
 		});
 		const { taskOfIssue } = await import("../server/src/factory/intake.js");
 		const writer = standin.users.get(owner)!;
@@ -535,10 +535,10 @@ async function run() {
 		type FeedbackClock = {checkAdvance(kind: "feedback" | "poll", ms: number): Promise<void>; checkWindow(): Promise<number>};
 		const feedbackItem = async () => {
 			const item = await push();
-			const clock = item.handle() as unknown as FeedbackClock;
+			const clock = () => item.handle() as unknown as FeedbackClock;
 			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
 			ci(item.head, "success");
-			await clock.checkAdvance("poll",0);
+			await clock().checkAdvance("poll",0);
 			await until("first handoff",async () => pull.comments.some(c=>c.body.startsWith("<!-- windlass-item:")) && (await item.view()).state === "review");
 			return { ...item, clock, pull };
 		};
@@ -573,7 +573,7 @@ async function run() {
 				const timeline = (await client.agentSession.get([uid, view.sessionId], { params: { token: ownerToken } }).snapshot()).timeline;
 				const turn = timeline.find(e => e.kind === "user" && e.turn === 2);
 				assert.ok(turn?.kind === "user" && turn.text.includes("> Fix the empty case.") && turn.text.includes("line three") && !turn.text.includes("decoy"));
-				await item.clock.checkAdvance("poll",0);
+				await item.clock().checkAdvance("poll",0);
 				await until("second handoff", async () => {
 					const v = await item.view();
 					return v.verifiedCheck?.conclusion === "success" && check.external_id === v.verdicts.find(r => r.run === 2)?.id && item.pull.requestedReviewers.includes(owner);
@@ -587,22 +587,22 @@ async function run() {
 				const item = await feedbackItem();
 				try {
 					for (let i=0;i<count;i++) {
-						if (i) await item.clock.checkAdvance("feedback",spacing);
+						if (i) await item.clock().checkAdvance("feedback",spacing);
 						const id = 50000 + item.pr * 10 + i;
 						item.pull.comments.push({id,body:"/windlass Point "+i,user:{...writer,type:"User"},author_association:"OWNER",created_at:new Date().toISOString()});
 						assert.equal((await delivered("issue_comment",commentFields(item.pr,id))).state,"done");
 					}
-					const length = await item.clock.checkWindow();
+					const length = await item.clock().checkWindow();
 					assert.ok(length>=window && length<=window+5000, "Wrong batch deadline " + length);
 					assert.equal((await item.view()).run?.n,1);
-					await item.clock.checkAdvance("feedback",window-(count-1)*spacing+5000);
+					await item.clock().checkAdvance("feedback",window-(count-1)*spacing+5000);
 					await until("batched comments", async()=>(await item.view()).feedback.batches.some(b=>b.state==="taken" && b.entries.length===count));
 					assert.equal((await item.view()).run?.n,2);
 					await until("eyes on conversation comments",async()=>standin.reactions.has("issues:" + (50000 + item.pr * 10)));
 					if (spacing===90_000) {
 						// The 10:30 and 12:00 comments belong to the next quiet window.
 						for (const [id, delay] of [[51000, 25_000], [51001, 90_000]]) {
-							await item.clock.checkAdvance("feedback", delay);
+							await item.clock().checkAdvance("feedback", delay);
 							item.pull.comments.push({ id, body: "/windlass Later " + id, user: { ...writer, type: "User" }, author_association: "OWNER", created_at: new Date().toISOString() });
 							await delivered("issue_comment", commentFields(item.pr, id));
 						}
@@ -669,13 +669,13 @@ async function run() {
 			const item=await feedbackItem();
 			try {
 				const r=standin.submitReview(projectG2,item.pull,peer,"changes_requested","Handle a missing file.");
-				await item.clock.checkAdvance("poll",0);
+				await item.clock().checkAdvance("poll",0);
 				const v=await until("missed review taken",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
 				assert.equal(v.feedback.batches[0].entries[0].id,"review:"+r.review.id);
 				assert.equal(v.feedback.batches[0].entries[0].access,"write");
 				await until("feedback status in marked comment",async()=>item.pull.comments.some(c=>c.body.includes("being worked on")));
 				await until("reworked PR awaiting CI",async()=>(await item.view()).run?.step.kind==="ci");
-				await item.clock.checkAdvance("poll",0);
+				await item.clock().checkAdvance("poll",0);
 				await until("writer requested again", async()=>item.pull.requestedReviewers.includes(peer.login));
 				assert.equal(item.pull.comments.filter(c=>c.body.startsWith("<!-- windlass-item:")).length,1);
 			} finally { await stop(item.id); }
@@ -971,8 +971,8 @@ async function run() {
 			await until("issue session interrupted", async () => (await account.listSessions()).find(s => s.id === item.sessionId)?.lastOutcome === "interrupted");
 		});
 		await check("G3 a fetched merge ends the issue item; a fresh label files generation two", async () => {
-			const clock = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
-			await clock.checkFallback(3500);
+			const clock = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
+			await clock().checkFallback(3500);
 			try {
 				const { person, account } = await newWriter("g3-merge");
 				const issue = make(53, person); issue.labels.push("windlass:quick"); await applyLabel(issue, "windlass", person); const [item] = await items(issue, account); assert.ok(item);
@@ -987,7 +987,7 @@ async function run() {
 				await notify(issue, "labeled", person); assert.equal((await items(issue, account)).length, 1);
 				await change(issue, "labeled", person); assert.equal((await items(issue, account)).length, 2);
 				assert.equal((await directory().internalFind({ issue: 53 }))[0].generation, 2);
-			} finally { await clock.checkFallback(null); }
+			} finally { await clock().checkFallback(null); }
 		});
 		await check("G3 a failed item retries only for its own writer with a fresh GitHub subject", async () => {
 			const { person, account } = await newWriter("g3-retry");
