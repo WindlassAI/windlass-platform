@@ -10,7 +10,7 @@
  *   2. The user authorizes the app at GitHub, which sends the browser here with `code` and `state`.
  *   3. This route checks the state, has the user's actor take it out of its list (so it works once),
  *      exchanges the code for a user access token, and asks GitHub two things with it: who this is, and
- *      which installations of the app they can reach. Then the token is deleted at GitHub and forgotten.
+ *      which installations of the app they can reach. A successful ticket carries a grant sealed for this user.
  *   4. With no installation yet, the browser goes on to the app's installation page with a new state.
  *      The app asks for the user's authorization during installation, so GitHub sends the browser here
  *      again afterwards, with a `code`, the `state` and an `installation_id`; step 3 runs again, and the
@@ -36,8 +36,8 @@ import { createClient } from "rivetkit/client";
 import { isActorGone } from "../actors/internal.js";
 import { serviceParams } from "../auth.js";
 import { config, ownEngineEndpoint } from "../config.js";
-import { GithubApp, GithubError, githubApp } from "./app.js";
-import { type ConfirmedConnection, issueTicket, verifyState } from "./state.js";
+import { GithubApp, GithubError, githubApp, type GithubUserGrant } from "./app.js";
+import { activeInstallations, issueTicket, sealGithubGrant, verifyState } from "./state.js";
 
 export const GITHUB_CALLBACK_PATH = "/github/callback";
 
@@ -142,9 +142,9 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 		// A request to install that an organization's owner has yet to approve comes back without a code.
 		if (code === null || code === "") return failed(origin, params.get("setup_action") === "request" ? "pending" : "code");
 
-		let userToken: string;
+		let grant: GithubUserGrant;
 		try {
-			userToken = await app.exchangeCode(code, claimed.verifier);
+			grant = await app.exchangeCode(code, claimed.verifier);
 		} catch (error) {
 			if (error instanceof GithubError && !error.unreachable) {
 				log(`[wlp] github.connect.refused uid=${uid}: ${error.message}`);
@@ -153,27 +153,27 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 			throw error;
 		}
 
-		let confirmed: ConfirmedConnection;
+		let issued = false;
 		try {
-			const [user, installations] = await Promise.all([app.viewer(userToken), app.userInstallations(userToken)]);
-			confirmed = { user, installations: installations.filter((installation) => !installation.suspended).map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl })) };
+			const [user, installations] = await Promise.all([app.viewer(grant.accessToken), app.userInstallations(grant.accessToken)]);
+			const confirmed = { user, installations: activeInstallations(installations) };
+			const named = params.get("installation_id");
+			if (named !== null && !confirmed.installations.some((installation) => String(installation.id) === named)) {
+				log(`[wlp] github.connect.not_theirs uid=${uid} github=${confirmed.user.login} installation=${named.slice(0, 20).replace(/[^0-9]/g, "?")}`);
+				return failed(origin, "not_yours");
+			}
+			if (confirmed.installations.length === 0) {
+				// Back from the installation page with nothing installed: it was not finished, or waits on an owner.
+				if (params.get("setup_action") !== null || named !== null) return failed(origin, "pending");
+				return redirect(app.installUrl(await store.next(uid, origin)));
+			}
+			log(`[wlp] github.connect.confirmed uid=${uid} github=${confirmed.user.login} installations=${confirmed.installations.map((installation) => installation.id).join(",")}`);
+			const ticket = issueTicket(uid, { ...confirmed, sealedGrant: sealGithubGrant(uid, user.id, grant) });
+			issued = true;
+			return back(origin, `github=${ticket}`);
 		} finally {
-			// Asked and answered: the platform acts as the installation from here on, never as the user.
-			await app.forgetUserToken(userToken);
+			if (!issued) await app.forgetUserToken(grant.accessToken);
 		}
-
-		const named = params.get("installation_id");
-		if (named !== null && !confirmed.installations.some((installation) => String(installation.id) === named)) {
-			log(`[wlp] github.connect.not_theirs uid=${uid} github=${confirmed.user.login} installation=${named.slice(0, 20).replace(/[^0-9]/g, "?")}`);
-			return failed(origin, "not_yours");
-		}
-		if (confirmed.installations.length === 0) {
-			// Back from the installation page with nothing installed: it was not finished, or waits on an owner.
-			if (params.get("setup_action") !== null || named !== null) return failed(origin, "pending");
-			return redirect(app.installUrl(await store.next(uid, origin)));
-		}
-		log(`[wlp] github.connect.confirmed uid=${uid} github=${confirmed.user.login} installations=${confirmed.installations.map((installation) => installation.id).join(",")}`);
-		return back(origin, `github=${issueTicket(uid, confirmed)}`);
 	} catch (error) {
 		const unreachable = error instanceof GithubError && error.unreachable;
 		console.error(`[wlp] github.connect.failed uid=${uid}: ${error instanceof Error ? error.message : "unknown error"}`);

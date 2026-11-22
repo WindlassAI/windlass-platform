@@ -173,6 +173,9 @@ export class GithubStandin {
 	readonly pulls: StandinPull[] = [];
 	readonly issues: StandinIssue[] = [];
 	readonly tokens = new Map<string, Token>();
+	userTokenSeconds = 28_800;
+	userInstallationsRetryAfter = 0;
+	private readonly refreshTokens = new Map<string, Token>();
 	readonly requests: StandinRequest[] = [];
 	readonly deliveries: { id: string; guid: string; installation_id: number | bigint | null; delivered_at: string; status_code: number; redelivery: boolean }[] = [];
 	private nextCommentId = 9007199254740992n;
@@ -608,12 +611,25 @@ export class GithubStandin {
 			const fields = (body ?? {}) as Record<string, string>;
 			const code = this.codes.get(String(fields.code));
 			if (fields.client_id !== this.clientId || fields.client_secret !== this.clientSecret) return answer(200, { error: "incorrect_client_credentials", error_description: "The client_id and/or client_secret passed are incorrect." });
-			const verifierOk = !code?.challenge || (typeof fields.code_verifier === "string" && createHash("sha256").update(fields.code_verifier).digest("base64url") === code.challenge);
-			if (!code || code.used || !verifierOk) return answer(200, { error: "bad_verification_code", error_description: "The code passed is incorrect or expired." });
-			code.used = true;
+			let user: number;
+			if (fields.grant_type === "refresh_token") {
+				const previous = this.refreshTokens.get(fields.refresh_token);
+				if (!previous?.user || previous.revoked) return answer(200, { error: "bad_refresh_token", error_description: "The refresh token is invalid." });
+				user = previous.user;
+				previous.revoked = true;
+				this.refreshTokens.delete(fields.refresh_token);
+			} else {
+				const verifierOk = !code?.challenge || (typeof fields.code_verifier === "string" && createHash("sha256").update(fields.code_verifier).digest("base64url") === code.challenge);
+				if (!code || code.used || !verifierOk) return answer(200, { error: "bad_verification_code", error_description: "The code passed is incorrect or expired." });
+				code.used = true;
+				user = code.user;
+			}
 			const value = `ghu_${randomBytes(18).toString("hex")}`;
-			this.tokens.set(value, { kind: "user", value, user: code.user, expiresAt: Date.now() + 8 * 3600_000, revoked: false });
-			return answer(200, { access_token: value, expires_in: 28800, refresh_token: `ghr_${randomBytes(18).toString("hex")}`, refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
+			const refresh = `ghr_${randomBytes(18).toString("hex")}`;
+			const token: Token = { kind: "user", value, user, expiresAt: Date.now() + this.userTokenSeconds * 1000, revoked: false };
+			this.tokens.set(value, token);
+			this.refreshTokens.set(refresh, token);
+			return answer(200, { access_token: value, expires_in: this.userTokenSeconds, refresh_token: refresh, refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
 		}
 
 		if (path === "/api/graphql" && request.method === "POST") {
@@ -653,6 +669,12 @@ export class GithubStandin {
 			}
 			return answer(405, { message: "Method not allowed" });
 		}
+		const target = /^\/app\/installations\/(\d+)$/.exec(api);
+		if (target && method === "GET") {
+			if (!auth.raw || !this.verifyJwt(auth.raw)) return answer(401, { message: "Bad credentials" });
+			const installation = this.installations.get(Number(target[1]));
+			return installation ? answer(200, this.installationJson(installation)) : answer(404, { message: "Not Found" });
+		}
 		const mint = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(api);
 		if (mint && method === "POST") {
 			if (auth.kind !== "jwt" || auth.raw === null || !this.verifyJwt(auth.raw)) return answer(401, { message: "A JSON web token could not be decoded" });
@@ -687,6 +709,7 @@ export class GithubStandin {
 			const user = auth.token?.kind === "user" ? [...this.users.values()].find((candidate) => candidate.id === auth.token?.user) : undefined;
 			if (!user) return answer(401, { message: "Bad credentials" });
 			if (api === "/user") return answer(200, { id: user.id, login: user.login, type: "User" });
+			if (this.userInstallationsRetryAfter) return answer(429, { message: "Rate limit exceeded" }, { "retry-after": String(this.userInstallationsRetryAfter) });
 			const list = this.installationsOf(user);
 			return answer(200, { total_count: list.length, installations: list.map((installation) => this.installationJson(installation)) });
 		}

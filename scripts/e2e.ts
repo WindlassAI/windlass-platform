@@ -3,6 +3,7 @@
  * and of its HTTP routes (`/platform/info`, `/platform/connection`, `/health`).
  *
  *   cd server && npx tsx ../scripts/e2e.ts                 starts a server on fresh state
+ *   cd server && npx tsx ../scripts/e2e.ts --github-only   the GitHub scenarios on a fresh fake server
  *   cd server && npx tsx ../scripts/e2e.ts --endpoint URL  uses a running server (HTTP on the
  *                                                         same host, port 6440, or at WLP_E2E_API)
  *
@@ -56,6 +57,8 @@ const MODE = (process.env.WLP_SANDBOX ?? "fake") as "fake" | "docker";
 const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
 const identityOnly = args.includes("--identity-only");
+const githubOnly = args.includes("--github-only");
+if (githubOnly && (!OWN_SERVER || !FAKE || identityOnly)) throw new Error("--github-only requires a local fake server");
 if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
@@ -720,6 +723,14 @@ async function main(server: Server | null): Promise<void> {
 		demoUids.push(result.profile.uid);
 		return result;
 	};
+
+	if (githubOnly && server) {
+		try {
+			const info = await (await platformInfo()).json() as import("../server/src/contract.js").PlatformInfo;
+			await githubChecks(server, client, demoSignIn, info.profiles.find(p => p.available)!.id);
+		} finally { await client.dispose(); }
+		return;
+	}
 
 	// --- platform ---------------------------------------------------------------------------------
 
@@ -3546,8 +3557,8 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			assert(accounts.every((account) => account.manageUrl.startsWith(standin.url)), "an account has no page at GitHub");
 			assert(plain(await userOf(alice).github()) === plain(status), "github() does not answer what githubComplete did");
 			const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
-			assert(userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)), "a user access token is still alive at GitHub");
-			return `ada, for ${accounts.map((account) => account.login).join(" and ")}; ${userTokens.length} user token(s), all deleted at GitHub`;
+			assert(userTokens.length > 0 && userTokens.some((token) => standin.alive(token.value)), "the connection has no active user grant");
+			return `ada, for ${accounts.map((account) => account.login).join(" and ")}; ${userTokens.length} user token(s) issued`;
 		});
 
 		await check(once, async () => {
@@ -3872,9 +3883,9 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 				const status = await connect(bob, "mallory");
 				assert(status.connection?.accounts.length === 1, "bob is not connected as mallory");
 				standin.uninstall(malloryInstallation);
-				const uninstalled = await refused(() => userOf(bob).githubRepositories("", true), "github_gone");
-				assert(uninstalled === "The GitHub App is no longer installed on mallory. Connect GitHub again and install it there, then try once more.", `it said "${uninstalled}"`);
-				return `"${lost}" | "${uninstalled}"`;
+				const refreshed = await userOf(bob).githubRepositories("", true);
+				assert(!refreshed.repositories.length && !(await userOf(bob).github()).connection?.accounts.length, "the uninstalled account is still listed");
+				return `"${lost}" | uninstalled account removed`;
 			} finally {
 				await doomedWatch.conn.dispose().catch(() => undefined);
 				await userOf(alice).deleteSession(created.id).catch(() => undefined);
@@ -4386,7 +4397,7 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
-		if (FAKE) {
+		if (FAKE && !githubOnly) {
 			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {

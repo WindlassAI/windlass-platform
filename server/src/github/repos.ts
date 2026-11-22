@@ -1,15 +1,13 @@
 /**
  * Which repositories a connected user may work on, and what GitHub lets them do there.
  *
- * A connection is a GitHub user and the installations of the app that user could reach when they
- * connected (state.ts). An installation covers the repositories its account chose, and that is more
- * than every user of it may see: GitHub lists an installation for anyone with access to one of its
+ * A connection is a GitHub user and the installations GitHub last verified for them. An installation
+ * covers the repositories its account chose, which can exceed what one user may see: GitHub lists an installation for anyone with access to one of its
  * repositories, so a member of an organization, or a collaborator on one repository of somebody's
  * account, reaches an installation that also covers repositories they cannot open. The platform acts
  * as the installation, which could read all of them. So before anything is done for a user in a
  * repository, GitHub is asked what that user may do there (`GithubApp.permission`), with the
- * installation's own token; the platform keeps no credential of the user's to ask as them. An account's
- * owner is not asked about: the installation on a user's own account covers that user's repositories.
+ * installation's own token. An installation on a user's own account covers that user's repositories.
  *
  *   to list a repository, to launch an agent on it      read
  *   to push to it and open a pull request               write
@@ -28,6 +26,8 @@ export interface StoredConnection extends ConfirmedConnection {
 	/** Directory updates must also be cleared if webhooks have since been switched off. */
 	webhookLinked?: boolean;
 	connectedAt: number;
+	/** Discard repository and permission reads started before this reconciliation. */
+	refreshedAt?: number;
 }
 
 export type StoredInstallation = StoredConnection["installations"][number];
@@ -66,7 +66,7 @@ interface Listed {
 }
 
 const lists = new Map<GithubId, Listed>();
-const listing = new Map<GithubId, Promise<Listed>>();
+const listing = new Map<GithubId, { at: number; result: Promise<Listed> }>();
 const permissions = new Map<string, { at: number; level: Level }>();
 
 /** Forgets what this server remembers of GitHub: for the checks, and for a connection that changed. */
@@ -80,7 +80,7 @@ export function forgetGithubCaches(): void {
 export function problemOf(error: unknown, account: string, repository?: string): GithubProblem {
 	if (error instanceof GithubProblem) return error;
 	if (error instanceof GithubError) {
-		if (error.status === 429 || (error.status === 403 && (error.headers.has("retry-after") || error.headers.get("x-ratelimit-remaining") === "0" || /rate limit/i.test(error.said)))) {
+		if (error.rateLimited) {
 			return new GithubProblem("github_unreachable", "GitHub asked the platform to wait before trying again.");
 		}
 		if (error.unreachable) return new GithubProblem("github_unreachable", "GitHub could not be reached. Try again in a moment.");
@@ -121,23 +121,24 @@ class ReadTokens {
 	}
 }
 
-async function installationList(app: GithubApp, tokens: ReadTokens, installation: StoredInstallation): Promise<Listed> {
+async function installationList(app: GithubApp, tokens: ReadTokens, installation: StoredInstallation, since = 0): Promise<Listed> {
 	const cached = lists.get(installation.id);
-	if (cached && Date.now() - cached.at < LIST_FRESH_MS) return cached;
-	let pending = listing.get(installation.id);
-	if (!pending) {
-		pending = tokens
-			.of(installation)
-			.then((token) => app.installationRepositories(token, tokens.deadline))
-			.then((found) => {
-				const listed: Listed = { at: Date.now(), ...found };
-				lists.set(installation.id, listed);
-				return listed;
-			})
-			.finally(() => listing.delete(installation.id));
-		listing.set(installation.id, pending);
-	}
-	return pending;
+	if (cached && cached.at >= since && Date.now() - cached.at < LIST_FRESH_MS) return cached;
+	const pending = listing.get(installation.id);
+	if (pending && pending.at >= since) return pending.result;
+	const at = Date.now();
+	const result = tokens.of(installation)
+		.then(token => app.installationRepositories(token, tokens.deadline))
+		.then(found => {
+			const listed = { at, ...found };
+			if (listing.get(installation.id)?.result === result) lists.set(installation.id, listed);
+			return listed;
+		})
+		.finally(() => {
+			if (listing.get(installation.id)?.result === result) listing.delete(installation.id);
+		});
+	listing.set(installation.id, { at, result });
+	return result;
 }
 
 /** Whether the installation is on the connected user's own account: nothing there is not theirs. */
@@ -148,8 +149,9 @@ const allows = (level: Level, need: "read" | "write") => (need === "read" ? leve
 /** What the connected user may do in a repository, asked of GitHub now. */
 async function levelOf(app: GithubApp, tokens: ReadTokens, connection: StoredConnection, installation: StoredInstallation, repository: Repository): Promise<Level> {
 	if (ownAccount(connection, installation)) return "admin";
-	const level = await app.permission(await tokens.of(installation), repository.owner, repository.name, connection.user.login, tokens.deadline);
-	permissions.set(`${connection.user.id}:${repository.id}`, { at: Date.now(), level });
+	const at = Date.now();
+	const level = await app.permission(await tokens.of(installation), repository.owner, repository.name, connection.user.login, tokens.deadline, connection.user.id);
+	permissions.set(`${connection.user.id}:${repository.id}`, { at, level });
 	return level;
 }
 
@@ -181,7 +183,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 	await Promise.all(
 		connection.installations.map(async (installation) => {
 			try {
-				const listed = await installationList(app, tokens, installation);
+				const listed = await installationList(app, tokens, installation, connection.refreshedAt);
 				truncated ||= listed.truncated;
 				for (const repository of listed.repositories) found.push({ installation, repository });
 			} catch (error) {
@@ -214,7 +216,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 			batch.map(async ({ installation, repository }): Promise<Level> => {
 				if (ownAccount(connection, installation)) return "admin";
 				const known = permissions.get(`${connection.user.id}:${repository.id}`);
-				if (known && Date.now() - known.at < PERMISSION_FRESH_MS) return known.level;
+				if (known && known.at >= (connection.refreshedAt ?? 0) && Date.now() - known.at < PERMISSION_FRESH_MS) return known.level;
 				checked += 1;
 				try {
 					return await levelOf(app, tokens, connection, installation, repository);
@@ -250,7 +252,7 @@ export async function resolveRepository(app: GithubApp, connection: StoredConnec
 	let firstProblem: GithubProblem | null = null;
 	for (const installation of connection.installations) {
 		try {
-			const listed = await installationList(app, tokens, installation);
+			const listed = await installationList(app, tokens, installation, connection.refreshedAt);
 			const repository = listed.repositories.find((candidate) => candidate.id === repositoryId);
 			if (repository) {
 				found = { installation, repository };
@@ -284,7 +286,7 @@ export async function resolveBoundRepository(app: GithubApp, connection: StoredC
 	if (!installation) throw new GithubProblem("github_gone", "The item's GitHub installation is no longer connected.");
 	return app.withToken(installationId, { repositoryId, permissions: { metadata: "read" } }, async token => {
 		const repository = await app.repositoryById(token, repositoryId);
-		const level = ownAccount(connection, installation) ? "admin" : await app.permission(token, repository.owner, repository.name, connection.user.login);
+		const level = ownAccount(connection, installation) ? "admin" : await app.permission(token, repository.owner, repository.name, connection.user.login, undefined, connection.user.id);
 		if (!allows(level, need) || (need === "write" && repository.archived)) throw new GithubProblem("github_denied", "GitHub no longer permits this action on the item's repository.");
 		return { installation, repository, described: described(repository, level) };
 	});

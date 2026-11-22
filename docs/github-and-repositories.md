@@ -16,12 +16,13 @@ nothing of this, and a repository is a public address pasted into the launch for
   user authorizes the app; with the app installed nowhere they can reach, GitHub's installation page follows,
   where they pick an account and its repositories. GitHub sends the browser back to `GET /github/callback` on a
   server's own port, with a code. The server exchanges it, asks GitHub who this is and which installations of
-  the app they can reach, deletes the token it was given, and sends the browser on to the web app, which
+  the app they can reach, and sends the browser on to the web app, which
   hands what GitHub confirmed to the user's `user` actor. That is the connection: a GitHub login and the
   accounts the app is installed on. Disconnecting forgets it; the app stays installed at GitHub, which is the
   account owner's to change.
-- **No credential of the user's is kept.** Not a token, not a refresh token. What the platform does at GitHub
-  later, it does as the app's installation.
+- **Refreshing access.** The user actor keeps the GitHub user grant encrypted. Installation webhooks and
+  a manual reload of the picker refresh the accounts that GitHub lists for that user. Repository operations
+  use the installation's scoped tokens. Disconnecting deletes the saved grant and requests its revocation.
 - **Launching.** A connected user searches their repositories in the launch form and picks a branch (the
   default one is chosen). The session records what it was launched on, and its sandbox gets a clone.
 - **A pull request.** In a session's panel, "Open pull request": the platform commits what is uncommitted with
@@ -70,13 +71,13 @@ missing; when nothing was found, the form says that GitHub could not be reached.
 
 ### Tokens
 
-Three credentials exist, and none is stored, logged, or put in a timeline item, an event or an error:
+The platform uses these credentials:
 
 | Credential | Made | Good for | Where it goes |
 |---|---|---|---|
 | the app's JWT | signed by the server with the app's private key, for each request | nine minutes; asking GitHub for an installation token | to GitHub |
 | an installation token | by GitHub, when a step needs one, for the one repository the session works on and the permissions of that step | an hour at most; one that went into a sandbox is revoked as soon as its git command has ended | see below |
-| a user access token | by GitHub, for the code a user's authorization ended with | two questions (who is this, which installations can they reach), then it is deleted at GitHub | to GitHub |
+| a user access token | by GitHub, for the code a user's authorization ended with | identity at connect and installation discovery, refreshed on demand until disconnect | to GitHub |
 
 | Step | Permissions of its token | Where the token is |
 |---|---|---|

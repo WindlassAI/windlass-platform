@@ -348,9 +348,13 @@ await section("connect: a user with an installation", async () => {
 		back.ticket?.installations.map((installation) => `${installation.account.login} (${installation.account.type})`).join(", "),
 	);
 	const calls = standin.requests.slice(before).map((request) => `${request.method} ${request.path.split("?")[0]} as ${request.auth}`);
-	expect("GitHub was asked four things: the exchange, who, which installations, and to delete the token", calls.join("; ") === "POST /login/oauth/access_token as none; GET /api/v3/user as user; GET /api/v3/user/installations as user; DELETE /api/v3/applications/Iv23standin0client/token as basic" || calls.length === 4, calls.join("; "));
-	const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
-	expect("no user access token is left alive: the platform keeps no credential of the user's", userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)));
+	expect("connect uses the user token to read the viewer and their installations", calls.length === 3 && calls.includes("GET /api/v3/user as user") && calls.includes("GET /api/v3/user/installations as user"), calls.join("; "));
+	const sealed = back.ticket?.sealedGrant ?? "";
+	const grant = state.openGithubGrant("u_ada", ada.id, sealed);
+	expect("the live user grant is encrypted in the ticket", standin.alive(grant.accessToken) && !JSON.stringify(back.ticket).includes(grant.accessToken));
+	let isolated = false;
+	try { state.openGithubGrant("u_other", ada.id, sealed); } catch { isolated = true; }
+	expect("another platform user cannot open the grant", isolated);
 	const forged = state.verifyTicket(`${back.location.slice(back.location.indexOf("=") + 1, -4)}AAAA`);
 	expect("a ticket that was changed is no ticket", forged === null);
 });

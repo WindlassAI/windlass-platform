@@ -222,7 +222,7 @@ async function run() {
 		standin.addUser("g2-neighbour");
 		const neighbour = standin.addInstallation("g2-neighbour", "User");
 		standin.addRepository({ owner: "g2-neighbour", name: "other", installation: neighbour });
-		await connectUser("g2-neighbour");
+		const { user: neighbourUser } = await connectUser("g2-neighbour");
 		const directory = () => client.githubRepository.getOrCreate([String(projectG2.id)], service());
 		const push = async () => {
 			const item = await g2User.createItem({ repository: { id: projectG2.id }, title: "A webhook check", body: "Add a short program.", start: true });
@@ -243,6 +243,123 @@ async function run() {
 				return row && ["done", "ignored"].includes(row.state) ? row : null;
 			});
 		};
+		const hasRepo = async (user: typeof g2User, id: number, fresh = false) =>
+			(await user.githubRepositories("", fresh)).repositories.some(r => r.id === id);
+		await check("installation refresh from signed lifecycle deliveries", async () => {
+			const org = standin.addInstallation("hook-org", "Organization");
+			const repo = standin.addRepository({ owner: org.account.login, name: "private", private: true, installation: org });
+			repo.access.set(owner, "write");
+			const other = standin.addRepository({ owner: org.account.login, name: "retained", installation: org });
+			other.access.set(owner, "read");
+			const event = (name: string, action: string, sender: string) => delivered(name, {
+				action, installation: { id: org.id, account: org.account }, sender: standin.users.get(sender),
+			}, org.id);
+			try {
+				// A signed sender hint cannot grant the neighbour access.
+				await event("installation", "created", "g2-neighbour");
+				assert.equal((await neighbourUser.github()).connection?.accounts.some(a => a.installationId === org.id), false);
+				await event("installation", "created", owner);
+				assert.ok(await hasRepo(g2User, repo.id));
+				org.suspended = true;
+				await event("installation", "suspend", "g2-neighbour");
+				assert.equal(await hasRepo(g2User, repo.id), false);
+				org.suspended = false;
+				await event("installation", "unsuspend", owner);
+				assert.ok(await hasRepo(g2User, repo.id));
+				org.repositories.delete(repo.id);
+				await event("installation_repositories", "removed", owner);
+				assert.ok(await hasRepo(g2User, other.id));
+				assert.equal(await hasRepo(g2User, repo.id), false);
+				org.repositories.add(repo.id);
+				await event("installation_repositories", "added", owner);
+				assert.ok(await hasRepo(g2User, repo.id));
+				standin.uninstall(org);
+				await event("installation", "deleted", "g2-neighbour");
+				assert.equal(await hasRepo(g2User, repo.id), false);
+				assert.equal((await g2User.github()).connection?.accounts.some(a => a.installationId === org.id), false);
+			} finally { standin.uninstall(org); }
+		});
+		await check("installation refresh from the repository picker with a per-user cooldown", async () => {
+			const org = standin.addInstallation("picker-org", "Organization");
+			const repo = standin.addRepository({ owner: org.account.login, name: "private", private: true, installation: org });
+			repo.access.set(owner, "read");
+			const reads = () => standin.requests.filter(r => r.auth === "user" && r.path.startsWith("/api/v3/user/installations?")).length;
+			try {
+				const before = reads();
+				assert.equal(await hasRepo(g2User, repo.id), false);
+				assert.ok(await hasRepo(g2User, repo.id, true));
+				assert.ok(await hasRepo(g2User, repo.id, true));
+				assert.equal(reads() - before, 1);
+				assert.equal(await hasRepo(neighbourUser, repo.id, true), false);
+				assert.equal(reads() - before, 2);
+			} finally { standin.uninstall(org); }
+		});
+		await check("installation refresh rotates an expiring grant and revokes it on disconnect", async () => {
+			const person = standin.addUser("refresh-rotation");
+			standin.addInstallation(person.login, "User");
+			standin.userTokenSeconds = 50;
+			try {
+				const { user } = await connectUser(person.login);
+				const tokens = () => [...standin.tokens.values()].filter(t => t.kind === "user" && t.user === person.id);
+				standin.userTokenSeconds = 28_800;
+				await user.githubRepositories("", true);
+				assert.equal(tokens().length, 2);
+				assert.equal(tokens()[0].revoked, true);
+				assert.equal(tokens()[1].revoked, false);
+				await user.githubDisconnect();
+				assert.equal(tokens()[1].revoked, true);
+			} finally { standin.userTokenSeconds = 28_800; }
+		});
+		await check("installation refresh honors GitHub's retry delay and preserves the saved accounts", async () => {
+			const person = standin.addUser("rate-limit");
+			const org = standin.addInstallation(person.login, "User");
+			const { user } = await connectUser(person.login);
+			const reads = () => standin.requests.filter(r => r.path.startsWith("/api/v3/user/installations?")).length;
+			const before = reads();
+			try {
+				standin.userInstallationsRetryAfter = 120;
+				await assert.rejects(user.githubRepositories("", true), /asked the platform to wait/);
+				standin.userInstallationsRetryAfter = 0;
+				await assert.rejects(user.githubRepositories("", true), /asked the platform to wait/);
+				assert.equal(reads(), before + 1);
+				assert.deepEqual((await user.github()).connection?.accounts.map(a => a.installationId), [org.id]);
+			} finally {
+				standin.userInstallationsRetryAfter = 0;
+				await user.githubDisconnect();
+			}
+		});
+		await check("installation refresh drops a revoked user's access", async () => {
+			const person = standin.addUser("refresh-revoked");
+			const org = standin.addInstallation(person.login, "User");
+			const { user } = await connectUser(person.login);
+			const token = [...standin.tokens.values()].find(t => t.kind === "user" && t.user === person.id)!;
+			token.revoked = true;
+			await assert.rejects(user.githubRepositories("", true), /Connect GitHub again/);
+			await delivered("installation", { action: "new_permissions_accepted", sender: person }, org.id);
+			assert.deepEqual((await user.github()).connection?.accounts, []);
+			await assert.rejects(user.githubRepositories("", true), /Connect GitHub again/);
+			await user.githubDisconnect();
+		});
+		await check("installation refresh verifies older connections by immutable GitHub identity", async () => {
+			const person = standin.addUser("legacy");
+			const auth = await client.login.getOrCreate([randomUUID()]).demo();
+			const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+			const { issueTicket } = await import("../server/src/github/state.js");
+			await user.githubComplete(issueTicket(auth.profile.uid, { user: person, installations: [] }));
+			const org = standin.addInstallation("legacy-org", "Organization");
+			const repo = standin.addRepository({ owner: org.account.login, name: "private", private: true, installation: org });
+			const notify = () => delivered("installation", { action: "new_permissions_accepted", sender: person }, org.id);
+			await notify();
+			assert.deepEqual((await user.github()).connection?.accounts, []);
+			repo.access.set(person.login, "read");
+			await notify();
+			assert.ok(await hasRepo(user, repo.id));
+			standin.uninstall(org);
+			await delivered("installation", { action: "deleted" }, org.id);
+			assert.deepEqual((await user.github()).connection?.accounts, []);
+			await assert.rejects(user.githubRepositories("", true), /Connect GitHub again/);
+			await user.githubDisconnect();
+		});
 		const countReads = (head: string) => standin.requests.filter(r => r.path.includes("/commits/" + head + "/check-runs")).length;
 		const ci = (head: string, state: string) => projectG2.ci.set(head, { runs: [], statuses: [{ context: "required", state }] });
 		await check("G2 signed CI and PR nudges, coalescing, installation isolation and live readings", async () => {
@@ -723,7 +840,7 @@ async function run() {
 			for (const state of ["success", "failure", "error"]) assert.deepEqual(take("status", { state })?.data, { head: HEAD });
 			assert.equal(take("status", { state: "pending" }), null);
 			for (const event of ["installation", "installation_repositories"])
-				assert.deepEqual(take(event, { repositories_added: [{ id: 9 }], repositories_removed: [{ id: 8 }] })?.data, { repositoryIds: [9, 8] });
+				assert.deepEqual(take(event, { repositories_added: [{ id: 9 }], repositories_removed: [{ id: 8 }] })?.data, { accountId: null, senderId: user.id });
 			assert.equal(take("push", {}), null);
 			assert.equal(take("status", { installation: {} }), null);
 			assert.equal(isAddressed(" \n@WINDLASS-FK4W fix it", standin.slug), "fix it");
@@ -939,11 +1056,22 @@ async function run() {
 			const taken = async () => (await (await send(payload)).json()).taken;
 			const a = await connect(); assert.equal(await taken(), true); assert.deepEqual(await account.internalWho(), { uid: a.uid, installations: [install.id] });
 			const b = await connect(); assert.deepEqual(await account.internalWho(), { uid: b.uid, installations: [install.id] });
+			assert.deepEqual(new Set(await account.internalUsers()), new Set([a.uid, b.uid]));
+			await a.user.githubRepositories("", true);
+			assert.equal((await account.internalWho())?.uid, b.uid);
+			// The installation account matches both connections even when someone else sent the event.
+			standin.uninstall(install);
+			const personal = standin.addInstallation("ada", "User");
+			await delivered("installation", { action: "created", installation: { id: personal.id, account: personal.account }, sender: { id: 1 } }, personal.id);
+			for (const { user } of [a, b]) assert.deepEqual((await user.github()).connection?.accounts.map(i => i.installationId), [personal.id]);
+			payload.installation.id = personal.id;
 			await a.user.githubDisconnect(); assert.equal((await account.internalWho())?.uid, b.uid); assert.equal(await taken(), true);
 			await b.user.githubDisconnect(); assert.equal(await account.internalWho(), null); assert.equal(await taken(), false);
 		});
 		await check("service-only actors", async () => {
 			await assert.rejects(client.githubAccount.getOrCreate(["1"]).internalWho());
+			await assert.rejects(client.githubHooks.getOrCreate(["app"]).internalInstallationUsers(installation.id));
+			await assert.rejects(g2User.internalRefreshGithub(installation.id, [installation.account.id]));
 			await assert.rejects(client.githubInbox.getOrCreate(["1"]).internalKnows(randomUUID()));
 			await assert.rejects(client.githubRepository.getOrCreate(["1"]).internalFind({ pr: 1 }));
 			await assert.rejects(client.githubHooks.getOrCreate(["app"]).internalSweep());

@@ -1626,7 +1626,7 @@ export interface UserActions {
 	githubDisconnect(): Promise<GithubStatus>;
 	/**
 	 * Repositories of the connection whose `owner/name` contains `query`, the most recently pushed first.
-	 * With `fresh`, GitHub is asked anew: for a repository that was added to an installation a moment ago.
+	 * With `fresh`, refresh the user’s installations and repository list, at most once a minute per user.
 	 */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;
