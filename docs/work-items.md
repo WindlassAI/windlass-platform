@@ -138,7 +138,8 @@ installation has accepted them, an item waits for no CI: it is handed over sayin
 
 `CreateItemInput.harness` picks the builder: `windlass` (the default), or a machine harness by id
 (`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in.
-A machine harness runs only Quick, only on a machine, in `docker-hardened`. It starts every turn in
+A machine harness runs only Quick, only on a machine, in `docker-hardened`. A Plan-first subtask's
+`needs.harness` other than `windlass` is refused by plan validation and by placement (`machineAgentRefusal`). It starts every turn in
 its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `build`), and the ACP
 harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
 agent still asks for is allowed once. The reviewer stays Windlass and runs only hosted, so these

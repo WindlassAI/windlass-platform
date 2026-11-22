@@ -66,7 +66,7 @@ An item's builder runs **Windlass** by default. On one of your machines, it can 
 What changes with Claude Code or OpenCode:
 
 - **Where.** Only on your machine, in **Hardened Docker on your machine "…"**. Hosted items run Windlass.
-- **How it runs.** Only **Quick**. **Plan first** runs with Windlass, because its planner files the plan with a Windlass tool.
+- **How it runs.** Only **Quick**. **Plan first** runs with Windlass, because its planner files the plan with a Windlass tool. Its subtasks also run with Windlass: a plan whose subtask needs Claude Code or OpenCode is refused.
 - **Asking.** An item has nobody watching it, so the agent works without asking. Claude Code runs in **Bypass permissions**. OpenCode runs in **Build**, and the platform allows once each edit or command it asks about, as Windlass runs commands in that container. The turn does not start if the agent does not offer that mode.
 - **Checks.** These agents do not run your repository's checks. CI decides the verdict, and the check on GitHub says "The turn left no record of its checks; CI decides."
 - **Review.** Items on a machine have no second reviewer, whatever the agent.
@@ -219,7 +219,7 @@ If approval is refused because the repository lacks checks or push CI, **Run as 
 
 ### Placement
 
-Each subtask says where it **runs on**: the place the planner prefers and why, and, when it **needs** something of a place (CPUs, memory, screenshots, a harness, egress or tags), what. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
+Each subtask says where it **runs on**: the place the planner prefers and why, and, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask runs only with Windlass: one that needs Claude Code or OpenCode is refused. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
 
 The approval card lists, under **Where each subtask runs**, each subtask's place, the planner's reason, its alternatives, whether overflow is allowed and, for every place, whether the repository's secrets are sent there: **secrets sent** or **no secrets**. This platform always gets them; a machine gets them only while its **Send saved secrets** switch is on. The planner may have read an issue anyone could file, so check this before you approve.
 

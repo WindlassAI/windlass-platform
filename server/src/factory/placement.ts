@@ -72,6 +72,15 @@ export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "
 		unit: { cpus: machine.host?.sandboxCpus ?? 0, memoryBytes: 1.5 * GiB } };
 }
 
+/**
+ * Plan-first children run only with Windlass, for now: a child is made with the feature's Windlass model,
+ * and the approval does not name an agent that works without asking. When they can: the agent signed in
+ * (signIn "token"), in the HARNESS_PROFILE the owner allows (the profile choice in `candidate` is ready).
+ */
+function machineAgentRefusal(needs: PlacementNeeds): string | null {
+	return needs.harness && needs.harness !== "windlass" ? `a Plan-first subtask runs only with Windlass, not ${harnessName(needs.harness)}` : null;
+}
+
 /** What the machine cannot do at all, from its last report. Kept while it is offline. */
 function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 	const tags = new Set([...machine.tags, machine.os, machine.arch, "os:" + machine.os, "arch:" + machine.arch, "harness:windlass",
@@ -80,12 +89,8 @@ function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 	if (missing) return `missing tag ‘${missing}’`;
 	if (needs.screenshots && !machine.screenshots) return "screenshots are unavailable";
 	if (machine.egress === "none" || (needs.egress && needs.egress !== machine.egress)) return "the egress policy does not support this repository task";
-	if (needs.harness && needs.harness !== "windlass") {
-		const name = harnessName(needs.harness);
-		if (!machine.harnesses?.some(h => h.id === needs.harness && h.signIn === "token")) return `${name} is not offered or not signed in`;
-		if (needs.profile && needs.profile !== HARNESS_PROFILE) return `${name} runs only in the ${HARNESS_PROFILE} profile`;
-		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${HARNESS_PROFILE} profile ${name} needs`;
-	}
+	const agent = machineAgentRefusal(needs);
+	if (agent) return agent;
 	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${needs.profile} profile`;
 	return null;
 }
@@ -125,7 +130,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const units = sandboxSlots(needed, slots.max ?? 1);
 	// A machine that has never reported is judged when it connects. One that has keeps its last report.
 	const reported = m.online || m.egress !== undefined;
-	const incapable = reported ? capabilityFit(m, needs) : null;
+	const incapable = machineAgentRefusal(needs) ?? (reported ? capabilityFit(m, needs) : null);
 	if (incapable) return never(incapable);
 	if (limited) return waiting(limited, m.name);
 	if (tokenWait) return { wait: tokenWait, dailyCap: true };
