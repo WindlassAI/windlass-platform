@@ -466,6 +466,8 @@ agent's first turn there.
   container's private tmpfs (`/dev/shm`), never on the user's shared data volume, so one session's setup cannot
   read another session's token; on E2B it is on the sandbox's own disk. After setup and before each token
   handoff, every leftover process in the sandbox is killed, so nothing setup started can read a later token.
+  A setup cut off with the server keeps running in the sandbox until the session's actor wakes again, which
+  then kills what it left at once (`stopCutOffSetup`), not at the next prompt; a turn waits for that first.
   Commands in the hardened profile can still read the current turn's token file while it exists.
 - **Not a place for a secret**: the command is shown in the timeline and given to the agent on failure. Read a
   saved secret (`$NPM_TOKEN`) instead; output is redacted.
