@@ -1795,6 +1795,9 @@ async function subtaskAgentChecks(): Promise<void> {
 		// A feature places a subtask only where at least 5 GiB of disk is free (placement.ts).
 		runner.fake.report.freeDiskBytes = 20 * 2 ** 30;
 		await runner.pair(user);
+		await runner.connectControl();
+		runner.report();
+		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
 		await check("machine: a Plan-first plan with mixed agents is approved only with the owner's confirmation, and its Claude Code child starts on its own model", async () => {
 			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }, { id: "sonnet", name: "Sonnet", efforts: ["low", "high"] }], checkedAt: Date.now(), modes: [] };
