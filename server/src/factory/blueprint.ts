@@ -4,7 +4,7 @@
  * which step comes next is decided here, from what the platform observed, never from what the agent
  * says.
  *
- *   0 refine     (when the item's plan is "approve") a turn as the read-only planner; a person approves
+ *   0 refine     (an orchestrated feature only) a turn as the read-only planner; a person approves
  *                the plan, at most 3 plan rounds
  *   1 implement  a turn on the task
  *   2 gate       code: the turn's verification decides. fail → a "continue fixing" turn, at most 2 per
@@ -108,8 +108,6 @@ export interface NewItem {
 	repos?: FeatureRepository[];
 	id: string;
 	task: Task;
-	/** §3.2: "none" unless asked for. */
-	plan?: "none" | "approve";
 	reviewer: NonNullable<FactoryItem["reviewer"]>;
 	place: FactoryItem["place"];
 	budget: ItemBudget;
@@ -127,7 +125,6 @@ export function createItem(input: NewItem): FactoryItem {
 		task: input.task,
 		...(input.repos && input.repos.length > 1 && input.mode === "orchestrate" && { repos: boundRepos(input.repos) }),
 		mode: input.mode ?? "single",
-		plan: input.mode === "orchestrate" ? "approve" : input.plan ?? "none",
 		reviewer: input.reviewer,
 		place: input.place,
 		machineRemoved: false,
@@ -590,16 +587,15 @@ function taskText(task: Task): string {
 	return `${task.title}\n\n${task.body}${criteria}`.trim();
 }
 
-/** A run's first turn: the plan (step 0) when the item's plan is "approve", the task otherwise. */
+/** A run's first turn: the plan (step 0) for an orchestrated feature, the task otherwise. */
 function firstPlan(item: FactoryItem, note: string | null): TurnPlan {
 	const plan = singleFirstPlan(item, note);
 	return crossRepo(item) && item.mode === "orchestrate" && plan.kind === "refine" ? { ...plan, text: plan.text + plannerText(item) } : plan;
 }
 
-function singleFirstPlan({ task, plan, mode, featurePlan, untrusted }: FactoryItem, note: string | null): TurnPlan {
+function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, note: string | null): TurnPlan {
 	const text = withNote(taskText(task), note);
 	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${text}`, ...marked(untrusted) };
-	if (plan === "approve") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Plan this work; do not change any file. File the plan with your report.\n\n${text}`, ...marked(untrusted) };
 	if (featurePlan?.status === "approved") {
 		const { goal, requirements, acceptance, outOfScope } = featurePlan.spec;
 		const spec = [
@@ -893,14 +889,8 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		if (!fact.report) return ask(c, "turn_refused", "The final summary was not filed.", [choice("again"), choice("give_up")], null, { ...IMPLEMENT, kind, text: "File the final feature summary with report." });
 		c.enter("publish"); c.effects.push({ kind: "describe_feature", key: c.key }); return;
 	}
-	if (kind === "refine" && item.mode === "orchestrate") return askPlan(c);
-	if (kind === "refine") {
-		const more = run.rounds.plan < RULES.planRounds;
-		const report = fact.report;
-		const plan = report && typeof report !== "string" ? [report.title, report.description, report.concerns ? `Unsure of: ${report.concerns}` : ""].filter(Boolean).join("\n\n") : report;
-		const text = plan ? `The planner proposes this plan:\n\n${plan}` : "The planner ended its turn without filing a plan.";
-		return ask(c, "plan_approval", text, [choice("approve"), ...(more ? [choice("revise")] : []), choice("give_up")], null, null, "Waiting for you to approve the plan.");
-	}
+	// Only an orchestrated feature plans (`singleFirstPlan`): one implementer is given the task.
+	if (kind === "refine") return askPlan(c);
 	// A builder that changed nothing for a review answers it in its report: the same head is reviewed again, with that report.
 	if (!fact.changes && kind === "review_fix" && run.ci && run.review && run.ci.head === item.head) {
 		if (run.ci.moved) return readForHandoff(c, run.ci, keptReview(run, run.ci));
@@ -1634,7 +1624,6 @@ function runSingle(c: Change) {
 		c.item.repos = c.item.repos!.slice(0, 1);
 	}
 	c.item.mode = "single";
-	c.item.plan = "none";
 	c.item.budget = singleAfterPlanning(c.item.singleBudget!, c.item.spent, c.item.budget);
 	if (plan && c.item.filedTurn === c.key) {
 		plan.status = "approved";
@@ -1751,9 +1740,9 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			if (run.step.turn === "delivered") item.forceSplit = true;
 			break;
 		case "approve":
-			if (item.mode === "orchestrate") return approveFeature(c, fact.inventory, fact.agents);
-			nextTurn(c, { ...IMPLEMENT, text: withNote("Your plan is approved. Implement it.", note) });
-			break;
+			// Offered only on a feature's plan (`askPlan`).
+			if (item.mode !== "orchestrate") throw new PlanError("Only a planned feature has a plan to approve.");
+			return approveFeature(c, fact.inventory, fact.agents);
 		case "revise":
 			if (question.kind === "placement_refused") item.jobs!.at(-1)!.state = "cancelled";
 			if ((question.kind === "budget" || question.kind === "placement_refused") && item.mode === "orchestrate") {

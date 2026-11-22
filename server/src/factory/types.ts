@@ -244,8 +244,6 @@ export interface FactoryItem {
 	 * Absent: none.
 	 */
 	unsandboxed?: string[];
-	/** §3.2: "approve" runs step 0 first. */
-	plan: "none" | "approve";
 	/** Absent on items persisted before second review was available. */
 	reviewer?: { on: true } | { off: "deployment" | "profile" };
 	place: SandboxPlace;

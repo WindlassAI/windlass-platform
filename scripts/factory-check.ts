@@ -125,11 +125,11 @@ for (const [label, place, profile, allowed] of [
 	["personal machine", { kind: "machine", machineId: "machine" }, e2bProfile({ windlassSandbox: true }), false],
 ] as const) expect(`reviewer profile: ${label}`, reviewerAllowed(place, profile) === allowed);
 
-function newItem(more: { reviewer?: FactoryItem["reviewer"]; plan?: "approve"; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
+function newItem(more: { reviewer?: FactoryItem["reviewer"]; mode?: FactoryItem["mode"]; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
 	return createItem({
 		id: "i_00000000000000aa",
 		task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
-		plan: more.plan,
+		...(more.mode && { mode: more.mode }),
 		reviewer: more.reviewer ?? { off: "deployment" },
 		place: { kind: "hosted" },
 		budget: { ...FACTORY_DEFAULTS.item, ...more.budget },
@@ -775,11 +775,10 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 			holds(deliverOf(o)?.text.startsWith("The person answered your question:\n\nUse Postgres") === true && deliverOf(o)?.asksLeft === 2, `delivered ${JSON.stringify(deliverOf(o)?.text)}`) },
 	]);
 
-	drive("ask_person: the planner's turn is not offered it, and a plan turn that says it asked is a plan", newItem({ plan: "approve" }), [
+	drive("ask_person: the planner's turn is not offered it, and a plan turn that says it asked is a plan", newItem({ mode: "orchestrate" }), [
 		{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: o => holds(deliverOf(o)?.agent === "planner" && deliverOf(o)?.asksLeft === undefined, "the planner has questions to ask") },
 		turn,
 		{ fact: askedEnd("succeeded", null), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.kind === "plan_approval" && o.item.run?.asks === undefined, `asked ${o.item.question?.kind}`) },
-		{ fact: answer("approve"), state: "working", effects: ["deliver", "check_turn"], also: o => holds(deliverOf(o)?.agent === null && deliverOf(o)?.asksLeft === 3, "the builder after the plan has no questions") },
 	]);
 
 	// Claude Code and OpenCode builders get ask_person and report too (over MCP, platform-tools.ts): the item's flow is the same.
@@ -843,12 +842,6 @@ print("\n== blueprint (continued)");
 	const comment = itemComment(handoff.verdict, handoff.words, report);
 	expect("the marked comment preserves the verdict and labels the agent's formatted prose", comment.startsWith(platform + "\n\n## Builder's report\n\n") && comment.includes("\\*\\*Failing\\*\\*") && comment.includes("### What it did\n\nAdjusted add.\n\n\\*\\*Windlass at ") && comment.includes("### Where to look\n\n\\<") && !comment.includes("<!-- windlass-item:fake") && comment.includes("### What the builder is unsure of\n\n@\u200Bowner"));
 	sql.close();
-
-	drive("structured planner report keeps the original prompt byte for byte", newItem({ plan: "approve" }), [
-		...begun.slice(0, 2),
-		{ fact: ended("succeeded", null, { report: filed[0] }), state: "waiting", wait: "person", effects: ["ask"],
-			also: (o) => holds(o.item.question?.text === `The planner proposes this plan:\n\n${title}\n\n${description}\n\nUnsure of: ${concerns}`, "the plan wording changed") },
-	]);
 }
 
 const pendingBuild = ciRead([{ name: "build", state: "pending" }]);
@@ -980,26 +973,11 @@ drive("four hours working uses the active-time budget, four hours waiting does n
 	{ fact: ended("unresolved", FAILING), after: fourHours - MINUTE, state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "budget" && o.item.question.cause === "activeSeconds" && o.item.spent.activeSeconds === fourHours / 1000, "exactly four hours of work stops the next turn") },
 ]);
 
-const planRound = (canRevise: boolean): Row[] => [
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("succeeded", null, { changes: false, report: "Fix the sign in add()." }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "plan_approval" && o.item.question.choices.some((choice) => choice.id === "revise") === canRevise, canRevise ? "the person can request another plan" : "the third plan must not offer a fourth round") },
-];
-const revise: Row = { fact: answer("revise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "the revision goes to the planner") };
-drive("the person can request a second and third plan, then planning stops for a decision", newItem({ plan: "approve" }), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	...planRound(true), revise,
-	...planRound(true), revise,
-	...planRound(false),
-]);
-
-drive("a plan for approval, a question to the person and its answer", newItem({ plan: "approve" }), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === "planner", "step 0 runs as the planner") },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("succeeded", null, { changes: false, report: "1. Fix the sign in add()." }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "plan_approval" && o.item.question.text.includes("Fix the sign"), "the plan is put to the person") },
-	{ fact: (k) => ({ kind: "answer", by: "person:u1", question: `${k.question}x`, choice: "approve" }), state: "waiting", wait: "person", effects: [], also: (o) => holds(o.events.length === 0, "an answer to another question is ignored") },
-	{ fact: answer("approve", { note: "Keep the signature." }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === null && /Keep the signature/.test(effect(o, "deliver")?.text ?? ""), "the approval and the note go to the implementing agent") },
+drive("an answer to another question is ignored, and the person's note goes with the answer", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.agent === null, "one implementer is given the task, with no planning turn") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED, { changes: false }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "no_change", "a turn that changed nothing is a question") },
+	{ fact: (k) => ({ kind: "answer", by: "person:u1", question: `${k.question}x`, choice: "again" }), state: "waiting", wait: "person", effects: [], also: (o) => holds(o.events.length === 0, "an answer to another question is ignored") },
 	{ fact: answer("again", { note: "The bug is in src/add.ts." }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/src\/add\.ts/.test(effect(o, "deliver")?.text ?? ""), "the person's note goes with it") },
 ]);
 
@@ -1283,7 +1261,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	});
 	const started: Row = { fact: feedback(), state: "queued", effects: ["verified_check", "deliver", "check_turn"],
 		also: o => holds(o.item.run?.n === 2 && effect(o, "deliver")?.text?.startsWith("People on GitHub asked for changes to your work. Fix what they point out on the same branch") === true && effect(o, "deliver")?.text?.endsWith("\n\nCover the empty result.") === true && effect(o, "verified_check")?.state === "in_progress", "feedback did not reopen the check and deliver the batch") };
-	drive("G4 single, including a plan-first implementer", { ...reviewed, plan: "approve" }, [started]);
+	drive("G4 single", reviewed, [started]);
 	const hold: Row = { fact: feedback(), state: "waiting", wait: "ci", effects: [], also: o => holds(o.feedback?.[0].state === "held", "feedback missing") };
 	drive("G4 held feedback preempts review and handoff", reviewerOn(), [...toCi, hold, {
 		...started, fact: freshCi, also: o => holds(o.events.some(e => e.stopReason === "feedback") && o.item.run?.n === 2 && effect(o, "deliver")?.to !== "review", "did not end run 1 for feedback"),
@@ -1637,7 +1615,7 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	expect("an item of the person's own: its first turn carries no source", !("untrusted" in effect(trusted.last, "deliver")!), JSON.stringify(sourcesOf(trusted.last)));
 	const issue = walk(fromIssue(), [{ kind: "start" }]);
 	expect("an item from someone else's issue: its first turn names the issue", same(issue.last, ["issue #42 by @someone"]), JSON.stringify(sourcesOf(issue.last)));
-	const planned = walk(fromIssue({ plan: "approve" }), [{ kind: "start" }]);
+	const planned = walk(fromIssue({ mode: "orchestrate" }), [{ kind: "start" }]);
 	expect("and so does its planning turn", effect(planned.last, "deliver")?.agent === "planner" && same(planned.last, [ISSUE]));
 	const interrupted = walk(fromIssue(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "interrupted" }]);
 	expect("a trusted follow-up (\"you were interrupted\") carries none: the session stays tainted in Windlass's log", sourcesOf(interrupted.last).length === 0 && /interrupted/.test(effect(interrupted.last, "deliver")?.text ?? ""));
