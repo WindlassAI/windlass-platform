@@ -404,6 +404,7 @@ export class Executor extends MachineDocker {
 		if (this.codexPin) harnesses.push({
 			id:"codex", adapter:"codex-acp 2.9.0", image:this.codexPin.split("@").at(-1)!,
 			signIn:!this.dockerHealth.ok ? "unknown" : this.codexCredential ? "token" : "none",
+			loginGeneration:this.codexCredential?.generation,
 			...(this.codexCredential && {method:this.codexCredential.provider === "chatgpt" ? "chatgpt" : "api-key"}),
 			modes:reportedCodexModes(!!this.codexInner),
 			...(!this.codexInner && {modeReason:innerModesReason}),

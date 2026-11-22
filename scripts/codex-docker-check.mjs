@@ -234,6 +234,7 @@ try {
 		entry = report.harnesses[0],
 		catalog = entry.options;
 	assert.equal(entry.method, 'chatgpt');
+	assert.match(entry.loginGeneration, /^[0-9a-f]{32}$/);
 	assert.deepEqual(entry.modes, ['agent-full-access']);
 	assert.deepEqual(catalog.models.map((m) => m.id).sort(), ['gpt-6.2-sol']);
 	assert.ok(catalog.models.every((m) => m.efforts.length));
