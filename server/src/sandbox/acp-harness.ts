@@ -8,7 +8,7 @@ import type { Harness, HarnessCapabilities } from "./harness.js";
 import { type AcpProfile, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
 
-import { codexDefaultMode, codexModes, innerModesReason } from "./codex-modes.js";
+import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, sandboxEscapeNote } from "./codex-modes.js";
 
 export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
@@ -24,6 +24,16 @@ function unsupported(input: RunTurnInput): string | undefined {
 	if (input.reportScreenshots) return "report screenshots";
 	return (["script", "maxSteps", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onReport", "onReview", "onPush", "onFetchBase"] as const)
 		.find(key => input[key] !== undefined);
+}
+
+/**
+ * Refuses without asking. codex-acp 2.9.0 offers "decline" (go on without it) for some commands and only
+ * "cancel" (end the turn) for others and for edits; either is a refusal.
+ */
+function refuse(params: Fields) {
+	const options = objects(params.options);
+	const chosen = (options.find(o => o.optionId === "decline" && o.kind === "reject_once") ?? options.find(o => o.kind === "reject_once"))?.optionId;
+	return { outcome: typeof chosen === "string" ? { outcome: "selected", optionId: chosen } : { outcome: "cancelled" } };
 }
 
 async function permission(params: Fields, input: RunTurnInput, signal: AbortSignal, name: string) {
@@ -171,6 +181,15 @@ export class AcpHarness implements Harness {
 		let phase: "setup" | "running" | "ended" = "setup";
 		let configs = optionsOf([]);
 		let modes = modeSelection(null, []);
+		// A Codex mode the profile does not allow, reported by the agent: the turn ends and the process is stopped.
+		let forbidden: string | null = null;
+		const forbid = (mode: string) => {
+			if (forbidden !== null) return;
+			const named = allCodexModes.find(m => m.id === mode)?.name ?? mode;
+			forbidden = `${profile.name} switched to the mode “${named}”, which this sandbox profile does not allow. The turn was stopped.`;
+			rpc.end(forbidden);
+		};
+		const allowedMode = (mode: unknown) => profile.id !== "codex" || codexModes(handle.profile).some(m => m.id === mode);
 		const readConfigs = (raw: unknown, freshSession = false) => {
 			configs = optionsOf(raw, acp.models ?? input.harnessModels, freshSession);
 			acp.models = configs.list;
@@ -190,8 +209,10 @@ export class AcpHarness implements Harness {
 					stream.push({ sessionUpdate: "usage_update", ...acp.usage, ...(rateLimit && { rateLimit }) });
 					return;
 				}
-				if (profile.id === "codex" && update.sessionUpdate === "current_mode_update" && !codexModes(handle.profile).some(m => m.id === update.currentModeId)) return;
+				if (update.sessionUpdate === "current_mode_update" && !allowedMode(update.currentModeId)) return forbid(text(update.currentModeId));
 				if (update.sessionUpdate === "config_option_update") {
+					const reported = objects(update.configOptions).find(option => option.category === "mode")?.currentValue;
+					if (reported !== undefined && !allowedMode(reported)) return forbid(text(reported));
 					if (profile.id === "codex") update.configOptions = objects(update.configOptions).map(option =>
 						option.category !== "mode" ? option : {...option, options:codexModes(handle.profile)
 							.filter(mode => configChoices(option).some(choice => choice.id === mode.id))
@@ -207,6 +228,10 @@ export class AcpHarness implements Harness {
 			request: async (method, params, withdrawn) => {
 				if (method !== "session/request_permission") throw new MethodNotFound(method);
 				if (phase !== "running" || params.sessionId !== result.windlassSessionId) return { outcome: { outcome: "cancelled" } };
+				if (profile.id === "codex" && refusesSandboxEscape(handle.profile)) {
+					input.onAcpNote?.(sandboxEscapeNote(object(params.toolCall).kind));
+					return refuse(params);
+				}
 				return permission(params, input, AbortSignal.any([questions.signal, withdrawn]), profile.name);
 			},
 		}, "", value => redactor.deep(value));
@@ -347,7 +372,7 @@ export class AcpHarness implements Harness {
 			stream.flush();
 			if (run && isTurnSandbox(handle)) {
 				run.closeStdin();
-				let end = run.hasEnded || !input.signal?.aborted || acp.stopReason ? await waitForExit(run, 2000) : null;
+				let end = forbidden === null && (run.hasEnded || !input.signal?.aborted || acp.stopReason) ? await waitForExit(run, 2000) : null;
 				for (const sig of ["TERM", "KILL"] as const) {
 					if (end) break;
 					await run.signal(sig, "all");

@@ -7,7 +7,7 @@ RUN cd /opt/wlp-codex && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
  && ln -s /opt/wlp-codex/node_modules/@openai/codex-linux-*/vendor/*/bin/codex /usr/local/bin/codex
 RUN install -d -o agent -g agent -m 0700 /home/agent/.codex
 COPY LICENSE NOTICE /usr/local/share/doc/wlp-codex/
-COPY config.toml /etc/codex/config.toml
+COPY config.toml requirements.toml /etc/codex/
 COPY --chmod=0755 wlp-codex-acp /usr/local/bin/
 ENV CODEX_HOME=/home/agent/.codex CODEX_PATH=/usr/local/bin/codex INITIAL_AGENT_MODE=agent-full-access
 USER agent

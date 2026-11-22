@@ -3457,6 +3457,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				...common,
 				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: active.secrets.redactor },
 				harnessModels: meta.harnessModels,
+				onAcpNote: text => {
+					if (open) note(c, turn, "warn", text);
+				},
 				onEffortFallback: fallback => {
 					if (open) note(c, turn, "info", `The selected model uses its default effort${fallback && fallback !== "default" ? ` (“${fallback}”)` : ""}.`);
 				},

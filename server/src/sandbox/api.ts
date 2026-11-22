@@ -363,6 +363,8 @@ export interface RunTurnInput {
 	onEffortFallback?: (fallback: string | null) => void;
 	/** The effective ACP mode and choices on open. fallbackFrom names a requested mode the agent no longer offers. */
 	onAcpModes?: (mode: string, offered: SessionMode[], fallbackFrom?: string) => void;
+	/** A note for the timeline from the platform's side of the ACP link, such as a refused permission request. */
+	onAcpNote?: (text: string) => void;
 	prompt: string;
 	/** Windlass's own session to continue (`session/resume`); omitted for the first turn. */
 	windlassSessionId?: string;

@@ -61,12 +61,14 @@ test("Codex catalogs have independent model and byte limits on both frame shapes
 		}
 	}
 });
-test("the Windlass sandbox profile offers Codex only its inner sandbox modes, starting in workspace-write", () => {
+test("the Windlass sandbox profile offers Codex only Read-only and Workspace access, starting in workspace-write", () => {
 	const probed = reportedCodexModes(true);
-	assert.deepEqual(probed, ["agent-full-access", "read-only", "workspace-write", "agent"]);
+	assert.deepEqual(probed, ["agent-full-access", "read-only", "workspace-write"]);
 	assert.deepEqual(reportedCodexModes(false), ["agent-full-access"]);
 	const inner = codexModes("docker-windlass-sandbox", probed);
-	assert.deepEqual(inner.map((m) => m.id), ["read-only", "workspace-write", "agent"]);
+	assert.deepEqual(inner.map((m) => m.id), ["read-only", "workspace-write"]);
+	// Auto review's reviewer model approves running outside the sandbox: not offered even when a runner reports it.
+	assert.deepEqual(codexModes("docker-windlass-sandbox", [...probed, "agent"]).map((m) => m.id), ["read-only", "workspace-write"]);
 	assert.deepEqual(codexModes("docker-hardened", probed).map((m) => m.id), ["agent-full-access"]);
 	assert.deepEqual(initialSessionModes("docker-windlass-sandbox", "codex", false, inner), { mode: "workspace-write", availableModes: inner });
 	assert.equal(initialSessionModes("docker-hardened", "codex", false, codexModes("docker-hardened", probed)).mode, "agent-full-access");
@@ -109,4 +111,112 @@ test("Codex reports its sign-in generation, so a usage limit ends with that sign
 	assert.equal(publish()?.loginGeneration, second);
 	assert.equal((await providerAccounts(db, at)).size, 0, "another account inherited the limit");
 	assert.equal(await recordProviderUsage(db as never, location, first, { kind: "refusal", at: at + 1, resetsAt: null }), false);
+});
+
+/**
+ * The real ACP client against a scripted Codex agent. The session/new reply is the recorded codex-acp 2.9.0
+ * handshake; the permission requests are the shapes codex-acp 2.9.0 sends for `exec_command` with
+ * `sandbox_permissions: "require_escalated"` and for `apply_patch` outside the writable roots.
+ */
+async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-sandbox", during: (emit: (frame: unknown) => void, sessionId: string) => void,
+	answered: (frame: { id: unknown; result?: unknown }) => boolean) {
+	const { readFileSync } = await import("node:fs");
+	const { harnessOf } = await import("../server/src/sandbox/harness.js");
+	const { markTurnSandbox } = await import("../server/src/sandbox/provider.js");
+	const opened = JSON.parse(readFileSync(new URL("../fixtures/codex/handshake.jsonl", import.meta.url), "utf8").split("\n")[2]).result;
+	const signals: string[] = [];
+	const notes: string[] = [];
+	const permissions: unknown[] = [];
+	let finished = false;
+	const sandbox = {
+		profile, cwd: "/workspace",
+		async stopLeftovers() { return 0; },
+		async sweep() { return 0; },
+		start(_argv: string[], opts: { onStdout?: (chunk: string) => void }) {
+			let finish!: (end: { code: number | null; signal: string | null; error: null }) => void;
+			const ended = new Promise<{ code: number | null; signal: string | null; error: null }>((resolve) => { finish = resolve; });
+			const emit = (frame: unknown) => queueMicrotask(() => opts.onStdout!(JSON.stringify({ jsonrpc: "2.0", ...(frame as object) }) + "\n"));
+			let mode = profile === "docker-hardened" ? "agent-full-access" : "workspace-write";
+			const options = (current: string) => opened.configOptions.map((o: { id: string }) => (o.id === "mode" ? { ...o, currentValue: current } : o));
+			let prompt: unknown;
+			const process = {
+				tag: "fixture", ended, hasEnded: false,
+				write(line: string) {
+					const frame = JSON.parse(line);
+					if (frame.method === "initialize") emit({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+					else if (frame.method === "providers/set") emit({ id: frame.id, result: {} });
+					else if (frame.method === "session/new") emit({ id: frame.id, result: { ...opened, configOptions: options(mode), modes: { ...opened.modes, currentModeId: mode } } });
+					else if (frame.method === "session/set_config_option") {
+						if (frame.params.configId === "mode") mode = frame.params.value;
+						emit({ id: frame.id, result: { configOptions: options(mode) } });
+					} else if (frame.method === "session/set_mode") {
+						mode = frame.params.modeId;
+						emit({ id: frame.id, result: {} });
+					} else if (frame.method === "session/prompt") {
+						prompt = frame.id;
+						during(emit, frame.params.sessionId);
+					} else if (frame.method === undefined && frame.id !== undefined) {
+						permissions.push(frame.result);
+						if (answered(frame)) emit({ id: prompt, result: { stopReason: "end_turn" } });
+					}
+					return true;
+				},
+				closeStdin() { if (finished) return; finished = true; process.hasEnded = true; finish({ code: 0, signal: null, error: null }); },
+				async signal(sig: string) { signals.push(sig); if (!finished) { finished = true; process.hasEnded = true; finish({ code: null, signal: sig, error: null }); } },
+				killClient() {},
+			};
+			return process;
+		},
+	};
+	markTurnSandbox(sandbox);
+	const asked: unknown[] = [];
+	const result = await harnessOf({ machine: { name: "Bench" } } as never, "codex").runTurn(sandbox as never, {
+		prompt: "go", onAcpNote: (text) => notes.push(text),
+		onQuestion: async (question) => { asked.push(question); return { choice: question.choices.find((c) => c.approve)?.id ?? "" }; },
+	});
+	return { result, notes, permissions, asked, signals };
+}
+const escalated = (sessionId: string) => ({ method: "session/request_permission", id: 0, params: { sessionId,
+	toolCall: { toolCallId: "exec-1", title: "id > /home/agent/escalated; echo wrote", rawInput: { command: "id > /home/agent/escalated; echo wrote", cwd: "/workspace" }, kind: "execute", status: "pending" },
+	options: [{ optionId: "allow_once", name: "Yes, proceed", kind: "allow_once" },
+		{ optionId: "accept_execpolicy_amendment", name: "Yes, and don't ask again for commands that start with `id`", kind: "allow_always" },
+		{ optionId: "cancel", name: "No, and tell Codex what to do differently", kind: "reject_once" }] } });
+const edit = (sessionId: string) => ({ method: "session/request_permission", id: 1, params: { sessionId,
+	toolCall: { toolCallId: "exec-2", title: "Edit files", locations: [{ path: "/workspace/.codex/config.toml" }], kind: "edit", status: "pending" },
+	options: [{ optionId: "allow_once", name: "Yes, proceed", kind: "allow_once" },
+		{ optionId: "allow_for_session", name: "Yes, and don't ask again for these files", kind: "allow_always" },
+		{ optionId: "cancel", name: "No, and tell Codex what to do differently", kind: "reject_once" }] } });
+const declinable = (sessionId: string) => { const frame = escalated(sessionId); frame.id = 2;
+	frame.params.options.splice(2, 0, { optionId: "decline", name: "No, continue without running it", kind: "reject_once" }); return frame; };
+
+test("on the Windlass sandbox profile every Codex request to leave its sandbox is refused without asking, with a note", async () => {
+	const turn = await scriptedCodexTurn("docker-windlass-sandbox", (emit, id) => { emit(escalated(id)); emit(edit(id)); emit(declinable(id)); }, () => true);
+	assert.equal(turn.result.failure, null);
+	assert.deepEqual(turn.asked, [], "the user was asked about a request outside the sandbox");
+	assert.deepEqual(turn.permissions, [
+		{ outcome: { outcome: "selected", optionId: "cancel" } },
+		{ outcome: { outcome: "selected", optionId: "cancel" } },
+		{ outcome: { outcome: "selected", optionId: "decline" } },
+	]);
+	assert.deepEqual(turn.notes, [
+		"Codex asked to run a command outside its sandbox; refused on this profile.",
+		"Codex asked to edit files outside its sandbox; refused on this profile.",
+		"Codex asked to run a command outside its sandbox; refused on this profile.",
+	]);
+});
+test("on the hardened profile, where the container is the boundary, a Codex request still reaches the user", async () => {
+	const turn = await scriptedCodexTurn("docker-hardened", (emit, id) => emit(escalated(id)), () => true);
+	assert.equal(turn.result.failure, null);
+	assert.equal(turn.asked.length, 1);
+	assert.deepEqual(turn.permissions, [{ outcome: { outcome: "selected", optionId: "allow_once" } }]);
+	assert.deepEqual(turn.notes, []);
+});
+test("a Codex mode the profile forbids, reported by the agent, ends the turn and stops the agent", { timeout: 10_000 }, async () => {
+	for (const update of [{ sessionUpdate: "current_mode_update", currentModeId: "agent-full-access" },
+		{ sessionUpdate: "config_option_update", configOptions: [{ id: "mode", category: "mode", type: "select", currentValue: "agent", options: [] }] }]) {
+		const turn = await scriptedCodexTurn("docker-windlass-sandbox", (emit, sessionId) => emit({ method: "session/update", params: { sessionId, update } }), () => false);
+		assert.equal(turn.result.failure?.reason, "engine");
+		assert.match(turn.result.failure.message, /^Codex switched to the mode “(Container access|agent)”, which this sandbox profile does not allow\. The turn was stopped\.$/);
+		assert.deepEqual(turn.signals, ["TERM"], "the agent process was left running");
+	}
 });

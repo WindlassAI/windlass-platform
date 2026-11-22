@@ -1,3 +1,15 @@
 cli_auth_credentials_store = "file"
 check_for_update_on_startup = false
 analytics.enabled = false
+
+# Codex asks before anything outside its sandbox: a command with sandbox_permissions = "require_escalated",
+# an edit outside the writable paths, more permissions. codex-acp 2.9.0 sends approval_policy = "on-request"
+# with every turn, which overrides a granular approval_policy here, so this hook refuses each such request
+# inside Codex: the model is told it was refused and the turn goes on. In Container access
+# (approval_policy = "never") Codex asks nothing. requirements.toml keeps hooks enabled.
+[[hooks.PermissionRequest]]
+matcher = "*"
+
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "cat > /dev/null; echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":\"Refused: on this machine Codex runs only inside its sandbox.\"}}}'"

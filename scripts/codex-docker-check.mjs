@@ -319,9 +319,9 @@ try {
 	await sandboxRunner.loginChanged(true);
 	const sandboxReport = sandboxRunner.report().harnesses[0];
 	if (sandboxReport.modes.includes('workspace-write')) {
-		assert.deepEqual(sandboxReport.modes, ['agent-full-access', 'read-only', 'workspace-write', 'agent']);
+		assert.deepEqual(sandboxReport.modes, ['agent-full-access', 'read-only', 'workspace-write']);
 		assert.doesNotThrow(() => sandboxRunner.requireHarness('docker-windlass-sandbox', 'codex'));
-		assert.deepEqual(codexModes('docker-windlass-sandbox', sandboxReport.modes).map((m) => m.id), ['read-only', 'workspace-write', 'agent']);
+		assert.deepEqual(codexModes('docker-windlass-sandbox', sandboxReport.modes).map((m) => m.id), ['read-only', 'workspace-write']);
 		const inner = await sandboxRunner.create('fourth', 'docker-windlass-sandbox', false, 'codex');
 		boxes.push(inner);
 		assert.equal(await cmd(['exec', boxName(inner), 'printenv', 'INITIAL_AGENT_MODE']), 'workspace-write');

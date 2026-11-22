@@ -1,0 +1,9 @@
+# Requirements outrank every config layer, including a repository's own .codex/config.toml.
+
+# Auto review lets Codex's own reviewer model approve a command outside the sandbox. The platform does
+# not offer that mode; a turn that asks for it fails.
+allowed_approvals_reviewers = ["user"]
+
+# The PermissionRequest hook in config.toml refuses requests to leave Codex's sandbox: keep hooks on.
+[features]
+codex_hooks = true
