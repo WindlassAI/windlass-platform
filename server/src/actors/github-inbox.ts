@@ -3,6 +3,7 @@
  */
 import { recentSubject } from "../factory/intake.js";
 import { cleanFeedback } from "../factory/feedback.js";
+import type { InstallationChange } from "./user-github.js";
 import type { GithubUser } from "../github/app.js";
 import type { FeedbackEntry, GithubId } from "../contract.js";
 import { decimalId, githubId } from "../github/ids.js";
@@ -51,22 +52,37 @@ const TIMER = "CREATE TABLE IF NOT EXISTS timer (singleton INTEGER PRIMARY KEY C
 async function refreshInstallation(d: Delivery, c: Ctx) {
 	console.log(`github.installation event=${d.event}.${d.action} installation=${d.installationId} delivery=${d.guid}`);
 	if (d.event !== "installation" && d.event !== "installation_repositories") return;
-	const relevant = d.event === "installation" ? ["created", "new_permissions_accepted", "unsuspend", "suspend", "deleted"] : ["added", "removed"];
-	if (!relevant.includes(d.action)) return;
 	const params = { params: serviceParams() };
-	const hooks = c.client().githubHooks.getOrCreate(["app"], params);
-	const users = new Set<string>(await hooks.internalInstallationUsers(d.installationId));
-	const hints = [...new Set([d.data.accountId, d.data.senderId].filter(Boolean))];
-	for (const id of hints) {
-		try {
-			const connected: string[] = await c.client().githubAccount.get([String(id)], params).internalUsers();
-			for (const uid of connected) users.add(uid);
-		} catch (error) { if (!missingActor(error)) throw error; }
+	let change: InstallationChange;
+	let users: Set<string>;
+	const remove = d.event === "installation" ? ["suspend", "deleted"].includes(d.action) : d.action === "removed";
+	if (remove) {
+		change = { kind: "remove", installationId: d.installationId };
+		const hooks = c.client().githubHooks.getOrCreate(["app"], params);
+		users = new Set(await hooks.internalInstallationUsers(d.installationId));
+	} else {
+		const attach = d.event === "installation" ? ["created", "new_permissions_accepted", "unsuspend"].includes(d.action) : d.action === "added";
+		if (!attach) return;
+		const app = githubApp();
+		if (!app) throw new Error("GitHub App unavailable.");
+		const installation = await app.activeInstallation(d.installationId);
+		if (!installation) return;
+		const { id, account, htmlUrl } = installation;
+		const senderId = d.data.senderId ?? null;
+		change = { kind: "attach", installation: { id, account, htmlUrl }, senderId };
+		users = new Set();
+		for (const candidate of new Set([senderId, account.type === "User" ? account.id : null])) {
+			if (candidate === null) continue;
+			try {
+				const connected: string[] = await c.client().githubAccount.get([String(candidate)], params).internalUsers();
+				for (const uid of connected) users.add(uid);
+			} catch (error) { if (!missingActor(error)) throw error; }
+		}
 	}
 	// Each actor checks its current connection again, in case it was replaced since the lookup.
 	let retry = false;
 	for (const uid of users) {
-		try { await c.client().user.get([uid], params).internalRefreshGithub(d.installationId, hints); }
+		try { await c.client().user.get([uid], params).internalUpdateGithubInstallation(change); }
 		catch (error) { if (!missingActor(error)) retry = true; }
 	}
 	if (retry) throw new Error("An installation refresh could not finish");

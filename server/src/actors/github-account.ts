@@ -41,7 +41,7 @@ export const githubAccount = actor({
 				await tx.execute("DELETE FROM link WHERE uid = ?", uid);
 			});
 		},
-		// Issue intake uses the latest link. Every connected platform account can refresh its own grant.
+		// Issue intake uses the latest link. Installation events reach every platform account connected to the same GitHub user.
 		internalUsers: async (c): Promise<string[]> => {
 			requireServiceFor(c, "call");
 			return (await c.db.execute<{ uid: string }>("SELECT uid FROM connected_users")).map(r => r.uid);

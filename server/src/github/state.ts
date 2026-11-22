@@ -27,23 +27,8 @@ import type { GithubId } from "../contract.js";
 import { isGithubId } from "./ids.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readSignedPayload, signedPayload } from "../signatures.js";
-import { serverSealer } from "../signin/seal.js";
-import type { GithubUserGrant, Installation } from "./app.js";
-
-export function sealGithubGrant(uid: string, githubId: GithubId, grant: GithubUserGrant): string {
-	return serverSealer().seal("github", JSON.stringify([uid, githubId]), JSON.stringify(grant));
-}
-
-export function openGithubGrant(uid: string, githubId: GithubId, sealed: string): GithubUserGrant {
-	return JSON.parse(serverSealer().open("github", JSON.stringify([uid, githubId]), sealed));
-}
 
 export const MAX_GITHUB_ACCOUNTS = 30;
-
-export function activeInstallations(installations: Installation[]) {
-	return installations.filter(i => !i.suspended).slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl }));
-}
-
 export const STATE_TTL_MS = 10 * 60 * 1000;
 export const TICKET_TTL_MS = 5 * 60 * 1000;
 
@@ -66,7 +51,6 @@ export interface ConfirmedConnection {
 }
 
 export interface TicketPayload extends ConfirmedConnection {
-	sealedGrant?: string;
 	k: "ticket";
 	uid: string;
 	nonce: string;
@@ -78,7 +62,7 @@ function encode(payload: StatePayload | TicketPayload): string {
 }
 
 function decode(token: unknown, now: number): Record<string, unknown> | null {
-	const fields = readSignedPayload(token, PREFIX, 16384, kind => kind === "state" ? "github-state" : kind === "ticket" ? "github-ticket" : null);
+	const fields = readSignedPayload(token, PREFIX, 8192, kind => kind === "state" ? "github-state" : kind === "ticket" ? "github-ticket" : null);
 	if (!fields) return null;
 	if (typeof fields.exp !== "number" || fields.exp <= now) return null;
 	if (typeof fields.uid !== "string" || fields.uid === "" || typeof fields.nonce !== "string" || fields.nonce === "") return null;
@@ -100,8 +84,8 @@ export function verifyState(token: unknown, now = Date.now()): StatePayload | nu
 	return fields as unknown as StatePayload;
 }
 
-export function issueTicket(uid: string, confirmed: ConfirmedConnection & { sealedGrant?: string }, now = Date.now()): string {
-	return encode({ k: "ticket", uid, nonce: newNonce(), exp: now + TICKET_TTL_MS, user: confirmed.user, installations: confirmed.installations, sealedGrant: confirmed.sealedGrant });
+export function issueTicket(uid: string, confirmed: ConfirmedConnection, now = Date.now()): string {
+	return encode({ k: "ticket", uid, nonce: newNonce(), exp: now + TICKET_TTL_MS, user: confirmed.user, installations: confirmed.installations });
 }
 
 /** The ticket's payload, or null when it is malformed, forged or expired. Whose it is, the caller checks. */

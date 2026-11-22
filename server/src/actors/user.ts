@@ -130,7 +130,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { syncGithubWebhooks, refreshGithubInstallations, replaceGithubConnection } from "./user-github.js";
+import { syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
@@ -1204,7 +1204,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
-			await db.execute("CREATE TABLE IF NOT EXISTS github_grant (id INTEGER PRIMARY KEY CHECK (id = 1), sealed TEXT, refresh_after INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0)");
+			await db.execute("DROP TABLE IF EXISTS github_grant");
 			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
 			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
 			await db.execute(`
@@ -1719,7 +1719,7 @@ export const user = actor({
 
 		githubComplete: async (c, ticket: string): Promise<GithubStatus> => {
 			const profile = requireUser(c);
-			const app = requireGithub();
+			requireGithub();
 			const confirmed = verifyTicket(ticket);
 			if (!confirmed) throw new UserError("This link to connect GitHub is not valid any more. Connect GitHub again.", { code: "github_ticket" });
 			// The one check that ties the browser that came back from GitHub to the user who began.
@@ -1738,7 +1738,7 @@ export const user = actor({
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
-			await replaceGithubConnection(c, profile.uid, app, connection, confirmed.sealedGrant);
+			await replaceGithubConnection(c, profile.uid, connection);
 			c.vars.reached = true;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
@@ -1747,26 +1747,25 @@ export const user = actor({
 		/** Forgets the connection. The app stays installed at GitHub, which is the account owner's to change. */
 		githubDisconnect: async (c): Promise<GithubStatus> => {
 			const profile = requireUser(c);
-			const app = requireGithub();
+			requireGithub();
 			// A connection that was begun and not finished ends here too. The tickets that were taken stay
 			// on the list until they would have expired: one of them must not bring the connection back.
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			const wasConnected = c.vars.github !== null;
-			await replaceGithubConnection(c, profile.uid, app, null);
+			await replaceGithubConnection(c, profile.uid, null);
 			await dropHostedSnapshots(profile.uid);
 			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
 		},
 
 		githubRepositories: async (c, query: string, fresh?: boolean): Promise<GithubRepositoryList> => {
-			const profile = requireUser(c);
+			requireUser(c);
 			const app = requireGithub();
-			requireConnection(c);
+			const connection = requireConnection(c);
 			if (typeof query !== "string" || query.length > 200) throw new UserError("Search for part of a repository's name.", { code: "bad_input" });
 			try {
 				// Asked for anew: somebody who has just added a repository at GitHub wants to see it.
-				if (fresh === true) await refreshGithubInstallations(c, profile.uid, app);
-				return await listRepositories(app, requireConnection(c), query);
+				return await listRepositories(app, fresh === true ? { ...connection, refreshedAt: Date.now() } : connection, query);
 			} catch (error) {
 				throw githubError(c.log, error, "The repositories could not be listed. Try again.");
 			}
@@ -2189,9 +2188,9 @@ export const user = actor({
 			return { state: issueState(c.key[0]!, nonce, String(origin)) };
 		},
 
-		internalRefreshGithub: async (c, installationId: GithubId, accounts: GithubId[]) => {
+		internalUpdateGithubInstallation: async (c, change: InstallationChange) => {
 			requireServiceFor(c, "call");
-			await refreshGithubInstallations(c, c.key[0], requireGithub(), { installationId, accounts });
+			await updateGithubInstallation(c, c.key[0], change);
 		},
 
 		/** The connection, for a session that is about to clone or push. */

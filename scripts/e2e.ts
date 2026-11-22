@@ -3577,8 +3577,8 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			assert(accounts.every((account) => account.manageUrl.startsWith(standin.url)), "an account has no page at GitHub");
 			assert(plain(await userOf(alice).github()) === plain(status), "github() does not answer what githubComplete did");
 			const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
-			assert(userTokens.length > 0 && userTokens.some((token) => standin.alive(token.value)), "the connection has no active user grant");
-			return `ada, for ${accounts.map((account) => account.login).join(" and ")}; ${userTokens.length} user token(s) issued`;
+			assert(userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)), "a user access token is still alive at GitHub");
+			return `ada, for ${accounts.map((account) => account.login).join(" and ")}; ${userTokens.length} user token(s), all deleted at GitHub`;
 		});
 
 		await check(once, async () => {
@@ -3903,9 +3903,9 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 				const status = await connect(bob, "mallory");
 				assert(status.connection?.accounts.length === 1, "bob is not connected as mallory");
 				standin.uninstall(malloryInstallation);
-				const refreshed = await userOf(bob).githubRepositories("", true);
-				assert(!refreshed.repositories.length && !(await userOf(bob).github()).connection?.accounts.length, "the uninstalled account is still listed");
-				return `"${lost}" | uninstalled account removed`;
+				const uninstalled = await refused(() => userOf(bob).githubRepositories("", true), "github_gone");
+				assert(uninstalled === "The GitHub App is no longer installed on mallory. Connect GitHub again and install it there, then try once more.", `it said "${uninstalled}"`);
+				return `"${lost}" | "${uninstalled}"`;
 			} finally {
 				await doomedWatch.conn.dispose().catch(() => undefined);
 				await userOf(alice).deleteSession(created.id).catch(() => undefined);

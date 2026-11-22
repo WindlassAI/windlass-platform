@@ -11,8 +11,9 @@
  *                            used for that step and dropped; one that went into a sandbox is revoked
  *                            when its git command has ended
  *   a user access token      what a user's authorization code is exchanged for when they connect. It
- *                            identifies the user at connect and lists their installations on refresh.
- *                            The user actor keeps the credentials encrypted
+ *                            is used for two questions (who is this, which installations can they
+ *                            reach), deleted at GitHub, and forgotten. The platform keeps no
+ *                            credential of the user's: what it does later it does as the installation
  *
  * What GitHub's documentation says of each call, as read on 2026-11-15:
  *
@@ -106,12 +107,6 @@ export interface InstallationToken {
 	/** A secret. */
 	token: string;
 	expiresAt: number;
-}
-
-export interface GithubUserGrant {
-	accessToken: string;
-	expiresAt: number | null;
-	refreshToken: string | null;
 }
 
 export interface GithubUser {
@@ -376,25 +371,15 @@ export class GithubApp {
 	// ---- a user who connects ------------------------------------------------------------------
 
 	/** Exchanges the code a user's authorization ended with for a user access token. */
-	exchangeCode(code: string, codeVerifier: string | null) {
-		return this.userGrant({ code, ...(codeVerifier && { code_verifier: codeVerifier }) });
-	}
-
-	refreshUserGrant(refreshToken: string) {
-		return this.userGrant({ grant_type: "refresh_token", refresh_token: refreshToken });
-	}
-
-	private async userGrant(input: Record<string, string>): Promise<GithubUserGrant> {
+	async exchangeCode(code: string, codeVerifier: string | null): Promise<string> {
 		const clientSecret = this.secrets.clientSecret();
 		if (clientSecret === null) throw new Error("WLP_GITHUB_CLIENT_SECRET is not set");
-		const { status, body } = await this.call({ method: "POST", path: "/login/oauth/access_token",
-			body: { ...input, client_id: this.settings.clientId, client_secret: clientSecret }, web: true, auth: null,
-			what: "obtain a user access token", secrets: [clientSecret, ...Object.values(input)] });
-		const fields = record(body);
-		const accessToken = text(fields.access_token);
-		if (!accessToken) throw new GithubError(status, "the answer holds no token", "could not obtain a user access token");
-		return { accessToken, expiresAt: typeof fields.expires_in === "number" ? Date.now() + fields.expires_in * 1000 : null,
-			refreshToken: text(fields.refresh_token) || null };
+		const body: Record<string, string> = { client_id: this.settings.clientId, client_secret: clientSecret, code };
+		if (codeVerifier !== null) body.code_verifier = codeVerifier;
+		const answer = await this.call({ method: "POST", path: "/login/oauth/access_token", body, auth: null, web: true, what: "exchange the authorization code", secrets: [clientSecret, code] });
+		const token = text(record(answer.body).access_token);
+		if (token === "") throw new GithubError(answer.status, "the answer holds no token", "could not exchange the authorization code");
+		return token;
 	}
 
 	async viewer(userToken: string): Promise<GithubUser> {
@@ -423,9 +408,8 @@ export class GithubApp {
 		return { id, account: { id: accountId, login, type: account.type }, htmlUrl: text(fields.html_url), suspended: fields.suspended_at != null };
 	}
 
-	/** Previous versions revoked the user token at connect. Verify a webhook candidate using the app
-	 * installation and the immutable GitHub principal on a covered repository. */
-	async verifiedInstallation(id: GithubId, user: GithubUser): Promise<Installation | null> {
+	/** Read the current account and suspension state before applying an installation webhook. */
+	async activeInstallation(id: GithubId): Promise<Installation | null> {
 		let installation;
 		try {
 			const { body } = await this.call({ path: `/app/installations/${id}`, auth: { bearer: this.jwt() }, what: "read the installation" });
@@ -435,16 +419,7 @@ export class GithubApp {
 			throw error;
 		}
 		if (!installation || installation.id !== id || installation.suspended) return null;
-		if (installation.account.type === "User" && installation.account.id === user.id) return installation;
-		const { token } = await this.installationToken(id, { permissions: { metadata: "read" } });
-		const deadline = Date.now() + 10_000;
-		const { repositories } = await this.installationRepositories(token, deadline);
-		// Bound the one-time compatibility probe. Public read access alone does not prove membership.
-		for (const repo of repositories.slice(0, 30)) {
-			const level = await this.permission(token, repo.owner, repo.name, user.login, deadline, user.id);
-			if (level === "admin" || level === "write" || (level === "read" && repo.private)) return installation;
-		}
-		return null;
+		return installation;
 	}
 
 	/** Deletes the user access token at GitHub: the platform has asked what it needed. Never throws. */

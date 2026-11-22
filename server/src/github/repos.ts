@@ -151,7 +151,9 @@ async function levelOf(app: GithubApp, tokens: ReadTokens, connection: StoredCon
 	if (ownAccount(connection, installation)) return "admin";
 	const at = Date.now();
 	const level = await app.permission(await tokens.of(installation), repository.owner, repository.name, connection.user.login, tokens.deadline, connection.user.id);
-	permissions.set(`${connection.user.id}:${repository.id}`, { at, level });
+	const key = `${connection.user.id}:${repository.id}`;
+	// A slow permission read must not overwrite a later Reload's answer.
+	if ((permissions.get(key)?.at ?? 0) <= at) permissions.set(key, { at, level });
 	return level;
 }
 
@@ -183,7 +185,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 	await Promise.all(
 		connection.installations.map(async (installation) => {
 			try {
-				const listed = await installationList(app, tokens, installation, connection.refreshedAt);
+				const listed = await installationList(app, tokens, installation, connection.refreshedAt ?? connection.connectedAt);
 				truncated ||= listed.truncated;
 				for (const repository of listed.repositories) found.push({ installation, repository });
 			} catch (error) {
@@ -216,7 +218,7 @@ export async function listRepositories(app: GithubApp, connection: StoredConnect
 			batch.map(async ({ installation, repository }): Promise<Level> => {
 				if (ownAccount(connection, installation)) return "admin";
 				const known = permissions.get(`${connection.user.id}:${repository.id}`);
-				if (known && known.at >= (connection.refreshedAt ?? 0) && Date.now() - known.at < PERMISSION_FRESH_MS) return known.level;
+				if (known && known.at >= (connection.refreshedAt ?? connection.connectedAt) && Date.now() - known.at < PERMISSION_FRESH_MS) return known.level;
 				checked += 1;
 				try {
 					return await levelOf(app, tokens, connection, installation, repository);
@@ -252,7 +254,7 @@ export async function resolveRepository(app: GithubApp, connection: StoredConnec
 	let firstProblem: GithubProblem | null = null;
 	for (const installation of connection.installations) {
 		try {
-			const listed = await installationList(app, tokens, installation, connection.refreshedAt);
+			const listed = await installationList(app, tokens, installation, connection.refreshedAt ?? connection.connectedAt);
 			const repository = listed.repositories.find((candidate) => candidate.id === repositoryId);
 			if (repository) {
 				found = { installation, repository };

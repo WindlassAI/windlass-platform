@@ -28,8 +28,8 @@ interface Found {
 }
 
 /** The search behind the menu: asked when it opens and a moment after each keystroke. */
-/** `connection` is who GitHub is connected as: a connection made while the picker is open lists again. */
-export function useRepositorySearch(open: boolean, connection: string | null = null) {
+/** Reconnecting while the picker is open lists again, even for the same GitHub login. */
+export function useRepositorySearch(open: boolean, connectedAt: number | null = null) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [query, setQuery] = useState("");
@@ -58,7 +58,7 @@ export function useRepositorySearch(open: boolean, connection: string | null = n
 		const timer = setTimeout(() => search(query.trim()), first.current ? 0 : SEARCH_DELAY_MS);
 		first.current = false;
 		return () => clearTimeout(timer);
-	}, [open, query, search, connection]);
+	}, [open, query, search, connectedAt]);
 	useEffect(() => {
 		if (!open) setQuery("");
 	}, [open]);
