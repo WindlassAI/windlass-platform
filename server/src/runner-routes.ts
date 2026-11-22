@@ -1,3 +1,4 @@
+import { RETENTION_PATH, retentionRequest, signSnapshot } from "./runner/snapshot-proof.js";
 import { randomBytes } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { createGrant, isActorGone } from "./actors/internal.js";
@@ -80,11 +81,20 @@ export async function runnerResponse(request: Request): Promise<Response> {
 		const now = Date.now();
 		if (Math.abs(now - input.time) > CLOCK_TOLERANCE_MS) return json(403, { reason: "clock", serverTime: now });
 		const { uid, machineId, signature, time } = input;
-		const result = await client.machine.get([uid, machineId], { params }).internalConnection(connectionProof(uid, machineId, time), signature, address === null)
+		const retention = pathname === RETENTION_PATH;
+		const statement = retention ? retentionRequest(uid, machineId, time) : connectionProof(uid, machineId, time);
+		const result = await client.machine.get([uid, machineId], { params }).internalConnection(statement, signature, address === null)
 			.catch(error => { if (isActorGone(error)) return "unknown" as const; throw error; });
 		if (result === "unknown") return refusedConnection(json(403, { reason: "unknown" }));
 		if (typeof result === "object" && "retryAfter" in result) return rateLimited(result.retryAfter, "This machine has reached its connection limit. Try again later.");
 		if (result !== "active") return json(410, { reason: "removed", removeSandboxes: result.removeSandboxes });
+		if (retention) {
+			const generations = config.snapshots ? await client.user.get([uid], { params }).internalSnapshotGenerations().catch(error => {
+				if (isActorGone(error)) return []; throw error;
+			}) : [];
+			const proof = signSnapshot({ uid, machineId, sessionId: "maintenance" }, statement, { kind: "retain", generations });
+			return proof ? json(200, { generations, proof }) : json(503, { code: "no_snapshot_key" });
+		}
 		const connection = await platformConnection();
 		return json(200, { ...connection, endpoint: connection.endpoint ?? (config.engine.remote ? null : ownEngineEndpoint()) });
 	} catch (error) {

@@ -1,3 +1,4 @@
+import { SnapshotVerifier } from "../../server/src/runner/snapshot-proof.js";
 import { basename } from "node:path";
 import { RunnerChannel, type ChannelSocket } from "../../server/src/runner/channel.js";
 import type { Hello, Operation, Value } from "../../server/src/runner/protocol.js";
@@ -35,7 +36,7 @@ class Conversation {
 	private pipes = new Set<DockerProcess>();
 	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string }>();
 	private runs = new Map<string, AbortController>();
-	constructor(private owner: Executor, private session: string, private channel: RunnerChannel) {}
+	constructor(private owner: Executor, private session: string, private channel: RunnerChannel, private verifier: SnapshotVerifier) {}
 	input(id: string, data: string) { this.processes.get(id)?.p.write(data); }
 	eof(id: string) { this.processes.get(id)?.p.closeStdin(); }
 	cancel(id: string) { this.runs.get(id)?.abort(); }
@@ -65,8 +66,11 @@ class Conversation {
 		const o = this.owner;
 		switch (op.name) {
 			case "create": {
-				const { harness, profile } = op.args;
+				const { harness, profile, prepared } = op.args;
 				if ((op.args.size ?? 1) > 1) throw new Refusal("This runner does not support sizing beyond one slot.");
+				if (prepared && (harness || !this.verifier.accept({ ...o.identity, sessionId: this.session },
+					{ kind: "create", profile, size: op.args.size, screenshots: !!op.args.screenshots, privateData: prepared.privateData, key: prepared }, prepared.proof)))
+					throw new Refusal("The snapshot request has no valid deployment signature.");
 				if (harness) o.requireHarness(profile, harness);
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;
@@ -74,7 +78,13 @@ class Conversation {
 				await o.ensureImage(); // The disk-space helper always uses the base pin.
 				if (harness) await o.prepareHarness(profile, harness);
 				if (screenshots) await o.ensureImage(shotsImage);
-				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness); });
+				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, prepared); });
+			}
+			case "saveSnapshot": {
+				const { id, source, proof } = op.args;
+				if (!this.verifier.accept({ ...o.identity, sessionId: this.session }, { kind: "save", id, source }, proof))
+					throw new Refusal("The snapshot request has no valid deployment signature.");
+				return o.serial(() => { this.requireActive(); return o.saveSnapshot(this.session, id, source); });
 			}
 			case "connect": case "suspend": case "destroy": case "state":
 				return o.serial(async () => {
@@ -91,6 +101,9 @@ class Conversation {
 		}
 		const id = op.args.id;
 		const box = o.running(id, this.session);
+		if (op.name === "start" || op.name === "writeSecretFile" ||
+			(op.name === "run" && Object.keys(op.args.options?.secretEnv ?? {}).length)) box.snapshotCandidate = false;
+		if (box.savingSnapshot) throw new Refusal("The sandbox is saving its prepared image.");
 		const h = new Handle(box, o.identity.uid, p => {
 			this.pipes.add(p);
 			if (this.paused) p.pauseOutput(true);
@@ -157,6 +170,7 @@ class Conversation {
 export class Session {
 	readonly channel: RunnerChannel;
 	private conversation: Conversation;
+	private verifier = new SnapshotVerifier();
 	private socket?: WebSocket;
 	refused = false;
 	orphaned: Promise<void> = Promise.resolve();
@@ -169,7 +183,7 @@ export class Session {
 			onDrain: () => this.conversation.pause(false),
 			onReset: () => {
 				this.orphaned = this.conversation.orphan();
-				this.conversation = new Conversation(this.owner, this.id, this.channel);
+				this.conversation = new Conversation(this.owner, this.id, this.channel, this.verifier);
 				// During a fresh handshake the new socket is already here. After the
 				// detached channel's grace, only the orphaned processes need to outlive it.
 				void this.orphaned.then(() => { if (!this.socket && !this.refused) this.forget(); });
@@ -180,9 +194,10 @@ export class Session {
 				this.channel.close();
 			},
 		});
-		this.conversation = new Conversation(owner, id, this.channel);
+		this.conversation = new Conversation(owner, id, this.channel, this.verifier);
 	}
 	attach(ws: WebSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">) {
+		this.verifier.attach(identity.ticket);
 		this.socket = ws;
 		ws.addEventListener("close", () => { if (this.socket === ws) this.socket = undefined; });
 		const socket: ChannelSocket = { send: text => ws.send(text), close: () => ws.close(),

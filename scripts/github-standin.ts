@@ -741,6 +741,23 @@ export class GithubStandin {
 				return answer(404, { message: "Not Found" });
 			}
 
+			const revision = /^\/commits\/([^/]+)$/.exec(rest);
+			const tree = /^\/git\/trees\/([a-f0-9]{40})$/.exec(rest);
+			if (method === "GET" && (revision || tree)) {
+				if (!this.allows(token, repository, "contents", "read")) return denied();
+				if (tree) {
+					const listing = git(["ls-tree", "-r", "-z", tree[1]], repository.path);
+					const entries = listing.split("\0").filter(Boolean).map(entry => {
+						const [header, path] = entry.split("\t"), [mode, type, sha] = header.split(" ");
+						return { mode, type, sha, path };
+					});
+					return answer(200, { sha: tree[1], tree: entries, truncated: false });
+				}
+				const ref = decodeURIComponent(revision![1]);
+				const sha = this.branchHead(repository, ref) ?? (/^[a-f0-9]{40}$/.test(ref) ? ref : null);
+				if (!sha) return answer(404, {message: "Not Found"});
+				return answer(200, {sha, commit: {tree: {sha: git(["show", "-s", "--format=%T", sha], repository.path)}}});
+			}
 			const commitCi = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(rest);
 			const job = /^\/actions\/jobs\/(\d+)(\/logs)?$/.exec(rest);
 			if (method === "GET" && (commitCi || job)) {

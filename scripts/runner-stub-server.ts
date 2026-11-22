@@ -43,6 +43,7 @@ export async function stub(storage: string) {
 	};
 	let observeControl: ((text: string) => void) | undefined;
 	const tickets = new Map<string, string>();
+	const acceptedTickets = new Map<string, string>();
 	const joined = new Map<string, number>();
 	const opened = new Map<string, number>();
 	let incompatible: string | undefined;
@@ -55,7 +56,7 @@ export async function stub(storage: string) {
 		if (!ch) {
 			ch = new ServerChannel({ accept(h) {
 				if (h.machineId !== machineId || tickets.get(session) !== h.ticket || !signed(sessionProof(uid, session, machineId, h.ticket), h.signature)) return false;
-				tickets.delete(session); joined.set(session, (joined.get(session) ?? 0) + 1); return true;
+				acceptedTickets.set(session, h.ticket); tickets.delete(session); joined.set(session, (joined.get(session) ?? 0) + 1); return true;
 			} });
 			channels.set(session, ch);
 		}
@@ -197,6 +198,7 @@ export async function stub(storage: string) {
 			const prior = joined.get(s) ?? 0;
 			wanted.add(s); ticket(s);
 			await until(() => (joined.get(s) ?? 0) > prior && channel(s).connected, "The session did not attach.");
+			return acceptedTickets.get(s)!;
 		},
 		detach(s = sessionId) { wanted.delete(s); channel(s).detach(); },
 		reset(s = sessionId) { wanted.delete(s); channel(s).close(); channels.delete(s); },

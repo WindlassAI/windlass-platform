@@ -216,6 +216,8 @@
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
+import { SNAPSHOT_MIN_SETUP_MS } from "./sandbox/snapshot-key.js";
+
 import { configuredKeys, type Keyring } from "./keyring.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -294,6 +296,9 @@ export interface Config {
 	questionTimeoutMs: number;
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
+	/** A Docker setup must finish successfully and reach this duration to be saved. */
+	snapshots: boolean;
+	snapshotMinSetupMs: number;
 	/** How long a repository's setup command may run before the platform stops it. */
 	setupTimeoutMs: number;
 	/** How long one turn may run before the platform stops it (WLP_TURN_TIMEOUT_MS). */
@@ -733,6 +738,8 @@ export const config: Config = {
 	questionTimeoutMs: readQuestionTimeout(),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
+	snapshots: process.env.WLP_SNAPSHOTS === "on",
+	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
 	usage: {

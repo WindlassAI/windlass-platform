@@ -1,3 +1,4 @@
+import { snapshotMaintenance } from "./snapshot-retention.js";
 import { reportPublisher } from "../../server/src/runner/catalog.js";
 import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
@@ -116,6 +117,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 	const { createClient } = await import("rivetkit/client");
 	const { uid, machineId } = owner.identity;
 	const sessions = new Map<string, Session>();
+	const maintainSnapshots = snapshotMaintenance(owner.identity, key, platform);
 	let idle = initialIdle;
 	let state = "";
 	let offset = 0;
@@ -142,6 +144,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				if (mayMaintain && idle !== undefined) await owner.idle(idle, id => sessions.get(id)?.channel.connected === true);
 			});
 			if (Date.now() - lastSent >= REPORT_MS) owner.publishReport?.();
+			if (mayMaintain) await maintainSnapshots(Date.now() + offset);
 		} catch (error) { audit(null, null, "maintenance", category(error)); }
 		finally { maintaining = false; }
 	};

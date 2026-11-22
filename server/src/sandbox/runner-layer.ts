@@ -26,6 +26,9 @@
  * a session's second `create` with the sandbox it already made for it; `run` and `start` never (the
  * caller decides, and the turn's own `stopLeftovers` ends what a lost `start` left).
  */
+
+import { signSnapshot, type SnapshotAction } from "../runner/snapshot-proof.js";
+import type { SnapshotSource } from "./snapshot-key.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
@@ -124,6 +127,8 @@ export class RunnerLink {
 	/** The first profile read is shared by snapshots and operations waiting to attach. */
 	readonly initialFacts: Promise<MachineFacts | null>;
 	private readonly tickets = new AttachTickets();
+	private snapshotTicket = "";
+	snapshotProof(action: SnapshotAction) { return signSnapshot(this.who, this.snapshotTicket, action); }
 	/** What the machine's actor last said of it. Had before the first ticket goes out: its key checks the hello. */
 	private heard: MachineFacts | null = null;
 	private reading?: Promise<MachineFacts>;
@@ -147,7 +152,11 @@ export class RunnerLink {
 		private readonly onReach?: (reach: MachineReach) => void,
 	) {
 		this.channel = new ServerChannel({
-			accept: (hello) => this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null }),
+			accept: (hello) => {
+				const accepted = this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null });
+				if (accepted) this.snapshotTicket = hello.ticket;
+				return accepted;
+			},
 			onReset,
 			onConnect: () => this.connected(),
 			onDisconnect: () => this.lost(),
@@ -450,6 +459,7 @@ class RunnerHandle implements TurnSandbox {
 		readonly profile: SandboxProfileId,
 		readonly cwd: string,
 		readonly runnerScreenshots: boolean,
+		readonly snapshot?: SnapshotSource,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
@@ -559,14 +569,35 @@ class RunnerSandboxes implements Sandboxes {
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${input.harness === "claude" ? "Claude Code" : "OpenCode"}. Update it and start it with --harness ${input.harness}.`);
-		return await link.again("create", { profile: input.profile, ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness ? { harness: input.harness } : {}),
-			...(input.screenshots && !input.harness && report?.screenshots ? { screenshots: true } : {}) });
+		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
+		const args = { profile: input.profile, ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		if (input.fromSnapshot && !input.harness && process.env.WLP_SNAPSHOT_SIGNING_KEY) {
+			await link.ready();
+			const privateData = input.privateData === true;
+			const proof = link.snapshotProof({ kind: "create", profile: input.profile, size: input.size, screenshots, privateData, key: input.fromSnapshot });
+			if (proof) {
+				try { return await link.request("create", { ...args, prepared: { ...input.fromSnapshot, privateData, proof } }); }
+				catch (error) {
+					// Older runners reject the optional arguments. A missing verification key also permits a cold start.
+					if (!(error instanceof ConversationLost) && !(error instanceof Error && [
+						"This runner does not serve that operation.", "The snapshot request has no valid deployment signature.",
+					].includes(error.message))) throw error;
+				}
+			}
+		}
+		return await link.again("create", args);
+	}
+
+	async saveSnapshot(id: string, source: SnapshotSource) {
+		await this.link.ready();
+		const proof = this.link.snapshotProof({ kind: "save", id, source });
+		return proof ? this.link.request("saveSnapshot", { id, source, proof, options: { timeoutMs: 15 * 60_000 } }) : false;
 	}
 
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

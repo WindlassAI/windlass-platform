@@ -1,3 +1,4 @@
+import type { SnapshotSelection, SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import type { HarnessOptions } from "../../server/src/contract.js";
 import { currentProvider, installedProvider } from "./opencode-login.js";
@@ -22,7 +23,7 @@ import { EgressNetwork } from "./egress-network.js";
 import { loadPair, Refusal, RunnerError, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box { snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -378,7 +379,7 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness) {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, prepared?: SnapshotSelection & { privateData: boolean }) {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
@@ -390,9 +391,9 @@ export class Executor extends MachineDocker {
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		const input = { uid: this.identity.uid, sessionId, profile };
-		const raw = harness ? await withLoginVolume(this, () => (harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, screenshots: this.screenshots && screenshots });
+		const raw = harness ? await withLoginVolume(this, () => (harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
-		this.boxes.set(id, { raw, sessionId, profile, harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
+		this.boxes.set(id, { raw, sessionId, profile, harness, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		try { await this.network.attach(raw, containerName(raw)); }
 		catch (error) { await this.remove(id); throw error; }
 		if (profile === bubblewrap) {
@@ -408,6 +409,14 @@ export class Executor extends MachineDocker {
 		}
 		this.publishReport?.();
 		return id;
+	}
+	async saveSnapshot(session: string, id: string, source: SnapshotSource) {
+		const box = this.running(id, session);
+		if (!box.snapshotCandidate || box.busy || box.harness) return false;
+		box.snapshotCandidate = false;
+		box.savingSnapshot = true;
+		try { return await this.provider.saveSnapshot(box.raw, source); }
+		finally { box.savingSnapshot = false; }
 	}
 	private owned(id: string, session?: string) {
 		rawId(this.identity.machineId, id);
@@ -471,7 +480,7 @@ export class Executor extends MachineDocker {
 			if (!handle) return null;
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
-			return { cwd: handle.cwd, profile: box.profile, ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}) };
+			return { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}) };
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
 		if (box.state === "running") {
@@ -538,6 +547,7 @@ export class Executor extends MachineDocker {
 			const helpers = await docker(["ps", "-aq", ...this.filters()], { check: true });
 			for (const id of helpers.stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
 			await this.network.prune();
+			await this.provider.dropSnapshots(this.identity.uid);
 			const volumes = await docker(["volume", "ls", "-q", ...this.filters()], { check: true });
 			for (const name of volumes.stdout.trim().split(/\s+/).filter(Boolean)) await this.dropVolume(name);
 		});

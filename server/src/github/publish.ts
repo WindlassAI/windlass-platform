@@ -38,7 +38,7 @@ export interface StoredRepository extends SessionRepository {
 	installationId: GithubId;
 }
 
-function sessionRepository(app: GithubApp, connection: StoredConnection, repo: StoredRepository, need: "read" | "write") {
+export function sessionRepository(app: GithubApp, connection: StoredConnection, repo: StoredRepository, need: "read" | "write") {
 	return repo.closesIssue ? resolveBoundRepository(app, connection, repo.id, repo.installationId, need) : resolveRepository(app, connection, repo.id, need);
 }
 
@@ -493,7 +493,7 @@ export async function openFromPushed(input: { app: GithubApp; connection: Stored
  * repository; with `work`, the session's own branch too, as `origin/<work>`, where GitHub has it, so the
  * agent can merge what others pushed there. Throws GithubProblem.
  */
-export async function fetchBase(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, work: string | null = null): Promise<void> {
+export async function fetchBase(app: GithubApp, connection: StoredConnection | null, repository: StoredRepository, sandbox: SandboxHandle, work: string | null = null): Promise<boolean> {
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
 	const resolved = await sessionRepository(app, connection, repository, "read");
 	const name = fullName(resolved.repository);
@@ -507,6 +507,7 @@ export async function fetchBase(app: GithubApp, connection: StoredConnection | n
 	const unsafe = fetched.marks.get("unsafe");
 	if (unsafe !== undefined) throw new GithubProblem("github_failed", unsafeWorkspace(unsafe));
 	if (!fetched.ok) throw gitProblem(fetched, "clone", name, account, repository.branch);
+	return fetched.marks.has("fetchedwork");
 }
 
 /**

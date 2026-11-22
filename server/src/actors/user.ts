@@ -1,3 +1,4 @@
+import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
@@ -507,13 +508,21 @@ async function readSetup(db: RawAccess, project: string): Promise<RepositorySetu
 	return { command: row?.command ?? "", updatedAt: row?.updated_at ?? null, timeoutMs: config.setupTimeoutMs };
 }
 
+async function dropHostedSnapshots(uid: string, repo?: string) {
+	if (config.snapshots && config.sandbox === "docker") await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
+		console.warn("[wlp] snapshot cleanup deferred");
+	});
+}
+
 /** Saves a command that was cleaned already, in place of the project's earlier one; "" removes the row. */
 async function saveSetup(c: UserCtx, uid: string, project: string, label: string, command: string): Promise<RepositorySetup> {
+	const previous = await readSetup(c.db, project);
+	if (previous.command === command) return previous;
 	if (command === "") {
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
 		await c.db.execute(
-			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, updated_at = excluded.updated_at",
+			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
 			label,
 			command,
@@ -523,6 +532,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
 	}
 	// The command is the user's text and may hold what they would not want in a log: only its length is said.
+	await dropHostedSnapshots(uid, project.slice("github:".length));
 	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);
 	return readSetup(c.db, project);
 }
@@ -1348,6 +1358,7 @@ export const user = actor({
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
 	},
 
+	onDestroy: async c => { await dropHostedSnapshots(c.key[0]); },
 	onWake: async (c) => {
 		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
 		const connection = c.vars.github;
@@ -1686,6 +1697,7 @@ export const user = actor({
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			const wasConnected = c.vars.github !== null;
 			await saveGithubConnection(c, profile.uid, null);
+			await dropHostedSnapshots(profile.uid);
 			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
 		},
@@ -1776,6 +1788,13 @@ export const user = actor({
 		internalHasChecks: async (c, repositoryId: GithubId): Promise<boolean> => {
 			requireService(c);
 			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
+		},
+		internalSnapshotGenerations: async (c): Promise<string[]> => {
+			requireService(c);
+			const connection = c.vars.github;
+			if (!connection) return [];
+			const rows = await c.db.execute<{project: string; updated_at: number}>("SELECT project, updated_at FROM setup_command");
+			return rows.map(row => snapshotGeneration(row.project.slice("github:".length), row.updated_at, connection.connectedAt));
 		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
@@ -1931,6 +1950,7 @@ export const user = actor({
 				await c.db.execute("DELETE FROM repository_checks WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
+				await dropHostedSnapshots(profile.uid, String(repositoryId));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);
 				return await repositoryView(c, repositoryId, project);
 			} catch (error) {

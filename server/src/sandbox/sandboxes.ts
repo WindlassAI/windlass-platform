@@ -28,6 +28,9 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
+import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
+import type { SnapshotSource } from "./snapshot-key.js";
+
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { SandboxProfile, SandboxProfileId } from "../contract.js";
@@ -85,6 +88,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly profile: SandboxProfileId,
 		/** The user whose data volume the container mounts, from the container's label. */
 		readonly uid: string,
+		readonly snapshot?: SnapshotSource,
 	) {
 		markTurnSandbox(this);
 	}
@@ -342,6 +346,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 }
 
 interface Inspected {
+	screenshots: boolean;
+	snapshot?: SnapshotSource;
 	cpuPolicyMatches: boolean;
 	status: string;
 	profile: SandboxProfileId;
@@ -410,11 +416,12 @@ export class DockerSandboxes implements Sandboxes {
 
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{with index .Config.Labels "${MACHINE_LABEL}"}}{{.}}{{end}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{with index .Config.Labels "${MACHINE_LABEL}"}}{{.}}{{end}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
-		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos] = result.stdout.trim().split("|");
+		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos, ...labels] = result.stdout.trim().split("|");
 		if (ours !== "1" || machine !== this.machine) return null;
-		return { status, profile: profile as SandboxProfileId, uid, cpuPolicyMatches: shares === "256" && Number(nanos) === (this.options.cpus ?? 1) * 1e9 };
+		const metadata = JSON.parse(labels.join("|") || "{}");
+		return { status, profile: profile as SandboxProfileId, uid, screenshots: metadata[variantLabel] === "shots", snapshot: sourceFromLabels(metadata), cpuPolicyMatches: shares === "256" && Number(nanos) === (this.options.cpus ?? 1) * 1e9 };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
@@ -459,7 +466,10 @@ export class DockerSandboxes implements Sandboxes {
 		if (harness !== input.harness) throw new SandboxUserError(`${harnessName} runs only on a machine offering it.`);
 		if (harness && (input.profile !== "docker-hardened" || input.screenshots))
 			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
-		const image = input.screenshots ? this.shotsImage : this.image;
+		const base = input.screenshots ? this.shotsImage : this.image;
+		const selected = input.fromSnapshot && !harness ? await new DockerSnapshots(this.machine, base, this.options.network, undefined, !!input.screenshots)
+			.select(input.fromSnapshot, input.uid, input.profile).catch(() => null) : null;
+		const image = selected?.image ?? base;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
@@ -486,6 +496,7 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
+				...(selected && input.fromSnapshot ? ["--label", candidateLabel + "=" + (input.fromSnapshot.writer ? selected.key : ""), "--label", variantLabel + "=" + (input.screenshots ? "shots" : "base"), "--label", attemptLabel + "=" + input.fromSnapshot.attempt] : []),
 				...commonRunFlags(this.options.cpus ?? 1, this.options.network?.name),
 				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
 					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
@@ -499,15 +510,35 @@ export class DockerSandboxes implements Sandboxes {
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
 			const message = result.stderr.trim();
+			if (selected && /No such image|not found/i.test(message)) return this.create({ ...input, fromSnapshot: undefined });
 			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
+		if (selected?.hit) return id;
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });
 		if (init.code !== 0) {
 			await docker(["rm", "-f", name]);
 			throw new Error(`could not set up the workspace: ${init.stderr.trim()}`);
 		}
 		return id;
+	}
+
+	async saveSnapshot(id: string, source: SnapshotSource) {
+		const found = await this.inspect(id);
+		if (!found || found.snapshot || this.options.sessionRelay) return false;
+		const name = containerName(id);
+		// Re-resolve the selected pin: a mutable tag may have moved during setup.
+		const base = found.screenshots ? this.shotsImage : this.image;
+		return new DockerSnapshots(this.machine, base, this.options.network, undefined, found.screenshots)
+			.save(name, found.uid, found.profile, source);
+	}
+
+	async sweepSnapshots(retained: (uid: string) => Promise<ReadonlySet<string>>) {
+		await new DockerSnapshots(this.machine, this.image, this.options.network).sweepOwners(retained);
+	}
+
+	async dropSnapshots(uid: string, repo?: string) {
+		await new DockerSnapshots(this.machine, this.image, this.options.network).drop(uid, repo);
 	}
 
 	async connect(id: string): Promise<SandboxHandle | undefined> {
@@ -521,7 +552,7 @@ export class DockerSandboxes implements Sandboxes {
 			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
 			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

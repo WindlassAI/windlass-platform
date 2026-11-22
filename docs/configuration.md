@@ -59,6 +59,10 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_TURN_TIMEOUT_MS` | how long one turn may run (default 45 minutes). The durations that keep its access token fresh are constants and hold for a turn of any length |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_SERVER_APPROVAL_TTL_MS` | how long an approval of a project's MCP server is remembered for its user (default and most: 30 days, which is how long Windlass keeps its own). A shorter time is for the checks |
+| `WLP_SNAPSHOTS` | `on` enables post-setup snapshots for Docker Windlass sessions. Defaults to `off`. |
+| `WLP_SNAPSHOT_MIN_SETUP_MS` | Minimum successful setup duration for saving a snapshot. Defaults to 30000 and can be raised. |
+| `WLP_SNAPSHOT_SIGNING_KEY` | Deployment Ed25519 private key in PEM format for machine snapshot requests. Hosted Docker needs only the feature switch. |
+| `WLP_SNAPSHOT_VERIFY_KEY` | Matching public PEM in the runner process environment. Machines continue starting cold until the deployment and runner have matching keys. |
 | `WLP_SETUP_TIMEOUT_MS` | how long a repository's setup command may run in a new sandbox before the platform stops it (default 10 minutes) |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
@@ -183,3 +187,13 @@ Read at build time (Vite) unless a row says otherwise.
 Actor data is in `.data/.rivetkit`; stop the server and remove that directory to start from nothing.
 `sandbox/cleanup.sh --keep-image` removes every container and volume this project made; the sign-ins in the
 users' actors go with the actor data.
+
+## Docker setup snapshots
+
+A snapshot lives on the Docker daemon that ran setup. Windlass keeps one image per user and repository there. The cache key includes the image ID, OS and architecture, sandbox profile, screenshots variant, network mode, setup text, lockfile contents and toolchain pins. For each package.json it compares the package manager and engines. If GitHub cannot provide a complete tree, the session uses the ordinary setup path. Editing setup or reconnecting GitHub changes the settings generation. A new session verifies access and the fetched revision before it skips setup.
+
+Each machine allows 10 GB of incremental image storage, with a 2 GB share per user. Eviction removes the least recently used images first. Saving needs 15 GB free on the Docker filesystem. Images expire after 14 days unused. A container already running from an evicted image can keep its layers alive until Docker removes the container.
+
+For runners, generate an Ed25519 key pair with `openssl genpkey -algorithm ED25519 -out snapshot-key.pem` and `openssl pkey -in snapshot-key.pem -pubout -out snapshot-public.pem`. Give the server the private PEM and provision the public PEM on each runner. Each create or save grant binds the user, machine, session socket, operation and inputs. Runners check which settings generations the deployment still retains every 15 minutes while connected. Runner prune also removes prepared images belonging to the pairing.
+
+To measure startup on a development host, run `WLP_SANDBOX=docker pnpm --filter @windlass-platform/server exec tsx ../scripts/e2e.ts --snapshot-benchmark` from the repository root. It uses three pinned public repositories, a local GitHub App stand-in and scripted Windlass turns. Each row gives the time from sandbox creation to the first Windlass event and the duration of setup when it ran.
