@@ -17,9 +17,9 @@
 set -eu
 
 [ "$#" -eq 0 ] || { echo "usage: fetch-windlass.sh" >&2; exit 2; }
-RELEASE=v0.5.0
-SUM_x64=955a2b63a34a2b3c0e7e8a77987a29326081f230524be6cd11f047a72461fef0
-SUM_arm64=c327ba95c1aa4aaa46ecb3d164088c1300ded7d18c588dce8931ef232dabfd3d
+RELEASE=v0.6.0
+SUM_x64=9518e8e473a481ae6a40287674f95bce094925a2c1cb9ce237b173a0100e21ad
+SUM_arm64=de71a24c49e1d8feb0bf134b93925c4cf1f34e6200d44d263fd531135b355d4e
 BASE="https://github.com/WindlassAI/windlass/releases/download/$RELEASE"
 
 dir="${WINDLASS_RELEASE_DIR:-$HOME/.cache/windlass-platform/windlass-$RELEASE}"
