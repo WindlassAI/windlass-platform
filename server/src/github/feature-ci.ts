@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { GithubError, type GithubApp } from "./app.js";
 import { ownApp } from "./ids.js";
 import { refHead } from "./feature.js";
+import { hasIntegrationWorkflow } from "./integration.js";
 
 const record = (v: unknown) => (v ?? {}) as Record<string, unknown>;
 
@@ -60,4 +61,26 @@ export async function hasPushCi(app: GithubApp, token: string, owner: string, re
 		if ((record(status.body).statuses as {state: string}[]).some(s => s.state === "success")) return true;
 	}
 	return false;
+}
+
+/**
+ * What keeps one repository of a cross-repo feature from being approved, in sentences naming it: push CI
+ * that does not run on the feature's actual branch names, a base that moved since the planner read it
+ * (unless the person reconfirmed the new commit), and, for the repository the combined run starts from,
+ * a missing integration workflow. Empty: this repository is ready.
+ */
+export async function repositoryAdmission(app: GithubApp, token: string, owner: string, repo: string, input: {
+	alias: string; baseRef: string; ciBase: string; branches: string[]; planningBaseSha: string | null; reconfirmed?: string; runsIntegration: boolean; opened: boolean;
+}): Promise<string[]> {
+	const label = owner + "/" + repo, problems: string[] = [];
+	if (!await hasPushCi(app, token, owner, repo, input.ciBase, input.branches))
+		problems.push(`${label}: push CI does not run on windlass/** branches (${input.branches.join(", ")}). Add a push trigger for them, or for every branch.`);
+	if (!input.opened && input.planningBaseSha) {
+		const now = await refHead(app, token, owner, repo, input.baseRef);
+		if (now !== input.planningBaseSha && input.reconfirmed !== now)
+			problems.push(`${label}: ${input.baseRef} moved from ${input.planningBaseSha.slice(0, 7)} to ${now.slice(0, 7)} since the planner read it. Revise the plan on the new base, or reconfirm it (bases: {"${input.alias}": "${now}"}).`);
+	}
+	if (input.runsIntegration && !await hasIntegrationWorkflow(app, token, owner, repo, input.baseRef))
+		problems.push(`${label}: the combined run needs .github/workflows/windlass-integration.yml, enabled, on ${input.baseRef}.`);
+	return problems;
 }

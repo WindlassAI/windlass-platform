@@ -1,0 +1,116 @@
+name: Windlass integration
+
+# A cross-repo feature's combined run (server/src/github/integration.ts, docs/factory "Cross-repo
+# features"): every repository of the feature at the commit the platform names, checked out side by side,
+# then the plan's approved command in this repository's checkout. The platform dispatches it on this
+# repository's feature branch and finds its run by the run name.
+#
+# A push that changes this workflow or the Windlass recipe runs it too, on this commit and the Windlass
+# CLI's main, so the two repositories are tested together before any feature relies on it.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('windlass-integration {0} {1}', inputs.feature, inputs.attempt) || format('windlass-integration self-test {0}', github.sha) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      feature:
+        type: string
+        required: true
+        description: The feature's item id
+      attempt:
+        type: string
+        required: true
+        description: The platform's attempt number for this run
+      run_from:
+        type: string
+        required: true
+        description: The alias of this repository in the feature
+      heads:
+        type: string
+        required: true
+        description: 'Every input, by alias: {"<alias>": {"repository": "owner/name", "sha": "<40 hex>"}}'
+      command:
+        type: string
+        required: true
+        description: The approved command, run in this repository's checkout
+      timeout_minutes:
+        type: string
+        default: '60'
+  push:
+    branches: [main, 'wip/**']
+    paths:
+      - .github/workflows/windlass-integration.yml
+      - scripts/cross-repo-integration.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windlass-integration-${{ github.event_name == 'workflow_dispatch' && inputs.feature || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  together:
+    name: Test the repositories together
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: run-from
+          persist-credentials: false
+      - name: Check out every input at its commit
+        env:
+          EVENT: ${{ github.event_name }}
+          HEADS: ${{ inputs.heads }}
+          RUN_FROM: ${{ inputs.run_from }}
+          SELF: ${{ github.repository }}
+          SELF_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != workflow_dispatch ]; then
+            # The self-test: this commit as "platform", the Windlass CLI's main as "cli".
+            cli=$(git ls-remote https://github.com/WindlassAI/windlass refs/heads/main | cut -f1)
+            HEADS=$(jq -cn --arg self "$SELF" --arg sha "$SELF_SHA" --arg cli "$cli" '{platform: {repository: $self, sha: $sha}, cli: {repository: "WindlassAI/windlass", sha: $cli}}')
+            RUN_FROM=platform
+          fi
+          echo "$HEADS" | jq -e 'type == "object" and length >= 1 and length <= 2' >/dev/null
+          [[ "$RUN_FROM" =~ ^[a-z][a-z0-9-]{0,15}$ ]]
+          mkdir -p inputs
+          for alias in $(echo "$HEADS" | jq -r 'keys[]'); do
+            [[ "$alias" =~ ^[a-z][a-z0-9-]{0,15}$ ]] || { echo "bad alias $alias"; exit 1; }
+            repo=$(echo "$HEADS" | jq -r --arg a "$alias" '.[$a].repository')
+            sha=$(echo "$HEADS" | jq -r --arg a "$alias" '.[$a].sha')
+            [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "bad input $alias"; exit 1; }
+            name=WLP_INPUT_$(echo "$alias" | tr 'a-z-' 'A-Z_')
+            if [ "$alias" = "$RUN_FROM" ]; then
+              # The platform dispatched this on the feature branch: its head must be the commit it named.
+              [ "$(git -C run-from rev-parse HEAD)" = "$sha" ] || { echo "$alias is at $(git -C run-from rev-parse HEAD), not $sha"; exit 1; }
+              echo "$name=$GITHUB_WORKSPACE/run-from" >> "$GITHUB_ENV"
+            else
+              git init -q "inputs/$alias"
+              git -C "inputs/$alias" fetch -q --depth=1 "https://github.com/$repo" "$sha"
+              git -C "inputs/$alias" checkout -q --detach FETCH_HEAD
+              [ "$(git -C "inputs/$alias" rev-parse HEAD)" = "$sha" ]
+              echo "$name=$GITHUB_WORKSPACE/inputs/$alias" >> "$GITHUB_ENV"
+            fi
+            echo "$alias: $repo at $sha"
+          done
+          echo "WLP_INPUTS=$(echo "$HEADS" | jq -c .)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+      - run: corepack enable pnpm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Run the approved command
+        working-directory: run-from
+        env:
+          EVENT: ${{ github.event_name }}
+          COMMAND: ${{ inputs.command }}
+          MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != workflow_dispatch ]; then COMMAND="bash scripts/cross-repo-integration.sh"; MINUTES=60; fi
+          [[ "$MINUTES" =~ ^[0-9]{1,2}$ ]] && [ "$MINUTES" -le 60 ] || MINUTES=60
+          timeout --kill-after=30s "${MINUTES}m" bash -c "$COMMAND"

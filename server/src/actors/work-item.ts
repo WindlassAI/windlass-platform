@@ -38,11 +38,11 @@ import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
-import { hasPushCi } from "../github/feature-ci.js";
+import { hasPushCi, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
-import { dispatchIntegration, findIntegrationRun, hasIntegrationWorkflow, readIntegrationRun } from "../github/integration.js";
+import { dispatchIntegration, findIntegrationRun, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import { recentSubject, type IssueBinding } from "../factory/intake.js";
@@ -731,17 +731,9 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 		try {
 			if (!await userActor(c, meta.uid).internalHasChecks(repo.repositoryId)) problems.push(`${label}: add saved repository checks.`);
 			const branches = [featureBranch(item.id), ...pending.filter(s => (s.repo ?? item.repos![0].alias) === repo.alias).map(s => branchFor(s.title, itemSessionId(childItemId(item.id, plan.version, s.key))))];
-			await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, async ({ app, token, owner, name }) => {
-				const base = repo.pr ? featureBranch(item.id) : repo.baseRef;
-				if (!await hasPushCi(app, token, owner, name, base, branches)) problems.push(`${label}: push CI does not run on windlass/** branches (${branches.join(", ")}).`);
-				if (!repo.pr && repo.planningBaseSha) {
-					const now = await refHead(app, token, owner, name, repo.baseRef);
-					if (now !== repo.planningBaseSha && bases[repo.alias] !== now)
-						problems.push(`${label}: ${repo.baseRef} moved from ${repo.planningBaseSha.slice(0, 7)} to ${now.slice(0, 7)} since the planner read it. Revise the plan on the new base, or reconfirm it (bases: {"${repo.alias}": "${now}"}).`);
-				}
-				if (plan.finalIntegration?.runFrom === repo.alias && !await hasIntegrationWorkflow(app, token, owner, name, repo.baseRef))
-					problems.push(`${label}: the combined run needs .github/workflows/windlass-integration.yml, enabled, on ${repo.baseRef}.`);
-			});
+			problems.push(...await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, ({ app, token, owner, name }) =>
+				repositoryAdmission(app, token, owner, name, { alias: repo.alias, baseRef: repo.baseRef, ciBase: repo.pr ? featureBranch(item.id) : repo.baseRef, branches, planningBaseSha: repo.planningBaseSha,
+					reconfirmed: bases[repo.alias], runsIntegration: plan.finalIntegration?.runFrom === repo.alias, opened: !!repo.pr })));
 			if (plan.finalIntegration?.runFrom !== repo.alias && repo.private) problems.push(`${label}: the combined run checks out the other repositories without a token, so ${label} must be public.`);
 		} catch (error) {
 			problems.push(`${label}: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
