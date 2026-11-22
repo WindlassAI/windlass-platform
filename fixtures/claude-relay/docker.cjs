@@ -37,4 +37,5 @@ const translate = args.includes('inspect') || args[0] === 'ps' || args[0] === 'v
 const result = spawnSync('/usr/bin/docker', args, { stdio: ['inherit', translate ? 'pipe' : 'inherit', 'inherit'], encoding: 'utf8' });
 if (translate && result.stdout) process.stdout.write(names.reduce((s, [original,fixture]) => s.replaceAll(fixture,original), result.stdout)
 	.replaceAll(prefix + '-box-', 'wlp-session-').replaceAll('"' + prefix + '-uplink":', '"bridge":'));
-process.exit(result.status ?? 1);
+// Full inspect output includes the bundled relay script and can span multiple pipe buffers.
+process.exitCode = result.status ?? 1;
