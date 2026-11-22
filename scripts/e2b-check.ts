@@ -341,9 +341,23 @@ async function main(): Promise<number> {
 						expect("restricted: the resolver is the lookup stub, which runs as nobody and survived the pause", stub === "nameserver 127.0.0.1 nobody", stub);
 						const blocked = await handle.blockedHosts();
 						expect("restricted: the stub names example.com, which a command could not reach, and not a host it may", blocked.includes("example.com") && !blocked.includes("registry.npmjs.org") && !blocked.includes("github.com"), blocked.join(","));
-						const applied = await boxes.setNetwork(id, ["example.com"]);
-						const reached = await sh(handle, "curl -sS --max-time 15 https://example.com/ | head -c 200; echo exit=$?");
-						expect("restricted: a host allowed while the sandbox runs (a repository's list, setNetwork) is reached at once", applied && reached.includes("Example Domain"), reached);
+						// Only a sandbox a turn holds is changed at once (setNetwork never resumes or extends one by itself).
+						const unheld = await boxes.setNetwork(id, ["example.com"]);
+						const release = await handle.holdForTurn();
+						let applied = false;
+						let reached = "";
+						try {
+							applied = await boxes.setNetwork(id, ["example.com"]);
+							reached = await sh(handle, "curl -sS --max-time 15 https://example.com/ | head -c 200; echo exit=$?");
+						} finally {
+							await release();
+						}
+						expect("restricted: a host allowed while a turn holds the sandbox (a repository's list, setNetwork) is reached at once, and not without a hold", !unheld && applied && reached.includes("Example Domain"), `${unheld ? "applied without a hold | " : ""}${reached}`);
+						// What keeps the agent from standing in for the lookup stub or racing root's files in /run and /tmp: the kernel's own settings in the guest.
+						const kernel = await sh(handle, "cat /proc/sys/net/ipv4/ip_unprivileged_port_start /proc/sys/fs/protected_symlinks /proc/sys/fs/protected_regular");
+						const [portStart, symlinks, regular] = kernel.split(/\s+/).map((value) => Number(value));
+						console.log(`      in the guest: net.ipv4.ip_unprivileged_port_start=${portStart} fs.protected_symlinks=${symlinks} fs.protected_regular=${regular}`);
+						expect("restricted: in the guest an unprivileged process cannot bind port 53, and symlinks and files in sticky directories are protected", Number.isInteger(portStart) && portStart! > 53 && symlinks! >= 1 && regular! >= 1, kernel);
 					}
 				} finally {
 					await boxes.destroy(id);
