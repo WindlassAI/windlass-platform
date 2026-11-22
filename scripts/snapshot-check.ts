@@ -73,7 +73,7 @@ if (process.argv.includes("--docker")) {
 		return selected;
 	};
 	const bigBox = fixture + "-large", alias = fixture + ":alias";
-	const sandboxes = new DockerSandboxes({ image: base, machine, dataVolume: async () => volume });
+	const sandboxes = new DockerSandboxes({ image: base, machine, dataVolume: async () => volume, dropDataVolume: async () => {} });
 	const containers = [consumer, bigBox];
 	try {
 		const producerId = await sandboxes.create({ uid, profile, sessionId: "producer", fromSnapshot: { ...source, writer: true } });

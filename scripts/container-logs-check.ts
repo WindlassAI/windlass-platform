@@ -60,7 +60,7 @@ try {
 	ok("Helper containers (sign-in steps, access tokens, version probe, volume chores) keep no log.");
 
 	const uid = "u_" + "a".repeat(16), sessionId = "s_check";
-	const hosted = new DockerSandboxes({ machine: null, dataVolume: async () => "wlp-user-" + uid });
+	const hosted = new DockerSandboxes({ machine: null, dataVolume: async () => "wlp-user-" + uid, dropDataVolume: async () => {} });
 	await hosted.create({ uid, sessionId, profile: "docker-hardened" });
 	const sessions = started();
 	assert.equal(sessions.length, 1);

@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { AcpConnection, LineSplitter } from "../server/src/sandbox/acp.js";
-import { docker, LABEL_ARG, MACHINE_LABEL, SHOTS_IMAGE } from "../server/src/sandbox/docker.js";
+import { DATA_DIR, docker, LABEL_ARG, MACHINE_LABEL, SHOTS_IMAGE } from "../server/src/sandbox/docker.js";
 import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import { COMMON_RUN_FLAGS, commonRunFlags } from "../server/src/sandbox/profiles.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
@@ -401,6 +401,40 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				ok(profile + " passes the private tmpfs file to Windlass and removes it on logout.");
 			}
 
+			// A hardened Windlass session has a data volume of its own; the Windlass sandbox profile keeps the machine's.
+			assert.equal(srv.state.report?.sessionVolumes, true);
+			const own = (sandbox: string) => `wlp-machine-${machineId}-${sandbox.slice(-12)}`;
+			const mountsOf = async (sandbox: string) => (JSON.parse((await docker(["container", "inspect", containerName(sandbox.slice(-12))], { check: true })).stdout)[0].Mounts as { Name?: string; Destination: string }[])
+				.map(m => `${m.Name}:${m.Destination}`).join(" ");
+			const volumeGone = async (name: string) => (await docker(["volume", "inspect", name])).code !== 0;
+			await srv.attach(srv.other);
+			const peer = srv.channel(srv.other);
+			const a = await handoff.request("create", { profile: hardened }), b = await peer.request("create", { profile: hardened });
+			assert.equal(await mountsOf(a), `${own(a)}:${DATA_DIR}`);
+			assert.equal(await mountsOf(b), `${own(b)}:${DATA_DIR}`);
+			const [volumeA] = JSON.parse((await docker(["volume", "inspect", own(a)], { check: true })).stdout);
+			assert.deepEqual([volumeA.Labels[MACHINE_LABEL], volumeA.Labels["dev.windlass-platform.uid"], volumeA.Labels["dev.windlass-platform.sandbox"]], [machineId, uid, a.slice(-12)]);
+			const inData = (channel: typeof handoff, id: string, command: string) => channel.request("run", { id, command });
+			assert.equal((await inData(handoff, a, `mkdir -p ${DATA_DIR}/sessions && echo a > ${DATA_DIR}/sessions/marker-a`)).exitCode, 0);
+			assert.equal((await inData(peer, b, `mkdir -p ${DATA_DIR}/sessions && echo b > ${DATA_DIR}/sessions/marker-b`)).exitCode, 0);
+			const markers = async (channel: typeof handoff, id: string) => (await inData(channel, id, `find ${DATA_DIR} -name 'marker-*' -printf '%f '`)).stdout.trim();
+			assert.equal(await markers(handoff, a), "marker-a");
+			assert.equal(await markers(peer, b), "marker-b");
+			// What A plants where B's state would be under a shared volume does not reach B.
+			await inData(handoff, a, `echo planted > ${DATA_DIR}/sessions/marker-planted`);
+			assert.equal(await markers(peer, b), "marker-b");
+			if (allowed.commandSandbox.ok) {
+				const shared = await peer.request("create", { profile: windlass });
+				assert.equal(await mountsOf(shared), `wlp-machine-${machineId}:${DATA_DIR}`);
+				assert.ok(!(await markers(peer, shared)).includes("marker-a"));
+				await peer.request("destroy", { id: shared });
+			}
+			await handoff.request("destroy", { id: a });
+			assert.ok(await volumeGone(own(a)));
+			assert.ok(!await volumeGone(own(b)));
+			srv.reset(srv.other);
+			ok("Hardened sessions each mount a data volume of their own and cannot see each other's Windlass data; destroy removes it; the Windlass sandbox profile keeps the machine volume.");
+
 			// Even a runner on a host without user namespaces can discover a pre-existing container.
 			await stopRunner();
 			const raw = randomBytes(6).toString("hex"), id = "m" + machineId + "-" + raw;
@@ -424,6 +458,24 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 			await assert.rejects(exec(process.execPath, [bundle, "run"], { env: env(state), timeout: 10_000 }),
 				(e: { stderr?: string }) => !!e.stderr?.includes("Invalid profile policy"));
 			ok("A malformed saved policy stops the service before connecting.");
+			await rm(join(state, `profiles-${machineId}.json`));
+			// Prune removes a session volume left without its container, and leaves another machine's.
+			const orphan = `wlp-machine-${machineId}-${randomBytes(6).toString("hex")}`;
+			const foreignMachine = "m_" + randomBytes(8).toString("hex");
+			const foreign = `wlp-machine-${foreignMachine}-${randomBytes(6).toString("hex")}`;
+			await docker(["volume", "create", "--label", LABEL_ARG, "--label", MACHINE_LABEL + "=" + machineId, "--label", "dev.windlass-platform.uid=" + uid, "--label", "dev.windlass-platform.sandbox=" + orphan.slice(-12), orphan], { check: true });
+			await docker(["volume", "create", "--label", LABEL_ARG, "--label", MACHINE_LABEL + "=" + foreignMachine, "--label", "dev.windlass-platform.uid=" + uid, "--label", "dev.windlass-platform.sandbox=" + foreign.slice(-12), foreign], { check: true });
+			try {
+				const prune = spawn(process.execPath, [bundle, "prune"], { env: env(state), stdio: ["pipe", "ignore", "ignore"] });
+				prune.stdin.end("yes\n");
+				assert.equal(await new Promise(resolve => prune.on("exit", resolve)), 0);
+				assert.notEqual((await docker(["volume", "inspect", orphan])).code, 0);
+				assert.equal((await docker(["volume", "inspect", foreign])).code, 0);
+				ok("Prune removes an orphaned session volume of this machine and leaves another machine's.");
+			} finally {
+				await docker(["volume", "rm", "-f", foreign]);
+				await docker(["volume", "rm", "-f", orphan]);
+			}
 			return;
 		}
 		if (claudePin) {
@@ -498,7 +550,7 @@ require("node:module").syncBuiltinESMExports();`);
 			const { FakeE2b } = await import("../server/src/sandbox/e2b/fake.js");
 			const { readE2bSettings } = await import("../server/src/sandbox/e2b/config.js");
 			const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
-			const hostedDocker = new DockerSandboxes({ machine: null, dataVolume: async () => { throw new Error("unexpected volume"); } });
+			const hostedDocker = new DockerSandboxes({ machine: null, dataVolume: async () => { throw new Error("unexpected volume"); }, dropDataVolume: async () => {} });
 			const hostedE2b = new E2bSandboxes(new FakeE2b(), readE2bSettings({}));
 			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes]) {
 				for (const harness of ["claude", "opencode", "codex"] as const) {
@@ -1103,7 +1155,7 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		const foreign = "m" + machineId + "-" + hostedRaw;
 		await assert.rejects(ch.request("destroy", { id: foreign }), /does not belong/);
 		await assert.rejects(ch.request("run", { id: foreign, command: "touch /tmp/touched" }), /owned/);
-		const hostedProvider = new DockerSandboxes({ image, machine: null, dataVolume: async () => { throw Error("unexpected create"); } });
+		const hostedProvider = new DockerSandboxes({ image, machine: null, dataVolume: async () => { throw Error("unexpected create"); }, dropDataVolume: async () => {} });
 		assert.deepEqual((await hostedProvider.list(uid)).map(x => x.id), [hostedRaw]);
 		assert.ok(!(await cli("status")).includes(hostedRaw)); assert.equal((await docker(["exec", hostedName, "test", "!", "-e", "/tmp/touched"])).code, 0);
 		srv.detach(srv.other); srv.incompatible(srv.other);

@@ -763,7 +763,7 @@ async function main(): Promise<void> {
 		// A runner's provider on the same daemon, for the same user: its containers and the hosted ones never meet.
 		const machine = `m_${randomId(8)}`;
 		const volume = `wlp-machine-chk-${run}`;
-		const own = new DockerSandboxes({ image, machine, dataVolume: async () => (await ensureDataVolume(volume, { [MACHINE_LABEL]: machine }, image), volume) });
+		const own = new DockerSandboxes({ image, machine, dataVolume: async () => (await ensureDataVolume(volume, { [MACHINE_LABEL]: machine }, image), volume), dropDataVolume: async () => {} });
 		let theirs: string | null = null;
 		try {
 			const hosted = await layer.sandboxes.create({ uid, sessionId: "check-provider", profile: "docker-hardened" });
@@ -809,6 +809,58 @@ async function main(): Promise<void> {
 			if (theirs !== null) await own.destroy(theirs);
 			await docker(["volume", "rm", "-f", volume]);
 		}
+	});
+
+	await section("session data volumes", async () => {
+		// Two hardened sessions and one with the Windlass sandbox, of one user; and a hardened reviewer.
+		const make = async (sessionId: string, profile: SandboxProfileId, privateData = false) => {
+			const id = await layer.sandboxes.create({ uid, sessionId, profile, privateData });
+			createdSandboxes.add(id);
+			everySandbox.add(id);
+			return (await layer.sandboxes.connect(id)) as DockerSandboxHandle;
+		};
+		const a = await make("check-own-data-a", "docker-hardened");
+		const b = await make("check-own-data-b", "docker-hardened");
+		const shared = await make("check-own-data-shared", "docker-windlass-sandbox");
+		const reviewer = await make("check-own-data-reviewer", "docker-hardened", true);
+		const mounts = { a: await mountsOf(a.container), b: await mountsOf(b.container), shared: await mountsOf(shared.container), reviewer: await mountsOf(reviewer.container) };
+		expect(
+			"each hardened session mounts a data volume of its own, the Windlass sandbox profile the user's, the reviewer none",
+			mounts.a === `wlp-user-${uid}-${a.id}:${DATA_DIR}` && mounts.b === `wlp-user-${uid}-${b.id}:${DATA_DIR}` && mounts.shared === `wlp-user-${uid}:${DATA_DIR}` && mounts.reviewer === "",
+			JSON.stringify(mounts),
+		);
+		const labels = (await docker(["volume", "inspect", "--format", "{{json .Labels}}", `wlp-user-${uid}-${a.id}`], { check: true })).stdout.trim();
+		const parsed = JSON.parse(labels) as Record<string, string>;
+		expect("the session's volume carries the platform's, the user's and the sandbox's labels", parsed[LABEL] === "1" && parsed[`${LABEL}.uid`] === uid && parsed[`${LABEL}.sandbox`] === a.id, labels);
+		expect("the session's own data directory belongs to the agent with mode 0700", (await a.run(`stat -c %U:%a ${DATA_DIR}`)).stdout.trim() === "agent:700");
+		// What one session writes where Windlass keeps its transcripts and state, the others do not see, and the other way round.
+		const write = (box: DockerSandboxHandle, name: string) => box.run(`mkdir -p ${DATA_DIR}/sessions && echo ${name} > ${DATA_DIR}/sessions/${name}`);
+		const seen = async (box: DockerSandboxHandle) => (await box.run(`find ${DATA_DIR} -name 'marker-*' -printf '%f '`)).stdout.trim().split(" ").filter(Boolean).sort().join(" ");
+		await write(a, "marker-a");
+		await write(b, "marker-b");
+		await write(shared, "marker-shared");
+		const views = { a: await seen(a), b: await seen(b), shared: await seen(shared) };
+		expect(
+			"a hardened session sees only its own Windlass data: not the other hardened session's, not the shared volume's",
+			views.a === "marker-a" && views.b === "marker-b" && !views.shared.includes("marker-a") && !views.shared.includes("marker-b"),
+			JSON.stringify(views),
+		);
+		// A write into the path where the other session's state was before this change reaches nothing of it.
+		await a.run(`mkdir -p ${DATA_DIR}/sessions && echo planted > ${DATA_DIR}/sessions/marker-planted`);
+		expect("a marker A plants in its data directory is not in B's", !(await seen(b)).includes("marker-planted"));
+		expect("suspend and connect keep the session's own data", await (async () => {
+			await layer.sandboxes.suspend(a.id);
+			const again = (await layer.sandboxes.connect(a.id)) as DockerSandboxHandle;
+			return (await seen(again)) === "marker-a marker-planted";
+		})());
+		await layer.sandboxes.destroy(a.id);
+		createdSandboxes.delete(a.id);
+		expect("destroy() removes A's own volume and leaves B's and the user's", (await volumeGone(`wlp-user-${uid}-${a.id}`)) && !(await volumeGone(`wlp-user-${uid}-${b.id}`)) && !(await volumeGone(`wlp-user-${uid}`)));
+		for (const box of [b, shared, reviewer]) {
+			await layer.sandboxes.destroy(box.id);
+			createdSandboxes.delete(box.id);
+		}
+		expect("destroy() removes B's own volume too", await volumeGone(`wlp-user-${uid}-${b.id}`));
 	});
 
 	await section("protocol client", async () => {
@@ -953,9 +1005,11 @@ PYTHON`);
 			expect("connect() returns a handle with the profile and the user", handle !== undefined && handle.profile === profileId && handle.cwd === "/workspace" && handle.uid === uid);
 			const mounted = await mountsOf(handle.container);
 			const holds = (await handle.run(DATA_LS)).stdout.trim();
+			// A hardened session's commands run in the container: its Windlass data is its own.
+			const dataVolume = profileId === "docker-hardened" ? `wlp-user-${uid}-${id}` : `wlp-user-${uid}`;
 			expect(
-				"the session's container mounts the user's data volume only and holds no sign-in, though the user has one",
-				mounted === `wlp-user-${uid}:${DATA_DIR}` && !/auth\.json|host-id|auth\.lock/.test(holds) && (await layer.logins.status(uid)) !== null,
+				`the session's container mounts ${profileId === "docker-hardened" ? "a data volume of its own" : "the user's data volume"} only and holds no sign-in, though the user has one`,
+				mounted === `${dataVolume}:${DATA_DIR}` && !/auth\.json|host-id|auth\.lock/.test(holds) && (await layer.logins.status(uid)) !== null,
 				`mounts: ${mounted}; data directory: ${holds === "" ? "empty" : holds}`,
 			);
 			const git = await handle.run("git rev-parse --is-inside-work-tree && git log --oneline | wc -l && ls -A");
@@ -1473,8 +1527,11 @@ PYTHON`);
 			expect("destroy() removes the container", (await layer.sandboxes.state(id)) === "none" && gone.code !== 0 && (await layer.sandboxes.connect(id)) === undefined);
 			await layer.sandboxes.destroy(id);
 			createdSandboxes.delete(id);
-			const kept = await lsVolume(`wlp-user-${uid}`);
-			expect("the user's data volume outlives the sandbox and holds Windlass's sessions, no sign-in and no token file", kept.includes("sessions") && !/auth\.json|host-id|access-token/.test(kept), kept);
+			if (profileId === "docker-hardened") expect("destroy() removes the sandbox's own data volume with it", await volumeGone(dataVolume));
+			else {
+				const kept = await lsVolume(`wlp-user-${uid}`);
+				expect("the user's data volume outlives the sandbox and holds Windlass's sessions, no sign-in and no token file", kept.includes("sessions") && !/auth\.json|host-id|access-token/.test(kept), kept);
+			}
 			expect("none of these scripted turns asked for the user's access token", layer.tokens.asked === askedBefore, `${layer.tokens.asked - askedBefore} requests`);
 		});
 	}
@@ -1770,8 +1827,12 @@ PYTHON`);
 		const demo = await turn(scripted, "Check scripted startup", plainScript);
 		expect("a scripted turn writes its script while checking for leftover engines", scripted.overlapped && outcomeOf(demo) === "succeeded");
 
+		// A pre-upgrade file on the user's shared volume, which the hardened first sandbox no longer mounts.
 		const legacyPath = `${DATA_DIR}/access-token-old-check.json`;
-		await first.writeSecretFile(legacyPath, "{}");
+		await layer.logins.ensureUserVolume(uidH);
+		const legacyHelper = tmpName();
+		await runHelper([...helperFlags(legacyHelper, "none"), "-v", `wlp-user-${uidH}:${DATA_DIR}`], legacyHelper, ["sh", "-c", `umask 077; echo '{}' > ${legacyPath}`], { image });
+		expect("the pre-upgrade file is on the user's volume", (await lsVolume(`wlp-user-${uidH}`)).includes("access-token-old-check.json"));
 		const second = await offlineSandbox(uidH, "docker-windlass-sandbox", "isolation-second");
 		if (!second) throw new Error("Could not isolate the second test container");
 		expect("connect clears pre-upgrade files before setup can run", (await second.ask(["test", "!", "-e", legacyPath]))?.code === 0);
@@ -2578,6 +2639,7 @@ PYTHON`);
 	await section("cleanup", async () => {
 		for (const id of createdSandboxes) await layer.sandboxes.destroy(id);
 		for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`]);
+		for (const id of everySandbox) for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}-${id}`]);
 		await docker(["volume", "rm", "-f", STANDIN_VOLUME]);
 		for (const image of createdImages) await removeImage(image);
 		const now = await listOurs();
@@ -2617,6 +2679,7 @@ async function emergencyCleanup(): Promise<void> {
 	const tmp = await docker(["ps", "-aq", "--filter", `label=${LABEL_ARG}`, "--filter", `name=^wlp-tmp-${PROCESS_MARK}-`]);
 	if (tmp.stdout.trim() !== "") await docker(["rm", "-f", ...tmp.stdout.trim().split("\n")]);
 	for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`]).catch(() => undefined);
+	for (const id of everySandbox) for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}-${id}`]).catch(() => undefined);
 	await docker(["volume", "rm", "-f", STANDIN_VOLUME]).catch(() => undefined);
 	for (const image of createdImages) await removeImage(image).catch(() => undefined);
 }

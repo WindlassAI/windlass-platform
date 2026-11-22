@@ -56,7 +56,7 @@ if (process.argv.includes("docker")) test("create, inspect and reconnect on this
 	process.env.PATH = dir + delimiter + path;
 	const uid = "sizing_owner";
 	const input = { uid, profile: "docker-hardened" as const, sessionId: "sizing_session", privateData: true };
-	const options = { machine: prefix, image: IMAGE, dataVolume: async () => { throw new Error("unexpected volume"); } };
+	const options = { machine: prefix, image: IMAGE, dataVolume: async () => { throw new Error("unexpected volume"); }, dropDataVolume: async () => {} };
 	const provider = (slots: ReturnType<typeof capacity>) => new DockerSandboxes({ ...options, slots });
 	const inspect = (id: string) => {
 		const [{ HostConfig: h, Config }] = JSON.parse(docker(["inspect", prefix + "-agent-" + id]));
