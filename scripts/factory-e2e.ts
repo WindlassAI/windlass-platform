@@ -1832,7 +1832,8 @@ async function subtaskAgentChecks(): Promise<void> {
 				const sent = runner.acpInput.length;
 				await user.actOnItem({ id: filed.id, action: { kind: "approve_plan", version: edited.plan!.version, agents: [plan.subtasks[0]!.key] } });
 				const running = await untilItem(user, filed.id, "the first child", v => v.children?.length === 1, 60_000);
-				const child = running.children![0]!;
+				// The index keeps no agent: the child's own page has it.
+				const child = await user.item(running.children![0]!.id);
 				assert(child.agent?.harness === "claude" && child.agent.model === "sonnet" && child.agent.effort === "high" && child.placement?.harness === "claude", JSON.stringify({ agent: child.agent, placement: child.placement }));
 				const builder = (await user.listSessions()).find(s => s.id === child.sessionId);
 				assert(builder?.harness === "claude" && builder.model === "sonnet" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions", JSON.stringify(builder && { harness: builder.harness, model: builder.model, profile: builder.profile, mode: builder.mode }));
