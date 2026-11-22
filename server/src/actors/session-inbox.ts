@@ -19,6 +19,7 @@
  */
 
 import { ownsPath } from "../factory/feature-plan.js";
+import type { TokenReceipt } from "../usage.js";
 import type { RawAccess } from "rivetkit/db";
 import type { RepositoryCheck, TurnOutcome, TurnUsage, Verified } from "../contract.js";
 import { turnTokens } from "../factory/budget.js";
@@ -94,7 +95,7 @@ export interface TurnRelease {
 }
 
 /** What the outbox sends: a fact to the item, or a slot given back to the user's turn queue. */
-export type OutboxMessage = { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
+export type OutboxMessage = { to: "tokens"; receipt: TokenReceipt } | { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
 
 /** What a slot request hands the user's turn queue (user-items.ts `internalRequestTurn`). */
 export interface TurnRequest {
@@ -270,8 +271,23 @@ async function armOutbox(c: InboxCtx, at: number): Promise<void> {
 	if (held) await c.schedule.cancel(held.schedule).catch(() => false);
 }
 
+/** Settle prior spending before a new personal turn or session deletion, including receipts awaiting retry. */
+export async function settleTokenReceipts(c: InboxCtx, uid: string): Promise<void> {
+	const rows = await c.db.execute<{ id: number; message: string }>("SELECT id, message FROM outbox WHERE json_extract(message, '$.to') = 'tokens' ORDER BY id");
+	for (const row of rows) {
+		const { receipt } = JSON.parse(row.message) as { receipt: TokenReceipt };
+		await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt });
+		await c.db.execute("DELETE FROM outbox WHERE id = ?", row.id);
+	}
+}
+
 const OUTBOX_RETRY_FIRST_MS = 10_000;
 const OUTBOX_RETRY_MOST_MS = 5 * 60_000;
+
+// Do not release a slot or advance the item past unacknowledged spending, even during a
+// receipt's retry delay. Unrelated earlier facts can still be sent.
+const sendable = `(json_extract(message, '$.to') = 'tokens' OR NOT EXISTS (
+	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'tokens'))`;
 
 /**
  * Sends what is due in the outbox, oldest first; removes each once it was acknowledged, and sets the
@@ -280,11 +296,12 @@ const OUTBOX_RETRY_MOST_MS = 5 * 60_000;
 export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 	try {
 		const now = Date.now();
-		const rows = await c.db.execute<{ id: number; message: string; attempts: number }>("SELECT id, message, attempts FROM outbox WHERE next_at <= ? ORDER BY id", now);
+		const rows = await c.db.execute<{ id: number; message: string; attempts: number }>(`SELECT id, message, attempts FROM outbox WHERE next_at <= ? AND ${sendable} ORDER BY id`, now);
 		for (const row of rows) {
 			const message = JSON.parse(row.message) as OutboxMessage;
 			try {
 				if (message.to === "item") await itemActor(c, uid, message.itemId).internalFact(message.fact);
+				else if (message.to === "tokens") await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt: message.receipt });
 				else await userActor(c, uid).internalTurnDone({ sessionId: c.key[1] as string, ...message.done });
 				await c.db.execute("DELETE FROM outbox WHERE id = ?", row.id);
 			} catch (error) {
@@ -295,7 +312,7 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 		}
 		// After every drain, an empty one too: the schedule that fired, or the safety one, may be earlier than
 		// any row still to send, and nothing else would set one for them.
-		const [next] = await c.db.execute<{ at: number | null }>("SELECT MIN(next_at) AS at FROM outbox");
+		const [next] = await c.db.execute<{ at: number | null }>(`SELECT MIN(next_at) AS at FROM outbox WHERE ${sendable}`);
 		if (next?.at !== null && next?.at !== undefined) await armOutbox(c, next.at);
 	} catch (error) {
 		c.log.warn({ msg: "could not send the outbox", error: String(error) });
@@ -303,8 +320,8 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 }
 
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
-export async function turnFlags(sandbox: SandboxHandle, base: string, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
-	const work = await readWork(sandbox, base);
+export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
+	const work = await readWork(sandbox, baseSha);
 	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns && (path => ownsPath(owns, path)));
 }
 

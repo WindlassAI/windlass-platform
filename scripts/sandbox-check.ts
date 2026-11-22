@@ -51,8 +51,9 @@ import { DEMO_SCENARIOS, DEMO_SPARE_ANSWERS } from "../server/src/sandbox/demo.j
 import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
 import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_REJECTED, TOKEN_REPLACE_LEAD_MS, TOKEN_VALID_FOR_MS, loginTokenCommand } from "../server/src/sandbox/handoff.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
-import { type DockerSandboxHandle, DockerSandboxes, containerName } from "../server/src/sandbox/sandboxes.js";
+import { DockerSandboxHandle, DockerSandboxes, containerName } from "../server/src/sandbox/sandboxes.js";
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { runSetupCommand } from "../server/src/sandbox/setup.js";
 import { ensureDataVolume } from "../server/src/sandbox/volumes.js";
 import type { SignInMaterial } from "../server/src/signin/material.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
@@ -268,7 +269,7 @@ const ENGINE_ENV = `pid=$(pgrep -f '^windlass acp$' | head -n 1); if [ -z "$pid"
 const fileFacts = (path: string) => `stat -c '%a %U %i' ${path} && python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(",".join(sorted(v)), v["expiresAt"])' ${path}`;
 
 /** What Windlass's data directory in a sandbox holds, on one line. */
-const DATA_LS = `ls -A ${DATA_DIR} | tr '\\n' ' '`;
+const DATA_LS = `(ls -A ${DATA_DIR}; ls -A /dev/shm) | tr '\\n' ' '`;
 
 /**
  * Reads a file again and again for a while, as Windlass does at each model call, and counts the reads
@@ -713,6 +714,9 @@ async function main(): Promise<void> {
 					stderr.trim().split("\n")[0] ?? "",
 				);
 			}
+			const cache = await docker(["run", "--rm", "--pull", "never", "--network", "none", "--user", "agent",
+				"--mount", "type=volume,dst=/tmp/.cache", image, "sh", "-c", "test -O /tmp/.cache && touch /tmp/.cache/check"]);
+			expect("an empty cache volume inherits agent ownership and can be written", cache.code === 0, cache.stderr);
 			const version = await layer.windlass.version();
 			expect("windlass.version() reports the same version", version === printed, String(version));
 			const problem = await layer.windlass.problem();
@@ -741,7 +745,7 @@ async function main(): Promise<void> {
 				const hasBrowser = expected === shotsImage;
 				const files = hasBrowser ? "test -x /usr/local/bin/wlp-shot && test -x /usr/local/bin/wlp-headless-shell"
 					: "test ! -e /usr/local/bin/wlp-shot && test ! -e /usr/local/bin/wlp-headless-shell && test ! -d /opt/wlp-browser";
-				await docker(["exec", containerName(id), "sh", "-c", files], { check: true });
+				await docker(["exec", containerName(id), "sh", "-c", "test -O /tmp/.cache && " + files], { check: true });
 				await sandboxes.destroy(id);
 			}
 		}
@@ -997,7 +1001,7 @@ PYTHON`);
 			const sandboxed = run1?.sandbox !== null && run1?.sandbox !== undefined;
 			expect(`commands run ${profile.approval === "auto" ? "inside" : "outside"} Windlass's sandbox (approval ${profile.approval})`, run1?.mode === profile.approval && sandboxed === (profileId === "docker-windlass-sandbox"), JSON.stringify(run1));
 			expect(`commands ${profile.commandNetwork ? "have" : "have no"} network`, out1.includes(profile.commandNetwork ? "NET_OK" : "NET_BLOCKED"));
-			expect(`commands ${profile.commandsCanReadAccessToken ? "can" : "cannot"} read Windlass's data directory, where a turn's access token file is`, out1.includes(profile.commandsCanReadAccessToken ? "DATA_DIR_READABLE" : "DATA_DIR_HIDDEN"));
+			expect(`commands ${profile.commandsCanReadAccessToken ? "can" : "cannot"} read Windlass's data directory`, out1.includes(profile.commandsCanReadAccessToken ? "DATA_DIR_READABLE" : "DATA_DIR_HIDDEN"));
 			expect("the command ran as the non-root user and wrote the workspace", out1.startsWith("agent\n") && (await handle.readTextFile("probe.txt")) === "probe-1\n");
 			const session = t1.result.windlassSessionId ?? undefined;
 
@@ -1632,14 +1636,14 @@ PYTHON`);
 		await layer.logins.adopt(attempt2, finishedAttempt(attempt2, { sub: "fake-sub-456", email: "other@example.invalid" }, expiresAt + 1), uid2);
 		expect("adopt() replaces an earlier sign-in", (await layer.logins.status(uid2))?.sub === "fake-sub-456");
 
-		// A token file a turn of this user would have in the data volume while it runs: logout takes it too.
+		// A pre-upgrade token file left on the data volume: logout takes it too.
 		{
 			const helper = tmpName();
 			await runHelper([...helperFlags(helper, "none"), "-v", `wlp-user-${uid2}:${DATA_DIR}`], helper, ["sh", "-c", `umask 077; echo '{}' > ${DATA_DIR}/access-token-0123456789ab.json; mkdir -p ${DATA_DIR}/sessions`], { image });
 		}
 		await layer.logins.logout(uid2);
 		expect(
-			"logout() forgets the sign-in in the user's store and removes the token files of running turns from the data volume",
+			"logout() forgets the sign-in in the user's store and removes legacy token files from the data volume",
 			(await layer.logins.status(uid2)) === null && storedSignIn(uid2)?.sealed === null && (await lsVolume(`wlp-user-${uid2}`)) === "sessions",
 			`wlp-user-${uid2}: ${await lsVolume(`wlp-user-${uid2}`)}`,
 		);
@@ -1746,6 +1750,78 @@ PYTHON`);
 		expect("for that Windlass is not started: the user's store holds no sign-in to ask it about", tokens.asked === asked && storedSignIn(uidT)?.sealed === null);
 	});
 
+	await section("session token isolation", async () => {
+		const first = await offlineSandbox(uidH, "docker-hardened", "isolation-first");
+		if (!first) throw new Error("Could not isolate the first test container");
+		// Both operations do Docker I/O. Observe their order without imposing a time limit.
+		const scripted = new (class extends DockerSandboxHandle {
+			writingScript = false;
+			overlapped = false;
+			override async writeTextFile(path: string, content: string) {
+				if (path.startsWith("/tmp/.wlp-script-")) this.writingScript = true;
+				await super.writeTextFile(path, content);
+			}
+			override async stopLeftovers(program: string) {
+				const count = await super.stopLeftovers(program);
+				this.overlapped = this.writingScript;
+				return count;
+			}
+		})(first.id, first.profile, first.uid);
+		const demo = await turn(scripted, "Check scripted startup", plainScript);
+		expect("a scripted turn writes its script while checking for leftover engines", scripted.overlapped && outcomeOf(demo) === "succeeded");
+
+		const legacyPath = `${DATA_DIR}/access-token-old-check.json`;
+		await first.writeSecretFile(legacyPath, "{}");
+		const second = await offlineSandbox(uidH, "docker-windlass-sandbox", "isolation-second");
+		if (!second) throw new Error("Could not isolate the second test container");
+		expect("connect clears pre-upgrade files before setup can run", (await second.ask(["test", "!", "-e", legacyPath]))?.code === 0);
+		const path = tokenFilePath(first.id);
+		await first.writeSecretFile(path, JSON.stringify({ accessToken: TOKEN_A, expiresAt: Date.now() + 3_600_000 }));
+		const setup = await runSetupCommand(second, { command: `test ! -e ${path}`, cwd: second.cwd, timeoutMs: 5000 });
+		expect("a second hosted session's setup cannot see the first session's file", setup.state === "succeeded");
+		expect("the token is on tmpfs", (await first.ask(["stat", "-f", "-c", "%T", path]))?.stdout.trim() === "tmpfs");
+		await first.removeFiles([path]);
+
+		// Use inert sleepers and check their PIDs. Neither fixture opens a credential file.
+		const detached = [
+			"rm -f /tmp/check-sleeper",
+			"setsid env -i /bin/sh -c 'echo $$ > /tmp/check-sleeper; exec sleep infinity' </dev/null >/dev/null 2>&1 &",
+			"while [ ! -s /tmp/check-sleeper ]; do sleep 0.01; done",
+		].join("\n");
+		const gone = async (box: DockerSandboxHandle) => (await box.run('! kill -0 "$(cat /tmp/check-sleeper)" 2>/dev/null')).exitCode === 0;
+		await docker(["exec", "-d", "--user", "65534:65534", second.container, "/bin/sleep", "610"], { check: true });
+		const result = await runSetupCommand(second, { command: detached, cwd: second.cwd, timeoutMs: 5000 });
+		expect("setup reaps a detached process with an empty environment before returning", result.state === "succeeded" && await gone(second));
+		expect("cleanup also removes a stranded Git transport process", (await second.ask(["pgrep", "-u", "65534", "-x", "sleep"]))?.code === 1);
+		const brokenSweep = new (class extends DockerSandboxHandle {
+			override async ask() { return null; }
+		})(first.id, first.profile, first.uid);
+		const incomplete = await runSetupCommand(brokenSweep, { command: "true", cwd: first.cwd, timeoutMs: 5000 });
+		expect("setup reports an unsuccessful cleanup even when its command succeeded", incomplete.cleanupPending === true && incomplete.state === "failed");
+		let requested = false;
+		const unavailable = new DockerWindlass({ current: async () => { requested = true; throw new Error("unexpected token request"); } }, { image });
+		const refused = await turn(brokenSweep, "Check unavailable cleanup", null, { windlass: unavailable });
+		expect("a failed process sweep stops the turn before it requests a token", !requested && refused.result.failure?.reason === "engine" && refused.events.length === 0);
+		for (const box of [first, second]) {
+			const script = "/tmp/check-profile.json";
+			const sandboxed = box.profile === "docker-windlass-sandbox";
+			await box.writeTextFile(script, JSON.stringify({ responses: [shell("visibility", `test ${sandboxed ? "!" : ""} -r ${tokenFilePath(box.id)} && echo expected-visibility`), say("Done.")] }));
+			await box.run(detached);
+			expect("a detached sleeper is alive before turn preparation", !await gone(box));
+			let cleanAtHandoff = false;
+			const tokens: AccessTokens = { current: async () => {
+				cleanAtHandoff = await gone(box);
+				return { accessToken: TOKEN_A, expiresAt: Date.now() + 3_600_000 };
+			} };
+			const windlass = new DockerWindlass(tokens, { image, engineCommand: ["sh", "-ec", `test "$(stat -f -c %T "$WINDLASS_ACCESS_TOKEN_FILE")" = tmpfs; windlass login status >/dev/null; WINDLASS_ACP_SCRIPT=${script} exec windlass acp`] });
+			const completed = await turn(box, "Check file visibility", null, { windlass });
+			expect(`${box.profile} clears old processes before the token request`, cleanAtHandoff);
+			expect(`${box.profile} runs Windlass with the handed-in file and the expected command visibility`, outcomeOf(completed) === "succeeded" && outputOf(settled(completed.events, "visibility")).includes("expected-visibility"), completed.result.failure?.message ?? "");
+			await layer.sandboxes.destroy(box.id);
+			createdSandboxes.delete(box.id);
+		}
+	});
+
 	await section("hand-off", async () => {
 		// Every turn here is handed a (fake) access token, so every one runs where there is no network.
 		await layer.logins.ensureUserVolume(uidH);
@@ -1756,7 +1832,7 @@ PYTHON`);
 			return;
 		}
 		const path = tokenFilePath(boxed.id);
-		expect("the token file is one per sandbox, in Windlass's data directory", path === `${DATA_DIR}/access-token-${boxed.id}.json` && tokenFilePath(direct.id) !== path, path);
+		expect("the token file is one per sandbox, on its private tmpfs", path === `/dev/shm/access-token-${boxed.id}.json` && tokenFilePath(direct.id) !== path, path);
 		const status = (handle: DockerSandboxHandle) => handle.run("windlass login status", { env: { [ACCESS_TOKEN_FILE_ENV]: tokenFilePath(handle.id) } });
 
 		// ---- A: the real token source and the real engine. The sign-in's token has the twenty minutes the platform
@@ -1823,7 +1899,7 @@ PYTHON`);
 					seen.accepted.stdout.trim(),
 				);
 				expect(
-					"while the turn runs the container still holds no sign-in and mounts no auth volume: the data directory has the token file and Windlass's own files",
+					"while the turn runs the container still holds no sign-in and mounts no auth volume: the token and Windlass data are separate",
 					seen.mounted === `wlp-user-${uidH}:${DATA_DIR}` && seen.holds.split(" ").includes(`access-token-${boxed.id}.json`) && !/auth\.json|host-id|auth\.lock|\.tmp/.test(seen.holds),
 					`mounts: ${seen.mounted}; data directory: ${seen.holds}`,
 				);
@@ -2214,19 +2290,16 @@ PYTHON`);
 		}
 
 		// What a turn that was cut off with its server left behind: a token file, and one half-written beside it. They are
-		// in the user's volume, which outlives the sandbox, so suspending or destroying the sandbox removes them.
+		// private to each container. Stopping a container discards its tmpfs.
 		const stale = (handle: DockerSandboxHandle) => handle.run(`umask 077; echo '{}' > ${tokenFilePath(handle.id)}; echo '{' > ${tokenFilePath(handle.id)}.tmp`);
 		await stale(direct);
 		await stale(boxed);
-		const planted = await lsVolume(`wlp-user-${uidH}`);
-		// A sandbox that does not run: the token is there, its file cannot be written. That is the sandbox's failure.
+		const before = await lsVolume(`wlp-user-${uidH}`);
 		await layer.sandboxes.suspend(direct.id);
-		const afterSuspend = await lsVolume(`wlp-user-${uidH}`);
-		expect(
-			"suspend() removes a token file left in the user's volume for that sandbox, and no other sandbox's",
-			planted.includes(`access-token-${direct.id}.json`) && planted.includes(`access-token-${direct.id}.json.tmp`) && !afterSuspend.includes(`access-token-${direct.id}`) && afterSuspend.includes(`access-token-${boxed.id}.json`) && afterSuspend.includes(`access-token-${boxed.id}.json.tmp`),
-			`before: ${planted}; after: ${afterSuspend}`,
-		);
+		const peerFiles = (await boxed.run(DATA_LS)).stdout;
+		expect("suspending one sandbox preserves its peer's private token and leaves the volume token-free",
+			!before.includes("access-token") && peerFiles.includes(`access-token-${boxed.id}.json.tmp`) && !peerFiles.includes(`access-token-${direct.id}.json`));
+
 		const asleep = await turn(direct, "Hello?", null);
 		expect(
 			"an unscripted turn in a sandbox that is not running fails as `engine`, not as anything about the sign-in",

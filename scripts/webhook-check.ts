@@ -43,6 +43,39 @@ async function testNode() {
 	};
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
 	Object.assign(workItem.config.actions!, {
+		// Start at the feature handoff for the inbox check. factory-e2e reaches it with real children.
+		checkFinishedFeature: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			const stored = c.vars.stored!;
+			const item = stored.item;
+			assert.equal(item.state, "review");
+			item.mode = "orchestrate";
+			const single = item.singleBudget!;
+			const tasks = ["one","two"].map(key => ({ key,title:key,brief:key,owns:[key],dependsOn:[],acceptance:["Run pnpm test"],budget:single }));
+			item.featurePlan = { version:1,status:"approved",subtasks:tasks,spec:{goal:item.task.title,requirements:[],outOfScope:[],acceptance:["Run pnpm test"]},
+				questions:[],singleSuggested:null,budget:item.budget,compare:{singleBudget:single} };
+			item.approvedPlan = structuredClone(item.featurePlan);
+			item.jobs = tasks.map(task=>({task,id:task.key,state:"done",spent:{turns:0,tokens:0,activeSeconds:0,hostedSeconds:0},head:item.head,report:"Done."}));
+			await c.db.execute("UPDATE item SET data=? WHERE id=1",JSON.stringify(stored));
+		},
+		// Move only this item's durable deadlines. CI and webhook acceptance keep their real clocks.
+		checkAdvance: async (c: ItemCtx, kind: "feedback" | "poll", ms: number) => {
+			requireServiceFor(c, "call");
+			if (kind === "feedback") {
+				await c.db.execute("UPDATE feedback SET received=received-?,ready=ready-? WHERE state='pending'", ms, ms);
+				await c.db.execute("UPDATE effects SET due_at=due_at-? WHERE id='feedback_ready:pending'", ms);
+			} else await c.db.execute("UPDATE effects SET due_at=0 WHERE id LIKE 'poll_%'");
+			await c.schedule.at(Date.now(), "internalDue");
+		},
+		checkWindow: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			const [r] = await c.db.execute<{ms:number}>("SELECT max(ready)-min(received) AS ms FROM feedback WHERE state='pending'");
+			return r?.ms;
+		},
+		checkPendingWrites: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			return (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE 'verified_check:%' LIMIT 1")).length > 0;
+		},
 		checkIssuePending: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
 			return (await c.db.execute("SELECT 1 FROM effects WHERE id='check_issue:pending'")).length > 0;
@@ -97,6 +130,14 @@ async function testNode() {
 			requireServiceFor(c, "call");
 			config.factory.githubItemsPerDay = limit;
 			config.factory.githubDrafts = drafts;
+		},
+		checkPlanning: (c: Ctx, enabled: boolean) => {
+			requireServiceFor(c, "call");
+			process.env.WLP_FACTORY_ORCHESTRATE = enabled ? "1" : "0";
+		},
+		checkCiTimeout: (c: Ctx, timeout: number) => {
+			requireServiceFor(c, "call");
+			Object.assign(CI_POLLING, { timeoutMs: timeout });
 		},
 		checkFallback: (c: Ctx, ms: number | null) => {
 			requireServiceFor(c, "call");
@@ -173,7 +214,7 @@ async function run() {
 		}
 	};
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
-		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
+		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_MAX_KEPT_SANDBOXES: "unlimited", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
 	});
 	let logs = "";
 	child.stdout.on("data", b => { logs += b.toString(); });
@@ -216,26 +257,25 @@ async function run() {
 			const connect = await user.githubConnect({ origin });
 			const back = await fetch(standin.authorize(login, connect.url), { redirect: "manual" });
 			await user.githubComplete(back.headers.get("location")!.split("#github=")[1]);
-			return { uid: auth.profile.uid, user };
+			return { uid: auth.profile.uid, token: auth.token, user };
 		};
-		const { uid, user: g2User } = await connectUser(owner);
+		const { uid, token: ownerToken, user: g2User } = await connectUser(owner);
 		standin.addUser("g2-neighbour");
 		const neighbour = standin.addInstallation("g2-neighbour", "User");
 		standin.addRepository({ owner: "g2-neighbour", name: "other", installation: neighbour });
 		const { user: neighbourUser } = await connectUser("g2-neighbour");
 		const directory = () => client.githubRepository.getOrCreate([String(projectG2.id)], service());
 		const push = async () => {
-			const item = await g2User.createItem({ repository: { id: projectG2.id }, title: "A webhook check", body: "Add a short program.", start: true });
+			const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title: "A webhook check", body: "Add a short program.", start: true });
 			const handle = () => client.workItem.get([uid, item.id], service());
 			const poll = () => (handle() as unknown as { checkPoll(): Promise<{ id: string; due_at: number; effect: string } | null> }).checkPoll();
 			const published = await until("registered push", async () => {
 				const view = await g2User.item(item.id);
-				if (view.head && view.pullRequest && (await directory().internalFind({ head: view.head, installationId: installation.id })).some(r => r.itemId === item.id)) return { head: view.head, pr: view.pullRequest.number };
+				if (view.head && view.pullRequest && view.verifiedCheck && (await directory().internalFind({ head: view.head, installationId: installation.id })).some(r => r.itemId === item.id)) return { head: view.head, pr: view.pullRequest.number };
 			}, 45_000);
 			return { ...published, id: item.id, handle, poll, view: () => g2User.item(item.id) };
 		};
-		const delivered = async (event: string, fields: object, id: number | string = installation.id) => {
-			const guid = randomUUID();
+		const delivered = async (event: string, fields: object, id: number | string = installation.id, guid = randomUUID()) => {
 			const res = await standin.deliver(web, event, { installation: { id }, repository: { id: projectG2.id, name: "decoy", owner: { login: "decoy" } }, ...fields }, { secret, guid });
 			assert.deepEqual(await res.json(), { taken: true });
 			return until("handled " + event, async () => {
@@ -362,6 +402,135 @@ async function run() {
 		});
 		const countReads = (head: string) => standin.requests.filter(r => r.path.includes("/commits/" + head + "/check-runs")).length;
 		const ci = (head: string, state: string) => projectG2.ci.set(head, { runs: [], statuses: [{ context: "required", state }] });
+		const waitForWrites = async (id: string) => {
+			const probe = client.workItem.get([uid, id], service()) as unknown as { checkPendingWrites(): Promise<boolean> };
+			await until("finished check writes", async () => !(await probe.checkPendingWrites()));
+		};
+		const stop = async (id: string) => {
+			await g2User.actOnItem({ id, action: { kind: "cancel" } });
+			await waitForWrites(id);
+		};
+		await check("verified completions never wake a waiting item", async () => {
+			const item = await push();
+			const before = await item.poll();
+			const taken = [];
+			for (const event of ["check_run", "check_suite"]) {
+				const res = await standin.deliver(web, event, { installation: { id: installation.id }, repository: { id: projectG2.id },
+					action: "completed", [event]: { head_sha: item.head, app: { id: standin.appId, slug: "old-slug" } } }, { secret });
+				taken.push(await res.json());
+			}
+			assert.deepEqual(taken, [{ taken: false }, { taken: false }]);
+			assert.deepEqual(await item.poll(), before);
+			await stop(item.id);
+		});
+		await check("verified publication, recovery after a lost POST reply, and a foreign push", async () => {
+			standin.appPermissions.checks = "write";
+			standin.checkFault = "lose_reply";
+			const item = await push();
+			try {
+				const onHead = () => standin.checks.filter(r => r.repository === projectG2.id && r.head_sha === item.head);
+				await until("adopted pending check", async () => (await item.view()).verifiedCheck?.state === "in_progress", 30_000);
+				assert.equal(onHead().length, 1);
+				const pending = onHead()[0];
+				assert.equal(pending.name, "windlass/verified");
+				assert.equal(pending.status, "in_progress");
+				assert.equal(pending.external_id, "pending:" + item.id + ":1");
+				assert.ok(standin.requests.some(r => r.method === "PATCH" && r.path.endsWith("/check-runs/" + pending.id)));
+				assert.ok(standin.minted.some(t => t.repositoryIds?.join() === String(projectG2.id) && JSON.stringify(t.permissions) === JSON.stringify({ metadata: "read", checks: "write" })));
+				ci(item.head, "success");
+				await delivered("status", { sha: item.head, state: "success" });
+				await until("successful check", async () => (await item.view()).verifiedCheck?.conclusion === "success", 25_000);
+				const v = await item.view();
+				assert.equal(onHead().length, 1);
+				assert.equal(pending.external_id, v.verdicts.at(-1)?.id);
+				assert.equal(pending.details_url, origin + "/items/" + item.id);
+				assert.match(pending.output.summary, /Ready for review/);
+				assert.ok(!JSON.stringify(pending.output).includes(v.task.title));
+				const original = structuredClone(pending);
+				const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+				const foreign = "d".repeat(40);
+				pull.headSha = foreign;
+				await delivered("pull_request", { action: "synchronize", pull_request: { number: item.pr, merged: false, head: { sha: foreign } } });
+				await until("foreign head explicitly blocked", async () => (await item.view()).verifiedCheck?.conclusion === "action_required", 25_000);
+				assert.ok(standin.checks.some(r => r.head_sha === foreign && r.conclusion === "action_required"));
+				assert.deepEqual(onHead(), [original]);
+				assert.ok((await directory().internalFind({ head: foreign, installationId: installation.id })).some(r => r.itemId === item.id));
+				pull.headSha = item.head;
+				await delivered("pull_request", { action: "synchronize", pull_request: { number: item.pr, merged: false, head: { sha: item.head } } });
+				await until("original commit verified again", async () => {
+					const view = await item.view();
+					return view.verifiedCheck?.sha === item.head && view.verifiedCheck.conclusion === "success" && view.verdicts.at(-1)?.moved === null && pending.completed_at !== original.completed_at;
+				}, 25_000);
+				await g2User.actOnItem({ id: item.id, action: { kind: "send_back", note: "Private owner feedback" } });
+				await until("handed check reopened for rework", async () => standin.requests.some(r => r.method === "PATCH" && r.path.endsWith("/check-runs/" + pending.id) &&
+					(r.body as { output?: { title: string } }).output?.title === "Sent back: being reworked in run 2"));
+				await stop(item.id);
+				await until("cancelled check", async () => standin.checks.some(r => r.head_sha === item.head && r.conclusion === "cancelled"));
+			} finally {
+				if ((await item.view()).state !== "cancelled") await stop(item.id);
+				standin.checkFault = null;
+				standin.appPermissions.checks = "read";
+			}
+		});
+		await check("verified read-only installation still hands over and logs once after two pushes", async () => {
+			installation.permissions = { ...standin.appPermissions, checks: "read" };
+			standin.appPermissions.checks = "write";
+			const item = await push();
+			try {
+				const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+				ci(item.head, "failure");
+				await delivered("status", { sha: item.head, state: "failure" });
+				await until("second push", async () => (await item.view()).events.filter(e => e.said.startsWith("Pushed ")).length === 2, 35_000);
+				ci(item.head, "success");
+				await delivered("status", { sha: item.head, state: "success" });
+				await until("handoff without Checks write", async () => pull.requestedReviewers.includes(owner) && pull.comments.some(c => c.body.startsWith("<!-- windlass-item:" + item.id + " -->")), 25_000);
+				const view = await item.view();
+				assert.equal(view.verdict?.result, "pass");
+				assert.equal(view.verifiedCheck?.state, "not_posted");
+				assert.equal(view.events.filter(e => e.said === view.verifiedCheck?.said).length, 1);
+				assert.equal(logs.split(`github.verified_check.not_permitted installation=${installation.id} item=${item.id}`).length - 1, 1);
+				assert.ok(!standin.checks.some(r => r.external_id.includes(item.id)));
+			} finally {
+				await stop(item.id);
+				delete installation.permissions;
+				standin.appPermissions.checks = "read";
+			}
+		});
+		await check("verified permission refusals on token and create finish the effect", async () => {
+			standin.appPermissions.checks = "write";
+			try {
+				for (const [step, status] of [["token", 403], ["create", 403], ["create", 422]] as const) {
+					standin.checkTokenFault = step === "token" ? status : null;
+					standin.checkFault = step === "create" ? status : null;
+					const item = await push();
+					await until("refused pending check", async () => (await item.view()).verifiedCheck?.state === "not_posted");
+					await stop(item.id);
+					const view = await item.view();
+					assert.equal(view.events.filter(e => e.said === view.verifiedCheck?.said).length, 1);
+					assert.ok(!standin.checks.some(r => r.external_id.includes(item.id)));
+				}
+			} finally { standin.checkTokenFault = null; standin.checkFault = null; standin.appPermissions.checks = "read"; }
+		});
+		await check("verified Re-run reads finished CI after a pending handover", async () => {
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkCiTimeout(ms: number): Promise<void> };
+			await settings.checkCiTimeout(0);
+			standin.appPermissions.checks = "write";
+			const item = await push();
+			try {
+				ci(item.head, "pending");
+				await delivered("status", { sha: item.head, state: "success" });
+				const q = await until("CI timeout question", async () => (await item.view()).question, 25_000);
+				await g2User.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "hand_over" } });
+				await until("unfinished handover check", async () => (await item.view()).verifiedCheck?.conclusion === "action_required");
+				const run = standin.checks.find(r => r.head_sha === item.head)!;
+				const external = run.external_id;
+				ci(item.head, "success");
+				await delivered("check_run", { action: "rerequested", check_run: run });
+				await until("Re-run observed finished CI", async () => (await item.view()).verifiedCheck?.conclusion === "success");
+				assert.equal(run.external_id, external);
+				assert.equal(standin.checks.filter(r => r.head_sha === item.head).length, 1);
+			} finally { await stop(item.id); await settings.checkCiTimeout(90 * 60_000); standin.appPermissions.checks = "read"; }
+		});
 		await check("G2 signed CI and PR nudges, coalescing, installation isolation and live readings", async () => {
 			const item = await push();
 			const first = await item.poll(); assert.ok(first);
@@ -439,8 +608,8 @@ async function run() {
 			console.log("PASS G2 open PR stayed in review; fetched merge ended item and removed its binding");
 		});
 		await check("G2 webhook fallback reaches review with zero deliveries", async () => {
-			const clock = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
-			await clock.checkFallback(3500);
+			const clock = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
+			await clock().checkFallback(3500);
 			try {
 				const sent = standin.deliveries.length;
 				projectG2.name = "factory";
@@ -452,7 +621,7 @@ async function run() {
 				await until("fallback read hands off", async () => (await item.view()).verdict?.ci === "passed", 12_000);
 				assert.equal(countReads(item.head), 1);
 				assert.equal(standin.deliveries.length, sent);
-			} finally { await clock.checkFallback(null); }
+			} finally { await clock().checkFallback(null); }
 		});
 		const { taskOfIssue } = await import("../server/src/factory/intake.js");
 		const writer = standin.users.get(owner)!;
@@ -465,6 +634,13 @@ async function run() {
 		const payload = (issue: Issue, sender = writer) => ({ issue: { number: issue.number, title: "Decoy title", body: "Decoy body", user: sender, author_association: "OWNER" }, sender: { ...sender, type: "User" } });
 		const notify = (issue: Issue, action: string, sender = writer, installationId = installation.id) => delivered("issues", { ...payload(issue, sender), action, label: { name: "windlass" } }, installationId);
 		const change = async (issue: Issue, action: string, sender = writer) => { standin.issueEvent(issue, action, sender); await notify(issue, action, sender); };
+		const applyLabel = async (issue: Issue, name: string, sender = writer) => {
+			const labels = new Set(issue.labels);
+			standin.issueEvent(issue, "labeled", sender);
+			issue.labels = [...labels.add(name)];
+			issue.events.at(-1)!.label = { name };
+			await delivered("issues", { ...payload(issue, sender), action: "labeled", label: { name } });
+		};
 		const mention = (issue: Issue, id: bigint, sender = writer) => delivered("issue_comment", { ...payload(issue, sender), action: "created",
 			comment: { id, body: "@windlass-fk4w payload words", author_association: "OWNER", user: sender } });
 		const items = async (issue: Issue, account = g2User) => (await account.listItems()).filter(i => i.origin?.issue.number === issue.number);
@@ -473,6 +649,174 @@ async function run() {
 			return { person, account: (await connectUser(login)).user };
 		};
 		const bots = (issue: Issue) => issue.comments.filter(c => c.user.login.endsWith("[bot]"));
+		type FeedbackClock = {checkAdvance(kind: "feedback" | "poll", ms: number): Promise<void>; checkWindow(): Promise<number>};
+		const feedbackItem = async () => {
+			const item = await push();
+			const clock = () => item.handle() as unknown as FeedbackClock;
+			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+			ci(item.head, "success");
+			await clock().checkAdvance("poll",0);
+			await until("first handoff",async () => pull.comments.some(c=>c.body.startsWith("<!-- windlass-item:")) && (await item.view()).state === "review");
+			return { ...item, clock, pull };
+		};
+		const reviewFields = (pr: number, review: ReturnType<typeof standin.submitReview>["review"]) => ({
+			action:"submitted", sender:review.user, pull_request:{number:pr}, review:{...review,body:"/windlass decoy webhook text"},
+		});
+		const commentFields = (pr: number, id: number, sender = writer, association = "OWNER") => ({
+			action:"created", issue:{number:pr,pull_request:{}}, sender:{...sender,type:"User"}, comment:{id,author_association:association,body:"/windlass decoy webhook text"},
+		});
+		await check("G4 owner review batches its lines, acknowledges once, reopens the check and requests review again", async () => {
+			standin.appPermissions.checks = "write";
+			const item = await feedbackItem();
+			try {
+				const check = await until("initial completed check", async () => standin.checks.find(c => c.repository === projectG2.id && c.head_sha === item.head && c.status === "completed"));
+				const r = standin.submitReview(projectG2,item.pull,writer,"changes_requested","Fix the empty case.",["/windlass line one","/windlass line two","/windlass line three"]);
+				const requests = standin.requests.filter(q=>q.path.endsWith("/requested_reviewers")).length;
+				const guid = randomUUID();
+				assert.equal((await delivered("pull_request_review",reviewFields(item.pr,r.review),installation.id,guid)).state,"done");
+				const replay = await standin.deliver(web, "pull_request_review", { installation: { id: installation.id }, repository: { id: projectG2.id }, ...reviewFields(item.pr, r.review) }, { secret, guid });
+				assert.deepEqual(await replay.json(), { taken: "duplicate" });
+				for (const line of r.lines) await delivered("pull_request_review_comment",{action:"created",sender:line.user,pull_request:{number:item.pr},comment:line});
+				await delivered("pull_request_review",reviewFields(item.pr,r.review));
+				const view = await until("one taken review",async () => { const v=await item.view(); return v.feedback?.batches.some(b => b.state === "taken") ? v : null; });
+				assert.equal(view.feedback.batches.length,1);
+				assert.equal(view.feedback.batches[0].entries.length,4);
+				assert.ok(!JSON.stringify(view.feedback).includes("decoy"));
+				assert.equal(view.run?.n,2);
+				await until("eyes on all three lines",async()=>r.lines.every(l=>standin.reactions.has("pulls:"+l.id)));
+				await until("reopened check", async () => standin.requests.some(q => q.method === "PATCH" && q.path.endsWith("/check-runs/" + check.id) &&
+					(q.body as {status: string; output?: {title?: string}}).status === "in_progress" && (q.body as {output?: {title?: string}}).output?.title === "Sent back: being reworked in run 2"));
+				await until("second push",async()=>(await item.view()).run?.step.kind==="ci");
+				const timeline = (await client.agentSession.get([uid, view.sessionId], { params: { token: ownerToken } }).snapshot()).timeline;
+				const turn = timeline.find(e => e.kind === "user" && e.turn === 2);
+				assert.ok(turn?.kind === "user" && turn.text.includes("> Fix the empty case.") && turn.text.includes("line three") && !turn.text.includes("decoy"));
+				await item.clock().checkAdvance("poll",0);
+				await until("second handoff", async () => {
+					const v = await item.view();
+					return v.verifiedCheck?.conclusion === "success" && check.external_id === v.verdicts.find(r => r.run === 2)?.id && item.pull.requestedReviewers.includes(owner);
+				});
+				assert.ok(standin.requests.filter(q=>q.path.endsWith("/requested_reviewers")).length>requests);
+				assert.ok(item.pull.comments.every(c=>!c.body.includes("Fix the empty case.")));
+			} finally { await stop(item.id); standin.appPermissions.checks = "read"; }
+		});
+		for (const [name, spacing, count, window] of [["quiet window",30_000,2,150_000],["ten minute cap",90_000,7,600_000]] as const) {
+			await check("G4 comments " + name,async()=>{
+				const item = await feedbackItem();
+				try {
+					for (let i=0;i<count;i++) {
+						if (i) await item.clock().checkAdvance("feedback",spacing);
+						const id = 50000 + item.pr * 10 + i;
+						item.pull.comments.push({id,body:"/windlass Point "+i,user:{...writer,type:"User"},author_association:"OWNER",created_at:new Date().toISOString()});
+						assert.equal((await delivered("issue_comment",commentFields(item.pr,id))).state,"done");
+					}
+					const length = await item.clock().checkWindow();
+					assert.ok(length>=window && length<=window+5000, "Wrong batch deadline " + length);
+					assert.equal((await item.view()).run?.n,1);
+					await item.clock().checkAdvance("feedback",window-(count-1)*spacing+5000);
+					await until("batched comments", async()=>(await item.view()).feedback.batches.some(b=>b.state==="taken" && b.entries.length===count));
+					assert.equal((await item.view()).run?.n,2);
+					await until("eyes on conversation comments",async()=>standin.reactions.has("issues:" + (50000 + item.pr * 10)));
+					if (spacing===90_000) {
+						// The 10:30 and 12:00 comments belong to the next quiet window.
+						for (const [id, delay] of [[51000, 25_000], [51001, 90_000]]) {
+							await item.clock().checkAdvance("feedback", delay);
+							item.pull.comments.push({ id, body: "/windlass Later " + id, user: { ...writer, type: "User" }, author_association: "OWNER", created_at: new Date().toISOString() });
+							await delivered("issue_comment", commentFields(item.pr, id));
+						}
+						assert.ok((await item.view()).feedback.batches.some(b => b.state === "pending" && b.entries.length === 2));
+					}
+				} finally { await stop(item.id); }
+			});
+		}
+		for (const association of ["NONE","COLLABORATOR"]) {
+			await check("G4 permission preflight for "+association,async()=>{
+				const item=await feedbackItem();
+				try {
+					const person=standin.addUser("g4-"+association.toLowerCase());
+					projectG2.access.set(person.login, association==="NONE" ? "write" : "read");
+					const prior=item.pull.comments.length;
+					await delivered("issue_comment",commentFields(item.pr,45671,person,association));
+					const view=await item.view();
+					assert.deepEqual(view.feedback,{batches:[],notTaken:1});
+					assert.equal(standin.requests.filter(r=>r.path.endsWith("/collaborators/"+person.login+"/permission")).length,association==="NONE"?0:1);
+					assert.equal(item.pull.comments.length,prior);
+				} finally { await stop(item.id); }
+			});
+		}
+		await check("G4 approval is logged once and a Bot approval never reaches the inbox",async()=>{
+			const item=await feedbackItem();
+			try {
+				const {review}=standin.submitReview(projectG2,item.pull,writer,"approved","Private approval.");
+				const bot=await standin.deliver(web,"pull_request_review",{installation:{id:installation.id},repository:{id:projectG2.id},...reviewFields(item.pr,review),sender:{...writer,type:"Bot"}},{secret});
+				assert.deepEqual(await bot.json(),{taken:false});
+				await delivered("pull_request_review",reviewFields(item.pr,review));
+				await delivered("pull_request_review",reviewFields(item.pr,review));
+				const view=await item.view();
+				assert.equal(view.events.filter(e=>e.said==="Approved by @"+owner+" on GitHub.").length,1);
+				assert.equal(view.run?.n,1);
+				assert.equal(view.feedback.batches.length,0);
+			} finally { await stop(item.id); }
+		});
+		for (const reason of ["four days old","wrong installation"]) {
+			await check("G4 ignores review "+reason+" and accepts a fresh bound review", async()=>{
+				const item=await feedbackItem();
+				try {
+					const r=standin.submitReview(projectG2,item.pull,writer,"changes_requested","Skipped request.",[],reason==="four days old"?Date.now()-4*DAY:Date.now());
+					await delivered("pull_request_review",reviewFields(item.pr,r.review),reason==="wrong installation"?neighbour.id:installation.id);
+					if (reason==="wrong installation") assert.equal(await item.handle().internalGithubFeedback({installationId:neighbour.id,repositoryId:projectG2.id,pr:item.pr,entries:[],denied:"test"}),false);
+					assert.deepEqual((await item.view()).feedback,{batches:[],notTaken:0});
+					const fresh=standin.submitReview(projectG2,item.pull,writer,"changes_requested","Fresh request.");
+					await delivered("pull_request_review",reviewFields(item.pr,fresh.review));
+					await until("fresh bound review",async()=>(await item.view()).feedback.batches.some(b=>b.entries[0].id==="review:"+fresh.review.id && b.state==="taken"));
+				} finally { await stop(item.id); }
+			});
+		}
+		await check("G4 owner review starts a planner on the feature PR",async()=>{
+			const item=await feedbackItem();
+			try {
+				await (item.handle() as unknown as {checkFinishedFeature():Promise<void>}).checkFinishedFeature();
+				const r=standin.submitReview(projectG2,item.pull,writer,"changes_requested","Add coverage to the feature.");
+				await delivered("pull_request_review",reviewFields(item.pr,r.review));
+				const view=await until("feedback re-planning",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
+				assert.equal(view.run?.step.kind,"refine");
+				assert.equal(view.feedback.batches[0].entries[0].access,"owner");
+			} finally { await stop(item.id); }
+		});
+		await check("G4 reconcile a missed writer review and request that writer at handoff", async()=>{
+			const item=await feedbackItem();
+			try {
+				const r=standin.submitReview(projectG2,item.pull,peer,"changes_requested","Handle a missing file.");
+				await item.clock().checkAdvance("poll",0);
+				const v=await until("missed review taken",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
+				assert.equal(v.feedback.batches[0].entries[0].id,"review:"+r.review.id);
+				assert.equal(v.feedback.batches[0].entries[0].access,"write");
+				await until("feedback status in marked comment",async()=>item.pull.comments.some(c=>c.body.includes("Changes asked for by \\@"+peer.login+" are being worked on in run 2\\.")));
+				await until("reworked PR awaiting CI",async()=>(await item.view()).run?.step.kind==="ci");
+				await item.clock().checkAdvance("poll",0);
+				await until("writer requested again", async()=>item.pull.requestedReviewers.includes(peer.login));
+				assert.equal(item.pull.comments.filter(c=>c.body.startsWith("<!-- windlass-item:")).length,1);
+			} finally { await stop(item.id); }
+		});
+		await check("G4 reconcile a missed standalone line comment", async()=>{
+			const item=await feedbackItem();
+			try {
+				// GitHub files a single line comment as a "commented" review with an empty body: only the line is addressed.
+				const r=standin.submitReview(projectG2,item.pull,peer,"commented","",[
+					{ path:"src/main.ts", line:3, body:"/windlass Close the file on error." },
+					{ path:"src/main.ts", line:9, body:"Not addressed, so not taken." },
+				]);
+				await item.clock().checkAdvance("poll",0);
+				// A line comment collects with others for the quiet window, as one delivered would.
+				await until("missed line comment collected",async()=>(await item.view()).feedback.batches.some(b=>b.state==="pending"));
+				await item.clock().checkAdvance("feedback",125_000);
+				const v=await until("missed line comment taken",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
+				assert.deepEqual(v.feedback.batches.flatMap(b=>b.entries.map(e=>[e.id,e.kind,e.path,e.line,e.body,e.access])),
+					[["review_comment:"+r.lines[0].id,"review_comment","src/main.ts",3,"Close the file on error.","write"]]);
+				// A later poll finds it handled and starts nothing more.
+				await item.clock().checkAdvance("poll",0);
+				assert.equal((await item.view()).run?.n,2);
+			} finally { await stop(item.id); }
+		});
 		await check("G3 feature filing binds the fetched command and label, and explains bug overrides", async () => {
 			const author = await newWriter("g3-feature-owner");
 			const named = make(175, reader);
@@ -481,10 +825,7 @@ async function run() {
 			assert.equal((await items(named, author.account))[0]?.mode, "orchestrate");
 
 			const labelled = make(176, reader);
-			standin.issueEvent(labelled, "labeled", author.person);
-			labelled.labels = ["windlass:orchestrate"];
-			labelled.events.at(-1)!.label = {name:"windlass:orchestrate"};
-			await delivered("issues", {...payload(labelled,author.person),action:"labeled",label:{name:"windlass:orchestrate"}});
+			await applyLabel(labelled, "windlass:orchestrate", author.person);
 			assert.equal((await items(labelled,author.account))[0]?.mode,"orchestrate");
 
 			const bug = make(177, reader);
@@ -493,7 +834,40 @@ async function run() {
 			await mention(bug, fileBug.id, author.person);
 			assert.equal((await items(bug,author.account))[0]?.mode,"single");
 			await until("bug reply",async () => bots(bug).length > 0);
-			assert.match(bots(bug)[0]!.body, /bug label.*single item/i);
+			assert.match(bots(bug)[0]!.body, /bug label.*Quick.*without a plan/i);
+
+			const defaults = make(178, reader);
+			await change(defaults, "labeled", author.person);
+			assert.equal((await items(defaults, author.account))[0]?.mode, "orchestrate");
+			await until("plan-first reply", async () => bots(defaults).some(c => /Plan first.*approve/.test(c.body)));
+
+			const quick = make(179, reader);
+			const note = standin.issueComment(quick, author.person, "/windlass quick fix the typo");
+			await mention(quick, note.id, author.person);
+			assert.equal((await items(quick, author.account))[0]?.mode, "single");
+			await until("quick reply", async () => bots(quick).some(c => /Quick.*without a plan/.test(c.body)));
+
+			const quickLabel = make(180, reader);
+			await applyLabel(quickLabel, "windlass:quick", author.person);
+			assert.equal((await items(quickLabel, author.account))[0]?.mode, "single");
+		});
+		await check("G3 feature defaults to single on a deployment without planning", async () => {
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkPlanning(enabled: boolean): Promise<void> };
+			await settings.checkPlanning(false);
+			try {
+				const author = await newWriter("g3-quick-default");
+				const issue = make(181, reader);
+				await change(issue, "labeled", author.person);
+				assert.equal((await items(issue, author.account))[0]?.mode, "single");
+				await until("deployment switch reply", async () => bots(issue).some(c => /disabled.*without a plan/.test(c.body)));
+				const draft = await author.account.createItem({ repository: { id: projectG2.id }, title: "Export", body: "Make an export." });
+				assert.equal(draft.mode, "single");
+				const explicit = make(182, reader);
+				await mention(explicit, standin.issueComment(explicit, author.person, "/windlass orchestrate").id, author.person);
+				assert.deepEqual(await items(explicit, author.account), []);
+				await until("explicit orchestration refusal", async () => bots(explicit).some(c => /Not taken.*disabled/.test(c.body)));
+				await assert.rejects(author.account.createItem({ repository: { id: projectG2.id }, title: "Export", body: "Make an export.", mode: "orchestrate" }));
+			} finally { await settings.checkPlanning(true); }
 		});
 		await check("G3 snapshot strips hidden text, bounds task, identifies author and fences third-party text", () => {
 			const issue = make(40, reader);
@@ -675,7 +1049,7 @@ async function run() {
 			assert.equal((await directory().internalFind({ issue: 47 }))[0].generation, 2);
 		});
 		await check("G3 marked issue comment links to the item, edits in place; real PR ends in Closes", async () => {
-			const issue = make(48); await change(issue, "labeled"); const [item] = await items(issue); assert.ok(item);
+			const issue = make(48); await applyLabel(issue, "windlass:quick"); const [item] = await items(issue); assert.ok(item);
 			const pull = await until("issue PR", async () => {
 				const view = await g2User.item(item.id);
 				return standin.pulls.find(p => p.repository === projectG2.id && p.number === view.pullRequest?.number);
@@ -726,7 +1100,7 @@ async function run() {
 		});
 		await check("G3 owner closure while working withdraws the actual turn", async () => {
 			const { person, account } = await newWriter("g3-close");
-			const issue = make(52, person); issue.body = "Build this carefully (slow)."; await change(issue, "labeled", person);
+			const issue = make(52, person); issue.body = "Build this carefully (slow)."; await applyLabel(issue, "windlass:quick", person);
 			const [item] = await items(issue, account); assert.ok(item);
 			await until("running issue turn", async () => (await account.listSessions()).some(s => s.id === item.sessionId && s.status === "running"), 30_000);
 			await change(issue, "closed", person);
@@ -734,11 +1108,11 @@ async function run() {
 			await until("issue session interrupted", async () => (await account.listSessions()).find(s => s.id === item.sessionId)?.lastOutcome === "interrupted");
 		});
 		await check("G3 a fetched merge ends the issue item; a fresh label files generation two", async () => {
-			const clock = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
-			await clock.checkFallback(3500);
+			const clock = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkFallback(ms: number | null): Promise<void> };
+			await clock().checkFallback(3500);
 			try {
 				const { person, account } = await newWriter("g3-merge");
-				const issue = make(53, person); await change(issue, "labeled", person); const [item] = await items(issue, account); assert.ok(item);
+				const issue = make(53, person); issue.labels.push("windlass:quick"); await applyLabel(issue, "windlass", person); const [item] = await items(issue, account); assert.ok(item);
 				const published = await until("published issue item", async () => { const v = await account.item(item.id); return v.pullRequest && v.head ? { head: v.head, pr: v.pullRequest.number } : null; }, 45_000);
 				ci(published.head, "success");
 				await until("issue in review", async () => (await account.item(item.id)).state === "review", 20_000);
@@ -750,13 +1124,13 @@ async function run() {
 				await notify(issue, "labeled", person); assert.equal((await items(issue, account)).length, 1);
 				await change(issue, "labeled", person); assert.equal((await items(issue, account)).length, 2);
 				assert.equal((await directory().internalFind({ issue: 53 }))[0].generation, 2);
-			} finally { await clock.checkFallback(null); }
+			} finally { await clock().checkFallback(null); }
 		});
 		await check("G3 a failed item retries only for its own writer with a fresh GitHub subject", async () => {
 			const { person, account } = await newWriter("g3-retry");
 			await account.saveRepositoryChecks({ repositoryId: projectG2.id, checks: [{ name: "build", command: "npm run fail" }] });
 			const issue = make(54, person);
-			await change(issue, "labeled", person);
+			await applyLabel(issue, "windlass:quick", person);
 			const [item] = await items(issue, account); assert.ok(item);
 			const fail = async () => {
 				const question = await until("repeated required check failure", async () => (await account.item(item.id)).question, 90_000);
@@ -815,7 +1189,7 @@ async function run() {
 			const subject = { id: 7, user, author_association: "OWNER", body: "@windlass-fk4w fix", commit_id: HEAD, path: "src/a", line: 9 };
 			const p = { ...shaPayload, action: "created", sender: user, issue: { number: 3, user, author_association: "OWNER" },
 				pull_request: { number: 4, head: { sha: HEAD }, merged: false }, review: { ...subject, state: "changes_requested" }, comment: subject };
-			const meta = { guid: randomUUID(), at: 42, slug: standin.slug };
+			const meta = { guid: randomUUID(), at: 42, appId: standin.appId, slug: standin.slug };
 			const take = (event: string, changes: object) => edge(event, { ...p, ...changes }, meta);
 			for (const action of ["labeled", "unlabeled", "closed", "reopened", "edited", "deleted", "transferred"]) {
 				assert.equal(take("issues", { action, label: { name: "windlass" } })?.event, "issues", action);
@@ -830,13 +1204,17 @@ async function run() {
 			assert.equal(take("pull_request", { action: "opened" }), null);
 			assert.ok(take("pull_request_review", { action: "submitted", review: { ...p.review, body: "" } }));
 			assert.ok(take("pull_request_review", { action: "submitted", review: { ...p.review, state: "commented" } }));
-			assert.equal(take("pull_request_review", { action: "submitted", review: { ...subject, state: "approved", body: "ok" } }), null);
+			assert.ok(take("pull_request_review", { action: "submitted", review: { ...subject, state: "approved", body: "ok" } }));
 			assert.ok(take("pull_request_review_comment", {}));
 			assert.equal(take("pull_request_review_comment", { comment: { ...subject, body: "fix" } }), null);
 			for (const event of ["check_suite", "check_run"]) {
 				assert.deepEqual(take(event, { action: "completed", [event]: { head_sha: HEAD } })?.data, { head: HEAD });
 				assert.equal(take(event, { action: "created", [event]: { head_sha: HEAD } }), null);
 			}
+			const rerun = { id: "9007199254740993", name: "windlass/verified", head_sha: HEAD, app: { id: standin.appId } };
+			assert.deepEqual(take("check_run", { action: "rerequested", check_run: rerun })?.data, { head: HEAD, runId: rerun.id });
+			for (const other of [{ ...rerun, name: "other" }, { ...rerun, app: { id: 123, slug: standin.slug } }])
+				assert.equal(take("check_run", { action: "rerequested", check_run: other }), null);
 			for (const state of ["success", "failure", "error"]) assert.deepEqual(take("status", { state })?.data, { head: HEAD });
 			assert.equal(take("status", { state: "pending" }), null);
 			for (const event of ["installation", "installation_repositories"])
@@ -1096,7 +1474,9 @@ async function run() {
 			});
 		}
 		await check("sweep posts the exact 19-digit delivery id once and skips known GUIDs", async () => {
-			// Only these two failures belong to this scenario. Both are real signed HTTP attempts.
+			// A scheduled sweep may have already redelivered failures from earlier scenarios.
+			const firstRequest = standin.requests.length;
+			const attempts = () => standin.requests.slice(firstRequest).filter(r => r.method === "POST" && r.path.endsWith("/attempts"));
 			standin.deliveries.length = 0;
 			const existing = randomUUID(), missing = randomUUID(), unlinked = 96666;
 			assert.equal((await send(shaPayload, existing)).status, 202);
@@ -1111,7 +1491,7 @@ async function run() {
 			const failedId = standin.deliveries.find(d => d.guid === missing)!.id;
 			assert.notEqual(String(Number(failedId)), failedId);
 			await hooks.internalSweep();
-			assert.deepEqual(standin.requests.filter(r => r.method === "POST" && r.path.endsWith("/attempts")).map(r => r.path),
+			assert.deepEqual(attempts().map(r => r.path),
 				[`/api/v3/app/hook/deliveries/${failedId}/attempts`]);
 			assert.deepEqual(standin.deliveries.filter(d => d.redelivery).map(d => [d.guid, d.status_code]), [[missing, 202]]);
 			assert.equal(await known(missing), true);
@@ -1120,7 +1500,7 @@ async function run() {
 			await fixture(91234).checkFixture("expire", missing);
 			await inbox(91234).internalDue();
 			await hooks.internalSweep();
-			assert.equal(standin.requests.filter(r => r.path.endsWith("/attempts")).length, 1);
+			assert.equal(attempts().length, 1);
 			assert.ok(standin.requests.some(r => r.auth === "jwt" && r.path.includes("status=failure") && r.path.includes("per_page=100")));
 		});
 		await check("sweep shares 50 attempts across installations and resumes its three-page scan", async () => {

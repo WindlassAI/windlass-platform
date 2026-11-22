@@ -9,18 +9,23 @@
  * ended ones (done, failed, cancelled), folded. Two chips filter it by repository and by how an item
  * was filed; both are kept in the address (`?repository=`, `?from=`), so a link can open it filtered.
  *
+ * The ended ones can be many, and only grow: unfolded, they come from the server a page at a time,
+ * newest filed first (`listItems` with a page, server/src/item-pages.ts), with "Show more" for the next.
+ * The live list keeps the rows shown current, and adds one that ends while the page is open.
+ *
  * Where the deployment runs no second review (`PlatformInfo.items.reviewer`), one line under the
  * heading says so and no row says a word of it.
  */
-import type { GithubId, ItemState, ItemSummary } from "@contract";
-import { useId, useState, type ReactNode } from "react";
+import { ITEM_PAGE_DEFAULT, type GithubId, type ItemCursor, type ItemState, type ItemSummary } from "@contract";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { byFiling, nextCursor } from "../../../server/src/item-pages";
 import { StartComposer } from "../components/StartComposer";
 import { ChevronIcon, FileIcon, Mark, RepoIcon, WarnIcon } from "../components/Icons";
 import { Menu, Pill, type MenuSpec } from "../components/ui";
 import { plural } from "../lib/format";
 import { repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
-import { useApp } from "../state/app";
+import { useApp, useAuth } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
 import { asking, ItemRow, questionLine, type ItemsState } from "./Items";
 
@@ -55,21 +60,104 @@ function repositoriesOf(list: readonly ItemSummary[]): Array<{ id: GithubId; nam
 	return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function Group({ id, name, items, now, reviewer, tone }: { id: string; name: string; items: ItemSummary[]; now: number; reviewer: boolean; tone?: "needs" }) {
-	if (items.length === 0) return null;
+function Group({ id, name, items, now, reviewer, tone, count, children }: { id: string; name: string; items: ItemSummary[]; now: number; reviewer: boolean; tone?: "needs"; count?: string; children?: ReactNode }) {
+	if (items.length === 0 && !children) return null;
 	return (
 		<section className={`agent-group factory-group${tone === "needs" ? " needs-you factory-lane-needs" : ""}`} aria-labelledby={id}>
 			<h2 className="agent-group-head factory-lane-head" id={id}>
 				<span className="agent-group-name">{name}</span>
-				<span className="agent-group-count">{plural(items.length, "work item")}</span>
+				<span className="agent-group-count">{count ?? plural(items.length, "work item")}</span>
 			</h2>
 			<ul className="agents factory-lane">
 				{items.map((item) => (
 					<ItemRow key={item.id} item={item} now={now} repository ci reviewer={reviewer} why={tone === "needs" ? questionLine(item) : undefined} />
 				))}
 			</ul>
+			{children}
 		</section>
 	);
+}
+
+const ENDED_STATES: ReadonlySet<ItemState> = new Set(ENDED);
+/** Whether an item stands on or before the cursor in the list's order (filed no earlier than the cursor's item). */
+const onOrBefore = (item: ItemSummary, cursor: ItemCursor) => byFiling(item, cursor) <= 0;
+
+export interface EndedPages {
+	/** The ended items shown, newest filed first: the pages read, as the live list has them now. */
+	items: ItemSummary[];
+	/** Whether the server has more after them. */
+	more: boolean;
+	loading: boolean;
+	error: string | null;
+	/** Reads the next page; the first again, when it could not be read. */
+	loadMore(): void;
+}
+
+/**
+ * The ended rows: the pages read, held against the live list (`live`, under the same filters). A row
+ * shows the item as the live list has it now, one that is no longer ended leaves, and one that ended
+ * since and is filed among those shown joins them (anywhere, once `cursor` is null: the last page is in).
+ */
+export function mergeEnded(read: readonly ItemSummary[], live: readonly ItemSummary[] | null, cursor: ItemCursor | null): ItemSummary[] {
+	const current = new Map((live ?? []).map((item) => [item.id, item]));
+	const rows = new Map<string, ItemSummary>();
+	for (const item of read) {
+		const now = live === null ? item : current.get(item.id);
+		if (now && ENDED_STATES.has(now.state)) rows.set(item.id, now);
+	}
+	// Ended since, and filed among the rows shown (or anywhere, once the last page is read).
+	for (const item of live ?? []) if (ENDED_STATES.has(item.state) && !rows.has(item.id) && (cursor === null || onOrBefore(item, cursor))) rows.set(item.id, item);
+	return [...rows.values()].sort(byFiling);
+}
+
+/** The ended items, read from the server a page at a time once `open`, under the page's filters; another filter starts again from the first page. */
+function useEndedPages(open: boolean, filters: { repository?: GithubId; from?: ItemSource }, live: readonly ItemSummary[] | null): EndedPages {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const key = `${filters.repository ?? ""}|${filters.from ?? ""}`;
+	const [state, setState] = useState<{ key: string; read: ItemSummary[]; cursor: ItemCursor | null; started: boolean; loading: boolean; error: string | null }>({ key, read: [], cursor: null, started: false, loading: false, error: null });
+	const asked = useRef(0);
+	const mine = state.key === key ? state : { key, read: [], cursor: null, started: false, loading: false, error: null };
+
+	const read = useCallback(
+		(from: ItemCursor | null, before: ItemSummary[]) => {
+			const ask = ++asked.current;
+			setState({ key, read: before, cursor: from, started: true, loading: true, error: null });
+			client
+				.user(auth)
+				.listItems({ ended: true, before: from, limit: ITEM_PAGE_DEFAULT, repository: filters.repository ?? null, source: filters.from ?? null })
+				.then(
+					(page) => ask === asked.current && setState({ key, read: [...before, ...page], cursor: nextCursor(page, ITEM_PAGE_DEFAULT), started: true, loading: false, error: null }),
+					(failure: unknown) => ask === asked.current && setState({ key, read: before, cursor: from, started: true, loading: false, error: explain(failure) }),
+				);
+		},
+		[client, auth, explain, key, filters.repository, filters.from],
+	);
+
+	// The first page, when the ended ones are unfolded, and again under other filters.
+	useEffect(() => {
+		if (open && !mine.started) read(null, []);
+	}, [open, mine.started, read]);
+	useEffect(
+		() => () => {
+			asked.current += 1;
+		},
+		[],
+	);
+
+	// Nothing is shown before the first page is in: the live list alone would draw every ended item.
+	const loaded = mine.started && !(mine.read.length === 0 && (mine.loading || mine.error !== null));
+	return {
+		items: loaded ? mergeEnded(mine.read, live, mine.cursor) : [],
+		more: loaded && mine.cursor !== null,
+		loading: mine.loading,
+		error: mine.error,
+		loadMore: () => {
+			if (mine.loading) return;
+			if (mine.error !== null && mine.read.length === 0) read(null, []);
+			else if (mine.cursor !== null) read(mine.cursor, mine.read);
+		},
+	};
 }
 
 /**
@@ -97,6 +185,36 @@ function FilterMenu({ name, label, icon, value, choices, chosen, onChoose }: { n
 				</Pill>
 			)}
 		/>
+	);
+}
+
+/** Under the ended rows: the way to the next page, or what is in the way of it. */
+function EndedFoot({ pages }: { pages: EndedPages }) {
+	if (pages.loading) {
+		return (
+			<p className="agents-fold items-fold factory-more" aria-busy="true" role="status">
+				{pages.items.length === 0 ? "Reading the ended items…" : "Reading more…"}
+			</p>
+		);
+	}
+	if (pages.error !== null) {
+		return (
+			<p className="agents-fold items-fold factory-more tone-bad" role="alert">
+				{pages.error}{" "}
+				<button type="button" className="link" onClick={pages.loadMore}>
+					Try again
+				</button>
+			</p>
+		);
+	}
+	if (!pages.more) return null;
+	return (
+		<p className="agents-fold items-fold factory-more">
+			<button type="button" className="link machine-toggle" onClick={pages.loadMore}>
+				<ChevronIcon size={11} className="machine-chevron" />
+				Show {ITEM_PAGE_DEFAULT} more
+			</button>
+		</p>
 	);
 }
 
@@ -143,6 +261,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const list = items.list;
 	const shown = list === null ? null : filterItems(list, filters);
 	const groups = factoryGroups(shown ?? []);
+	const endedPages = useEndedPages(showEnded, filters, shown);
 	const repositories = repositoriesOf(list ?? []);
 	const filtered = filters.repository !== undefined || filters.from !== undefined;
 	const running = workingCounts(sessions ?? []).items;
@@ -306,7 +425,9 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 								{showEnded ? null : <span>{ENDED.map((state) => [state, groups.ended.filter((item) => item.state === state).length] as const).filter(([, n]) => n > 0).map(([state, n]) => `${n} ${state}`).join(", ")}</span>}
 							</p>
 							<div id={ended} hidden={!showEnded}>
-								<Group id={ids.ended} name="Ended" items={groups.ended} now={now} reviewer={reviewer} />
+								<Group id={ids.ended} name="Ended" items={endedPages.items} count={endedPages.items.length < groups.ended.length ? `${endedPages.items.length} of ${plural(groups.ended.length, "work item")}` : undefined} now={now} reviewer={reviewer}>
+									<EndedFoot pages={endedPages} />
+								</Group>
 							</div>
 						</>
 					) : null}

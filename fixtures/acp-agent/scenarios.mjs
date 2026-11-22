@@ -81,6 +81,20 @@ export const scenarios = {
 	*usage() {
 		yield { sessionUpdate: "usage_update", used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } };
 	},
+	*claudelimit() {
+		const rateLimit = { status: "rejected", rateLimitType: "five_hour", utilization: 1, resetsAt: 1900000000,
+			email: "canary@example.invalid", accountId: "canary-account", token: "canary-token" };
+		yield { sessionUpdate: "usage_update", used: 50, size: 100, _meta: { "_claude/rateLimit": rateLimit, private: "canary-meta" } };
+		return { error: { code: -32603, message: "Limit reached", data: { errorKind: "rate_limit", rateLimit } } };
+	},
+	*codexlimit() {
+		return { error: { code: -32603, message: "Quota exhausted", data: { codexErrorInfo: "usageLimitExceeded", additionalDetails: "canary-account" } } };
+	},
+	*warning() {
+		yield { sessionUpdate: "usage_update", used: 50, size: 100, _meta: { "_claude/rateLimit": { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.93 } } };
+		yield { steer: true };
+		yield message("Finished after warning.");
+	},
 	*stream() {
 		const updates = [...scenarios.plain(), ...scenarios.tools(), ...scenarios.plan(), ...scenarios.plain()];
 		for (const update of updates) {

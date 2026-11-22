@@ -20,11 +20,17 @@
  * config.ts reads. The day's allowance and the kept sandboxes are usage.ts's own settings.
  */
 
-import type { SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
-import { spellSeconds, type UsageEntry } from "../usage.js";
+import { MINUTE, providerWait } from "../provider-usage.js";
+import type { ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
+import { nextUtcDay, spellSeconds, type UsageEntry } from "../usage.js";
 import type { FactoryLimits, ItemBudget, StopCause, Wait } from "./types.js";
 
 export const FACTORY_DEFAULTS: FactoryLimits = {
+	dailyTokens: null,
+	featureMultiplier: 3,
+	githubItemsPerDay: 20,
+	githubDrafts: 20,
+	attachments: { bytes: 2 * 1024 * 1024, perItem: 40, accountBytes: 1_073_741_824, days: 180 },
 	runningTurns: 6,
 	factoryTurns: 5,
 	hostedRunning: 3,
@@ -102,12 +108,20 @@ export type PlaceNow =
 			/** Its control socket is online, but the runner did not open the session link. */
 			attachRetryAt: number | null;
 			keptFull: boolean;
+			slots?: { units: number; free: number };
 			/** Its sandboxes running, and how many its runner said it runs at most. */
 			running: number;
 			max: number;
 	  };
 
+export function slotWait(name: string, units: number, free: number): string {
+	return `Waiting for ${units} free slot${units === 1 ? "" : "s"} on ‘${name}’. ${free} free now.`;
+}
+
 export interface AdmissionInput {
+	provider?: ProviderAccount;
+	/** All Factory turns currently use the platform model source. */
+	dailyTokenWait?: string | null;
 	at: number;
 	limits: FactoryLimits;
 	/** The user's turns running now, the factory's among them by their items' titles. */
@@ -128,10 +142,18 @@ const listed = (titles: string[]) => (titles.length === 0 ? "" : ` (${titles.sli
 const utcTime = (ms: number) => new Date(ms).toISOString().slice(11, 16);
 
 /** In the order a person can act on them: the first that holds is the one reason named. */
+
 export function admit(input: AdmissionInput): Admission {
 	const { at, limits, turns, place } = input;
+	const account = input.provider;
+	if (account?.state === "limited" && account.limitedUntil !== null && account.limitedUntil > at) {
+		const reset = account.windows.find(w => w.source === "refusal" && w.resetsAt !== null && w.resetsAt + MINUTE === account.limitedUntil)?.resetsAt;
+		return { ok: false, wait: providerWait(account.harness, place.kind === "hosted" ? "hosted" : place.name, account.limitedUntil, reset) };
+	}
 	const later = retryAt(at, input.attempt);
 	const wait = (reason: Wait["reason"], sentence: string, when = later): Admission => ({ ok: false, wait: { reason, sentence, retryAt: when } });
+
+	if (input.dailyTokenWait) return wait("capacity", input.dailyTokenWait, nextUtcDay(at));
 
 	if (place.kind === "machine" && (!place.online || (place.attachRetryAt ?? 0) > at)) {
 		return wait("machine", `Waiting for your machine "${place.name}" to come back online.`, place.online ? place.attachRetryAt! : later);
@@ -152,6 +174,7 @@ export function admit(input: AdmissionInput): Admission {
 	}
 
 	if (place.kind === "machine") {
+		if (place.slots && place.slots.free < place.slots.units) return wait("machine", slotWait(place.name, place.slots.units, place.slots.free));
 		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`);
 		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there.`);
 		return { ok: true };

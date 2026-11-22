@@ -29,6 +29,7 @@ trap 'rm -f -- "$tmp"' EXIT
     signin_key=$(openssl rand -hex 32)
     echo "WLP_SIGNIN_KEY=$signin_key"
   fi
+  echo "WLP_REQUIRE_SIGNED_RUNNER=0"
   echo "WLP_SANDBOX=fake"
   echo "WLP_DEMO=$demo"
   echo "SELFHOST_SERVER_TARGET=$target"

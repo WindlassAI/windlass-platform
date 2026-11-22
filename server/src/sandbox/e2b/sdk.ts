@@ -44,7 +44,7 @@ function connection(sandbox: Sandbox): E2bConnection {
 				// E2B's own limit on a command is 60 s by default and kills it; a turn's engine runs for as long as the turn.
 				timeoutMs: 0,
 				requestTimeoutMs: REQUEST_TIMEOUT_MS,
-				user: USER,
+				user: options.gitUser ? "nobody" : USER,
 				cwd: options.cwd,
 				envs: options.envs,
 				stdin: options.stdin,

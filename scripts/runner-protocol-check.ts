@@ -315,6 +315,10 @@ expect("the control report accepts both owner policies and legacy reports",
 expect("malformed owner policies are refused", [null, hardened, [], [windlass], [hardened, hardened],
 	[hardened, "e2b"], [hardened, windlass, hardened], [hardened, {}]].every(ids => profileReport(ids) === null));
 
+const generationReport = (loginGeneration: unknown) => parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [],
+	harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", loginGeneration }] }));
+expect("a legacy control report carries the login generation and rejects arbitrary identity text", generationReport("a".repeat(32))?.kind === "report" && generationReport("canary@example.invalid") === null);
+
 async function harnessCreate() {
 	const model = { id: "opus", name: "Opus", efforts: ["low", "high"] };
 	const options = { models: [model], defaultModel: "opus", modes: [], checkedAt: 1000 };
@@ -323,8 +327,8 @@ async function harnessCreate() {
 	expect("a bounded model report passes, oversized or inconsistent options are refused", accepted(options) &&
 		[{ models: Array(33).fill(model) }, { models: [{ ...model, efforts: Array(17).fill("x") }] },
 			{ defaultModel: "absent" }, { checkedAt: -1 }, { modes: [null] }, { models: [model, model] },
-			{ models: Array.from({ length: 28 }, (_, i) => ({ ...model, id: i ? String(i) : model.id, name: "界".repeat(210) })) },
-			{ models: [{ ...model, name: "x".repeat(257) }] }].every(change => !accepted({ ...options, ...change })));
+			{ models: Array.from({ length: 1800 }, (_, i) => ({ ...model, id: i ? String(i) : model.id, name: "界".repeat(210) })) },
+			{ models: [{ ...model, name: "x".repeat(513) }] }].every(change => !accepted({ ...options, ...change })));
 	const args = { profile: "docker-hardened", harness: "claude" } as const;
 	const { ch: s } = server();
 	const { ch: r } = runner((ch, op) => {

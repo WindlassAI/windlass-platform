@@ -1,6 +1,6 @@
 ## Why use your own machine
 
-An agent on one of your machines runs in a Docker container there, made by a small program called the runner. Its sandboxes take none of your daily sandbox time, no place among your kept sandboxes and no place among your agents working at once. You set its limits yourself. On a machine you can also run Claude Code with your Claude subscription.
+An agent on one of your machines runs in a Docker container there, made by a small program called the runner. Its sandboxes take none of your daily sandbox time, no place among your kept sandboxes and no place among your agents working at once. You set its limits yourself. On a machine you can also run Claude Code with your Claude subscription, or OpenCode with a model provider of yours.
 
 The runner connects out to the platform. Nothing needs to reach your machine from outside.
 
@@ -18,7 +18,22 @@ Open the account menu and choose **Machines**, then **Add a machine**.
 
 ### 1. Start the runner
 
-The dialog shows a command. Copy it and run it on your machine. It has this shape; the image and the address come from the platform:
+The dialog offers two commands. The image and the address in them come from the platform.
+
+**Set it up** is the setup command. Tick **Enable Claude Code** or **Enable OpenCode** for the agents the machine should offer, then copy the command and run it in a terminal on your machine. With both ticked it reads:
+
+```sh
+docker run -it --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner \
+  <runner image> setup --platform <platform address> --harness claude --harness opencode
+```
+
+It pairs the machine and signs its agents in, asking in the terminal as it goes. First it prints the pairing code: enter it as in steps 2 and 3. Then it asks to [sign each agent in](#sign-agents-in). Last, it prints `Start the runner on this machine:` and the command that starts the runner in the background, with the same options. Run that command.
+
+A box is shown only for an agent the platform's runner image includes.
+
+**Or start the runner in the background** is the install command. It starts the runner at once, and you read the pairing code from its log:
 
 ```sh
 docker run -d --name windlass-runner --restart unless-stopped \
@@ -29,11 +44,13 @@ docker run -d --name windlass-runner --restart unless-stopped \
 
 The runner keeps its key and its state in the `windlass-runner` volume. Keep that volume: it is what keeps the machine paired.
 
+Setup pairs the machine again each time you run it. It refuses while the runner is running with the same volume: "The runner is already using this state. Use login <agent> in the running runner." To sign an agent in on a running machine, use `login`.
+
 > **Tip** Where rootless Docker works, use it: the runner then gets less of your machine. Mount `$XDG_RUNTIME_DIR/docker.sock` in place of `/var/run/docker.sock`.
 
 ### 2. Enter the code
 
-When it starts, the runner prints a pairing code like `XXXX-XXXX`, and the address to enter it at:
+When it starts, the runner prints a pairing code like `XXXX-XXXX`, and the address to enter it at. Setup prints it in your terminal. The background runner prints it in its log:
 
 ```sh
 docker logs windlass-runner
@@ -45,11 +62,13 @@ Choose **Enter the code**, type the code and choose **Check code**. Case, spaces
 
 The page shows what the machine says about itself: its name, OS, architecture and runner version. Nobody has checked these. Connect it only if it is the machine you started the runner on. Then choose **Connect**.
 
-The runner then prints whose account it joined: `Paired with <your GitHub login>`. If that is not you, run `windlass-runner pair` again.
+The runner then prints the platform's key fingerprint, and whose account it joined: `Paired with <your GitHub login>`. If that is not you, run `windlass-runner pair` again.
+
+A new runner pairs only with a platform that signs its runner connections. If the platform does not, the runner says "This runner needs signed runner connections enabled on the platform. Ask the operator to enable them, then pair again." Ask whoever runs the platform.
 
 ### Name it
 
-The machine is named after its Docker daemon, or its hostname if Docker gives none. To choose the name yourself, add `--name` after the runner image, with `run` or `pair`:
+The machine is named after its Docker daemon, or its hostname if Docker gives none. To choose the name yourself, add `--name` after the runner image, with `setup`, `run` or `pair`:
 
 ```sh
 <runner image> --platform <platform address> --name "Build box"
@@ -57,7 +76,7 @@ The machine is named after its Docker daemon, or its hostname if Docker gives no
 
 A name has 1 to 64 printable characters. The runner saves it and uses it again when it restarts without `--name`.
 
-> **Note** If the code expired, the runner says so. Restart the container, or run `windlass-runner pair`, to get a new code.
+> **Note** If the code expired, the runner says so. Restart the container, or run `windlass-runner pair`, to get a new code. With setup, run the setup command again.
 
 ## What the machine receives
 
@@ -82,11 +101,11 @@ When you start an agent, choose the machine under **on**. Each machine offers tw
 
 ### Turn limit and queueing
 
-A runner runs 2 turns at once by default. More turns wait in a queue, in the order they arrive. A waiting agent says "Waiting for a free slot on your machine (2 of 2 busy)." **Stop** takes a turn out of the queue. To change the limit, start the runner with `--max-turns`. See [Runner reference](/docs/runner#run-options).
+The runner sizes its slots from the machine’s CPU and memory. A personal turn takes one slot by default. A large factory turn can take up to four. Turns wait in arrival order, so a large turn at the head waits for enough free slots before a smaller turn can start. **Stop** takes a turn out of the queue. Set the capacity with `--slots` or `--max-turns`. See [Runner reference](/docs/runner#run-options).
 
 ### CPU and memory
 
-Each sandbox gets 1536 MiB of memory, at most 512 processes and no Linux capabilities. Its CPU is capped at half the CPUs the runner can use, at least 0.5 CPU. To change the cap, set `WLP_RUNNER_CPUS` in the runner's environment, for example `-e WLP_RUNNER_CPUS=2` before the image. **Details** on the Machines page shows the CPUs given to sandboxes under **Capacity**.
+On a machine with one or two CPUs, one slot defaults to half the available CPUs, 1536 MiB of memory and 512 processes. Larger machines reserve CPU and memory for the host before dividing resources into slots. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget.
 
 ## Network access
 
@@ -152,35 +171,149 @@ You can tell the planner of an orchestrated work item what each machine is for. 
 
 Choose **Save**. The planner reads this, with the machine's OS, capacity and what it can run, when it splits a feature into subtasks. Nothing else reads it. See [Orchestrate](/docs/factory#orchestrate-a-feature).
 
-## Claude Code on your machine
+### Let features use it
 
-Claude Code runs only on a machine whose runner was started with `--harness claude`, and only in the hardened profile, **Hardened Docker on your machine "…"**. The runner must be a build that includes the Claude Code image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image."
+Under **Details**, **Subtasks of features** says whether a feature's subtasks may run on the machine:
 
-To add the flag, put `--harness claude` after the runner image in the command above.
+- **Any feature** (the default): features may place subtasks here.
+- **When named**: only when a plan names this machine for the subtask.
+- **Never**: features never place subtasks here.
 
-### Sign Claude in
+The choice is saved at once. A machine that is not on **Any feature** says so on its card, for example "features: when named". A subtask that only inherits the feature's place counts as not named, so a feature filed on a **When named** machine must name it in each subtask. A plan that needs a **Never** machine cannot be approved: the plan says why under the subtask. See [Placement](/docs/factory#placement).
 
-The Machines page shows the sign-in state and a command to copy. Run it in a terminal on the paired machine.
+## Agents on your machine
+
+On a machine of yours you can run two more agents, each with your own account:
+
+- **Claude Code**, with your Claude subscription;
+- **OpenCode**, with a model provider of your choice, or with OpenCode's free public models.
+
+An agent runs only on a machine whose runner was started with its flag, `--harness claude` or `--harness opencode`. Repeat `--harness` to offer both. The **Enable** boxes of the setup command add these flags, and the command setup prints keeps them. The runner must be a build that includes that agent's image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image." or "Use --harness opencode with a runner built with the pinned OpenCode image."
+
+The runner does not save `--harness`. Give it each time you start the runner, or the agent is no longer offered.
+
+Both agents run only in the hardened profile, **Hardened Docker on your machine "…"**. Neither runs work items: "Work items and their reviewers run only with Windlass." Neither has a tool to publish: open the pull request from the session panel. Neither gets your saved secrets.
+
+## Sign agents in
+
+Agents are signed in only in a terminal on the machine, never on the platform's pages. The Machines page lists each agent the machine offers, with its state: **signed in**, **sign in needed** or **sign-in not reported**. Beside it is the command that signs it in, with a copy button:
 
 ```sh
 docker exec -it windlass-runner windlass-runner login claude
 ```
 
-To sign out:
+```sh
+docker exec -it windlass-runner windlass-runner login opencode
+```
+
+The machine must be paired first, or the runner says "Pair this machine before signing in to Claude Code." or "Pair this machine before signing in to OpenCode." When it is done, it says "Claude Code: signed in." or "OpenCode: signed in.", and the Machines page shows the new state.
+
+[Setup](#1-start-the-runner) asks to sign each agent in as it goes: "Claude Code: sign in now? [Y/n] " and "OpenCode: sign in now? [Y/n] ". Answer `n` to skip one and sign it in later with `login`.
+
+### Claude Code
+
+`login claude` runs Anthropic's own sign-in, `claude setup-token`, in your terminal. Sign in there. Then the runner asks, without showing what you type:
+
+```text
+Paste the token it printed (or one made by claude setup-token on any computer):
+```
+
+Paste the token `claude setup-token` printed. You can also make the token on another computer with `claude setup-token`, and paste it here. If the sign-in in the terminal does not finish, the runner says "Setup did not finish. You can paste a token made on another computer." and asks for the token all the same.
+
+### OpenCode
+
+`login opencode` asks which model provider to use:
+
+```text
+  opencode-go — OpenCode Go (Go-specific key)
+  opencode — OpenCode Zen
+  chatgpt — ChatGPT device login
+  openai — OpenAI
+  anthropic — Anthropic
+  openrouter — OpenRouter
+  google — Google
+  zai-coding-plan — Z.AI Coding Plan
+  free — OpenCode public models
+OpenCode provider (id or search, Enter for chatgpt):
+```
+
+Type an ID from the list, or a word to search all the providers the runner can route, such as `router` or `zhipu`. Press <kbd>Enter</kbd> alone for `chatgpt`. For GLM models, choose Z.AI (`zai` or `zai-coding-plan`) or Zhipu AI (`zhipuai` or `zhipuai-coding-plan`).
+
+| Provider | What you need |
+| --- | --- |
+| `opencode-go` | The API key of your OpenCode Go subscription. |
+| `opencode` | An OpenCode Zen API key. |
+| `chatgpt` | Your ChatGPT account. OpenCode's own device sign-in runs in the terminal. |
+| `openrouter`, `anthropic`, `openai`, `google`, `zai-coding-plan` and others | That provider's API key. |
+| `free` | Nothing. OpenCode's free public models. |
+
+For a key, the runner asks "Enter the … API key: ", without showing what you type. The ChatGPT sign-in runs in a temporary container that keeps its files in memory, and the runner removes that container when the sign-in ends. It needs a terminal: use `docker exec -it`.
+
+To skip the list, name the provider:
+
+```sh
+docker exec -it windlass-runner windlass-runner login opencode --provider opencode-go
+```
+
+Run `login opencode` again to add another provider. Each provider keeps its own login, with two exceptions: `chatgpt` and `openai` replace each other, and so do `free` and `opencode`.
+
+Once OpenCode is signed in, the runner reports the models of its providers, and the **agent** chip lists them under **OpenCode**. See [The model](/docs/start-an-agent#the-model).
+
+> **Note** OpenCode's free public models have a small allowance, which OpenCode counts by your machine's public IP address. Everyone behind that address shares it. When it runs out, the turn says "The provider's usage or rate limit was reached." Wait, or sign in with a provider of your own.
+
+### Import your OpenCode keys
+
+If OpenCode already runs on the machine with API keys, setup can take them over. In **Add a machine**, tick **Enable OpenCode**, then **Import existing OpenCode API keys during setup**. The setup command then mounts OpenCode's data folder, read-only:
+
+```sh
+--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"
+```
+
+If you set your own `XDG_DATA_HOME`, put your OpenCode folder in place of `$HOME/.local/share/opencode`. The folder must exist: the mount fails without it.
+
+When you answer yes to "OpenCode: sign in now?", setup reads OpenCode's `auth.json` once, and asks about each entry:
+
+- an API key it can use: "… (…) API key: import? [Y/n] ";
+- a subscription login that renews itself, which it does not copy: "… login can't be shared safely; sign in separately for the runner? [Y/n] ". Yes starts a sign-in of the runner's own: the ChatGPT device sign-in for `openai`, or that provider's API key prompt;
+- a provider it has no route for: "Skipping …: no fixed inference route in this runner."
+
+If it took nothing, setup asks for a provider as `login opencode` does. The command setup prints at the end does not mount the folder.
+
+### Sign out
 
 ```sh
 docker exec windlass-runner windlass-runner logout claude
 ```
 
-### Your Claude login stays out of the container
+```sh
+docker exec windlass-runner windlass-runner logout opencode
+```
 
-The runner stores the setup token in a login volume on your machine. No session container mounts it. A separate relay container on the machine holds it instead, and is the only one that reads it.
+`logout` signs the agent out for this pairing and every earlier one. `logout opencode` removes all of its providers at once.
 
-Each Claude session gets the relay's address and a placeholder in place of the token. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to Anthropic with the real token. It takes only Claude's model requests. Anything else is refused: "Claude credential relay refused the request."
+## Agent logins stay out of the container
 
-So commands in a Claude session cannot read your token. They can still use that session's relay and consume subscription quota, in every network mode, `none` included.
+No agent's login is ever inside its container. The runner keeps each login in a login volume on the machine that no session mounts. A separate relay container on the machine holds it instead, and is the only one that reads it.
 
-Older runners mounted the login volume in Claude sessions. On upgrade, archive any work you need from those stopped sessions, remove them, revoke the old token with Anthropic, and sign in with a fresh token before recreating the sessions.
+Each Claude Code or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
+
+When the relay refuses a request, or the provider answers with an error, the agent gets one of these fixed messages. The relay does not pass the provider's own reason on.
+
+| Message | What it means |
+| --- | --- |
+| "Provider sign-in is missing or the session placeholder is no longer valid." | The machine has no login for this provider, the provider did not accept the login, or the session's placeholder no longer matches. |
+| "This request is not allowed by the relay." | It was not a model request the relay takes, or the provider refused it as not allowed. |
+| "The provider's usage or rate limit was reached." | The provider answered that a usage or rate limit was reached. |
+| "The provider failed or couldn't be reached." | The provider failed, or the relay could not reach it. |
+| "The provider rejected the request." | The provider refused it for another reason. |
+
+So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, in every network mode, `none` included.
+
+In `restricted` mode, commands in an OpenCode session also cannot reach any model provider's host, or any bare IP address, through the proxy. `--egress-allow` does not reopen them. Model requests go only through the relay.
+
+Adding a provider or changing a key keeps existing OpenCode sessions working. After `logout opencode`, or after the machine is paired again, the placeholders of existing OpenCode sessions stop working. Start new sessions afterwards.
+
+Older runners mounted the Claude login volume in Claude sessions. On upgrade, archive any work you need from those stopped sessions, remove them, revoke the old token with Anthropic, and sign in with a fresh token before recreating the sessions.
 
 ## Machine details and warnings
 
@@ -207,7 +340,7 @@ When the platform needs a newer runner, the machine shows **Needs an update**. R
 docker rm -f windlass-runner
 ```
 
-Then run the command from the Machines page. The volume keeps the key, so the machine stays paired.
+Then run the command from the Machines page, with the same options as before, `--harness` included. The volume keeps the key, so the machine stays paired. If the Machines page says to pair again, run `windlass-runner pair` after the update, so the runner gets the platform's key.
 
 ## Remove a machine
 

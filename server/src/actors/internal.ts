@@ -23,6 +23,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
+	size?: number;
 	mode?: string;
 	harness?: HarnessId;
 	harnessOptions?: HarnessOptions;
@@ -43,13 +44,14 @@ export interface SessionCreateInput {
 	demo: boolean;
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[] };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number };
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "origin" | "harness">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
-	return { uid, sessionId, profile, ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
+	const size = session.size ?? origin?.size;
+	return { uid, sessionId, profile, ...(size && { size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -73,15 +75,20 @@ export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; n
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalDailyTokenWait(): Promise<string | null>;
+	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;
 	internalTokenGeneration(): Promise<number>;
 	internalMachineSystem(id: string): Promise<{ os: string; arch: string } | null>;
 	internalFeatureChild(input: { parent: string; child: string; cancel?: boolean }): Promise<ItemView | null>;
+	internalProviderGeneration(location: import("./provider-accounts.js").AccountLocation): Promise<string | null>;
+	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
+	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
 	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
 	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
-	internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
+	internalAcquireRun(sessionId: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 	/** Gives back the running slot of the claim named `claim`, for a prompt the session refused after it was claimed; a newer claim, or one already settled, is left as it is. */
 	internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
 	/** The user's GitHub connection as it is now; null when there is none. */
@@ -94,6 +101,7 @@ export interface UserInternal {
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
+	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;
@@ -119,6 +127,7 @@ export interface UserInternal {
 
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
 export interface SealedSecrets {
+	snapshotSetup?: { command: string; updatedAt: number; connectedAt: number; previouslySaved: boolean };
 	/** Only the server-side redactor may use these values. The machine owner disabled sending them. */
 	redactOnly?: boolean;
 	screenshots?: boolean;
@@ -137,7 +146,7 @@ export interface SealedSecrets {
 
 /** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */
 export interface UserSecretsInternal {
-	internalSessionSecrets(sessionId: string): Promise<SealedSecrets>;
+	internalSessionSecrets(sessionId: string, snapshotSetup?: boolean): Promise<SealedSecrets>;
 }
 
 /** Actions of `agentSession` that only actors may call. */
@@ -163,8 +172,11 @@ export interface SessionInternal {
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalProviderChanged(revision: number): Promise<void>;
+	/** Immutable commit the feature was created from, including for children made before a restart. */
+	internalSetupSeed(source: "child" | "feature"): Promise<string | null>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }): Promise<void>;
-	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string } | null>;
+	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace } } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;

@@ -1,3 +1,4 @@
+import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
@@ -78,9 +79,12 @@ import { plannerMachines } from "../machines/details.js";
 
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
-import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
-import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
+import { changeUserLimit, effectiveUserLimits, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
+import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
+import type { UsageObservation } from "../provider-usage.js";
+import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -133,7 +137,7 @@ import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
 import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
-import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
+import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
@@ -154,7 +158,7 @@ import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
-import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
@@ -488,18 +492,31 @@ function approvalText(value: unknown, max: number): string {
 // ---------------------------------------------------------------------------------------------
 
 /** The setup command saved for a project (setup-command.ts, `SetupProject.key`); none when there is no row. */
+async function setupRow(db: RawAccess, project: string) {
+	const [row] = await db.execute<{ command: string; updated_at: number; snapshot_connection: number | null }>(
+		"SELECT command, updated_at, snapshot_connection FROM setup_command WHERE project = ?", project);
+	return row;
+}
 async function readSetup(db: RawAccess, project: string): Promise<RepositorySetup> {
-	const [row] = await db.execute<{ command: string; updated_at: number }>("SELECT command, updated_at FROM setup_command WHERE project = ?", project);
+	const row = await setupRow(db, project);
 	return { command: row?.command ?? "", updatedAt: row?.updated_at ?? null, timeoutMs: config.setupTimeoutMs };
+}
+
+async function dropHostedSnapshots(uid: string, repo?: string) {
+	if (config.snapshots && config.sandbox === "docker") await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
+		console.warn("[wlp] snapshot cleanup deferred");
+	});
 }
 
 /** Saves a command that was cleaned already, in place of the project's earlier one; "" removes the row. */
 async function saveSetup(c: UserCtx, uid: string, project: string, label: string, command: string): Promise<RepositorySetup> {
+	const previous = await readSetup(c.db, project);
+	if (previous.command === command) return previous;
 	if (command === "") {
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
 		await c.db.execute(
-			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, updated_at = excluded.updated_at",
+			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, snapshot_connection = NULL, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
 			label,
 			command,
@@ -509,6 +526,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
 	}
 	// The command is the user's text and may hold what they would not want in a log: only its length is said.
+	await dropHostedSnapshots(uid, project.slice("github:".length));
 	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);
 	return readSetup(c.db, project);
 }
@@ -682,11 +700,13 @@ const logged = (text: string) => text.replace(/[^\x21-\x7e]/g, "?");
 /** The account's settings as their page shows them. No value of a secret is read. */
 async function accountView(db: RawAccess): Promise<AccountSettings> {
 	const defaults = await readAccountDefaults(db);
+	const lastStart = await readLastStart(db);
 	const servers = await readServers(db);
 	const secrets = await accountSecretNames(db);
 	const { sandboxes } = await getLayer();
 	return {
 		defaults,
+		lastStart,
 		servers: servers.map((server) => listedServer(server, secrets)),
 		serverReach: personalServerReach(sandboxes.profiles()),
 		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
@@ -730,19 +750,23 @@ type UsageEntryRow = { day: number; session: string; hold: string; kind: string;
 type UsageHoldRow = { id: string; session: string; day: number; seconds: number; started_at: number; expires_at: number };
 
 /** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
-async function readUsage(db: RawAccess): Promise<UsageBook> {
+async function readUsage(db: RawAccess, limits: UsageLimits): Promise<UsageBook> {
 	const today = dayOf(Date.now());
 	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
 	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
 	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
+	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
 	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, at, note FROM usage_entry WHERE day > ? ORDER BY id", today - USAGE_HISTORY_DAYS);
 	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, started_at, expires_at FROM usage_hold");
 	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
-	return new UsageBook(config.usage, {
+	const book = new UsageBook(limits, {
 		entries: entries.map((row) => ({ day: row.day, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, at: row.at, note: row.note })),
 		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, startedAt: row.started_at, expiresAt: row.expires_at })),
 		kept,
 	});
+	const at = Date.now();
+	book.noteModelTokens(at, await tokensOn(db, at));
+	return book;
 }
 
 /**
@@ -793,7 +817,10 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 		for (const session of change.released) await c.db.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
 		for (const claim of change.kept) await c.db.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
 	} catch (error) {
-		c.vars.usage = await readUsage(c.db).catch(() => c.vars.usage);
+		const restored = await readUsage(c.db, c.vars.usage.limits).catch(() => c.vars.usage);
+		const now = Date.now();
+		restored.noteModelTokens(now, c.vars.usage.modelTokens(now));
+		c.vars.usage = restored;
 		throw error;
 	}
 	// One line per entry: what was counted, for whoever reads the log beside the provider's bill.
@@ -863,6 +890,8 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 		.sort((a, b) => (b.usedAt ?? 0) - (a.usedAt ?? 0) || (a.sessionId < b.sessionId ? -1 : 1));
 	return {
 		...book.numbers(now),
+		usedModelTokens: book.modelTokens(now),
+		factoryLimits: effectiveUserLimits(c.vars.items.limits.overrides).factory,
 		today: book.today(now).map((row) => ({ ...row, title: c.vars.sessions.get(row.sessionId)?.title ?? null })),
 		days: book.days(now),
 		kept,
@@ -916,6 +945,9 @@ const KEYED = "agent";
  */
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4]): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
+	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
+		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
+	const size = item?.size ?? input.size ?? 1;
 	const harness = input.harness === undefined ? "windlass" : input.harness;
 	if (harness !== "windlass" && harness !== "claude" && harness !== "opencode") throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
@@ -967,6 +999,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	let summary: SessionSummary;
 	try {
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
+		if (size > 1 && !machine?.slots) throw new UserError("Choose a machine reporting slots for a large sandbox.", { code: "bad_input" });
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
@@ -1013,7 +1046,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && {owns: item.owns}) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }) } } : {}),
+			...(!item && size > 1 && { size }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
 			place: summary.place,
@@ -1041,6 +1075,12 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	if (submission) c.vars.created.set(submission.key, { ...submission, id: summary.id });
 	await storeSession(c, summary, submission);
 	broadcastSessions(c);
+	// What the next agent starts on. An agent the user started, not a work item's: one that cannot be remembered is still made.
+	if (!item) {
+		await recordLastStart(c.db, { place: summary.place, harness: summary.harness ?? "windlass", mode: summary.mode, startedAt: summary.createdAt }).catch((error: unknown) => {
+			c.log.error({ msg: "the last start could not be remembered", error: String(error) });
+		});
+	}
 	return summary;
 }
 
@@ -1218,6 +1258,8 @@ export const user = actor({
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
+			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
+			await db.execute(LAST_START_TABLE);
 			// The models of the user's ChatGPT plan as Windlass last listed them (account-models.ts): one row.
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
@@ -1231,6 +1273,7 @@ export const user = actor({
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
+				["setup_command", "snapshot_connection", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (columns.some((found) => found.name === column)) continue;
@@ -1306,7 +1349,8 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
+		const items = await loadItems(c.db);
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, effectiveUserLimits(items.limits.overrides).usage), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
 	events: {
@@ -1335,6 +1379,7 @@ export const user = actor({
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
 	},
 
+	onDestroy: async c => { await dropHostedSnapshots(c.key[0]); },
 	onWake: async (c) => {
 		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
 		const connection = c.vars.github;
@@ -1346,6 +1391,7 @@ export const user = actor({
 		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
 		queueChanged(c);
 		await notifyRemovedMachines(c);
+		await notifyProviderWaits(c, c.vars.items.items.values());
 		// A try whose next schedule was set and not stored, because the server stopped in between, is set again.
 		try {
 			const late = await c.db.execute<{ session: string; tries: number }>("SELECT session, tries FROM backup_removal WHERE due_at < ?", Date.now() - BACKUP_REMOVE_LATE_MS);
@@ -1372,6 +1418,32 @@ export const user = actor({
 			requireUser(c);
 			await revokeTokens(c, options?.revokeApiTokens === true);
 		},
+		internalLimitHistory: async (c, operator: string, before?: number) => {
+			requireServiceFor(c, limitsSubject(c.key[0]!, operator));
+			return c.db.execute<LimitAuditRow>("SELECT id, at, operator, setting, old_value, new_value, overrides FROM limit_changes WHERE id < ? ORDER BY id DESC LIMIT 100", before ?? Number.MAX_SAFE_INTEGER);
+		},
+		internalSetLimit: async (c, change: LimitChange) => {
+			const result = await changeUserLimit(c, change);
+			if (result.id >= c.vars.items.limits.id) {
+				c.vars.items.limits = result;
+				Object.assign(c.vars.usage.limits, effectiveUserLimits(result.overrides).usage);
+				c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+				queueChanged(c);
+			}
+			return effectiveUserLimits(c.vars.items.limits.overrides);
+		},
+		internalDailyTokenWait: (c) => { requireServiceFor(c, "call"); return accountTokenWait(c); },
+		internalRecordTurnTokens: async (c, input: { sessionId: string; receipt: TokenReceipt }) => {
+			requireServiceFor(c, "call");
+			// The session can already be out of the index while its deletion settles its last receipt.
+			const inserted = await recordTurnTokens(c.db, input.sessionId, input.receipt);
+			const { at } = input.receipt;
+			c.vars.usage.noteModelTokens(at, await tokensOn(c.db, at));
+			if (inserted) {
+				c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+				if (accountTokenWait(c)) queueChanged(c);
+			}
+		},
 		internalRevokeTokens: async (c): Promise<void> => {
 			requireServiceFor(c, "revoke:" + c.key[0]);
 			await revokeTokens(c);
@@ -1381,6 +1453,15 @@ export const user = actor({
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
+		internalProviderGeneration: (c, location: AccountLocation) => { requireServiceFor(c, "call"); return loginGeneration(c.db, location); },
+		internalLimitedAccounts: async c => { requireServiceFor(c, "call"); return limitedAccounts(await providerAccounts(c.db, Date.now())); },
+		internalObserveUsage: async (c, location: AccountLocation, generation: string, observation: UsageObservation) => {
+			requireServiceFor(c, "call");
+			if (await recordProviderUsage(c.db, location, generation, observation)) {
+				if (c.vars.machines.size && (location.harness === "windlass" || location.place !== "hosted")) await machinesChanged(c);
+				queueChanged(c);
+			}
+		},
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
@@ -1405,7 +1486,7 @@ export const user = actor({
 		[ATTACHMENT_SWEEP_ACTION]: (c) => itemActions.internalAttachmentSweep(c),
 		itemAttachmentLinks: (c, input: string) => itemActions.itemAttachmentLinks(c, input),
 		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
-		listItems: (c): ItemSummary[] => itemActions.listItems(c),
+		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
@@ -1672,6 +1753,7 @@ export const user = actor({
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			const wasConnected = c.vars.github !== null;
 			await replaceGithubConnection(c, profile.uid, app, null);
+			await dropHostedSnapshots(profile.uid);
 			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
 		},
@@ -1763,6 +1845,18 @@ export const user = actor({
 			requireService(c);
 			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
 		},
+		internalSnapshotSaved: async (c, project: string, updatedAt: number | null, connectedAt: number) => {
+			requireService(c);
+			if (c.vars.github?.connectedAt === connectedAt)
+				await c.db.execute("UPDATE setup_command SET snapshot_connection = ? WHERE project = ? AND updated_at = ?", connectedAt, project, updatedAt);
+		},
+		internalSnapshotGenerations: async (c): Promise<string[]> => {
+			requireService(c);
+			const connection = c.vars.github;
+			if (!connection) return [];
+			const rows = await c.db.execute<{project: string; updated_at: number}>("SELECT project, updated_at FROM setup_command");
+			return rows.map(row => snapshotGeneration(row.project.slice("github:".length), row.updated_at, connection.connectedAt));
+		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
 			return readSetup(c.db, approvalText(project, 600));
@@ -1818,7 +1912,7 @@ export const user = actor({
 		 * sessions, not from the call: a session is handed the secrets of the repository it was launched
 		 * on and of no other, and a session this user does not have is handed none.
 		 */
-		internalSessionSecrets: async (c, sessionId: string): Promise<SealedSecrets> => {
+		internalSessionSecrets: async (c, sessionId: string, includeSnapshotSetup = false): Promise<SealedSecrets> => {
 			const id = approvalText(sessionId, 200);
 			requireServiceFor(c, secretsCaller(c.key[0]!, id));
 			// A session this user does not have is handed nothing, of the account's either.
@@ -1837,7 +1931,11 @@ export const user = actor({
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
-			return { project, ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			const connectedAt = c.vars.github?.connectedAt;
+			const setup = includeSnapshotSetup && config.snapshots && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
+			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
+				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
+			return { project, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -1917,6 +2015,7 @@ export const user = actor({
 				await c.db.execute("DELETE FROM repository_checks WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
+				await dropHostedSnapshots(profile.uid, String(repositoryId));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);
 				return await repositoryView(c, repositoryId, project);
 			} catch (error) {
@@ -1975,6 +2074,17 @@ export const user = actor({
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
+			}
+		},
+
+		forgetLastStart: async (c): Promise<AccountSettings> => {
+			const profile = requireUser(c);
+			try {
+				await forgetLastStart(c.db);
+				console.log(`[wlp] last_start.forgotten uid=${profile.uid}`);
+				return await accountView(c.db);
+			} catch (error) {
+				throw clientError(c.log, error, "Where your last agent ran could not be forgotten. Try again.");
 			}
 		},
 
@@ -2134,6 +2244,9 @@ export const user = actor({
 			requireService(c);
 			return answered(c, async () => {
 				await (await signIn(c)).adopt(sealed);
+				if (c.vars.machines.size) await machinesChanged(c);
+				queueChanged(c);
+				await notifyProviderWaits(c, c.vars.items.items.values(), true);
 				// From here on the actor is a user's, and stays.
 				c.vars.reached = true;
 				console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);
@@ -2246,13 +2359,13 @@ export const user = actor({
 			queueChanged(c);
 		},
 
-		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
+		internalAcquireRun: async (c, sessionId: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
 			// A session on one of the user's machines is neither counted nor refused (`hostedLimitsApply`).
 			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle" && hostedLimitsApply(session.place));
-			const atLimit = () => others().length + factorySlots(c) >= config.factory.runningTurns;
+			const atLimit = () => others().length + factorySlots(c) >= effectiveUserLimits(c.vars.items.limits.overrides).factory.runningTurns;
 			const asking = c.vars.sessions.get(sessionId);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would
@@ -2276,10 +2389,12 @@ export const user = actor({
 			// The user's index can still be a turn behind. The session asking for the slot
 			// cannot start its next turn until we answer, so this is its actual starting count.
 			const own = asking && hostedLimitsApply(asking.place) ? await sessionActor(c, uid, sessionId).internalSummary() : null;
+			const tokenWait = asking && usesPlatformModel(asking.place, asking.harness) ? accountTokenWait(c) : null;
 			// From here to the `set` nothing is awaited: the count and the claim are one step.
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false, until: null, claim: null };
 			const running = others().length;
+			if (tokenWait) return { dailyTokenWait: tokenWait, ok: false, running, known: true, until: null, claim: null };
 			if (hostedLimitsApply(entry.place) && atLimit()) return { ok: false, running: running + factorySlots(c), known: true, until: null, claim: null };
 			const claimed: SessionSummary = { ...entry, turns: own?.turns ?? entry.turns, status: entry.status === "idle" ? "starting" : entry.status };
 			// The lease lapses at `until` (`internalCheckLaunch`); the claim is named by its generation (`internalReleaseRun`), one more

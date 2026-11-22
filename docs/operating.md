@@ -260,8 +260,8 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Setup URL | none. GitHub takes none while the setting above is selected |
 | Enable Device Flow | not selected |
 | Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
-| Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request (installation events come by themselves) |
-| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read-only. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
+| Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment (installation events come by themselves) |
+| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
 | Organization and account permissions | none |
 | Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
 
@@ -282,15 +282,7 @@ that installation during redelivery sweeps. The endpoint still accepts `installa
 Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
 key (a `.pem` file is downloaded).
 
-Issues is for filing work items from GitHub issues and commenting on them. The three read-only permissions are for work items ([work-items.md](work-items.md)), which read the CI of a commit the
-platform pushed: its check runs (Checks), its commit statuses (Commit statuses) and the log of a GitHub
-Actions job that failed (Actions). Nothing else uses them, and everything else works without them. An app
-that was registered with the first two only is changed on its page, under Permissions and events; GitHub
-then asks the owner of each account the app is installed on to accept the new permissions. Until an
-installation has accepted them GitHub refuses the platform its CI, and an item on that installation's
-repositories is handed over without it: its verdict says that CI was not read, that the app needs read
-access to Checks, Commit statuses and Actions, accepted on the installation, and that the pull request's
-own page shows the checks.
+Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
 
 | Variable | Effect |
 |---|---|

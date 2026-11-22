@@ -1,3 +1,4 @@
+import { feedbackWords } from "./feedback.js";
 /** The report tool's trust boundary. The page reads these strings as text. Only platform records supply facts and links. */
 import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type SandboxPlace, type SandboxProfile, type WindlassEvent, type ItemReview, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
 import { type AgentReport, CONTROL, REPORT_TAKEN } from "../agent-publish.js";
@@ -408,7 +409,7 @@ export function reportBlocks(report: Omit<AgentReport, "screenshots"> & Partial<
 }
 
 /** Bound outside text before escaping, so twenty all-punctuation criteria still fit in GitHub's comment. */
-function commentText(value: string, max: number): string {
+export function commentText(value: string, max: number): string {
 	const line = value.replace(/\s+/g, " ").replace(CONTROL, "").trim();
 	const bounded = line.length > max ? `${line.slice(0, max)}…` : line;
 	return bounded.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1").replace(/^([-+=])/, "\\$1");
@@ -468,11 +469,16 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 	return paragraphs;
 }
 
-export function itemComment(verdict: Verdict, words: string, report: ItemReport | null, review?: CommentReview): string {
+export function feedbackComment(who: string, run: number) {
+	return commentText(feedbackWords.working(who, run), 2000);
+}
+
+export function itemComment(verdict: Verdict, words: string, report: ItemReport | null, review?: CommentReview, feedback?: { who: string; run: number }): string {
 	// The marker is an HTML comment GitHub must find byte for byte. Only a platform id belongs there.
 	if (!/^[\w-]{1,128}$/.test(verdict.item) || verdict.item.includes("--")) throw new Error("Invalid item id for the verdict comment.");
 	const headline = verdictWords(verdict, null).split(".", 1)[0];
 	const paragraphs = [`<!-- windlass-item:${verdict.item} -->`, `**Windlass at ${commentText(verdict.head.slice(0, 7), 7)}: ${headline}**`, commentText(words, MAX_NOTE_CHARS)];
+	if (feedback) paragraphs.push(feedbackComment(feedback.who, feedback.run));
 	const criteria = verdict.acceptance.slice(0, MAX_ACCEPTANCE_CRITERIA).map((one) => `- ${commentText(one, 1000)}`);
 	if (criteria.length) paragraphs.push(`Acceptance criteria left to you:\n\n${criteria.join("\n")}`);
 	if (review) paragraphs.push(...reviewParagraphs(verdict.item, review));

@@ -143,7 +143,7 @@ export function useChatgpt(): { status: ChatgptStatus | null; error: string | nu
 	return { status, error };
 }
 
-/** The factory's limits for the user, the deployment's settings: read once when the screen opens. `enabled` false asks nothing, as `useItems`. */
+/** The user's effective Factory limits: read once when the screen opens. `enabled` false asks nothing, as `useItems`. */
 export function useFactoryLimits(enabled = true): { value: FactoryLimits | null; error: string | null } {
 	const { client, explain } = useApp();
 	const auth = useAuth();

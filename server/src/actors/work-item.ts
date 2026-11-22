@@ -28,14 +28,23 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
+import { batchText, feedbackWords, fingerprint, fits, QUIET_MS, MOST_MS } from "../factory/feedback.js";
+import { isAddressed } from "../github/events.js";
+import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
+import { verdictWords } from "../factory/verdict.js";
 import { PlanError } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
+import { getLayer } from "../layer.js";
+import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCi } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
-import type { IssueBinding } from "../factory/intake.js";
+import { recentSubject, type IssueBinding } from "../factory/intake.js";
+import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
+import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
 import type { ItemReview } from "../contract.js";
 import { ledgerSeconds, retryAt } from "../factory/budget.js";
@@ -43,12 +52,12 @@ import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
-import { githubConfig } from "../config.js";
+import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
-import { itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
-import type { Effect as BlueprintEffect, Fact, FactoryItem } from "../factory/types.js";
+import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { feedbackComment, itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
+import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -135,7 +144,8 @@ const VIEW_EVENTS = 500;
 type IssueCheck = IssueChanges & { kind: "check_issue"; key: "pending"; at: number };
 const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
-type Effect = BlueprintEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string } | { kind: "forget"; key: string };
+type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string; run: number } | { kind: "feedback_comment"; key: string; run: number; who: string };
+type Effect = BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -168,6 +178,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		title: item.task.title,
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		place: item.place,
+		...(item.placement && { placement: item.placement }),
 		source: meta.source,
 		origin: meta.github?.origin ?? null,
 		state: item.state,
@@ -198,9 +209,11 @@ function viewOf(c: Ctx): Promise<ItemView> {
 	});
 }
 
-/** The report and its reference snapshots share one JSON value and one transaction with the turn. */
+export const FEEDBACK_TABLE = "CREATE TABLE IF NOT EXISTS feedback(id TEXT PRIMARY KEY,data TEXT NOT NULL,at INTEGER NOT NULL,received INTEGER NOT NULL,batch TEXT NOT NULL,ready INTEGER NOT NULL,after_run INTEGER NOT NULL DEFAULT -1,state TEXT NOT NULL DEFAULT 'pending',reason TEXT NOT NULL,run INTEGER,plan INTEGER,saved_plan TEXT)";
+export const CHECKS_TABLE = "CREATE TABLE IF NOT EXISTS checks (sha TEXT PRIMARY KEY, check_run_id TEXT, external_id TEXT NOT NULL, state TEXT NOT NULL, conclusion TEXT, at INTEGER NOT NULL, said TEXT NOT NULL)";
 export const REVIEWS_TABLE = "CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
+/** The report and its reference snapshots share one JSON value and one transaction with the turn. */
 export const REPORTS_TABLE = "CREATE TABLE IF NOT EXISTS reports (key TEXT PRIMARY KEY, run INTEGER NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
 export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryItem, sessionId: string, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
@@ -229,13 +242,30 @@ export async function latestReport(db: Pick<RawAccess, "execute">, run: number):
 	return row ? JSON.parse(row.data) as ItemReport : null;
 }
 
+type FeedbackRow = { id: string; data: string; batch: string; state: FeedbackBatch["state"]; reason: string; run: number | null; plan: number | null; saved_plan: string | null };
+
+async function feedbackView(db: RawAccess): Promise<ItemView["feedback"]> {
+	const batches = new Map<string, FeedbackBatch>();
+	for (const r of await db.execute<FeedbackRow>("SELECT * FROM feedback ORDER BY at, id")) {
+		const key = r.state + ":" + r.batch;
+		let batch = batches.get(key);
+		if (!batch) batches.set(key, batch = { entries: [], state: r.state, reason: r.reason, run: r.run, plan: r.plan, ...(r.saved_plan && { savedPlan: JSON.parse(r.saved_plan) }) });
+		batch.entries.push(JSON.parse(r.data));
+	}
+	const [counts] = await db.execute<{ n: number }>("SELECT count(*) AS n FROM issue_actions WHERE subject LIKE 'feedback-denied:%'");
+	return { batches: [...batches.values()], notTaken: counts.n };
+}
+
 async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const run = stored.item.run;
 	const events = await c.db.execute<{ data: string }>("SELECT data FROM (SELECT seq, data FROM events ORDER BY seq DESC LIMIT ?) ORDER BY seq", VIEW_EVENTS);
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
 	return {
 		...summaryOf(stored),
+		feedback: await feedbackView(c.db),
+		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: stored.item.featurePlan ?? null,
+		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
@@ -294,17 +324,19 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 	}
 }
 
+type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckEffect; id: string | null; installationId: GithubId };
+
 /**
  * The item after `fact`, stored with its effects and events in one transaction over the revision it
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { baseSha, nudged, issue }: { baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
+async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number }, { baseSha, nudged, issue, overflow }: { overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
 	const stored = c.vars.stored;
 	if (!stored) return false;
 	// From here to the write being queued nothing is awaited: the decision is one step.
 	const before = stored.item;
-	const outcome: ReturnType<typeof advance> = fact.kind === "issue_note" ? { item: { ...before, revision: before.revision + 1 }, effects: [], events: [] } : advance(before, fact);
+	const outcome: ReturnType<typeof advance> = fact.kind === "issue_note" || fact.kind === "check_recorded" ? { item: { ...before, revision: before.revision + 1 }, effects: [], events: [] } : advance(before, fact);
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
@@ -319,7 +351,7 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 	if (outcome.storeVerdict && baseSha && /^[0-9a-f]{40}$/.test(baseSha)) stored.meta.reviewBase = { head: outcome.storeVerdict.verdict.head, sha: baseSha };
 	const filing = fact.kind === "review_ended" && fact.review?.id === outcome.item.run?.ci?.secondReview?.review ? fact.review : null;
 	if (filing) stored.meta.handoffReview = { recommendation: filing.recommendation, reason: null };
-	if (handoff) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
+	if (handoff && before.run?.n === outcome.item.run?.n) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
 	// The item, its revision and its data are taken from this decision now: a later decision, made while this
 	// one waits for its write, changes `stored` and must not be written beside this one's data.
 	const next = outcome.item;
@@ -331,12 +363,15 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 	if (stored.meta.reviewerSessionId && next.run && before.state !== next.state && (next.state === "review" || ENDED.has(next.state))) {
 		effects.push({ kind: "release_review", key: String(next.run.n), run: next.run.n, to: "review" });
 	}
+	if (stored.meta.reviewerSessionId && handoff?.continuedIn) effects.push({ kind: "release_review", key: String(handoff.verdict.run), run: handoff.verdict.run, to: "review" });
 	if (stored.meta.github) {
 		if (issue?.subject !== "gone" && (before.pr?.number !== next.pr?.number || ENDED.has(before.state) !== ENDED.has(next.state)))
 			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
-	if (fact.kind === "published" && fact.pr) effects.push({ kind: "register", key: fact.key, pr: fact.pr.number, head: fact.head });
+	if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
+	if (fact.kind !== "published" && fact.kind !== "feature_ready" && (before.run?.ci?.moved !== next.run?.ci?.moved || (next.mode === "orchestrate" && before.head !== next.head)) && next.pr && next.head && !ENDED.has(next.state))
+		effects.push({ kind: "register", key: String(next.revision), pr: next.pr.number, head: next.head });
 	if (ENDED.has(next.state) && !ENDED.has(before.state)) effects.push({ kind: "forget", key: String(next.revision) });
 	try {
 		await queued(c, () =>
@@ -349,8 +384,38 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 				for (const old of await tx.execute<{ id: string; effect: string }>("SELECT id, effect FROM effects")) {
 					if ((issue?.subject === "gone" && old.id === "issue_comment:link") || !live(next, JSON.parse(old.effect) as Effect)) await tx.execute("DELETE FROM effects WHERE id = ? AND effect = ?", old.id, old.effect);
 				}
+				if (next.feedbackReplans && next.featurePlan?.version !== before.featurePlan?.version && next.featurePlan) {
+					const { version, spec, subtasks } = next.featurePlan;
+					await tx.execute("UPDATE feedback SET plan=?,saved_plan=? WHERE state='taken' AND run=?", version, JSON.stringify({ goal: spec.goal, subtasks: subtasks.map(t => t.title) }), next.run!.n);
+				}
+				if (overflow?.length) {
+					await tx.execute("UPDATE feedback SET state='pending', reason=?, after_run=?, batch='overflow' WHERE id IN (SELECT value FROM json_each(?))", feedbackWords.overflow, before.run?.n ?? 0, JSON.stringify(overflow));
+				}
+				for (const decision of outcome.feedback ?? []) {
+					const ids = JSON.stringify(decision.ids);
+					await tx.execute("UPDATE feedback SET state=?,reason=?,run=?,plan=?,batch=? WHERE id IN (SELECT value FROM json_each(?))", decision.state, decision.reason, decision.run ?? null, decision.plan ?? null, decision.ids[0], ids);
+					if (decision.state !== "taken") continue;
+					await tx.execute("INSERT OR IGNORE INTO issue_actions SELECT value FROM json_each(?)", ids);
+					const writers = new Set<string>();
+					for (const row of await tx.execute<{ data: string }>("SELECT data FROM feedback WHERE id IN (SELECT value FROM json_each(?))", ids)) {
+						const entry: FeedbackEntry = JSON.parse(row.data);
+						writers.add("@" + entry.author);
+						if (entry.kind.endsWith("_comment")) effects.push({ kind: "feedback_ack", key: entry.id, run: decision.run! });
+					}
+					effects.push({ kind: "feedback_comment", key: String(decision.run), run: decision.run!, who: [...writers].join(", ") });
+				}
+				if (ENDED.has(next.state) && next.state !== before.state)
+					await tx.execute("UPDATE feedback SET state='declined',reason=? WHERE state IN ('pending','held','question')", feedbackWords.ended(next.state));
+				if (fact.kind === "github_feedback" || before.run?.n !== next.run?.n || ENDED.has(next.state)) await scheduleFeedback(tx, next);
+				if (fact.kind === "check_recorded") await storeCheckReceipt(tx, next.id, fact, outcome.events);
 				for (const event of outcome.events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) {
+					// Rework can reopen a posted check or one whose POST reply is still outstanding.
+					if (effect.kind === "verified_check" && effect.existingOnly && !(await tx.execute(
+						"SELECT 1 FROM checks WHERE sha=? AND check_run_id IS NOT NULL UNION ALL SELECT 1 FROM effects WHERE id=? LIMIT 1", effect.key, rowId(effect),
+					)).length) continue;
+					if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
+						await prepareCompletedCheck(tx, next, effect, handoff);
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
@@ -373,7 +438,11 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 		if (state && state !== "retry" && state !== previous)
 			console.log(`[wlp] factory.ci.nudge_found item=${next.id} head=${fact.head.slice(0, 7)} state=${state}`);
 	}
-	for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${next.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
+	if (fact.kind === "check_recorded") {
+		if (fact.id === null && outcome.events.length) console.log(`github.verified_check.not_permitted installation=${fact.installationId} item=${next.id}`);
+	} else {
+		for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${next.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
+	}
 	report(c);
 	// The item's one schedule, set before anything is performed: an item stopped by a deploy before its effects ran wakes for them.
 	await armDue(c);
@@ -465,6 +534,76 @@ async function binding(c: Ctx): Promise<GithubId | null> {
 	return githubId(row?.installation);
 }
 
+/** Rebuild the one durable timer from unconsumed subjects, including overflow eligible in this run. */
+async function scheduleFeedback(tx: Pick<RawAccess, "execute">, item: FactoryItem) {
+	const [due] = await tx.execute<{ at: number | null }>("SELECT min(ready) AS at FROM feedback WHERE state='pending' AND after_run < ?", item.run?.n ?? 0);
+	if (due.at === null) await tx.execute("DELETE FROM effects WHERE id='feedback_ready:pending'");
+	else {
+		const e: FeedbackEffect = { kind: "feedback_ready", key: "pending", at: due.at };
+		await tx.execute("INSERT OR REPLACE INTO effects VALUES(?,?,?,0)", rowId(e), JSON.stringify(e), due.at);
+	}
+}
+
+async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
+	const changed = await queued(c, async () => {
+		const stored = await load(c.db);
+		if (!stored || stored.meta.repository.id !== notice.repositoryId || stored.item.pr?.number !== notice.pr || await binding(c) !== notice.installationId) return false;
+		const { item } = stored;
+		if (item.state === "done" || item.state === "cancelled") return false;
+		const now = Date.now();
+		return c.db.transaction(async tx => {
+			if (notice.denied || notice.approval) {
+				const subject = notice.denied ? "feedback-denied:" + notice.denied : notice.approval!.id;
+				const added = await tx.execute("INSERT OR IGNORE INTO issue_actions VALUES(?) RETURNING subject", subject);
+				if (added.length && notice.approval) await tx.execute("INSERT INTO events(at,data) VALUES(?,?)", now, JSON.stringify({
+					at: now, step: null, by: "github:" + notice.approval.author, said: feedbackWords.approved(notice.approval.author),
+				}));
+				return !!added.length;
+			}
+			const review = notice.entries.find(e => e.kind === "changes_requested" || e.kind === "commented");
+			let added = false;
+			for (const e of notice.entries) {
+				const oversized = e.body.length > 8000;
+				const rows = await tx.execute("INSERT OR IGNORE INTO feedback(id,data,at,received,batch,ready,state,reason) VALUES(?,?,?,?,?,?,?,?) RETURNING id",
+					e.id, JSON.stringify(e), e.at, now, review?.id ?? "comments", review ? now : now + QUIET_MS,
+					oversized ? "declined" : "pending", oversized ? feedbackWords.oversized : feedbackWords.waiting);
+				added ||= !!rows.length;
+				// A line delivery can beat its review; the review collects the still-pending line.
+				if (review && !rows.length) await tx.execute("UPDATE feedback SET batch=?,ready=? WHERE id=? AND state='pending' AND batch='comments'", review.id, now, e.id);
+			}
+			if (!added) return false;
+			if (!review) await tx.execute("UPDATE feedback SET ready=min(?, (SELECT min(received) FROM feedback WHERE state='pending' AND batch='comments') + ?) WHERE state='pending' AND batch='comments'", now + QUIET_MS, MOST_MS);
+			await scheduleFeedback(tx, item);
+			return true;
+		});
+	});
+	if (changed) await take(c, { kind: "issue_note", at: Date.now() });
+	else await armDue(c); // A duplicate repairs a lost timer after a restart.
+	return changed;
+}
+
+async function feedbackReady(c: Ctx) {
+	const now = Date.now();
+	const item = c.vars.stored!.item;
+	const rows = await queued(c, () => c.db.execute<FeedbackRow>(`SELECT * FROM feedback WHERE state='held' OR (state='pending' AND batch=(
+		SELECT batch FROM feedback WHERE state='pending' AND ready<=? AND after_run<? ORDER BY ready, received, rowid LIMIT 1) AND after_run<?) ORDER BY at,id`,
+		now, item.run?.n ?? 0, item.run?.n ?? 0));
+	if (item !== c.vars.stored!.item || !rows.some(r => r.state === "pending")) return;
+	const { taken, rest } = fits(rows.map(r => JSON.parse(r.data) as FeedbackEntry));
+	const writers = [...new Set(taken.map(e => e.author))];
+	const ids = taken.map(e => e.id), overflow = rest.map(e => e.id);
+	if (ids.every(id => item.feedback?.held?.includes(id))) {
+		// The current held batch is full. Keep the rest for the first eligible later run.
+		await queued(c, () => c.db.transaction(async tx => {
+			await tx.execute("UPDATE feedback SET after_run=?,batch='overflow',reason=? WHERE state='pending' AND id IN (SELECT value FROM json_each(?))", item.run?.n ?? 0, feedbackWords.overflow, JSON.stringify(overflow));
+			await scheduleFeedback(tx, c.vars.stored!.item);
+		}));
+		return;
+	}
+	await take(c, { kind: "github_feedback", at: now, by: "github:" + writers[0], writers, ids, fingerprint: fingerprint(taken),
+		text: batchText(taken, { pr: item.pr!.number, run: (item.run?.n ?? 0) + 1, head: item.run?.ci?.moved ?? item.head }), others: taken.some(e => e.access !== "owner") }, { overflow });
+}
+
 /** Under the item's write queue. A directory lookup may race a new push, a cancel, or a transfer. */
 async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
 	const stored = await load(c.db);
@@ -500,7 +639,47 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	const resolved = await resolveBoundRepository(app, connection, meta.repository.id, installationId, access);
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
-	return { app, installationId: resolved.installation.id, owner, name, pull, author: authorOf(connection), login: connection.user.login };
+	return { app, installationId: resolved.installation.id, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
+}
+
+async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType<typeof github>>, pr: number) {
+	const { app, installationId } = hub;
+	const target = { repositoryId: meta.repository.id, installationId, pr };
+	const now = Date.now();
+	const [cursor] = await c.db.execute<{ since: number }>("SELECT since FROM feedback_cursor WHERE id=1");
+	const subjects: FeedbackSubject[] = [];
+	const since = Math.max(now - 3 * 86_400_000, (cursor?.since ?? meta.createdAt) - 1000);
+	await app.withToken(installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, async token => {
+		const repo = hub.repository;
+		for (const r of await app.reviews(token, repo, pr)) {
+			if (!recentSubject(r.at, now)) continue;
+			if (r.state === "approved" || r.state === "changes_requested" || (r.state === "commented" && isAddressed(r.body, app.settings.slug) !== null))
+				subjects.push({ kind: "review", sender: r.author, association: r.association, id: r.id });
+			// A single line comment comes as a "commented" review with an empty body: its lines may be addressed.
+			// Only reviews since the last poll are opened, so each costs one call once.
+			else if (r.state === "commented" && r.at >= since) {
+				for (const line of await app.reviewComments(token, repo, pr, r.id))
+					if (recentSubject(line.at, now) && isAddressed(line.body, app.settings.slug) !== null)
+						subjects.push({ kind: "review_comment", sender: line.author, association: line.association, id: line.id });
+			}
+		}
+		for (const r of await app.issueComments(token, repo.owner, repo.name, pr, true, since))
+			if (r.id && r.person && isAddressed(r.body, app.settings.slug) !== null) subjects.push({ kind: "issue_comment", sender: r.person, association: r.association, id: r.id });
+	});
+	for (const s of subjects) {
+		const id = feedbackId(s);
+		if ((await c.db.execute("SELECT 1 FROM feedback WHERE id=? UNION ALL SELECT 1 FROM issue_actions WHERE subject IN (?,?) LIMIT 1", id, id, "feedback-denied:" + id)).length) continue;
+		const notice = await readFeedback(c, meta.uid, target, s, githubConfig().webhook ? undefined : hub.connectedUserId);
+		if (notice) await receiveFeedback(c, notice);
+	}
+	await c.db.execute("INSERT OR REPLACE INTO feedback_cursor VALUES(1,?)", now);
+}
+
+async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
+	const user = userActor(c, uid);
+	const [machines, limited, dailyTokenWait] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait()]);
+	const hostedProfiles = (await getLayer()).sandboxes.profiles().filter(p => p.available).map(p => p.id);
+	return { machines, hostedProfiles, limited, dailyTokenWait };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {
@@ -530,13 +709,74 @@ async function updateDirectory(c: Ctx, meta: ItemMeta, effect: Extract<Effect, {
 		if (effect.kind === "forget" && meta.github && !ENDED.has(durable.item.state)) return true;
 		if (effect.kind === "register" && installation !== null) {
 			await c.db.execute("INSERT OR REPLACE INTO github_binding VALUES (1, ?)", String(installation));
-			await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: installation, pr: effect.pr, head: effect.head });
+			await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: installation, pr: effect.pr, head: effect.head, moved: durable.item.run?.ci?.moved });
 		} else {
 			await directory.internalForget(durable.item.id);
-			if (!meta.github) await c.db.execute("DELETE FROM github_binding");
+			const installed = await binding(c);
+			if (durable.item.state === "failed" && durable.item.pr && installed !== null) {
+				await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: installed, pr: durable.item.pr.number });
+			} else if (!meta.github) await c.db.execute("DELETE FROM github_binding");
 		}
 		return true;
 	});
+}
+
+const itemUrl = (id: string) => `${config.origins[0]}/items/${encodeURIComponent(id)}`;
+
+async function storeCheckReceipt(tx: Pick<RawAccess, "execute">, itemId: string, fact: CheckReceipt, events: ItemEvent[]) {
+	const e = fact.effect;
+	const denied = fact.id === null;
+	await tx.execute(`INSERT INTO checks VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sha) DO UPDATE SET
+		check_run_id=coalesce(excluded.check_run_id,checks.check_run_id), external_id=excluded.external_id,
+		state=excluded.state, conclusion=excluded.conclusion, at=excluded.at, said=excluded.said`,
+		e.key, fact.id, e.verdictId ?? `pending:${itemId}:${e.run}`, denied ? "not_posted" : e.state, denied ? null : e.conclusion, e.changedAt, denied ? CHECK_DENIED : e.title);
+	if (denied && !(await tx.execute("SELECT 1 FROM events WHERE json_extract(data, '$.step.run') = ? AND json_extract(data, '$.said') = ? LIMIT 1", e.run, CHECK_DENIED)).length)
+		events.push({ by: "platform", at: fact.at, step: e.step, said: CHECK_DENIED });
+}
+
+async function prepareCompletedCheck(tx: Pick<RawAccess, "execute">, item: FactoryItem, effect: Extract<VerifiedCheckEffect, { state: "completed" }>, handoff: Handoff) {
+	let assessment = handoff.review !== null ? handoff.assessment ?? null : null;
+	// Reviews filed before check runs carried only their filing id on the handoff.
+	if (handoff.review && !assessment) {
+		const [row] = await tx.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", handoff.review);
+		const filed: ItemReview | null = row ? JSON.parse(row.data) : null;
+		if (filed?.recommendation) assessment = { recommendation: filed.recommendation, blocking: filed.blocks.filter(b => b.kind === "finding" && b.severity === "blocking").length };
+	}
+	effect.title = checkTitle(handoff.verdict, assessment);
+	effect.conclusion = checkConclusion(handoff.verdict, assessment);
+	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id));
+}
+
+/** Only the token request and the write treat a permission refusal as a finished effect. */
+function checkRefused(error: unknown): null {
+	if (error instanceof GithubError && (error.status === 403 || error.status === 422)) return null;
+	throw error;
+}
+
+async function postVerifiedCheck(c: Ctx, meta: ItemMeta, itemId: string, e: VerifiedCheckEffect): Promise<void> {
+	const { app, installationId, owner, name } = await github(c, meta, "write");
+	const issued = await app.installationToken(installationId, {
+		repositoryId: meta.repository.id, permissions: { metadata: "read", checks: "write" },
+	}).catch(checkRefused);
+	let id: string | null = null;
+	if (issued) {
+		const { token } = issued;
+		const [row] = await c.db.execute<{ check_run_id: string | null }>("SELECT check_run_id FROM checks WHERE sha=?", e.key);
+		const existing = row?.check_run_id ?? await app.findCheckRun(token, owner, name, e.key, itemId);
+		if (!existing && e.existingOnly) return;
+		const url = itemUrl(itemId);
+		const update: CheckRunUpdate = {
+			external_id: e.verdictId ?? `pending:${itemId}:${e.run}`,
+			details_url: url,
+			started_at: new Date(e.startedAt).toISOString(),
+			output: { title: e.title, summary: e.verdictId ? e.summary : e.summary + "\n\n" + evidenceLine(url) },
+			...(e.state === "in_progress" ? { status: e.state } : { status: e.state, conclusion: e.conclusion, completed_at: new Date(e.changedAt).toISOString() }),
+		};
+		id = existing
+			? await app.updateCheckRun(token, owner, name, existing, update).then(() => existing).catch(checkRefused)
+			: await app.createCheckRun(token, owner, name, e.key, update).catch(checkRefused);
+	}
+	await take(c, { kind: "check_recorded", at: Date.now(), effect: e, id, installationId });
 }
 
 type Handoff = Extract<Effect, { kind: "handoff" }>;
@@ -551,6 +791,15 @@ async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<vo
 	));
 }
 
+async function writeMarkedComment(app: GithubApp, token: string, owner: string, name: string, pr: number, item: string, body: string) {
+	const marker = `<!-- windlass-item:${item} -->`;
+	const comments = await app.issueComments(token, owner, name, pr, true);
+	const own = comments.find(c => c.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && c.body.split("\n", 1)[0] === marker);
+	if (!own) await app.createIssueComment(token, owner, name, pr, body);
+	else if (!own.id) throw new Error("GitHub returned an invalid verdict comment id");
+	else await app.updateIssueComment(token, owner, name, own.id, body);
+}
+
 async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: Handoff, row: EffectRow): Promise<void> {
 	const { verdict } = effect;
 	let action = "reach the pull request";
@@ -560,9 +809,11 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 			if (!effect.reviewDone) {
 				action = "request your review";
 				const pull = await app.pull(token, owner, name, number);
-				if (!pull.requestedReviewers.some((reviewer) => reviewer.toLowerCase() === login.toLowerCase())) {
+				const rows = await c.db.execute<{ login: string }>("SELECT DISTINCT json_extract(data,'$.author') AS login FROM feedback WHERE state='taken' AND run=? AND json_extract(data,'$.kind')='changes_requested'", verdict.run);
+				const wanted = [...new Set([login, ...rows.map(r => r.login)])].filter(name => !pull.requestedReviewers.some(r => r.toLowerCase() === name.toLowerCase()));
+				for (const reviewer of wanted) {
 					try {
-						await app.requestReviewers(token, owner, name, number, [login]);
+						await app.requestReviewers(token, owner, name, number, [reviewer]);
 					} catch (error) {
 						if (!(error instanceof GithubError && error.status === 422)) throw error;
 						console.log(`[wlp] factory.review_request_refused item=${verdict.item} status=422`);
@@ -576,15 +827,9 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 			}
 
 			action = "post the verdict comment";
-			const marker = `<!-- windlass-item:${verdict.item} -->`;
 			const [reviewRow] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id = ?", effect.review) : [];
 			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, owner, name });
-			// Every page, so that on a busy pull request a comment past the first hundred is edited, not posted a second time.
-			const comments = await app.issueComments(token, owner, name, number);
-			const own = comments.find((one) => one.author.toLowerCase() === `${app.settings.slug.toLowerCase()}[bot]` && one.body.split("\n", 1)[0] === marker);
-			if (own?.id === null) throw new Error("GitHub returned an invalid verdict comment id");
-			if (own) await app.updateIssueComment(token, owner, name, own.id, body);
-			else await app.createIssueComment(token, owner, name, number, body);
+			await writeMarkedComment(app, token, owner, name, number, verdict.item, body);
 		});
 	} catch (error) {
 		const status = error instanceof GithubError && error.status ? ` (GitHub ${error.status})` : "";
@@ -634,8 +879,10 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
+	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
 	if (effect.kind === "notify_integrated") return item.state === "done" && item.head === effect.head;
-	if (effect.kind === "cancel_children") return true;
+	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "issue_comment") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
@@ -645,6 +892,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
 	switch (effect.kind) {
+		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
 		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
 		case "integrate": return effect.key === key && run.step.kind === "subtasks" && !item.question;
 		case "dispatch": return !item.question && effect.key === key && run.step.kind === "subtasks";
@@ -659,7 +907,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 		case "poll_pr":
 			return effect.key === prPollKey(item) && effect.pr === item.pr?.number;
 		case "handoff":
-			return run.n === effect.verdict.run && item.pr !== null;
+			return item.pr !== null && (run.n === effect.verdict.run || (run.n === effect.continuedIn && !run.ci?.handed));
 	}
 }
 
@@ -721,11 +969,60 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "provider_retry":
+			await take(c, { ...effect, at: Date.now(), loginChanged: row.due_at < effect.at });
+			return true;
+		case "feedback_ready":
+			await feedbackReady(c);
+			return "deferred";
+		case "feedback_ack": {
+			const hub = await github(c, meta);
+			const [kind, id] = effect.key.split(":") as ["issue_comment" | "review_comment", string];
+			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", [kind === "issue_comment" ? "issues" : "pull_requests"]: "write" } },
+				token => hub.app.react(token, hub, { kind, id }, "eyes")).catch(error => {
+				if (!(error instanceof GithubError && [404, 410].includes(error.status))) throw error;
+			});
+			return true;
+		}
+		case "feedback_comment": {
+			const update = c.vars.handoff.then(async () => {
+				if (!live(c.vars.stored!.item, effect)) return;
+				const hub = await github(c, meta);
+				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async token => {
+					const marker = `<!-- windlass-item:${item.id} -->`;
+					const [prev] = await c.db.execute<{data:string}>("SELECT data FROM verdicts WHERE run < ? ORDER BY at DESC,rowid DESC LIMIT 1", effect.run);
+					let body = marker + "\n\n" + feedbackComment(effect.who, effect.run);
+					if (prev) {
+						const verdict: Verdict = JSON.parse(prev.data);
+						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
+						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
+							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name }, effect);
+					}
+					await writeMarkedComment(hub.app, token, hub.owner, hub.name, item.pr!.number, item.id, body);
+				});
+			});
+			c.vars.handoff = update.catch(() => {});
+			await update;
+			return true;
+		}
+		case "verified_check":
+			// A handoff or cancellation can replace a pending row after the due scan.
+			if (!(await c.db.execute("SELECT 1 FROM effects WHERE id=? AND effect=?", row.id, row.effect)).length) return true;
+			await postVerifiedCheck(c, meta, item.id, effect);
+			return true;
 		case "notify_integrated":
 			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, state:"done", integratedHead:effect.head });
 			return true;
 		case "cancel_children":
-			for (const child of effect.ids) await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+			for (const child of effect.ids) {
+				const view = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+				const active = c.vars.stored?.item, job = active?.jobs?.at(-1);
+				if (!view && active && job?.id === child && job.cancelRequested && job.state === "draft" && !ENDED.has(active.state)) {
+					// A placement wait has no child actor to report cancellation.
+					await take(c, { kind: "child_update", key: currentKey(active)!, child, state: "cancelled",
+						spent: job.spent, head: null, report: "Cancelled before launch.", at: Date.now() });
+				}
+			}
 			return true;
 		case "dispatch":
 		case "describe_feature":
@@ -733,8 +1030,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const key = effect.key;
 			const job = item.jobs?.at(-1);
 			if (effect.kind === "dispatch" && item.pr && job) {
+				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
+					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid), at: Date.now() });
+					return true;
+				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, placement: v.placement, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				if (!changed && live(c.vars.stored!.item, effect)) {
 					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
 					await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
@@ -806,7 +1107,24 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const description = prose("What it did"), lookAt = prose("Where to look"), risk = report?.blocks.find(b => b.kind === "risk");
 				checkout = { ...effect.reviewerInput, baseSha: meta.reviewBase.sha, report: report ? { title: report.title, description: description?.kind === "text" ? description.text : "", lookAt: lookAt?.kind === "text" ? lookAt.text : "", concerns: risk?.text ?? "", screenshots: report.screenshots.map(s => ({ file: s.id, caption: s.caption })) } : null };
 			}
-			const text = effect.agent === "planner" ? effect.text + "\n\nOwner machine descriptions and capacity (read-only data): " + JSON.stringify(await userActor(c, meta.uid).internalPlannerMachines()) + "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent) : effect.text;
+			let text = effect.text;
+			if (effect.feedbackQuote) {
+				const { head, start, length } = effect.feedbackQuote;
+				const run = item.run!.n;
+				const rows = await c.db.execute<{ data: string }>("SELECT data FROM feedback WHERE state='taken' AND run=? ORDER BY at,id", run);
+				const quote = batchText(rows.map(row => JSON.parse(row.data) as FeedbackEntry), { pr: item.pr!.number, run, head });
+				text = text.slice(0, start) + quote + text.slice(start + length);
+			}
+			// A provider retry replays the delivered planner prompt, including its inventory.
+			if (effect.agent === "planner" && item.run!.step.attempt === 1) {
+				const inventory = await placementInventory(c, meta.uid);
+				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({ ...description,
+					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
+				const parent = item.place;
+				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
+				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, machines: places })
+					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
+			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
 			return true;
 		}
@@ -856,8 +1174,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "poll_pr": {
 			// In review, too: the last turn's sandbox time is settled while the person reviews.
 			await factsOf(c, meta);
-			const pull = await (await github(c, meta)).pull(effect.pr);
+			const hub = await github(c, meta);
+			const pull = await hub.pull(effect.pr);
 			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
+			if ((pull.state === "open" || pull.state === "draft") && item.state === "review") await reconcileFeedback(c, meta, hub, effect.pr);
 			return true;
 		}
 		case "handoff": {
@@ -946,8 +1266,12 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT, issue_checked_at INTEGER NOT NULL DEFAULT 0)");
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
+			await db.execute(CHECKS_TABLE);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
+			await db.execute(FEEDBACK_TABLE);
+			await db.execute("CREATE INDEX IF NOT EXISTS feedback_pending ON feedback(state,after_run,ready)");
+			await db.execute("CREATE TABLE IF NOT EXISTS feedback_cursor(id INTEGER PRIMARY KEY, since INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS github_binding (id INTEGER PRIMARY KEY CHECK (id = 1), installation TEXT NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS issue_actions(subject TEXT PRIMARY KEY)");
 			await db.execute("CREATE TABLE IF NOT EXISTS issue_comment(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL)");
@@ -1022,11 +1346,27 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
 		},
+		// The seed belongs to the parent. Looking it up on clone also covers previously created child sessions.
+		internalSetupSeed: async (c, source: "child" | "feature"): Promise<string | null> => {
+			requireServiceFor(c, "call");
+			const stored = c.vars.stored;
+			if (!stored) throw new Error("The work item is unavailable for setup.");
+			if (source === "child") {
+				const parent = stored.item.parent;
+				return parent ? itemActor(c, stored.meta.uid, parent.itemId).internalSetupSeed("feature") : null;
+			}
+			if (!stored.item.seed) throw new Error("The feature has no recorded setup commit.");
+			return stored.item.seed;
+		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
 			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
-			return { job, sessionId: s.meta.sessionId, feature: summaryOf(s), context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: s.item.jobs?.filter(j => j.state === "done" && job.task.dependsOn.includes(j.task.key)).map(j => j.report) }) };
+			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
+			const previous = completed.at(-1);
+			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report) }),
+				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place } };
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);
@@ -1055,7 +1395,10 @@ export const workItem = actor({
 			let changed: boolean;
 			try {
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
-				if (approving && advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
+				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
+					fact.inventory = await placementInventory(c, stored.meta.uid);
+					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
+				}
 				changed = await take(c, fact);
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
@@ -1081,6 +1424,31 @@ export const workItem = actor({
 			await checkIssue(c, meta, input.action === "unlabeled" ? { unlabeledBy: input.senderId } : {});
 		},
 
+		internalGithubFeedback: async (c, input: FeedbackNotice) => {
+			requireServiceFor(c, "call");
+			return receiveFeedback(c, input);
+		},
+
+		internalReverify: async (c, input: { installationId: GithubId; repositoryId: GithubId; head: string }): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			if (input.repositoryId !== c.vars.stored?.meta.repository.id || input.installationId !== await binding(c)) return false;
+			return take(c, { kind: "reverify", head: input.head, at: Date.now() });
+		},
+
+		internalProviderChanged: async (c, revision: number): Promise<void> => {
+			requireServiceFor(c, "call");
+			await queued(c, async () => {
+				const item = c.vars.stored?.item;
+				if (item?.revision !== revision || item.wait?.reason !== "provider" || item.question) return;
+				// Admission waits belong to the user's queue. A refused turn or unplaced child has its own timer.
+				const key = currentKey(item);
+				const now = Date.now();
+				const rows = await c.db.execute("UPDATE effects SET due_at=? WHERE id IN (?,?) AND due_at>? RETURNING id",
+					now, "provider_retry:" + key, "dispatch:" + key, now);
+				if (rows.length) await armDueInQueue(c);
+			});
+		},
+
 		internalGithubNudge: async (c, input: GithubNudge): Promise<boolean> => {
 			requireServiceFor(c, "call");
 			return queued(c, () => nudge(c, input));
@@ -1093,6 +1461,11 @@ export const workItem = actor({
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored || typeof fact?.kind !== "string" || typeof fact.at !== "number") return;
+			if (fact.kind === "placement_wait") {
+				requireServiceFor(c, "call");
+				await take(c, fact);
+				return;
+			}
 			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "review_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
 			await takeSessionFact(c, stored, fact);
 		},

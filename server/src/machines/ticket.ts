@@ -9,6 +9,7 @@
  */
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { keyedDigest } from "../signatures.js";
+import { machineStatement } from "../runner/frame-auth.js";
 import { sessionProof } from "../runner/control.js";
 import type { Hello } from "../runner/protocol.js";
 
@@ -44,7 +45,10 @@ export class AttachTickets {
 		this.issued.delete(digest);
 		if (until === undefined || until <= now) return false;
 		if (hello.machineId !== expected.machineId || expected.publicKey === null) return false;
-		return signedBy(expected.publicKey, sessionProof(expected.uid, expected.sessionId, expected.machineId, hello.ticket), hello.signature);
+		// The one-use challenge was delivered in the authenticated control attach.
+		const proof = hello.protocol === 2 ? machineStatement({ ...expected, challenge: hello.ticket, ticket: hello.ticket }, hello)
+			: sessionProof(expected.uid, expected.sessionId, expected.machineId, hello.ticket);
+		return signedBy(expected.publicKey, proof, hello.signature);
 	}
 }
 

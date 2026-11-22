@@ -143,7 +143,7 @@ await section("profiles", async () => {
 	);
 	expect(
 		"what it promises holds with or without bubblewrap: Windlass asks or sandboxes, and commands are not said to be without network or token",
-		e2b?.approval === "auto" && e2b.commandNetwork === true && e2b.commandsCanReadAccessToken === true && /not been established/.test(e2b.summary) && /never in the microVM/.test(e2b.summary),
+		e2b?.approval === "auto" && e2b.commandNetwork === true && e2b.commandsCanReadAccessToken === true && /asks before running a command it cannot sandbox/.test(e2b.summary) && /never in the microVM/.test(e2b.summary),
 		e2b?.summary,
 	);
 	expect("the Docker profiles say why they cannot be chosen there", onE2b.filter((profile) => profile.id.startsWith("docker-")).every((profile) => !profile.available && /E2B/.test(profile.unavailableReason ?? "")));
@@ -439,9 +439,9 @@ await section("suspend, resume, destroy", async () => {
 	w.clock.now += 90_000;
 	machine.commands.length = 0;
 	await w.sandboxes.suspend(id);
-	const path = tokenFilePath(id);
+	const path = tokenFilePath(id, DATA_DIR);
 	expect("suspend removes an access token file a turn that was cut off left, then pauses", machine.commands.some((entry) => entry.command === `rm -f -- ${path} ${path}.tmp`) && w.fake.sandboxes.get(id)?.state === "paused" && (await w.sandboxes.state(id)) === "paused", machine.commands.map((entry) => entry.command).join(" | "));
-	expect("the token file is where it is in a container: one per sandbox in Windlass's data directory", path === `${DATA_DIR}/access-token-${id}.json`);
+	expect("the E2B token file stays in Windlass's data directory on the private guest disk", path === `${DATA_DIR}/access-token-${id}.json`);
 	const paused = w.lines.find((line) => line.includes(`e2b.sandbox.paused id=${id}`));
 	expect("a line says how long it ran and what that costs by estimate", paused !== undefined && paused.includes("uid=u1 session=s1: it ran 90 s at 1 vCPU and 1024 MiB, $0.0017 (estimated)"), paused);
 	expect("E2B counted the same running time", w.fake.ranMs(id) === 90_000);
@@ -507,7 +507,7 @@ await section("the handle", async () => {
 	await handle.writeSecretFile("/home/agent/.local/share/windlass/access-token-x.json", '{"accessToken":"FAKE-TOKEN-not-real"}');
 	const write = machine.commands[0];
 	expect("a secret goes in on standard input and is on no command line", secrets.join() === '{"accessToken":"FAKE-TOKEN-not-real"}' && write !== undefined && !write.command.includes("FAKE-TOKEN") && write.command.endsWith("sh /home/agent/.local/share/windlass/access-token-x.json") && write.options.stdin === true, write?.command);
-	expect("it is written beside the file and renamed into place, readable by its owner only", /umask 077/.test(write?.command ?? "") && /mv -f -- "\$tmp" "\$1"/.test(write?.command ?? ""));
+	expect("it is written beside the file and renamed into place, readable by its owner only", /umask 077/.test(write?.command ?? "") && /mv -fT -- "\$tmp" "\$1"/.test(write?.command ?? ""));
 	expect("an argument is quoted for E2B's shell, whatever is in it", shellQuote("it's $HOME `x`") === `'it'\\''s $HOME \`x\`'` && shellQuote("plain-1.txt") === "plain-1.txt" && shellQuote("") === "''");
 	machine.commands.length = 0;
 	await handle.run("echo hi", { env: { A_B: "x y" }, cwd: "/tmp" });
@@ -542,7 +542,7 @@ await section("a sign-in that is forgotten", async () => {
 	const tokens: AccessTokens = { current: async () => ({ accessToken: "x".repeat(20), expiresAt: Date.now() + 3_600_000 }) };
 	const layer = createE2bSandboxLayer({ logins, tokens }, { client: w.fake, settings: { ...SETTINGS, maxRunning: 5 }, log: () => undefined, now: () => w.clock.now });
 	await layer.logins.logout("u1");
-	const removed = (id: string) => (w.machines.get(id)?.commands ?? []).some((entry) => entry.command === `rm -f -- ${tokenFilePath(id)} ${tokenFilePath(id)}.tmp`);
+	const removed = (id: string) => (w.machines.get(id)?.commands ?? []).some((entry) => entry.command === `rm -f -- ${tokenFilePath(id, DATA_DIR)} ${tokenFilePath(id, DATA_DIR)}.tmp`);
 	expect("logout forgets the sign-in, then removes the token files of the user's running turns, each in its own sandbox", loggedOut === "u1" && removed(one) && removed(two));
 	expect("another user's sandbox is left alone, and a paused one is not started for it", !removed(other) && w.fake.sandboxes.get(asleep)?.state === "paused" && (w.machines.get(other)?.commands.length ?? 0) === 0);
 });
@@ -647,14 +647,15 @@ class ContainerMachine implements FakeMachine {
 		const name = `wlp-e2bfake-${run}-${id.slice(0, 12)}`;
 		// As a session container of the first Docker profile, where bubblewrap works, but on a disk of its own (no
 		// volume) and with no network at all: nothing these turns do needs one.
-		const flags = ["--init", "--user", "agent", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--network", "none", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "1", "--pids-limit", "512", "--hostname", "sandbox", ...(PROFILE_RUN_FLAGS["docker-windlass-sandbox"] ?? [])];
+		// Stand in for the VM supervisor, which runs outside the agent UID. start() selects agent explicitly.
+		const flags = ["--init", "--user", "root", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--network", "none", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "1", "--pids-limit", "512", "--hostname", "sandbox", ...(PROFILE_RUN_FLAGS["docker-windlass-sandbox"] ?? [])];
 		await docker(["run", "-d", "--pull", "never", "--name", name, "--label", LABEL_ARG, ...flags, image], { timeoutMs: 120_000, check: true });
 		return new ContainerMachine(name);
 	}
 
 	async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
 		const envs = Object.entries(options.envs ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		const child: ChildProcess = spawn("docker", ["exec", ...(options.stdin ? ["-i"] : []), "-u", "agent", "-w", options.cwd, ...envs, this.container, "bash", "-l", "-c", command], { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+		const child: ChildProcess = spawn("docker", ["exec", ...(options.stdin ? ["-i"] : []), "-u", options.gitUser ? "nobody" : "agent", "-w", options.cwd, ...envs, this.container, "bash", "-l", "-c", command], { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
 		child.stdout?.setEncoding("utf8").on("data", (text: string) => options.onStdout?.(text));
 		child.stderr?.setEncoding("utf8").on("data", (text: string) => options.onStderr?.(text));
 		child.stdin?.on("error", () => undefined);
@@ -675,7 +676,7 @@ class ContainerMachine implements FakeMachine {
 	}
 
 	async readFile(path: string): Promise<string> {
-		const result = await docker(["exec", this.container, "cat", "--", path]);
+		const result = await docker(["exec", "-u", "agent", this.container, "cat", "--", path]);
 		if (result.code !== 0) throw new Error(result.stderr.trim());
 		return result.stdout;
 	}
@@ -749,6 +750,11 @@ if (withDocker) {
 			const log = await handle.run("git log --oneline | wc -l; git status --short | wc -l; whoami; pwd; echo $LANG $NO_COLOR");
 			expect("a new sandbox has an empty git repository in /workspace, and commands run as agent with the image's environment", log.exitCode === 0 && log.stdout.trim().split(/\s+/).join(" ") === "1 0 agent /workspace C.UTF-8 1", log.stdout.trim());
 			expect("the Windlass version is known once a sandbox was made", version !== null && /^\d+\.\d+\.\d+/.test(version), String(version));
+			const isolated = await handle.run('id -u; pwd; test -z "${GIT_CONFIG_COUNT-}"', {
+				gitUser: true, cwd: "/workspace", env: { GIT_CONFIG_COUNT: "1" },
+			});
+			expect("Git transport selects the separate uid and clean environment through the E2B command adapter",
+				isolated.exitCode === 0 && isolated.stdout === "65534\n/\n", isolated.stdout.trim());
 			const odd = ["a b", "it's", "$HOME", 'x"y', "`uname`", "", "é✓", "a\nb", "*", "~", "; echo no"];
 			const echoed = await handle.exec(["printf", "[%s]", ...odd]);
 			expect("every argument arrives as it was given, whatever is in it", echoed.exitCode === 0 && echoed.stdout === odd.map((item) => `[${item}]`).join(""), echoed.stdout);
@@ -797,11 +803,14 @@ if (withDocker) {
 				engineCommand: ["sh", "-c", 'echo "file=$WINDLASS_ACCESS_TOKEN_FILE mode=$(stat -c %a "$WINDLASS_ACCESS_TOKEN_FILE") holds=$(grep -c accessToken "$WINDLASS_ACCESS_TOKEN_FILE") $(cat "$WINDLASS_ACCESS_TOKEN_FILE")" >&2; exit 7'],
 				tokenFile: { log: (line) => lines.push(line) },
 			});
+			await handle.run("setsid env -i /bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $! > /tmp/prior-turn-pid");
 			const handed = await turn(handle, "Hello", undefined, { windlass: standIn });
+			expect("the guest sweep removes the previous turn's agent process and preserves the supervisor",
+				(await handle.run('! kill -0 "$(cat /tmp/prior-turn-pid)" 2>/dev/null')).exitCode === 0);
 			const tail = handed.result.stderrTail;
 			expect(
 				"a turn that is not scripted finds its user's access token in its sandbox's own file, readable by its owner only",
-				asked === 1 && tail.includes(`file=${tokenFilePath(id)} mode=600 holds=1`) && handed.result.failure?.reason === "engine",
+				asked === 1 && tail.includes(`file=${tokenFilePath(id, DATA_DIR)} mode=600 holds=1`) && handed.result.failure?.reason === "engine",
 				tail.replace(TOKEN, "<the token>"),
 			);
 			expect(

@@ -66,6 +66,15 @@ test("the ACP projection enables every selected provider with separate placehold
 	}
 });
 
+test("free uses the native anonymous model catalog and authenticates only its loopback transport", () => {
+	const env = projection("free","fixture-placeholder");
+	const value = (key: string) => JSON.parse(env.find(v => v.startsWith(key+"="))!.slice(key.length+1));
+	assert.deepEqual(value("OPENCODE_AUTH_CONTENT"), {});
+	assert.deepEqual(value("OPENCODE_CONFIG_CONTENT"), { enabled_providers:["opencode"], provider:{
+		opencode: { options: { baseURL:"http://127.0.0.1:17892/free", headers:{authorization:"Bearer fixture-placeholder"} } }
+	} });
+});
+
 test("authenticated reports carry a full provider catalog while other frames retain the control limit", async () => {
 	const { MAX_CONTROL_FRAME_BYTES, parseRunnerFrame, validHarnessOptions } = await import("../server/src/runner/control.js");
 	const models = Array.from({ length: 1400 }, (_, i) => ({ id: "openrouter/model-" + i, name: "Model " + i, efforts: ["low", "high"] }));

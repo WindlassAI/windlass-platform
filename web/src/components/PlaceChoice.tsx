@@ -21,6 +21,7 @@ export type PlacePurpose = "agent" | "item";
 
 /** Why a machine cannot be chosen; null when it can. An offline machine can: what is made there waits for it. */
 export function machineUnusable(machine: MachineSummary, minRunnerVersion: string, purpose: PlacePurpose): string | null {
+	if (machine.warnings.some(w => w.kind === "signing-disabled")) return "This runner requires signed connections to be enabled on the platform.";
 	if (machine.warnings.some((warning) => warning.kind === "outdated")) return `Its runner is ${machine.runnerVersion}; the platform needs ${minRunnerVersion} or later. Update it on the machine.`;
 	if (machine.profiles.length === 0) return machine.status === "waiting" ? "Its runner has not connected since the machine was added." : "Its runner has not said yet which sandboxes it can make.";
 	if (purpose === "item" && !machine.profiles.some((profile) => profile.available)) return "None of the sandboxes its runner reported can be used now.";
@@ -28,7 +29,7 @@ export function machineUnusable(machine: MachineSummary, minRunnerVersion: strin
 }
 
 /** One place it can run: this platform (`machine` null) or one of the user's machines, as a card like a sandbox's. */
-function PlaceCard({ machine, why, name, checked, now, purpose, onChoose }: { machine: MachineSummary | null; why: string | null; name: string; checked: boolean; now: number; purpose: PlacePurpose; onChoose(machineId: string | null): void }) {
+function PlaceCard({ machine, why, name, checked, now, onChoose }: { machine: MachineSummary | null; why: string | null; name: string; checked: boolean; now: number; onChoose(machineId: string | null): void }) {
 	const id = useId();
 	const reasonId = `${id}-reason`;
 	return (
@@ -41,7 +42,7 @@ function PlaceCard({ machine, why, name, checked, now, purpose, onChoose }: { ma
 			</span>
 			<span className="profile-summary">
 				{machine
-					? `Your ${machine.os} ${machine.arch} machine. ${purpose === "agent" ? "The platform's limits do not apply." : "It costs no hosted time."}`
+					? `Your ${machine.os} ${machine.arch} machine. It costs no hosted time.`
 					: "A sandbox the platform makes and controls. It counts against your daily sandbox time."}
 			</span>
 			{why === null ? null : (
@@ -76,7 +77,7 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 								<span>
 									your {chosen.os} {chosen.arch} machine
 								</span>
-								{purpose === "agent" ? <span>the platform's limits do not apply</span> : null}
+								{purpose === "agent" ? <span>costs no hosted time</span> : null}
 							</>
 						) : (
 							<>
@@ -108,9 +109,9 @@ export function PlaceCards({ machines, chosen, minRunnerVersion, now, purpose, o
 	return (
 		<>
 			<div className="profiles places">
-				<PlaceCard machine={null} why={null} name={group} checked={chosen === null} now={now} purpose={purpose} onChoose={onChoose} />
+				<PlaceCard machine={null} why={null} name={group} checked={chosen === null} now={now} onChoose={onChoose} />
 				{usable.map((machine) => (
-					<PlaceCard key={machine.machineId} machine={machine} why={null} name={group} checked={chosen?.machineId === machine.machineId} now={now} purpose={purpose} onChoose={onChoose} />
+					<PlaceCard key={machine.machineId} machine={machine} why={null} name={group} checked={chosen?.machineId === machine.machineId} now={now} onChoose={onChoose} />
 				))}
 			</div>
 			{unusable.length > 0 ? (
@@ -118,7 +119,7 @@ export function PlaceCards({ machines, chosen, minRunnerVersion, now, purpose, o
 					<p className="profiles-divider">Listed, but not usable now</p>
 					<div className="profiles profiles-unavailable">
 						{unusable.map((machine) => (
-							<PlaceCard key={machine.machineId} machine={machine} why={why(machine)} name={group} checked={false} now={now} purpose={purpose} onChoose={onChoose} />
+							<PlaceCard key={machine.machineId} machine={machine} why={why(machine)} name={group} checked={false} now={now} onChoose={onChoose} />
 						))}
 					</div>
 				</>

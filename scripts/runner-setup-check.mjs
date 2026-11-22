@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { spawn, execFileSync } from 'node:child_process';
@@ -13,7 +14,12 @@ for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'dec
 	const root = fileURLToPath(new URL('../', import.meta.url));
 	const dir = await mkdtemp(join(root, '.setup-check-'));
 	const pin = 'sha256:'+'1'.repeat(64), id = 'm_'+'a'.repeat(16);
+	const registry = 'ghcr.io/windlassai/';
+	const runner = registry+'windlass-runner@'+pin;
+	const ref = role => registry+'windlass-platform-'+role+'@'+pin;
+	const pins = [ref('sandbox'), ref('sandbox-shots'), 'claude='+ref('claude'), 'opencode='+ref('opencode')];
 	const asked = [];
+	const platformRoot = generateKeyPairSync("ed25519").publicKey.export({format:"der",type:"spki"}).toString("base64");
 	let refuseSetup = false;
 	const server = createServer(async (req,res) => {
 		let body=''; for await(const c of req) body+=c;
@@ -21,12 +27,12 @@ for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'dec
 		if (refuseSetup) { res.writeHead(403); res.end("{}"); return; }
 		res.setHeader('content-type','application/json');
 		res.end(JSON.stringify(req.url === '/runner/pair' ? {code:'ABCD-EFGH',pairing:'a'.repeat(43),pollSecret:'b'.repeat(43)}
-			: {state:'approved',uid:'fixture',machineId:id,githubLogin:'fixture-owner'}));
+			: {state:'approved',uid:'fixture',machineId:id,githubLogin:'fixture-owner',platformRoot,endpoint:'http://127.0.0.1:'+server.address().port}));
 	});
 	try {
 		await new Promise(done=>server.listen(0,'127.0.0.1',done));
 		const origin='http://127.0.0.1:'+server.address().port;
-		execFileSync(process.execPath,[join(root,'runner/bundle.mjs'),pin,join(dir,'runner.cjs'),'claude='+pin,'opencode='+pin]);
+		execFileSync(process.execPath,[join(root,'runner/bundle.mjs'),pins[0],join(dir,'runner.cjs'),...pins.slice(1)]);
 		await writeFile(join(dir,"package.json"),JSON.stringify({type:"commonjs"}));
 		const preload=join(dir,'host.cjs');
 		const state = join(dir,'state'), volume = join(dir,'relay-volume'), source = join(dir,'auth.json');
@@ -40,7 +46,22 @@ fs.open=(p,...args)=>open(p==='/import/opencode/auth.json'?${JSON.stringify(sour
 require('node:module').syncBuiltinESMExports()`);
 		await writeFile(join(dir,'docker'),`#!/usr/bin/env node
 const a=process.argv.slice(2),d=process.env.WLP_RUNNER_STATE_DIR,fs=require('node:fs'),pin=${JSON.stringify(pin)};
-if (a.includes('{{json .Image}} {{json .Mounts}}')) console.log(JSON.stringify(pin),JSON.stringify([{Type:'bind',Source:'/var/run/docker.sock',Destination:'/var/run/docker.sock'},{Type:'volume',Name:'setup-test',Destination:d},...${importing ? "[{Type:'bind',RW:false,Source:'/fixture/source',Destination:'/import/opencode'}]" : '[]'}]));
+if (a[0]==='container' && a.at(-1)==='0123456789ab') {
+ const mounts=[{Type:'bind',Source:'/var/run/docker.sock',Destination:'/var/run/docker.sock'},{Type:'volume',Name:'setup-test',Destination:d},...${importing ? "[{Type:'bind',RW:false,Source:'/fixture/source',Destination:'/import/opencode'}]" : '[]'}];
+ if (a.includes('{{json .Image}} {{json .Mounts}}')) console.log(JSON.stringify(pin),JSON.stringify(mounts));
+ else console.log(JSON.stringify([pin, ${JSON.stringify(importing ? 'local:test' : runner)}, mounts]));
+}
+else if(a[0]==='version') console.log('linux/arm64');
+else if(a[0]==='image' && a.some(v=>v.includes('@'))) {
+ if(!fs.existsSync(d+'/pulled-'+a.find(v=>v.includes('@')).split('/').at(-1))) process.exit(1);
+ console.log('linux/arm64');
+}
+else if(a[0]==='manifest') console.log(JSON.stringify({manifests:[{platform:{os:'linux',architecture:'amd64'}}]}));
+else if(a[0]==='pull') {
+ const role=a.at(-1).split('/').at(-1);
+ if(process.env.RELEASE_MISSING_ARCH) {console.error('no matching manifest for linux/arm64 in the manifest list entries');process.exit(1);}
+ console.log('Pull progress '+role);fs.writeFileSync(d+'/pulled-'+role,'');
+}
 else if(a[0]==='image') console.log(pin);
 else if(a[0]==='container') { console.error('No such container');process.exitCode=1; }
 else if(a[0]==='volume' && a[1]==='ls') console.log('wlp-harness-opencode-${id}');
@@ -53,7 +74,7 @@ else if(a[0]==='run' && a.includes('--network') && a.includes('none')) {
 else process.exitCode=2;
 `,{mode:0o755});
 		const env={...process.env,PATH:dir+':'+process.env.PATH,WLP_RUNNER_STATE_DIR:state};
-		const child=spawn('script',['-qef','-c',`"${process.execPath}" --require "${preload}" "${dir}/runner.cjs" setup --platform ${origin} --harness claude --harness opencode`,'/dev/null'],{env,stdio:['pipe','pipe','pipe']});
+		const child=spawn('script',['-qef','-c',`"${process.execPath}" --require "${preload}" "${dir}/runner.cjs" setup --platform ${origin} ${importing ? '--screenshots ' : ''}--harness claude --harness opencode`,'/dev/null'],{env,stdio:['pipe','pipe','pipe']});
 		const prompts=[['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',accept ? '' : 'n'],['(opencode) API key: import?',accept ? '' : 'n'],["can't be shared safely",'n']] : []),...(!accept ? [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']] : [])];
 		let output='', step=0;
 		child.stdout.on('data',chunk=>{output+=chunk;if(step<prompts.length && output.includes(prompts[step][0])) child.stdin.write(prompts[step++][1]+'\n');});
@@ -83,9 +104,24 @@ else process.exitCode=2;
 		}
 		if (importing) assert.equal(await readFile(source,'utf8'),fixture);
 		assert.doesNotMatch(output,/fixture-existing-|fixture-foreign-|\/import\/opencode|\/fixture\/source/);
-		assert.ok(output.includes(pin+' run --platform '+origin+' --harness claude --harness opencode'));
+		assert.ok(output.includes((importing ? pin : runner)+' run --platform '+origin+(importing ? ' --screenshots' : '')+' --harness claude --harness opencode'), 'printed service command: '+output.split('Start the runner on this machine:').at(-1));
+		for (const role of ['sandbox', 'claude', 'opencode', ...(importing ? ['sandbox-shots'] : [])]) {
+			const progress = output.indexOf('Pull progress windlass-platform-'+role+'@');
+			assert.ok(progress >= 0 && progress < output.indexOf('ABCD-EFGH'), 'missing pre-pair pull progress for '+role);
+		}
+		if (!importing) assert.doesNotMatch(output, /Pull progress windlass-platform-sandbox-shots/);
 		if (!importing) {
 			const bundle = join(dir, 'runner.cjs');
+			const before = asked.length;
+			await rm(join(state,'pulled-'+ref('sandbox').split('/').at(-1)));
+			for (const command of ['setup','run']) {
+				await assert.rejects(promisify(execFile)(process.execPath,['--require',preload,bundle,command,'--platform',origin],
+					{env:{...env, RELEASE_MISSING_ARCH:'1'}, timeout:8000}), error => {
+					assert.match(error.stderr,/This runner release has no linux\/arm64 images/);
+					return true;
+				});
+			}
+			assert.equal(asked.length, before);
 			const piped = spawn(process.execPath,[bundle,'login','opencode','--provider','openai'],{env,stdio:['pipe','ignore','pipe']});
 			let error = '';
 			piped.stderr.setEncoding('utf8').on('data', chunk => { error += chunk; });

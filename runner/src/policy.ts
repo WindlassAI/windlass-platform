@@ -1,4 +1,5 @@
-import { availableParallelism } from "node:os";
+import { spawn } from "node:child_process";
+import type { MachineSlotCapacity } from "../../server/src/contract.js";
 import type { Args } from "../../server/src/runner/protocol.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
@@ -13,19 +14,12 @@ export type MachineHarness = NonNullable<Args<"create">["harness"]>;
 export const harnessImage = (id: MachineHarness) => HARNESS_IMAGES[id];
 export const shotsImage = SHOTS_IMAGE_PIN;
 export const image = SANDBOX_IMAGE;
+export const imagePins = () => ({ sandbox: image, "sandbox-shots": shotsImage, ...HARNESS_IMAGES });
 export const bubblewrap = "docker-windlass-sandbox";
 export type Profile = Args<"create">["profile"];
-export function runnerCpus(): number {
-	const setting = process.env.WLP_RUNNER_CPUS;
-	if (setting === undefined) return Math.max(0.5, availableParallelism() / 2);
-	const value = Number(setting);
-	if (!/^\d+(?:\.\d{1,9})?$/.test(setting) || !Number.isFinite(value) || value < 0.01)
-		throw new RunnerError("Give WLP_RUNNER_CPUS a CPU count of at least 0.01.");
-	return value;
-}
 
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
-export type Limits = { maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
+export type Limits = { slots?: MachineSlotCapacity | null; maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
 // The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
 export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^(?:claude|opencode)-/, "")}`;
 export function rawId(machine: string, id: string) {
@@ -33,6 +27,67 @@ export function rawId(machine: string, id: string) {
 	const raw = id.slice(prefix.length);
 	if (!id.startsWith(prefix) || !/^[a-f0-9]{12}$/.test(raw)) throw new Refusal("This sandbox id does not belong to this machine.");
 	return raw;
+}
+
+function imageRole(pin: string) {
+	if (pin === image) return "sandbox";
+	if (pin === shotsImage) return "screenshots";
+	if (pin === harnessImage("claude")) return "Claude Code";
+	return "OpenCode";
+}
+
+async function pullImage(pin: string, platform: string, progress: boolean) {
+	const child = spawn("docker", ["pull", "--platform", platform, pin], { stdio: ["ignore", "pipe", "pipe"], timeout: 30 * 60_000, killSignal: "SIGKILL" });
+	let diagnostic = "";
+	for (const output of [child.stdout, child.stderr]) {
+		output.on("data", (chunk: Buffer) => {
+			diagnostic = (diagnostic + chunk.toString()).slice(-8192);
+			if (progress) process.stderr.write(chunk);
+		});
+	}
+	const code = await new Promise<number | null>((resolve, reject) => {
+		child.once("error", reject);
+		child.once("close", resolve);
+	});
+	if (code === 0) return;
+	if (/no matching manifest|no match for platform|does not match the specified platform|does not provide the specified platform/i.test(diagnostic))
+		throw new RunnerError(`This runner release has no ${platform} images (${imageRole(pin)}).`);
+	throw new RunnerError(`The pinned ${imageRole(pin)} image is missing and could not be pulled.`);
+}
+
+async function daemonPlatform() {
+	const result = await docker(["version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"], { timeoutMs: 10_000 });
+	const platform = result.stdout.trim();
+	if (result.code !== 0 || !/^linux\/[a-z0-9_]+$/.test(platform))
+		throw new RunnerError("Could not determine the Linux Docker daemon architecture.");
+	return platform;
+}
+
+async function fetchImage(pin: string, mode: "setup" | "run" | "session" = "session", platform?: string) {
+	const cached = await docker(["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", pin]);
+	if (!pin.includes("@")) {
+		if (cached.code !== 0) throw new RunnerError(`The pinned ${imageRole(pin)} image is missing and could not be pulled.`);
+		return;
+	}
+	platform ??= await daemonPlatform();
+	if (cached.code === 0 && cached.stdout.trim() === platform) return;
+	if (mode !== "run") return pullImage(pin, platform, mode === "setup");
+	// A service started without setup only needs the index to check compatibility.
+	const manifest = await docker(["manifest", "inspect", pin], { timeoutMs: 30_000 });
+	if (manifest.code !== 0) throw new RunnerError(`Could not inspect the pinned ${imageRole(pin)} image index.`);
+	const entries: { platform?: { os: string; architecture: string } }[] | undefined = JSON.parse(manifest.stdout).manifests;
+	// A locally assembled runner can also refer directly to a single image manifest.
+	if (!entries) return pullImage(pin, platform, false);
+	if (!entries.some(entry => entry.platform && entry.platform.os + "/" + entry.platform.architecture === platform))
+		throw new RunnerError(`This runner release has no ${platform} images (${imageRole(pin)}).`);
+}
+
+export async function prepareImages(agents: MachineHarness[], screenshots: boolean, mode: "setup" | "run") {
+	const pins = [image, ...agents.map(id => harnessImage(id)!), ...(screenshots ? [shotsImage] : [])];
+	const platform = pins.some(pin => pin.includes("@")) ? await daemonPlatform() : undefined;
+	for (const pin of new Set(pins)) {
+		if (mode === "setup" || pin.includes("@")) await fetchImage(pin, mode, platform);
+	}
 }
 
 export class MachineDocker {
@@ -76,14 +131,9 @@ export class MachineDocker {
 	ensureImage(pin = image) {
 		const pending = this.preparing.get(pin);
 		if (pending) return pending;
-		const fetch = this.fetchImage(pin).finally(() => this.preparing.delete(pin));
+		const fetch = fetchImage(pin).finally(() => this.preparing.delete(pin));
 		this.preparing.set(pin, fetch);
 		return fetch;
-	}
-	private async fetchImage(image: string) {
-		if ((await docker(["image", "inspect", image, "--format", "{{.Id}}"])).code === 0) return;
-		if (!image.includes("@") || (await docker(["pull", image], { timeoutMs: 30 * 60_000 })).code !== 0)
-			throw new RunnerError("The pinned sandbox image is missing and could not be pulled.");
 	}
 	async disk() {
 		const result = await this.helper(["df", "-B1", "--output=avail", "/workspace"]);

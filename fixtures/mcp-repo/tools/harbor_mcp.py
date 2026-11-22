@@ -6,7 +6,7 @@ Two tools:
 
   berth   says which berth is free for a ship: something a model can call and get an answer from
   reach   says what this process can reach from where it runs: the network, Windlass's data directory
-          and whether a turn's access token file is in it. It prints no file's content, ever.
+          and whether the test's private handoff fixture is readable. It prints no file's content, ever.
 
 `reach` is how scripts/mcp-check.ts shows what the platform tells a user about a project's server:
 that it runs in the session's sandbox but outside Windlass's sandbox around commands.
@@ -43,10 +43,10 @@ def network():
 
 def data_directory():
     try:
-        names = os.listdir(DATA_DIR)
+        os.listdir(DATA_DIR)
     except OSError:
         return "data directory: hidden", "access token file: out of reach"
-    token = any(name.startswith("access-token-") and name.endswith(".json") for name in names)
+    token = os.access("/dev/shm/access-token-mcp-check.json", os.R_OK)
     return "data directory: readable", "access token file: " + ("present" if token else "none in this turn")
 
 

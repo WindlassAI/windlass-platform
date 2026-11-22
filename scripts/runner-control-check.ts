@@ -29,6 +29,9 @@ const never = (parse: (data: unknown) => unknown, inputs: unknown[]) => inputs.e
 	try { return parse(input) === null; } catch { return false; }
 });
 
+// Legacy runners may display a future refusal sentence. An authenticated socket rejects extra fields.
+const extendedRefusal = JSON.stringify({ kind: "refused", reason: "unknown", message: "Fixture", extra: true });
+expect("signed control refuses unknown fields even in refusal frames", parseServerFrame(extendedRefusal, true) === null && parseServerFrame(extendedRefusal)?.kind === "refused");
 const signature = "A".repeat(86);
 const hello = { kind: "hello", runnerVersion: "0.1.0", epoch: "e0123456789", time: Date.now(), signature };
 const junk: unknown[] = [
@@ -50,7 +53,12 @@ expect("and for the HTTP answers", never(parsePairStatus, [...junk, { state: "ap
 
 expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kind === "hello"
 	&& parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: false, reason: "permission denied" }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [{ id: "m_0123456789abcdef-0123456789ab", sessionId: "s_0123456789abcdef", state: "paused", usedAt: 5 }] }))?.kind === "report");
+const slots = { max: 3, unit: { cpus: 2, memoryBytes: 8 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: 4 * 2 ** 30 } };
 const plainReport = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] };
+expect("malformed slot reports are refused", [
+	{ ...slots, max: 65 }, { ...slots, max: 0 }, { ...slots, max: 1.5 }, { ...slots, unit: { ...slots.unit, memoryBytes: 0 } },
+	{ ...slots, reserve: { cpus: -1, memoryBytes: 0 } }, { ...slots, busy: 1 },
+].every(invalid => parseRunnerFrame(JSON.stringify({ ...plainReport, slots: invalid })) === null));
 expect("a report can update the machine name", parseRunnerFrame(JSON.stringify({ ...plainReport, name: "Build host" }))?.kind === "report");
 expect("invalid reported names are refused", ["", " ", "x".repeat(65), "line\nfeed", "a\u0085b", "a\u202eb"].every(name => !parseRunnerFrame(JSON.stringify({ ...plainReport, name }))));
 const harness = { id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fixture", signIn: "none" };
@@ -166,14 +174,15 @@ async function withControl(answers: Response[], exercise: (runner: {
 	Date.now = () => clock;
 	globalThis.fetch = async () => answers[requests++] ?? answer(503);
 	const owner = {
+		slots, maxTurns: slots.max,
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
 		checkAuthenticatedNetwork: async () => {}, welcome: async () => {},
-		report: () => ({ ...plainReport, egress: "restricted", claudeRelay: true }),
+		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
-	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host");
+	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host", null);
 	try {
 		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
 			async online(socketIndex = 0) {
@@ -184,6 +193,10 @@ async function withControl(answers: Response[], exercise: (runner: {
 				socket.frame({ kind: "welcome", idleSuspendMs: 60_000 });
 				await until(() => socket.sent.some(f => f.kind === "report"));
 				const report = socket.sent.find(f => f.kind === "report");
+				for (const kind of ["hello", "report"]) {
+					const frame = parseRunnerFrame(JSON.stringify(socket.sent.find(f => f.kind === kind)));
+					assert.deepEqual(frame && "slots" in frame && frame.slots, slots);
+				}
 				assert.equal(report?.name, "Build host");
 				assert.equal(report?.egress, "restricted");
 				assert.equal(report?.claudeRelay, true);

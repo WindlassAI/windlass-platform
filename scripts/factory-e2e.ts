@@ -163,11 +163,17 @@ class Server {
 
 type Client = ReturnType<typeof createClient<Registry>>;
 
-/** One server with a GitHub stand-in, a demo user connected to it as "ada", and a repository. */
-async function world(server: Server, standin: GithubStandin, env: Record<string, string> = {}) {
+async function fixtureLogin(client: Client, code: string) {
+	const login = client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]);
+	const { redirectPrefix } = await login.start();
+	return login.finish(`${redirectPrefix}?${new URLSearchParams({ code })}`);
+}
+
+/** One server with a GitHub stand-in, a user connected to it as "ada", and a repository. */
+async function world(server: Server, standin: GithubStandin, env: Record<string, string> = {}, loginCode?: string) {
 	await server.start({ ...standin.env(), ...env });
 	const client: Client = createClient<Registry>({ endpoint: ENDPOINT, headers: { Origin: ORIGIN } });
-	const auth: AuthResult = await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+	const auth: AuthResult = loginCode ? await fixtureLogin(client, loginCode) : await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const { url } = await user.githubConnect({ origin: ORIGIN });
 	const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });
@@ -211,7 +217,68 @@ await standin.start();
 standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
-standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
+standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "write", statuses: "read", actions: "read" };
+
+if (!only.length || only.some(name => name.startsWith("user-limits"))) {
+	const server = new Server();
+	try {
+		await check("user-limits: the operator changes one account; charged turns finish and further turns wait", async () => {
+			const { config } = await import("../server/src/config.js");
+			const { issueServiceToken } = await import("../server/src/tokens.js");
+			const { limitsSubject } = await import("../server/src/user-limits.js");
+			const { user, client, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_DAILY_TOKENS: "9000000" });
+			try {
+				const uid = auth.profile.uid, operator = "test-operator";
+				const second = await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+				const other = client.user.getOrCreate([second.profile.uid], { params: { token: second.token } });
+				const params = { token: issueServiceToken(limitsSubject(uid, operator)) };
+				const admin = client.user.get([uid], { params });
+				const change = { operator, key: "dailyTokens", value: 1 };
+				await refused(() => user.internalSetLimit(change), "forbidden");
+				await refused(() => user.internalLimitHistory(operator), "forbidden");
+				await refused(() => client.user.get([second.profile.uid], { params }).internalSetLimit(change), "forbidden");
+				await refused(() => admin.internalSetLimit({ ...change, value: 1.5 }), "bad_input");
+				await admin.internalSetLimit(change);
+				await admin.internalSetLimit(change); // Retry after a lost reply.
+				await admin.internalSetLimit({ ...change, key: "featureMultiplier", value: 2 });
+				await admin.internalSetLimit({ ...change, key: "item.tokens", value: 123456 });
+				const history = await admin.internalLimitHistory(operator);
+				assert(history.length === 3 && history[2].operator === operator && history[2].old_value === 9000000 && history[2].new_value === 1 && history[2].at > 0, "wrong audit trail");
+				assert((await other.factoryLimits()).dailyTokens === 9000000 && (await other.usage()).usedModelTokens === 0, "one account changed another");
+				const ownSession = await other.createSession({ profile: "docker-hardened" });
+				const own = client.agentSession.get([second.profile.uid, ownSession.id], { params: { token: second.token } });
+				await own.prompt({ text: "Run two parallel tool calls." });
+				const ownEnd = await waitFor("the other user's interactive turn", async () =>
+					(await own.snapshot()).timeline.find(e => e.kind === "turn.ended"), 60_000);
+				assert(ownEnd.usage && ownEnd.usage.inputTokens > 0, "the fixture reported no model usage");
+				await other.deleteSession(ownSession.id);
+				assert((await other.usage()).usedModelTokens === ownEnd.usage.inputTokens + ownEnd.usage.outputTokens, "deleting an interactive session lost its usage");
+				assert((await user.usage()).usedModelTokens === 0, "another user's turn spent this user's tokens");
+				const filing = { repository: { id: harbor.id }, title: "Write notes", body: "Run two parallel tool calls." };
+				const feature = await user.createItem({ ...filing, mode: "orchestrate", start: false });
+				assert(feature.budget.tokens === 246912, "new feature did not receive the effective item budget and multiplier");
+				const item = await user.createItem({ ...filing, mode: "single", start: true });
+				const session = client.agentSession.get([uid, item.sessionId], { params: { token: auth.token } });
+				const finished = await waitFor("the admitted Factory step to finish", async () =>
+					(await session.snapshot()).timeline.find(e => e.kind === "turn.ended"), 60_000);
+				assert(finished.outcome === "succeeded" && (finished.steps ?? 0) >= 2 && finished.usage, "the cap interrupted the granted multi-request turn");
+				const usage = await user.usage();
+				assert(usage.usedModelTokens === finished.usage.inputTokens + finished.usage.outputTokens && usage.factoryLimits.dailyTokens === 1, "the Usage total disagrees with the turn report");
+				const personal = await user.createSession({ profile: "docker-hardened" });
+				const agent = client.agentSession.get([uid, personal.id], { params: { token: auth.token } });
+				assert((await refused(() => agent.prompt({ text: "Continue." }), "daily_token_cap")).includes("00:00 UTC"), "missing reset time on prompt refusal");
+				const next = await user.createItem({ ...filing, title: "Second item", mode: "single", start: true });
+				const waiting = await untilItem(user, next.id, "a daily token wait", v => v.wait?.sentence.includes("daily model token") === true);
+				assert(waiting.wait?.reason === "capacity" && waiting.wait.retryAt === usage.resetsAt && !waiting.question, "the cap was not a transient wait until midnight");
+				await admin.internalSetLimit({ ...change, value: "default" });
+				await untilItem(user, next.id, "the waiting turn after restoring the deployment cap", v => v.spent.turns > 0);
+				assert((await user.factoryLimits()).dailyTokens === 9000000, "removing the override did not restore the default");
+				return "one account, an audited reset, accurate input/output and a resumed Factory turn";
+			} finally { await client.dispose(); }
+		});
+	} finally { await server.stop(); server.remove(); }
+	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
+}
 
 if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const singleServer = new Server();
@@ -220,14 +287,19 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const repo = standin.addRepository({ owner: "ada", name: "single-handoff", installation, files: { "README.md": "# Notes\n" } });
 			const { user, client, auth } = await world(singleServer, standin, { WLP_FEATURE_TEST_GIT: join(singleServer.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
-			const item = await user.createItem({ repository: { id: repo.id }, title: "Add one note", body: "Write the requested note. (suggest-single)", mode: "orchestrate", start: true });
+			const item = await user.createItem({ repository: { id: repo.id }, title: "Add one note", body: "Write the requested note. (suggest-single)", start: true });
 			const proposed = await untilItem(user, item.id, "a single-item suggestion", v => !!v.question);
 			assert(proposed.plan?.singleSuggested && proposed.question?.kind === "single_suggested", "The planner did not suggest single.");
-			await user.actOnItem({ id: item.id, action: { kind: "answer", question: proposed.question.id, choice: "run_single" } });
+			const spec = { goal: "Record one note.", requirements: ["Preserve the original line endings."], acceptance: ["The note ends with a newline."], outOfScope: ["Reformatting existing notes."] };
+			const edited = await user.actOnItem({ id: item.id, action: { kind: "edit_plan", version: proposed.plan.version, plan: { ...proposed.plan, spec } } });
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: edited.question!.id, choice: "run_single" } });
 			const result = await untilItem(user, item.id, "the implementation result", v => !!v.pullRequest || !!v.question);
 			const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
 			const { timeline } = await session.snapshot();
 			const opens = timeline.flatMap(e => e.kind === "windlass" && e.event.type === "fake.session_open" ? [e.event] : []);
+			const prompt = timeline.find(e => e.kind === "user" && e.turn === 2);
+			assert(prompt?.kind === "user", "The implementing turn has no prompt.");
+			for (const line of [...spec.requirements, ...spec.acceptance, ...spec.outOfScope]) assert(prompt.text.includes(line), "The builder prompt omitted " + line);
 			const [plan, build] = opens;
 			assert(plan?.data?.method === "session/new" && build?.data?.method === "session/resume" && plan.sessionId === build.sessionId, "The handoff lost the planner conversation.");
 			const meta = (build.data.params as { _meta: { windlass: { agent?: string; hostTools: { name: string }[] } } })._meta.windlass;
@@ -255,9 +327,50 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(view.question?.kind === "turn_refused" && view.question.text.includes(reason), stateOf(view));
 			assert(view.spent.turns === 1 && snapshot.summary.turns === 1 && view.question.choices.map(c => c.id).join() === "again,give_up", stateOf(view));
 			assert(!JSON.stringify([snapshot.timeline, view]).includes("fixture-secret-value"), "provider error leaked a saved secret");
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: view.question.id, choice: "again" } });
+			await untilItem(user, item.id, "the retried planner", v => v.spent.turns === 2);
+			const prompts = (await session.snapshot()).timeline.filter(e => e.kind === "user");
+			assert(prompts.length === 2, "expected two planner deliveries");
+			for (const prompt of prompts) assert(prompt.text.split("Placement inventory (read-only data):").length === 2,
+				`turn ${prompt.turn} has ${prompt.text.split("Placement inventory (read-only data):").length - 1} inventories`);
 			return view.question.text;
 		});
 	} finally { await refusalServer.stop(); refusalServer.remove(); }
+	const usageServer = new Server();
+	try {
+		await check("orchestrator usage: Windlass two-hour reset reaches the item and gates later work", async () => {
+			const { user, client, auth } = await world(usageServer, standin, { WLP_ALLOWED_EMAILS: "routing@example.com" }, "routing");
+			const startedAt = Date.now();
+			const item = await user.createItem({ repository: { id: harbor.id }, title: "Run the checks", body: "Run (usage-limit)", start: true });
+			const view = await untilItem(user, item.id, "the provider outcome", v => !!v.question || v.wait?.reason === "provider");
+			assert(view.wait?.reason === "provider" && !view.question && view.wait.retryAt! >= startedAt + 121 * 60_000, stateOf(view));
+			const snapshot = await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot();
+			assert(!JSON.stringify([snapshot.timeline, view]).includes("canary"), "private Windlass limit fields reached the page");
+			const next = await user.createItem({ repository: { id: harbor.id }, title: "Continue checks", body: "Verify the build", start: true });
+			const queued = await untilItem(user, next.id, "the account cooldown", v => v.wait?.reason === "provider");
+			assert(queued.spent.turns === 0 && queued.wait?.retryAt === view.wait.retryAt, stateOf(queued));
+			const renewed = await fixtureLogin(client, "routing");
+			assert(renewed.profile.uid === auth.profile.uid, "the second login must replace the same account");
+			await untilItem(user, item.id, "the refused turn to retry on the new login", v => v.spent.turns >= 2, 15_000);
+			return view.wait.sentence;
+		});
+	} finally { await usageServer.stop(); usageServer.remove(); }
+	const unknownServer = new Server();
+	try {
+		await check("orchestrator usage: unknown Windlass reset asks the owner and blocks a second item for fifteen minutes", async () => {
+			const { user } = await world(unknownServer, standin);
+			const start = Date.now();
+			const first = await user.createItem({ repository: { id: harbor.id }, title: "Run checks", body: "Run (usage-limit-unknown)", start: true });
+			const view = await untilItem(user, first.id, "the unknown reset question", v => !!v.question);
+			assert(view.question?.kind === "turn_refused", stateOf(view));
+			const next = await user.createItem({ repository: { id: harbor.id }, title: "Review changes", body: "Review the changes", start: true });
+			const queued = await untilItem(user, next.id, "the next admission", v => v.wait?.reason === "provider" || v.spent.turns > 0);
+			const until = queued.wait?.retryAt;
+			assert(queued.wait?.reason === "provider" && until && until >= start + 900_000 && until <= Date.now() + 900_000 && queued.spent.turns === 0, stateOf(queued));
+			return queued.wait.sentence;
+		});
+	} finally { await unknownServer.stop(); unknownServer.remove(); }
+	if (only.length === 1 && only[0] === "orchestrator usage") { await standin.stop(); process.exit(failed ? 1 : 0); }
 	if (only.length === 1 && only[0] === "orchestrator refusal") { await standin.stop(); process.exit(failed ? 1 : 0); }
 }
 
@@ -265,11 +378,11 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
-			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
-			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result. (suggest-single)", mode:"orchestrate", start:true})});
+			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result. (suggest-single)", start:true})});
 			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused feature filing.");
 			const feature = await user.item(filing.body.id);
 			const suggestion = await untilItem(user, feature.id, "the single-item suggestion", v => !!v.question);
@@ -281,7 +394,10 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const invalid = structuredClone(page.plan);
 			invalid.subtasks[0].budget.tokens = 0;
 			await refused(() => user.actOnItem({id:feature.id, action:{kind:"edit_plan", version:invalid.version, plan:invalid}}), "bad_input");
-			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
+			const checkedPlan = structuredClone(page.plan);
+			checkedPlan.subtasks[0].brief += " (change-setup-fixture)";
+			checkedPlan.subtasks[1].brief += " (consume-setup-fixture)";
+			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:checkedPlan }});
 			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
 			const version = edited.plan!.version;
 			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[]});
@@ -292,23 +408,33 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const noCi = await refused(() => user.actOnItem({id:feature.id, action:{kind:"answer",question:edited.question!.id,choice:"approve"}}), "bad_input");
 			assert(/single.*push/i.test(noCi), "Missing push CI guidance: " + noCi);
 			standin.commit(harbor, "main", {".github/workflows/build.yml":"on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"}, "Run build on push");
+			standin.commit(harbor, "main", { "index/setup.sh": 'test -n "$SETUP_FIXTURE" && echo seed-setup\n' }, "Add setup fixture");
+			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "sh index/setup.sh" });
+			await user.saveRepositorySecret({ repositoryId: harbor.id, profile: "docker-windlass-sandbox", name: "SETUP_FIXTURE", scope: "setup", value: "fixture-only" });
 			const base = standin.branchHead(harbor,"main")!;
 			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
+				if (v.run?.step.kind === "subtasks") assert(!standin.checks.some(r => r.external_id.includes(feature.id)), "A check appeared during feature integration");
 				for (const child of v.children ?? []) {
 					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
 					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
 				}
-				if (v.question) throw new Error(v.question.text);
-				return v.state === "review";
+				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
 			}, 320_000);
+			assert(done.state === "review", done.question?.text ?? done.children?.find(child => child.question)?.question?.text ?? stateOf(done));
 			const read = await api("/api/items/" + feature.id, {token});
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
 			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
 			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			await waitFor("one successful feature check", () => standin.checks.find(r => r.external_id === done.verdicts.at(-1)?.id && r.conclusion === "success"), 30_000);
+			assert(standin.checks.filter(r => r.external_id.includes(feature.id)).length === 1 && !standin.checks.some(r => done.children!.some(child => r.external_id.includes(child.id))), "Extra feature or child checks were posted");
 			const [first, secondChild] = done.children;
 			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
+			assert(standin.fileOn(harbor, branchFor(first.title, first.sessionId), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
+			const snapshot = await client.agentSession.get([auth.profile.uid, secondChild.sessionId], { params: { token: auth.token } }).snapshot();
+			const setup = snapshot.timeline.find(e => e.kind === "setup" && e.state === "succeeded");
+			assert(setup?.kind === "setup" && setup.output.trim() === "seed-setup", "The second subtask must run the seed setup with the fixture secret. Observed " + (setup?.kind === "setup" ? setup.output : "no successful setup"));
 			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
 			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
@@ -317,6 +443,14 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.repository===harbor.id && p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
 			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
 			assert(!(await user.listItems()).some(i => i.parent), "A child leaked into the root list.");
+			const owner = standin.users.get("ada")!;
+			const { review } = standin.submitReview(harbor, ready, owner, "changes_requested", "Please add a regression check.");
+			const delivery = await standin.deliver(API + "/github/webhook", "pull_request_review", { installation: { id: installation.id }, repository: { id: harbor.id },
+				action: "submitted", sender: review.user, pull_request: { number: ready.number }, review }, { secret: server.secret });
+			assert((await delivery.json()).taken, "The feature review was dropped.");
+			const replanning = await untilItem(user, feature.id, "the feedback planner", v => v.run?.n === 2 && v.run.step.kind === "refine");
+			assert(replanning.feedback.batches.some(b => b.run === 2 && b.state === "taken"), "The owner’s review did not start the feature planner.");
+			await waitFor("the reopened feature check", () => standin.checks.find(r => r.external_id === "pending:" + feature.id + ":2" && r.status === "in_progress"), 12_000);
 			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});
 			const proposal = await untilItem(user,second.id,"a second plan",v=>v.plan?.status==="proposed" && !!v.question);
 			await user.actOnItem({id:second.id,action:{kind:"approve_plan",version:proposal.plan!.version}});
@@ -345,7 +479,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			return "items: { reviewer: true }";
 		});
 		await check("reviewer: builder and reviewer keep their profile mode", async () => {
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Fixed modes", body: "Read the repository.", start: false });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Fixed modes", body: "Read the repository.", start: false });
 			const view = await user.item(item.id);
 			assert(view.reviewerSessionId, "missing reviewer session");
 			for (const id of [view.sessionId, view.reviewerSessionId]) {
@@ -365,8 +499,8 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			await user.savePersonalServer({ name: "builder-notes", definition: { command: "cat" } });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
 			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "true" });
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report) (review-files) (lookup-limit)", start: true });
-			const view = await untilItem(user, item.id, "the second review handoff", v => v.state === "review", CI_WAIT_MS);
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report) (review-files) (lookup-limit)", start: true });
+			const view = await untilItem(user, item.id, "the second review handoff and its published check", v => v.state === "review" && v.verifiedCheck?.state === "completed", CI_WAIT_MS);
 			assert(view.reviewerSessionId, "missing reviewer session");
 			const keys = [auth.profile.uid, view.reviewerSessionId];
 			const session = client.agentSession.get(keys, { params: { token: auth.token } });
@@ -388,6 +522,11 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(setup?.kind === "platform" && setup.text.includes("SETUP_ONLY") && !setup.text.includes("BUILD_ONLY") && !setup.text.includes("ACCOUNT_ONLY"), "reviewer setup secret scopes differ");
 			assert(view.review?.state === "filed" && view.review.recommendation === "approve" && view.reviews.length === 1, "missing filed recommendation");
 			const [r] = view.reviews;
+			const check = standin.checks.find(run => run.repository === harbor.id && run.external_id === r.verdictId);
+			assert(check && check.head_sha === r.head && check.conclusion === "success", "Missing check for the reviewed commit");
+			const privateWords = [view.task.title, view.task.body, ...view.task.acceptance, view.report?.title, ...r.blocks.map(b => "text" in b ? b.text : "")];
+			assert(!privateWords.some(words => words && check.output.summary.includes(words)), "Private task or filing text reached the public check");
+			assert(check.output.summary.includes("0 blocking findings"), "The public check omitted the review counts");
 			const [shot] = r.screenshots;
 			assert(r.head === head && r.base === standin.branchHead(harbor, "main") && r.by.sessionId === view.reviewerSessionId && r.verdictId === view.verdicts[0]?.id && view.verdicts.length === 1, "review provenance or strip differs");
 			assert(r.blocks.some(b => b.kind === "text" && b.refs[0]?.ref === "command/review_step/shell_1") && r.records.some(record => record.kind === "command" && record.command === "pwd" && record.exitCode === 0), "missing reviewer command");
@@ -413,14 +552,14 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			return `file_review alone; one verdict, one review, a verified PNG and ${view.spent.hostedSeconds}s across two sessions`;
 		});
 		await check("reviewer: networked commands hand over with the profile reason", async () => {
-			const item = await user.createItem({ repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
 			const view = await untilItem(user, item.id, "the handoff without a reviewer", v => v.state === "review", CI_WAIT_MS);
 			assert(view.reviewerSessionId === null && !view.reviews.length && view.review?.state === "off" && view.reviewNone?.includes("commands would run with the network"), "networked commands admitted a reviewer");
 			return view.reviewNone ?? undefined;
 		});
 		await check("reviewer: repository screenshot opt-out reaches both agents", async () => {
 			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: false });
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review without pictures", body: "Change the homepage. (report) (screenshot) (try-disabled-shot)", start: true });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review without pictures", body: "Change the homepage. (report) (screenshot) (try-disabled-shot)", start: true });
 			const v = await untilItem(user, item.id, "the text-only review", v => v.state === "review", CI_WAIT_MS);
 			const timeline = async (id: string) => JSON.stringify((await client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } }).snapshot()).timeline);
 			const builder = await timeline(item.sessionId), reviewer = await timeline(v.reviewerSessionId!);
@@ -436,7 +575,7 @@ await check("reviewer: a pull ref missing the expected commit hands over before 
 		const head = "a".repeat(40);
 		setCi(harbor, head, "success");
 		const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_REVIEW_CLONE_503_ONCE: "1", WLP_FAKE_REVIEW_MISSING: "1" });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the pushed commit", body: "Change the homepage.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review the pushed commit", body: "Change the homepage.", start: true });
 		const view = await untilItem(user, item.id, "the refused checkout", v => v.state === "review", CI_WAIT_MS);
 		assert(view.reviewerSessionId && view.review?.state === "none" && !view.reviews.length && view.reviewNone?.includes("checkout of aaaaaaa failed"), "missing a reason for the unavailable head");
 		const snapshot = await client.agentSession.get([auth.profile.uid, view.reviewerSessionId], { params: { token: auth.token } }).snapshot();
@@ -528,7 +667,7 @@ async function drained(jobs: Promise<unknown>[]): Promise<void> {
 async function memoryChecks(): Promise<void> {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
 	process.env.WLP_SANDBOX = "fake";
-	const { workItem, REPORTS_TABLE, REVIEWS_TABLE } = await import("../server/src/actors/work-item.js");
+	const { workItem, REPORTS_TABLE, REVIEWS_TABLE, CHECKS_TABLE, FEEDBACK_TABLE } = await import("../server/src/actors/work-item.js");
 	const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -585,8 +724,12 @@ async function memoryChecks(): Promise<void> {
 		await db.execute("CREATE TABLE effects (id TEXT PRIMARY KEY, effect TEXT, due_at INTEGER, attempts INTEGER)");
 		await db.execute("CREATE TABLE github_binding (id INTEGER PRIMARY KEY, installation TEXT NOT NULL)");
 		await db.execute("CREATE TABLE verdicts (id TEXT PRIMARY KEY, run INTEGER, head TEXT, at INTEGER, data TEXT)");
+		await db.execute(CHECKS_TABLE);
 		await db.execute(REPORTS_TABLE);
 		await db.execute(REVIEWS_TABLE);
+		await db.execute(FEEDBACK_TABLE);
+		await db.execute("CREATE TABLE issue_actions(subject TEXT PRIMARY KEY)");
+		await db.execute("CREATE TABLE feedback_cursor(id INTEGER PRIMARY KEY,since INTEGER)");
 		const meta = { uid: "u", sessionId: "s", reviewerSessionId: answers.freeReviewer ? "review-session" : null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
 		await db.execute("INSERT INTO item VALUES (1, ?, ?, NULL)", item.revision, JSON.stringify({ item, meta }));
 		const jobs: Promise<unknown>[] = [];
@@ -879,13 +1022,15 @@ async function memoryChecks(): Promise<void> {
 		for (const table of INBOX_TABLES) await db.execute(table);
 		const alarms = new Map<string, number>();
 		let next = 0;
-		let calls = 0;
+		let calls = 0, receipts = 0;
+		let releasedEarly = false;
 		const jobs: Promise<unknown>[] = [];
 		const c = {
 			key: ["u", "s"],
 			db,
 			log: { warn: () => undefined },
-			client: () => ({ user: { get: () => ({ internalTurnDone: async () => (calls += 1) === 1 ? Promise.reject(new Error("not now")) : undefined }) } }),
+			client: () => ({ user: { get: () => ({ internalRecordTurnTokens: async () => { if (++receipts === 1) throw new Error("not now"); },
+				internalTurnDone: async () => { if (receipts < 2) releasedEarly = true; if (++calls === 1) throw new Error("not now"); } }) } }),
 			keepAwake<P>(promise: Promise<P>) {
 				jobs.push(promise);
 				return promise;
@@ -896,6 +1041,7 @@ async function memoryChecks(): Promise<void> {
 		let now = T;
 		Date.now = () => now;
 		try {
+			await queueMessage(db as never, { to: "tokens", receipt: { seq: 1, at: now, tokens: 100 } });
 			await queueMessage(db as never, { to: "user", done: { slot: "t_1", key: "i_memory:1:1:1" } });
 			await flushOutbox(c as never, "u");
 			await drained(jobs);
@@ -911,7 +1057,7 @@ async function memoryChecks(): Promise<void> {
 		}
 		const left = raw.prepare("SELECT COUNT(*) AS n FROM outbox").get() as { n: number };
 		raw.close();
-		assert(left.n === 0 && calls === 2, `rows left ${left.n}, sends ${calls}`);
+		assert(left.n === 0 && calls === 2 && receipts === 2 && !releasedEarly, `rows left ${left.n}, sends ${calls}`);
 		return "sent on its retry after the safety alarm found nothing due";
 	});
 
@@ -1068,6 +1214,29 @@ async function memoryChecks(): Promise<void> {
 		};
 	};
 
+	await check("memory: a daily token wait keeps an admitted slot and the midnight schedule grants the next", async () => {
+		const clock = Date.now;
+		const midnight = (Math.floor(clock() / 86_400_000) + 1) * 86_400_000;
+		let now = midnight - 1000;
+		Date.now = () => now;
+		try {
+			const q = await queue({ dailyTokens: 100 });
+			try {
+				const admitted = await q.request("a");
+				assert(admitted.granted, "first turn did not start");
+				q.c.vars.usage.noteModelTokens(now, 110);
+				assert(!(await q.request("b")).granted, "a new turn started after the cap");
+				assert(q.c.vars.items.slots.has(admitted.slot), "crossing the cap cancelled the running turn");
+				await q.release("a", admitted.slot);
+				const fire = q.c.vars.items.queueAt;
+				assert(fire?.at === midnight && !q.grants.includes("b"), "the next turn did not wait for the UTC reset");
+				now = midnight;
+				await itemActions.internalTurnQueue({ ...q.c, scheduledFire: { id: fire.id, scheduledAt: midnight, firedAt: now } } as never);
+				assert(q.grants.includes("b"), "the midnight schedule did not grant the waiting turn");
+				return "held its slot, then waited through 23:59:59 and started at 00:00:00 UTC";
+			} finally { q.close(); }
+		} finally { Date.now = clock; }
+	});
 	await check("memory: a waiting turn that is given the freed slot survives a stop between the two writes, and its grant is sent on wake", async () => {
 		const q = await queue({ factoryTurns: 1 });
 		try {
@@ -1352,8 +1521,8 @@ function checkHandoff(pull: StandinPull, view: ItemView) {
 }
 
 await memoryChecks();
-// The in-memory cases alone need no server: FACTORY_ONLY=memory stops here.
-if (only.length > 0 && only.every((name) => name.startsWith("memory"))) {
+// All selected memory and per-user limit checks have run.
+if (only.length > 0 && only.every(name => name.startsWith("memory") || name.startsWith("user-limits"))) {
 	await standin.stop();
 	console.log(failed === 0 ? "\nall passed" : `\n${failed} failed`);
 	process.exit(failed === 0 ? 0 : 1);
@@ -1366,7 +1535,7 @@ async function machineChecks(): Promise<void> {
 		const { user, client, auth } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
 		await runner.pair(user);
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
-		const task = { repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
+		const task = { mode: "single" as const, repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
 		await check("machine: only a paired machine with an available profile can take an item", async () => {
 			await refused(() => user.createItem({ ...task, place: { kind: "machine", machineId: "m_0123456789abcdef" } }), "machine_not_found");
 			await refused(() => user.createItem(task), "machine_not_connected");
@@ -1518,7 +1687,7 @@ try {
 		assert(/^wlp_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token), "the token is not shaped as one");
 		const listed = await user.apiTokens();
 		assert(listed.length === 1 && !JSON.stringify(listed).includes(token.slice(-43)), "the token's value is in the list");
-		const body = { repository: { id: harbor.id }, title: "Write a short program", body: "Add a small program to the repository.", acceptance: ["It runs", "Keep <!-- windlass-item:fake --> and @everyone inert"], start: true };
+		const body = { mode: "single", repository: { id: harbor.id }, title: "Write a short program", body: "Add a small program to the repository.", acceptance: ["It runs", "Keep <!-- windlass-item:fake --> and @everyone inert"], start: true };
 		assert((await api("/api/items", { method: "POST", body: JSON.stringify(body) })).status === 401, "no token was taken");
 		// A token shaped right that names no user: the same refusal as a wrong one, at once, with nothing logged as an error.
 		const logged = main.text.length;
@@ -1575,7 +1744,7 @@ try {
 	await check("ci: on a repository with no checks, CI that passes on the pushed commit makes it ready for review", async () => {
 		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [] });
 		// No word here may choose the fake layer's recording in which checks run ("check", "verify"): its others run none.
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "A short note", body: "Add a short note to the repository.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "A short note", body: "Add a short note to the repository.", start: true });
 		const published = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === published.pullRequest?.number);
 		assert(pull, "the stand-in has no such pull request");
@@ -1598,7 +1767,7 @@ try {
 	await check("gate: a required check that fails sends the agent back once, and the same failure again stops at once with a question", async () => {
 		// "build" in the check's name makes the fake layer replay a longer command in the fix turn, which names the check: long enough to look at it running.
 		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "npm run fail" }] });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Fix the light", body: "Make the light work.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Fix the light", body: "Make the light work.", start: true });
 		// The fix turn is delivered the moment the first turn ends, while that turn still settles its sandbox time: watched from the user's side meanwhile.
 		const samples: Array<{ held: number; kept: boolean }> = [];
 		let watching = true;
@@ -1631,7 +1800,7 @@ try {
 	});
 
 	await check("ci: a failing CI gets a fix turn, and the same CI failure again stops at once with a question", async () => {
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
@@ -1661,7 +1830,7 @@ try {
 
 	await check("sleep: an item waiting on its CI schedule while the server is stopped and started again proceeds when the time comes", async () => {
 		await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report) (screenshot)", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report) (screenshot)", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null && view.wait?.reason === "ci", 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
@@ -1707,7 +1876,7 @@ try {
 	});
 
 	await check("deploy: SIGTERM during an implement turn, a restart, and the step is tried again as attempt 2 with the 'you were interrupted' message", async () => {
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Slow work", body: "A long build (slow).", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Slow work", body: "A long build (slow).", start: true });
 		await untilItem(user, item.id, "the turn to start", (view) => view.run?.step.turn === "started", 60_000);
 		await main.stop();
 		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
@@ -1765,9 +1934,9 @@ try {
 	const publishedHead = "b".repeat(40);
 	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_REVIEW_HEAD: publishedHead, WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
 	await check("capacity: with one factory turn a second item waits with the sentence, and starts when the first turn ends", async () => {
-		const a = await user.createItem({ repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
+		const a = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
 		await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started", 60_000);
-		const b = await user.createItem({ repository: { id: harbor.id }, title: "Second", body: "Write a short program.", start: true });
+		const b = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Second", body: "Write a short program.", start: true });
 		const waiting = await untilItem(user, b.id, "the wait", (view) => view.state === "waiting" && view.wait?.reason === "capacity", 30_000);
 		assert(waiting.wait && /Waiting for one of your 1 factory turns; 1 are running \(“First \(slow\)”\)\./.test(waiting.wait.sentence), `it says ${waiting.wait?.sentence}`);
 		const started = await untilItem(user, b.id, "the second turn", (view) => view.run?.step.turn === "started" || view.run?.step.kind !== "implement", 120_000);
@@ -1775,7 +1944,7 @@ try {
 	});
 	await check("screenshots: the item serves the builder’s PNG to its owner and links GitHub to the page", async () => {
 		await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Screenshot", body: "Change the home page. (report) (screenshot)", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Screenshot", body: "Change the home page. (report) (screenshot)", start: true });
 		const view = await untilItem(user, item.id, "the report and push", v => !!v.report && !!v.pullRequest);
 		const shot = view.report!.screenshots[0];
 		assert(shot?.width === 1 && shot.height === 1 && shot.state === "kept" && view.report!.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id), "the item did not retain the verified PNG");
@@ -1815,9 +1984,9 @@ try {
 	await check("allowance: with the day's sandbox time used, an item waits for 00:00 UTC, saying so", async () => {
 		const tomorrow = (view: ItemView) => view.wait?.reason === "capacity" && /00:00 UTC/.test(view.wait.sentence);
 		// The first item's turn holds the whole day's minute, or, where a turn needs more to start, waits itself.
-		const a = await user.createItem({ repository: { id: harbor.id }, title: "Uses the day", body: "A long build (slow).", start: true });
+		const a = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Uses the day", body: "A long build (slow).", start: true });
 		const first = await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started" || tomorrow(view), 60_000);
-		const b = tomorrow(first) ? null : await user.createItem({ repository: { id: harbor.id }, title: "Waits for tomorrow", body: "Write a short program.", start: true });
+		const b = tomorrow(first) ? null : await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Waits for tomorrow", body: "Write a short program.", start: true });
 		const waiting = b === null ? first : await untilItem(user, b.id, "the wait", tomorrow, 30_000);
 		const midnight = Math.ceil(Date.now() / 86_400_000) * 86_400_000;
 		assert(waiting.wait?.retryAt === midnight, `it is tried again at ${waiting.wait?.retryAt}, not ${midnight}`);
@@ -1847,7 +2016,7 @@ try {
 		await refused(() => user.apiTokens(), "items_off");
 		await refused(() => user.createApiToken({ name: "script", scopes: ["items:read"] }), "items_off");
 		await refused(() => user.revokeApiToken("tok_0123456789abcdef"), "items_off");
-		await refused(() => user.createItem({ repository: { id: harbor.id }, title: "Off", body: "Nothing.", start: true }), "items_off");
+		await refused(() => user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Off", body: "Nothing.", start: true }), "items_off");
 		await refused(() => user.item("i_0123456789abcdef"), "items_off");
 		await refused(() => user.actOnItem({ id: "i_0123456789abcdef", action: { kind: "cancel" } }), "items_off");
 		const sessions = await user.listSessions();

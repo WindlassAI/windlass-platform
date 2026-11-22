@@ -99,12 +99,13 @@ export interface PlatformInfo {
  *     <runnerImage> --platform <platformUrl> [--name "Build host"]
  *
  * For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. To update, the same
- * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired.
+ * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired across updates within a protocol. The first upgrade to signed connections requires a new pairing.
  * The runner prints its pairing code in `docker logs windlass-runner`.
  */
 export interface MachinesInfo {
+	platformFingerprint?: string;
 	/**
-	 * The oldest runner release this platform serves, "0.1.0". A machine whose runner is older is
+	 * The oldest runner release this deployment serves in its current protocol mode. A machine whose runner is older is
 	 * refused until it is updated (`MachineWarning` "outdated"); a newer one is served.
 	 */
 	minRunnerVersion: string;
@@ -346,6 +347,8 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 }
 
 export interface CreateSessionInput {
+	/** Machine sandbox size in slots. A personal session defaults to one. */
+	size?: 1 | 2 | 4;
 	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
 	mode?: string;
 	harness?: HarnessId;
@@ -812,6 +815,23 @@ export interface SavedRepository {
 export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
 
 /**
+ * Where the user's newest agent was started, with which agent and in which mode, as the server
+ * remembered it when that agent was made (account-defaults.ts). Not a saved default: every agent the
+ * user starts replaces it, a work item's sessions never do, and it outlives the agent it came from.
+ * The start composer starts where it runs, the agent and the mode from it where nothing is chosen; a
+ * machine that cannot be used now, or an agent it does not offer, leaves the composer on this
+ * platform with Windlass, and it says so. Forgotten (`forgetLastStart`), they start on the platform's.
+ */
+export interface LastStart {
+	place: SandboxPlace;
+	harness: HarnessId;
+	/** The mode the agent started in: one of that agent's own. */
+	mode: string;
+	/** When, ms since the epoch. */
+	startedAt: number;
+}
+
+/**
  * An MCP server of the user's own: Windlass starts it, or reaches it, in every session of theirs,
  * whatever the repository. It is never read from a repository. `definition` is what Windlass's own
  * configuration takes for one server (its docs/mcp.md, "The keys"): `command` with `args`, `cwd` and
@@ -863,6 +883,8 @@ export interface PersonalServerReach {
 /** The account's settings, as their page shows them. No value of a secret is among them: `accountSecrets` lists those. */
 export interface AccountSettings {
 	defaults: AccountDefaults;
+	/** Where the user's newest agent was started, its agent and its mode (`LastStart`); null before the first, or once forgotten. */
+	lastStart: LastStart | null;
 	/** By name. */
 	servers: PersonalServer[];
 	/** One entry for each sandbox this deployment can run. */
@@ -980,6 +1002,9 @@ export interface UsagePrice {
 
 /** What the usage page shows. */
 export interface UsageView extends UsageNumbers {
+	/** Model usage reported by requests using the platform credential on this UTC day. */
+	usedModelTokens: number;
+	factoryLimits: FactoryLimits;
 	/** Today's sandbox time by agent, the most first; an agent whose sandbox runs now is among them. */
 	today: UsageSession[];
 	/** The last USAGE_HISTORY_DAYS days, the oldest first and today last. */
@@ -1011,6 +1036,7 @@ export type MachineProbe = { ok: true } | { ok: false; reason: string };
 
 /** Something the Machines page warns about. Each is listed only while it holds. */
 export type MachineWarning =
+	| { kind: "signing-disabled" }
 	/** The runner is older than `MachinesInfo.minRunnerVersion`, so it is refused; its version is `MachineSummary.runnerVersion`. */
 	| { kind: "outdated" }
 	/** The runner cannot reach Docker on its machine; `reason` is what Docker said, as the runner reported it. */
@@ -1022,6 +1048,7 @@ export type MachineWarning =
 
 /** An agent's sandbox on a machine, as its runner last reported it. */
 export interface MachineSandbox {
+	resizePending?: true;
 	sessionId: string;
 	/** Null when that agent was deleted and its sandbox is still there. */
 	title: string | null;
@@ -1052,9 +1079,24 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 
 /** Latest host sample for an already listed machine. */
 export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
-export interface MachineDetails { whenToUse: string; tags: string[] }
+export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
+export interface MachineSlotCapacity {
+	max: number;
+	unit: { cpus: number; memoryBytes: number; pids: number };
+	reserve: { cpus: number; memoryBytes: number };
+}
+
+/** Large sandboxes use two or four slots, limited by the machine's configured capacity. */
+export function sandboxSlots(requested: number, max: number) {
+	return Math.min(max, requested > 2 ? 4 : requested > 1 ? 2 : 1);
+}
+
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
+	providerAccounts?: ProviderAccount[];
+	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
+	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & { reserve?: MachineSlotCapacity["reserve"]; busy: number; queued: number };
+	personalRunning?: number;
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
 	screenshots?: boolean;
@@ -1062,7 +1104,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; loginGeneration?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1104,6 +1146,30 @@ export interface MachineClaim {
 }
 
 // --- Work items: the software factory (Plans "software factory") ------------------------------
+
+/** How many work items a page holds when it does not say, and at most (`listItems`). */
+export const ITEM_PAGE_DEFAULT = 25;
+export const ITEM_PAGE_MAX = 100;
+
+/** Where a page of work items starts: after this item, the last of the page before. Both never change. */
+export interface ItemCursor {
+	createdAt: number;
+	id: string;
+}
+
+/**
+ * A page of the user's work items (`listItems`), in the list's order: newest filed first. `ended`
+ * keeps done, failed and cancelled ones; `repository` and `source` keep one repository's and one way
+ * of filing's, as the Factory's filters do.
+ */
+export interface ItemListPage {
+	before?: ItemCursor | null;
+	/** `ITEM_PAGE_DEFAULT` when left out, at most `ITEM_PAGE_MAX`. */
+	limit?: number;
+	ended?: boolean;
+	repository?: GithubId | null;
+	source?: "web" | "api" | "github" | null;
+}
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
 // steps (the blueprint): an agent implements it, the user's checks gate it, the platform pushes the
@@ -1121,10 +1187,12 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
+	/** The sign-in whose cooldown holds this item, when known. */
+	accountKey?: string;
 	reason: WaitReason;
 	/** "Waiting for one of your 5 factory turns; 5 are running (…)." */
 	sentence: string;
@@ -1158,6 +1226,8 @@ export interface ItemStep {
 	checks: number;
 	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
 	interruptions: number;
+	/** Consecutive automatic retries after a provider refusal on this step. */
+	providerRetries?: number;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
@@ -1190,8 +1260,13 @@ export interface ItemBudget {
 	hostedSeconds: number;
 }
 
-/** The factory's limits for a user: the deployment's settings (WLP_FACTORY_*), which its owner sets; a user cannot raise them. */
+/** Effective account limits after applying the operator’s overrides to the deployment defaults. */
 export interface FactoryLimits {
+	dailyTokens: number | null;
+	featureMultiplier: number;
+	githubItemsPerDay: number;
+	githubDrafts: number;
+	attachments: { bytes: number; perItem: number; accountBytes: number; days: number };
 	/** All factory turns and the person's own hosted turns count toward this ceiling. */
 	runningTurns: number;
 	/** Of those, the factory's: the rest are always free for the person's own prompts. */
@@ -1205,7 +1280,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1217,7 +1292,7 @@ export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approv
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  */
-export type ChoiceId = "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1231,6 +1306,8 @@ export interface ItemQuestion {
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */
 export interface ItemEvent {
+	/** Why a run ended before its normal handoff. */
+	stopReason?: "feedback";
 	at: number;
 	/** "person:<uid>" or "platform". */
 	by: string;
@@ -1463,6 +1540,7 @@ export interface RoundCaps {
 
 /** An item as the user's index lists it. */
 export interface ItemSummary {
+	placement?: ChildPlacement;
 	mode?: ItemMode;
 	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;
@@ -1495,9 +1573,38 @@ export interface ItemSummary {
 }
 
 /** An item's page. */
+export type CheckConclusion = "success" | "action_required" | "failure" | "cancelled";
+
+export interface FeedbackEntry {
+	id: string;
+	author: string;
+	access: "owner" | "write";
+	kind: "changes_requested" | "commented" | "issue_comment" | "review_comment";
+	body: string;
+	path: string | null;
+	line: number | null;
+	commit: string | null;
+	url: string;
+	at: number;
+}
+
+export interface FeedbackBatch {
+	savedPlan?: { goal: string; subtasks: string[] };
+	entries: FeedbackEntry[];
+	state: "pending" | "held" | "question" | "taken" | "declined";
+	reason: string;
+	run: number | null;
+	plan: number | null;
+}
+
 export interface ItemView extends ItemSummary {
+	feedback: { batches: FeedbackBatch[]; notTaken: number };
+	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
+	canRetry?: boolean;
 	plan?: FeaturePlan | null;
 	children?: ItemSummary[];
+	/** Current owner policy for the places named in the proposed plan. */
+	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */
@@ -1517,7 +1624,29 @@ export interface ItemView extends ItemSummary {
 
 export type ItemMode = "single" | "orchestrate";
 
+export interface PlacementNeeds {
+	tags?: string[];
+	screenshots?: boolean;
+	egress?: "open" | "restricted";
+	profile?: "docker-hardened" | "docker-windlass-sandbox";
+	harness?: HarnessId;
+	cpus?: number;
+	memoryGiB?: number;
+}
+
+export interface ChildPlacement {
+	place: SandboxPlace;
+	name: string;
+	reason: string;
+	units: number;
+	sendSecrets: boolean;
+	profile?: SandboxProfileId;
+}
+
 export interface PlanSubtask {
+	/** Older plans inherit the feature's place. */
+	place?: { prefer: string; reason: string; allow?: string[] };
+	needs?: PlacementNeeds;
 	key: string;
 	title: string;
 	brief: string;
@@ -1528,6 +1657,7 @@ export interface PlanSubtask {
 }
 
 export interface FeaturePlanEdit {
+	overflow?: boolean;
 	questions: { id: string; text: string; options?: string[]; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
@@ -1699,6 +1829,8 @@ export interface UserActions {
 	 * that is left out stays as it is; null saves none for it. Throws as `saveRepositoryDefaults` does.
 	 */
 	saveAccountDefaults(input: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	/** Forgets where the newest agent was started (`AccountSettings.lastStart`): the next agent starts on the platform's defaults. The next agent started is remembered again. */
+	forgetLastStart(): Promise<AccountSettings>;
 	/**
 	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is
 	 * replaced, and its setting with it; without, a new one is added. `unasked` is `PersonalServer.unasked`,
@@ -1774,10 +1906,15 @@ export interface UserActions {
 	 */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
-	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
+	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
-	/** The user's work items, the newest first. */
-	listItems(): Promise<ItemSummary[]>;
+	/**
+	 * The user's work items, the newest first. With `page`, at most `page.limit` of them after
+	 * `page.before`, kept to ended ones, one repository or one way of filing where it says so
+	 * (`ItemListPage`); a page shorter than its limit is the last. Throws a UserError with code
+	 * `bad_input` for a page that is not one.
+	 */
+	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	itemAttachmentLinks(itemId: string): Promise<Array<{ id: string; url: string; expiresAt: number }>>;
@@ -1839,7 +1976,22 @@ export interface TurnUsage {
 	reasoningTokens: number;
 }
 
+export interface UsageWindow {
+	kind: "5h" | "7d" | "model" | "rpm" | "other";
+	usedPct: number | null;
+	resetsAt: number | null;
+	observedAt: number;
+	source: "refusal" | "event" | "header";
+}
+export interface ProviderAccount {
+	key: string;
+	harness: HarnessId;
+	state: "ok" | "warning" | "limited";
+	limitedUntil: number | null;
+	windows: UsageWindow[];
+}
 export interface AcpContext {
+	fiveHourUsedPct?: number;
 	used: number;
 	size: number;
 	cost: { amount: number; currency: string } | null;
@@ -1860,7 +2012,7 @@ export type AcpUpdate = (
 	| { sessionUpdate: "current_mode_update"; currentModeId: string }
 	| { sessionUpdate: "config_option_update"; configOptions: unknown[] }
 	| { sessionUpdate: "session_info_update"; title?: string; updatedAt?: string }
-	| { sessionUpdate: "usage_update"; used: number; size: number; cost?: AcpContext["cost"] }
+	| { sessionUpdate: "usage_update"; rateLimit?: { status: "allowed" | "allowed_warning" | "rejected"; window: UsageWindow }; fiveHourUsedPct?: number; used: number; size: number; cost?: AcpContext["cost"] }
 	| { sessionUpdate: "notice" }
 	| { sessionUpdate: "compaction_update" }
 	| { sessionUpdate: "unknown"; originalSessionUpdate: string }

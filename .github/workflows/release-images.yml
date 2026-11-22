@@ -1,0 +1,359 @@
+name: Release images
+
+on:
+  push:
+    tags: ['runner-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        description: x.y.z
+      push:
+        type: boolean
+        default: false
+        description: 'Publish from the matching tag (false builds only)'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-images
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/windlassai
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.plan.outputs.revision }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - &node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+          package-manager-cache: false
+      - id: plan
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.push }}
+        run: |
+          version=${VERSION_INPUT:-${GITHUB_REF_NAME#runner-v}}
+          tag=$(node scripts/release-check.ts tag "$version")
+          if [[ "$PUBLISH" == true && "$GITHUB_REF" != "refs/tags/$tag" ]]; then
+            echo "Select the matching release tag for a signed publication." >&2
+            exit 1
+          fi
+          revision=$(git rev-parse HEAD)
+          printf '%s\n' "revision=$revision" "version=$version" "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+  sandbox:
+    needs: plan
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+        variant: [base, shots]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions: &package-write
+      contents: read
+      packages: write
+    env:
+      ROLE: ${{ matrix.variant == 'shots' && 'sandbox-shots' || 'sandbox' }}
+      WLP_SANDBOX_VARIANT: ${{ matrix.variant }}
+    steps:
+      - *checkout
+      - &buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - &login
+        if: needs.plan.outputs.publish == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble the native build context with the checksum-pinned Windlass
+        run: sandbox/build.sh --context "$RUNNER_TEMP/context"
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ runner.temp }}/context
+          target: ${{ matrix.variant }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: &native-output ${{ needs.plan.outputs.publish == 'true' && format('type=image,name={0}/windlass-platform-{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, env.ROLE) || format('type=oci,dest={0}/native.tar', runner.temp) }}
+          provenance: mode=max
+          sbom: true
+          labels: &labels |
+            dev.windlass-platform=1
+            org.opencontainers.image.source=https://github.com/WindlassAI/windlass-platform
+            org.opencontainers.image.revision=${{ needs.plan.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+      - &save-digest
+        name: Record native build digest
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "$DIGEST" > "$RUNNER_TEMP/$ROLE-$ARCH"
+      - &upload-digest
+        if: needs.plan.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ env.ROLE }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/${{ env.ROLE }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+      - name: Pass the dry-run base to the matching native harness jobs
+        if: needs.plan.outputs.publish == 'false' && matrix.variant == 'base'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dry-base-${{ matrix.arch }}
+          path: ${{ runner.temp }}/native.tar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  sandbox-index:
+    needs: [plan, sandbox]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions: *package-write
+    outputs:
+      sandbox: ${{ steps.merge.outputs.sandbox }}
+      sandbox-shots: ${{ steps.merge.outputs.sandbox-shots }}
+    steps:
+      - *checkout
+      - *node
+      - *buildx
+      - *login
+      - &download-digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+      - id: merge
+        env: &version
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: node scripts/release-check.ts indexes "$VERSION" "$RUNNER_TEMP/digests" sandbox sandbox-shots
+
+  harness:
+    needs: [plan, sandbox, sandbox-index]
+    if: >-
+      !cancelled() && needs.sandbox.result == 'success' &&
+      (needs.sandbox-index.result == 'success' || needs.plan.outputs.publish == 'false')
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+        harness: [claude, opencode]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions: *package-write
+    env:
+      ROLE: ${{ matrix.harness }}
+    steps:
+      - *checkout
+      - *buildx
+      - *login
+      - if: needs.plan.outputs.publish == 'false'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dry-base-${{ matrix.arch }}
+          path: ${{ runner.temp }}
+      - id: base
+        env:
+          DIGEST: ${{ needs.sandbox-index.outputs.sandbox }}
+        run: |
+          if [[ -n "$DIGEST" ]]; then
+            echo "ref=$REGISTRY/windlass-platform-sandbox@$DIGEST" >> "$GITHUB_OUTPUT"
+          else
+            mkdir "$RUNNER_TEMP/base"
+            tar -xf "$RUNNER_TEMP/native.tar" -C "$RUNNER_TEMP/base"
+            rm "$RUNNER_TEMP/native.tar"
+            echo "ref=dry-base" >> "$GITHUB_OUTPUT"
+            echo "context=dry-base=oci-layout://$RUNNER_TEMP/base" >> "$GITHUB_OUTPUT"
+          fi
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: sandbox/harness/${{ matrix.harness }}
+          build-args: SANDBOX_IMAGE=${{ steps.base.outputs.ref }}
+          build-contexts: ${{ steps.base.outputs.context }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: *native-output
+          provenance: mode=max
+          sbom: true
+          labels: *labels
+      - *save-digest
+      - *upload-digest
+
+  harness-index:
+    needs: [plan, harness]
+    if: needs.plan.outputs.publish == 'true' && !cancelled() && needs.harness.result == 'success'
+    runs-on: ubuntu-latest
+    permissions: *package-write
+    outputs:
+      claude: ${{ steps.merge.outputs.claude }}
+      opencode: ${{ steps.merge.outputs.opencode }}
+    steps:
+      - *checkout
+      - *node
+      - *buildx
+      - *login
+      - *download-digests
+      - id: merge
+        env: *version
+        run: node scripts/release-check.ts indexes "$VERSION" "$RUNNER_TEMP/digests" claude opencode
+
+  runner:
+    needs: [plan, sandbox-index, harness, harness-index]
+    if: >-
+      !cancelled() && needs.harness.result == 'success' &&
+      (needs.plan.outputs.publish == 'false' || (needs.sandbox-index.result == 'success' && needs.harness-index.result == 'success'))
+    runs-on: ubuntu-latest
+    permissions: *package-write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - *checkout
+      - *node
+      - *buildx
+      - *login
+      - name: Read the most recent published runner manifest for a dry run
+        if: needs.plan.outputs.publish == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.draft == false and (.tag_name | startswith("runner-v"))) | .published_at + " " + .tag_name')
+          tag=$(sort -r <<< "$releases" | sed -n '1s/^[^ ]* //p')
+          if [[ -z "$tag" ]]; then
+            echo 'Skipping the dry runner build because no runner release has been published.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh release download "$tag" --pattern release.json --dir "$RUNNER_TEMP"
+            node scripts/release-check.ts validate "$RUNNER_TEMP/release.json"
+            echo 'DRY_PINS=true' >> "$GITHUB_ENV"
+          fi
+      - if: needs.plan.outputs.publish == 'true' || env.DRY_PINS == 'true'
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile
+      - id: build
+        if: needs.plan.outputs.publish == 'true' || env.DRY_PINS == 'true'
+        env:
+          WLP_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          WLP_RUNNER_RELEASE_DIR: ${{ runner.temp }}/runner-bundle
+          SANDBOX: ${{ needs.sandbox-index.outputs.sandbox }}
+          SHOTS: ${{ needs.sandbox-index.outputs.sandbox-shots }}
+          CLAUDE: ${{ needs.harness-index.outputs.claude }}
+          OPENCODE: ${{ needs.harness-index.outputs.opencode }}
+        run: |
+          if [[ "${DRY_PINS:-}" == true ]]; then
+            pins="$RUNNER_TEMP/release.json"
+            SANDBOX=$(jq -er '.images.sandbox.index' "$pins")
+            SHOTS=$(jq -er '.images["sandbox-shots"].index' "$pins")
+            CLAUDE=$(jq -er '.images.claude.index' "$pins")
+            OPENCODE=$(jq -er '.images.opencode.index' "$pins")
+            export WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64 WLP_RUNNER_ARCHIVE="$RUNNER_TEMP/runner.tar"
+          else
+            export WLP_RUNNER_PUSH="$REGISTRY/windlass-runner:runner-v$WLP_RELEASE_VERSION"
+          fi
+          prefix="$REGISTRY/windlass-platform"
+          export WLP_RUNNER_HARNESSES="claude=$prefix-claude@$CLAUDE opencode=$prefix-opencode@$OPENCODE"
+          result=$(scripts/runner-build.sh --screenshots "$prefix-sandbox@$SANDBOX" "$prefix-sandbox-shots@$SHOTS")
+          echo "digest=$result" >> "$GITHUB_OUTPUT"
+      - if: needs.plan.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-bundle
+          path: ${{ runner.temp }}/runner-bundle/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: [plan, runner, sandbox-index, harness-index]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - *checkout
+      - *node
+      - *buildx
+      - *login
+      - &cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: 'v3.1.4'
+      - name: Read platform manifests and sign each published index
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          SANDBOX: ${{ needs.sandbox-index.outputs.sandbox }}
+          SHOTS: ${{ needs.sandbox-index.outputs.sandbox-shots }}
+          CLAUDE: ${{ needs.harness-index.outputs.claude }}
+          OPENCODE: ${{ needs.harness-index.outputs.opencode }}
+          RUNNER: ${{ needs.runner.outputs.digest }}
+        run: |
+          INDEX_DIGESTS=$(jq -cn '{runner:env.RUNNER,sandbox:env.SANDBOX,"sandbox-shots":env.SHOTS,claude:env.CLAUDE,opencode:env.OPENCODE}')
+          export INDEX_DIGESTS
+          node scripts/release-check.ts manifest "$VERSION" > release.json
+          jq -r '.images[] | .ref + "@" + .index' release.json > "$RUNNER_TEMP/refs"
+          while read -r ref; do cosign sign --yes "$ref"; done < "$RUNNER_TEMP/refs"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-manifest
+          path: release.json
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: [plan, sign]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+    steps:
+      - *checkout
+      - *node
+      - *cosign
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-manifest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runner-bundle
+          path: ${{ runner.temp }}/runner-bundle
+      - name: Verify the embedded pins and signatures, then draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          # Read access also covers packages awaiting the owner's visibility change.
+          export DOCKER_CONFIG="$RUNNER_TEMP/release-auth"
+          mkdir -m 700 "$DOCKER_CONFIG"
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          jq -n '{auths:{"ghcr.io":{auth:((env.GITHUB_ACTOR + ":" + env.GH_TOKEN) | @base64)}}}' > "$DOCKER_CONFIG/config.json"
+          cosign sign-blob --yes --bundle release.json.sigstore.json release.json
+          node scripts/release-check.ts verify release.json "$RUNNER_TEMP/runner-bundle/runner.cjs"
+          signer=$(jq -er .signer release.json)
+          runner=$(jq -er '.images.runner | .ref + "@" + .index' release.json)
+          cat > "$RUNNER_TEMP/notes" <<EOF
+          Verify the release manifest and runner before setup (cosign v3):
+          \`\`\`sh
+          cosign verify-blob --bundle release.json.sigstore.json --certificate-identity '$signer' --certificate-oidc-issuer https://token.actions.githubusercontent.com release.json
+          cosign verify --certificate-identity '$signer' --certificate-oidc-issuer https://token.actions.githubusercontent.com '$runner'
+          \`\`\`
+          EOF
+          gh release create "runner-v$VERSION" --draft --verify-tag --title "Runner v$VERSION" --notes-file "$RUNNER_TEMP/notes" release.json release.json.sigstore.json

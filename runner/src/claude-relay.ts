@@ -18,7 +18,7 @@ export function projection(selected: string | string[], placeholder: string) {
 		const route = selected === "chatgpt" ? "openai" : selected;
 		const p = providers[id];
 		config[id] = {
-			options: { baseURL: relayUrl + "/" + route, ...(selected === "free" && { headers: { "x-wlp-session": placeholder } }) },
+			options: { baseURL: relayUrl + "/" + route, ...(selected === "free" && { headers: { authorization: "Bearer " + placeholder } }) },
 			...(p?.blocked && { blacklist: p.blocked }),
 			...(p?.variants && { models: Object.fromEntries(Object.keys(p.variants).map(model => [model, {headers: {"x-wlp-route":model}}])) }),
 		};

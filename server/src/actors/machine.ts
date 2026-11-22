@@ -1,15 +1,18 @@
 import { randomBytes } from "node:crypto";
+import { authFailure, FrameAuthError, machineStatement, platformWelcome, type FrameAuth } from "../runner/frame-auth.js";
+import { OLD_RUNNER } from "../runner/protocol.js";
 import { compactReport, optionsDigest, type CatalogFrame, type CatalogId } from "../runner/catalog.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, requireServiceFor, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { isMachineIdName, machineLabel, MACHINE_EXPIRY_MS, type HarnessOptions, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
+import { isMachineIdName, machineLabel, sandboxSlots, type MachineSummary, MACHINE_EXPIRY_MS, type HarnessOptions, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
-import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
+import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MAX_REPORT_BYTES, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
 
+const minimum = () => config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
 const SEEN_INTERVAL = 3 * 60_000;
 // A refused copy has no open socket. Give it time to retry before retiring the warning.
 const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
@@ -19,7 +22,7 @@ const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
  */
 const HELLO_WAIT_MS = 10_000;
 interface Socket { send(frame: ServerFrame): boolean; close(code: number, reason: string): void }
-interface Live { maxTurns?: number; offset: number; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
+interface Live { slots?: Report["slots"]; maxTurns?: number; offset: number; ws: Socket; epoch: string; heardAt: number; connected: number; savedAt: number }
 /** `greeting` is the one control socket that has yet to say hello: a newer one replaces it. */
 interface Vars { system?: { os: string; arch: string }; retryOnFrame: boolean; nextSlotCheck: number; live: Live | null; work: Promise<void>; greeting: Socket | null }
 interface Ctx {
@@ -29,12 +32,12 @@ interface Ctx {
 	client(): any;
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
-type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null; host: string | null };
-export interface MachineUpdate { host?: Report["host"]; name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
+type Row = { protocol: number; name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null; host: string | null };
+export interface MachineUpdate { slots?: MachineSummary["slots"]; host?: Report["host"]; name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
 /** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
 export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
-export type TurnSlot = { state: "granted" | "reconnecting" | "offline" | "removed" } | { state: "waiting"; busy: number; max: number };
-type SlotRow = { session: string; turn: number; running: number };
+export type TurnSlot = { state: "granted" | "reconnecting" | "offline" | "removed" | "unsupported" } | { state: "waiting"; size: number; busy: number; max: number | null; behind: boolean };
+type SlotRow = { session: string; turn: number; running: number; size: number };
 export type Attachment = { ok: true } | { ok: false; reason: "offline" | "removed" | "unknown" };
 
 const controlPath = (r?: Request) => !!r && new URL(r.url).pathname === "/websocket/control";
@@ -53,8 +56,8 @@ function ordered<T>(c: Ctx, step: () => Promise<T>): Promise<T> {
 
 // The FIFO belongs to the machine, across control sockets and actor sleeps. Only a new
 // request, a grant or a release writes SQLite. Polls of a full queue are read-only.
-async function requestSlot(c: Ctx, session: string, turn: number): Promise<TurnSlot> {
-	const rows = await c.db.execute<SlotRow>("SELECT session, turn, running FROM turn_slots ORDER BY rowid");
+async function requestSlot(c: Ctx, session: string, turn: number, requested: number): Promise<TurnSlot> {
+	const rows = await c.db.execute<SlotRow>("SELECT session, turn, running, size FROM turn_slots ORDER BY rowid");
 	const own = rows.find(row => row.session === session && row.turn === turn);
 	if (!c.vars.live) {
 		const machine = await record(c);
@@ -62,20 +65,24 @@ async function requestSlot(c: Ctx, session: string, turn: number): Promise<TurnS
 		return { state: own ? "reconnecting" : "offline" };
 	}
 	if (own?.running) return { state: "granted" };
-	const max = c.vars.live.maxTurns;
-	const busy = rows.filter(row => row.running).length;
+	if (requested > 1 && !c.vars.live.slots) return { state: "unsupported" };
+	const max = c.vars.live.slots?.max ?? c.vars.live.maxTurns;
+	const size = sandboxSlots(requested, c.vars.live.slots?.max ?? 1);
+	const busy = rows.reduce((total, row) => total + (row.running ? row.size : 0), 0);
+	// Strict FIFO: keep a smaller turn behind the head so large turns cannot starve.
 	const first = rows.find(row => !row.running);
-	const grant = max === undefined || (busy < max && (!first || first === own));
-	if (!own) await c.db.execute("INSERT INTO turn_slots VALUES (?, ?, ?)", session, turn, Number(grant));
-	else if (grant) await c.db.execute("UPDATE turn_slots SET running = 1 WHERE session = ? AND turn = ?", session, turn);
-	if (!own || grant) await tell(c, await record(c));
-	return grant ? { state: "granted" } : { state: "waiting", busy, max: max! };
+	const behind = first !== undefined && first !== own;
+	const grant = !behind && (max === undefined || busy + size <= max);
+	if (!own) await c.db.execute("INSERT INTO turn_slots (session, turn, running, size) VALUES (?, ?, ?, ?)", session, turn, Number(grant), size);
+	else if (grant || own.size !== size) await c.db.execute("UPDATE turn_slots SET running = ?, size = ? WHERE session = ? AND turn = ?", Number(grant), size, session, turn);
+	if (!own || grant || own.size !== size) await tell(c, await record(c));
+	return grant ? { state: "granted" } : { state: "waiting", size, busy, max: max ?? null, behind };
 }
 
 // A session node can die before its release arrives. Reconcile by turn number, outside
 // the machine's control queue, so a sleeping session can call back during recovery.
 async function reapSlots(c: Ctx) {
-	const rows = await c.db.execute<SlotRow>("SELECT session, turn, running FROM turn_slots");
+	const rows = await c.db.execute<SlotRow>("SELECT session, turn, running, size FROM turn_slots");
 	await Promise.all(rows.map(async row => {
 		try {
 			const summary = await sessionActor(c, c.key[0]!, row.session).internalSummary();
@@ -92,7 +99,8 @@ const user = (c: Pick<Ctx, "key" | "client">) => c.client().user.get([c.key[0]],
 function update(c: Ctx, row: Row): MachineUpdate {
 	const report: Report | null = row.report ? JSON.parse(row.report) : null;
 	const warnings: MachineWarning[] = [];
-	if (!versionAtLeast(row.version, MIN_RUNNER_VERSION)) warnings.push({ kind: "outdated" });
+	if (!config.machines?.identity && row.protocol === 2) warnings.push({ kind: "signing-disabled" });
+	if ((config.machines?.identity && row.protocol === 1) || !versionAtLeast(row.version, minimum())) warnings.push({ kind: "outdated" });
 	if (report && !report.docker.ok) warnings.push({ kind: "docker", reason: report.docker.reason });
 	if (Math.abs(row.offset) > CLOCK_TOLERANCE_MS) warnings.push({ kind: "clock", offsetSeconds: Math.round(row.offset / 1000) });
 	if (row.duplicate !== null && Date.now() < row.duplicate + KEY_WARNING_MS) warnings.push({ kind: "key", at: row.duplicate });
@@ -101,8 +109,12 @@ function update(c: Ctx, row: Row): MachineUpdate {
 async function publish(c: Ctx, row: Row) {
 	const facts = row.removed_at === null ? update(c, row) : null;
 	if (facts) {
-		const [slots] = await c.db.execute<{ running: number; queued: number }>("SELECT count(CASE WHEN running=1 THEN 1 END) AS running, count(CASE WHEN running=0 THEN 1 END) AS queued FROM turn_slots");
-		facts.turns = { ...slots, max: c.vars.live?.maxTurns ?? null };
+		const [counts] = await c.db.execute<{ running: number; waiting: number; busy: number; queued: number }>(`SELECT
+			count(*) FILTER (WHERE running=1) AS running, count(*) FILTER (WHERE running=0) AS waiting,
+			coalesce(sum(size) FILTER (WHERE running=1), 0) AS busy, coalesce(sum(size) FILTER (WHERE running=0), 0) AS queued FROM turn_slots`);
+		const capacity = c.vars.live ? c.vars.live.slots : facts.report?.slots;
+		facts.turns = { running: counts.running, queued: counts.waiting, max: c.vars.live?.slots?.max ?? c.vars.live?.maxTurns ?? null };
+		if (capacity) facts.slots = { ...capacity, busy: counts.busy, queued: counts.queued };
 	}
 	const conflict = facts?.warnings.find(w => w.kind === "key");
 	if (conflict) {
@@ -193,7 +205,9 @@ export async function machineTables(db: RawAccess) {
 	await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
 		public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
 	await db.execute("CREATE TABLE IF NOT EXISTS catalogs (id TEXT PRIMARY KEY, digest TEXT NOT NULL, options TEXT NOT NULL)");
-	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machine)")).some(column => column.name === "host")) {
+	const columns = await db.execute<{ name: string }>("PRAGMA table_info(machine)");
+	if (!columns.some(column => column.name === "protocol")) await db.execute("ALTER TABLE machine ADD COLUMN protocol INTEGER NOT NULL DEFAULT 0");
+	if (!columns.some(column => column.name === "host")) {
 		await db.execute("ALTER TABLE machine ADD COLUMN host TEXT");
 	}
 	// A report stored by an older runner (with inline catalogs or host figures) is dropped, not converted:
@@ -202,6 +216,8 @@ export async function machineTables(db: RawAccess) {
 	await db.execute(`UPDATE machine SET report = NULL WHERE removed_at IS NULL AND (report LIKE '%"options":%' OR json_type(report, '$.host') IS NOT NULL)`);
 	await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
+	const slotColumns = await db.execute<{ name: string }>("PRAGMA table_info(turn_slots)");
+	if (!slotColumns.some(col => col.name === "size")) await db.execute("ALTER TABLE turn_slots ADD COLUMN size INTEGER NOT NULL DEFAULT 1");
 	await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
 }
 
@@ -240,6 +256,9 @@ export const machine = actor({
 		if (!controlPath(c.request)) { raw.close(1008, "Unknown path"); return; }
 		const [uid, id] = c.key;
 		const nonce = randomBytes(32).toString("base64url");
+		const identity = config.machines?.identity;
+		const context = { uid: uid!, machineId: id!, challenge: nonce };
+		let auth: FrameAuth | undefined;
 		let hello = false;
 		let closed = false;
 		const queue = new ControlQueue();
@@ -256,7 +275,7 @@ export const machine = actor({
 		const ws: Socket = {
 			send(frame) {
 				if (!closed && raw.readyState === raw.OPEN) {
-					try { raw.send(JSON.stringify(frame)); return true; }
+					try { raw.send(auth ? auth.seal(frame) : JSON.stringify(frame)); return true; }
 					catch (error) { machineError("send control frame", error); }
 				}
 				ws.close(1011, "Control socket failed");
@@ -281,8 +300,19 @@ export const machine = actor({
 		raw.addEventListener("message", ({ data }) => {
 			if (closed) return;
 			const bytes = typeof data === "string" ? Buffer.byteLength(data) : Infinity;
-			if (!queue.reserve(bytes)) { reject(ws, refuse("bad-frame")); return; }
-			const frame = parseRunnerFrame(data, c.vars.live?.ws === ws);
+			if (!queue.reserve(bytes)) {
+				if (auth) { console.warn("frame_auth_failed size"); ws.close(1008, "frame_auth_failed"); }
+				else reject(ws, refuse("bad-frame"));
+				return;
+			}
+			let frame;
+			try {
+				if (identity && hello && !auth) throw new FrameAuthError("handshake");
+				frame = parseRunnerFrame(auth ? auth.open(data, MAX_REPORT_BYTES) : data, c.vars.live?.ws === ws);
+				if (auth && (!frame || frame.kind === "hello")) throw new FrameAuthError("schema");
+			} catch (error) {
+				console.warn(authFailure(error)); ws.close(1008, "frame_auth_failed"); return;
+			}
 			if (!frame || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
 				reject(ws, refuse("bad-frame")); return;
 			}
@@ -299,26 +329,43 @@ export const machine = actor({
 				if (closed) return;
 				if (frame.kind === "hello") {
 					const r = await record(c);
-					if (!r || !signed(r.public_key, controlProof(uid!, id!, nonce), frame.signature)) { reject(ws, refuse("unknown")); return; }
-					if (r.removed_at !== null) { reject(ws, refuse("removed", { removeSandboxes: !!r.remove_sandboxes })); return; }
-					if (!versionAtLeast(frame.runnerVersion, MIN_RUNNER_VERSION)) {
-						const [changed] = await c.db.execute<Row>("UPDATE machine SET version = ? WHERE removed_at IS NULL RETURNING *", frame.runnerVersion);
-						reject(ws, refuse("outdated", frame));
+					const statement = frame.protocol === 2 ? machineStatement(context, frame) : controlProof(uid!, id!, nonce);
+					if (!r || !signed(r.public_key, statement, frame.signature)) { reject(ws, refuse("unknown")); return; }
+					const base = { kind: "welcome" as const, idleSuspendMs: config.idleSuspendMs };
+					const greeting = (refusal?: Refusal) => identity && frame.protocol === 2
+						? platformWelcome(context, frame, { ...base, refusal }, identity) : undefined;
+					const decline = (refusal: Refusal) => {
+						const reply = greeting(refusal);
+						if (!reply) return reject(ws, refusal);
+						ws.send(reply.welcome);
+						ws.close(1008, refusal.reason);
+					};
+					if (r.removed_at !== null && (!identity || frame.protocol === 2)) {
+						decline(refuse("removed", { removeSandboxes: !!r.remove_sandboxes })); return;
+					}
+					const foreign = (frame.protocol === 2) !== !!identity;
+					if (foreign || !versionAtLeast(frame.runnerVersion, minimum())) {
+						const [changed] = await c.db.execute<Row>("UPDATE machine SET version = ?, protocol = ? WHERE removed_at IS NULL RETURNING *", frame.runnerVersion, frame.protocol ?? 1);
+						if (identity) decline({ kind: "refused", reason: "outdated", minimum: MIN_RUNNER_VERSION, message: OLD_RUNNER });
+						else if (foreign) decline({ kind: "refused", reason: "signing-disabled", message: "This platform has signed runner connections disabled." });
+						else decline(refuse("outdated", { ...frame, minimum: minimum() }));
 						await tell(c, changed);
 						return;
 					}
 					const old = c.vars.live;
 					if (secondHello(old, frame, now) === "refuse") {
 						const [changed] = await c.db.execute<Row>("UPDATE machine SET duplicate = ? WHERE removed_at IS NULL RETURNING *", now);
-						reject(ws, refuse("key-in-use"));
+						decline(refuse("key-in-use"));
 						await tell(c, changed);
 						return;
 					}
-					const [changed] = await c.db.execute<Row>("UPDATE machine SET seen = ?, version = ?, offset = ? WHERE removed_at IS NULL RETURNING *", now, frame.runnerVersion, frame.time - now);
+					const accepted = greeting();
+					const [changed] = await c.db.execute<Row>("UPDATE machine SET seen = ?, version = ?, offset = ?, protocol = ?, report = json_patch(report, ?) WHERE removed_at IS NULL RETURNING *", now, frame.runnerVersion, frame.time - now, frame.protocol ?? 1, JSON.stringify({ slots: frame.slots ?? null }));
 					if (!changed || closed) return;
-					c.vars.live = { ws, maxTurns: frame.maxTurns, offset: frame.time - now, epoch: frame.epoch, heardAt: now, connected: now, savedAt: now };
+					c.vars.live = { ws, slots: frame.slots, maxTurns: frame.maxTurns, offset: frame.time - now, epoch: frame.epoch, heardAt: now, connected: now, savedAt: now };
 					old?.ws.close(1001, "Reconnected");
-					ws.send({ kind: "welcome", idleSuspendMs: config.idleSuspendMs });
+					if (!ws.send(accepted?.welcome ?? base)) return;
+					auth = accepted?.auth;
 					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) ws.send({ kind: "remove", sandbox });
 					await tell(c, changed);
 				} else {
@@ -338,7 +385,8 @@ export const machine = actor({
 					}
 					if (frame.kind === "catalog") staged.set(frame.id, frame);
 					if (frame.kind === "report") {
-						const changed = await saveReport(c.db, frame, staged, live.offset);
+						const changed = await saveReport(c.db, { ...frame, slots: frame.slots ?? live.slots }, staged, live.offset);
+						live.slots = frame.slots ?? live.slots;
 						staged.clear();
 						if (changed) await tell(c, changed);
 					}
@@ -348,9 +396,9 @@ export const machine = actor({
 		ws.send({ kind: "challenge", nonce });
 	},
 	actions: {
-		internalTurnSlot: async (c, session: string, turn: number): Promise<TurnSlot> => {
+		internalTurnSlot: async (c, session: string, turn: number, size = 1): Promise<TurnSlot> => {
 			requireServiceFor(c, "call");
-			const slot = await ordered(c, () => requestSlot(c, session, turn));
+			const slot = await ordered(c, () => requestSlot(c, session, turn, size));
 			if (slot.state === "waiting" && Date.now() >= c.vars.nextSlotCheck) {
 				c.vars.nextSlotCheck = Date.now() + 60_000;
 				void c.keepAwake(reapSlots(c).catch(error => machineError("check machine turn slots", error)));

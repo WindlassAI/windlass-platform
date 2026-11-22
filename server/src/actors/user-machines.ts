@@ -10,11 +10,13 @@ import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
 import { compactReport, type CatalogId } from "../runner/catalog.js";
-import { MACHINE_ID, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
+import { MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
 import { MACHINE_PROFILES } from "../runner/protocol.js";
 import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
+
+import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 
 interface Ctx {
 	db: RawAccess; key: string[]; client(): unknown; conn?: { params: unknown } | null;
@@ -37,6 +39,15 @@ export function launchPlace(raw: unknown): SandboxPlace {
 }
 
 export async function machineTables(db: RawAccess) {
+	await db.execute(PROVIDER_TABLE);
+	// Consolidate pre-account Windlass rows before per-machine cleanup can remove them.
+	// Repeating either statement after an interrupted migration keeps the same strongest cooldown.
+	await db.execute(`INSERT OR REPLACE INTO provider_usage (place,harness,generation,data)
+		SELECT '*', harness, generation, json_set(data, '$.account.key', '*/windlass/' || generation)
+		FROM provider_usage WHERE harness='windlass' AND EXISTS (SELECT 1 FROM provider_usage WHERE harness='windlass' AND place<>'*')
+		ORDER BY CAST(generation AS INTEGER) DESC, json_extract(data, '$.account.limitedUntil') DESC,
+			json_extract(data, '$.lastRefusal') DESC, place LIMIT 1`);
+	await db.execute("DELETE FROM provider_usage WHERE harness='windlass' AND place<>'*'");
 	await db.execute(`CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, facts TEXT NOT NULL,
 		send INTEGER NOT NULL DEFAULT 1, login TEXT, expires INTEGER)`);
 	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machines)")).some(column => column.name === "host"))
@@ -49,6 +60,15 @@ export async function machineTables(db: RawAccess) {
 		const { host, ...report } = facts.report;
 		await db.execute("UPDATE machines SET facts = ?, host = ? WHERE id = ?", JSON.stringify({ ...facts, report: compactReport(report) }), host ? JSON.stringify(host) : null, row.id);
 	}
+	await db.execute("CREATE TRIGGER IF NOT EXISTS forget_machine_usage AFTER DELETE ON machines BEGIN DELETE FROM provider_usage WHERE place=OLD.id; END");
+	// Legacy runners have no generation marker. An explicit logout still retires the old account.
+	await db.execute(`CREATE TRIGGER IF NOT EXISTS forget_harness_usage AFTER UPDATE OF facts ON machines BEGIN
+		DELETE FROM provider_usage WHERE place=NEW.id AND EXISTS (
+			SELECT 1 FROM json_each(NEW.facts, '$.report.harnesses') AS h
+			WHERE json_extract(h.value,'$.id')=harness AND (
+				json_extract(h.value,'$.signIn')='none' OR
+				(json_extract(h.value,'$.signIn')='token' AND COALESCE(json_extract(h.value,'$.loginGeneration'),'legacy')<>generation)));
+	END`);
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_details (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
 }
@@ -63,16 +83,20 @@ async function pairing(c: Ctx, input: { code: string }) {
 
 export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "sessions"> }): Promise<MachineSummary[]> {
 	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; host: string | null; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, host, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
+	const accounts = await providerAccounts(c.db, Date.now());
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
 		const titles = new Map(sessions.map(s => [s.id, s.title]));
 		return {
-			...row.details ? JSON.parse(row.details) as import("../contract.js").MachineDetails : { whenToUse: "", tags: [] },
+			whenToUse: "", tags: [], orchestrator: "yes" as const,
+			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
+			providerAccounts: accountsAt(accounts, row.id),
+			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
 			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
 			profiles: report ? machineProfiles(machineLabel(row), report) : [], sendSecrets: !!row.send, agents: sessions.length,
-			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
+			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt, resizePending }) => ({ sessionId, state, usedAt, resizePending, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
 			freeDiskBytes: report?.freeDiskBytes ?? null, commandSandbox: report?.commandSandbox ?? null,
 			...(report && { egress: report.egress ?? "open", allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
@@ -81,7 +105,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}) };
 	});
 }
-async function changed(c: Ctx) {
+export async function changed(c: Ctx) {
 	const machines = await listMachines(c);
 	c.vars.machines = new Map(machines.map(m => [m.machineId, m]));
 	c.broadcast("machines", machines);
@@ -102,13 +126,15 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 	const [row] = await db.execute<{ name: string; os: string; arch: string; facts: string }>("SELECT name, os, arch, facts FROM machines WHERE id = ? AND expires IS NULL", id);
 	if (!row) throw missing();
 	const name = machineLabel(row);
-	const { report, runnerVersion }: MachineUpdate = JSON.parse(row.facts);
+	const { report, runnerVersion, warnings = [] }: MachineUpdate = JSON.parse(row.facts);
 	// First: an outdated runner is refused before it can report, so it has no report either.
-	if (!versionAtLeast(runnerVersion, MIN_RUNNER_VERSION)) {
-		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
+	const minimum = config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
+	if (!config.machines?.identity && warnings.some(w => w.kind === "signing-disabled")) throw new UserError("This runner requires signed connections to be enabled on the platform.", { code: "runner_signing_disabled" });
+	if (!versionAtLeast(runnerVersion, minimum) || (config.machines?.identity && warnings.some(w => w.kind === "outdated"))) {
+		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${minimum} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
 	if (!report) throw new UserError(`"${name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
-	return { name, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
+	return { name, slots: report.slots, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
 }
 
 /**
@@ -183,11 +209,15 @@ export const machineActions = {
 		catch (error) { if (isActorGone(error)) throw missing(); throw error; }
 		return listMachines(c);
 	},
-	async setMachineDetails(c: Ctx, input: { machineId: string; whenToUse: string; tags: string[] }) {
+	async setMachineDetails(c: Ctx, input: { machineId: string } & import("../contract.js").MachineDetails) {
 		requireUser(c); enabled();
 		let details;
 		try { details = machineDetails(input); } catch (error) { throw new UserError((error as Error).message, { code: "bad_input" }); }
-		const rows = await c.db.execute("INSERT OR REPLACE INTO machine_details SELECT id, ? FROM machines WHERE id=? AND expires IS NULL RETURNING id", JSON.stringify(details), input.machineId);
+		// Older settings forms send only text and tags. Preserve the owner's placement policy on those writes.
+		const rows = await c.db.execute(`INSERT OR REPLACE INTO machine_details SELECT m.id,
+			json_set(?, '$.orchestrator', COALESCE(?, json_extract(d.data, '$.orchestrator'), 'yes'))
+			FROM machines m LEFT JOIN machine_details d ON d.id=m.id WHERE m.id=? AND m.expires IS NULL RETURNING id`,
+			JSON.stringify(details), input.orchestrator ?? null, input.machineId);
 		if (!rows.length) throw missing();
 		return changed(c);
 	},

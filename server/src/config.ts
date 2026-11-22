@@ -53,6 +53,8 @@
  *                              there either way, and an item that exists goes on with its steps, so
  *                              turning it off and on again loses nothing; while it is off, nobody can
  *                              file, read or act on an item
+ *   WLP_DAILY_TOKENS           model tokens per user per UTC day (default unlimited)
+ *   WLP_FACTORY_FEATURE_MULTIPLIER   starting feature budget as a multiple of one item (default 3)
  *   WLP_FACTORY_RUNNING_TURNS  the software factory's limits for every user (factory/budget.ts; the
  *   WLP_FACTORY_TURNS          defaults are FACTORY_DEFAULTS there): turns of a user running at once,
  *   WLP_FACTORY_HOSTED_RUNNING the factory's and the user's own (default 6, also the ceiling of a
@@ -216,6 +218,9 @@
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
+import { SNAPSHOT_MIN_SETUP_MS } from "./sandbox/snapshot-key.js";
+
+import { readPlatformKey, type PlatformIdentity } from "./runner/frame-auth.js";
 import { configuredKeys, type Keyring } from "./keyring.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -259,6 +264,7 @@ export interface BrowserConnectionConfig {
 
 /** WLP_MACHINES and what goes with it; `Config.machines` is null when the feature is off. */
 export interface MachinesConfig {
+	identity?: PlatformIdentity;
 	runnerHarnesses?: MachinesInfo["runnerHarnesses"];
 	runnerImage: string | null;
 	/** WLP_PUBLIC_URL as an origin, without a trailing slash. */
@@ -294,13 +300,16 @@ export interface Config {
 	questionTimeoutMs: number;
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
+	/** A Docker setup must finish successfully and reach this duration to be saved. */
+	snapshots: boolean;
+	snapshotMinSetupMs: number;
 	/** How long a repository's setup command may run before the platform stops it. */
 	setupTimeoutMs: number;
 	/** How long one turn may run before the platform stops it (WLP_TURN_TIMEOUT_MS). */
 	turnTimeoutMs: number;
 	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
 	usage: UsageLimits;
-	/** The software factory's limits, the same for every user (WLP_FACTORY_*). */
+	/** The software factory's deployment defaults for user limits (WLP_FACTORY_*). */
 	factory: ReturnType<typeof readFactory>;
 	/** Whether users may file work items (WLP_ITEMS=1). */
 	items: boolean;
@@ -344,6 +353,11 @@ export function ownEngineEndpoint(): string {
 	if (named) return named;
 	const port = Number(process.env.RIVET_RUN_ENGINE_PORT);
 	return `http://127.0.0.1:${Number.isInteger(port) && port > 0 && port < 65_536 ? port : 6420}`;
+}
+
+/** The same gateway origin must be advertised at pairing and signed runner discovery. */
+export function signedRunnerEndpoint(publicUrl: string): string {
+	return config.browsers.endpoint ?? (config.engine.remote ? publicUrl : ownEngineEndpoint());
 }
 
 /**
@@ -597,7 +611,7 @@ function readQuestionTimeout(): number {
 }
 
 /** A whole number from `min` to `max`, or `unlimited` (null) where the setting can mean no limit; `fallback` when it is not set. Anything else is unusable. */
-function readCount(name: string, fallback: number, min: number, max: number, unlimited: boolean): number | null {
+function readCount(name: string, fallback: number | null, min: number, max: number, unlimited: boolean): number | null {
 	const text = (process.env[name] ?? "").trim();
 	if (text === "") return fallback;
 	if (unlimited && text.toLowerCase() === "unlimited") return null;
@@ -622,21 +636,23 @@ function readHttpLimits() {
 	};
 }
 
-function readFactory(): FactoryLimits & { githubItemsPerDay: number; githubDrafts: number; reviewer: boolean; attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
+function readFactory(): FactoryLimits & { reviewer: boolean } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
 	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
-	// The factory's share leaves the person at least one turn of their own.
-	const factoryTurns = Math.min(count("WLP_FACTORY_TURNS", d.factoryTurns, 100), Math.max(1, runningTurns - 1));
+	// Keep the configured share. The effective per-user limit reserves one turn for the person.
+	const factoryTurns = count("WLP_FACTORY_TURNS", d.factoryTurns, 100);
 	return {
-		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", 20, 1_000_000),
-		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", 20, 1_000_000),
+		dailyTokens: readCount("WLP_DAILY_TOKENS", d.dailyTokens, 1, Number.MAX_SAFE_INTEGER, true),
+		featureMultiplier: count("WLP_FACTORY_FEATURE_MULTIPLIER", d.featureMultiplier, 100),
+		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", d.githubItemsPerDay, 1_000_000),
+		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", d.githubDrafts, 1_000_000),
 		reviewer: process.env.WLP_FACTORY_REVIEWER === "on",
 		attachments: {
 			bytes: count("WLP_FACTORY_ATTACHMENT_BYTES", ATTACHMENT_LIMITS.bytes, ATTACHMENT_LIMITS.bytes),
 			perItem: count("WLP_FACTORY_ATTACHMENTS_PER_ITEM", ATTACHMENT_LIMITS.perItem, 1_000_000),
-			accountBytes: count("WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES", 1_073_741_824, Number.MAX_SAFE_INTEGER),
-			days: count("WLP_FACTORY_ATTACHMENT_DAYS", 180, 36500),
+			accountBytes: count("WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES", d.attachments.accountBytes, Number.MAX_SAFE_INTEGER),
+			days: count("WLP_FACTORY_ATTACHMENT_DAYS", d.attachments.days, 36500),
 		},
 		runningTurns,
 		factoryTurns,
@@ -667,6 +683,14 @@ export function publishedHarnesses(image: string, raw?: string): MachinesInfo["r
 	} catch { return undefined; }
 }
 
+function platformIdentity() {
+	const mode = process.env.WLP_REQUIRE_SIGNED_RUNNER ?? "0";
+	if (mode === "0") return;
+	if (mode !== "1") { unusable.push("WLP_REQUIRE_SIGNED_RUNNER must be 0 or 1"); return; }
+	try { return readPlatformKey(process.env.WLP_PLATFORM_KEY); }
+	catch { unusable.push("WLP_PLATFORM_KEY needs a valid, unexpired certified online key"); }
+}
+
 function readMachines(httpPort: number): MachinesConfig | null {
 	if (process.env.WLP_MACHINES !== "1") return null;
 	const image = (process.env.WLP_RUNNER_IMAGE ?? "").trim();
@@ -688,7 +712,7 @@ function readMachines(httpPort: number): MachinesConfig | null {
 		if (fit) publicUrl = url!.origin;
 		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
 	}
-	return { runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
+	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
 }
 
 function readAccountEmails(): ReadonlyMap<string, string> {
@@ -733,6 +757,8 @@ export const config: Config = {
 	questionTimeoutMs: readQuestionTimeout(),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
+	snapshots: process.env.WLP_SNAPSHOTS === "on",
+	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
 	usage: {

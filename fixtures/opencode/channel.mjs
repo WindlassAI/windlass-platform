@@ -6,8 +6,9 @@ import { ServerChannel } from '../../server/src/runner/channel.ts';
 import { RunnerLink, machineLayer } from '../../server/src/sandbox/runner-layer.ts';
 import { AcpHarness } from '../../server/src/sandbox/acp-harness.ts';
 import { OPENCODE } from '../../server/src/sandbox/harnesses.ts';
+import { turnRefusal } from '../../server/src/provider-refusal.ts';
 
-export async function channelTurn(owner, session, id, model) {
+export async function channelTurn(owner, session, id, model, expectedFailure) {
 	const runner = new Session(session, owner, () => {});
 	const messages = [new EventEmitter(),new EventEmitter()];
 	const endpoint = side => ({
@@ -37,7 +38,7 @@ export async function channelTurn(owner, session, id, model) {
 			let reply = '', selected;
 			const turn = await harness.runTurn(box, {
 				prompt: 'Say relay proof.', mode, model, windlassSessionId: previous,
-				signal: AbortSignal.timeout(90000),
+				signal: AbortSignal.timeout(expectedFailure ? 150000 : 90000),
 				onAcpModes(current, choices) {
 					assert.deepEqual(choices.map(c => c.id), ['build','plan']);
 					selected = current;
@@ -46,6 +47,11 @@ export async function channelTurn(owner, session, id, model) {
 					if (update.sessionUpdate === 'agent_message_chunk') reply += update.content.text;
 				},
 			});
+			if (expectedFailure) {
+				assert.deepEqual(turn.failure, expectedFailure);
+				assert.deepEqual(turnRefusal('error', turn, null), {kind:expectedFailure.reason, message:expectedFailure.message});
+				return;
+			}
 			assert.equal(turn.failure, null, JSON.stringify(turn.failure));
 			assert.equal(turn.aborted, false);
 			assert.equal(turn.acp.stopReason, 'end_turn');

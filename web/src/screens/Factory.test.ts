@@ -4,7 +4,7 @@
  * what asks, its groups and filters, filing a work item from it without leaving, the first visit, and
  * a deployment without the second review.
  */
-import type { AuthResult, CreateItemInput, ItemSummary } from "@contract";
+import { ITEM_PAGE_DEFAULT, type AuthResult, type CreateItemInput, type ItemListPage, type ItemSummary } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,12 +28,15 @@ let root: Root | null;
 let client: MockClient;
 /** What was filed, in order. */
 let filed: CreateItemInput[];
+/** The pages of items asked for, in order. */
+let paged: ItemListPage[];
 
 beforeEach(() => {
 	host = document.createElement("div");
 	document.body.append(host);
 	root = null;
 	filed = [];
+	paged = [];
 	sessionStorage.clear();
 });
 
@@ -55,7 +58,7 @@ async function show(path: string, options: MockOptions = {}): Promise<void> {
 	const user = client.user.bind(client);
 	(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
 		const api = user(who);
-		return { ...api, createItem: (input: CreateItemInput) => (filed.push(input), api.createItem(input)) };
+		return { ...api, createItem: (input: CreateItemInput) => (filed.push(input), api.createItem(input)), listItems: (page?: ItemListPage) => (page && paged.push(page), api.listItems(page)) };
 	};
 	saveAuth("mock", ada);
 	root = createRoot(host);
@@ -162,8 +165,43 @@ describe("the Factory page's groups and filters", () => {
 		const ended = rest.filter((item) => ["done", "failed", "cancelled"].includes(item.state));
 		expect(ended.length).toBeGreaterThan(0);
 		act(() => button(`Show ${ended.length} ended items`).click());
+		await settle();
 		expect(groups().at(-1)).toMatchObject({ name: "Ended" });
 		expect((groups().at(-1)?.titles ?? []).slice().sort()).toEqual(names(ended));
+	});
+
+	it("reads the ended ones from the server a page at a time, and starts again under a filter", async () => {
+		await show("/factory", { items: "many" });
+		const all = await listed();
+		const ended = all.filter((item) => item.question === null && ["done", "failed", "cancelled"].includes(item.state));
+		expect(ended.length).toBeGreaterThan(2 * ITEM_PAGE_DEFAULT);
+		// Nothing is asked of the server until they are unfolded.
+		expect(paged).toEqual([]);
+		act(() => button(`Show ${ended.length} ended items`).click());
+		await settle();
+		const endedRows = () => groups().find((group) => group.name === "Ended")?.titles ?? [];
+		const byFiling = ended.slice().sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+		expect(endedRows()).toEqual(byFiling.slice(0, ITEM_PAGE_DEFAULT).map((item) => item.title));
+		expect(paged).toEqual([{ ended: true, before: null, limit: ITEM_PAGE_DEFAULT, repository: null, source: null }]);
+		expect(host.textContent).toContain(`${ITEM_PAGE_DEFAULT} of ${ended.length} work items`);
+		// The next page starts after the last row shown.
+		act(() => button(`Show ${ITEM_PAGE_DEFAULT} more`).click());
+		await settle();
+		expect(endedRows()).toEqual(byFiling.slice(0, 2 * ITEM_PAGE_DEFAULT).map((item) => item.title));
+		const last = byFiling[ITEM_PAGE_DEFAULT - 1] as ItemSummary;
+		expect(paged[1]).toMatchObject({ ended: true, before: { createdAt: last.createdAt, id: last.id } });
+		// Under a filter, the server is asked for that repository's from the first page.
+		await filter("repo", "acme/harbor");
+		const harbor = byFiling.filter((item) => item.repository.id === 7101);
+		expect(paged.at(-1)).toMatchObject({ ended: true, before: null, repository: 7101 });
+		expect(endedRows()).toEqual(harbor.slice(0, ITEM_PAGE_DEFAULT).map((item) => item.title));
+		// Read to the end: no more to show.
+		for (let page = 0; page < 5 && host.textContent?.includes(`Show ${ITEM_PAGE_DEFAULT} more`); page++) {
+			act(() => button(`Show ${ITEM_PAGE_DEFAULT} more`).click());
+			await settle();
+		}
+		expect(endedRows()).toEqual(harbor.map((item) => item.title));
+		expect(host.textContent).not.toContain(`Show ${ITEM_PAGE_DEFAULT} more`);
 	});
 
 	it("shows a row's verdict, CI, second review, pull request and issue", async () => {
@@ -235,9 +273,9 @@ describe("filing a work item from the Factory page", () => {
 		expect(filed[0]?.idempotencyKey).toBeTruthy();
 		expect(location.pathname).toBe("/factory");
 		expect(field().value).toBe("");
-		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Add the tests command to the README”. Open");
+		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Add the tests command to the README”: its plan comes to you for approval. Open");
 		expect((await listed()).length).toBe(before + 1);
-		expect(groups().find((group) => group.name === "In progress")?.titles).toContain("Add the tests command to the README");
+		expect(groups().find((group) => group.name === "Needs you")?.titles).toContain("Add the tests command to the README");
 	});
 
 	it("files a draft from the line under it, into Drafts", async () => {

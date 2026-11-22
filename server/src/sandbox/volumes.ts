@@ -1,7 +1,8 @@
-/** The user volume holds Windlass session data and the access token files of running turns. */
+/** The user volume holds Windlass session data. Older servers also put token files there. */
 
 import { assertName } from "../signin/material.js";
 import { DATA_DIR, LABEL, createVolume, helperFlags, runHelper, tmpName, volumeExists } from "./docker.js";
+import { removeRunningTokenFiles } from "./sandboxes.js";
 import { TOKEN_FILE_PREFIX } from "./token-file.js";
 
 // User ids become Docker volume names, which is why they are held to a safe alphabet (signin/material.ts).
@@ -30,10 +31,11 @@ export function ensureUserVolume(uid: string, image?: string): Promise<void> {
 
 /**
  * The Docker provider's part of forgetting a sign-in (`SignInHolder.logout`): the token files of the
- * user's turns that still run are removed from the user's data volume, so Windlass has none at its next
- * model call. It works where the volume is, which is the one machine Docker sandboxes run on.
+ * user's running turns are removed from each container, then any old files on the volume are removed.
  */
 export async function removeTokenFiles(uid: string, image?: string): Promise<void> {
+	await removeRunningTokenFiles(uid, "");
+	// Also clean files left on disk by older servers.
 	const sessions = userVolume(uid);
 	if (!(await volumeExists(sessions))) return;
 	const helper = tmpName();

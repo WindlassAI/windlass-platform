@@ -10,8 +10,8 @@
  *     container or microVM. It is never inside Windlass's sandbox around commands (bubblewrap), in any
  *     profile and whatever approval mode Windlass runs with.
  *   - So it has the sandbox machine's network, and it can read Windlass's data directory: Windlass's
- *     record of the conversation, and the turn's access token file (sandbox/token-file.ts). On Docker
- *     that directory is the user's volume, with the records of the user's other sessions in it. Where the profile promises that the agent's
+ *     record of the conversation. It can also read the session-private token file (sandbox/token-file.ts).
+ *     On Docker the data volume contains the records of the user's other sessions. Where the profile promises that the agent's
  *     commands have neither (`commandNetwork`, `commandsCanReadAccessToken` both false), that is the
  *     difference the user has to know; where commands run directly in the container, there is none;
  *     and where nothing is promised of commands (E2B until its check has passed), the server's reach
@@ -107,8 +107,8 @@ function reach(question: Pick<TurnServerQuestion, "argv">, context: Pick<ServerQ
 	if (question.argv === null) {
 		return `Nothing is started: Windlass reaches it at that address from ${where}, outside its sandbox around commands, and what the agent sends it leaves ${context.machine ? "your machine" : `the ${machine(profile)}`}.`;
 	}
-	// Windlass's data directory: its record of the conversation, and the turn's access token file.
-	const data = "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed";
+	// A locally started server has the same filesystem access as Windlass.
+	const data = "Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue";
 	if (profile.approval === "full") {
 		// Commands run directly in the machine: the server has what they have.
 		return demo

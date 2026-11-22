@@ -11,6 +11,8 @@
  */
 
 import type { ProviderRefusal } from "../provider-refusal.js";
+import type { PlacementRoute, PlacementInventory } from "./placement.js";
+import type { CheckConclusion, ChildPlacement, ReviewRecommendation } from "../contract.js";
 import type { AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { ReviewerTaskInput } from "./reviewer-task.js";
@@ -76,6 +78,11 @@ export interface Run extends ItemRun {
 export type Task = ItemTask;
 
 export interface FeatureJob {
+	/** Current attempt attached to a creation request by the parent actor. */
+	dispatchKey?: string;
+	route?: PlacementRoute;
+	warm?: string[];
+	placement?: ChildPlacement;
 	failure?: string | null;
 	cancelRequested?: boolean;
 	id: string;
@@ -86,7 +93,51 @@ export interface FeatureJob {
 	report: string;
 }
 
+export interface FeedbackInput {
+	ids: string[];
+	text: string;
+	fingerprint: string;
+	others: boolean;
+	by: string;
+	writers?: string[];
+}
+
+export interface FeedbackDecision {
+	ids: string[];
+	state: "held" | "question" | "taken" | "declined";
+	reason: string;
+	run?: number;
+	plan?: number;
+}
+
 export interface FactoryItem {
+	feedbackReplans?: number;
+	/**
+	 * What the planner had spent, closing work and subtasks left out, when the latest feedback re-plan began.
+	 * Planning counts its share from here, so each feedback re-plan gets a share of its own; the feature budget
+	 * and its closing reserve still bound it.
+	 */
+	planningBase?: ItemBudget;
+	/** Closing work is charged to the feature, outside its planner allowance. */
+	beforeClosing?: ItemBudget;
+	closingSpend?: ItemBudget;
+	feedback?: {
+		held: string[] | null;
+		heldText: string;
+		heldFingerprint: string;
+		heldWriters: string[];
+		heldOthers: boolean;
+		awaiting: FeedbackInput | null;
+		taken: string[];
+		runs: Record<string, number>;
+		othersRuns: number;
+		lastIds: string[];
+	};
+	/** Checks opened by this run, including a handed head reopened for rework. */
+	pendingChecks?: { sha: string; existingOnly: boolean; feedback?: boolean }[];
+	lastReverifyAt?: number;
+	routes?: Record<string, PlacementRoute>;
+	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
 	forceSplit?: boolean;
 	seed?: string;
@@ -141,7 +192,8 @@ export interface Question extends ItemQuestion {
 /** base is the target branch. The actor supplies its pinned SHA to reviewerTask. */
 export type ReviewCheckout = { head: string; base: string; pr: number };
 export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "earlier"> & { verdictId: string };
-export type HandoffReview = { review: string; reviewNone: null } | { review: null; reviewNone: string };
+export type CheckReview = { recommendation: ReviewRecommendation; blocking: number };
+export type HandoffReview = { review: string; reviewNone: null; assessment?: CheckReview } | { review: null; reviewNone: string };
 
 /** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
@@ -150,6 +202,8 @@ export interface TurnPlan {
 	to?: "work" | "review";
 	checkout?: ReviewCheckout | null;
 	text: string;
+	/** Range occupied by the quoted batch. A held batch's line locations are rendered against the head at handoff. */
+	feedbackQuote?: { head: string | null; start: number; length: number };
 	/** False: another attempt of the current step (after an interruption). */
 	newStep: boolean;
 	/** The round counter the turn uses (§2.4); "interruptions": the step's cut-off turns, counted when they end. */
@@ -166,6 +220,8 @@ export interface TurnPlan {
 
 /** The owner's explicit retry replays this delivery, including a conflict step's base fetch. */
 export interface ItemProviderRefusal extends ProviderRefusal {
+	accountKey?: string;
+	placeName?: string;
 	retry: Pick<TurnPlan, "text" | "fetchBase">;
 }
 
@@ -179,16 +235,20 @@ export interface TurnSpend {
 }
 
 export type Fact =
+	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
+	| { kind: "reverify"; at: number; head: string }
 	| { kind: "feature_seed"; at: number; key: string; sha: string }
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
-	| { kind: "child_update"; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
+	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
+	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
-	| { kind: "approve_plan"; at: number; by: string; version: number }
+	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number }
 	| { kind: "run_single"; at: number; by: string }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
@@ -197,8 +257,9 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
-	| { kind: "answer"; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
+	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
+	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
 	| { kind: "turn_started"; at: number; key: string }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
@@ -241,14 +302,29 @@ export type Fact =
  * the actor stores the effects with the state in one write and performs each by its key, so one that
  * is performed again after a crash or a deploy is the same request (§2.5). `at`: not before then.
  */
+export type VerifiedCheckEffect = {
+	kind: "verified_check";
+	key: string;
+	run: number;
+	step: NonNullable<ItemEvent["step"]>;
+	startedAt: number;
+	changedAt: number;
+	verdictId: string | null;
+	title: string;
+	summary: string;
+	existingOnly?: boolean;
+} & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
+
 export type Effect =
+	| VerifiedCheckEffect
+	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
 	| { kind: "describe_feature"; key: string }
 	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }
@@ -261,7 +337,7 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; reviewDone?: true } & HandoffReview);
+	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true } & HandoffReview);
 
 /** A transaction-only effect, consumed before the actor performs any deliveries. */
 export interface VerdictEffect {
@@ -271,6 +347,7 @@ export interface VerdictEffect {
 }
 
 export interface Outcome {
+	feedback?: FeedbackDecision[];
 	/** The same object as given when the fact changed nothing. */
 	item: FactoryItem;
 	/** Store beside the item before performing the outbox. This effect never goes to GitHub. */

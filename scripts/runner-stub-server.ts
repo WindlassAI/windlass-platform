@@ -1,17 +1,19 @@
 // Only the pairing routes and two socket endpoints. The real session channel owns replay,
 // receipts, operation ids, timers, and result validation on this side of the TCP proxy.
 import { localListeners } from "./check-listeners.js";
-import { randomBytes, verify } from "node:crypto";
-import { createServer as http } from "node:http";
+import { generateKeyPairSync, randomBytes, verify } from "node:crypto";
+import { createServer as http, type RequestListener } from "node:http";
+import { createServer as https, type ServerOptions } from "node:https";
 import { createRequire } from "node:module";
 import { connect, type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { ServerChannel } from "../server/src/runner/channel.js";
-import { parseFrame } from "../server/src/runner/protocol.js";
+import { certify, readPlatformKey, signRemoval, machineStatement, platformWelcome, type FrameAuth, type PlatformIdentity } from "../server/src/runner/frame-auth.js";
+import type { Body } from "../server/src/runner/protocol.js";
 import {
 	CLOCK_TOLERANCE_MS, CONTROL_HEARTBEAT_MS, RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH,
-	connectionProof, controlProof, sessionProof, parseRunnerFrame, parseConnectionRequest, parsePairPoll, parsePairRequest,
+	connectionProof, parseRunnerFrame, parseConnectionRequest, parsePairPoll, parsePairRequest,
 	refuse, secondHello, type PairStatus, type PairStarted, type Refusal, type Report, type ServerFrame,
 } from "../server/src/runner/control.js";
 
@@ -21,15 +23,18 @@ export async function until(test: () => boolean | Promise<boolean>, message: str
 }
 const random = () => randomBytes(32).toString("base64url");
 type WS = import("../server/node_modules/rivetkit/dist/tsup/mod.js").UniversalWebSocket;
-const send = (ws: WS, f: ServerFrame) => ws.send(JSON.stringify(f));
 
-export async function stub(storage: string) {
+
+export async function stub(storage: string, tls?: ServerOptions) {
 	for (const k of Object.keys(process.env)) if (k.startsWith("RIVET")) delete process.env[k];
 	const { engine: port } = await localListeners(0);
 	Object.assign(process.env, { RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(port), RIVET_LOG_LEVEL: "silent", NODE_ENV: "development" });
 	const require = createRequire(new URL("../server/package.json", import.meta.url));
 	const { actor, setup } = require("rivetkit") as typeof import("../server/node_modules/rivetkit/dist/tsup/mod.js");
 	const { createClient } = await import("../server/src/client.js");
+	let platformIdentity = readPlatformKey(certify(generateKeyPairSync("ed25519").privateKey, 1, Date.now() + 86_400_000));
+	const codecs = new WeakMap<WS, FrameAuth>();
+	const send = (ws: WS, frame: ServerFrame) => ws.send(codecs.get(ws)?.seal(frame) ?? JSON.stringify(frame));
 	const uid = "u_" + randomBytes(6).toString("hex");
 	const machineId = "m_" + randomBytes(8).toString("hex");
 	const sessionId = "s_" + randomBytes(8).toString("hex");
@@ -38,10 +43,11 @@ export async function stub(storage: string) {
 	const signed = (statement: string, signature: string) => verify(null, Buffer.from(statement), publicKey, Buffer.from(signature, "base64url"));
 	let live: { ws: WS; epoch: string; heardAt: number } | null = null;
 	const state = {
-		report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
+		helloSlots: undefined as Report["slots"], report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
 		refusal: null as Refusal | null, httpRefusal: null as "removed" | "unknown" | null, idleMs: 600_000, removed: "", lastErrorKind: "",
 	};
 	let observeControl: ((text: string) => void) | undefined;
+	const catalogs = new Map<string, import("../server/src/contract.js").HarnessOptions>();
 	const tickets = new Map<string, string>();
 	const joined = new Map<string, number>();
 	const opened = new Map<string, number>();
@@ -49,12 +55,21 @@ export async function stub(storage: string) {
 	const channels = new Map<string, ServerChannel>();
 	const wanted = new Set<string>();
 	let holdAcks = false;
-	let corrupt: "unknown" | "create" | undefined;
+	let corrupt = false;
+	class FixtureChannel extends ServerChannel {
+		protected override send(body: Body) {
+			if (corrupt && body.kind === "op") {
+				body = { ...body, name: "unsupported" };
+				corrupt = false;
+			}
+			super.send(body);
+		}
+	}
 	function channel(session: string) {
 		let ch = channels.get(session);
 		if (!ch) {
-			ch = new ServerChannel({ accept(h) {
-				if (h.machineId !== machineId || tickets.get(session) !== h.ticket || !signed(sessionProof(uid, session, machineId, h.ticket), h.signature)) return false;
+			ch = new FixtureChannel({ platform: { identity: platformIdentity, uid, machineId, sessionId: session }, accept(h) {
+				if (h.machineId !== machineId || tickets.get(session) !== h.ticket || h.protocol !== 2 || !signed(machineStatement({ uid, machineId, sessionId: session, challenge: h.ticket, ticket: h.ticket }, h), h.signature)) return false;
 				tickets.delete(session); joined.set(session, (joined.get(session) ?? 0) + 1); return true;
 			} });
 			channels.set(session, ch);
@@ -70,19 +85,29 @@ export async function stub(storage: string) {
 		const nonce = random();
 		ws.addEventListener("message", e => {
 			if (typeof e.data === "string") observeControl?.(e.data);
-			const f = parseRunnerFrame(e.data);
+			const f = parseRunnerFrame(codecs.get(ws)?.open(e.data, 2 * 1024 * 1024) ?? e.data);
 			if (!f) { ws.close(); return; }
 			if (f.kind === "hello") {
-				if (!signed(controlProof(uid, machineId, nonce), f.signature)) { ws.close(); return; }
+				const context = { uid, machineId, challenge: nonce };
+				if (f.protocol !== 2 || !signed(machineStatement(context, f), f.signature)) { ws.close(); return; }
 				const refused = state.refusal ?? (secondHello(live, f, Date.now()) === "refuse" ? refuse("key-in-use") : null);
-				if (refused) { send(ws, refused); ws.close(); return; }
+				const greeting = platformWelcome(context, f, { kind: "welcome" as const, idleSuspendMs: state.idleMs, refusal: refused ?? undefined }, platformIdentity);
+				send(ws, greeting.welcome); codecs.set(ws, greeting.auth);
+				if (refused) { ws.close(); return; }
 				live?.ws.close(); live = { ws, epoch: f.epoch, heardAt: Date.now() };
-				state.connections++; state.epoch = f.epoch;
-				send(ws, { kind: "welcome", idleSuspendMs: state.idleMs });
+				state.connections++; state.helloSlots = f.slots; state.epoch = f.epoch;
 				for (const s of wanted) ticket(s);
 			} else if (live?.ws === ws) {
 				live.heardAt = Date.now();
-				if (f.kind === "report") { state.report = f; state.reports++; }
+				if (f.kind === "catalog") catalogs.set(f.id, f.options);
+				if (f.kind === "report") {
+					state.report = { ...f, harnesses: f.harnesses?.map(h => {
+						const options = h.optionsDigest ? catalogs.get(h.id) : h.options;
+						return { ...h, options: options && { ...options, checkedAt: h.optionsCheckedAt ?? options.checkedAt } };
+					}) };
+					state.reports++;
+				}
+				if (f.kind === "host" && state.report) state.report.host = f.host ?? undefined;
 				if (f.kind === "removed") state.removed = f.sandbox;
 			}
 		});
@@ -94,18 +119,12 @@ export async function stub(storage: string) {
 		opened.set(session, (opened.get(session) ?? 0) + 1);
 		channel(session).attach({
 			send(text) {
-				const f = parseFrame(text);
+				const f = JSON.parse(text);
 				if (holdAcks && f?.kind === "ack") return;
-				if (corrupt && f?.kind === "msg" && f.body.kind === "op") {
-					if (corrupt === "unknown") f.body.name = "unsupported";
-					else Object.assign(f.body.args, { uid: "somebody_else", sessionId: other });
-					corrupt = undefined;
-					ws.send(JSON.stringify(f)); return;
-				}
 				ws.send(text);
 			},
 			close: () => ws.close(), onMessage(fn) { ws.addEventListener("message", e => {
-				const frame = parseFrame(e.data);
+				const frame = typeof e.data === "string" && JSON.parse(e.data);
 				if (frame?.kind === "hello" && session === incompatible) { fn(JSON.stringify({ ...frame, protocol: 0 })); return; }
 				if (frame?.kind === "msg" && frame.body.kind === "res" && !frame.body.ok) state.lastErrorKind = frame.body.error.kind;
 				fn(e.data);
@@ -124,7 +143,9 @@ export async function stub(storage: string) {
 	const pipes = new Set<Duplex>();
 	let credential: { token: string; expiresAt: number; validForMs: number } | null = null;
 	let offline: "all" | "gateway" | undefined;
-	const proxy = http();
+	const server = (handler?: RequestListener) => tls ? https(tls, handler) : http(handler);
+	const origin = tls ? "https://127.0.0.1:" : "http://127.0.0.1:";
+	const proxy = server();
 	proxy.on("upgrade", (req, incoming, head) => {
 		if (offline) { incoming.destroy(); return; }
 		const url = new URL(req.url!, "http://localhost");
@@ -145,10 +166,10 @@ export async function stub(storage: string) {
 		incoming.pipe(outgoing).pipe(incoming);
 	});
 	await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
-	const advertised = "http://127.0.0.1:" + (proxy.address() as AddressInfo).port;
+	const advertised = origin + (proxy.address() as AddressInfo).port;
 	let started: PairStarted | undefined;
 	let pendingKey = "";
-	const api = http(async (req, res) => {
+	const api = server(async (req, res) => {
 		const answer = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
 		try {
 			const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -170,28 +191,32 @@ export async function stub(storage: string) {
 				if (!state.pollFailures++) return answer(503, {});
 				if (state.pairingMode !== "approve") return answer(200, { state: state.pairingMode });
 				publicKey = pendingKey;
-				return answer(200, { state: "approved", uid, machineId, githubLogin: "runner-check" } satisfies PairStatus);
+				return answer(200, { state: "approved", uid, machineId, githubLogin: "runner-check", platformRoot: platformIdentity.root, endpoint: advertised } satisfies PairStatus);
 			}
 			if (req.url === RUNNER_CONNECTION_PATH) {
 				state.connectionRequests++;
 				const p = parseConnectionRequest(b);
-				if (!p || p.uid !== uid || p.machineId !== machineId || !signed(connectionProof(uid, machineId, p.time), p.signature)) return answer(403, { reason: "unknown" });
+				if (!p || p.uid !== uid || p.machineId !== machineId || !signed(connectionProof(uid, machineId, p.time, p.nonce), p.signature)) return answer(403, { reason: "unknown" });
 				const now = Date.now() + 30 * 60_000;
 				if (Math.abs(now - p.time) > CLOCK_TOLERANCE_MS) { state.clockRefusals++; return answer(403, { reason: "clock", serverTime: now }); }
 				if (state.httpRefusal === "unknown") return answer(403, { reason: "unknown" });
-				if (state.httpRefusal === "removed") return answer(410, { reason: "removed", removeSandboxes: false });
+				if (state.httpRefusal === "removed" && p.nonce) return answer(410, signRemoval(uid, machineId, p.nonce, false, platformIdentity));
 				if (offline === "all") return answer(503, {});
 				credential = state.gatewayLifetime ? { token: random(), expiresAt: Date.now() + state.gatewayLifetime, validForMs: state.gatewayLifetime } : null;
-				return answer(200, { endpoint: advertised, namespace: "default", token: credential });
+				return answer(200, { endpoint: advertised, endpointChange: platformIdentity.endpointChange, namespace: "default", token: credential });
 			}
 			answer(404, {});
 		} catch { answer(400, {}); }
 	});
 	await new Promise<void>(resolve => api.listen(0, "127.0.0.1", resolve));
 	const heartbeat = setInterval(() => { if (live) send(live.ws, { kind: "heartbeat" }); }, CONTROL_HEARTBEAT_MS);
-	return { state, uid, machineId, sessionId, other, platform: "http://127.0.0.1:" + (api.address() as AddressInfo).port,
+	return { state, uid, machineId, sessionId, other, advertised, setIdentity(value: PlatformIdentity) { platformIdentity = value; }, platform: origin + (api.address() as AddressInfo).port,
+		unsignedCreate() {
+			if (!live) throw Error("Fixture socket is closed");
+			live.ws.send(JSON.stringify({ kind: "op", name: "create", id: "fixture", args: { profile: "docker-hardened" } }));
+		},
 		observeControl(fn: (text: string) => void) { observeControl = fn; },
-		channel, ticket, opened, incompatible(s: string) { incompatible = s; }, online: () => !!live, send: (f: ServerFrame) => { if (!live) throw new Error("Control is offline"); send(live.ws, f); },
+		channel, ticket, opened, incompatible(s?: string) { incompatible = s; }, online: () => !!live, send: (f: ServerFrame) => { if (!live) throw new Error("Control is offline"); send(live.ws, f); },
 		async attach(s = sessionId) {
 			await client.agentSession.getOrCreate([uid, s]).resolve();
 			const prior = joined.get(s) ?? 0;
@@ -202,7 +227,7 @@ export async function stub(storage: string) {
 		reset(s = sessionId) { wanted.delete(s); channel(s).close(); channels.delete(s); },
 		cut(link: "all" | "gateway" = "all") { offline = link; for (const p of pipes) p.destroy(); },
 		restore() { offline = undefined; },
-		acks(enabled: boolean) { holdAcks = !enabled; }, corruptNext(value: typeof corrupt) { corrupt = value; },
+		acks(enabled: boolean) { holdAcks = !enabled; }, unknownOperation() { corrupt = true; },
 		async close() {
 			clearInterval(heartbeat); wanted.clear(); for (const ch of channels.values()) ch.close();
 			live?.ws.close(); for (const p of pipes) p.destroy();

@@ -34,5 +34,11 @@ export function currentMode(summary: Pick<SessionSummary, "harness" | "available
 	return sessionModes(summary, profile).find((mode) => mode.id === summary.mode) ?? { id: summary.mode, name: summary.mode, description: null };
 }
 
+/** A mode by its name, for a line that names one outside a session: "Plan", "Auto"; an id no list has is shown as it is. */
+export function modeName(harness: HarnessId, id: string): string {
+	const known = harness === "claude" ? CLAUDE_LAUNCH_MODES : harness === "windlass" ? [...windlassModes("auto"), ...windlassModes("full")] : [];
+	return known.find((mode) => mode.id === id)?.name ?? (id.charAt(0).toUpperCase() + id.slice(1));
+}
+
 /** The modes that let the agent act without asking anything: said in the warning tone where the sandbox's facts are. */
 export const OPEN_MODES: ReadonlySet<string> = new Set(["bypassPermissions", "full"]);

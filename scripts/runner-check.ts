@@ -1,12 +1,14 @@
+import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
+import { writeProofDocker } from "./runner-proof-docker.js";
 import { imageId } from "./check-image.js";
 import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createHash, createPublicKey, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +22,8 @@ import { COMMON_RUN_FLAGS, commonRunFlags } from "../server/src/sandbox/profiles
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
 import { RUNNER_GRACE_MS } from "../server/src/runner/protocol.js";
+import { optionsDigest } from "../server/src/runner/catalog.js";
+import { certify } from "../server/src/runner/frame-auth.js";
 import { ConversationLost, ServerChannel } from "../server/src/runner/channel.js";
 import { safeSentence } from "../runner/src/audit.js";
 import { stub, until } from "./runner-stub-server.js";
@@ -80,7 +84,7 @@ async function realMachine(runnerImage: string) {
 	const node = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
 		cwd: join(root, "server"), stdio: "ignore",
 		env: { PATH: process.env.PATH, HOME: process.env.HOME, WLP_SECRET: randomBytes(32).toString("hex"),
-			WLP_MACHINES: "1", WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_PUBLIC_URL: platform,
+			WLP_MACHINES: "1", WLP_REQUIRE_SIGNED_RUNNER: "1", WLP_PLATFORM_KEY: certify(generateKeyPairSync("ed25519").privateKey, 1, Date.now() + 86_400_000), WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_PUBLIC_URL: platform,
 			WLP_HTTP_PORT: String(http), RIVET_RUN_ENGINE_PORT: String(port),
 			RIVET_LOG_LEVEL: "silent", RIVETKIT_STORAGE_PATH: join(tmp, "real-engine") },
 	});
@@ -200,16 +204,129 @@ timers.setTimeout = (ms, ...args) => wait(ms === ${REFUSED_RETRY_MS} ? 3500 : ms
 const timeout = AbortSignal.timeout.bind(AbortSignal);
 AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	function run(dir = state, preload?: string, program = bundle, dockerEnv: NodeJS.ProcessEnv = {}, { platform = srv.platform, flags = [] }: { platform?: string; flags?: string[] } = {}) {
-		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", platform, ...flags], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(process.execPath, ["--require", testClock, ...(preload ? ["--require", preload] : []), program, "--platform", platform, "--egress", "open", ...flags], { env: { ...env(dir), ...dockerEnv }, stdio: ["ignore", "pipe", "pipe"] });
 		let output = "";
 		child.stdout.on("data", s => { output += s; }); child.stderr.on("data", s => { output += s; });
 		children.add(child); child.once("exit", () => children.delete(child));
 		return { child, output: () => output };
 	}
 	async function cli(command: string, dir = state) { return (await exec(process.execPath, [bundle, command], { env: env(dir), timeout: 20_000 })).stdout; }
+	const limitsOf = async (name: string) => {
+		const [box] = JSON.parse((await docker(["inspect", name], { check: true })).stdout);
+		return [box.HostConfig.NanoCpus, box.HostConfig.Memory, box.HostConfig.MemorySwap, box.HostConfig.PidsLimit, box.HostConfig.CpuShares, box.Config.Labels["dev.windlass-platform.slots"]];
+	};
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
+		if (process.argv.includes("--snapshots-only")) {
+			const service = run(state, undefined, bundle, {}, { flags: ["--slots", "3", "--slot-cpus", "0.5", "--slot-memory", "1g"] });
+			try {
+				await until(() => !!srv.state.report?.slots, "Runner did not report");
+				const key = { writer: true, attempt: randomBytes(16).toString("hex"), repo: "123", inputs: "a".repeat(64), generation: "c".repeat(64) };
+				const {writer: _writer, ...requestKey} = key;
+				const source = { ...requestKey, commit: "b".repeat(40), created: Date.now() };
+				const profile = "docker-hardened" as const;
+				async function session(sessionId: string, privateData: boolean, request = key) {
+					await srv.attach(sessionId);
+					const channel = srv.channel(sessionId);
+					return { channel, create: (size: number) => channel.request("create", { profile, size, prepared: { ...request, privateData } }) };
+				}
+				const a = await session(sessionId, false), id = await a.create(4);
+				assert.deepEqual(await limitsOf(containerName(id.slice(-12))), [1.5e9, 3 * 2 ** 30, 3 * 2 ** 30, 1536, 256, "3"]);
+				assert.equal((await a.channel.request("run", { id, command: "touch /workspace/build-output"})).exitCode, 0);
+				assert.equal(await a.channel.request("saveSnapshot", {id, source}), true);
+				assert.equal(await a.channel.request("saveSnapshot", {id, source}), false);
+				await a.channel.request("run", { id, command: "touch /workspace/agent-wrote-this" });
+				await a.channel.request("destroy", { id });
+				const next = { ...key, writer: false, attempt: randomBytes(16).toString("hex") };
+				const b = await session(srv.other, true, next), restored = await b.create(2);
+				const name = containerName(restored.slice(-12));
+				const limits = [1e9, 2 ** 31, 2 ** 31, 1024, 256, "2"];
+				assert.deepEqual(await limitsOf(name), limits);
+				// Reconnect must repair drift using the reader's size, even when its producer was clamped.
+				await docker(["update", "--cpus", "0.5", "--pids-limit", "512", name], { check: true });
+				assert.deepEqual((await b.channel.request("connect", {id: restored}))?.snapshot, { ...source, attempt: next.attempt });
+				assert.deepEqual(await limitsOf(name), limits);
+				await until(() => reported(restored), "Restored sandbox missing from inventory");
+				assert.deepEqual(srv.state.report?.slots, srv.state.helloSlots);
+				assert.equal(srv.state.report?.slots?.max, 3);
+				ok("A snapshot restore gets its own two-slot limits and label, and reconnect repairs them using the consumer's size.");
+				assert.equal((await b.channel.request("run", {id: restored, command: "test -e build-output && test ! -e agent-wrote-this"})).exitCode, 0);
+				assert.equal(await b.channel.request("saveSnapshot", {id: restored, source}), false);
+				await b.channel.request("destroy", {id: restored});
+				const child = { ...key, writer: false, inputs: "f".repeat(64), attempt: randomBytes(16).toString("hex") };
+				const childId = await a.channel.request("create", { profile, prepared: { ...child, privateData: false } });
+				const childSource = { ...source, inputs: child.inputs, attempt: child.attempt };
+				assert.equal(await a.channel.request("saveSnapshot", { id: childId, source: childSource }), false);
+				await a.channel.request("destroy", { id: childId });
+				ok("A cold subtask with a read-only request cannot save a snapshot.");
+				const fresh = { ...key, inputs: "0".repeat(64), attempt: randomBytes(16).toString("hex") };
+				// Reuse the accepted socket after destroy, with a different dependency key.
+				const cold = await a.channel.request("create", {profile, prepared: {...fresh, privateData: false}});
+				const ran = await a.channel.request("run", {id: cold, command: 'test -n "$CHECK_TOKEN"', options: {secretEnv: {CHECK_TOKEN: "fixture"}}});
+				assert.equal(ran.exitCode, 0);
+				const dirty = { ...source, inputs: fresh.inputs, attempt: fresh.attempt };
+				assert.equal(await a.channel.request("saveSnapshot", {id: cold, source: dirty}), false);
+				await a.channel.request("destroy", {id: cold});
+				ok("A runner refuses to save a sandbox after a command received secret environment variables.");
+				ok("An authenticated machine save and private reviewer restore preserve only pre-turn files.");
+			} finally {
+				await stop(service.child);
+				await new DockerSnapshots(machineId, image).drop(uid);
+				await docker(["network", "rm", "wlp-open-"+machineId]);
+			}
+			return;
+		}
+		if (process.argv.includes("--sizing-only")) {
+			for (const command of ["run", "setup"]) {
+				for (const [flag, value] of [["--slots", "65"], ["--slot-cpus", "999999"], ["--slot-memory", "512m"], ["--sandbox-memory", "1g"]]) {
+					await assert.rejects(exec(process.execPath, [bundle, command, flag, value], { env: env(state) }),
+						(e: { stderr?: string }) => !!e.stderr?.includes(flag));
+				}
+			}
+			const bin = join(tmp, "bin");
+			await mkdir(bin);
+			const prefix = "sizing-" + machineId + "-";
+			await writeProofDocker(bin, prefix, (await exec("which", ["docker"])).stdout.trim(), undefined,
+				["wlp-egress-", "wlp-claude-relay-", "wlp-opencode-relay-", "wlp-harness-opencode-"]);
+			const host = join(tmp, "two-cores.cjs");
+			await writeFile(host, 'const os = require("node:os"); os.availableParallelism = () => 2; os.totalmem = () => 12 * 2**30;');
+			const start = (flags: string[]) => run(state, host, bundle, { PATH: bin + ":" + process.env.PATH }, { flags });
+			let service = start([]);
+			try {
+				await until(() => !!srv.state.report?.slots, "Missing default sizing report");
+				await srv.attach(srv.other);
+				const kept = await srv.channel(srv.other).request("create", { profile: "docker-hardened" });
+				assert.deepEqual(await limitsOf(prefix + "agent-" + kept.slice(-12)), [1e9, 1.5 * 2 ** 30, 1.5 * 2 ** 30, 512, 256, "1"]);
+				srv.reset(srv.other);
+				await stop(service.child);
+				await until(() => !srv.online(), "Runner did not disconnect.");
+				service = start(["--max-turns", "3", "--slot-cpus", "0.75", "--slot-memory", "2g"]);
+				await until(() => srv.state.report?.slots?.max === 3, "Missing authenticated sizing report");
+				const slots = srv.state.report!.slots!;
+				assert.equal(slots.max, 3);
+				assert.deepEqual(slots.unit, { cpus: 0.75, memoryBytes: 2 ** 31, pids: 512 });
+				assert.deepEqual(srv.state.helloSlots, slots);
+				await srv.attach(srv.other);
+				await srv.channel(srv.other).request("connect", { id: kept });
+				assert.deepEqual(await limitsOf(prefix + "agent-" + kept.slice(-12)), [0.75e9, 2 ** 31, 2 ** 31, 512, 256, "1"]);
+				await srv.attach();
+				const { weightedFifo } = await import("./machine-fairness-check.js");
+				const created: string[] = [];
+				await weightedFifo(slots, async (turn, size) => {
+					const channel = srv.channel(turn === "large" ? sessionId : srv.other);
+					const id = await channel.request("create", { profile: "docker-hardened", size });
+					if (turn === "large") {
+						created.push(id);
+						assert.deepEqual(await limitsOf(prefix + "agent-" + id.slice(-12)), [1.5e9, 2 ** 32, 2 ** 32, 1024, 256, "2"]);
+					} else assert.equal(id, kept);
+				});
+				assert.equal(created.length, 2);
+				assert.equal(created[0], created[1]);
+				ok("Authenticated hello and inventory carry the same slots. Retried size-two create has one labelled container with twice the advertised limits.");
+			} finally { await stop(service.child); }
+			return;
+		}
 		if (process.argv.includes("--profiles-only")) {
 			const windlass = "docker-windlass-sandbox", hardened = "docker-hardened";
 			const policyFlag = "--allow-profile";
@@ -251,6 +368,23 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 			await stopRunner();
 			assert.deepEqual((await start()).allowedProfiles, [hardened, windlass]);
 			ok("An upgraded pairing keeps both profiles and an explicit opt-in survives restart.");
+			await srv.attach();
+			const handoff = srv.channel(sessionId);
+			for (const profile of allowed.commandSandbox.ok ? [hardened, windlass] as const : [hardened] as const) {
+				const id = await handoff.request("create", { profile });
+				const path = tokenFilePath(id);
+				await handoff.request("writeSecretFile", { id, path, content: JSON.stringify({ accessToken: "fake-runner-fixture", expiresAt: Date.now() + 3_600_000 }) });
+				const fs = await handoff.request("ask", { id, argv: ["stat", "-f", "-c", "%T", path] });
+				assert.equal(fs?.stdout.trim(), "tmpfs");
+				const login = await handoff.request("ask", { id, argv: ["windlass", "login", "status"], options: { env: { WINDLASS_ACCESS_TOKEN_FILE: path } } });
+				assert.equal(login?.code, 0);
+				assert.ok(login?.stdout.includes(path));
+				srv.send({ kind: "logout" });
+				await until(async () => (await handoff.request("ask", { id, argv: ["test", "!", "-e", path] }))?.code === 0, "Logout left the private file.");
+				await handoff.request("destroy", { id });
+				ok(profile + " passes the private tmpfs file to Windlass and removes it on logout.");
+			}
+
 			// Even a runner on a host without user namespaces can discover a pre-existing container.
 			await stopRunner();
 			const raw = randomBytes(6).toString("hex"), id = "m" + machineId + "-" + raw;
@@ -407,7 +541,7 @@ require("node:module").syncBuiltinESMExports();`);
 			const options = report()?.options;
 			assert.ok(options && options.defaultModel === "default" && options.models.find(m => m.id === "default")?.efforts.includes("high"));
 			assert.deepEqual(options.models.find(m => m.id === "sonnet")?.efforts, ["default", "low"]);
-			assert.deepEqual(report(), { options, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
+			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
 			clean(JSON.stringify(srv.state.report));
 			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
 			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);
@@ -490,6 +624,7 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.deepEqual(setup.Mounts, []);
 			ok("The setup CLI has session hardening, pairing labels and no login mount. The paste has echo off.");
 
+			await until(async () => (await probes()).length >= 3, "Login rotation did not refresh options.");
 			const beforeLaunch = await probes();
 			assert.deepEqual(beforeLaunch, [claudePin, claudePin, claudePin], "login rotation probes again");
 			const id = await ch.request("create", { ...create, screenshots: true });
@@ -539,21 +674,16 @@ require("node:module").syncBuiltinESMExports();`);
 			srv.detach(srv.other); srv.detach(); await stop(service.child);
 			await until(() => !srv.online(), "Enabled runner did not disconnect.");
 			const oldRunner = await rollbackRunner(image);
-			const oldStatus = await exec(process.execPath, [oldRunner, "status"], { env: env(state) });
+			// A protocol-1 binary cannot read a pinned pairing. Check local discovery with its original record.
+			await assert.rejects(exec(process.execPath, [oldRunner, "status"], { env: env(state) }), /Invalid pair.json/);
+			const rollbackState = join(tmp, "rollback-state");
+			await mkdir(rollbackState, { mode: 0o700 });
+			const { current, previous: earlier, platform, key } = JSON.parse(await readFile(join(state, "pair.json"), "utf8"));
+			await writeFile(join(rollbackState, "pair.json"), JSON.stringify({ current, previous: earlier, platform, key }), { mode: 0o600 });
+			const oldStatus = await exec(process.execPath, [oldRunner, "status"], { env: env(rollbackState) });
 			assert.ok(oldStatus.stdout.includes(ordinary), "The old runner missed the Windlass session");
 			assert.ok(!oldStatus.stdout.includes(id), "The old runner adopted the token-mounted Claude session");
-			srv.state.report = null;
-			service = run(state, undefined, oldRunner);
-			await until(() => !!srv.state.report, "The old runner did not start from the harness-enabled state.");
-			assert.ok(reported(ordinary) && !reported(id));
-			await srv.attach();
-			assert.equal(await ch.request("connect", { id }), null);
-			await assert.rejects(ch.request("run", { id, command: "true" }), /require a running sandbox/);
-			await srv.attach(srv.other);
-			assert.equal((await windlass.request("connect", { id: ordinary }))?.profile, "docker-hardened");
-			srv.detach(srv.other); srv.detach(); await stop(service.child);
-			await until(() => !srv.online(), "The old runner did not stop.");
-			ok("The b12b61e runner reads harness-enabled state and serves only the ordinary session.");
+			ok("The old runner refuses the pinned pairing and discovers only the ordinary session with its original state.");
 
 			// Recreate 8d01472's persisted name and snapshot. Upgrade with the harness disabled.
 			await docker(["rename", name, containerName(id.slice(-12))], { check: true });
@@ -566,7 +696,7 @@ require("node:module").syncBuiltinESMExports();`);
 			await assert.rejects(ch.request("connect", { id }), /--harness claude/);
 			await assert.rejects(ch.request("readTextFile", { id, path }), /--harness claude/);
 			assert.equal((await inspect(name)).Id, box.Id);
-			const migrated = await exec(process.execPath, [oldRunner, "status"], { env: env(state) });
+			const migrated = await exec(process.execPath, [oldRunner, "status"], { env: env(rollbackState) });
 			assert.ok(migrated.stdout.includes(ordinary) && !migrated.stdout.includes(id));
 			ok("Upgrade preserves the existing Claude container and hides it from b12b61e discovery.");
 			srv.detach(); await stop(service.child); await until(() => !srv.online(), "Runner did not disconnect.");
@@ -768,6 +898,10 @@ require("node:module").syncBuiltinESMExports();`);
 		const wrappedDocker = { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH };
 		// A delayed pull is entirely local. All container operations use the real daemon.
 		await writeFile(join(bin, "docker"), `#!/bin/sh
+if [ "$1" = manifest ] && [ "$2" = inspect ]; then
+  echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+  exit 0
+fi
 if [ "$1" = "pull" ]; then
   echo start >> "$CHECK_PULL_STARTED"
   for i in $(seq 1 100); do [ -f "$CHECK_RELEASE_PULL" ] && break; sleep 0.1; done
@@ -794,7 +928,8 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 				const { stderr, code } = await docker(["--host", missingHost, "ps"]);
 				assert.notEqual(code, 0);
 				const prefix = stderr.trim().split(/[\r\n]/, 1)[0].split("unix://")[0];
-				assert.ok(prefix.length > 0 && health.reason.startsWith(prefix));
+				// Credential-path checks may conceal the Docker diagnostic before discovery runs.
+				assert.ok(health.reason === "Docker did not provide a diagnostic." || (prefix.length > 0 && health.reason.startsWith(prefix)));
 				assert.ok(!health.reason.includes("absent-directory") && !/[\r\n]/.test(health.reason) && health.reason.length <= 500);
 				assert.match(await cli("log"), /"operation":"docker","outcome":"(?:not found|unreachable)"/);
 			} else {
@@ -935,10 +1070,9 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await srv.attach(srv.other);
 		await assert.rejects(srv.channel(srv.other).request("run", { id, command: "touch /tmp/wrong-session" }), /another session/);
 		assert.equal(srv.state.lastErrorKind, "refused");
-		srv.corruptNext("unknown");
+		srv.unknownOperation();
 		await assert.rejects(ch.request("run", { id, command: "touch /tmp/unknown-op" }), /does not serve/);
-		srv.corruptNext("create");
-		await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /does not serve/);
+		await assert.rejects(ch.request("create", { profile: "docker-hardened", unexpected: true } as never), /Invalid arguments/);
 		assert.equal((await ch.request("run", { id, command: "test ! -e /tmp/wrong-session && test ! -e /tmp/unknown-op" })).exitCode, 0);
 		await docker(["run", "-d", "--name", hostedName, "--label", LABEL_ARG, "--label", marker, "--label", "dev.windlass-platform.uid=" + uid, image, "sleep", "infinity"], { check: true });
 		hosted = true;
@@ -950,11 +1084,9 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.ok(!(await cli("status")).includes(hostedRaw)); assert.equal((await docker(["exec", hostedName, "test", "!", "-e", "/tmp/touched"])).code, 0);
 		srv.detach(srv.other); srv.incompatible(srv.other);
 		srv.ticket(srv.other);
-		await until(async () => (await cli("log")).includes("speaks protocol 0"), "The session refusal was not logged.");
-		const opened = srv.opened.get(srv.other);
-		srv.ticket(srv.other); await wait(1500);
-		assert.equal(srv.opened.get(srv.other), opened);
-		ok("A protocol-refused session ignores subsequent tickets while the control socket stays online.");
+		await until(() => !srv.channel(srv.other).connected, "The incompatible session stayed connected.");
+		srv.incompatible(); await srv.attach(srv.other);
+		ok("An unverified session refusal cannot prevent the next authenticated attach.");
 		ok("Cross-session, hosted and unknown operations are refused. Hosted and runner inventories are disjoint.");
 
 		let output = "";
@@ -1106,10 +1238,10 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await stop(service.child);
 		srv.state.httpRefusal = "unknown"; service = run();
 		await until(() => service.output().includes("HTTP 403"), "HTTP refusal was not reported.");
-		assert.equal(service.child.exitCode, null); assert.match(await cli("status"), /unknown/);
+		assert.equal(service.child.exitCode, null); assert.match(await cli("status"), /HTTP 403/);
 		srv.state.httpRefusal = "removed"; await expectParked();
 		assert.equal((await docker(["inspect", "-f", "{{.State.Status}}", containerName(kept.slice(-12))], { check: true })).stdout.trim(), "exited");
-		assert.match(await cli("log"), /HTTP 410/);
+		assert.match(await cli("log"), /removed/);
 		await stop(service.child);
 		ok("Recoverable refusals retry slowly. Both forms of removal erase the key and park until the owner acts.");
 
@@ -1128,13 +1260,14 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		if (hosted) await docker(["rm", "-f", hostedName], { check: true });
 		for (const id of (await docker(["ps", "-aq", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
 		for (const v of (await docker(["volume", "ls", "-q", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["volume", "rm", v], { check: true });
+		for (const net of (await docker(["network", "ls", "-q", ...ownedFilters])).stdout.trim().split(/\s+/).filter(Boolean)) await docker(["network", "rm", net], { check: true });
 	}
 }
 const privateHarnessTag = "chk-" + randomUUID();
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (process.argv.includes("--profiles-only")) {
+	if (process.argv.includes("--profiles-only") || process.argv.includes("--sizing-only") || process.argv.includes("--snapshots-only")) {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
 		await check(image);
 	} else if (process.argv.includes("--harness-only")) {

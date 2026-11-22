@@ -15,6 +15,9 @@
  * Every method is synchronous: an actor's actions and socket handlers interleave around the channel,
  * never inside it.
  */
+import { plain } from "./check.js";
+import type { KeyObject } from "node:crypto";
+import { authFailure, FrameAuthError, platformWelcome, runnerHandshake, type FrameAuth, type PlatformIdentity, type Trust } from "./frame-auth.js";
 import { SandboxUserError } from "../sandbox/api.js";
 import type { ProcessEnd } from "../sandbox/provider.js";
 import {
@@ -65,6 +68,7 @@ abstract class Channel {
 	protected socket: ChannelSocket | null = null;
 	protected conversation: string | null = null;
 	protected closed = false;
+	protected readonly codecs = new WeakMap<ChannelSocket, FrameAuth>();
 	private sent = 0;
 	private acked = 0;
 	private received = 0;
@@ -87,6 +91,12 @@ abstract class Channel {
 	get connected(): boolean { return this.socket !== null; }
 	/** What is held for the peer until it acknowledges it. */
 	get buffered(): { bytes: number; frames: number } { return { bytes: this.bytes, frames: this.backlog.size }; }
+
+	get authenticated(): boolean { return !!this.socket && this.codecs.has(this.socket); }
+	protected badBody(): void {
+		console.warn("frame_auth_failed schema");
+		this.fail("The authenticated peer sent an invalid session message.");
+	}
 
 	protected abstract deliver(body: Body): void;
 	/** Lets go of everything outstanding in the conversation. */
@@ -118,18 +128,29 @@ abstract class Channel {
 	}
 
 	/** Listens to a socket that has yet to introduce itself: its first frame goes to `introduce`, within DEAD_MS. */
-	protected watch(socket: ChannelSocket, introduce: (frame: Frame) => void): void {
+	protected watch(socket: ChannelSocket, introduce: (frame: Frame) => void, protocol = 1): void {
 		const [oldest] = this.strangers.keys();
 		if (oldest && this.strangers.size >= MAX_STRANGERS) this.dismiss(oldest);
 		this.strangers.set(socket, setTimeout(() => this.dismiss(socket), DEAD_MS));
 		socket.onMessage((data) => {
 			if (this.closed) return;
-			if (this.socket === socket) { this.receive(parseFrame(data)); return; }
+			if (this.socket === socket) {
+				const auth = this.codecs.get(socket);
+				try {
+					const frame = parseFrame(auth ? auth.open(data, MAX_FRAME_BYTES) : data, protocol);
+					if (auth && (!frame || !["msg", "part", "ack"].includes(frame.kind))) throw new FrameAuthError("schema");
+					this.receive(frame);
+				} catch (error) { console.warn(authFailure(error)); this.lost(); }
+				return;
+			}
 			if (!this.strangers.has(socket)) return;
 			clearTimeout(this.strangers.get(socket));
 			this.strangers.delete(socket);
-			const frame = parseFrame(data);
-			if (frame) introduce(frame);
+			const frame = parseFrame(data, protocol);
+			try {
+				if (frame) introduce(frame);
+				else if (protocol === 2) throw new FrameAuthError("schema");
+			} catch (error) { console.warn(authFailure(error)); }
 			// One its introduction did not make current (refused, a resume that failed, or the owner
 			// closing the channel from `onReset` meanwhile) belongs to nobody.
 			if (this.socket !== socket) socket.close();
@@ -167,7 +188,9 @@ abstract class Channel {
 		clearInterval(this.clock);
 		this.clock = setInterval(() => this.tick(), ACK_MS);
 		this.heard = Date.now();
-		if (introduction) this.transmit(JSON.stringify(introduction));
+		if (introduction) {
+			try { socket.send(JSON.stringify(introduction)); } catch { this.lost(); return; }
+		}
 		this.told = this.received;
 		// Resent before the release can call `onDrain`, so new output cannot overtake what the peer lacks.
 		for (const [seq, frame] of this.backlog) if (seq > peerReceived) this.transmit(frame.text);
@@ -232,7 +255,10 @@ abstract class Channel {
 
 	private transmit(text: string): void {
 		try {
-			this.socket?.send(text);
+			if (this.socket) {
+				const auth = this.codecs.get(this.socket);
+				this.socket.send(auth ? auth.seal(JSON.parse(text)) : text);
+			}
 			this.spoke = Date.now();
 		} catch { this.lost(); }
 	}
@@ -272,7 +298,7 @@ abstract class Channel {
 		const body = parseBody(this.parts.join(""));
 		this.parts = [];
 		this.partUnits = 0;
-		if (!body) return this.fail("A message could not be read.");
+		if (!body) return this.authenticated ? this.badBody() : this.fail("A message could not be read.");
 		this.deliver(body);
 	}
 
@@ -300,30 +326,41 @@ export class ServerChannel extends Channel {
 	 * when a hello has made its socket the current one; it must not call the channel.
 	 * `onDisconnect` is told when that socket is lost, including a heartbeat timeout or a failed send.
 	 */
-	constructor(private readonly options: Options & { accept(hello: Hello): boolean; onConnect?(): void; onDisconnect?(): void }) {
+	constructor(private readonly options: Options & { platform?: { identity: PlatformIdentity; uid: string; machineId: string; sessionId: string }; accept(hello: Hello): boolean; onConnect?(): void; onDisconnect?(): void }) {
 		super(options, "The machine did not come back within ten minutes.");
 	}
 
 	/** A socket from the gateway. It counts once its hello is accepted; one that says nothing goes after DEAD_MS. */
 	attach(socket: ChannelSocket): void {
 		if (this.closed) { socket.close(); return; }
+		const platform = this.options.platform;
+		const protocol = platform ? PROTOCOL_VERSION : 1;
 		this.watch(socket, (hello) => {
 			if (hello.kind === "foreign") {
-				try { socket.send(JSON.stringify({ kind: "welcome", protocol: PROTOCOL_VERSION, refused: protocolRefusal(hello.protocol) })); } catch {}
+				try { socket.send(JSON.stringify({ kind: "welcome", protocol, refused: protocolRefusal(hello.protocol, protocol) })); } catch {}
 				return;
 			}
 			if (hello.kind !== "hello" || !this.accepts(hello)) return;
 			const resumes = hello.resume !== null && hello.resume.conversation === this.conversation && this.resumable(hello.resume.received);
 			// Only the runner that holds the conversation may replace a live socket: it has given up on that one.
 			if (this.socket && !resumes) return;
+			const conversation = resumes ? this.conversation! : crypto.randomUUID();
+			const base = { kind: "welcome" as const, conversation, received: resumes ? this.delivered : 0, resumed: resumes };
+			let welcome: Welcome = { ...base, protocol: 1 };
+			if (platform && hello.protocol === 2) {
+				const greeting = platformWelcome({ ...platform, challenge: hello.ticket, ticket: hello.ticket }, hello, { ...base, protocol: 2 as const }, platform.identity);
+				this.codecs.set(socket, greeting.auth);
+				welcome = greeting.welcome;
+			}
+			// An expired certificate or invalid peer key must not reset outstanding work.
 			if (!resumes) {
 				if (this.conversation) this.reset("The machine's runner restarted, or gave up on this session's work after a long disconnection.");
-				this.conversation = crypto.randomUUID();
+				if (this.closed) return;
+				this.conversation = conversation;
 			}
-			const welcome: Welcome = { kind: "welcome", protocol: PROTOCOL_VERSION, conversation: this.conversation!, received: this.delivered, resumed: resumes };
 			this.adopt(socket, welcome, resumes ? hello.resume!.received : 0);
 			if (this.socket === socket) this.options.onConnect?.();
-		});
+		}, protocol);
 	}
 
 	private accepts(hello: Hello): boolean {
@@ -414,7 +451,10 @@ export class ServerChannel extends Channel {
 				const p = this.pending.get(body.id);
 				if (!p) return; // It stopped waiting.
 				if (!body.ok) return this.settle(body.id, body.error.kind === "user" ? new SandboxUserError(body.error.message) : new Error(body.error.message));
-				if (!validValue(p.name, body.value)) return this.settle(body.id, new Error(`The machine's answer to ${p.name} could not be read.`));
+				if (!validValue(p.name, body.value)) {
+					if (this.authenticated) return this.badBody();
+					return this.settle(body.id, new Error(`The machine's answer to ${p.name} could not be read.`));
+				}
 				// Here, not when the promise settles: the process's own messages may follow in this same task.
 				if (p.name === "start") this.started(body.id);
 				return this.settle(body.id, { value: body.value });
@@ -434,6 +474,8 @@ export class ServerChannel extends Channel {
 		for (const id of [...this.processes.keys()]) this.finish(id, { code: null, signal: null, error: new ConversationLost(reason) });
 	}
 }
+
+export interface SessionTrust { uid: string; sessionId: string; machine: KeyObject; trust: Trust; endpoint: string }
 
 /** The runner's end, one per session it serves. */
 export class RunnerChannel extends Channel {
@@ -459,16 +501,22 @@ export class RunnerChannel extends Channel {
 	}
 
 	/** A new socket, opened because the last one was given up on. Its ticket and signature are new. */
-	attach(socket: ChannelSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">): void {
+	attach(socket: ChannelSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">, secure?: SessionTrust): void {
 		if (this.closed) { socket.close(); return; }
 		this.detach();
 		this.dismiss();
 		const asked = this.conversation;
-		const hello: Hello = { kind: "hello", protocol: PROTOCOL_VERSION, ...identity, resume: asked ? { conversation: asked, received: this.delivered } : null };
+		const base = { kind: "hello" as const, runnerVersion: identity.runnerVersion, machineId: identity.machineId, ticket: identity.ticket, resume: asked ? { conversation: asked, received: this.delivered } : null };
+		const exchange = secure && runnerHandshake({ uid: secure.uid, sessionId: secure.sessionId, machineId: identity.machineId, challenge: identity.ticket, ticket: identity.ticket }, base, secure.machine);
+		const hello: Hello = exchange?.hello ?? { ...base, protocol: 1, signature: identity.signature };
 		const text = JSON.stringify(hello);
-		if (parseFrame(text)?.kind !== "hello") throw new Error("Invalid runner identity.");
+		if (parseFrame(text, hello.protocol)?.kind !== "hello") throw new Error("Invalid runner identity.");
 		this.watch(socket, (welcome) => {
 			if (welcome.kind !== "welcome") return;
+			if (secure && exchange) {
+				if (!("platformEph" in welcome)) throw new FrameAuthError("handshake");
+				this.codecs.set(socket, exchange.finish(welcome, secure.trust, secure.endpoint));
+			} else if ("platformEph" in welcome) return;
 			if ("refused" in welcome) return this.options.onRefused(welcome.refused);
 			if (welcome.resumed) {
 				if (welcome.conversation !== asked || asked !== this.conversation || !this.resumable(welcome.received)) {
@@ -479,7 +527,7 @@ export class RunnerChannel extends Channel {
 			if (this.conversation) this.reset("The platform no longer has this session's work: its server restarted, or gave up after a long disconnection.");
 			this.conversation = welcome.conversation;
 			this.adopt(socket, null, 0);
-		});
+		}, hello.protocol);
 		try { socket.send(text); } catch { this.dismiss(socket); }
 	}
 
@@ -518,10 +566,16 @@ export class RunnerChannel extends Channel {
 		switch (body.kind) {
 			case "op": {
 				if (this.serving.has(body.id) || this.processes.has(body.id)) return this.fail("The platform used an operation id twice.");
-				const refusal = !isName(body.name) || !validArgs(body.name, body.args) ? "This runner does not serve that operation."
+				const name = body.name;
+				const known = isName(name);
+				const valid = known && validArgs(name, body.args);
+				if (this.authenticated && known && !valid) return this.badBody();
+				const snapshot = name === "saveSnapshot" || name === "hasSnapshot" || (name === "create" && plain(body.args) && body.args.prepared !== undefined);
+				const refusal = snapshot && !this.authenticated ? "Machine snapshots require an authenticated session."
+					: !valid ? "This runner does not serve that operation."
 					: this.serving.size >= MAX_OPS_IN_FLIGHT ? "Too many operations are waiting on this machine." : null;
 				if (refusal) return this.send({ kind: "res", id: body.id, ok: false, error: { kind: "refused", message: refusal } });
-				this.serving.set(body.id, body.name as Name);
+				this.serving.set(body.id, name as Name);
 				return this.options.onOperation(body as Operation);
 			}
 			case "in":

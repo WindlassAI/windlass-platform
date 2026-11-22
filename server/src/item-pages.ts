@@ -1,0 +1,84 @@
+/**
+ * A page of the user's work items, for a list that would be slow to send or draw whole: the Factory's
+ * ended items, a page at a time ("Show more"). `listItems` without a page answers with the whole list
+ * as it always did; with one, with at most `limit` items after the cursor.
+ *
+ * The order is the list's own: newest filed first, and by id between two filed in the same
+ * millisecond. A cursor is the last item of the page before, by when it was filed and its id, both of
+ * which never change: a page after it holds every item older than that one, whatever changed meanwhile,
+ * so a page is never skipped or repeated by an item that changed its state. One filed since comes at
+ * the top of the list, where the live list already has it.
+ *
+ * This file has no actor in it: the `user` actor's `listItems` calls it, and the web app's mock does too.
+ */
+
+import { type GithubId, type ItemCursor, type ItemSummary, ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX } from "./contract.js";
+import { isGithubId } from "./github/ids.js";
+
+/** Thrown for a page that cannot be read; `message` is fit to show. */
+export class ItemPageProblem extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ItemPageProblem";
+	}
+}
+
+const ENDED: ReadonlySet<ItemSummary["state"]> = new Set(["done", "failed", "cancelled"]);
+const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github"]);
+
+/** A page as asked for, checked: the cursor, the limit, and what it keeps. */
+export interface CleanPage {
+	before: ItemCursor | null;
+	limit: number;
+	ended: boolean;
+	repository: GithubId | null;
+	source: ItemSummary["source"] | null;
+}
+
+/** What a client sent as a page; null for none (the whole list). Throws ItemPageProblem for one that is not a page. */
+export function cleanItemPage(raw: unknown): CleanPage | null {
+	if (raw === undefined || raw === null) return null;
+	if (typeof raw !== "object" || Array.isArray(raw)) throw new ItemPageProblem("A page of work items is an object.");
+	const input = raw as Record<string, unknown>;
+	let before: ItemCursor | null = null;
+	if (input.before !== undefined && input.before !== null) {
+		const cursor = input.before as Record<string, unknown>;
+		if (typeof cursor !== "object" || typeof cursor.createdAt !== "number" || !Number.isFinite(cursor.createdAt) || typeof cursor.id !== "string" || cursor.id === "" || cursor.id.length > 64) {
+			throw new ItemPageProblem("Start a page after an item of the page before: its createdAt and id.");
+		}
+		before = { createdAt: cursor.createdAt, id: cursor.id };
+	}
+	const limit = input.limit === undefined ? ITEM_PAGE_DEFAULT : input.limit;
+	if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > ITEM_PAGE_MAX) throw new ItemPageProblem(`A page holds 1 to ${ITEM_PAGE_MAX} work items.`);
+	if (input.ended !== undefined && typeof input.ended !== "boolean") throw new ItemPageProblem("Say true or false for ended items only.");
+	if (input.repository !== undefined && input.repository !== null && !isGithubId(input.repository)) throw new ItemPageProblem("Name the repository by GitHub's id for it.");
+	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"])) throw new ItemPageProblem("Filed from is web, api or github.");
+	return { before, limit, ended: input.ended === true, repository: (input.repository ?? null) as GithubId | null, source: (input.source ?? null) as ItemSummary["source"] | null };
+}
+
+/** Newest filed first, by id between equals: the order of the list and of its pages. */
+export function byFiling(a: Pick<ItemSummary, "createdAt" | "id">, b: Pick<ItemSummary, "createdAt" | "id">): number {
+	return b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+}
+
+/** Whether an item comes after the cursor in that order. */
+const after = (item: Pick<ItemSummary, "createdAt" | "id">, cursor: ItemCursor) => item.createdAt < cursor.createdAt || (item.createdAt === cursor.createdAt && item.id < cursor.id);
+
+/** The page of a list (any order): the items it keeps, after the cursor, at most `limit` of them. */
+export function itemPage(list: readonly ItemSummary[], page: CleanPage): ItemSummary[] {
+	const kept = list.filter(
+		(item) =>
+			(!page.ended || ENDED.has(item.state)) &&
+			(page.repository === null || String(item.repository.id) === String(page.repository)) &&
+			(page.source === null || item.source === page.source) &&
+			(page.before === null || after(item, page.before)),
+	);
+	return kept.sort(byFiling).slice(0, page.limit);
+}
+
+/** The cursor for the page after this one; null when this one was the last (shorter than its limit). */
+export function nextCursor(page: readonly ItemSummary[], limit: number): ItemCursor | null {
+	const last = page[page.length - 1];
+	return page.length < limit || !last ? null : { createdAt: last.createdAt, id: last.id };
+}
+

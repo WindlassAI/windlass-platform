@@ -27,7 +27,9 @@ import { createClient, type Registry } from "../server/src/client.js";
 import type { AcpUpdate, LiveDelta, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
 import { type ChannelSocket, RunnerChannel } from "../server/src/runner/channel.js";
 import { MIN_RUNNER_VERSION, sessionProof } from "../server/src/runner/control.js";
-import { DEAD_MS, PROTOCOL_VERSION, type Operation } from "../server/src/runner/protocol.js";
+import { optionsDigest } from "../server/src/runner/catalog.js";
+import { certify } from "../server/src/runner/frame-auth.js";
+import { DEAD_MS, type Operation } from "../server/src/runner/protocol.js";
 import { StandInRunner, assert, until, opened } from "./runner-standin.js";
 import { GithubStandin } from "./github-standin.js";
 import { FakeRunner } from "./runner-fake.js";
@@ -204,7 +206,7 @@ async function welcomed(client: Client, uid: string, sessionId: string, hello: R
 			clearTimeout(timer);
 			done(false);
 		});
-		ws.send(JSON.stringify({ kind: "hello", protocol: PROTOCOL_VERSION, runnerVersion: MIN_RUNNER_VERSION, resume: null, ...hello }));
+		ws.send(JSON.stringify({ kind: "hello", protocol: 1, runnerVersion: MIN_RUNNER_VERSION, resume: null, ...hello }));
 	});
 }
 
@@ -367,7 +369,7 @@ async function linkChecks(): Promise<void> {
 	};
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.UTC(2026, 10, 19) });
 	try {
-		await check("link: create sends Claude only to a runner offering it and omits harness for Windlass", async () => {
+		await check("link: create sends Claude only to a runner offering it and keeps a protocol 1 snapshot request cold", async () => {
 			const input = { uid: LINK_WHO.uid, sessionId: LINK_WHO.sessionId, profile: "docker-hardened" as const };
 			const received: unknown[] = [];
 			const serve = (op: Operation, ch: RunnerChannel) => {
@@ -379,7 +381,7 @@ async function linkChecks(): Promise<void> {
 			assert(refused.at instanceof Error && refused.at.message.includes("--harness claude") && !old.log.attaches.length, "missing preflight refusal");
 			const offered = fresh({ serve, report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: true },
 				freeDiskBytes: null, sandboxes: [], harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
-			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create(input)]) {
+			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create({ ...input, fromSnapshot: { writer: true, attempt: "a".repeat(32), repo: "1", generation: "b".repeat(64), inputs: "c".repeat(64) } })]) {
 				await advance(50);
 				await create;
 			}
@@ -627,7 +629,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				], checkedAt: Date.now(), modes: [] };
 				runner.fake.report.harnesses![0]!.options = options;
 				runner.report();
-				await until("reported model options", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.[0]?.options);
+				await until("reported model options", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.[0]?.optionsDigest === optionsDigest(options));
 				const code = await refusal(user.createSession({ ...launch, model: "unknown" }));
 				assert(code === "bad_input", "unknown-model refusal was " + code);
 				const implicit = await user.createSession(launch);
@@ -830,7 +832,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				writeFileSync(marker, "");
 				try {
 					const error = await watch.conn.prompt({ text: "plain" }).then(() => null, e => e);
-					assert(error?.code === "secrets_unavailable" && error.message.includes("could not read all saved values to redact the Claude Code session"), String(error));
+					assert(error?.code === "secrets_unavailable" && error.message.includes("could not read all saved values to redact the harness session"), String(error));
 					assert(runner.acpInput.length === before, "started an ACP process");
 					return error.code;
 				} finally { rmSync(marker); }
@@ -1034,6 +1036,7 @@ async function main(): Promise<void> {
 				defaultModel: "opus", modes: [{ id: "plan", name: "Plan", description: "Plan first" }], checkedAt: Date.now() };
 			runner.fake.report.harnesses![0]!.options = options;
 			runner.fake.maxTurns = 2;
+			runner.fake.report.slots = { max: 2, unit: { cpus: 1, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } };
 			await runner.connectControl();
 			await until("machine report", async () => (await user.machines()).some(m => m.commandSandbox));
 			await check("a fresh Claude session shows the machine catalog before turn one, then adopts the live ACP catalog", async () => {
@@ -1511,7 +1514,8 @@ else if (process.argv[2] === "egress") {
 	const server = new Server();
 	try {
 		const { sessionEgress } = await import("./runner-session-egress.js");
-		await sessionEgress(server.storage, ORIGIN, ENDPOINT, env => server.start(env));
+		await sessionEgress(server.storage, ORIGIN, ENDPOINT, env => server.start({ ...env, WLP_REQUIRE_SIGNED_RUNNER: "1",
+			WLP_PLATFORM_KEY: certify(generateKeyPairSync("ed25519").privateKey, 1, Date.now() + 86_400_000) }));
 	} finally { await server.stop(); rmSync(server.storage, { recursive: true, force: true }); }
 	process.exit(0);
 } else {

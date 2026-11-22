@@ -3,6 +3,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
 import { validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { pairingTrust } from "./state.js";
 import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
 import { audit, showLog } from "./audit.js";
@@ -15,7 +16,8 @@ import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
 import { removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
-import { harnessImage, shotsImage, type MachineHarness } from "./policy.js";
+import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
+import { localSizing } from "./sizing.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
 import { egressFlags } from "./egress-policy.js";
@@ -39,13 +41,18 @@ async function main() {
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
 		provider: { type: "string" }, egress: { type: "string" }, "egress-allow": { type: "string" },
-		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
+		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false },
+		slots: { type: "string" }, "slot-cpus": { type: "string" }, "slot-memory": { type: "string" }, "sandbox-memory": { type: "string" }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
 	const command = positionals[0] ?? "run";
 	// A release can publish this report without mounting runner state or a Docker socket.
 	if (command === "capabilities" && positionals.length === 1) {
 		const harnesses = (["claude", "opencode"] as const).filter(id => harnessImage(id));
 		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses }));
+		return;
+	}
+	if (command === "image-pins" && positionals.length === 1) {
+		console.log(JSON.stringify(imagePins()));
 		return;
 	}
 	const auth = command === "login" || command === "logout";
@@ -59,7 +66,7 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode"].includes(agent)
 		: positionals.length <= 1 && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--max-turns N] [--screenshots] [--harness claude] [--harness opencode] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
+		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--screenshots] [--harness claude] [--harness opencode] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
 	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
@@ -73,7 +80,12 @@ async function main() {
 	if (claude && !harnessImage("claude"))
 		throw new RunnerError("Use --harness claude with a runner built with the pinned Claude Code image.");
 	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
-	const limits = { maxTurns: limit("max-turns", values["max-turns"]) ?? 2, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
+	// Owner commands such as status and prune do not need a viable session budget.
+	const sizingCommand = command === "run" || command === "setup";
+	if (!sizingCommand && [values.slots, values["slot-cpus"], values["slot-memory"], values["sandbox-memory"]].some(v => v !== undefined))
+		throw new RunnerError("Use --slots, --slot-cpus, --slot-memory and --sandbox-memory with run or setup.");
+	const slots = sizingCommand ? localSizing(values) : null;
+	const limits = { slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]) };
 	if (command === "log") return showLog();
 	const abort = new AbortController();
 	const stop = () => abort.abort();
@@ -121,7 +133,7 @@ async function main() {
 			console.log(`Runner ${VERSION}, protocol ${PROTOCOL_VERSION}. ${paired && !serviceRunning() ? "Stopped" : status?.connection ?? (paired ? "Paired" : "Unpaired")}`);
 			if (paired) console.log(egressNote(paired.current.machineId));
 			const caps = status ?? limits;
-			console.log(`Running turn limit: ${caps.maxTurns ?? "no limit"}`);
+			console.log(`Turn capacity: ${caps.maxTurns === undefined ? "not reported yet" : `${caps.maxTurns} slots`}`);
 			console.log(`Running sandbox limit: ${caps.maxRunning ?? "no limit"}`);
 			console.log(`Kept sandbox limit: ${caps.maxSandboxes ?? "no limit"}`);
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {
@@ -156,12 +168,13 @@ async function main() {
 		let platform = origin(values.platform ?? paired?.platform ?? "");
 		let name = await resolveMachineName(values.name);
 		const launch = command === "setup" ? await setupImageAndMounts() : undefined;
-		let needsPair = command === "setup" || command === "pair" || !paired?.key;
+		if (command === "run" || command === "setup") await prepareImages(agents, values.screenshots, command);
+		let needsPair = command === "setup" || command === "pair" || !paired?.key || !paired?.pin;
 		let client: Socket | undefined;
 		let resumePlatform: string | undefined;
 		function saveStatus(connection: string, idleSuspendMs?: number) {
 			save("status.json", { machineId: paired?.current.machineId ?? null, connection, idleSuspendMs: idleSuspendMs ?? null,
-				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, ...limits });
+				runnerVersion: VERSION, protocol: PROTOCOL_VERSION, maxTurns: limits.maxTurns, maxRunning: limits.maxRunning, maxSandboxes: limits.maxSandboxes });
 		}
 		if (command === "run") {
 			if (paired && (harness === undefined || status?.claude)) {
@@ -197,6 +210,7 @@ async function main() {
 								await login();
 							});
 						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
+						if (values["slot-cpus"] === undefined && process.env.WLP_RUNNER_CPUS !== undefined) flags.push("--slot-cpus", String(slots!.unit.cpus));
 						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));
 						return;
 					}
@@ -236,7 +250,7 @@ async function main() {
 				let removed: string | undefined;
 				try {
 					removed = await control(owner, paired.key, platform, active, saveStatus,
-						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined, name);
+						status?.machineId === paired.current.machineId ? status.idleSuspendMs ?? undefined : undefined, name, pairingTrust(paired));
 				} finally { connection.abort(); }
 				const request = await local;
 				if (request && !abort.signal.aborted) {
@@ -265,6 +279,6 @@ async function main() {
 }
 void main().catch(error => {
 	console.error(error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
-		? "Give --egress a mode, --egress-allow a hostname list, --allow-profile a profile ID, each sandbox limit a positive whole number and --platform a URL." : category(error));
+		? "Give --slots or --max-turns a count, --slot-cpus a CPU count, --slot-memory or --sandbox-memory a size, --egress a mode, --egress-allow a hostname list, --allow-profile a profile ID, each sandbox count a positive whole number and --platform a URL." : category(error));
 	process.exitCode = 1;
 });

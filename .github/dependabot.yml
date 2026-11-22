@@ -5,6 +5,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # TypeScript 7 (the native compiler) typechecks this repo, but its package
+      # has no stable JavaScript API yet, and scripts/web-stage-check.ts parses
+      # sources with ts.createSourceFile. Move that check to another parser (or
+      # the TypeScript 7 API once it is stable) before taking the major update.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /sandbox/harness/claude
     schedule:

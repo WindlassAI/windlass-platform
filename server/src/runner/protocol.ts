@@ -11,6 +11,8 @@
  * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
+import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
+import { helloFields, welcomeFields } from "./frame-auth.js";
 import type { SandboxProfileId } from "../contract.js";
 import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
@@ -18,7 +20,8 @@ import { type Assert, type Check, type Of, type Same, anything, boolean, count, 
 
 export const positiveLimit = is<number>(v => count(v) && v > 0);
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+export const OLD_RUNNER = "This runner is too old for this platform. Update it with the command on the Machines page.";
 /** Under the 256 KiB RivetKit takes per incoming message (registry.ts); the probe measures the gateway. */
 export const MAX_FRAME_BYTES = 128 * 1024;
 /** The largest message, as JSON: a `run` result holds up to 4 MiB of output (sandboxes.ts, STDOUT_CAP). */
@@ -51,16 +54,21 @@ export const machineProfile = oneOf(...MACHINE_PROFILES);
 export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
 const harness = optional(oneOf("claude", "opencode"));
 const sandbox = { id };
-const startOptions = { cwd: optional(string), env: optional(env), secretEnv: optional(env) };
+const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
 /**
  * The methods of `Sandboxes`, `SandboxHandle`, `TurnSandbox` and `SandboxProcess` that cross to a
  * machine, as [arguments, result]. `id` is a sandbox; `process` is the id of the `start` that made it.
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
+const fingerprint = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
+const snapshotKey = { attempt: is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v)), generation: fingerprint, repo: is<string>(v => typeof v === "string" && /^[1-9]\d{0,19}$/.test(v)), inputs: fingerprint };
+const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v === "string" && /^[a-f0-9]{40}$/.test(v)), created: count });
 const operations = {
-	create: [object({ profile: machineProfile, harness, screenshots: optional(boolean) }), id],
-	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, screenshots: optional(boolean) }))],
+	create: [object({ profile: machineProfile, size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
+	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
+	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],
@@ -107,10 +115,12 @@ const body = either(
 export type Body = Of<typeof body>;
 
 const resume = object({ conversation: id, received: count });
-const hello = object({ kind: oneOf("hello"), protocol: oneOf(PROTOCOL_VERSION), runnerVersion: text(64), machineId: id, ticket: text(1024), signature: text(1024), resume: nullable(resume) });
+const helloBase = { kind: oneOf("hello"), runnerVersion: text(64), machineId: id, ticket: text(1024), signature: text(1024), resume: nullable(resume) };
+const hello = either(object({ ...helloBase, protocol: oneOf(1) }), object({ ...helloBase, protocol: oneOf(PROTOCOL_VERSION), ...helloFields }));
 /** A refusal keeps this shape in every version, so a runner of any version can show it. */
 const refusal = object({ kind: oneOf("welcome"), protocol: integer, refused: text(1000) });
-const welcome = either(object({ kind: oneOf("welcome"), protocol: oneOf(PROTOCOL_VERSION), conversation: id, received: count, resumed: boolean }), refusal);
+const welcomeBase = { kind: oneOf("welcome"), conversation: id, received: count, resumed: boolean };
+const welcome = either(either(object({ ...welcomeBase, protocol: oneOf(1) }), object({ ...welcomeBase, protocol: oneOf(PROTOCOL_VERSION), ...welcomeFields })), refusal);
 const seq = is<number>((v) => count(v) && v !== 0);
 const frame = either(
 	either(hello, welcome),
@@ -123,10 +133,10 @@ export type Foreign = { kind: "foreign"; protocol: number };
 export type Frame = Of<typeof frame> | Foreign;
 
 /** Null for anything that is not a frame of this protocol. Nothing of a refused frame is kept. */
-export function parseFrame(data: unknown): Frame | null {
+export function parseFrame(data: unknown, protocol = PROTOCOL_VERSION): Frame | null {
 	if (typeof data !== "string" || data.length > MAX_FRAME_BYTES || Buffer.byteLength(data) > MAX_FRAME_BYTES) return null;
 	const v = json(data);
-	if (plain(v) && v.kind === "hello" && Number.isSafeInteger(v.protocol) && v.protocol !== PROTOCOL_VERSION) return { kind: "foreign", protocol: v.protocol as number };
+	if (plain(v) && v.kind === "hello" && Number.isSafeInteger(v.protocol) && v.protocol !== protocol) return { kind: "foreign", protocol: v.protocol as number };
 	return frame(v) ? v : null;
 }
 
@@ -136,10 +146,11 @@ export function parseBody(data: string): Body | null {
 	return body(v) ? v : null;
 }
 
-export function protocolRefusal(runnerProtocol: number): string {
-	return runnerProtocol < PROTOCOL_VERSION
-		? `This machine's runner speaks protocol ${runnerProtocol}; the platform needs ${PROTOCOL_VERSION}. Update the runner.`
-		: `This machine's runner speaks protocol ${runnerProtocol}, newer than the platform's ${PROTOCOL_VERSION}. Use the runner release the Machines page names.`;
+export function protocolRefusal(runnerProtocol: number, protocol = PROTOCOL_VERSION): string {
+	if (protocol === 2 && runnerProtocol < protocol) return OLD_RUNNER;
+	return runnerProtocol < protocol
+		? `This machine's runner speaks protocol ${runnerProtocol}; the platform needs ${protocol}. Update the runner.`
+		: `This machine's runner speaks protocol ${runnerProtocol}, newer than the platform's ${protocol}. Use the runner release the Machines page names.`;
 }
 
 // The wire types are the provider's, without what cannot cross a socket (callbacks, an AbortSignal).

@@ -92,7 +92,7 @@ async function realRunner() {
 	const owner = new Executor(id, { maxRunning: 1, maxSandboxes: 1 });
 	// The connection's state in status.json, as runner/src/main.ts keeps it: the check reads "key-in-use" there.
 	const saveStatus = (connection: string, idleSuspendMs?: number) => save("status.json", { machineId: id.machineId, connection, idleSuspendMs: idleSuspendMs ?? null });
-	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined, "Test machine");
+	await control(owner, createPrivateKey({ key, type: "pkcs8", format: "der" }), process.env.WLP_PUBLIC_URL!, new AbortController().signal, saveStatus, undefined, "Test machine", null);
 }
 
 async function check() {
@@ -239,12 +239,14 @@ async function check() {
 		const models = Array.from({ length: 1000 }, (_, i) => ({ id: "provider/model-" + i, name: "Model " + i + "x".repeat(256), efforts: [] }));
 		const options = { models, defaultModel: models[0]!.id, modes: [], checkedAt: 1000 };
 		const catalogDigest = optionsDigest(options);
+		runner.report.slots = { max: 2, unit: { cpus: 1, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } };
 		const host = { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 };
 		loginSocket.send({ kind: "catalog", id: "claude", options });
 		loginSocket.send({ ...runner.report, host, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: options.checkedAt }] });
 		await eventually(() => events.at(-1)?.some(r => r.harnesses?.[0]?.optionsDigest === catalogDigest) === true);
 		assert.equal((await row()).harnesses?.[0]?.options, undefined);
 		assert.deepEqual(await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }), options);
+		assert.deepEqual((await row()).slots, { ...runner.report.slots, busy: 0, queued: 0 });
 		const beforeSample = events.length;
 		// An older runner sends inline options even when only its load changes.
 		loginSocket.send({ ...runner.report, host: { ...host, load1: 2 }, harnesses: [{ ...harness, options }] });

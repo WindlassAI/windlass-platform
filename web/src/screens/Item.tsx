@@ -28,12 +28,15 @@
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
-import { Inline, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
+import { ITEM_MODE_WORDS } from "../lib/feature";
+import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
+import { ItemSpend } from "../components/ItemSpend";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
+import { GithubFeedback } from "../components/GithubFeedback";
 import { reviewShots, SecondReview } from "../components/SecondReview";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -449,7 +452,7 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 /** The open question: its text, its answers, and a note to the agent with any of them. */
 function Question({ view, question, acting, now }: { view: ItemView; question: ItemQuestion; acting: Acting; now: number }) {
 	// No agent is left to read a note once its machine was removed.
-	const noted = question.kind !== "machine_removed";
+	const noted = !["machine_removed", "feedback_feature", "feedback_more"].includes(question.kind);
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
 	const ids = { title: useId(), note: useId() };
@@ -477,7 +480,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 						</div>
 					) : null}
 					<div className="item-choices">
-						{question.choices.map((choice, index) => (
+						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").map((choice, index) => (
 							<button
 								key={choice.id}
 								type="button"
@@ -629,6 +632,8 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 	const earlier = useId();
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const before = view.verdicts.slice(0, -1).reverse();
+	const check = view.verifiedCheck;
+	const checkLabel = check?.conclusion ? { success: "Success", action_required: "Action required", failure: "Failure", cancelled: "Cancelled" }[check.conclusion] : "In progress";
 	return (
 		<section className="usage-section" aria-labelledby="item-verdict">
 			<h2 className="usage-title" id="item-verdict">
@@ -658,6 +663,8 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 					) : null}
 				</>
 			)}
+			{check && <p className="usage-note">{check.state === "not_posted" ? check.said :
+				`On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}</p>}
 			{view.report === null && view.state === "review" ? <p className="usage-note">The agent that made the change filed no report.</p> : null}
 		</section>
 	);
@@ -711,27 +718,7 @@ function Cost({ view }: { view: ItemView }) {
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
-			<dl className="usage-facts item-facts item-cost">
-				{rows.map((field) => {
-					const spent = view.spent[field.key];
-					const budget = view.budget[field.key];
-					const reached = spent >= budget;
-					return (
-						<div key={field.key}>
-							<dt>{field.label}</dt>
-							<dd className="usage-number">
-								{field.spelled(spent)} <span className="tone-faint">of {field.spelled(budget)}</span>
-							</dd>
-							<dd className="item-cost-meter">
-								<span className="usage-meter" aria-hidden="true">
-									<span className={`usage-meter-used${reached ? " item-meter-reached" : ""}`} style={{ width: `${Math.min(100, (spent / budget) * 100)}%` }} />
-								</span>
-								{reached ? <span className="tone-warn">reached</span> : null}
-							</dd>
-						</div>
-					);
-				})}
-			</dl>
+			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} />
 			<p className="usage-note">
 				{hosted
 					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."
@@ -969,7 +956,7 @@ export function Item({ page }: { page: ItemPage }) {
 							</>
 						) : (
 							<>
-								{view.mode === "orchestrate" ? "feature" : "work item"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
+								{view.mode === "orchestrate" ? "Plan first" : view.plan ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
 							</>
 						)}
 					</p>
@@ -998,6 +985,7 @@ export function Item({ page }: { page: ItemPage }) {
 							filed {relativeTime(view.createdAt, now)}
 						</span>
 					</p>
+					{!view.parent && !view.plan ? <p className="field-note">{ITEM_MODE_WORDS[view.mode ?? "single"].description}</p> : null}
 					{view.origin ? <IssueOrigin origin={view.origin} /> : null}
 				</div>
 				<div className="item-actions">
@@ -1006,12 +994,12 @@ export function Item({ page }: { page: ItemPage }) {
 							{acting.busy === "start" ? "Starting…" : "Start"}
 						</button>
 					) : null}
-					{view.state === "failed" && machine !== null ? (
+					{view.state === "failed" && (view.canRetry ?? (!view.parent && view.mode !== "orchestrate")) && machine !== null ? (
 						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "retry" })} disabled={busy}>
 							{acting.busy === "retry" ? "Starting…" : "Retry"}
 						</button>
 					) : null}
-					{view.state === "review" && machine !== null ? (
+					{view.mode !== "orchestrate" && view.state === "review" && machine !== null ? (
 						<button type="button" className="button button-outline" onClick={() => setDialog("send_back")} disabled={busy}>
 							Send back…
 						</button>
@@ -1043,6 +1031,8 @@ export function Item({ page }: { page: ItemPage }) {
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
 				{view.question && planOpen(view) ? (
 					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
+				) : view.question?.kind === "placement_refused" && view.plan ? (
+					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
 				) : (
@@ -1052,7 +1042,7 @@ export function Item({ page }: { page: ItemPage }) {
 			</section>
 
 			{view.plan ? (
-				<PlanSection view={view} review={review} acting={acting} />
+				<div id={`feature-plan-${view.plan.version}`}><PlanSection view={view} review={review} acting={acting} /></div>
 			) : view.children?.length ? (
 				<section className="usage-section" aria-label="Subtasks">
 					<h2 className="usage-title">Subtasks</h2>
@@ -1066,6 +1056,7 @@ export function Item({ page }: { page: ItemPage }) {
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />
+			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
 			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
 			<Cost view={view} />

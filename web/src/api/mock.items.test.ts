@@ -6,6 +6,8 @@ import { MAX_API_TOKENS, type CheckStatus, type ItemSummary, type ReviewBlock, t
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX, type ItemCursor } from "@contract";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage, nextCursor } from "../../../server/src/item-pages";
 import type { GateEvidence } from "../../../server/src/factory/types";
 import { ciSentence as serverCiSentence, verdictOf, verdictWords } from "../../../server/src/factory/verdict";
 import { createMockClient, type MockMachineState } from "./mock";
@@ -55,7 +57,7 @@ describe("the mock's work items", () => {
 		for (const item of list) expect(item.wait !== null).toBe(item.state === "waiting");
 		// A question is always a wait for the person, with the question's text.
 		for (const item of list.filter((one) => one.question)) expect(item.wait).toMatchObject({ reason: item.question?.kind === "budget" ? "budget" : "person", sentence: item.question?.text, retryAt: null });
-		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed"]));
+		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more"]));
 		expect(new Set(list.flatMap((item) => (item.verdict ? [item.verdict.result] : [])))).toEqual(new Set(["pass", "fail", "incomplete", "unverified"]));
 		mock.dispose();
 	});
@@ -84,7 +86,7 @@ describe("the mock's work items", () => {
 		expect(sessions.filter((session) => session.item).length).toBe(items.length);
 		expect(sessions.some((session) => session.id === "harbor-build" && session.item === undefined)).toBe(true);
 		// One filed here is the item's from the start, and is at work once it starts.
-		const filed = await user.createItem({ repository: { id: 7101 }, title: "Log the release's checksum", body: "", start: true });
+		const filed = await user.createItem({ repository: { id: 7101 }, mode: "single", title: "Log the release's checksum", body: "", start: true });
 		await new Promise((resolve) => setTimeout(resolve, 2700));
 		expect((await user.listSessions()).find((session) => session.id === filed.sessionId)).toMatchObject({ item: { id: filed.id }, status: "running" });
 		mock.dispose();
@@ -178,7 +180,7 @@ describe("the mock's work items", () => {
 		const seen: ItemSummary[][] = [];
 		const close = user.watch({ onSessions: () => undefined, onItems: (list) => seen.push(list) });
 		await tick();
-		const input = { repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", acceptance: ["Read once."], start: true, idempotencyKey: "key-1" };
+		const input = { mode: "single" as const, repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", acceptance: ["Read once."], start: true, idempotencyKey: "key-1" };
 		const first = await user.createItem(input);
 		const again = await user.createItem(input);
 		expect(again.id).toBe(first.id);
@@ -257,7 +259,7 @@ describe("the mock's work items", () => {
 	it("files an item on a machine as the server does: on its first available sandbox, and waiting while the machine is away", async () => {
 		const mock = make("none", "full");
 		const user = mock.user(auth);
-		const input = { repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", start: true };
+		const input = { mode: "single" as const, repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", start: true };
 		// The sandbox asked for is not the machine's: its first available one is taken.
 		const made = await user.createItem({ ...input, place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" });
 		expect(made).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, state: "queued" });
@@ -302,7 +304,7 @@ describe("the mock's work items", () => {
 	it("asks the person when an item's machine is removed, and then offers only handing over or giving up", async () => {
 		const mock = make("none", "full");
 		const user = mock.user(auth);
-		const made = await user.createItem({ repository: { id: 7101 }, title: "On build-box", body: "", place: { kind: "machine", machineId: "m_build" }, start: true });
+		const made = await user.createItem({ repository: { id: 7101 }, mode: "single", title: "On build-box", body: "", place: { kind: "machine", machineId: "m_build" }, start: true });
 		await tick();
 		expect((await user.item(made.id)).state).toBe("working");
 		await user.removeMachine({ machineId: "m_build", removeSandboxes: false });
@@ -482,7 +484,7 @@ describe("the screenshots on an item's page", () => {
 it("files an orchestrated feature, edits its budget by version, and lists the children under one feature", async () => {
 	const mock = make(), user = mock.user(auth);
 	try {
-		const made = await user.createItem({ repository: { id: 7101 }, title: "Find documents", body: "Index and search.", mode: "orchestrate", start: true });
+		const made = await user.createItem({ repository: { id: 7101 }, title: "Find documents", body: "Index and search.", start: true });
 		const page = await user.item(made.id);
 		expect(page.mode).toBe("orchestrate");
 		const plan = structuredClone(page.plan!);
@@ -519,4 +521,57 @@ it("lets a designer exercise the single suggestion and re-plan decisions", async
 		expect(revision.question?.kind).toBe("replan_approval");
 		expect(revision.budget).toEqual(view.budget);
 	} finally { mock.dispose(); }
+});
+
+describe("a page of work items", () => {
+	const item = (id: string, createdAt: number, state: ItemSummary["state"] = "done", repository = 7101): ItemSummary => ({ id, createdAt, state, repository: { id: repository }, source: "web" }) as unknown as ItemSummary;
+	const page = (raw: unknown) => cleanItemPage(raw) as CleanPage;
+
+	it("is the whole list without one, and refuses what is not a page, in the server's words", async () => {
+		expect(cleanItemPage(undefined)).toBeNull();
+		expect(cleanItemPage(null)).toBeNull();
+		for (const bad of [7, [], { limit: 0 }, { limit: ITEM_PAGE_MAX + 1 }, { limit: 2.5 }, { before: { createdAt: "1", id: "a" } }, { before: { createdAt: 1, id: "" } }, { ended: "yes" }, { repository: "acme/harbor" }, { source: "email" }]) {
+			expect(() => cleanItemPage(bad), JSON.stringify(bad)).toThrow(ItemPageProblem);
+		}
+		const mock = make();
+		const user = mock.user(auth);
+		await expect(user.listItems({ limit: 0 })).rejects.toMatchObject({ reason: "bad_input" });
+		expect((await user.listItems()).length).toBeGreaterThan(ITEM_PAGE_DEFAULT);
+		mock.dispose();
+	});
+
+	it("goes newest filed first, by id between equals, and a cursor never skips or repeats an item that changed", () => {
+		const list = [item("a", 10), item("c", 30), item("b", 30), item("d", 20, "working"), item("e", 5, "failed", 7102)];
+		const first = itemPage(list, page({ limit: 2 }));
+		expect(first.map((one) => one.id)).toEqual(["c", "b"]);
+		const cursor = nextCursor(first, 2);
+		expect(cursor).toEqual({ createdAt: 30, id: "b" });
+		// "c" ended meanwhile and "d" was reopened: the next page is what is after "b", whatever changed.
+		const second = itemPage(list, page({ limit: 2, before: cursor }));
+		expect(second.map((one) => one.id)).toEqual(["d", "a"]);
+		const third = itemPage(list, page({ limit: 2, before: nextCursor(second, 2) }));
+		expect(third.map((one) => one.id)).toEqual(["e"]);
+		expect(nextCursor(third, 2)).toBeNull();
+		// Ended only, one repository, one way of filing.
+		expect(itemPage(list, page({ ended: true })).map((one) => one.id)).toEqual(["c", "b", "a", "e"]);
+		expect(itemPage(list, page({ ended: true, repository: 7102 })).map((one) => one.id)).toEqual(["e"]);
+		expect(itemPage(list, page({ source: "api" }))).toEqual([]);
+	});
+
+	it("pages the mock's items as the server does", async () => {
+		const mock = make("many");
+		const user = mock.user(auth);
+		const all = await user.listItems();
+		const ended = all.filter((one) => ["done", "failed", "cancelled"].includes(one.state)).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+		const read: string[] = [];
+		let before: ItemCursor | null = null;
+		for (let guard = 0; guard < 20; guard++) {
+			const got = await user.listItems({ ended: true, before, limit: 40 });
+			read.push(...got.map((one) => one.id));
+			before = nextCursor(got, 40);
+			if (before === null) break;
+		}
+		expect(read).toEqual(ended.map((one) => one.id));
+		mock.dispose();
+	});
 });

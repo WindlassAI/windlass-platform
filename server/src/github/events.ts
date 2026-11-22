@@ -1,5 +1,6 @@
+import { VERIFIED_NAME } from "./checks.js";
 import type { GithubId } from "../contract.js";
-import { decimalId, githubId } from "./ids.js";
+import { decimalId, githubId, ownApp } from "./ids.js";
 
 /** The edge keeps just the inputs to a later lookup. GUID and receipt time come from the route. */
 type Sender = { id: GithubId; login: string; association: string };
@@ -10,7 +11,7 @@ type Fields = {
 	pull_request: { pr: number; head: string; merged: boolean };
 	pull_request_review: { pr: number; reviewId: string; state: string; body: string; commitId: string; sender: Sender };
 	pull_request_review_comment: { pr: number; commentId: string; body: string; path: string; line: number | null; commitId: string; sender: Sender };
-	check_run: { head: string };
+	check_run: { head: string; runId?: string };
 	check_suite: { head: string };
 	status: { head: string };
 	installation: InstallationHints;
@@ -41,9 +42,9 @@ export function isAddressed(body: string, slug: string): string | null {
 	return address === "@" + slug.toLowerCase() || address === "/windlass" ? words?.[2] ?? "" : null;
 }
 
-export function edge(event: string, payload: unknown, meta: { slug: string } & Receipt): Delivery | null;
-export function edge(event: string, payload: unknown, meta: { slug: string }): Trimmed | null;
-export function edge(event: string, payload: unknown, meta: { slug: string } & Partial<Receipt>): Trimmed | null {
+export function edge(event: string, payload: unknown, meta: { slug: string; appId?: string } & Receipt): Delivery | null;
+export function edge(event: string, payload: unknown, meta: { slug: string; appId?: string }): Trimmed | null;
+export function edge(event: string, payload: unknown, meta: { slug: string; appId?: string } & Partial<Receipt>): Trimmed | null {
 	const p = obj(payload);
 	const installationId = githubId(obj(p.installation).id);
 	if (!installationId) return null;
@@ -57,7 +58,13 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	}
 	if (!repositoryId) return null;
 	if (event === "check_run" || event === "check_suite") {
-		const head = sha(obj(p[event]).head_sha);
+		const check = obj(p[event]);
+		const head = sha(check.head_sha);
+		if (ownApp(obj(check.app), meta)) {
+			const runId = decimalId(check.id);
+			return event === "check_run" && action === "rerequested" && check.name === VERIFIED_NAME && head && runId && !runId.startsWith("0")
+				? { ...base, event, data: { head, runId } } : null;
+		}
 		return action === "completed" && head ? { ...base, event, data: { head } } : null;
 	}
 	if (event === "status") {
@@ -82,8 +89,11 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	const sender = { id: userId, login, association: sameAuthor ? str(subject.author_association) || "NONE" : "NONE" };
 	const n = id(issue.number);
 	if (event === "issues" && n) {
-		if ((["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate"].includes(str(obj(p.label).name))) || ["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
-			return { ...base, event, data: { issue: n, sender, ...(obj(p.label).name === "windlass:orchestrate" && { label: "windlass:orchestrate" }) } };
+		const label = str(obj(p.label).name);
+		if (["labeled", "unlabeled"].includes(action) && ["windlass", "windlass:orchestrate", "windlass:quick"].includes(label))
+			return { ...base, event, data: { issue: n, sender, ...(label !== "windlass" && { label }) } };
+		if (["closed", "reopened", "edited", "deleted", "transferred"].includes(action))
+			return { ...base, event, data: { issue: n, sender } };
 	}
 	const commentId = decimalId(subject.id);
 	if (!commentId || commentId === "0") return null;
@@ -94,7 +104,7 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	const commitId = sha(subject.commit_id);
 	if (!pr || !commitId) return null;
 	const state = str(subject.state).toLowerCase();
-	if (event === "pull_request_review" && action === "submitted" && (state === "changes_requested" || addressed))
+	if (event === "pull_request_review" && action === "submitted" && (state === "approved" || state === "changes_requested" || addressed))
 		return { ...base, event, data: { pr, reviewId: commentId, state, body: cut(body), commitId, sender } };
 	if (event === "pull_request_review_comment" && action === "created" && addressed && typeof subject.path === "string")
 		return { ...base, event, data: { pr, commentId, body: cut(body), path: subject.path, line: id(subject.line), commitId, sender } };

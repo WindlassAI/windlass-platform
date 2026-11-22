@@ -28,6 +28,7 @@ import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
+import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -163,6 +164,7 @@ export function MachineState({ machine, now }: { machine: MachineSummary; now: n
 
 /** What the runner reported that needs the user, each only while it holds. */
 function Warning({ warning, machine, info, now }: { warning: MachineWarning; machine: MachineSummary; info: MachinesInfo; now: number }) {
+	if (warning.kind === "signing-disabled") return <p className="callout callout-warn" role="status"><WarnIcon />This runner requires signed connections. Ask the platform operator to enable them.</p>;
 	if (warning.kind === "outdated") {
 		const install = installCommand(info);
 		return (
@@ -171,7 +173,7 @@ function Warning({ warning, machine, info, now }: { warning: MachineWarning; mac
 				<div>
 					<p className="callout-text">
 						This machine's runner is {machine.runnerVersion}; the platform needs {info.minRunnerVersion} or later, so it cannot connect.{" "}
-						{install ? "Update it on the machine: its volume keeps the key, so it stays paired." : "No newer runner is published yet."}
+						{install ? info.platformFingerprint ? "Update it on the machine and pair again to pin the platform key." : "Update it on the machine: its volume keeps the key, so it stays paired." : "No newer runner is published yet."}
 					</p>
 					{install ? <Command text={`docker rm -f windlass-runner\n${install}`} label="The update command" /> : null}
 				</div>
@@ -257,11 +259,77 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 	);
 }
 
+/**
+ * Whether features may place subtasks on the machine (`MachineSummary.orchestrator`): a segmented
+ * choice of three, saved as soon as it is chosen with `setMachineDetails`, which keeps the note and tags.
+ */
+function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState<Orchestrator | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const ids = { label: useId(), means: useId() };
+	const saved = orchestratorOf(machine);
+	const shown = busy ?? saved;
+	const set = (orchestrator: Orchestrator) => {
+		if (orchestrator === saved || busy) return;
+		setBusy(orchestrator);
+		setError(null);
+		client
+			.user(auth)
+			.setMachineDetails({ machineId: machine.machineId, whenToUse: machine.whenToUse ?? "", tags: machine.tags ?? [], orchestrator })
+			.then(
+				(list) => {
+					onChanged(list);
+					setBusy(null);
+				},
+				(failure: unknown) => {
+					setError(explain(failure));
+					setBusy(null);
+				},
+			);
+	};
+	return (
+		<div className="machine-policy">
+			<p className="machine-policy-label" id={ids.label}>
+				Subtasks of features
+			</p>
+			<div className="segmented machine-policy-choice" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.means}>
+				{ORCHESTRATOR_CHOICES.map((choice) => (
+					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} title={choice.means}>
+						<input className="segment-radio" type="radio" name={ids.label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+						{choice.label}
+					</label>
+				))}
+			</div>
+			<p className={`field-note${error ? " tone-bad" : ""}`} id={ids.means} role={error ? "alert" : undefined}>
+				{error ?? ORCHESTRATOR_CHOICES.find((choice) => choice.id === shown)!.means}
+			</p>
+		</div>
+	);
+}
+
 /** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
 /** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
 function sandboxLimit(machine: MachineSummary): string {
 	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
 	return caps.length === 0 ? "no limit" : caps.join(", ");
+}
+
+function machineCapacity({ slots, turns, host }: MachineSummary) {
+	const parts: string[] = [];
+	if (slots) {
+		const memory = Number((slots.unit.memoryBytes / 2 ** 30).toFixed(2));
+		parts.push(`${slots.max} slot${slots.max === 1 ? "" : "s"} × ${slots.unit.cpus} CPU · ${memory} GB`);
+		parts.push(`${slots.busy} busy${slots.queued ? `, ${slots.queued} queued` : ""}`);
+	} else if (turns) {
+		parts.push(`${turns.running} of ${turns.max ?? "any number of"} turns running${turns.queued ? `, ${turns.queued} queued` : ""}`);
+	}
+	if (host) {
+		const cpus = slots ? `${host.cpus} CPUs` : `${host.sandboxCpus} of ${host.cpus} CPUs for sandboxes`;
+		parts.push(`${cpus}, ${diskSize(host.memoryFreeBytes)} of ${diskSize(host.memoryBytes)} memory free`);
+	}
+	return parts.join(" · ");
 }
 
 export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: number }) {
@@ -275,6 +343,7 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 				</a>
 			)}
 			<SandboxState state={sandbox.state} />
+			{sandbox.resizePending && <span>resized at next restart</span>}
 			<span className="machine-used" title={absoluteTime(sandbox.usedAt)}>
 				used {relativeTime(sandbox.usedAt, now)}
 			</span>
@@ -441,6 +510,11 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</div>
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
+					{orchestratorNote(machine) ? (
+						<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
+							{orchestratorNote(machine)}
+						</span>
+					) : null}
 					<span className="machine-sandbox-count">
 						{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}
 						{machine.maxSandboxes ? (
@@ -458,6 +532,8 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</p>
 				<MachineUse machine={machine} onChanged={onChanged} />
 				<MachineAgents harnesses={machine.harnesses ?? []} />
+				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
+					<p className="field-note" key={a.key}>{HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 			</div>
 			<MachineState machine={machine} now={now} />
 			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
@@ -498,14 +574,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dt>Commands sandboxed by Windlass</dt>
 						<dd>{machine.commandSandbox === null ? <span className="tone-faint">not reported yet</span> : machine.commandSandbox.ok ? "yes" : <>no: {machine.commandSandbox.reason}</>}</dd>
 					</div>
-					{machine.turns || machine.host ? (
+					{machine.slots || machine.turns || machine.host ? (
 						<div>
 							<dt>Capacity</dt>
-							<dd>
-								{machine.turns ? `${machine.turns.running} of ${machine.turns.max ?? "any number of"} turns running${machine.turns.queued ? `, ${machine.turns.queued} queued` : ""}` : null}
-								{machine.turns && machine.host ? " · " : null}
-								{machine.host ? `${machine.host.sandboxCpus} of ${machine.host.cpus} CPUs for sandboxes, ${diskSize(machine.host.memoryFreeBytes)} of ${diskSize(machine.host.memoryBytes)} memory free` : null}
-							</dd>
+							<dd>{machineCapacity(machine)}</dd>
 						</div>
 					) : null}
 					<div>
@@ -522,6 +594,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						</dd>
 					</div>
 				</dl>
+				<PlacementPolicy machine={machine} onChanged={onChanged} />
 				<SecretsSwitch machine={machine} onChanged={onChanged} />
 			</div>
 		</li>

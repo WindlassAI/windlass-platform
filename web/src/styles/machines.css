@@ -536,3 +536,59 @@
 		grid-template-columns: minmax(0, 1fr);
 	}
 }
+
+/*
+ * Whether features may place subtasks on the machine: a segmented choice in its details, what the
+ * chosen one means under it. The card names the policy in its meta line only when it is not the
+ * default, with a small dot: the accent for "when named", the faint ink for "never".
+ */
+.machine-policy {
+	display: grid;
+	justify-items: start;
+	gap: 6px;
+	padding-bottom: 14px;
+	border-bottom: 1px solid var(--line);
+}
+.machine-policy-label {
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.machine-policy-choice .segment {
+	padding: 4px 12px;
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+}
+.machine-policy .field-note {
+	margin: 0;
+}
+.machine-policy-note {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink-dim);
+}
+.machine-policy-note::before {
+	content: "";
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--ink-faint);
+}
+.machine-policy-note-named::before {
+	background: var(--accent);
+}
+@media (max-width: 760px) {
+	.machine-row .agent-meta > .machine-policy-note {
+		display: flex;
+	}
+	.machine-policy-choice {
+		display: flex;
+		width: 100%;
+	}
+	.machine-policy-choice .segment {
+		flex: 1;
+		text-align: center;
+		padding: 6px 8px;
+	}
+}

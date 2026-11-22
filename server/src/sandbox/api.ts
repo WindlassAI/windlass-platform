@@ -30,6 +30,8 @@
  * are three durations that belong together: handoff.ts has them and says why.
  */
 
+import type { SnapshotSelection, SnapshotSource } from "./snapshot-key.js";
+
 import type { AcpContext, AcpUpdate, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
@@ -40,6 +42,8 @@ import type { ProjectChecks } from "../windlass-config.js";
 // ---------------------------------------------------------------------------------------------
 
 export interface ExecOptions {
+	/** Run as the unprivileged transport user, outside the workspace. */
+	gitUser?: true;
 	/** Defaults to the sandbox's workspace. */
 	cwd?: string;
 	env?: Record<string, string>;
@@ -86,6 +90,7 @@ export interface SandboxHandle {
 	readonly cwd: string;
 	/** On a personal machine, the connected runner's permission to use its browser. */
 	readonly runnerScreenshots?: boolean;
+	readonly snapshot?: SnapshotSource;
 	readonly profile: SandboxProfileId;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
@@ -93,6 +98,9 @@ export interface SandboxHandle {
 }
 
 export interface CreateSandboxInput {
+	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
+	size?: number;
+	fromSnapshot?: SnapshotSelection;
 	/** Machine-only. The default harness uses the ordinary Windlass image. */
 	harness?: Exclude<HarnessId, "windlass">;
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */
@@ -151,12 +159,16 @@ export interface Sandboxes {
 	profiles(): SandboxProfile[];
 	profile(id: SandboxProfileId): SandboxProfile;
 	/**
-	 * Creates and starts a sandbox with an empty git repository in its workspace. Returns its id.
+	 * Creates and starts a sandbox with an empty git repository or a matching post-setup snapshot in its workspace. Returns its id.
 	 * Throws SandboxUserError, with a sentence fit to show, when the profile is not available here, and on
 	 * E2B when the deployment already runs as many sandboxes at once as it may (WLP_E2B_MAX_RUNNING):
 	 * trying again later may work.
 	 */
 	create(input: CreateSandboxInput): Promise<string>;
+	hasSnapshot?(uid: string, repo: string): Promise<boolean>;
+	saveSnapshot?(id: string, source: SnapshotSource): Promise<boolean>;
+	dropSnapshots?(uid: string, repo?: string): Promise<void>;
+	sweepSnapshots?(retained: (uid: string) => Promise<ReadonlySet<string> | null>): Promise<void>;
 	/**
 	 * Starts the sandbox if it is paused. Undefined when it no longer exists. On E2B, starting a paused
 	 * sandbox counts against the same limit as `create`, and throws the same SandboxUserError when the
@@ -523,7 +535,7 @@ export interface RunTurnResult {
 	 *
 	 * Null otherwise, and null when `aborted` is true.
 	 */
-	failure: { reason: string; message: string } | null;
+	failure: { reason: string; message: string; resetsAt?: number; window?: import("../contract.js").UsageWindow } | null;
 	/** What Windlass had for checks in this turn. Absent when the turn ended before its configuration was dealt with. */
 	checks?: TurnChecks;
 }

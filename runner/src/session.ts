@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { RunnerChannel, type ChannelSocket } from "../../server/src/runner/channel.js";
+import { RunnerChannel, type ChannelSocket, type SessionTrust } from "../../server/src/runner/channel.js";
 import type { Hello, Operation, Value } from "../../server/src/runner/protocol.js";
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../../server/src/sandbox/sandboxes.js";
@@ -65,7 +65,8 @@ class Conversation {
 		const o = this.owner;
 		switch (op.name) {
 			case "create": {
-				const { harness, profile } = op.args;
+				const { harness, profile, prepared } = op.args;
+				if (prepared && harness) throw new Refusal("This harness cannot use snapshots.");
 				if (harness) o.requireHarness(profile, harness);
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;
@@ -73,7 +74,12 @@ class Conversation {
 				await o.ensureImage(); // The disk-space helper always uses the base pin.
 				if (harness) await o.prepareHarness(profile, harness);
 				if (screenshots) await o.ensureImage(shotsImage);
-				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness); });
+				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, op.args.size, prepared); });
+			}
+			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
+			case "saveSnapshot": {
+				const { id, source } = op.args;
+				return o.serial(() => { this.requireActive(); return o.saveSnapshot(this.session, id, source); });
 			}
 			case "connect": case "suspend": case "destroy": case "state":
 				return o.serial(async () => {
@@ -90,6 +96,9 @@ class Conversation {
 		}
 		const id = op.args.id;
 		const box = o.running(id, this.session);
+		if (op.name === "start" || op.name === "writeSecretFile" ||
+			(op.name === "run" && Object.keys(op.args.options?.secretEnv ?? {}).length)) box.snapshotCandidate = false;
+		if (box.savingSnapshot) throw new Refusal("The sandbox is saving its prepared image.");
 		const h = new Handle(box, o.identity.uid, p => {
 			this.pipes.add(p);
 			if (this.paused) p.pauseOutput(true);
@@ -181,11 +190,11 @@ export class Session {
 		});
 		this.conversation = new Conversation(owner, id, this.channel);
 	}
-	attach(ws: WebSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">) {
+	attach(ws: WebSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">, secure?: SessionTrust) {
 		this.socket = ws;
 		ws.addEventListener("close", () => { if (this.socket === ws) this.socket = undefined; });
 		const socket: ChannelSocket = { send: text => ws.send(text), close: () => ws.close(),
 			onMessage: fn => ws.addEventListener("message", e => fn(e.data)), onClose: fn => ws.addEventListener("close", fn) };
-		this.channel.attach(socket, identity);
+		this.channel.attach(socket, identity, secure);
 	}
 }

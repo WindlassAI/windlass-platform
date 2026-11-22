@@ -413,11 +413,18 @@
 	flex: none;
 	margin-right: 4px;
 }
-.start-kind .segment {
+.start .segment {
 	padding: 1px 10px;
 }
 .start-kinds {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
 	margin-bottom: 8px;
+}
+/* On a phone the cost of the chosen mode sits between the picker and the box: a quiet line, spaced from both. */
+.start-kinds + .item-mode-cost {
+	margin: -2px 0 10px;
 }
 
 /* The line under the box: what the sandbox lets its commands do, and where it runs. */

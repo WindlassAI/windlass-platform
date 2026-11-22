@@ -1496,6 +1496,266 @@ a.plan-task-title:hover {
 	color: var(--needs);
 }
 
+/*
+ * Placement. The feature's line under the card's head: where a subtask with no place runs, overflow,
+ * and the places that get no secrets. Each subtask's place among its facts: the place in the mono
+ * face, why in the dim ink; while the plan is open, two pills that open menus. A wait carries a small
+ * warm dot; a place the server refuses says why in the bad ink. No fills: the card stays neutral.
+ */
+.plan-placement {
+	display: grid;
+	gap: 6px;
+	margin: 10px 18px 0;
+	padding: 0 0 12px;
+	border-bottom: 1px solid var(--line);
+	font-size: var(--text-13);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.plan-placement-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 10px;
+	min-height: 24px;
+}
+.plan-placement-term {
+	width: 76px;
+	flex: none;
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.plan-overflow .segment {
+	padding: 2px 10px;
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+}
+.plan-overflow-word {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-place-name {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-place > dd,
+.plan-place-wait > dd,
+.plan-place-problem > dd {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 0;
+	font-size: var(--text-13);
+	line-height: 1.5;
+}
+.plan-place-alt {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--ink-dim);
+	white-space: pre;
+}
+.plan-place-why {
+	flex-basis: 100%;
+	color: var(--ink-dim);
+}
+.plan-place-picks {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: -3px 0 3px;
+}
+.plan-place-pick {
+	height: 26px;
+	font-size: 12.5px;
+}
+.plan-place-pick .ui-pill-value {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--ink);
+}
+.plan-place-allow .ui-pill-value {
+	color: var(--ink-dim);
+}
+.plan-need {
+	color: var(--ink);
+}
+.plan-place-wait > dd {
+	align-items: center;
+	gap: 8px;
+	color: var(--ink);
+}
+.plan-place-dot {
+	width: 6px;
+	height: 6px;
+	flex: none;
+	border-radius: 50%;
+	background: var(--warn);
+	animation: plan-wait-pulse 1.8s var(--ease) infinite;
+}
+@keyframes plan-wait-pulse {
+	50% {
+		opacity: 0.35;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.plan-place-dot {
+		animation: none;
+	}
+}
+.plan-place-problem > dt {
+	color: var(--bad);
+}
+.plan-place-problem > dd {
+	color: var(--bad);
+}
+@media (max-width: 760px) {
+	.plan-placement {
+		margin: 10px 14px 0;
+	}
+	.plan-placement-term {
+		width: 100%;
+	}
+}
+
+/* Whether a place gets the repository's secrets: two words after the place, the dot warm when they go. */
+.plan-secrets {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	margin-left: 10px;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.plan-secrets::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--warn);
+}
+.plan-secrets-none {
+	color: var(--ink-faint);
+}
+.plan-secrets-none::before {
+	background: none;
+	box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+.plan-secrets-unknown::before {
+	background: var(--ink-faint);
+}
+.plan-place-picks .plan-secrets {
+	align-self: center;
+	margin-left: 4px;
+}
+
+/*
+ * On the approval card: each subtask's places in one compact list between hairlines, the place and
+ * its secrets on the right. The card stays neutral; only the secrets dot carries colour.
+ */
+.plan-routes {
+	margin-top: 14px;
+	border-top: 1px solid var(--line);
+}
+.plan-routes-head {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 0 4px;
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-routes-overflow {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.plan-routes-overflow strong {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-routes-list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+.plan-route {
+	display: grid;
+	grid-template-columns: 18px minmax(0, 1fr) minmax(0, auto);
+	column-gap: 12px;
+	padding: 9px 0;
+	border-bottom: 1px solid var(--line);
+}
+.plan-route-n {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--ink-faint);
+}
+.plan-route-title {
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	line-height: 1.5;
+	color: var(--ink);
+}
+.plan-route-why {
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--ink-dim);
+}
+.plan-route-problem {
+	margin-top: 2px;
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--bad);
+}
+.plan-route-places {
+	display: grid;
+	align-content: start;
+	justify-items: end;
+	gap: 3px;
+	list-style: none;
+	padding: 0;
+	margin: 0;
+	font-size: 12px;
+	line-height: 1.5;
+	text-align: right;
+}
+.plan-route-places .plan-place-name {
+	font-size: 12px;
+}
+.plan-route-unused .plan-place-name {
+	color: var(--ink-faint);
+}
+.plan-routes-note {
+	padding-top: 8px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--ink-faint);
+}
+.plan-routes-note strong {
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+@media (max-width: 760px) {
+	.plan-route {
+		grid-template-columns: 18px minmax(0, 1fr);
+		row-gap: 4px;
+	}
+	.plan-route-places {
+		grid-column: 2;
+		justify-items: start;
+		text-align: left;
+	}
+}
+
 /* What they spend together, against what the feature may spend; the hatch is what is kept back. */
 .plan-total {
 	padding: 14px 18px 16px;
@@ -1733,4 +1993,268 @@ a.plan-task-title:hover {
 	height: 1.5px;
 	border-radius: 1px;
 	background: var(--ink-faint);
+}
+
+/* Approval held back by a place no machine can ever take: the reason beside the button, its signal a small dot. */
+.plan-blocked-place {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	max-width: 74ch;
+	line-height: 1.5;
+}
+.plan-blocked-place strong {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-blocked-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--bad);
+	transform: translateY(-1px);
+}
+/* What a subtask would wait for if approved now: a fact, not an alarm. */
+.plan-place-ahead > dt {
+	color: var(--ink-faint);
+}
+.plan-place-ahead > dd {
+	color: var(--ink-dim);
+}
+.plan-route-wait {
+	margin-top: 2px;
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--ink-dim);
+}
+
+/* A subtask the feature could not place: what refused it, where it was approved to run, and the answers. */
+.placement-question-facts {
+	display: grid;
+	gap: 6px;
+	margin: 0;
+}
+.placement-question-facts > div {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+}
+.placement-question-facts dt {
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.placement-question-facts dd {
+	margin: 0;
+}
+.placement-revise {
+	display: grid;
+	gap: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+@media (max-width: 760px) {
+	.placement-question-facts > div {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 2px;
+	}
+}
+
+/* Under the ended rows: the next page, set as the fold above them is. */
+.factory-more {
+	padding-top: 10px;
+}
+.factory-more .machine-chevron {
+	transform: rotate(90deg);
+}
+
+/* ---- From GitHub (G4) -------------------------------------------------------------------------- */
+
+/*
+ * Feedback from the pull request, batch by batch. No cards: a batch is its state line over its
+ * entries, with hairlines between batches. The state's dot is the only colour: lime once taken, the
+ * Needs-you hue when it asks, info blue while it waits, a hollow ring when it was not taken. The quoted
+ * words sit behind a plain rule, as quoted text does.
+ */
+.gh-batches {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	margin-top: 14px;
+}
+.gh-batches[hidden] {
+	display: none;
+}
+.gh-batch {
+	padding: 12px 0 14px;
+	border-top: 1px solid var(--line);
+}
+.gh-batch:last-child {
+	padding-bottom: 4px;
+}
+/* The state, then its reason in a column of its own, so a wrapped reason keeps its edge. */
+.gh-batch-head {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr) auto;
+	align-items: baseline;
+	gap: 2px 10px;
+	padding: 0 8px 0 12px;
+	font-size: var(--size-small);
+	line-height: 1.45;
+}
+.gh-state {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+	white-space: nowrap;
+}
+.gh-state::before {
+	content: "";
+	width: 7px;
+	height: 7px;
+	flex: none;
+	border-radius: var(--radius-pill);
+	background: var(--info);
+	translate: 0 -0.5px;
+}
+[data-state="taken"] > .gh-batch-head .gh-state::before {
+	background: var(--accent);
+}
+[data-state="question"] > .gh-batch-head .gh-state::before {
+	background: var(--needs);
+}
+[data-state="declined"] > .gh-batch-head .gh-state::before,
+.gh-counted .gh-state::before {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--ink-faint);
+}
+.gh-reason {
+	min-width: 0;
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+.gh-plan-link {
+	font-size: var(--size-small);
+}
+.gh-plan {
+	margin: 8px 8px 0 26px;
+	color: var(--ink-dim);
+	font-size: var(--size-small);
+}
+.gh-entries {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 12px;
+	margin: 10px 0 0;
+	padding: 0 8px 0 26px;
+}
+.gh-entry {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 4px;
+	min-width: 0;
+}
+.gh-entry-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 10px;
+	min-width: 0;
+}
+.gh-who {
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.gh-meta {
+	margin-top: 0;
+	color: var(--ink-faint);
+}
+.gh-meta > span {
+	white-space: nowrap;
+}
+.gh-open {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+	text-decoration: none;
+	white-space: nowrap;
+	transition: color var(--dur-hover) var(--ease);
+}
+.gh-open:hover {
+	color: var(--ink);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.gh-where {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 10px;
+	min-width: 0;
+	font-size: var(--size-small);
+	color: var(--ink-faint);
+}
+.gh-path {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.gh-line {
+	color: var(--ink-dim);
+}
+.gh-commit {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.gh-quote {
+	min-width: 0;
+	margin-top: 2px;
+	padding: 1px 0 1px 12px;
+	border-left: 2px solid var(--line-strong);
+	font-size: var(--text-14);
+	line-height: 1.5;
+	color: var(--ink);
+}
+.gh-empty {
+	color: var(--ink-faint);
+	font-size: var(--size-small);
+}
+.gh-more {
+	margin-top: 4px;
+	font-size: var(--size-small);
+}
+.gh-counted {
+	margin-top: 4px;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+
+@media (max-width: 760px) {
+	.gh-batch-head {
+		padding: 0 2px 0 4px;
+	}
+	.gh-entries {
+		padding: 0 2px 0 18px;
+	}
+	.gh-plan {
+		margin-left: 18px;
+	}
+	/* The name and its link share the first line; the facts take the next, whole. */
+	.gh-open {
+		order: 1;
+		min-height: 32px;
+		margin: -8px 0 -6px auto;
+	}
+	.gh-meta {
+		order: 2;
+		flex-basis: 100%;
+	}
 }

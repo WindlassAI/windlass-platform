@@ -416,6 +416,13 @@ async function main(): Promise<void> {
 	});
 
 	await section("startup", async () => {
+		const { readPlatformKey } = await import("../server/src/runner/frame-auth.js");
+		for (const raw of [undefined, "malformed-key-sentinel"]) {
+			let problem = "";
+			try { readPlatformKey(raw); } catch (error) { problem = (error as Error).message; }
+			expect("platform identity configuration errors name the variable and redact its value",
+				problem.includes("WLP_PLATFORM_KEY") && !problem.includes("malformed-key-sentinel"));
+		}
 		reset();
 		const engineConfig = { remote: true, endpoint: "http://internal.example", namespace: "default", pool: "default" };
 		const browsers = (endpoint: string | null, withTokens: boolean) => ({ endpoint, tokens: withTokens, tokenTtlMs: HOUR });

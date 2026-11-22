@@ -28,6 +28,17 @@ either way, since `WLP_FACTORY_RUNNING_TURNS` is also the ceiling on a person's 
 with its steps while the switch is off, and turning it off and on again loses nothing. While it is off,
 nobody can file, read or act on an item.
 
+## The list, and its pages
+
+The `user` actor keeps every item's summary and sends the whole list to `listItems` without arguments
+and on the live feed (`UserEvents.items`) after any change. `listItems` also takes a page
+(`ItemListPage`, `server/src/item-pages.ts`): at most `limit` items (25 by default, 100 at most), newest
+filed first, after a cursor that is the last item of the page before (its `createdAt` and id, which never
+change, so no item is skipped or repeated when states change), kept to ended items, one repository or
+one way of filing where it says so. A page shorter than its limit is the last. The Factory page reads its
+ended items this way, a page at a time. The live feed still carries every item: a user with thousands
+would need the feed to carry only open items and the newest ended ones, with counts beside them.
+
 ## Where an item runs
 
 An item runs on a hosted sandbox by default. With `WLP_MACHINES=1`, it can run on a machine paired
@@ -124,13 +135,16 @@ cd server && npx tsx ../scripts/factory-e2e.ts                          # items 
 
 ## Feature orchestration
 
-Select **Orchestrate** when filing a feature, send `"mode": "orchestrate"` to `POST /api/items`, or use the
-GitHub command `@windlass orchestrate` or the `windlass:orchestrate` label. Single is the default.
-An issue with the `bug` label runs as a single item and the issue reply explains the override.
+**Plan first** is the default when orchestration is enabled. The web form, API filings without a mode,
+and ordinary GitHub issue filings start with a plan for owner approval. Select **Quick** or send
+`"mode": "single"` for one implementer. On GitHub, use the `windlass:quick` label or start the
+command with `quick`. An issue labelled `bug` always runs Quick.
 
 The planner reads the repository and proposes two to six subtasks with owned paths, dependencies,
 acceptance checks and individual caps. The feature starts with three times the single-item allowance
-in each dimension. Planning and children must leave four turns for the summary, review and a retry of each.
+in each dimension. Before each planner turn, the factory checks a cumulative planning allowance of
+25% of one Quick item. Switching to one implementer keeps the planning spend on the ledger and
+adds one Quick allowance for implementation, within the feature cap. Planning and children must leave four turns for the summary, review and a retry of each.
 One sixth of the single-item tokens, active seconds and hosted seconds is also reserved, rounded up.
 At the default limits that is 1M tokens, 40 active minutes and 20 hosted minutes. A feature budget
 raise specifies new limits and can add at most one single-item allowance in each dimension per raise. Each subtask needs two turns for implementation and verification, and at least 10% of the single-item
@@ -153,9 +167,10 @@ approval. Cancel on the parent stops its children and keeps their branches. The 
 whole-feature review go on the one feature PR. The owner merges it.
 
 The user action `setMachineDetails` accepts `machineId`, `whenToUse` and `tags`. The planner sees
-this inventory and the available machine capacity. All v1 children use the feature's selected place.
-Update the server before runners so it can read the optional host report. Older runners can keep serving
-work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
+this inventory and the available machine capacity. A subtask needs a feasible, allowed placement at approval.
+Runners that report per-slot capacity support multi-slot subtasks. At dispatch, a busy or offline destination can wait.
+A removed or disallowed destination asks the owner to revise the placement, retry allowed places or give up the subtask.
+Update the server before runners so it accepts the optional slot fields in the hello and inventory report. Older runners can keep serving single-slot work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
 
 ## The second review
 
@@ -207,6 +222,9 @@ curl https://<name>.onrivet.dev/api/items/<id> -H "Authorization: Bearer $API_TO
 for a repository of the user's connection, `branch` beside it names the base (the default branch when left
 out), and `start: true` starts the item at once; without it the item is a draft until it is started. It
 answers 201 with the item's summary. `GET /api/items/<id>` answers 200 with the item's page (`ItemView`).
+Clients that previously omitted `mode` to launch one implementer must now send `"mode": "single"`.
+Omitting `mode` selects Plan first and waits for owner approval when orchestration is enabled.
+With `WLP_FACTORY_ORCHESTRATE=0`, omission selects Quick.
 The `Idempotency-Key` header is the creation's key, by the rules of [A message sent twice](architecture.md#a-message-sent-twice): the same key
 with the same body answers with the item the first attempt made, and with another body it is refused (409,
 `idempotency_key_reused`). Invalid or out-of-scope tokens receive 401, `invalid_token`, within the applicable rate limits.

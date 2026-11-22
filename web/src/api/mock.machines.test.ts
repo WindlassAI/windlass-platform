@@ -477,7 +477,9 @@ describe("the start composer's agent picker", () => {
 	it("says Claude Code's mode and its Claude login in the sandbox's facts, and Windlass's as before", async () => {
 		await open();
 		expect(sandboxLine()).toContain("runs what the sandbox contains, refuses the rest");
-		expect(sandboxLine()).toContain("commands cannot read the session's access token");
+		expect(sandboxLine()).toContain("token hidden from commands");
+		expect(sandboxLine()).toContain("The agent's commands cannot read the session's access token.");
+		expect(sandboxLine()).toContain("Approved local MCP servers can read each token.");
 		place("m_nas");
 		await settle();
 		agents();
@@ -505,6 +507,30 @@ describe("the start composer's agent picker", () => {
 			Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(field, task);
 			field.dispatchEvent(new Event("input", { bubbles: true }));
 		});
+	}
+});
+
+it("shows the update and re-pair instructions for an old runner on a signed platform", async () => {
+	const { Machines } = await import("../screens/Machines");
+	const host = document.createElement("div");
+	document.body.append(host);
+	const root = createRoot(host);
+	const client = make("outdated");
+	const info = await client.info();
+	vi.spyOn(client, "info").mockResolvedValue({ ...info, machines: { ...info.machines!, platformFingerprint: "fixture" } });
+	saveAuth("mock", auth);
+	try {
+		act(() => root.render(createElement(AppProvider, { client, children: createElement(Machines, { adding: false }) })));
+		for (let i = 0; i < 50 && !host.querySelector(".machine-row-outdated"); i++) await act(async () => { await tick(); });
+		const row = host.querySelector(".machine-row-outdated");
+		expect(row?.textContent).toContain("Needs an update");
+		expect(row?.textContent).toContain("pair again to pin the platform key");
+		expect(row?.querySelector('pre[aria-label="The update command"]')?.textContent).toContain(info.machines!.runnerImage);
+	} finally {
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		saveAuth("mock", null);
 	}
 });
 

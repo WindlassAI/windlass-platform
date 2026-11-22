@@ -29,6 +29,32 @@ in-app docs ([Use your own machine](../web/src/docs/content/machines.md#add-a-ma
   the listing on its next report.
 - The Machines page names the image in `WLP_RUNNER_IMAGE` and the address in `WLP_PUBLIC_URL`.
 
+### Signed runner connections
+
+`WLP_REQUIRE_SIGNED_RUNNER` defaults to `0`. In this mode the server continues to accept protocol 1,
+advertises its original minimum of 0.1.0 and requires no platform identity key. Keep the current runner
+image advertised until cutover. With `WLP_REQUIRE_SIGNED_RUNNER=1` the minimum is 0.2.0. Both sockets
+require protocol 2. Update and re-pair each runner to obtain a new pairing with the platform root and
+gateway origin. Compare the fingerprint printed by the runner with the owner's offline copy.
+
+Pairing establishes initial trust over TLS. A signed runner checks the online certificate against the
+stored Ed25519 root, its expiry and the highest serial already seen on either socket. The runner signs
+its ephemeral X25519 key, nonce and hello fields. The certified platform key signs the corresponding
+welcome, including resume state and idle policy. On the session socket the one-use random attach ticket
+from the authenticated control socket serves as the platform challenge. Each connection derives fresh
+directional HMAC keys. A counter starts at zero in each direction. Verification precedes dispatch for
+control, catalog, report, host, session data and acknowledgments. A resumed conversation retains its
+message sequence and authenticates each retransmission under the new connection keys.
+
+The pinned endpoint is the gateway origin advertised at pairing. To move the gateway, certify the next serial with a
+root-signed endpoint statement. Discovery supplies the authorization before the runner sends a gateway
+token to the new origin. The verified welcome confirms the change before the runner saves it.
+An offline removal response binds the pruning instruction to a fresh signed discovery nonce. A removed machine receives no gateway lease.
+
+The transport can still be observed or interrupted by an edge terminating TLS. The platform identity
+protects message authenticity and ordering. The operator keeps the offline root separate from the
+platform's token-signing, sealing and backup keys. [Self-hosted cutover and rotation](../deploy/selfhost/README.md#enable-signed-runner-connections)
+
 ### Profiles allowed on this machine
 
 The `--allow-profile` rules are in the [runner reference](../web/src/docs/content/runner.md#allowed-profiles).
@@ -60,8 +86,7 @@ resumes it.
 The launch form lists the user's machines beside the platform's own sandboxes, each
 with its state. A machine whose runner has not reported yet cannot be chosen ("“nas” has not connected
 yet. Start its runner, and once the Machines page shows it online, start the agent again."), nor one
-whose runner is older than the platform takes ("The runner on “nas” is older than this platform takes:
-update it to 0.1.0 or later, then start the agent again."). A machine offers the two Docker profiles,
+whose runner is below the deployment’s minimum. The form names the required release. A machine offers the two Docker profiles,
 `docker-windlass-sandbox` and `docker-hardened`, as its runner last reported them: the first only where
 the owner allows it and bubblewrap starts in a container there.
 
@@ -99,10 +124,10 @@ protocol names: it makes a session's container, runs the platform's commands in 
 it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code image pins come from the runner build. It touches only containers it labelled for its own machine
 (`dev.windlass-platform.machine=<machine id>`) and keeps Windlass data in
 `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
-volume is on Docker. Each agent container gets 256 CPU shares and a cap of half the CPUs available to
-the runner (at least 0.5 CPU). Set `WLP_RUNNER_CPUS` in the runner's environment to override the cap.
-The runner applies that policy when it creates or reconnects a sandbox. Each container gets 1536 MiB
-of memory, 512 processes and no capabilities, and creation requires 5 GB of free disk. It stops a
+volume is on Docker. Each agent container gets 256 CPU shares. The runner scales CPU, memory and process limits
+by its slot count. On a machine with one or two CPUs, one slot defaults to half the CPUs, 1536 MiB
+and 512 processes. Larger machines reserve resources for the host before sizing their slots.
+The runner applies these limits on creation and reconnect. A limit below current memory usage waits until the sandbox restarts. Creation requires 5 GB of free disk. It stops a
 sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
 a command runs in it or the session's socket is connected, and it removes one by itself in one case
 only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the
@@ -125,6 +150,10 @@ Enter the pairing code on the Machines page and choose **Connect**. Setup asks a
 answer **n** to skip its sign-in. For OpenCode, enter a provider ID or search by name. Pick **opencode-go**
 for a Go subscription key or **opencode** for a Zen pay-as-you-go key, and paste the key at the hidden
 prompt. **chatgpt** starts a separate OpenAI device login, and **free** enables OpenCode's public models.
+Public sessions use OpenCode’s anonymous catalog and carry their own ACP client identity. If the
+provider returns HTTP 429, the turn reports that its usage or rate limit was reached. The public models'
+allowance is small and counted per public IP address, so every session behind that address shares it.
+A working interactive terminal session can coexist with a refused anonymous ACP request on the same machine.
 
 To import existing API keys, add
 `--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"` before the image name
@@ -144,7 +173,20 @@ ChatGPT tokens and checks each session's signed placeholder; agent commands can 
 configured providers. Adding a provider or changing a key keeps existing sessions working, because the
 relay looks up the current key on each request. A full `logout opencode` or a new pairing invalidates the
 placeholders, and affected sessions must be recreated. Open and restricted sessions both send inference
-through the loopback relay. See [the relay's provider routes](../sandbox/relay/README.md#opencode-1196).
+through the loopback relay. In `restricted` mode the OpenCode session's command proxy also refuses every
+catalog inference hostname and every bare IP address, and `--egress-allow` does not reopen them.
+See [the relay's provider routes](../sandbox/relay/README.md#opencode-1196).
+
+Both relays answer a refusal or a provider error with a fixed message per status and never pass the
+provider's own body on: 401 "Provider sign-in is missing or the session placeholder is no longer valid.",
+403 "This request is not allowed by the relay.", 429 "The provider's usage or rate limit was reached.",
+5xx "The provider failed or couldn't be reached." and any other status "The provider rejected the request."
+
+The credential relay checks decoded JSON strings in successful responses. For Anthropic Messages
+streams it joins text deltas by content-block index and holds a possible credential prefix across
+events. Other provider event formats are checked one JSON event at a time. A credential divided
+between those events or encoded as model output in another representation can pass this check.
+The relay closes the response on malformed JSON or an oversized JSON document or SSE event.
 
 Machines report each agent's models, efforts and modes at startup, after each login or logout, and every
 six hours. The composer fetches a catalog by digest only when it changes; host load and memory travel
@@ -197,8 +239,8 @@ The platform counts nothing of a machine: its sandboxes take no
 sandbox time and no place among the kept sandboxes, have no price, and its turns are not among the
 user's agents working at once: one rule, `hostedLimitsApply` (`server/src/usage.ts`), holds a session
 to the daily time, the kept sandboxes and the running agents, and it holds only a hosted one.
-A runner accepts two simultaneous turns by default. Set `--max-turns N` to change this.
-The machine actor queues additional turns in arrival order and keeps them across runner reconnects.
+The runner sizes its turn capacity from the machine. Set `--slots N` or `--max-turns N` to override it.
+The machine actor queues turns in arrival order and waits until the head can take all its slots. The queue survives reconnects.
 Stop cancels a queued turn. Older runners omit the turn limit and allow unlimited concurrent turns.
 For optional limits on Docker containers, its runner takes `--max-running` and `--max-sandboxes`, with no
 default, after the command above, and a turn that would pass one ends with "This machine has reached its
@@ -294,10 +336,9 @@ key (`MACHINE_EXPIRY_MS`); its agents keep their timelines, and its sandboxes ar
 ### Forgetting the ChatGPT sign-in
 
 Each machine whose runner is connected at that moment is told, and
-its runner removes the token files of running turns from its data volume. A machine that is offline then
+its runner removes each running turn’s token from the container’s private tmpfs and clears old copies on its data volume. A machine that is offline then
 is not told, and is not told later: the platform keeps no logout for it. A token in a file there, which a
-turn cut off by the machine going away can leave, lasts about an hour from when it was handed out, and
-whoever reads it cannot renew it. To remove such files sooner, the machine's owner removes the runner's
+turn cut off by the machine going away can leave, expires about an hour after issue. To remove such files sooner, the machine's owner removes the runner's
 sandboxes and its data volume there with `prune`. It refuses to run while the runner does ("The runner
 service or another command is using this state volume. Stop the runner container or finish the command,
 then run prune in a one-off runner container with the same state volume and Docker socket."), so the
@@ -341,6 +382,8 @@ asked.
 |---|---|
 | `WLP_MACHINES` | `1`: every user of the deployment may pair machines. Off (the default): the runner's routes answer 404, the machine actions refuse with `machines_off`, and platform info has no `machines`. The machines and their tables stay, so turning it off and on again loses nothing |
 | `WLP_PUBLIC_URL` | the platform's address as a machine outside reaches it: an `https://` origin, or `http://` on a loopback address, with no path. Required with `WLP_MACHINES=1` and a remote engine; with the local one, `http://localhost:<WLP_HTTP_PORT>` |
+| `WLP_REQUIRE_SIGNED_RUNNER` | `0` (default) serves protocol 1. `1` requires protocol 2 on both sockets. |
+| `WLP_PLATFORM_KEY` | certified online key required when machines and signed connections are enabled. |
 | `WLP_RUNNER_IMAGE` | the runner image the Machines page tells users to start, pinned by digest (`<name>@sha256:<64 hex>`). Unset: the page says that it cannot be installed yet. Set to anything else, the server does not start |
 
 ## Building the runner

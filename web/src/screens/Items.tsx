@@ -12,7 +12,7 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemState, type ItemSummary } from "@contract";
+import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemMode, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
@@ -27,6 +27,7 @@ import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
+import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 
 export interface ItemsState {
@@ -100,7 +101,7 @@ export function verdictWord(verdict: NonNullable<ItemSummary["verdict"]>): { wor
 		case "pass":
 			if (verdict.flags.length > 0) return { word: "Needs a look", tone: "warn" };
 			if (verdict.ci === "not_run") return { word: "Your checks passed; CI did not start", tone: "warn" };
-			if (verdict.ci === "unread") return { word: "Your checks passed; CI not read", tone: "warn" };
+			if (verdict.ci === "unread" || verdict.ci === "not_permitted") return { word: "Your checks passed; CI not read", tone: "warn" };
 			if (verdict.ci === "timed_out") return { word: "Your checks passed; CI unfinished", tone: "warn" };
 			return { word: "Ready for review", tone: "good" };
 		case "fail":
@@ -184,7 +185,7 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider limit", children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
@@ -495,7 +496,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	const [orchestrate, setOrchestrate] = useState(false);
+	const [mode, setMode] = useState<ItemMode>("orchestrate");
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -503,7 +504,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const last = useRef<Submission | null>(null);
-	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId(), mode: useId() };
+	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId() };
 	const acceptance = criteria
 		.split("\n")
 		.map((line) => line.trim())
@@ -515,7 +516,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, ...(orchestrate && platform.info?.items?.orchestrate && { mode: "orchestrate" as const }), ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -557,18 +558,12 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			<form id={ids.form} className="item-form" onSubmit={file}>
 				{platform.info?.items?.orchestrate ? (
 					<div>
-						<span className="label" id={ids.mode}>
+						<span className="label">
 							How it runs
 						</span>
-						<div className="segmented" role="radiogroup" aria-labelledby={ids.mode}>
-							{(["single", "orchestrate"] as const).map((option) => (
-								<label key={option} className={`segment${(option === "orchestrate") === orchestrate ? " segment-chosen" : ""}`}>
-									<input className="segment-radio" type="radio" name={ids.mode} value={option} checked={(option === "orchestrate") === orchestrate} disabled={busy} onChange={() => setOrchestrate(option === "orchestrate")} />
-									{ITEM_MODE_WORDS[option].name}
-								</label>
-							))}
-						</div>
-						<p className="field-note">{orchestrate ? `${ITEM_MODE_WORDS.orchestrate.description} Approving the plan needs saved checks and CI that reports on pushes.` : ITEM_MODE_WORDS.single.description}</p>
+						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy} />
+						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
+						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
 				) : null}
 				<div>

@@ -831,9 +831,30 @@ describe("an ACP turn", () => {
 		const plan = blocksOf(acpView("acp-claude-plan"));
 		expect(plan).toHaveLength(1);
 		expect(plan[0]).toMatchObject({ kind: "plan", entries: [{ content: "Read the file", status: "completed" }, { content: "Make the edit", status: "completed" }, { content: "Check the result", status: "completed" }] });
+		const fixture = acpFixture("acp-claude-usage");
+		const estimated = acpReduce(acpRunToFeed({ ...fixture, updates: fixture.updates.map(u => ({ ...u, fiveHourUsedPct: 93 })) }));
+		expect(estimated.context?.fiveHourUsedPct).toBe(93);
+		expect(turn(estimated).end?.context?.fiveHourUsedPct).toBe(93);
 		const usage = acpView("acp-claude-usage");
 		expect(usage.context).toEqual({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } });
 		expect(turn(usage).end?.context).toEqual({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } });
+	});
+
+	it("clears a plan that an empty plan update empties, in its turn only", () => {
+		// What claude-agent-acp 0.109.0 sent with Claude Code's task tools: one turn left its last task in
+		// progress, and the next turn's adapter process, which never saw the tasks, sent an empty plan.
+		const step = (statuses: string[]): AcpUpdate => ({ sessionUpdate: "plan", entries: statuses.map((status, index) => ({ content: `Task ${index + 1}`, priority: "medium", status })) });
+		const first: AcpFixture = { scenario: "tasks", prompt: "start", stopReason: "end_turn", updates: [step(["in_progress", "pending"]), step(["completed", "in_progress"])] };
+		const second: AcpFixture = { scenario: "tasks", prompt: "go on", stopReason: "end_turn", updates: [step([])] };
+		const one = acpRunToFeed(first);
+		const lastSeq = one.flatMap((entry) => ("item" in entry ? [entry.item.seq] : [])).at(-1);
+		const view = acpReduce([...one, ...acpRunToFeed(second, { turn: 2, afterSeq: lastSeq })]);
+		const plans = (number: number) => view.turns.find((candidate) => candidate.turn === number)?.blocks.filter((block) => block.kind === "plan");
+		expect(plans(1)).toMatchObject([{ entries: [{ status: "completed" }, { status: "in_progress" }] }]);
+		expect(plans(2)).toEqual([]);
+		// In the same turn the empty update takes the checklist away.
+		const cleared = acpReduce(acpRunToFeed({ ...first, updates: [...first.updates, step([])] }));
+		expect(blocksOf(cleared).filter((block) => block.kind === "plan")).toEqual([]);
 	});
 
 	it("folds updates it does not show, and kinds it has never heard of, into nothing, between the ones it does", () => {

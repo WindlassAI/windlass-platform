@@ -36,11 +36,13 @@ Open the account menu and choose **Sign out**. This signs you out in this browse
 
 Connect GitHub to launch agents on your own repositories, private ones included, and to get their work back as pull requests. Without it, an agent can still clone a public repository by its address, or start in an empty one.
 
-1. Open the account menu and choose **Connect GitHub**.
-2. Authorize the Windlass GitHub App at GitHub.
+1. Open the account menu and choose **Connect GitHub**. You can also connect from the repository chip when you start an agent.
+2. GitHub opens in a new window. Authorize the Windlass GitHub App there.
 3. If the App is not installed on your account yet, GitHub shows its installation page. Choose the account and the repositories the App may see.
 
-When you are back, the menu says **GitHub connected** and lists the accounts the connection covers. Organizations are marked **organization**.
+When GitHub is done, its window closes. What you were writing stays where it was, and the repository list fills in. If your browser blocks the window, the whole page goes to GitHub instead and comes back with what you wrote. If you close the window early, nothing is connected.
+
+The menu then says **GitHub connected** and lists the accounts the connection covers. Organizations are marked **organization**.
 
 - To choose which repositories the App may see, follow the **repositories** link beside an account. It opens that installation's settings at GitHub.
 - To add another account or organization, choose **Add an account**.
@@ -58,13 +60,18 @@ The platform uses the App’s installation for repository operations. The App as
 | --- | --- | --- |
 | Contents | Read and write | Clone the repository, and push the agent's branch. |
 | Pull requests | Read and write | Open and update the pull request. |
-| Checks | Read-only | Read CI on a work item's pull request. |
+| Checks | Read and write | Read CI and publish the Factory verdict as `windlass/verified` on the pull request's head commit. |
 | Commit statuses | Read-only | Read CI on a work item's pull request. |
 | Actions | Read-only | Read CI on a work item's pull request. |
 | Issues | Read and write | Read an issue filed as a work item, and comment on it. |
 | Metadata | Read-only | GitHub adds it to every App. |
 
-The Issues permission and the three read-only CI permissions are used only by work items. Everything else works without them.
+Issues, Checks, Commit statuses and Actions are used only by work items. Agents you start yourself need only Contents, Pull requests and Metadata.
+
+Contents write is the widest of these. It covers every repository the installation can see, and GitHub has no way to limit an App to some branches. So keep the App's reach small:
+
+- At GitHub, set the installation's **Repository access** to **Only select repositories**, and pick the repositories you want agents on.
+- Add a ruleset for each repository's default branch: block force pushes and deletions, and require a pull request before merging. Leave the App off the ruleset's bypass list. The platform pushes only `windlass/…` branches, so it keeps working, and it cannot write the default branch.
 
 Each token the platform makes for a clone or a push covers one repository and lasts an hour at most. It is given only to that one git command, and it is revoked when the command ends. The agent's sandbox is never given your GitHub access.
 

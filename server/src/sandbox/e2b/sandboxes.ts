@@ -56,6 +56,7 @@ import { type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecRes
 import { profilesFor } from "../profiles.js";
 import {
 	BWRAP_PROBE,
+	DATA_DIR,
 	type Answer,
 	type InternalExecResult,
 	NAME,
@@ -68,7 +69,10 @@ import {
 	type TurnSandbox,
 	WORKSPACE,
 	assertEnvNames,
+	GIT_USER_ENV,
+	gitProcess,
 	markTurnSandbox,
+	signalGitProcess,
 	randomId,
 	shellQuote,
 } from "../provider.js";
@@ -172,8 +176,8 @@ export class E2bSandboxHandle implements TurnSandbox {
 		assertEnvNames(options.env);
 		assertEnvNames(options.secretEnv);
 		// Both kinds go in the request that starts the command (`envs`), never in the command's text.
-		const envs = options.secretEnv === undefined ? options.env : { ...options.secretEnv, ...options.env };
-		const command = ["wlp-run", "exec", tag, ...argv].map(shellQuote).join(" ");
+		const envs = options.gitUser ? GIT_USER_ENV : options.secretEnv === undefined ? options.env : { ...options.secretEnv, ...options.env };
+		const command = (options.gitUser ? gitProcess(tag, argv) : ["wlp-run", "exec", tag, ...argv]).map(shellQuote).join(" ");
 		const emit = (handler: ((chunk: string) => void) | undefined, text: string) => {
 			if (text === "" || handler === undefined) return;
 			try {
@@ -187,7 +191,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 		let stdinOpen = true;
 		/** A write failed: nothing more is sent, also not what was queued behind it. */
 		let broken = false;
-		const started = this.connection.start(command, { cwd: options.cwd ?? this.cwd, envs, stdin: true, onStdout: (text) => emit(options.onStdout, text), onStderr: (text) => emit(options.onStderr, text) });
+		const started = this.connection.start(command, { gitUser: options.gitUser, cwd: options.gitUser ? "/" : options.cwd ?? this.cwd, envs, stdin: true, onStdout: (text) => emit(options.onStdout, text), onStderr: (text) => emit(options.onStderr, text) });
 		// Each `sendStdin` is a request of its own, so they go one after the other: what is written arrives in the order it was written.
 		let queue: Promise<void> = started.then(
 			(command) => {
@@ -238,7 +242,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 				return hasEnded;
 			},
 			signal: async (sig, who) => {
-				await this.plain(["wlp-run", "signal", tag, sig, who], { timeoutMs: 10_000 }).catch(() => undefined);
+				await this.plain(options.gitUser ? signalGitProcess(tag, sig) : ["wlp-run", "signal", tag, sig, who], { gitUser: options.gitUser, timeoutMs: 10_000 }).catch(() => undefined);
 			},
 			killClient: () => {
 				// As a killed `docker exec`: this side stops listening, and the program is left to `signal` and `sweep`.
@@ -254,6 +258,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 		let stdout = "";
 		let stderr = "";
 		const run = this.start(argv, {
+			gitUser: options.gitUser,
 			cwd: options.cwd,
 			env: options.env,
 			secretEnv: options.secretEnv,
@@ -335,12 +340,12 @@ export class E2bSandboxHandle implements TurnSandbox {
 	 * Runs argv to its end, not under wlp-run: what a plain `docker exec` is on Docker. `stdin` is written
 	 * and closed. Rejects when the command could not be started or the connection to it broke.
 	 */
-	private async plain(argv: string[], options: { stdin?: string; env?: Record<string, string>; timeoutMs: number }): Promise<PlainResult> {
+	private async plain(argv: string[], options: { gitUser?: true; stdin?: string; env?: Record<string, string>; timeoutMs: number }): Promise<PlainResult> {
 		let stdout = "";
 		let stderr = "";
 		const command = await this.connection.start(argv.map(shellQuote).join(" "), {
-			cwd: this.cwd,
-			envs: options.env,
+			gitUser: options.gitUser, cwd: options.gitUser ? "/" : this.cwd,
+			envs: options.gitUser ? GIT_USER_ENV : options.env,
 			stdin: options.stdin !== undefined,
 			onStdout: (text) => (stdout += text),
 			onStderr: (text) => (stderr += text),
@@ -613,7 +618,7 @@ export class E2bSandboxes implements Sandboxes {
 		// The access token file a turn that was cut off left behind. A turn that ended removed its own.
 		const connection = await this.client.connect(id, this.settings.idleTimeoutMs).catch(() => undefined);
 		if (connection !== undefined) {
-			const path = tokenFilePath(id);
+			const path = tokenFilePath(id, DATA_DIR);
 			const made = sandboxProfile(info.metadata);
 			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
 		}
@@ -711,7 +716,7 @@ export class E2bSandboxes implements Sandboxes {
 			running.map(async (info) => {
 				const connection = await this.client.connect(info.sandboxId, this.settings.idleTimeoutMs);
 				if (connection === undefined) return;
-				const path = tokenFilePath(info.sandboxId);
+				const path = tokenFilePath(info.sandboxId, DATA_DIR);
 				const made = sandboxProfile(info.metadata);
 				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
 			}),
@@ -798,7 +803,7 @@ export class E2bSandboxes implements Sandboxes {
 	 * access token in its file. Both are removed before anything else happens in the sandbox.
 	 */
 	private async tidy(handle: E2bSandboxHandle): Promise<void> {
-		const path = tokenFilePath(handle.id);
+		const path = tokenFilePath(handle.id, DATA_DIR);
 		const stopped = await handle.stopLeftovers("windlass").catch(() => 0);
 		await handle.removeFiles([path, `${path}.tmp`]);
 		if (stopped > 0) this.log(`[wlp] e2b.sandbox.tidied id=${handle.id}: stopped ${stopped} Windlass run(s) that a turn cut off before the pause had left in it`);

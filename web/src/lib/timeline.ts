@@ -466,6 +466,11 @@ class Draft {
 		this.patchTurn(number, { blocks: turn.blocks.map((candidate) => (candidate === block ? ({ ...block, ...patch } as Block) : candidate)) });
 	}
 
+	remove(number: number, block: Block): void {
+		const turn = this.turn(number);
+		this.patchTurn(number, { blocks: turn.blocks.filter((candidate) => candidate !== block) });
+	}
+
 	mapBlocks(number: number, map: (block: Block) => Block): void {
 		const turn = this.turn(number);
 		let changed = false;

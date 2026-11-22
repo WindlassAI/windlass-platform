@@ -1,14 +1,17 @@
 /** githubInbox[installationId] and githubHooks["app"]. Only service actions write or read rows.
  * A scheduled action must be fired by the engine. An empty actor has no work and arms no timer.
  */
-import type { GithubId } from "../contract.js";
+import { recentSubject } from "../factory/intake.js";
+import { cleanFeedback } from "../factory/feedback.js";
+import type { GithubUser } from "../github/app.js";
+import type { FeedbackEntry, GithubId } from "../contract.js";
 import { decimalId, githubId } from "../github/ids.js";
 import { actor } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
 import { githubConfig } from "../config.js";
 import { githubApp, GithubError } from "../github/app.js";
-import { githubIdKey, type Delivery } from "../github/events.js";
+import { isAddressed, githubIdKey, type Delivery } from "../github/events.js";
 
 // https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
 // Redeliveries have "the same" delivery GUID. This is the inbox primary key.
@@ -89,7 +92,11 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	for (const { uid, itemId } of matches) {
 		const item = c.client().workItem.get([uid, itemId], { params: serviceParams() });
 		try {
-			if (await item.internalGithubNudge({ ...subject, repositoryId: d.repositoryId, installationId: d.installationId })) waiting = true;
+			const binding = { repositoryId: d.repositoryId, installationId: d.installationId };
+			const woke = d.event === "check_run" && d.action === "rerequested"
+				? await item.internalReverify({ ...binding, head: d.data.head })
+				: await item.internalGithubNudge({ ...subject, ...binding });
+			if (woke) waiting = true;
 		} catch (error) {
 			if (missingActor(error) || (error as { code?: string })?.code === "item_not_found") await directory.internalForget(itemId);
 			else retry = true;
@@ -98,6 +105,87 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (retry) throw new Error("A work item could not be reached");
 	if (!waiting) return "no item";
 }
+export type FeedbackSubject = {
+	kind: "review" | "review_comment" | "issue_comment"; id: string; sender: GithubUser; association: string;
+};
+export type FeedbackNotice = { installationId: GithubId; repositoryId: GithubId; pr: number; entries: FeedbackEntry[]; denied?: string; approval?: { id: string; author: string } };
+const associated = (association: string) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(association);
+export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + subject.id;
+
+/** Both webhook and poll go through this preflight and authoritative subject read. */
+export async function readFeedback(c: Pick<Ctx, "client">, uid: string, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, pollingOwner?: GithubId): Promise<FeedbackNotice | null> {
+	const { repositoryId, installationId, pr } = target;
+	const denied = { ...target, entries: [], denied: feedbackId(subject) };
+	if (!associated(subject.association)) return denied;
+	const params = { params: serviceParams() };
+	const directory = c.client().githubRepository.get([String(repositoryId)], params);
+	const write = await directory.internalIssuePermission(installationId, subject.sender) === "write";
+	// Without webhooks there is no account directory. The poll has already resolved
+	// this item's own connection against its bound installation and repository.
+	let owner = pollingOwner === subject.sender.id;
+	if (pollingOwner === undefined) {
+		try {
+			const link = await c.client().githubAccount.get([String(subject.sender.id)], params).internalWho();
+			owner = link?.uid === uid && link.installations.includes(installationId);
+		} catch (e) { if (!missingActor(e)) throw e; }
+	}
+	if (!write && !owner) return denied;
+	const app = githubApp();
+	if (!app) throw new Error("GitHub App unavailable.");
+	try {
+		return await app.withToken(installationId, { repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, async token => {
+			const repo = await app.repositoryById(token, repositoryId);
+			if (repo.id !== repositoryId) return null;
+			const entry = (kind: FeedbackEntry["kind"], id: string, body: string, at: number, url: string, author: string): FeedbackEntry => ({
+				id, author, access: owner ? "owner" : "write", kind, body: cleanFeedback(body).slice(0, 16000), at, url, commit: null, path: null, line: null,
+			});
+			const valid = (r: { author: GithubUser; at: number; association: string }) => r.author.id === subject.sender.id && associated(r.association) && recentSubject(r.at);
+			if (subject.kind === "issue_comment") {
+				const r = await app.issueCommand(token, repo, pr, subject.id);
+				if (!r || !valid(r)) return null;
+				const note = isAddressed(r.body, app.settings.slug);
+				if (note === null) return null;
+				const url = app.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + "#issuecomment-" + subject.id;
+				return { ...target, entries: [entry("issue_comment", feedbackId(subject), note, r.at, url, r.author.login)] };
+			}
+			const review = subject.kind === "review";
+			const r = review ? await app.review(token, repo, pr, subject.id) : await app.reviewComment(token, repo, pr, subject.id);
+			if (!r || !valid(r)) return null;
+			if (review && r.state === "approved") return { ...target, entries: [], approval: { id: feedbackId(subject), author: r.author.login } };
+			const requested = review && r.state === "changes_requested";
+			if (review && !requested && r.state !== "commented") return null;
+			const body = requested ? r.body : isAddressed(r.body, app.settings.slug);
+			if (body === null) return null;
+			const entries = [{ ...entry(review ? requested ? "changes_requested" : "commented" : "review_comment", feedbackId(subject), body, r.at, r.url, r.author.login), commit: r.commit, path: r.path, line: r.line }];
+			if (review) for (const line of await app.reviewComments(token, repo, pr, r.id)) {
+				if (!valid(line)) continue;
+				entries.push({ ...entry("review_comment", "review_comment:" + line.id, line.body, line.at, line.url, line.author.login), commit: line.commit, path: line.path, line: line.line });
+			}
+			return { ...target, entries };
+		});
+	} catch (e) {
+		if (e instanceof GithubError && [404, 410].includes(e.status)) return null;
+		throw e;
+	}
+}
+
+async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
+	if (!d.repositoryId || (d.event !== "pull_request_review" && d.event !== "pull_request_review_comment" && d.event !== "issue_comment")) return "no item";
+	const data = d.data;
+	const target = { installationId: d.installationId, repositoryId: d.repositoryId, pr: "pr" in data ? data.pr : data.issue };
+	const subject: FeedbackSubject = { sender: data.sender, association: data.sender.association,
+		kind: "reviewId" in data ? "review" : "pr" in data ? "review_comment" : "issue_comment", id: "reviewId" in data ? data.reviewId : data.commentId };
+	const params = { params: serviceParams() };
+	try {
+		const matches = await c.client().githubRepository.get([String(d.repositoryId)], params).internalFind({ pr: target.pr, installationId: d.installationId });
+		if (!matches.length) return "no item";
+		for (const { itemId, uid } of matches) {
+			const notice = await readFeedback(c, uid, target, subject);
+			if (notice) await c.client().workItem.get([uid, itemId], params).internalGithubFeedback(notice);
+		}
+	} catch (e) { if (missingActor(e)) return "no item"; throw e; }
+}
+
 async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (!d.repositoryId || (d.event !== "issues" && d.event !== "issue_comment")) return "no item";
 	const { sender, issue } = d.data;
@@ -126,7 +214,9 @@ async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
 }
 export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c: Ctx) => void | Promise<void | "no item">>> = {
 	issues: issueDelivery,
-	issue_comment: issueDelivery,
+	issue_comment: (d, c) => d.event === "issue_comment" && d.data.isPullRequest ? prFeedback(d, c) : issueDelivery(d, c),
+	pull_request_review: prFeedback,
+	pull_request_review_comment: prFeedback,
 	check_run: nudgeItems,
 	check_suite: nudgeItems,
 	status: nudgeItems,
