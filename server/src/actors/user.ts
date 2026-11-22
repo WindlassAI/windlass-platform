@@ -160,6 +160,7 @@ import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
+import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -722,7 +723,7 @@ async function accountView(db: RawAccess): Promise<AccountSettings> {
 		defaults,
 		lastStart,
 		servers: servers.map((server) => listedServer(server, secrets)),
-		serverReach: personalServerReach(sandboxes.profiles()),
+		serverReach: personalServerReach(sandboxes.profiles(), sandboxes.egress?.()),
 		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
 	};
 }
@@ -1015,6 +1016,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
 		if (size > 1 && !machine?.slots) throw new UserError("Choose a machine reporting slots for a large sandbox.", { code: "bad_input" });
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
+		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();

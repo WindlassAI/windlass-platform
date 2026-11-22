@@ -766,11 +766,12 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	// A partial creation stays pinned, and must still pass current owner policy.
-	const profiles = (await getLayer()).sandboxes.profiles();
+	const { sandboxes } = await getLayer();
+	const profiles = sandboxes.profiles();
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.() };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {

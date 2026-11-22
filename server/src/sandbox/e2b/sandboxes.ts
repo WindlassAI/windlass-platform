@@ -80,9 +80,18 @@ import { tokenFilePath } from "../token-file.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
 import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, type E2bSettings } from "./config.js";
 import { describeUsage, pricePerSecond } from "./pricing.js";
+import { type E2bNetwork, guestDnsArgv, networkConfig } from "./network.js";
+import type { EgressMode } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
-export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile" } as const;
+export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile", network: "wlp_network" } as const;
+
+const OPEN: E2bNetwork = { mode: "open", hosts: [] };
+/** The network mode a sandbox was made with, from its metadata: none recorded is `open`, as before network modes. */
+export function sandboxNetwork(metadata: Record<string, string>): EgressMode {
+	const named = metadata[META.network];
+	return named === "restricted" || named === "none" ? named : "open";
+}
 
 /** E2B's sandbox ids are short strings of letters and digits; anything else was never one. */
 const SANDBOX_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -140,6 +149,8 @@ export interface E2bSandboxesOptions {
 	sleep?: (ms: number) => Promise<void>;
 	/** Called with the Windlass version a new sandbox reported (`windlass --version` in the template). */
 	onVersion?: (version: string) => void;
+	/** Where the sandbox's pinned names point (network.ts `PIN_ADDRESS`). The Docker stand-in of the tests names its own filter. */
+	pinAddress?: string;
 }
 
 /** The profiles a sandbox on E2B can be made with. */
@@ -498,7 +509,31 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	profiles(): SandboxProfile[] {
-		return profilesFor("e2b", this.settings);
+		return profilesFor("e2b", { ...this.settings, network: this.network.mode });
+	}
+
+	/** WLP_E2B_NETWORK: what every sandbox of the deployment may reach (network.ts). */
+	get network(): E2bNetwork {
+		return this.settings.network ?? OPEN;
+	}
+
+	egress(): EgressMode {
+		return this.network.mode;
+	}
+
+	/**
+	 * The sandbox's name files for the deployment's mode, as root (network.ts `GUEST_DNS_SCRIPT`): the
+	 * allowed names pinned, every other lookup failing at once. A fixed script; nothing of a session's is in it.
+	 */
+	private async guestNetwork(connection: E2bConnection): Promise<void> {
+		const mode = this.network.mode;
+		let stdout = "";
+		let stderr = "";
+		const command = await connection.start(guestDnsArgv(this.network, this.options.pinAddress).map(shellQuote).join(" "), { root: true, cwd: "/", stdin: false, onStdout: (text) => (stdout += text), onStderr: (text) => (stderr += text) });
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const result = await Promise.race([command.wait(), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), 30_000)))]).finally(() => clearTimeout(timer));
+		if (result === null) await command.kill().catch(() => undefined);
+		if (result === null || result.exitCode !== 0 || !stdout.includes(`network ${mode}`)) throw new Error(`could not set the sandbox's names for WLP_E2B_NETWORK=${mode} (${result === null ? "it took longer than 30 s" : stderr.trim().slice(-300) || `exit ${result.exitCode}`})`);
 	}
 
 	profile(id: SandboxProfileId): SandboxProfile {
@@ -512,15 +547,18 @@ export class E2bSandboxes implements Sandboxes {
 		if (typeof input.uid !== "string" || !NAME.test(input.uid)) throw new Error('invalid user id: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit');
 		const profile = this.profile(input.profile);
 		if (!profile.available || !E2B_PROFILES.includes(profile.id)) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
+		const network = this.network;
+		const config = networkConfig(network);
 		await this.assertRoom();
 		let connection: E2bConnection;
 		try {
 			connection = await this.client.create({
 				template: input.screenshots ? this.settings.shotsTemplate : this.settings.template,
 				timeoutMs: this.settings.idleTimeoutMs,
-				metadata: { [META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile },
+				metadata: { [META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile, ...(network.mode === "open" ? {} : { [META.network]: network.mode }) },
 				envs: SANDBOX_ENVS,
 				onTimeout: this.settings.pause ? "pause" : "kill",
+				...(config === null ? {} : { network: config }),
 			});
 		} catch (error) {
 			if (error instanceof E2bLimitError) throw new SandboxUserError(ACCOUNT_LIMIT);
@@ -541,6 +579,8 @@ export class E2bSandboxes implements Sandboxes {
 		}
 		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval);
 		try {
+			// Before anything of the session's runs in it: from the first command on, only the allowed names resolve.
+			if (config !== null) await this.guestNetwork(connection);
 			const init = await handle.exec(["sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'], { timeoutMs: 60_000 });
 			if (init.exitCode !== 0) throw new Error(`could not set up the workspace: ${(init.stderr.trim() || init.stdout.trim() || `exit ${init.exitCode}`).slice(-500)}`);
 			// "Windlass 0.4.0 (linux-x64)"
@@ -597,6 +637,17 @@ export class E2bSandboxes implements Sandboxes {
 			known.runningSince ??= info.startedAt;
 			// A connect only ever pushes the timeout out.
 			if (known.holds === 0) known.deadline = Math.max(info.endAt, now + this.settings.idleTimeoutMs);
+		}
+		// The deployment's mode, whatever the sandbox was made with: E2B's configuration replaced as a whole and the
+		// names written again (a resume may have rewritten them). Metadata cannot be changed after create, so a
+		// sandbox once out of `open` is set at every connect. Open to open changes nothing, as before network modes.
+		if (sandboxNetwork(info.metadata) !== "open" || this.network.mode !== "open") {
+			try {
+				await this.client.updateNetwork(id, networkConfig(this.network));
+				await this.guestNetwork(connection);
+			} catch (error) {
+				throw new Error(`could not set the sandbox's network to WLP_E2B_NETWORK=${this.network.mode}: ${messageOf(error)}`);
+			}
 		}
 		return handle;
 	}
