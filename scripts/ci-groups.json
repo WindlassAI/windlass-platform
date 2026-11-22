@@ -36,7 +36,9 @@
         "scripts/github-standin.ts",
         "scripts/check-image.ts",
         "scripts/e2b-network-standin.mjs",
-        "scripts/{access,account,attachments,backup,connection,harness,models,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config}-check.ts",
+        "scripts/{access,account,attachments,backup,connection,harness,models,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted}-check.ts",
+        "server/src/factory/untrusted.ts",
+        "server/src/actors/session-inbox.ts",
         "server/src/actors/agent-session.ts",
         "scripts/e2b-provider-test.ts",
         "scripts/workflow-lint.ts"
@@ -58,6 +60,7 @@
         "secrets": "tsx ../scripts/secrets-check.ts",
         "setup": "tsx ../scripts/setup-check.ts",
         "git-config": "tsx ../scripts/git-config-check.ts",
+        "untrusted": "tsx ../scripts/untrusted-check.ts",
         "usage": "tsx ../scripts/usage-check.ts",
         "verified": "tsx ../scripts/verified-check.ts",
         "web-files": "tsx ../scripts/web-files-check.ts",
@@ -146,7 +149,7 @@
         "server/src/repository-checks.ts",
         "server/src/sandbox-fake.ts",
         "server/src/bucket/**",
-        "server/src/actors/{work-item,user-items,acp-item,github-item,github-intake,github-inbox,github-repository,github-account,user-github,user,agent-session}.ts",
+        "server/src/actors/{work-item,user-items,acp-item,github-item,github-intake,github-inbox,github-repository,github-account,user-github,user,agent-session,session-inbox}.ts",
         "scripts/github-standin.ts",
         "scripts/runner-standin.ts",
         "scripts/feature-git-fixture.ts",
@@ -154,7 +157,7 @@
       ],
       "shards": {
         "1": { "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
-        "2": { "env": { "FACTORY_ONLY": "api,on,ci,ask,person,gate,handoff,sleep,deploy,creation" } },
+        "2": { "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,sleep,deploy,creation" } },
         "3": { "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off" } }
       },
       "checks": {

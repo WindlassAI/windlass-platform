@@ -194,6 +194,21 @@ function untilItem(user: { item(id: string): Promise<ItemView> }, id: string, wh
 }
 
 const said = (view: ItemView) => view.events.map((event) => event.said);
+/**
+ * What reached a session's Windlass as text from someone else: the source of each marked prompt, in order (the fake's
+ * `fake.prompt_untrusted`, its record of `_meta["windlass/untrusted"]`), and the source its one `taint.noticed` names.
+ */
+const marksIn = (client: Client, auth: Awaited<ReturnType<typeof world>>["auth"]) => async (sessionId: string) => {
+	const timeline = (await client.agentSession.get([auth.profile.uid, sessionId], { params: { token: auth.token } }).snapshot()).timeline;
+	const prompts: string[] = [];
+	let taint: string | null = null;
+	for (const entry of timeline) {
+		if (entry.kind !== "windlass") continue;
+		if (entry.event.type === "fake.prompt_untrusted") prompts.push(String(entry.event.data?.source));
+		if (entry.event.type === "taint.noticed") taint = String((entry.event.data?.source as { tool?: unknown } | undefined)?.tool);
+	}
+	return { prompts, taint };
+};
 const stateOf = (view: ItemView) => `${view.state}${view.wait ? ` (${view.wait.reason}: ${view.wait.sentence})` : ""}${view.question ? ` asks “${view.question.text}”` : ""}`;
 
 /** Sets what CI reports for a branch at the stand-in. */
@@ -474,6 +489,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 		const { config } = await import("../server/src/config.js");
 		const { client, user, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_BACKUP_DIR: join(server.storage, "shots"), WLP_FAKE_BUCKET_SIGNING_SECRET: randomBytes(32).toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_IDLE_SUSPEND_MS: "1000" });
+		const untrustedMarks = marksIn(client, auth);
 		await check("reviewer: platform info says the second review is on", async () => {
 			const info = (await (await fetch(`${API}/platform/info`)).json()) as { items?: { reviewer?: unknown } };
 			assert(info.items?.reviewer === true, `platform info has items: ${JSON.stringify(info.items)}`);
@@ -571,6 +587,11 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(timeline.includes('r1.f1 is blocking and has no \\"earlier\\" block'), "round 2's reviewer was not held to its earlier finding");
 			const builder = JSON.stringify((await client.agentSession.get([auth.profile.uid, view.sessionId], { params: { token: auth.token } }).snapshot()).timeline);
 			assert(builder.includes("asks for changes before the work is handed over") && builder.includes("No check for the empty page"), "the builder's fix turn lacks the finding");
+			// Each reviewer turn reached Windlass marked as the builder's report, and the fix turn as the reviewer's findings.
+			const reviewerMarks = await untrustedMarks(view.reviewerSessionId!), builderMarks = await untrustedMarks(view.sessionId);
+			const report = `the builder's report on pull request #${view.pullRequest?.number}`;
+			assert(reviewerMarks.prompts.length === 2 && reviewerMarks.prompts.every(p => p === report) && reviewerMarks.taint === report, `reviewer marks ${JSON.stringify(reviewerMarks)}`);
+			assert(builderMarks.prompts.join() === (await import("../server/src/factory/untrusted.js")).untrustedWords.review(first.head), `builder marks ${JSON.stringify(builderMarks)}`);
 			return `2 reviews, 1 fix turn, round 2 answered r1.f1; check ${view.verifiedCheck?.conclusion}`;
 		});
 		await check("reviewer: networked commands hand over with the profile reason", async () => {
@@ -1892,6 +1913,7 @@ const main = new Server();
 try {
 	// Room for every sandbox these items leave running: the cap on them has a check of its own (factory-check.ts, `admit`).
 	const { client, auth, user } = await world(main, standin, { WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
+	const untrustedMarks = marksIn(client, auth);
 
 	let token = "";
 	let first: ItemSummary | null = null;
@@ -2014,7 +2036,8 @@ try {
 	});
 
 	await check("ci: a failing CI gets a fix turn, and the same CI failure again stops at once with a question", async () => {
-		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
+		// On "Docker + Windlass sandbox", where Windlass can sandbox a tainted session's commands: the fix turn is marked (below).
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-windlass-sandbox", title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
@@ -2022,7 +2045,33 @@ try {
 		const asked = await untilItem(user, item.id, "the question", (view) => view.question !== null, CI_WAIT_MS * 2);
 		const fixes = said(asked).filter((line) => line.startsWith("CI failed")).length;
 		assert(asked.question?.kind === "rounds" && /same failure/.test(asked.question.text) && fixes === 2 && asked.run?.rounds.ci === 1, `${stateOf(asked)}; ${said(asked).join(" / ")}`);
-		return `${fixes} CI failures, ${asked.run.rounds.ci} fix round; ${asked.question.text}`;
+		// The fix turn's prompt reached Windlass marked as CI's (the fake records `_meta["windlass/untrusted"]` and taints the session once, as 0.6.0 does).
+		const marks = await untrustedMarks(item.sessionId);
+		const source = (await import("../server/src/factory/untrusted.js")).untrustedWords.ci(pull.head);
+		assert(marks.prompts.join() === source && marks.taint === source, `marks ${JSON.stringify(marks)}`);
+		return `${fixes} CI failures, ${asked.run.rounds.ci} fix round; ${asked.question.text}; marked “${source}”`;
+	});
+
+	await check("untrusted: on Docker, hardened, a CI fix turn runs, labelled only, and the timeline says so once", async () => {
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Loosen the bolts", body: "Make the bolts loose.", start: true });
+		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
+		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
+		assert(pull, "no pull request");
+		setCi(harbor, pull.head, "failure");
+		const asked = await untilItem(user, item.id, "the question", (view) => view.question !== null, CI_WAIT_MS * 2);
+		const fixes = said(asked).filter((line) => line.startsWith("CI failed")).length;
+		// The fix turn ran (the same failure came back after it), as on a profile that marks the text.
+		assert(asked.question?.kind === "rounds" && /same failure/.test(asked.question.text) && fixes === 2 && asked.run?.rounds.ci === 1, `${stateOf(asked)}; ${said(asked).join(" / ")}`);
+		const marks = await untrustedMarks(item.sessionId);
+		assert(marks.prompts.length === 0 && marks.taint === null, `the fix turn reached Windlass marked: ${JSON.stringify(marks)}`);
+		const { hardenedUnmarkedNote, untrustedWords } = await import("../server/src/factory/untrusted.js");
+		const timeline = (await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot()).timeline;
+		const notes = timeline.filter((entry) => entry.kind === "platform" && entry.text === hardenedUnmarkedNote([untrustedWords.ci(pull.head)]));
+		assert(notes.length === 1, `the timeline's line: ${notes.length}; ${JSON.stringify(timeline.filter((entry) => entry.kind === "platform").map((entry) => (entry as { text?: string }).text))}`);
+		const prompt = JSON.stringify(timeline.filter((entry) => entry.kind === "user"));
+		assert(prompt.includes("untrusted"), "the CI log was not labelled in the prompt");
+		await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+		return `${fixes} CI failures, the fix ran unmarked; “${notes[0] && (notes[0] as { text: string }).text}”`;
 	});
 
 	await check("ask: the builder asks its person, the item waits with the agent's words apart, and the answer is the next turn's message", async () => {

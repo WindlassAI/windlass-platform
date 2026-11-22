@@ -30,6 +30,7 @@
 
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
+import { sources, untrustedWords } from "../factory/untrusted.js";
 import { batchText, feedbackWords, fingerprint, fits, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
@@ -1144,7 +1145,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places })
 					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
 			}
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
 			return true;
 		}
 		case "release_review":
@@ -1394,9 +1395,14 @@ export const workItem = actor({
 			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
+			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
 			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
-				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report) }),
-				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place } };
+				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
+				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
+				// The subtask's task was planned from the feature's (its sources go with it), and quotes the reports of subtasks before it.
+				untrusted: sources(s.item.untrusted, reports.length ? [untrustedWords.earlier] : []),
+				// What the feature's person chose to run anyway on "Docker, hardened": the subtask's task carries the same text.
+				...(s.item.unsandboxed?.length && { unsandboxed: s.item.unsandboxed }) };
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);

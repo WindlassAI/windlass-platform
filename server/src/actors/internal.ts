@@ -188,7 +188,7 @@ export interface ItemInternal {
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature"): Promise<string | null>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }): Promise<void>;
-	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace } } | null>;
+	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;

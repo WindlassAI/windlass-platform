@@ -170,6 +170,8 @@ interface TurnOptions {
 	outcomes?: TurnRun["outcomes"];
 	/** The user's own servers the turn is handed. */
 	own?: TurnPersonalServer[];
+	/** An item's turn: nothing is answered unasked once Windlass says the session is tainted. */
+	unaskedUntilTainted?: boolean;
 }
 
 async function turn(handle: DockerSandboxHandle, prompt: string, script: ScriptedModel, options: TurnOptions = {}): Promise<TurnRun> {
@@ -186,6 +188,7 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 		windlassSessionId: options.windlassSessionId,
 		signal: options.signal,
 		servers: options.own,
+		unaskedUntilTainted: options.unaskedUntilTainted,
 		onUnasked: (allowed) => unasked.push(allowed),
 		onEvent: (event) => events.push(event),
 		onReport: options.onReport,
@@ -815,6 +818,16 @@ async function checkOtherServers(): Promise<void> {
 		info(`the timeline's line under such a call: ${unaskedNote("tracker")}`);
 		const tainted = unaskedRun.events.filter((event) => event.type === "tool.settled").map((event) => (dataOf(event).display as { mcp?: { untrusted?: boolean } } | undefined)?.mcp?.untrusted);
 		expect("the setting does not make the server's output trusted: Windlass still marks its results as content it does not trust", tainted.length === 2 && tainted.every((untrusted) => untrusted === true), JSON.stringify(tainted));
+
+		// An item's turn, in a session not yet tainted: the first call is answered for the user; its result taints the session part way
+		// through the turn, and from then on the layer answers for nobody, so the second call is put to the item's question (here, allowed).
+		const fresh = await sandbox(uid, "docker-windlass-sandbox", "mcp-own-taint");
+		await fresh.writeTextFile("/workspace/.windlass/config.json", none);
+		const item = await turn(fresh, "Find berths for Ada and Bo", twoCalls(), { own: [quiet], unaskedUntilTainted: true });
+		const taintAt = item.events.findIndex((event) => event.type === "taint.noticed");
+		expect("an item's turn: once Windlass says the session is tainted, part way through the turn, the call after it is asked, not answered unasked", taintAt >= 0 && JSON.stringify(allowed(item)) === JSON.stringify(["o1:tracker/berth"]) && item.toolQuestions.length === 1 && ran(item), `taint at ${taintAt}; answered ${answers(item).join(", ")}; unasked ${allowed(item).join(", ")}; ${item.toolQuestions.length} question(s)`);
+		const itemLater = await turn(fresh, "Find berths for Ada and Bo again", twoCalls(), { own: [quiet], unaskedUntilTainted: true, windlassSessionId: item.result.windlassSessionId ?? undefined });
+		expect("and a later item turn of that session is told no new taint: the session hands its servers asked (agent-session.ts, meta.tainted), which this layer alone does not know", !itemLater.events.some((event) => event.type === "taint.noticed") && itemLater.unasked.length === 2, `${itemLater.unasked.length} answered unasked`);
 
 		const off = await turn(handle, "Find berths for Ada and Bo once more", twoCalls(), { own: [tracker], windlassSessionId: asked.result.windlassSessionId ?? undefined });
 		expect("switched off again, the next turn asks again: nothing was remembered in Windlass", off.toolQuestions.length === 2 && off.unasked.length === 0, `${off.toolQuestions.length} question(s)`);

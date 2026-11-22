@@ -141,6 +141,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	give_up: "Give up",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
+	run_anyway: "Run it anyway",
 };
 const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
 
