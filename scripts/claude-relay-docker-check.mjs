@@ -92,9 +92,10 @@ async function limitedTurn(name) {
 	const refused = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:'Rate limit check.'}]}).then(() => undefined, error => error);
 	child.stdin.end();
 	const reported = events.map(event => claudeLimit(event, Date.now())).find(event => event?.status === 'rejected');
-	assert.ok(reported || refused?.limit, `No rate-limit report: events=${JSON.stringify(events)} error=${refused?.message}`);
-	if (reported) assert.equal(reported.window.resetsAt, 4102444800_000);
-	if (refused?.limit) assert.equal(refused.limit.resetsAt, 4102444800_000);
+	const seen = `events=${JSON.stringify(events)} error=${refused?.message} limit=${JSON.stringify(refused?.limit)}`;
+	assert.ok(reported || refused?.limit, 'No rate-limit report: ' + seen);
+	if (reported) assert.equal(reported.window.resetsAt, 4102444800_000, seen);
+	if (refused?.limit) assert.equal(refused.limit.resetsAt, 4102444800_000, seen);
 	assert.ok(!JSON.stringify(events).includes('req_fixture'));
 }
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
@@ -146,6 +147,16 @@ try {
 	ok('Both real session containers have zero mounts. Own bearer accepted, cross-session bearer and foreign Host refused.');
 	await turn(first, [], true);
 	await turn(first, ['-e','HTTP_PROXY=http://127.0.0.1:1','-e','HTTPS_PROXY=http://127.0.0.1:1','-e','http_proxy=http://127.0.0.1:1','-e','https_proxy=http://127.0.0.1:1','-e','NO_PROXY=','-e','no_proxy='], false);
+	// What the session itself receives from the relay for a refused request.
+	const limited = JSON.parse(await cmd(['exec', first, 'node', '-e', `const r=require('http').request(process.env.ANTHROPIC_BASE_URL+'/v1/messages?beta=true',
+		{method:'POST', headers:{authorization:'Bearer '+process.argv[1],'content-type':'application/json'}},res=>{console.log(JSON.stringify({status:res.statusCode,headers:res.headers}));res.resume()});
+		r.on('error',()=>process.exit(1));r.end(JSON.stringify({messages:[{role:'user',content:'Rate limit check.'}]}));`, one.placeholder]));
+	assert.equal(limited.status, 429);
+	assert.equal(limited.headers['anthropic-ratelimit-unified-status'], 'rejected');
+	assert.equal(limited.headers['anthropic-ratelimit-unified-reset'], '4102444800');
+	assert.equal(limited.headers['retry-after'], '3600');
+	assert.equal(limited.headers['request-id'], undefined);
+	ok('The relay passes the upstream 429 rate-limit headers to the session, without its request id.');
 	await limitedTurn(first);
 	ok('A 429 with unified headers reached the pinned harness through the relay; it reported the limit with its reset.');
 	const recorded = await cmd(['logs',upstream]);
