@@ -5,13 +5,28 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 	const bytes = [];
 	for await (const chunk of req) bytes.push(chunk);
 	const match = req.headers.authorization === 'Bearer ' + fs.readFileSync('/fixture/expected', 'utf8');
-	console.log(req.method, req.url, 'bearerMatch=' + match, 'beta=' + req.headers['anthropic-beta'], 'version=' + req.headers['anthropic-version']);
+	const body = Buffer.concat(bytes).toString();
+	const tag = req.url.startsWith('/v1/messages/count_tokens') ? '-' : body.includes('Slow relay check.') ? 'slow' : body.includes('Queued relay check.') ? 'queued' : '-';
+	console.log(req.method, req.url, 'bearerMatch=' + match, 'beta=' + req.headers['anthropic-beta'], 'version=' + req.headers['anthropic-version'], 'tag=' + tag);
 	if (!match) { res.writeHead(401); return res.end(); }
 	if (req.url.startsWith('/v1/messages/count_tokens')) {
 		res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":3}');
 	}
-	const {model} = JSON.parse(Buffer.concat(bytes));
-	res.writeHead(200, { 'content-type': 'text/event-stream' });
+	// A prompt that asks to be slow holds its relay slot for a while before the reply starts.
+	if (tag === 'slow') await new Promise(done => setTimeout(done, 6000));
+	// A prompt that asks for the limit gets the subscription's own refusal, with its unified headers.
+	if (body.includes('Rate limit check.')) {
+		res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '3600', 'request-id': 'req_fixture',
+			'anthropic-ratelimit-unified-status': 'rejected', 'anthropic-ratelimit-unified-reset': '4102444800',
+			'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-utilization': '1.0' });
+		return res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'fixture limit' } }));
+	}
+	const {model} = JSON.parse(body);
+	// A prompt that asks for a warning gets a normal reply with the 5-hour window nearly used.
+	res.writeHead(200, { 'content-type': 'text/event-stream', ...(body.includes('Rate warning check.') && {
+		'anthropic-ratelimit-unified-status': 'allowed_warning', 'anthropic-ratelimit-unified-reset': '4102444800',
+		'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-utilization': '0.93',
+		'anthropic-ratelimit-unified-5h-reset': '4102444800', 'anthropic-ratelimit-unified-5h-surpassed-threshold': '0.9' }) });
 	const chunks = [
 		{type:'message_start',message:{id:'msg_check',type:'message',role:'assistant',model,content:[],stop_reason:null,
 			stop_sequence:null,usage:{input_tokens:5,output_tokens:0}}},
@@ -22,5 +37,5 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 		{type:'message_stop'},
 	];
 	for (const event of chunks) res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
-	res.end();
+	res.end(() => { if (tag === 'slow') console.log('slow done'); });
 }).listen(443);

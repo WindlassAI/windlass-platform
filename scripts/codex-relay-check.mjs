@@ -249,7 +249,7 @@ async function relayAndForwarder(t, { stopping = false } = {}) {
 		const req = request({ host: '127.0.0.1', port: forwarder.address().port, method, path, agent,
 			headers: { host: '127.0.0.1:17892', authorization: bearer, 'content-type': 'application/json' } }, (res) => {
 			res.resume();
-			res.on('end', () => ok({ status: res.statusCode, connection: res.headers.connection, reused: req.reusedSocket }));
+			res.on('end', () => ok({ status: res.statusCode, connection: res.headers.connection, reused: req.reusedSocket, headers: res.headers }));
 		});
 		req.on('error', fail);
 		req.end(method === 'POST' ? '{}' : undefined);
@@ -272,7 +272,8 @@ test('logout during a request on a warm connection still answers the signed-out 
 	while (!relay.held.length) await new Promise((r) => setTimeout(r, 10));
 	await writeFile(relay.marker, '');
 	relay.exit();
-	assert.deepEqual(await turn, { status: 401, connection: 'close', reused: false });
+	const { headers, ...signedOut } = await turn;
+	assert.deepEqual(signedOut, { status: 401, connection: 'close', reused: false });
 });
 test('a relay that is being replaced answers retryable, and signed out only after a logout', { timeout: 10_000 }, async (t) => {
 	const stopping = await relayAndForwarder(t, { stopping: true });
@@ -290,4 +291,22 @@ test('a relay that is being replaced answers retryable, and signed out only afte
 	while (!cut.held.length) await new Promise((r) => setTimeout(r, 10));
 	cut.exit();
 	assert.equal((await pending).status, 503);
+});
+test('Codex rate-limit headers reach the client through the forwarder, on success and on a 429', { timeout: 10_000 }, async (t) => {
+	const relay = await relayAndForwarder(t);
+	const limits = { 'x-codex-primary-used-percent': '91.5', 'x-codex-primary-window-minutes': '300', 'x-codex-primary-reset-at': '1763800000',
+		'x-codex-secondary-used-percent': '40', 'x-codex-credits-has-credits': 'false', 'x-codex-credits-unlimited': 'false',
+		'x-codex-rate-limit-reached-type': 'primary', 'x-ratelimit-remaining-requests': '3' };
+	const hidden = { 'x-request-id': 'r', 'openai-organization': 'o', 'set-cookie': 'c', 'x-codex-turn-state': 's', 'x-codex-promo-message': 'p',
+		'x-codex-secondary-reset-at': 'sk-fixture' };
+	for (const [status, extra] of [[200, { 'content-type': 'text/event-stream' }], [429, { 'retry-after': '30' }]]) {
+		const turn = relay.call('POST', '/codex/v1/responses');
+		while (!relay.held.length) await new Promise((r) => setTimeout(r, 10));
+		relay.held.shift().writeHead(status, { ...limits, ...hidden, ...extra }).end(status === 200 ? 'data: {}\n\n' : '{"error":{"type":"usage_limit_reached"}}');
+		const { headers, ...reply } = await turn;
+		assert.equal(reply.status, status);
+		for (const [name, value] of Object.entries(limits)) assert.equal(headers[name], value, name);
+		for (const name of Object.keys(hidden)) assert.equal(headers[name], undefined, name);
+		if (status === 429) assert.equal(headers['retry-after'], '30');
+	}
 });

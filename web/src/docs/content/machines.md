@@ -347,7 +347,7 @@ docker exec windlass-runner windlass-runner logout opencode
 
 No agent's login is ever inside its container. The runner keeps each login in a login volume on the machine that no session mounts. A separate relay container on the machine holds it instead, and is the only one that reads it.
 
-Each Claude Code or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
+Each Claude Code, Codex or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
 
 When the relay refuses a request, or the provider answers with an error, the agent gets one of these fixed messages. The relay does not pass the provider's own reason on.
 
@@ -358,8 +358,21 @@ When the relay refuses a request, or the provider answers with an error, the age
 | "The provider's usage or rate limit was reached." | The provider answered that a usage or rate limit was reached. |
 | "The provider failed or couldn't be reached." | The provider failed, or the relay could not reach it. |
 | "The provider rejected the request." | The provider refused it for another reason. |
+| "Too many model requests at once from this session (8)." | The session had 8 model requests in flight, and none finished while this one waited 90 seconds. |
+| "Too many model requests at once on this machine (24)." | The machine's sessions had 24 requests in flight through this relay, and none finished while this one waited 90 seconds. |
+| "Too many model requests waiting from this session (32)." | 32 of the session's requests were already waiting at the relay. |
+| "Too many model requests waiting on this machine (128)." | 128 requests were already waiting at this relay. |
+| "Too many connections to the model relay from this session (32)." | The session already has 32 connections open to the relay. |
 
-So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, in every network mode, `none` included.
+The relay passes on the provider's rate-limit headers, and nothing else from its reply headers: `retry-after`, `anthropic-ratelimit-*`, `x-ratelimit-*` and Codex's `x-codex-*` usage and credit headers. It passes them on a successful reply and on a usage-limit (429) or overload (503, 529) refusal. The agent reads them as it would without a relay, so the platform sees the same "limited until" times. The relay never passes on cookies, request IDs, redirects or account names, and drops any header value over 64 characters, with a character other than letters, digits, spaces and `. , : _ + -`, or containing the login.
+
+## Limits on model requests
+
+Each relay holds one login for the whole machine, so it limits how hard sessions can use it. A session can have at most 8 model requests in flight and 32 connections open to the relay. All sessions on the machine together can have at most 24 requests in flight through one agent's relay. Claude Code, Codex and OpenCode each have their own relay and their own 24.
+
+A request over a limit waits at the relay for up to 90 seconds, in the order it came, and goes on to the provider as soon as one of the requests ahead of it finishes. A waiting request costs nothing at the provider, and one that its agent gives up on leaves the line. A session at its own limit does not hold up other sessions waiting for the machine's. If no slot frees in 90 seconds, or 32 of the session's requests (128 on the machine) are already waiting, the agent gets a 503 with `retry-after: 2`, a busy error it retries a limited number of times: Claude Code up to 10 times over about 3 minutes, Codex for about a minute. Then the turn ends with that error. A connection past the session's 32 is answered with the same kind of 503 and closed, and a connection that sends no request within 10 seconds is closed. The refusal is not a 429: Claude Code does not retry a 429 on a subscription login and would take it as your usage limit being reached. Normal work, including a few subagents at once, stays well under the limits. A runaway command that fires hundreds of requests in parallel gets most of them refused instead of spending your subscription.
+
+So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, within these limits, in every network mode, `none` included.
 
 In `restricted` mode, commands in an OpenCode session also cannot reach any model provider's host, or any bare IP address, through the proxy. `--egress-allow` does not reopen them. Model requests go only through the relay.
 
