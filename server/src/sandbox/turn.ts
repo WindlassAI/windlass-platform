@@ -472,6 +472,8 @@ class Turn {
 	private personal = new Set<string>();
 	/** Of those, the ones whose tools run without asking. */
 	private unasked = new Set<string>();
+	/** The engine reported the session tainted in this turn, with `unaskedUntilTainted`: nothing is answered unasked any more. */
+	private taintSeen = false;
 	/** The calls of the platform's tools that are being answered, by `<messageId>\n<callId>`: aborted when the engine settles one, or the turn ends. */
 	private readonly hostCalls = new Map<string, AbortController>();
 	/** The calls of a tool of a server in `unasked` the engine reported and has not settled. */
@@ -968,7 +970,7 @@ class Turn {
 			await this.storeConfiguration(next, had);
 			this.configWritten = next.written !== null;
 			this.personal = new Set(personal.map((server) => server.name));
-			this.unasked = new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
+			this.unasked = this.taintSeen ? new Set() : new Set((this.input.servers ?? []).filter((server) => server.unasked === true && this.personal.has(server.name)).map((server) => server.name));
 		} catch (error) {
 			if (missed !== "") this.notes.push(`[platform] Windlass's configuration file in the sandbox could not be written (${error instanceof Error ? error.message : String(error)}), so ${missed}`);
 		}
@@ -994,6 +996,11 @@ class Turn {
 	 * `tool.settled` ends it.
 	 */
 	private callingUnasked(event: WindlassEvent): void {
+		if (event.type === "taint.noticed" && this.input.unaskedUntilTainted === true) {
+			this.taintSeen = true;
+			this.unasked.clear();
+			this.unaskedCalls.clear();
+		}
 		if (this.unasked.size === 0 || (event.type !== "tool.called" && event.type !== "tool.settled")) return;
 		const data = (event.data ?? {}) as Record<string, unknown>;
 		if (typeof data.messageId !== "string" || typeof data.callId !== "string") return;

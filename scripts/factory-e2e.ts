@@ -2036,7 +2036,8 @@ try {
 	});
 
 	await check("ci: a failing CI gets a fix turn, and the same CI failure again stops at once with a question", async () => {
-		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
+		// On "Docker + Windlass sandbox", where Windlass can sandbox a tainted session's commands: the fix turn is marked (below).
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-windlass-sandbox", title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
@@ -2051,18 +2052,26 @@ try {
 		return `${fixes} CI failures, ${asked.run.rounds.ci} fix round; ${asked.question.text}; marked “${source}”`;
 	});
 
-	await check("untrusted: on Docker, hardened, a CI fix turn does not start, and the item says why", async () => {
+	await check("untrusted: on Docker, hardened, a CI fix turn runs, labelled only, and the timeline says so once", async () => {
 		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Loosen the bolts", body: "Make the bolts loose.", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
 		setCi(harbor, pull.head, "failure");
-		const asked = await untilItem(user, item.id, "the refusal", (view) => view.question !== null, CI_WAIT_MS * 2);
-		assert(asked.question?.kind === "turn_refused" && asked.question.text.includes("“Docker, hardened”") && asked.question.text.includes((await import("../server/src/factory/untrusted.js")).untrustedWords.ci(pull.head)), stateOf(asked));
+		const asked = await untilItem(user, item.id, "the question", (view) => view.question !== null, CI_WAIT_MS * 2);
+		const fixes = said(asked).filter((line) => line.startsWith("CI failed")).length;
+		// The fix turn ran (the same failure came back after it), as on a profile that marks the text.
+		assert(asked.question?.kind === "rounds" && /same failure/.test(asked.question.text) && fixes === 2 && asked.run?.rounds.ci === 1, `${stateOf(asked)}; ${said(asked).join(" / ")}`);
 		const marks = await untrustedMarks(item.sessionId);
-		assert(marks.prompts.length === 0 && marks.taint === null, `the refused turn reached Windlass: ${JSON.stringify(marks)}`);
+		assert(marks.prompts.length === 0 && marks.taint === null, `the fix turn reached Windlass marked: ${JSON.stringify(marks)}`);
+		const { hardenedUnmarkedNote, untrustedWords } = await import("../server/src/factory/untrusted.js");
+		const timeline = (await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot()).timeline;
+		const notes = timeline.filter((entry) => entry.kind === "platform" && entry.text === hardenedUnmarkedNote([untrustedWords.ci(pull.head)]));
+		assert(notes.length === 1, `the timeline's line: ${notes.length}; ${JSON.stringify(timeline.filter((entry) => entry.kind === "platform").map((entry) => (entry as { text?: string }).text))}`);
+		const prompt = JSON.stringify(timeline.filter((entry) => entry.kind === "user"));
+		assert(prompt.includes("untrusted"), "the CI log was not labelled in the prompt");
 		await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
-		return asked.question.text;
+		return `${fixes} CI failures, the fix ran unmarked; “${notes[0] && (notes[0] as { text: string }).text}”`;
 	});
 
 	await check("ask: the builder asks its person, the item waits with the agent's words apart, and the answer is the next turn's message", async () => {

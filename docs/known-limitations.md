@@ -94,6 +94,11 @@ details.
   each turn's outside text and taints the session ([Untrusted text](work-items.md#untrusted-text)); these
   agents only get the labelled prompt, and run every command without asking. An item from someone else's
   issue can still be started on them.
+- **On Docker, hardened, Windlass is told of no outside text.** A tainted Windlass there would refuse every
+  command, since its sandbox cannot start under Docker's default seccomp. CI logs, findings and reports go
+  labelled only; someone else's issue or feedback stops the turn until the person chooses **Run it
+  anyway**, and then goes labelled only too, its commands outside Windlass's sandbox. **Docker + Windlass
+  sandbox** is the profile for such work.
 - **An item's verdict is as good as its repository's checks and CI.** The acceptance criteria are listed
   for the person and checked by nobody, and a repository with no checks of its user's and no CI is
   handed over `unverified`.

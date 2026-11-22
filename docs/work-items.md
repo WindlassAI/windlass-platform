@@ -277,6 +277,8 @@ prompt stays either way.
 | Subtask reports: the feature's summary turn, a re-plan after a stopped subtask, the reviewer of a feature | those plans | `reports of the feature's subtasks` |
 | A subtask's task: its feature's sources, and the reports of the subtasks before it | `internalChildRequest`, `internalFeatureChild` | `reports of earlier subtasks` |
 
+The issue and feedback rows are someone else's text; the others are the run's own.
+
 Not marked: the platform's own sentences, the item's body from the web app or the API, the person's
 notes and answers (an `ask_person` answer resumes with `untrusted` cleared), the person's own feedback,
 the planner's placement inventory, and the repository's files (the workspace, trusted by Windlass's
@@ -284,20 +286,35 @@ decision; a conflict turn's fetched base too). The agent's own `ask_person` ques
 any agent; it is shown to the person as the agent's words. A provider retry replays the delivery's
 sources (`ItemProviderRefusal.retry.untrusted`).
 
-In the session (`agent-session.ts`): a Windlass item turn with sources on `docker-hardened` is refused
-before the sandbox opens (`hardenedRefusal`): Windlass runs there with approval `full`, a tainted session
-puts commands back in bubblewrap, and Docker's default seccomp does not let it start, so every command
-would ask and be refused. `e2b-open` is not refused: bubblewrap runs in its template, so its tainted
-commands run sandboxed without network. An item turn with sources, or in a session Windlass has reported
-tainted (`meta.tainted`, from `taint.noticed` and `taint.cleared`), hands the user's servers with
-`unasked` off, so the layer answers none of their questions and Windlass refuses the calls. Claude Code
-and OpenCode get no marker: the timeline says so once (`agentUnmarkedNote`).
+Two kinds (`thirdParty`, by the words' beginnings): someone else's (an issue of theirs, feedback with
+another writer, and either as a subtask inherits it) and the run's own (CI logs, findings, the
+builder's report, subtask reports).
+
+In the session (`agent-session.ts`), on `docker-hardened` a Windlass item turn is told of no source:
+Windlass runs there with approval `full`, a tainted session puts commands back in bubblewrap, and
+Docker's default seccomp does not let it start, so every command would ask and be refused. A turn with
+only the run's own sources goes labelled only, with one timeline line (`hardenedUnmarkedNote`). A turn
+with someone else's is refused before the sandbox opens (`hardenedStop`, `hardenedRefusal`), and the
+`turn_ended` fact carries `untrustedRefusal`: those sources and the delivered row's text. The item asks
+`turn_refused` with **Run it anyway** (`run_anyway`) and give up; the choice adds the sources to
+`FactoryItem.unsandboxed` and delivers that same text. A delivery whose sources of someone else's are
+all in `unsandboxed` carries `unsandboxed: true` (the inbox's `unsandboxed` column), which the session
+lets through, labelled only. A subtask starts with its feature's (`internalChildRequest`). Every other
+profile is told every source. `e2b-open` runs its tainted commands in bubblewrap, which works in its
+template.
+
+An item turn with sources, or in a session Windlass has reported tainted (`meta.tainted`, from
+`taint.noticed` and `taint.cleared`), hands the user's servers with `unasked` off. Every item turn
+also sets `unaskedUntilTainted`: the layer stops answering for `unasked` servers at the turn's own
+`taint.noticed` (`turn.ts`), so a call after the taint goes to the item's question and is refused.
+Claude Code and OpenCode get no marker: the timeline says so once (`agentUnmarkedNote`).
 
 ```sh
 cd server && npx tsx ../scripts/factory-check.ts      # "untrusted text": each turn's sources, by input
 cd server && npx tsx ../scripts/untrusted-check.ts    # the session/prompt frame against a stand-in 0.6.0 and an older engine; the inbox column
-cd server && FACTORY_ONLY=ci,untrusted,reviewer npx tsx ../scripts/factory-e2e.ts   # CI fix, reviewer and review fix reach the fake Windlass marked; the hardened refusal
-cd server && WEBHOOK_ONLY="G3 a stranger" npx tsx ../scripts/webhook-check.ts       # someone else's issue, started by its owner
+cd server && FACTORY_ONLY=ci,untrusted,reviewer npx tsx ../scripts/factory-e2e.ts   # CI fix, reviewer and review fix reach the fake Windlass marked; on docker-hardened the CI fix runs unmarked
+cd server && WEBHOOK_ONLY="G3 a stranger" npx tsx ../scripts/webhook-check.ts       # someone else's issue, started by its owner; on docker-hardened refused, then run anyway
+cd server && npx tsx ../scripts/mcp-check.ts                                         # (Docker) an item turn stops answering for unasked servers at its own taint
 ```
 
 ## The second review

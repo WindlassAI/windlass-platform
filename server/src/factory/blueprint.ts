@@ -53,7 +53,7 @@ import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
-import { sources, untrustedWords } from "./untrusted.js";
+import { sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
 import { harnessName } from "../sandbox/harnesses.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
@@ -544,6 +544,15 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 
 const IMPLEMENT: TurnPlan = { kind: "implement", text: "", newStep: true, charge: null, fingerprint: null, fetchBase: null };
 
+/**
+ * A delivery's `unsandboxed`: someone else's text in it, all of which the person chose to run anyway where
+ * Windlass can't sandbox a tainted session ("Docker, hardened"); the session refuses the turn there otherwise.
+ */
+const unsandboxedOf = (item: FactoryItem, list: readonly string[] | undefined): { unsandboxed?: true } => {
+	const outside = thirdParty(list);
+	return outside.length && outside.every(source => item.unsandboxed?.includes(source)) ? { unsandboxed: true } : {};
+};
+
 /** A plan's `untrusted`: the sources, each once; nothing for none, so a trusted plan stays as it was. */
 const marked = (...lists: Array<readonly string[] | undefined | null>): Pick<TurnPlan, "untrusted"> => {
 	const list = sources(...lists);
@@ -767,10 +776,11 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
 		// The reviewer always reads another agent's report, and the task as the item has it (a feature's with its subtasks' reports).
 		const untrusted = marked(item.untrusted, [untrustedWords.builder(plan.checkout.pr)], item.approvedPlan ? [untrustedWords.reports] : []);
-		c.effects.push({ ...delivery, to: "review", checkout: plan.checkout, reviewerInput: reviewerInput(c, run.ci, plan.checkout.pr), agent: null, maxSteps: RULES.reviewMaxSteps, ...untrusted });
+		c.effects.push({ ...delivery, to: "review", checkout: plan.checkout, reviewerInput: reviewerInput(c, run.ci, plan.checkout.pr), agent: null, maxSteps: RULES.reviewMaxSteps, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted) });
 	} else {
 		const asking = ASKING.has(plan.kind) ? { asksLeft: Math.max(0, RULES.asks - (run.asks ?? 0)) } : {};
-		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...marked(plan.untrusted) });
+		const untrusted = marked(plan.untrusted);
+		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted) });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);
@@ -826,6 +836,11 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	const result = gateResult(fact.outcome, fact.verified);
 	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
 	// again on its own. The person is asked, with the session's own sentence.
+	// Refused on "Docker, hardened" for someone else's text: the person may run that very turn anyway, labelled only.
+	if (fact.refused && fact.untrustedRefusal?.sources.length) {
+		const resume: TurnPlan = { ...IMPLEMENT, kind, ...fact.untrustedRefusal.retry, newStep: false };
+		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("run_anyway"), ...handOver(item), choice("give_up")], null, resume);
+	}
 	if (fact.refused) {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) };
 		// Two sentences: the session's own may be several, and starts with a capital.
@@ -1577,6 +1592,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	give_up: "Give up",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
+	run_anyway: "Run it anyway",
 };
 const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
 /**
@@ -1721,6 +1737,16 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			if (question.kind !== "review_question" || resume === null) return false;
 			fixAfterReview(c, { ...resume, text: withNote(resume.text, note) });
 			break;
+		case "run_anyway": {
+			// Someone else's text on "Docker, hardened": the person lets it go labelled only, its commands outside Windlass's
+			// sandbox, for this turn and for any later one (and subtask) that carries no source beyond these.
+			const outside = thirdParty(resume?.untrusted);
+			if (question.kind !== "turn_refused" || resume === null || !outside.length) return false;
+			item.unsandboxed = sources(item.unsandboxed, outside);
+			c.say(`You chose to run text from someone else (${outside.join("; ")}) without Windlass's sandbox.`);
+			nextTurn(c, { ...resume, text: withNote(resume.text, note) });
+			break;
+		}
 		case "reply":
 			// An answer needs words: the page does not send one without them.
 			if (question.kind !== "agent_ask" || resume === null || note === null) return false;

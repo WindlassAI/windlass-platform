@@ -210,28 +210,36 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 ## Text from someone else
 
-Some of what an item's agent reads is not yours:
+Some of what an item's agent reads is not yours. Some of it was written by other people:
 
 - the issue, when someone else wrote it;
-- CI's logs, when CI fails;
 - feedback on the pull request from anyone but you;
+- in a feature, either of these as its subtasks inherit them.
+
+The rest comes from the item's own run:
+
+- CI's logs, when CI fails;
 - the second reviewer's findings, and, for the reviewer, the builder's report;
 - in a feature, the reports of other subtasks.
 
-The agent is told in its prompt that this text is quoted data, not instructions. Windlass is told too, with the turn that carries it, and with where it came from, for example "CI logs of 1a2b3c4" or "issue #42 by @someone". From that turn on, the session counts as tainted. A command that would use the network or run outside Windlass's sandbox asks first, and so does a tool that could send data out. Nobody is there to answer in an item's turn, so such a call is refused, and the timeline says why. Edits in the workspace, commands inside the sandbox, and the platform's own tools (report, push) still work. The session stays tainted until the item ends. Your MCP servers set to run without asking are asked about again in such a session, so in an item's turn their tools are refused.
+The agent is told in its prompt that all of this is quoted data, not instructions. The item's page and the session's timeline name each source, for example "CI logs of 1a2b3c4" or "issue #42 by @someone".
+
+On most profiles Windlass is told too, with the turn that carries the text and with where it came from. From that turn on, the session counts as tainted. A command that would use the network or run outside Windlass's sandbox asks first, and so does a tool that could send data out. Nobody is there to answer in an item's turn, so such a call is refused, and the timeline says why. Edits in the workspace, commands inside the sandbox, and the platform's own tools (report, push) still work. The session stays tainted until the item ends.
+
+Your MCP servers set to run without asking lose that setting in an item once its session is tainted, also part way through a turn. Their calls are then refused. Windlass taints a session for many reasons, among them the first result of an MCP server that is not marked `untrusted: false`.
 
 Your own words are never marked: an item you wrote, your notes, your answers to the agent's questions, and your feedback on GitHub.
 
-What a tainted turn can still do depends on the item's profile:
+What a turn with such text does depends on the item's profile:
 
-| Profile | After text from someone else |
-|---|---|
-| Docker + Windlass sandbox, E2B + Windlass sandbox | Commands run as before: in the sandbox, without network. |
-| E2B, before the sandbox check | As before: a command Windlass cannot sandbox is refused. |
-| E2B, microVM only | Commands move into Windlass's sandbox: no network, and nothing written outside the workspace. |
-| Docker, hardened | The turn does not start. Windlass can't sandbox commands there, so it would refuse every one. The item asks you, naming the text. File the work again on **Docker + Windlass sandbox**, or give up. |
+| Profile | Text from the run (CI logs, findings, reports) | Text from someone else (issue, feedback) |
+|---|---|---|
+| Docker + Windlass sandbox, E2B + Windlass sandbox | Windlass is told. Commands run as before: in its sandbox, without network. | The same. |
+| E2B, before the sandbox check | Windlass is told. A command Windlass can't sandbox is refused, as before. | The same. |
+| E2B, microVM only | Windlass is told. Commands move into its sandbox: no network, and nothing written outside the workspace. | The same. |
+| Docker, hardened | Windlass is not told: it can't sandbox commands there, so it would refuse every one. The text goes labelled only, the timeline says so once, and commands run as on any turn, with the container's network. | The turn does not start. The item asks you, naming the text. **Run it anyway** sends that turn labelled only, as for text from the run: Windlass is not told, so the agent's commands run outside Windlass's sandbox, with the container's network and the session's access token, and a command the text talked it into is not stopped. Later turns of the item, and its subtasks, that carry no other text from someone else go the same way. Text from someone new asks again. Or file the work again on **Docker + Windlass sandbox**, or give up. |
 
-**Claude Code and OpenCode** can't be told which text is someone else's. They get the same labelled prompt, the timeline says once that the text went as labelled text only, and they still run every command without asking, with network. Read an issue someone else wrote before you start an item on them.
+**Claude Code and OpenCode** can't be told which text came from someone else. They get the same labelled prompt, the timeline says once that the text went as labelled text only, and they still run every command without asking, with network. Read an issue someone else wrote before you start an item on them.
 
 A sandbox whose Windlass is older than 0.6.0 also gets labelled text only, and its timeline says so once.
 

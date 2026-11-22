@@ -1145,7 +1145,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places })
 					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
 			}
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
 			return true;
 		}
 		case "release_review":
@@ -1400,7 +1400,9 @@ export const workItem = actor({
 				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
 				// The subtask's task was planned from the feature's (its sources go with it), and quotes the reports of subtasks before it.
-				untrusted: sources(s.item.untrusted, reports.length ? [untrustedWords.earlier] : []) };
+				untrusted: sources(s.item.untrusted, reports.length ? [untrustedWords.earlier] : []),
+				// What the feature's person chose to run anyway on "Docker, hardened": the subtask's task carries the same text.
+				...(s.item.unsandboxed?.length && { unsandboxed: s.item.unsandboxed }) };
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);

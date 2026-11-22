@@ -202,6 +202,13 @@ export interface FactoryItem {
 	 * Every turn that hands the agent the task says so. Absent: the task is the person's own.
 	 */
 	untrusted?: string[];
+	/**
+	 * The sources of someone else's text (untrusted.ts, `thirdParty`) the person chose to run anyway on
+	 * "Docker, hardened" ("Run it anyway"), where Windlass can't sandbox a tainted session's commands: a
+	 * turn whose such sources are all here goes there labelled only. A subtask starts with its feature's.
+	 * Absent: none.
+	 */
+	unsandboxed?: string[];
 	/** §3.2: "approve" runs step 0 first. */
 	plan: "none" | "approve";
 	/** Absent on items persisted before second review was available. */
@@ -274,6 +281,12 @@ export interface TurnPlan {
 export interface ItemProviderRefusal extends ProviderRefusal {
 	accountKey?: string;
 	placeName?: string;
+	retry: Pick<TurnPlan, "text" | "fetchBase" | "untrusted">;
+}
+
+/** A turn the session did not start on "Docker, hardened" for someone else's text (untrusted.ts, `hardenedRefusal`). */
+export interface UntrustedRefusal {
+	sources: string[];
 	retry: Pick<TurnPlan, "text" | "fetchBase" | "untrusted">;
 }
 
@@ -353,6 +366,11 @@ export type Fact =
 			 * person. Absent for a turn that ran, or was cut off.
 			 */
 			refused?: string | null;
+			/**
+			 * With `refused`, when the session refused it on "Docker, hardened" for someone else's text: those
+			 * sources, and the turn as it was delivered, to run anyway.
+			 */
+			untrustedRefusal?: UntrustedRefusal;
 			providerRefusal?: ItemProviderRefusal;
 			spend: TurnSpend;
 	  }
@@ -394,7 +412,7 @@ export type Effect =
 	| { kind: "describe_feature"; key: string }
 	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[] }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }

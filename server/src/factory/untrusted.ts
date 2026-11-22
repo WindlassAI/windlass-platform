@@ -36,6 +36,19 @@ export const untrustedWords = {
 	earlier: "reports of earlier subtasks",
 };
 
+/**
+ * The sources written by someone other than the item's person: an issue of someone else's, and GitHub
+ * feedback with any other writer, also as a subtask or a feature inherited them (the same words). The
+ * rest (CI logs, the second reviewer's findings, the builder's report, subtask reports) is text the
+ * platform's own run made: no person outside put it there, though what it quotes is not vouched for.
+ */
+export function thirdParty(list: readonly string[] | undefined | null): string[] {
+	return sources(list).filter(source => THIRD_PARTY.some(form => form.test(source)));
+}
+
+/** `untrustedWords.issue` and `untrustedWords.feedback`, as they begin: every source is made by those words. */
+const THIRD_PARTY = [/^issue #\d+ by @/, /^GitHub feedback from /];
+
 /** The sources of several pieces of text, each once, in order. */
 export function sources(...lists: Array<readonly string[] | undefined | null>): string[] {
 	return [...new Set(lists.flatMap(list => list ?? []).map(source => source.trim()).filter(Boolean))];
@@ -49,13 +62,24 @@ export function untrustedSource(list: readonly string[] | undefined): string | n
 }
 
 /**
- * Why a Windlass turn with outside text does not start on "Docker, hardened": Windlass runs there with
- * approval "full", and once the session is tainted it puts commands back into its bubblewrap sandbox,
- * which Docker's default seccomp profile does not let start. Every command would ask, and an item's turn
- * refuses what asks: the turn could do nothing.
+ * On "Docker, hardened" Windlass runs with approval "full", and once a session is tainted it puts
+ * commands back into its bubblewrap sandbox, which Docker's default seccomp profile does not let start:
+ * every command would ask, and an item's turn refuses what asks. So there no source is marked. Text of
+ * the run's own goes as labelled text only (`hardenedUnmarkedNote`); a turn with someone else's text
+ * does not start (this sentence) until the person chooses to run it anyway (`FactoryItem.unsandboxed`),
+ * and then it too goes labelled only, its commands outside Windlass's sandbox.
  */
 export const hardenedRefusal = (list: readonly string[]) =>
-	`This turn carries text from someone else (${sources(list).join("; ")}). On “Docker, hardened” Windlass cannot sandbox commands once such text is in the conversation, so it would refuse every command. File the work again on “Docker + Windlass sandbox”, or give up.`;
+	`This turn carries text from someone else (${sources(list).join("; ")}). On “Docker, hardened” Windlass cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token. Run it anyway, file the work again on “Docker + Windlass sandbox”, or give up.`;
+
+/** What stops a turn on "Docker, hardened" (above): its sources of someone else's, unless the person chose to run them anyway. */
+export function hardenedStop(list: readonly string[] | undefined, unsandboxed: boolean | undefined): string[] {
+	return unsandboxed ? [] : thirdParty(list);
+}
+
+/** Once per session, on "Docker, hardened", where no source is marked (above). */
+export const hardenedUnmarkedNote = (list: readonly string[]) =>
+	`On “Docker, hardened” Windlass is not told that this text is not yours (${sources(list).join("; ")}), since it could not sandbox commands once told. The text went to the agent as labelled text only, and commands run as on any turn.`;
 
 /** Once per session, when the sandbox's Windlass does not take the marker (before 0.6.0). */
 export const unmarkedNote = (list: readonly string[]) =>

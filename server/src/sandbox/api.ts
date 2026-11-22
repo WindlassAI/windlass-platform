@@ -446,6 +446,13 @@ export interface RunTurnInput {
 	 */
 	untrusted?: string[];
 	onUntrustedUnmarked?: () => void;
+	/**
+	 * The layer stops answering for `TurnPersonalServer.unasked` once the engine reports the session
+	 * tainted (`taint.noticed`), also part way through the turn: from then on such a call's question goes
+	 * to `onQuestion` like any other. For a turn nobody watches, where Windlass's asking again after taint
+	 * is the only stop on a call that sends out what came in.
+	 */
+	unaskedUntilTainted?: boolean;
 	/** Windlass's own session to continue (`session/resume`); omitted for the first turn. */
 	windlassSessionId?: string;
 	model?: string;

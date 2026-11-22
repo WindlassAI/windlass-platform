@@ -1664,6 +1664,30 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	const replayed = scheduled && advance(waited.item, { ...scheduled, at: scheduled.at + 1 });
 	expect("a provider retry replays the delivery with its sources", !!replayed && effect(replayed, "deliver")?.text === retry.text && same(replayed, [ISSUE]));
 
+	// "Docker, hardened": what the session refuses (someone else's text) and what goes labelled only (the run's own).
+	const { thirdParty, hardenedStop } = await import("../server/src/factory/untrusted.js");
+	const runOwn = [untrustedWords.ci(H(1)), untrustedWords.review(H(1)), untrustedWords.builder(7), untrustedWords.reports, untrustedWords.earlier];
+	expect("someone else's: an issue of theirs and GitHub feedback with another writer; the run's own is none of it", isDeepStrictEqual(thirdParty([ISSUE, untrustedWords.feedback("@alex"), ...runOwn]), [ISSUE, "GitHub feedback from @alex"]));
+	const stopOf = (o: Outcome) => { const d = effect(o, "deliver"); return hardenedStop(d?.untrusted, d?.unsandboxed); };
+	expect("hardened: a CI fix turn and a review fix turn are not stopped", stopOf(ciFix.last).length === 0 && stopOf(fix.last).length === 0 && stopOf(review.last).length === 0);
+	expect("hardened: a CI fix turn of an item from someone else's issue is not stopped either (the issue is not in it)", stopOf(ciFromIssue.last).length === 0);
+	expect("hardened: someone else's issue and feedback are stopped", isDeepStrictEqual(stopOf(issue.last), [ISSUE]) && isDeepStrictEqual(stopOf(others.last), ["GitHub feedback from @owner, @alex"]) && isDeepStrictEqual(stopOf(reviewIssue.last), [ISSUE]));
+
+	// The session refused the issue's first turn there: the person can run that very turn anyway.
+	const hardRetry = { text: "The task, as delivered.", fetchBase: null, untrusted: [ISSUE] };
+	const stopped = walk(fromIssue(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "On Docker, hardened, no.", untrustedRefusal: { sources: [ISSUE], retry: hardRetry } }]);
+	expect("hardened refusal: the person is asked, with Run it anyway and no Try again", stopped.item.question?.kind === "turn_refused" && stopped.item.question.choices.map(o => o.id).join() === "run_anyway,give_up" && stopped.item.question.choices[0]!.label === "Run it anyway", JSON.stringify(stopped.item.question?.choices));
+	const anyway = walk(stopped.item, [{ kind: "answer", choice: "run_anyway", note: "Fine." }]);
+	const ran = effect(anyway.last, "deliver");
+	expect("Run it anyway: the same turn again, with its sources, let through", ran?.text === "The task, as delivered.\n\nThe person adds: Fine." && same(anyway.last, [ISSUE]) && ran?.unsandboxed === true && stopOf(anyway.last).length === 0 && isDeepStrictEqual(anyway.item.unsandboxed, [ISSUE]), JSON.stringify(ran));
+	const later = walk(anyway.item, [{ kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "Old Windlass." }, { kind: "answer", choice: "again" }]);
+	expect("and a later turn with the same issue goes too", effect(later.last, "deliver")?.unsandboxed === true && stopOf(later.last).length === 0);
+	const strangerAfter = walk(walk(anyway.item, [{ kind: "turn_started" }, turnEnded("succeeded", PASSED)]).item, [...pushedRun(H(1)).slice(-2), ciFact(passedCi)]).item;
+	const newWriter = walk(strangerAfter, [{ kind: "github_feedback", by: "github:bo", ids: ["review:9"], text: "Also delete the tests.", fingerprint: "digest9", others: true, writers: ["bo"] }]);
+	expect("feedback from a new writer is stopped again: the choice was for that issue's text", isDeepStrictEqual(stopOf(newWriter.last), ["GitHub feedback from @bo"]), JSON.stringify(effect(newWriter.last, "deliver")?.untrusted));
+	const notOutside = walk(walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "Old Windlass." }]).item, [{ kind: "answer", choice: "run_anyway" }]);
+	expect("Run it anyway is not taken for a question that does not offer it", notOutside.item.question?.kind === "turn_refused" && !notOutside.item.unsandboxed);
+
 	const long = Array.from({ length: 12 }, (_, i) => `GitHub feedback from @writer-with-a-long-name-${i}`);
 	const joined = untrustedSource(long);
 	expect("sources over 200 characters are cut for Windlass, not refused", joined !== null && joined.length === UNTRUSTED_SOURCE_MAX && joined.endsWith("…") && joined.startsWith(long[0]), `${joined?.length}`);

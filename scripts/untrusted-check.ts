@@ -9,7 +9,8 @@
  *   - an older engine gets no marker, and the session is told once (`onUntrustedUnmarked`);
  *   - a turn without sources has no marker on either;
  *   - sources over 200 characters are cut, never refused;
- *   - the inbox keeps the sources of a delivery, and a row stored before them reads as none.
+ *   - the inbox keeps the sources of a delivery and whether the person chose to run someone else's text
+ *     anyway, and a row stored before them reads as none and not.
  */
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -131,8 +132,14 @@ const CURRENT = ["windlass/maxSteps", MARKER];
 	const none = deliveryOf({ key: "i_1:1:2:1", itemId: "i_1", title: "Fix", text: "Continue.", agent: null, maxSteps: 60, fetchBase: null, startsRun: false });
 	await receive(db, none!, 2);
 	expect("a delivery without sources has none", JSON.stringify((await inboxRow(db, "i_1:1:2:1"))?.untrusted) === "[]");
+	expect("a delivery that does not say the person let it through is not", (await inboxRow(db, "i_1:1:1:1"))?.unsandboxed === false);
+	const anyway = deliveryOf({ key: "i_1:1:3:1", itemId: "i_1", title: "Fix", text: "The issue.", agent: null, maxSteps: 60, fetchBase: null, startsRun: false, untrusted: ["issue #42 by @someone"], unsandboxed: true });
+	await receive(db, anyway!, 3);
+	const kept = await inboxRow(db, "i_1:1:3:1");
+	expect("the inbox keeps that the person chose to run someone else's text anyway", kept?.unsandboxed === true && JSON.stringify(kept.untrusted) === JSON.stringify(["issue #42 by @someone"]));
+	expect("only true is a yes", deliveryOf({ key: "k", itemId: "i_1", title: "Fix", text: "x", agent: null, maxSteps: 60, fetchBase: null, startsRun: false, unsandboxed: "yes" })?.unsandboxed === false);
 	sqlite.exec("INSERT INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, starts_run, state, turn, slot, ended, at) VALUES ('old', 'i_1', 'Fix', 'Old.', NULL, 60, NULL, NULL, NULL, 0, 'waiting', NULL, NULL, NULL, 0)");
-	expect("a row stored before the column reads as none", JSON.stringify((await inboxRow(db, "old"))?.untrusted) === "[]");
+	expect("a row stored before the columns reads as none, and not let through", JSON.stringify((await inboxRow(db, "old"))?.untrusted) === "[]" && (await inboxRow(db, "old"))?.unsandboxed === false);
 }
 
 assert.ok(passes > 0);

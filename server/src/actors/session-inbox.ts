@@ -48,6 +48,7 @@ export const INBOX_TABLES = [
 		checkout TEXT,
 		asks_left INTEGER,
 		untrusted TEXT NOT NULL DEFAULT '[]',
+		unsandboxed INTEGER NOT NULL DEFAULT 0,
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -94,6 +95,11 @@ export interface Delivery {
 	 * platform's and the person's own words, and for rows stored before it.
 	 */
 	untrusted?: string[];
+	/**
+	 * The person chose to run the text from someone else in `untrusted` anyway (`FactoryItem.unsandboxed`):
+	 * on "Docker, hardened" the turn then goes labelled only instead of being refused.
+	 */
+	unsandboxed?: boolean;
 }
 
 export interface InboxRow extends Delivery {
@@ -137,13 +143,13 @@ interface InboxCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; unsandboxed: number | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), unsandboxed: row.unsandboxed === 1, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, starts_run, state, turn, slot, ended FROM inbox";
 
 /** The sources of a delivery or a row: strings, each kept to Windlass's length, at most a handful; anything else is none. */
 export function untrustedOf(value: unknown): string[] {
@@ -173,7 +179,7 @@ export function deliveryOf(input: unknown): Delivery | null {
 	const checkout = given.checkout as ReviewDelivery | undefined;
 	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
 	const asksLeft = typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0 ? given.asksLeft : null;
-	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted) };
+	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted), unsandboxed: given.unsandboxed === true };
 }
 
 /** Writes the delivery's row, in one statement. False when a row of that key was there: the delivery came before. */
@@ -181,7 +187,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -192,6 +198,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		delivery.checkout ? JSON.stringify(delivery.checkout) : null,
 		delivery.asksLeft ?? null,
 		JSON.stringify(delivery.untrusted ?? []),
+		delivery.unsandboxed ? 1 : 0,
 		delivery.startsRun ? 1 : 0,
 		now,
 	);

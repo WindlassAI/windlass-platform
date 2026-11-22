@@ -213,9 +213,9 @@ import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
-import { agentUnmarkedNote, hardenedRefusal, unmarkedNote } from "../factory/untrusted.js";
+import { agentUnmarkedNote, hardenedRefusal, hardenedStop, hardenedUnmarkedNote, unmarkedNote } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
-import type { Fact, ItemProviderRefusal } from "../factory/types.js";
+import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
@@ -532,7 +532,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal };
 }
 
 /**
@@ -3469,6 +3469,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const checkout = active.item?.row.checkout;
 	// Where the outside text of an item's turn came from: Windlass is told with the prompt (factory/untrusted.ts).
 	const untrusted = active.item?.row.untrusted ?? [];
+	// On "Docker, hardened" Windlass can't sandbox a tainted session's commands, so it is told of no source: the run's own text goes
+	// labelled only, and someone else's only once the person chose to run it anyway (`unsandboxed`).
+	const hardened = (meta.harness ?? "windlass") === "windlass" && meta.profile === "docker-hardened";
 	const unmarked = (text: string) => {
 		if (meta.untrustedUnmarkedNoted) return;
 		meta.untrustedUnmarkedNoted = true;
@@ -3556,10 +3559,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
-		// Text from someone else taints Windlass's session, and a tainted Windlass on "Docker, hardened" can run no command: refused before anything starts.
-		if (active.item && untrusted.length && (meta.harness ?? "windlass") === "windlass" && meta.profile === "docker-hardened") {
-			const reason = hardenedRefusal(untrusted);
+		// Someone else's text on "Docker, hardened" would go unmarked, its commands outside Windlass's sandbox: refused before anything
+		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
+		const outside = hardenedStop(untrusted, active.item?.row.unsandboxed);
+		if (active.item && hardened && outside.length) {
+			const reason = hardenedRefusal(outside);
+			const { text: retryText, fetchBase } = active.item.row;
 			active.item.refused = reason;
+			active.item.untrustedRefusal = { sources: outside, retry: { text: retryText, fetchBase, untrusted } };
 			throw new TurnProblem(reason);
 		}
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
@@ -3717,6 +3724,8 @@ fi`, { signal, timeoutMs: 5000 });
 			}
 			let filings = Promise.resolve("");
 			let calls = 0;
+			// Told of no source there (above): the timeline says once that the text went labelled only.
+			if (hardened && untrusted.length) unmarked(hardenedUnmarkedNote(untrusted));
 			result = await harness.runTurn(sandbox, {
 				...common,
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
@@ -3732,7 +3741,9 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				prompt: (prepared ? snapshotPrompt(prepared) : "") + (reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`),
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
-				...(untrusted.length && { untrusted, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(untrusted)); } }),
+				...(untrusted.length && !hardened && { untrusted, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(untrusted)); } }),
+				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
+				...(item && { unaskedUntilTainted: true }),
 				reportScreenshots: browser,
 				onReview: reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
 					const openFiles = filingFiles;
@@ -3807,7 +3818,11 @@ fi`, { signal, timeoutMs: 5000 });
 						if (event.type === "step.failed" && lastStepRefusal?.retryAfterMs !== undefined)
 							lastStepRefusal.resetsAt = resetTime(Date.now() + lastStepRefusal.retryAfterMs);
 						if (reviewer) commands.note(event);
-						if (event.type === "taint.noticed" || event.type === "taint.cleared") meta.tainted = event.type === "taint.noticed";
+						// Kept at once: Windlass says it once per session, and a later turn's servers go by it.
+						if ((event.type === "taint.noticed" || event.type === "taint.cleared") && meta.tainted !== (event.type === "taint.noticed")) {
+							meta.tainted = event.type === "taint.noticed";
+							void persist(c);
+						}
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
 					} catch (error) {
@@ -4471,7 +4486,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }) };
 	}
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (attachmentStore()) {
@@ -4551,6 +4566,7 @@ export const agentSession = actor({
 			if (!inboxColumns.some(col => col.name === "asks_left")) await db.execute("ALTER TABLE inbox ADD COLUMN asks_left INTEGER");
 			// Rows from before the marker carry no sources: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "untrusted")) await db.execute("ALTER TABLE inbox ADD COLUMN untrusted TEXT NOT NULL DEFAULT '[]'");
+			if (!inboxColumns.some(col => col.name === "unsandboxed")) await db.execute("ALTER TABLE inbox ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 		},
 	}),
