@@ -3,7 +3,7 @@ import type { AcpContent, AcpUpdate, TurnUsage } from "../contract.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
-import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle } from "./api.js";
+import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle, type StartMark } from "./api.js";
 import type { Harness, HarnessCapabilities } from "./harness.js";
 import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
@@ -199,6 +199,10 @@ export class AcpHarness implements Harness {
 		const stream = updateStream(redactor, update => input.onAcpUpdate?.(update));
 		const stderr = new RedactingStream(redactor);
 		const keepError = (piece: string) => { result.stderrTail = (result.stderrTail + piece).slice(-4096); };
+		const mark = (point: StartMark) => {
+			try { input.onStartMark?.(point); } catch { /* A listener's failure must not stop the turn. */ }
+		};
+		let outputSeen = false;
 		let run: SandboxProcess | undefined;
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
 		let phase: "setup" | "running" | "ended" = "setup";
@@ -224,6 +228,11 @@ export class AcpHarness implements Harness {
 				if (phase === "ended" || method !== "session/update" || !result.windlassSessionId || params.sessionId !== result.windlassSessionId) return;
 				const update = object(params.update);
 				if (typeof update.sessionUpdate !== "string") return;
+				// The agent's first output after the prompt: text, thinking, or a tool call.
+				if (phase === "running" && !outputSeen && ["agent_message_chunk", "agent_thought_chunk", "tool_call"].includes(update.sessionUpdate)) {
+					outputSeen = true;
+					mark("output");
+				}
 				if (update.sessionUpdate === "usage_update") {
 					if (typeof update.used !== "number" || typeof update.size !== "number") return;
 					const cost = object(update.cost);
@@ -279,6 +288,7 @@ export class AcpHarness implements Harness {
 			await handle.stopLeftovers(profile.leftovers);
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			const lines = new LineSplitter(line => rpc.receive(line));
+			mark("process");
 			run = handle.start(profile.command, { cwd: handle.cwd, env: {}, onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
@@ -287,6 +297,7 @@ export class AcpHarness implements Harness {
 			const request = (method: string, params: Fields, onResult?: (value: Fields) => void) => rpc.request<Fields>(method, params, { timeoutMs: 60_000, onResult });
 			const init = await request("initialize", { protocolVersion: 1, clientCapabilities: { ...(profile.id === "codex" && {auth:{_meta:{gateway:true}}}), fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "windlass-platform", version: "0" } });
 			if (init.protocolVersion !== 1) throw new Error(`${profile.name} does not speak ACP v1.`);
+			mark("initialized");
 			if (profile.id === "codex") await request("providers/set", {providerId:"openai", apiType:"openai", baseUrl:"http://127.0.0.1:17892/codex/v1", headers:{}});
 			const caps = object(init.agentCapabilities);
 			const canSteer = object(object(init._meta).steering).supported === true;
@@ -377,6 +388,7 @@ export class AcpHarness implements Harness {
 			}
 			const prompt = (value: string) => ({ sessionId, prompt: [{ type: "text", text: value }] });
 			phase = "running";
+			mark("prompted");
 			const answer = rpc.request<Fields>("session/prompt", prompt(input.prompt), { onResult: () => { phase = "ended"; } });
 			input.onControl?.({
 				steer: async value => {

@@ -381,6 +381,33 @@ try {
 			assert.ok(validValue("connect", found));
 		}
 	});
+	await checkControl("a runner tells a sandbox's start times on its first connect after the create, once, and only to a server that named start-times", async () => {
+		for (const [capabilities, named] of [[undefined, false], [["git-mirrors", "model-relay"], false], [["git-mirrors", "start-times"], true]] as const) {
+			await withControl([lease()], async r => {
+				await r.online(0, capabilities && [...capabilities]);
+				assert.equal(r.owner.startTimes, named, `owner.startTimes after welcome capabilities ${JSON.stringify(capabilities)}`);
+			});
+		}
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		for (const named of [false, true]) {
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+			owner.startTimes = named;
+			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			owner.provider.create = async () => "0123456789ab";
+			owner.provider.connect = async () => ({ cwd: "/workspace" }) as unknown as DockerSandboxHandle;
+			const id = await owner.create("s_times", "docker-hardened");
+			// What the session's create (runner/src/session.ts) puts on the box.
+			owner.boxes.get(id)!.startTimes = { image: 12, pulled: true, create: 340 };
+			const first = await owner.lifecycle("connect", id, "s_times");
+			const second = await owner.lifecycle("connect", id, "s_times");
+			assert.ok(validValue("connect", first) && validValue("connect", second));
+			assert.deepEqual(first && typeof first === "object" && "startTimes" in first ? first.startTimes : null, named ? { image: 12, pulled: true, create: 340 } : null, `named ${named}`);
+			assert.equal(second && typeof second === "object" && "startTimes" in second, false, "only the first connect says it");
+		}
+	});
 	await checkControl("suspending or removing a sandbox ends its turns' relay leases: the relay's file, the forwarder and the conversation's entry", async () => {
 		const { Executor } = await import("../runner/src/docker-executor.js");
 		for (const op of ["suspend", "destroy"] as const) {

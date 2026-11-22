@@ -36,7 +36,7 @@
         "scripts/github-standin.ts",
         "scripts/check-image.ts",
         "scripts/e2b-network-standin.mjs",
-        "scripts/{access,account,attachments,backup,connection,harness,models,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route}-check.ts",
+        "scripts/{access,account,attachments,backup,connection,harness,models,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times}-check.ts",
         "server/src/factory/untrusted.ts",
         "server/src/actors/session-inbox.ts",
         "sandbox/relay/**",
@@ -70,6 +70,7 @@
         "shot": "tsx ../scripts/shot-check.ts",
         "sizing": "tsx ../scripts/sizing-check.ts",
         "model-relay-route": "tsx ../scripts/model-relay-route-check.ts",
+        "start-times": "tsx ../scripts/start-times-check.ts",
         "workflow-lint": "node ../scripts/workflow-lint.ts ../.github/workflows/ci-heavy.yml"
       }
     },

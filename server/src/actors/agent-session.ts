@@ -157,6 +157,7 @@ import {
 	type SessionSnapshot,
 	type SessionStatus,
 	type SessionSummary,
+	type StartTimes,
 	SETUP_OUTPUT_CHARS,
 	type TimelineItem,
 	type TurnOutcome,
@@ -219,6 +220,7 @@ import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_R
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
 import { leaseState } from "../sandbox/relay-leases.js";
+import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
@@ -314,6 +316,8 @@ interface SessionMeta {
 	model: string;
 	mode: string;
 	availableModes: SessionSummary["availableModes"];
+	/** The last few turns' start times (start-times.ts), oldest first. Absent on sessions that have had no turn since. */
+	startTimes?: StartTimes[];
 	repoUrl: string | null;
 	createdAt: number;
 	updatedAt: number;
@@ -661,6 +665,8 @@ interface SessionVars {
 	runner: RunnerLink | null;
 	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
 	setupReap: Promise<void> | null;
+	/** The running turn's start clock (start-times.ts), which `openSandbox` tells when the sandbox and the workspace are ready. */
+	startClock: StartClock | null;
 	/**
 	 * The hosts allowed from this session (`allowHost`), with when: a turn whose list of hosts was read
 	 * before one of them keeps it all the same (`openSandbox`). This instance's only: a turn that starts
@@ -768,6 +774,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		status: meta.status,
 		turns: meta.turns,
 		lastOutcome: meta.lastOutcome,
+		...(meta.startTimes?.length ? { startTimes: meta.startTimes } : {}),
 		sandbox: meta.sandbox,
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
 		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder" } } : {}),
@@ -1285,7 +1292,9 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		const hosts = hostsForTurn(secrets.network, secrets.networkAt ?? 0, c.vars.hostsAllowed);
 		meta.networkHosts = meta.place.kind === "hosted" && hosts.length > 0 ? hosts : undefined;
 	}
+	const connecting = Date.now();
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, connectOptions(meta)) : undefined;
+	if (handle) c.vars.startClock?.sandbox(Date.now() - connecting, false);
 	sandboxChanged(c);
 	// An actor stopped between a create and its first connect learns it here. Only a yes is taken: a
 	// runner downgraded since says nothing of a sandbox the newer one made with a volume of its own.
@@ -1299,6 +1308,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			meta.sandbox = "none";
 			meta.cloned = false;
 		}
+		const making = Date.now();
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
 		meta.accountSecrets = null;
 		meta.snapshotCommit = null;
@@ -1341,6 +1351,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 		handle = await layer.sandboxes.connect(id, connectOptions(meta));
 		if (!handle) throw new TurnProblem("The new sandbox disappeared right after it was created.");
+		c.vars.startClock?.sandbox(Date.now() - making, true, handle.runnerStart);
 		// Recorded for this sandbox from what it has, not from what the provider would make now.
 		meta.ownDataSandbox = handle.ownData ? id : null;
 		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes, id))) {
@@ -3463,6 +3474,17 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	}
 }
 
+/** The turn's start clock: at the first output (or the turn's end) it keeps the record on the session, shows it, and logs it. */
+function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | null): StartClock {
+	const place = meta.profile.startsWith("e2b") ? "e2b" : meta.place.kind === "machine" ? "machine" : "hosted";
+	return new StartClock(turn, meta.harness ?? "windlass", place, waited, (times) => {
+		meta.startTimes = keepStartTimes(meta.startTimes, times);
+		console.log(startTimesLog(meta.sessionId, times));
+		publish(c);
+		void persist(c);
+	});
+}
+
 async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void, machine: ReturnType<typeof machineActor> | null): Promise<void> {
 	const startedAt = Date.now();
 	const turn = active.number;
@@ -3523,8 +3545,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	};
 	// A turn that never ends would hold its sandbox, and one of the user's running slots, for ever.
 	let limit: ReturnType<typeof setTimeout> | undefined;
+	let clock: StartClock | null = null;
 	try {
 		await persist(c);
+		const waiting = Date.now();
 		if (machine && meta.place.kind === "machine") {
 			let announced = false;
 			for (;;) {
@@ -3544,6 +3568,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				await delay(1000, undefined, { signal });
 			}
 		}
+		clock = c.vars.startClock = startClock(c, meta, turn, machine ? Date.now() - waiting : null);
 		limit = setTimeout(() => {
 			if (!open) return;
 			note(c, turn, "warn", `This turn ran for ${duration(TURN_TIMEOUT_MS)}, which is the limit, so it was stopped.`);
@@ -3576,6 +3601,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
+		clock.opened();
 		used = sandbox;
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
 		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
@@ -3604,6 +3630,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			prompt: text, mode, planFirst:active.planFirst, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
+			onStartMark: (point, ms) => clock?.mark(point, ms),
 			onAcpUpdate: update => {
 				if (!open) return;
 				if (update.sessionUpdate === "usage_update" && update.rateLimit) recordLimit(update.rateLimit);
@@ -3882,6 +3909,9 @@ fi`, { signal, timeoutMs: 5000 });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
 	}
+	// A turn that ended before its agent's first output keeps what it measured.
+	clock?.finish();
+	if (c.vars.startClock === clock) c.vars.startClock = null;
 	acpTimeline.flush();
 	open = false;
 	clearTimeout(limit);
@@ -4709,6 +4739,7 @@ export const agentSession = actor({
 			carried: null,
 			runner: null,
 			setupReap: null,
+			startClock: null,
 			hostsAllowed: new Map(),
 		};
 	},

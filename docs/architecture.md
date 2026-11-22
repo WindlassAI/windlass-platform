@@ -126,6 +126,72 @@ not start when they add up to more. A suspend that takes longer goes on without 
 sandbox pauses at its own timeout (`WLP_E2B_IDLE_TIMEOUT_MS`, or `WLP_E2B_TURN_LEASE_MS` when a turn was
 running), on Docker the container stops as it was asked to, and the next check or prompt sees that.
 
+### Start times
+
+Every turn records how long its start took, part by part, from the turn's start (after any wait for a free
+slot on a machine) to the agent's first output (`server/src/start-times.ts`, `StartTimes` in the contract).
+The session keeps the last five, the side panel shows the last one under **Sandbox → Last start**, and the
+server logs one line per turn with durations, ids and names only:
+
+```
+[wlp] session.start_times session=… turn=3 harness=claude place=machine new=true pulled=true image_ms=… sandbox_ms=… runnerCreate_ms=… setup_ms=… prepare_ms=… agent_ms=… session_ms=… firstOutput_ms=… total_ms=…
+```
+
+| Part | From → to | When it is there |
+| --- | --- | --- |
+| `waited` | waiting for a slot on the machine | a wait of a second or more |
+| `image`, `pulled` | the runner's image check, and pull | a new sandbox on a runner that names `start-times` |
+| `sandbox` | making and starting the container, or connecting to or resuming it, as the server saw it | always |
+| `runnerCreate` | the runner's own share of `sandbox` | as `image` |
+| `setup` | clone, the repository's setup command, a restored memory or prepared image | a new sandbox, or one of a second or more |
+| `prepare` | the platform's work before the agent's process starts: leftovers, the token file | always |
+| `relay` | opening the turn's model relay lease: the relay container if it was not running, and the forwarder ([model-relay.md](model-relay.md)) | Windlass turns with the relay; part of `prepare` |
+| `agent` | starting the agent's process until it answered ACP `initialize` | always |
+| `session` | `session/new` or resume, mode and model choices, until the prompt went | always |
+| `firstOutput` | the prompt to the first text, thinking or tool call | when there was output |
+
+Each turn starts the agent's process again, so `agent` is paid on every turn, not only the first. A runner
+reports `image`, `pulled` and `runnerCreate` on the first connect after a create, only to a server that named
+the `start-times` capability; the runner 0.3.1 does not, and the server takes its answers as before.
+
+Measured on 2026-11-22 on the self-hosted host (2 Arm CPUs, 12 GB, load 6 to 11 from other work), with
+throwaway containers of the runner 0.3.0 images, no network and no credentials, medians of 2 to 5 runs:
+
+| | Create and start | Workspace `git init` | Agent start and `initialize` | `session/new` |
+| --- | --- | --- | --- | --- |
+| Windlass | 0.65 s | 0.14 s | 0.73 s | needs a sign-in |
+| Claude Code | 0.63 s | 0.19 s | 1.26 s | 1.76 s |
+| OpenCode | 0.42 s | 0.10 s | 3.47 s | 2.26 s |
+| Codex | 0.47 s | 0.14 s | 1.72 s | needs a sign-in |
+
+With the image's own layers out of the page cache the agent's start takes 0.3 to 2 s more (Windlass 1.13 s,
+Claude Code 1.95 s, Codex 3.64 s; OpenCode no different). The model relay adds 1.1 s once per Docker daemon
+for its container, and 1.1 to 1.5 s on every Windlass turn for the forwarder, with 0.4 s to close it at the
+turn's end. A cold pull of the Claude Code image (567 MB compressed, 1.43 GB unpacked) took 94 s to
+download and 47 s to unpack; a release that keeps the base layers downloads its 185 MB of new layers. These
+are the same Docker steps on the hosted server and on a machine; a machine adds the runner's round trips,
+and E2B was not measured. First output needs a model and was not measured; the records give it.
+
+**No warm-up after a pull.** Starting and stopping one throwaway container right after a pull was measured
+and does not help: it reads the image's `sleep` and little else, so the agent's files stay as cold as they
+were (medians 6.2 s against 5.9 s cold for Claude Code, 4.2 s against 4.8 s for Codex), and it costs 0.5 to
+1.8 s of the host. A pull leaves the files it unpacked in the page cache anyway, so the first session after
+a pull is not the cold one; the cold one is after a reboot or memory pressure, which a warm-up at pull time
+does not reach.
+
+**No pool of spare sandboxes.** Measured with `docker stats`, an idle sandbox (the container's init and
+`sleep`) uses 0.7 MiB, whatever its agent; with the agent's process started and idle after `session/new`,
+Windlass uses 41 MiB, Codex 86 MiB, OpenCode 288 MiB and Claude Code 388 MiB, and the relay 17 MiB. So memory
+does not decide it: on 12 GB with about 7 GB available, spares at 0.7 MiB are free. What decides it is what
+a spare would save and what it cannot carry. It saves the create and `git init`, 0.5 to 0.8 s of a start of
+2 to 6 s before the model's first token. And most of what a sandbox is made with is fixed at `docker run`:
+its own data volume and Git mirror mount, the user, session and profile labels, the egress network and its
+variables, the size's limits, a machine agent's credential relay. A spare would have to be one per user,
+profile, agent and size, or the create would have to move those into later steps. Neither is worth half a
+second. The larger parts are paid on every turn: the agent's start (0.7 to 3.5 s) and, for Windlass, the
+relay's forwarder (1.1 to 1.5 s), which today opens after the leftover sweep and could open beside it.
+Keeping an agent's process alive between turns would save its start, at 41 to 388 MiB per idle session.
+
 ### Idle sandboxes
 
 A sandbox costs money while it runs, whether or not a browser is open. Ten minutes after a

@@ -73,7 +73,9 @@ const operations = {
 	/** `ownData`: its Windlass data directory is a volume of its own (SandboxHandle.ownData), said only to a server that named `session-volumes`. */
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean), ownData: optional(oneOf(true)),
 		/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
-		modelRelay: optional(oneOf(true)) }))],
+		modelRelay: optional(oneOf(true)),
+		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
+		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],

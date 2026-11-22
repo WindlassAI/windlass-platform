@@ -80,10 +80,21 @@ class Conversation {
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;
 				const screenshots = !harness && op.args.screenshots === true && o.screenshots;
-				await o.ensureImage(); // The disk-space helper always uses the base pin.
-				if (harness) await o.prepareHarness(profile, harness);
-				if (screenshots) await o.ensureImage(shotsImage);
-				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo); });
+				// What making it takes, for the first connect to tell a server that named `start-times` (docs/architecture.md, "Start times").
+				const began = Date.now();
+				let pulled = await o.ensureImage(); // The disk-space helper always uses the base pin.
+				if (harness) pulled = (await o.prepareHarness(profile, harness)) === true || pulled;
+				if (screenshots) pulled = (await o.ensureImage(shotsImage)) || pulled;
+				const imaged = Date.now();
+				return o.serial(async () => {
+					this.requireActive();
+					const creating = Date.now();
+					const made = await o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo);
+					const box = o.boxes.get(made);
+					// Only a sandbox this create made: `existing` hands back one an earlier create made.
+					if (box && box.usedAt >= creating) box.startTimes = { image: imaged - began, ...(pulled && { pulled: true as const }), create: Date.now() - creating };
+					return made;
+				});
 			}
 			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
 			// Not serial: a save runs for minutes in its own helper container, outside the sandbox.

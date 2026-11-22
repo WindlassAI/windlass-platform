@@ -508,8 +508,12 @@ async function clientCheck(state: string) {
 	}
 	methods.length = 0;
 	let lateSteer: Promise<void> | undefined;
-	const first = await harness.runTurn(handle, { ...input, onControl: c => { duringShutdown = () => { lateSteer = assert.rejects(c.steer("late"), /turn ended/i); }; }, onAcpUpdate: u => updates.push(u) });
+	const marks: string[] = [];
+	const first = await harness.runTurn(handle, { ...input, onStartMark: point => marks.push(point), onControl: c => { duringShutdown = () => { lateSteer = assert.rejects(c.steer("late"), /turn ended/i); }; }, onAcpUpdate: u => updates.push(u) });
 	assert.equal(first.failure, null);
+	// The start's points, once each, in order (start-times.ts).
+	assert.deepEqual(marks, ["process", "initialized", "prompted", "output"]);
+	ok("an ACP turn tells its start's points in order");
 	assert.equal(first.acp?.stopReason, "end_turn");
 	assert.equal(first.stderrTail, redactor.text(secret));
 	assert(!JSON.stringify(updates).includes(secret));

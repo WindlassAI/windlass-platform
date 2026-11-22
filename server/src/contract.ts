@@ -298,6 +298,45 @@ export const CLAUDE_LAUNCH_MODES: readonly SessionMode[] = [
 	{ id: "bypassPermissions", name: "Bypass permissions", description: "Run tools without permission prompts." },
 ];
 
+/**
+ * How long each part of one turn's start took, in milliseconds, from the turn's start (after any wait for
+ * a free slot on a machine) to the agent's first output (docs/architecture.md, "Start times"). A part that did not happen
+ * in that turn is left out: `image` and `setup` only for a new sandbox, `relay` only where Windlass's model
+ * relay is used, `runner*` only from a runner that reports them.
+ */
+export interface StartTimes {
+	turn: number;
+	/** When the turn started. */
+	at: number;
+	harness: HarnessId;
+	place: "hosted" | "machine" | "e2b";
+	/** A sandbox was made for this turn (false: an existing one was connected or resumed). */
+	newSandbox: boolean;
+	/** Waiting for a free slot on the machine, before the start. */
+	waited?: number;
+	/** The runner's image check, and pull when `pulled`. */
+	image?: number;
+	pulled?: boolean;
+	/** Making and starting the container, or resuming it, as the server saw it (on a machine: with the runner's round trips and image check). */
+	sandbox?: number;
+	/** The part of `sandbox` the runner spent creating the container itself. */
+	runnerCreate?: number;
+	/** Cloning, the repository's setup command, a restored memory or prepared image. */
+	setup?: number;
+	/** The platform's own work between the sandbox being ready and the agent's process starting: leftover processes, the token file. */
+	prepare?: number;
+	/** Windlass's model relay for this turn: the relay container when it was not running, and the turn's forwarder. Part of `prepare`. */
+	relay?: number;
+	/** From starting the agent's process until it answered ACP `initialize`. */
+	agent?: number;
+	/** session/new or resume, and the mode and model choices, until the prompt was sent. */
+	session?: number;
+	/** From the prompt being sent to the agent's first output (text, thinking or a tool call). */
+	firstOutput?: number;
+	/** From the turn's start to the first output. */
+	total?: number;
+}
+
 export interface SessionSummary {
 	/** The mode selected for the next prompt. */
 	mode: string;
@@ -337,6 +376,8 @@ export interface SessionSummary {
 	status: SessionStatus;
 	turns: number;
 	lastOutcome: TurnOutcome | null;
+	/** The last few turns' start times, oldest first (StartTimes). */
+	startTimes?: StartTimes[];
 	/** Whether the sandbox exists and whether it is running or paused. */
 	sandbox: "none" | "running" | "paused";
 	/**

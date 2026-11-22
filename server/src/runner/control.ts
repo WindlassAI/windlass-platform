@@ -125,8 +125,9 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *   model-relay      the report's `modelRelay`, a connect's `modelRelay`, and the `modelRelay`,
  *                    `modelRelayToken` and `modelRelayClose` operations (docs/model-relay.md); without
  *                    it, or from a runner that says neither, a turn's token goes into the sandbox
+ *   start-times      the first connect's `startTimes` after a create (docs/architecture.md, "Start times")
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -265,7 +266,8 @@ export type Report = Of<typeof report>;
 
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
-	const fields: Record<Capability, keyof Report> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay" };
+	// `start-times` has no field in the report: only a connect says it.
+	const fields: Partial<Record<Capability, keyof Report>> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay" };
 	const kept: Report = { ...report };
 	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
 		if (!named?.includes(capability)) delete kept[field];

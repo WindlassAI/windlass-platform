@@ -276,6 +276,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						// Sandboxes of their own data only for a server that knows they are (Executor.sessionVolumes).
 						owner.sessionVolumes = named?.includes("session-volumes" satisfies Capability) === true;
 						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
+						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);
 						mayMaintain = true;
 						status("Online");

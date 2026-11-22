@@ -52,7 +52,7 @@ async function pullImage(pin: string, platform: string, progress: boolean) {
 		child.once("error", reject);
 		child.once("close", resolve);
 	});
-	if (code === 0) return;
+	if (code === 0) return true;
 	if (/no matching manifest|no match for platform|does not match the specified platform|does not provide the specified platform/i.test(diagnostic))
 		throw new RunnerError(`This runner release has no ${platform} images (${imageRole(pin)}).`);
 	throw new RunnerError(`The pinned ${imageRole(pin)} image is missing and could not be pulled.`);
@@ -66,14 +66,15 @@ async function daemonPlatform() {
 	return platform;
 }
 
-async function fetchImage(pin: string, mode: "setup" | "run" | "session" = "session", platform?: string) {
+/** True when the image was pulled. */
+async function fetchImage(pin: string, mode: "setup" | "run" | "session" = "session", platform?: string): Promise<boolean> {
 	const cached = await docker(["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", pin]);
 	if (!pin.includes("@")) {
 		if (cached.code !== 0) throw new RunnerError(`The pinned ${imageRole(pin)} image is missing and could not be pulled.`);
-		return;
+		return false;
 	}
 	platform ??= await daemonPlatform();
-	if (cached.code === 0 && cached.stdout.trim() === platform) return;
+	if (cached.code === 0 && cached.stdout.trim() === platform) return false;
 	if (mode !== "run") return pullImage(pin, platform, mode === "setup");
 	// A service started without setup only needs the index to check compatibility.
 	const manifest = await docker(["manifest", "inspect", pin], { timeoutMs: 30_000 });
@@ -83,6 +84,7 @@ async function fetchImage(pin: string, mode: "setup" | "run" | "session" = "sess
 	if (!entries) return pullImage(pin, platform, false);
 	if (!entries.some(entry => entry.platform && entry.platform.os + "/" + entry.platform.architecture === platform))
 		throw new RunnerError(`This runner release has no ${platform} images (${imageRole(pin)}).`);
+	return false;
 }
 
 export async function prepareImages(agents: MachineHarness[], screenshots: boolean, mode: "setup" | "run") {
@@ -140,7 +142,7 @@ export class MachineDocker {
 		return runHelper([...this.flags(name, "docker-hardened"),
 			...(mount ? ["--mount", `type=volume,src=${this.volume},dst=/data,volume-nocopy`] : [])], name, argv, { image });
 	}
-	private preparing = new Map<string, Promise<void>>();
+	private preparing = new Map<string, Promise<boolean>>();
 	ensureImage(pin = image) {
 		const pending = this.preparing.get(pin);
 		if (pending) return pending;

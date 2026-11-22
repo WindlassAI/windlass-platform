@@ -34,7 +34,7 @@ import { EgressNetwork } from "./egress-network.js";
 import { loadPair, Refusal, RunnerError, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box { startTimes?: { image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -117,6 +117,8 @@ export class Executor extends MachineDocker {
 	 * relay (docs/model-relay.md), and a connect says so. Set by the control connection on each welcome.
 	 */
 	modelRelays = false;
+	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
+	startTimes = false;
 	/** Windlass's model relay of this machine: its container and each turn's forwarder. */
 	readonly modelRelay: DockerModelRelay;
 	/**
@@ -136,7 +138,7 @@ export class Executor extends MachineDocker {
 		this.slots = limits.slots === null ? undefined : limits.slots ?? localSizing({ slots: limits.maxTurns?.toString() });
 		this.network = new EgressNetwork(this, policy);
 		// One user's machine: the relay's ceiling is the other machine relays' (sandbox/relay/server.cjs `limits`).
-		this.modelRelay = new DockerModelRelay({ machine: identity.machineId, image, labelFlags: this.pairingLabelFlags, ensureImage: () => this.ensureImage() });
+		this.modelRelay = new DockerModelRelay({ machine: identity.machineId, image, labelFlags: this.pairingLabelFlags, ensureImage: async () => { await this.ensureImage(); } });
 		const network = this.network.sandboxNetwork();
 		const slots = this.slots;
 		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage,
@@ -672,11 +674,16 @@ export class Executor extends MachineDocker {
 			}
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
-			return { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
+			const answer = { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				// Windlass's own sandboxes only, and only to a server that named `model-relay`.
-				...(this.modelRelays && this.modelRelayReady && !box.harness ? { modelRelay: true as const } : {}) };
+				...(this.modelRelays && this.modelRelayReady && !box.harness ? { modelRelay: true as const } : {}),
+				// Once, and only to a server that named `start-times`.
+				...(this.startTimes && box.startTimes ? { startTimes: box.startTimes } : {}),
+			};
+			delete box.startTimes;
+			return answer;
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
 		if (box.state === "running") {

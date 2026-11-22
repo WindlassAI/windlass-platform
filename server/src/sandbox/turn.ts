@@ -113,7 +113,7 @@ import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
 import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, StartMark, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, handedInProblem, relayRefused, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -286,6 +286,9 @@ export class SandboxWindlass implements Windlass {
 		return new Turn(sandbox, input, this.options, this.tokens).run();
 	}
 }
+
+/** Windlass's events that are the model's output: what the first of them in a turn marks (`output`). */
+const OUTPUT_EVENTS = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.called"]);
 
 type Outcome = "succeeded" | "unresolved" | "failed" | "stopped" | "interrupted";
 
@@ -488,6 +491,8 @@ class Turn {
 	private stepFailureCode: string | null = null;
 	/** The message of the provider error of the model call that failed: with the model relay, it says whether the relay refused the lease (`relayRefused`). */
 	private stepFailureMessage: string | null = null;
+	/** Whether the model's first output was told (`onStartMark`). */
+	private outputSeen = false;
 
 	constructor(
 		private readonly sandbox: TurnSandbox,
@@ -509,6 +514,15 @@ class Turn {
 			NS,
 			(value) => this.redactor.deep(value),
 		);
+	}
+
+	/** Tells a point of the turn's start (RunTurnInput.onStartMark). */
+	private mark(mark: StartMark, ms?: number): void {
+		try {
+			this.input.onStartMark?.(mark, ms);
+		} catch {
+			// A listener's failure must not stop the turn.
+		}
 	}
 
 	async run(): Promise<RunTurnResult> {
@@ -549,6 +563,8 @@ class Turn {
 				};
 				// The repository's secrets that Windlass may have, for the MCP servers that name them: never one of the turn's own variables.
 				const secretEnv = Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env)));
+				if (tokenFile?.relayMs != null) this.mark("relay", tokenFile.relayMs);
+				this.mark("process");
 				const run = sandbox.start(this.options.engineCommand ?? ["windlass", "acp"], {
 					env,
 					secretEnv,
@@ -709,6 +725,7 @@ class Turn {
 		try {
 			const init = await this.unlessAborted(peer.request<Initialized>("initialize", INITIALIZE, { timeoutMs: this.startTimeoutMs }));
 			if (init === "aborted") return;
+			this.mark("initialized");
 			const offered = init.agentCapabilities?._meta?.[NS] as { notifications?: unknown } | undefined;
 			if (!Array.isArray(offered?.notifications) || !offered.notifications.includes(EXT.event)) {
 				this.failure = { reason: "engine", message: `the engine process does not send Windlass's events (${EXT.event}); it may be another version` };
@@ -746,6 +763,7 @@ class Turn {
 		if (asked === "aborted" || this.abortRequested || this.peer.closed) return;
 
 		this.promptSent = true;
+		this.mark("prompted");
 		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }], ...promptMeta(input, this.promptKeys) };
 		if (untrustedSource(input.untrusted) !== null && !this.promptKeys.includes(UNTRUSTED_KEY)) {
 			try {
@@ -894,6 +912,11 @@ class Turn {
 
 	private event(event: WindlassEvent): void {
 		if (this.sealed) return;
+		// The model's first output of the turn: text, thinking, or a tool call it began.
+		if (this.promptSent && !this.outputSeen && OUTPUT_EVENTS.has(event.type)) {
+			this.outputSeen = true;
+			this.mark("output");
+		}
 		if (this.sessionSeen === null && typeof event.sessionId === "string") this.sessionSeen = event.sessionId;
 		this.tally.note(event);
 		const data = (event.data ?? {}) as Record<string, unknown>;

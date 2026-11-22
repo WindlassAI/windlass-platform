@@ -86,6 +86,22 @@ export interface ExecResult {
  * sandbox needs, and a turn needs more of a sandbox than it offers (provider.ts), so this layer
  * drives Docker and E2B itself.)
  */
+/** A runner's own measure of making a sandbox, in milliseconds (protocol.ts `connect`). */
+export interface RunnerStartTimes {
+	/** Checking the images, and pulling one when `pulled`. */
+	image: number;
+	pulled?: true;
+	/** Creating and starting the container, the workspace and the probes. */
+	create: number;
+}
+
+/**
+ * The points of a turn's start a harness tells (`RunTurnInput.onStartMark`), in order: the agent's
+ * process is about to start, it answered `initialize`, the prompt went, its first output came. `relay`
+ * comes before `process`, with how long the turn's model relay lease took to open.
+ */
+export type StartMark = "relay" | "process" | "initialized" | "prompted" | "output";
+
 export interface SandboxHandle {
 	readonly id: string;
 	/** The workspace directory inside the sandbox: "/workspace". */
@@ -100,6 +116,11 @@ export interface SandboxHandle {
 	 * on E2B (`Sandboxes.sessionsLiveInSandbox` says that), and from a runner that does not say.
 	 */
 	readonly ownData?: boolean;
+	/**
+	 * What a runner said of making this sandbox, on the first connect after its create, to a server that
+	 * named `start-times` (StartTimes.image, pulled, runnerCreate). Absent elsewhere.
+	 */
+	readonly runnerStart?: RunnerStartTimes;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
@@ -426,6 +447,8 @@ export interface TurnControl {
 }
 
 export interface RunTurnInput {
+	/** Told at each point of the turn's start (StartMark); `ms` with `relay`. A listener's failure does not stop the turn. */
+	onStartMark?: (mark: StartMark, ms?: number) => void;
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
 	mode?: string;
 	planFirst?: boolean;

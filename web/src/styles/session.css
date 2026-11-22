@@ -2012,6 +2012,22 @@ button.output-more:hover {
 .kv dt {
 	color: var(--ink-faint);
 }
+/* A start's parts: longer names, and figures that line up. */
+.kv-wide {
+	grid-template-columns: 92px minmax(0, 1fr);
+	font-variant-numeric: tabular-nums;
+}
+.panel-start-earlier {
+	margin: 10px 0 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+	font-variant-numeric: tabular-nums;
+}
+.panel-start-earlier li + li {
+	margin-top: 3px;
+}
 .kv dt::first-letter {
 	text-transform: uppercase;
 }

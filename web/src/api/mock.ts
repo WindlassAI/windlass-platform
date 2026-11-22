@@ -2256,7 +2256,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		});
 		// What the turn's sandbox ran is counted for the day.
 		if (clock === null && session.summary.place.kind === "hosted") world.spent.set(session.summary.id, (world.spent.get(session.summary.id) ?? 0) + Math.max(1, Math.round((now() - state.startedAt) / 1000)));
-		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: end.outcome, updatedAt: now() });
+		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: end.outcome, updatedAt: now(), startTimes: mockStartTimes(session.summary, state.turn, state.startedAt) });
 		// An idle sandbox is suspended after a while, and the timeline says so as the server's does; its files stay.
 		if (clock === null) {
 			session.pauseTimer = later(2 * MINUTE, () => {
@@ -2511,7 +2511,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const outcome = acpOutcome(stopReason);
 		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
 		// Once it has run, the session has the models Claude Code listed.
-		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), harnessModels: { ...(session.summary.harness === "codex" ? MOCK_CODEX_MODELS : session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
+		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), startTimes: mockStartTimes(session.summary, state.turn, state.startedAt), harnessModels: { ...(session.summary.harness === "codex" ? MOCK_CODEX_MODELS : session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
 		if (clock === null) {
 			session.pauseTimer = later(2 * MINUTE, () => {
 				if (session.run !== null || session.summary.sandbox !== "running") return;
@@ -4265,4 +4265,17 @@ export function openingWords(text: string): string {
 	const cut = line.slice(0, 56);
 	const space = cut.lastIndexOf(" ");
 	return `${space > 24 ? cut.slice(0, space) : cut}…`;
+}
+
+/** Start times like those measured on a 2-CPU host (docs/architecture.md, "Start times"): a new sandbox on the first turn, a connected one after. */
+function mockStartTimes(summary: SessionSummary, turn: number, at: number): NonNullable<SessionSummary["startTimes"]> {
+	const harness = summary.harness ?? "windlass";
+	const fresh = turn === 1;
+	const agent = { windlass: 730, claude: 1260, opencode: 3470, codex: 1720 }[harness];
+	const session = { windlass: 20, claude: 1760, opencode: 2260, codex: 70 }[harness];
+	const machine = summary.place.kind === "machine";
+	const parts = { sandbox: fresh ? 820 : 140, setup: fresh ? 1900 : undefined, prepare: harness === "windlass" ? 1700 : 400, relay: harness === "windlass" ? 1250 : undefined, agent, session, firstOutput: 2100 };
+	const total = Object.values(parts).reduce<number>((sum, ms) => sum + (ms ?? 0), 0) - (parts.relay ?? 0) + (fresh && machine ? 60 : 0);
+	const times = { turn, at, harness, place: machine ? "machine" as const : "hosted" as const, newSandbox: fresh, ...(fresh && machine ? { image: 60, runnerCreate: 620 } : {}), ...Object.fromEntries(Object.entries(parts).filter(([, ms]) => ms !== undefined)), total };
+	return [...(summary.startTimes ?? []), times].slice(-5);
 }

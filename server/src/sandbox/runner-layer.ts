@@ -37,7 +37,7 @@ import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/c
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
+import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
@@ -459,6 +459,8 @@ class RunnerHandle implements TurnSandbox {
 		readonly ownData = false,
 		/** The runner's connect said `modelRelay` (docs/model-relay.md): false from a runner 0.3.x, whose turns get the token in the sandbox. */
 		relay = false,
+		/** What the runner said of making it (`SandboxHandle.runnerStart`), on the first connect after its create. */
+		readonly runnerStart?: RunnerStartTimes,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
@@ -633,7 +635,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

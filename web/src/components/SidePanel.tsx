@@ -14,11 +14,12 @@
  * profile's approval, and that its commands can use the Claude login it runs with.
  */
 import type { EgressMode, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { acpHarnessName, contextWords, costWords, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
+import { startHeadline, startLine, startRows } from "../lib/start-times";
 import { cachedShare, lastTurn, sessionUsage, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
@@ -118,7 +119,37 @@ function Sandbox({ summary, profile }: { summary: SessionSummary; profile: Sandb
 				</summary>
 				<Layers profile={profile} />
 			</details>
+			<StartTimesFacts summary={summary} />
 		</section>
+	);
+}
+
+/** How long the last turn took to start, part by part, and the turns before it in one line each. */
+function StartTimesFacts({ summary }: { summary: SessionSummary }) {
+	const kept = summary.startTimes ?? [];
+	const last = kept.at(-1);
+	if (!last) return null;
+	const earlier = kept.slice(0, -1).reverse();
+	return (
+		<details className="panel-more">
+			<summary>
+				<ChevronIcon size={12} className="panel-more-chevron" />
+				Last start: {startHeadline(last)}
+			</summary>
+			<dl className="kv kv-wide" aria-label={`How turn ${last.turn} started`}>
+				{startRows(last).map((row) => (
+					<Fragment key={row.label}>
+						<dt title={row.hint}>{row.label}</dt>
+						<dd>{row.value}</dd>
+					</Fragment>
+				))}
+			</dl>
+			{earlier.length > 0 && (
+				<ul className="panel-start-earlier" aria-label="Earlier starts">
+					{earlier.map((times) => <li key={times.turn}>{startLine(times)}</li>)}
+				</ul>
+			)}
+		</details>
 	);
 }
 

@@ -110,6 +110,8 @@ export class TokenFile {
 	replaced = 0;
 	/** The turn's lease of the model relay, once `start` opened it. */
 	private relay: TurnModelRelay | null = null;
+	/** How long opening the relay's lease took (StartTimes.relay), once it was opened. */
+	relayMs: number | null = null;
 
 	constructor(
 		private readonly sandbox: TurnSandbox,
@@ -158,8 +160,10 @@ export class TokenFile {
 	async start(): Promise<void> {
 		const token = await this.tokens.current(this.sandbox.uid);
 		if (this.sandbox.modelRelay !== undefined && !this.stopped) {
+			const began = Date.now();
 			try {
 				this.relay = await this.sandbox.modelRelay();
+				this.relayMs = Date.now() - began;
 			} catch (error) {
 				throw new TokenFileError(`the model relay could not be started: ${error instanceof Error ? error.message : String(error)}`);
 			}
