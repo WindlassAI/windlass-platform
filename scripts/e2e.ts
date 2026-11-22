@@ -4482,11 +4482,17 @@ async function preparedSessions(server: Server) {
 			const secret = { repositoryId: repo.id, profile: "docker-hardened", name: "CHECK_TOKEN" };
 			const putSecret = () => user.saveRepositorySecret({ ...secret, value: randomBytes(16).toString("hex"), scope: "setup" });
 			await putSecret();
+			const beforeSeed = github.gitResponseBytes;
 			await turn(false, true);
+			const seeded = github.gitResponseBytes - beforeSeed;
 			const images = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
 			assert(!images, "A secret-bearing setup left a snapshot image");
 			await user.deleteRepositorySecret(secret);
+			const beforeWarm = github.gitResponseBytes;
 			await turn(false);
+			const warm = github.gitResponseBytes - beforeWarm;
+			assert(warm > 0 && warm < seeded, "A fresh session downloaded the full repository again");
+			pass("Two hosted sessions on the same private repository reuse Git objects", `${seeded} then ${warm} Git HTTP response bytes`);
 			github.commit(repo,"main",{"base.txt":"next", "quick":""},"Source-only change");
 			github.commit(repo, "feature", {"feature.txt": "from feature"}, "Feature source", "main");
 			await turn(true, false, "feature");

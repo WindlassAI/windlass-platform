@@ -380,12 +380,12 @@ async function linkChecks(): Promise<void> {
 			await advance(50);
 			assert(refused.at instanceof Error && refused.at.message.includes("--harness claude") && !old.log.attaches.length, "missing preflight refusal");
 			const offered = fresh({ serve, report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: true },
-				freeDiskBytes: null, sandboxes: [], harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
-			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create({ ...input, fromSnapshot: { writer: true, attempt: "a".repeat(32), repo: "1", generation: "b".repeat(64), inputs: "c".repeat(64) } })]) {
+				freeDiskBytes: null, sandboxes: [], gitMirrors: true, harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
+			for (const create of [offered.sandboxes.create({ ...input, harness: "claude", mirrorRepo: "1" }), old.sandboxes.create({ ...input, mirrorRepo: "1", fromSnapshot: { writer: true, attempt: "a".repeat(32), repo: "1", generation: "b".repeat(64), inputs: "c".repeat(64) } })]) {
 				await advance(50);
 				await create;
 			}
-			assert(received.length === 2 && received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile, harness: "claude" }))
+			assert(received.length === 2 && received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile, mirrorRepo: "1", harness: "claude" }))
 				&& received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile })), "wrong create arguments");
 			return "checked both wire requests and the refusal before attach";
 		});

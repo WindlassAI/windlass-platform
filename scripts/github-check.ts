@@ -23,6 +23,9 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
+import assert from "node:assert/strict";
+import { gitMirrorMount, MIRROR_ROOT, mirrorOwner } from "../server/src/sandbox/git-mirrors.js";
+import { docker as dockerCli } from "../server/src/sandbox/docker.js";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { imageId } from "./check-image.js";
 import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
@@ -1493,6 +1496,117 @@ await section("docker: the same git commands in a container of the sandbox image
 		} catch {
 			// Removed already.
 		}
+	}
+});
+
+await section("mirror: Docker scope, authenticated clone, fallback and eviction", async () => {
+	if (!DOCKER) { skips++; return; }
+	const volume = "mirror-proof-" + randomBytes(8).toString("hex");
+	const image = await imageId(), uid = "fixtureA", other = "fixtureB";
+	const fixture = standin.addRepository({ owner: "ada", name: "mirror-proof", private: true, installation: adaInstallation });
+	const repo = String(fixture.id), path = MIRROR_ROOT + "/" + mirrorOwner(uid, repo);
+	const boxes: string[] = [], allocations: number[] = [];
+	const cli = async (...args: string[]) => (await dockerCli(args, { check: true })).stdout.trim();
+	async function mount(user: string, deployment = "proof", machine = "") {
+		const start = performance.now();
+		const m = await gitMirrorMount(image, deployment, machine, user, repo, volume, 2);
+		allocations.push(Math.round(performance.now() - start));
+		assert.ok(m, "allocator refused a fixture slot");
+		return m;
+	}
+	async function box(user: string, mounted?: string) {
+		const name = volume + "-" + boxes.length;
+		boxes.push(name);
+		await cli("run", "-d", "--rm", "--pull", "never", "--name", name, "--network", "host",
+			"--user", "agent", "--cpus", "1", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+			...(mounted ? ["--mount", mounted] : []), image, "sleep", "900");
+		return new (class extends DockerSandboxHandle { override get container() { return name; } })(name, "docker-hardened", user);
+	}
+	async function clone(handle: DockerSandboxHandle, user?: string, remote = fixture) {
+		await cli("exec", handle.container, "bash", "-ec", "cd /workspace; find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +");
+		let hit = false;
+		const sandbox: SandboxHandle = {
+			id: handle.id, profile: handle.profile, cwd: handle.cwd,
+			run: async (cmd, opts) => {
+				const result = await handle.run(cmd, opts);
+				if (gitSteps.markers(result.stdout).has("mirror")) hit = true;
+				return result;
+			}, readTextFile: handle.readTextFile.bind(handle), writeTextFile: handle.writeTextFile.bind(handle),
+		};
+		const start = performance.now(), bytes = standin.gitResponseBytes, from = standin.minted.length;
+		const repository = stored(remote, adaInstallation);
+		const result = await publish.cloneRepository(app, adaConnection, repository, sandbox, undefined, undefined, undefined, user);
+		const ms = Math.round(performance.now() - start);
+		assert.ok(result);
+		assert.equal(repository.baseSha, standin.branchHead(remote, "main"));
+		const tokens = standin.minted.slice(from).filter(t => t.permissions?.contents);
+		assert.ok(tokens.length > 0);
+		assert.ok(tokens.every(t => !standin.alive(t.token) && t.permissions?.contents === "read" && t.repositoryIds?.join() === String(remote.id)));
+		await cli("exec", handle.container, "sh", "-ec", "test ! -e .git/objects/info/alternates && test ! -e .git/objects/info/http-alternates && git fsck --full --no-dangling");
+		return { ms, bytes: standin.gitResponseBytes - bytes, hit, tokens: tokens.length };
+	}
+	try {
+		const a = await box(uid, await mount(uid)), b = await box(other, await mount(other));
+		const plain = await clone(a), seed = await clone(a, uid), warm = await clone(a, uid);
+		assert.ok(!plain.hit && !seed.hit && warm.hit && warm.bytes < plain.bytes);
+		console.log("Small fixture clone (ms and HTTP Git bytes)", JSON.stringify({ plain, seed, warm }));
+		assert.equal(await cli("exec", "--user", "65534", a.container, "stat", "-c", "%u:%a", path), "65534:700");
+		assert.equal(await cli("exec", "--user", "65534", a.container, "find", path, "!", "-uid", "65534", "-print", "-quit"), "");
+		assert.equal(await cli("exec", "--user", "65534", a.container, "git", "--git-dir", path + "/repo.git", "config", "--local", "--list"), "core.bare=true\ncore.repositoryformatversion=0");
+		assert.notEqual((await dockerCli(["exec", a.container, "touch", path + "/from-agent"])).code, 0);
+		assert.notEqual((await dockerCli(["exec", a.container, "cat", path + "/repo.git/config"])).code, 0);
+		assert.equal((await clone(a, uid, notes)).hit, false, "a different repository used this slot");
+		assert.equal((await clone(b, other)).hit, false);
+		assert.equal((await clone(b, uid)).hit, false, "another user's mounted slot was used");
+		assert.equal((await clone(b, other)).hit, true);
+		standin.commit(fixture, "main", { "moved.txt": "fresh" }, "Advance origin");
+		assert.equal((await clone(a, uid)).hit, true);
+		assert.equal(await cli("exec", a.container, "cat", "moved.txt"), "fresh");
+
+		standin.hangNextGitRead = true;
+		const slow = await clone(a, uid);
+		assert.ok(!standin.hangNextGitRead && !slow.hit && slow.tokens === 2 && slow.ms < 30_000, "stalled reference did not fall back promptly");
+		await cli("exec", "--user", "65534", a.container, "touch", path + "/repo.git/objects/info/alternates");
+		const repaired = await clone(a, uid);
+		assert.ok(!repaired.hit && repaired.tokens === 2, "bad alternates must fall back under a new token");
+		assert.equal((await clone(a, uid)).hit, true);
+		await cli("exec", "--user", "65534", a.container, "rm", "-rf", path + "/repo.git");
+		await cli("exec", a.container, "git", "fsck", "--full", "--no-dangling");
+		assert.equal((await clone(a, uid)).hit, false);
+
+		// Touch A's slot, admit a third scope, and check both the cold victim and the survivor.
+		await mount(uid);
+		const isolated = await box(uid, await mount(uid, "another-deployment"));
+		assert.equal((await clone(isolated, uid)).hit, false);
+		assert.equal((await clone(a, uid)).hit, true);
+		assert.equal((await clone(b, other)).hit, false, "evicted slot still had objects");
+		const machine = await box(uid, await mount(uid, "proof", "another-machine"));
+		assert.equal((await clone(machine, uid)).hit, false);
+		expect("only the selected transport-owned slot is used, bad or absent mirrors fall back, and eviction leaves a standalone workspace", true);
+
+		if (process.argv.includes("--mirror-benchmark")) {
+			// Loose history forces the HTTP server to build a pack as it would after new pushes.
+			// Only the last 512 KiB blob is checked out. Every version is in the clone.
+			const git = (args: string[], input?: Buffer | string) => execFileSync("git", ["-C", fixture.path, ...args], {
+				input, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "fixture", GIT_COMMITTER_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.org", GIT_COMMITTER_EMAIL: "fixture@example.org" },
+			}).trim();
+			let parent = git(["rev-parse", "main"]);
+			for (let i = 0; i < 96; i++) {
+				const blob = git(["hash-object", "-w", "--stdin"], randomBytes(512 * 1024));
+				const tree = git(["mktree"], "100644 blob " + blob + "\tpayload\n");
+				parent = git(["commit-tree", tree, "-p", parent, "-m", "Version " + i]);
+			}
+			git(["update-ref", "refs/heads/main", parent]);
+			const bench = await box(uid, await mount(uid));
+			const baseline = await clone(bench), fill = await clone(bench, uid);
+			const trials = [await clone(bench, uid), await clone(bench), await clone(bench, uid)];
+			assert.ok(trials[0]!.hit && trials[2]!.hit);
+			console.log("48 MiB fixture clone (ms and HTTP Git bytes)", JSON.stringify({ baseline, fill, warm1: trials[0], plain2: trials[1], warm2: trials[2] }));
+			console.log("Mirror slot allocation (ms)", JSON.stringify(allocations));
+		}
+	} finally {
+		for (const name of boxes) await dockerCli(["rm", "-fv", name]);
+		await cli("volume", "rm", volume);
 	}
 });
 

@@ -338,6 +338,7 @@ GitHub's refusals written from what is known of them and not copied from a run a
 ```sh
 cd server && npx tsx ../scripts/github-check.ts             # the server's GitHub code and real git against the stand-in
 cd server && npx tsx ../scripts/github-check.ts --docker  # and the git commands again in a container of the sandbox image
+cd server && WLP_CHECK_SECTIONS=mirror pnpm exec tsx ../scripts/github-check.ts --docker --mirror-benchmark
 cd server && pnpm e2e                                       # its last section: the route and the actors, on the fake layer
 ```
 

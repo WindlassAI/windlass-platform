@@ -1,3 +1,4 @@
+import { MIRROR_ROOT, mirrorOwner } from "../server/src/sandbox/git-mirrors.js";
 import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
@@ -224,14 +225,18 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				await until(() => !!srv.state.report?.slots, "Runner did not report");
 				const key = { writer: true, attempt: randomBytes(16).toString("hex"), repo: "123", inputs: "a".repeat(64), generation: "c".repeat(64) };
 				const {writer: _writer, ...requestKey} = key;
+				assert.equal(srv.state.report?.gitMirrors, true);
+				const slot = MIRROR_ROOT + "/" + mirrorOwner(uid, key.repo);
 				const source = { ...requestKey, commit: "b".repeat(40), created: Date.now() };
 				const profile = "docker-hardened" as const;
 				async function session(sessionId: string, privateData: boolean, request = key) {
 					await srv.attach(sessionId);
 					const channel = srv.channel(sessionId);
-					return { channel, create: (size: number) => channel.request("create", { profile, size, prepared: { ...request, privateData } }) };
+					return { channel, create: (size: number) => channel.request("create", { profile, size, mirrorRepo: request.repo, prepared: { ...request, privateData } }) };
 				}
 				const a = await session(sessionId, false), id = await a.create(4);
+				assert.equal((await a.channel.request("run", { id, command: `test ! -r ${slot} && test ! -w ${slot}` })).exitCode, 0);
+				assert.equal((await a.channel.request("run", { id, options: { gitUser: true }, command: `mountpoint -q ${slot} && touch ${slot}/runner-proof` })).exitCode, 0);
 				assert.deepEqual(await limitsOf(containerName(id.slice(-12))), [1.5e9, 3 * 2 ** 30, 3 * 2 ** 30, 1536, 256, "3"]);
 				assert.equal((await a.channel.request("run", { id, command: "touch /workspace/build-output"})).exitCode, 0);
 				assert.equal(await a.channel.request("saveSnapshot", {id, source}), true);
@@ -241,6 +246,7 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				const next = { ...key, writer: false, attempt: randomBytes(16).toString("hex") };
 				const b = await session(srv.other, true, next), restored = await b.create(2);
 				const name = containerName(restored.slice(-12));
+				assert.equal((await b.channel.request("run", { id: restored, options: { gitUser: true }, command: `mountpoint -q ${slot} && test -f ${slot}/runner-proof` })).exitCode, 0);
 				const limits = [1e9, 2 ** 31, 2 ** 31, 1024, 256, "2"];
 				assert.deepEqual(await limitsOf(name), limits);
 				// Reconnect must repair drift using the reader's size, even when its producer was clamped.

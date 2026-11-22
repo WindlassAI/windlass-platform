@@ -186,6 +186,9 @@ export class GithubStandin {
 	readonly issues: StandinIssue[] = [];
 	readonly tokens = new Map<string, Token>();
 	readonly requests: StandinRequest[] = [];
+	gitResponseBytes = 0;
+	/** Leave one authenticated advertisement pending until the client cancels it. */
+	hangNextGitRead = false;
 	readonly deliveries: { id: string; guid: string; installation_id: number | bigint | null; delivered_at: string; status_code: number; redelivery: boolean }[] = [];
 	private nextCommentId = 9007199254740992n;
 	private nextDeliveryId = 3855090938003079000n;
@@ -1006,6 +1009,11 @@ export class GithubStandin {
 			if (write && (!this.allows(token, repository, "contents", "write") || repository.archived)) return refuse(403, `Permission to ${owner}/${name}.git denied to ${this.slug}[bot].\n`);
 		}
 
+		if (token && !write && endpoint === "info/refs" && this.hangNextGitRead) {
+			this.hangNextGitRead = false;
+			return;
+		}
+
 		const env: Record<string, string> = {
 			PATH: process.env.PATH ?? "/usr/bin:/bin",
 			GIT_PROJECT_ROOT: join(this.root, "git"),
@@ -1031,6 +1039,7 @@ export class GithubStandin {
 		let sent = false;
 		child.stdout.on("data", (chunk: Buffer) => {
 			if (sent) {
+				this.gitResponseBytes += chunk.length;
 				response.write(chunk);
 				return;
 			}
@@ -1049,6 +1058,7 @@ export class GithubStandin {
 			entry.status = status;
 			sent = true;
 			response.writeHead(status, headers);
+			this.gitResponseBytes += head.length - end - 4;
 			response.write(head.subarray(end + 4));
 		});
 		await new Promise<void>((resolve) => child.on("close", () => resolve()));
