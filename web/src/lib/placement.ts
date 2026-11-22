@@ -78,21 +78,47 @@ export function withPlace(task: PlanSubtask, draft: PlaceDraft): PlanSubtask {
 export const placeChanged = (task: PlanSubtask, draft: PlaceDraft) => JSON.stringify(placeDraftOf(task)) !== JSON.stringify({ prefer: draft.prefer, allow: draft.allow.filter((name) => name !== draft.prefer) });
 
 /**
- * Why the server would refuse this subtask's place at approval, in its words; null when a place can
- * take it now or later (a busy or offline machine only makes it wait). Not judged where the route
- * includes this platform: the page does not know the deployment's hosted profiles.
+ * How the server's check (`choosePlacement`) judges this subtask's place over the machines the page
+ * has read. `refused`: no allowed place can ever take it (an owner policy, a removed machine, a missing
+ * capability, a size its runner cannot report), and approval is refused with these words. `wait`: a
+ * place is busy, offline, or short of something it may have later; approval is allowed and the feature
+ * waits, or asks once it gets there. Null: a place can take it now. Not judged where the route includes
+ * this platform: the page does not know the deployment's hosted profiles.
  */
-export function placementProblem(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): string | null {
+export function placementFit(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): { refused: string } | { wait: string } | null {
 	const inventory = plannerMachines(machines);
 	let route;
 	try {
 		route = bindRoute(task, parent, overflow, inventory);
 	} catch (error) {
-		return (error as Error).message;
+		return { refused: (error as Error).message };
 	}
 	if ([route.preferred, ...route.alternatives].some((place) => place.kind === "hosted")) return null;
 	const fit = choosePlacement(task, route, { machines: inventory, hostedProfiles: [] });
-	return fit.refused ?? null;
+	if (fit.decision) return null;
+	if (fit.wait !== undefined) return { wait: fit.wait };
+	return fit.permanent ? { refused: fit.refused } : { wait: `${fit.refused} It asks you when it gets there.` };
+}
+
+/** Why the server would refuse this subtask's place at approval, in its words; null when a place can take it now or later. */
+export function placementProblem(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): string | null {
+	const fit = placementFit(task, parent, overflow, machines);
+	return fit && "refused" in fit ? fit.refused : null;
+}
+
+/** What the subtask would wait for if the plan were approved now; null when it would start, or cannot be placed. */
+export function placementWait(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): string | null {
+	const fit = placementFit(task, parent, overflow, machines);
+	return fit && "wait" in fit ? fit.wait : null;
+}
+
+/**
+ * The subtask a "placement_refused" question is about: the server prefixes its words with the subtask's
+ * title (blueprint.ts, `askPlacement`). The longest title that matches, as one title may begin another.
+ */
+export function refusedSubtask(plan: FeaturePlan | null, text: string): { task: PlanSubtask; reason: string } | null {
+	const task = [...(plan?.subtasks ?? [])].sort((a, b) => b.title.length - a.title.length).find((one) => text.startsWith(`${one.title}: `));
+	return task ? { task, reason: text.slice(task.title.length + 2) } : null;
 }
 
 /** The part of an approval refusal that is about this subtask: the server prefixes it with the subtask's title. */

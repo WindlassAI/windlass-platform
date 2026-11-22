@@ -29,7 +29,7 @@ import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type I
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
-import { Inline, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
+import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { ItemSpend } from "../components/ItemSpend";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
@@ -1026,6 +1026,8 @@ export function Item({ page }: { page: ItemPage }) {
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
 				{view.question && planOpen(view) ? (
 					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
+				) : view.question?.kind === "placement_refused" && view.plan ? (
+					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
 				) : (

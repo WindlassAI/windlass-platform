@@ -562,7 +562,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 							How it runs
 						</span>
 						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy} />
-						<ItemModeCost id={ids.form + "-cost"} />
+						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
 				) : null}

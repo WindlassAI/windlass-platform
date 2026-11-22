@@ -1994,3 +1994,69 @@ a.plan-task-title:hover {
 	border-radius: 1px;
 	background: var(--ink-faint);
 }
+
+/* Approval held back by a place no machine can ever take: the reason beside the button, its signal a small dot. */
+.plan-blocked-place {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	max-width: 74ch;
+	line-height: 1.5;
+}
+.plan-blocked-place strong {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.plan-blocked-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--bad);
+	transform: translateY(-1px);
+}
+/* What a subtask would wait for if approved now: a fact, not an alarm. */
+.plan-place-ahead > dt {
+	color: var(--ink-faint);
+}
+.plan-place-ahead > dd {
+	color: var(--ink-dim);
+}
+.plan-route-wait {
+	margin-top: 2px;
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--ink-dim);
+}
+
+/* A subtask the feature could not place: what refused it, where it was approved to run, and the answers. */
+.placement-question-facts {
+	display: grid;
+	gap: 6px;
+	margin: 0;
+}
+.placement-question-facts > div {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+}
+.placement-question-facts dt {
+	font-size: 11.5px;
+	color: var(--ink-faint);
+}
+.placement-question-facts dd {
+	margin: 0;
+}
+.placement-revise {
+	display: grid;
+	gap: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+@media (max-width: 760px) {
+	.placement-question-facts > div {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 2px;
+	}
+}

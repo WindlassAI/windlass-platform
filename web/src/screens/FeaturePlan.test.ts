@@ -122,6 +122,7 @@ describe("the Factory composer's mode choice", () => {
 		expect(filed[0]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
 		expect(host.querySelector(".start-filed")?.textContent).toContain("its plan comes to you for approval");
 		act(() => option("single")!.click());
+		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Starts one implementer at once, with no plan to approve.");
 		await file("Fix the report title");
 		expect(filed[1]).toMatchObject({ title: "Fix the report title", mode: "single" });
 		expect(option("orchestrate")?.checked).toBe(true);
@@ -395,9 +396,13 @@ describe("placement in a feature's plan", () => {
 		// Before approval, from the server's own check; "studio" is busy, which is a wait and not a refusal.
 		expect(fact("compare", "can't place")).toBe("‘ci-box’: owner placement policy is never.");
 		expect(fact("capture", "can't place")).toBeNull();
-		await act(async () => button("Approve version 1")?.click());
-		await settle();
-		expect(host.querySelector(".plan-question .callout-bad")?.textContent).toBe("Compare captures against the baseline: ‘ci-box’: owner placement policy is never.");
+		expect(fact("capture", "if approved")).toBe("Waiting for 1 free slot on ‘studio’. 0 free now.");
+		// A place no machine can ever take holds approval back, with the reason beside the button.
+		const approve = button("Approve version 1")!;
+		expect(approve.disabled).toBe(true);
+		expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toBe("Compare captures against the baseline can't be placed: ‘ci-box’: owner placement policy is never. Choose another place below and save, or ask for a new plan.");
+		// The server refuses in the same words, should an approval reach it from elsewhere; the busy "studio" is not among them.
+		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: 1 })).rejects.toThrow(/^Compare captures against the baseline: ‘ci-box’: owner placement policy is never\.$/);
 		expect((await api().item(feature.id)).plan?.status).toBe("proposed");
 	});
 
@@ -411,8 +416,13 @@ describe("placement in a feature's plan", () => {
 		await settle(2);
 		expect(fact("compare", "can't place")).toBeNull();
 		expect(fact("compare", "runs on")).toContain("Chosen in plan review.");
+		// "studio" is busy: a wait, which approval allows.
+		expect(fact("compare", "if approved")).toBe("Waiting for 1 free slot on ‘studio’. 0 free now.");
 		await act(async () => button("Save as version 2")?.click());
 		await settle();
+		expect(button("Approve version 2")?.disabled).toBe(false);
+		expect(host.querySelector(".plan-question .plan-blocked-place")).toBeNull();
+		expect([...host.querySelectorAll(".plan-question .plan-route-wait")].map((line) => line.textContent)).toEqual(["If approved now: Waiting for 1 free slot on ‘studio’. 0 free now.", "If approved now: Waiting for 1 free slot on ‘studio’. 0 free now."]);
 		const saved = await api().item(feature.id);
 		expect(saved.plan?.subtasks[2]?.place).toEqual({ prefer: "studio", reason: "Chosen in plan review." });
 		expect(saved.plan?.overflow).toBe(true);
@@ -476,6 +486,108 @@ describe("placement in a feature's plan", () => {
 		expect(fact("proof", "waits")).toBe("Waiting for 2 free slots on ‘studio’. 0 free now.");
 		expect(row("proof").querySelector(".plan-task-word")?.textContent).toBe("waits for a machine");
 		expect(pill("Runs on: studio")).toBeUndefined();
+	});
+});
+
+describe("a subtask the feature could not place", () => {
+	const card = () => host.querySelector(".placement-question") as HTMLElement;
+	const fact = (term: string) => [...card().querySelectorAll(".placement-question-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent ?? null;
+	const menuRow = (name: string) => [...document.querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.textContent?.startsWith(name)) as HTMLElement;
+
+	it("says which subtask, why, and where it was approved, with the three answers", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Flood alerts by mail");
+		await show(`/items/${feature.id}`);
+		expect(card().querySelector(".item-question-text")?.textContent).toBe("“Send the alert mails” can't be placed");
+		expect(fact("refused")).toBe("‘ci-box’: owner placement policy is never.");
+		expect(fact("approved")).toBe("ci-box");
+		expect([...card().querySelectorAll(".item-choices button")].map((one) => one.textContent)).toEqual(["Revise the placement…", "Retry allowed places", "Give up the subtask"]);
+	});
+
+	it("retries the approved places and asks again while the owner's policy still refuses", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Flood alerts by mail");
+		await show(`/items/${feature.id}`);
+		const asked = feature.question!.id;
+		await act(async () => button("Retry allowed places")?.click());
+		await settle();
+		const after = await api().item(feature.id);
+		expect(after.question?.kind).toBe("placement_refused");
+		expect(after.question?.id).not.toBe(asked);
+		expect(fact("refused")).toBe("‘ci-box’: owner placement policy is never.");
+	});
+
+	it("revises the placement with a place picked from the owner's machines, sent to the planner as the owner's note", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Flood alerts by mail");
+		await show(`/items/${feature.id}`);
+		act(() => button("Revise the placement…")!.click());
+		const send = button("Ask for a revised plan")!;
+		expect(send.disabled).toBe(false);
+		const pill = [...card().querySelectorAll("button")].find((one) => one.getAttribute("aria-label")?.startsWith("Runs on:")) as HTMLButtonElement;
+		expect(pill.getAttribute("aria-label")).toBe("Runs on: ci-box");
+		act(() => pill.click());
+		expect(menuRow("ci-box")?.getAttribute("aria-disabled")).toBe("true");
+		act(() => menuRow("nas").click());
+		await settle(2);
+		expect(card().querySelector(".plan-place-problem dd")?.textContent).toBe("‘ci-box’: owner placement policy is never.");
+		const sent: ItemAction[] = [];
+		meanwhile = async (_id, action) => void sent.push(action);
+		await act(async () => button("Ask for a revised plan")?.click());
+		await settle();
+		expect(sent[0]).toEqual({ kind: "answer", question: feature.question!.id, choice: "revise", note: "Run “Send the alert mails” on nas." });
+		const after = await api().item(feature.id);
+		expect(after.question?.kind).toBe("plan_approval");
+		expect(after.plan?.version).toBe(2);
+	});
+
+	it("allows a revision to a busy place, and says what it would wait for", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Flood alerts by mail");
+		await show(`/items/${feature.id}`);
+		act(() => button("Revise the placement…")!.click());
+		const pill = [...card().querySelectorAll("button")].find((one) => one.getAttribute("aria-label")?.startsWith("Runs on:")) as HTMLButtonElement;
+		act(() => pill.click());
+		// "studio" takes a subtask that names it; both its slots are busy, which is a wait and not a refusal.
+		act(() => menuRow("studio").click());
+		await settle(2);
+		expect(button("Ask for a revised plan")?.disabled).toBe(false);
+		expect([...card().querySelectorAll(".plan-place-ahead dd")].map((one) => one.textContent)).toEqual(["Waiting for 1 free slot on ‘studio’. 0 free now."]);
+	});
+
+	it("gives up the subtask", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Flood alerts by mail");
+		await show(`/items/${feature.id}`);
+		await act(async () => button("Give up the subtask")?.click());
+		await settle();
+		const after = await api().item(feature.id);
+		expect(after.question?.kind).not.toBe("placement_refused");
+		expect(after.events.some((event) => event.said.includes("Cancelled “Send the alert mails”."))).toBe(true);
+	});
+});
+
+describe("one implementer suggested with the planner's questions open", () => {
+	it("shows the questions and approves only once both are answered and saved", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Round tide heights to centimetres");
+		await show(`/items/${feature.id}`);
+		const card = host.querySelector(".plan-question") as HTMLElement;
+		expect(card.querySelector(".item-question-text")?.textContent).toContain("One function and its callers in a single change");
+		expect([...card.querySelectorAll(".plan-ask-text")].map((one) => one.textContent)).toEqual(["Round half up, or half to even?", "Should the CSV export round too, or keep the raw millimetres?"]);
+		const approve = button("Approve for one implementer")!;
+		expect(approve.disabled).toBe(true);
+		expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toBe("Answer the 2 questions and save first.");
+		act(() => (card.querySelector('.plan-ask-options input[value="Half to even"]') as HTMLInputElement).click());
+		type(card.querySelector(".plan-asks input:not([type])") as HTMLInputElement, "Keep the raw millimetres.");
+		await act(async () => button("Save as version 2")?.click());
+		await settle();
+		expect(button("Approve for one implementer")?.disabled).toBe(false);
+		await act(async () => button("Approve for one implementer")?.click());
+		await settle();
+		const after = await api().item(feature.id);
+		expect(after.mode).toBe("single");
+		expect(after.plan?.questions.map((one) => one.answer)).toEqual(["Half to even", "Keep the raw millimetres."]);
 	});
 });
 

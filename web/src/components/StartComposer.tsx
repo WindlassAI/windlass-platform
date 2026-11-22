@@ -1059,7 +1059,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				</p>
 			) : null}
 			{phone && (kindSwitch || itemModeControl) ? <div className="start-kinds">{kindSwitch}{itemModeControl}</div> : null}
-			{phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} />}
+			{phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} mode={itemMode} />}
 			<div className="start-box">
 				<label className="visually-hidden" htmlFor={ids.text}>
 					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
@@ -1136,7 +1136,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					)}
 				</div>
 			</div>
-			{!phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} />}
+			{!phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} mode={itemMode} />}
 			{facts.length > 0 || chosenMachine ? (
 				<p className={`start-sandbox${anyOpen ? " start-sandbox-open" : ""}`} title={facts.map((fact) => fact.long).join("; ") || undefined}>
 					{anyOpen ? <WarnIcon size={13} /> : <ShieldGlyph />}

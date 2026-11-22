@@ -21,7 +21,7 @@
  * shown under the subtask it names. Once a subtask has its item, its row says where it ran and why;
  * the subtask the feature waits to place says which machine it waits for and what for.
  */
-import type { FeaturePlan, ItemAction, ItemBudget, ItemSummary, ItemView, MachineSummary, PlanSubtask, Waiting } from "@contract";
+import { MAX_NOTE_CHARS, type FeaturePlan, type ItemAction, type ItemBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type PlanSubtask, type Waiting } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
@@ -29,7 +29,7 @@ import { ItemSpend } from "../components/ItemSpend";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
-import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementProblem, placeWord, refusalFor, withPlace, type PlaceDraft } from "../lib/placement";
+import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placementWait, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { useApp } from "../state/app";
 import { useMachines } from "./Machines";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
@@ -152,6 +152,19 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 
 export type PlanReview = ReturnType<typeof usePlanReview>;
 
+/**
+ * The subtasks of the saved version that no allowed place can ever take, in the words of the server's
+ * check (lib/placement.ts); those already done are not placed again. Empty until the machines are read.
+ */
+function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null): { task: PlanSubtask; reason: string }[] {
+	if (!machines) return [];
+	const done = new Set((view.children ?? []).filter((child) => child.state === "done" && child.parent).map((child) => child.parent!.key));
+	return plan.subtasks.flatMap((task) => {
+		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines);
+		return reason ? [{ task, reason }] : [];
+	});
+}
+
 /** What the server's refusal of an approval says to do instead: the feature as one item. */
 const SINGLE_INSTEAD = /single item/i;
 
@@ -169,7 +182,10 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 	const tasks = plan.subtasks.length;
 	const totalTokens = sumBudgets(Object.values(review.parsed)).tokens;
 	const refused = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
+	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines);
 	const blocked = review.problems.any ? "Fix the figures marked below first." : review.dirty ? "Save your changes, then approve this version." : review.unanswered > 0 ? `Answer ${review.unanswered === 1 ? "the question" : `the ${review.unanswered} questions`} and save first.` : null;
+	// The owner's choice: a place no allowed machine can ever take holds approval back, with the server's words. A busy or offline one does not.
+	const placeBlocked = blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
 	const revise = view.question.choices.find((choice) => choice.id === "revise");
 	const giveUp = view.question.choices.find((choice) => choice.id === "give_up");
 	return (
@@ -225,7 +241,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						</button>
 					</>
 				) : (
-					<button type="button" className="button button-primary" disabled={busy || blocked !== null} onClick={() => void review.approve()} aria-describedby={blocked ? `${ids.title}-why` : undefined}>
+					<button type="button" className="button button-primary" disabled={busy || blocked !== null || placeBlocked !== null} onClick={() => void review.approve()} aria-describedby={blocked || placeBlocked ? `${ids.title}-why` : undefined}>
 						{single ? "Approve for one implementer" : acting.busy === "approve_plan" ? "Approving…" : `Approve version ${plan.version}`}
 					</button>
 				)}
@@ -253,6 +269,13 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 			{blocked && !review.dirty ? (
 				<p className="field-note" id={`${ids.title}-why`}>
 					{blocked}
+				</p>
+			) : placeBlocked && !review.dirty ? (
+				<p className="field-note plan-blocked-place" id={`${ids.title}-why`}>
+					<span className="plan-blocked-dot" aria-hidden="true" />
+					<span>
+						<strong>{placeBlocked.task.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.reason} Choose another place below and save, or ask for a new plan.
+					</span>
 				</p>
 			) : null}
 			{!single && <p className="field-note">Sizing beyond one slot is not supported by current runners.</p>}
@@ -377,6 +400,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 		// The server's refusal is about the place it was sent; a place changed since is checked here again.
 		problem: plan.status !== "proposed" ? null : ((review.places[task.key] && placeChanged(task, review.places[task.key]!) ? null : refusalFor(task, refusal)) ?? (machines ? placementProblem(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines) : null)),
 		wait: task.key === waitingKey ? view.wait : null,
+		ahead: plan.status !== "proposed" || !machines ? null : placementWait(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines),
 		secrets: (name) => secretsFor(name, view.placementReview, machines),
 		onPlace: (draft) => review.setPlace(task.key, draft),
 	});
@@ -609,6 +633,8 @@ interface PlaceRow {
 	problem: string | null;
 	/** The feature's wait, when it waits to place this subtask. */
 	wait: Waiting | null;
+	/** What it would wait for if the plan were approved now: a busy or offline place. Only while the plan is proposed. */
+	ahead: string | null;
 	/** Whether repository secrets go to a place, by its name; null when not known. */
 	secrets(name: string): boolean | null;
 	onPlace(draft: PlaceDraft): void;
@@ -774,6 +800,15 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 					</dd>
 				</div>
 			) : null}
+			{row.ahead && !row.problem && !child ? (
+				<div className="plan-place-wait plan-place-ahead">
+					<dt>if approved</dt>
+					<dd>
+						<span className="plan-place-dot" aria-hidden="true" />
+						{row.ahead}
+					</dd>
+				</div>
+			) : null}
 			{row.problem && !child ? (
 				<div className="plan-place-problem">
 					<dt>can't place</dt>
@@ -824,7 +859,9 @@ function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: F
 			<ol className="plan-routes-list">
 				{plan.subtasks.map((task, index) => {
 					const route = routeWords(task, parent, overflow);
-					const problem = refusalFor(task, refusal) ?? (machines ? placementProblem(task, view.place, overflow, machines) : null);
+					const fit = machines ? placementFit(task, view.place, overflow, machines) : null;
+					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);
+					const wait = !problem && fit && "wait" in fit ? fit.wait : null;
 					return (
 						<li key={task.key} className="plan-route">
 							<span className="plan-route-n" aria-hidden="true">
@@ -834,6 +871,7 @@ function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: F
 								<p className="plan-route-title">{task.title}</p>
 								<p className="plan-route-why">{route.inherited ? "Names no place: it runs where the feature does." : route.reason}</p>
 								{problem ? <p className="plan-route-problem">Can't be placed: {problem}</p> : null}
+								{wait ? <p className="plan-route-wait">If approved now: {wait}</p> : null}
 							</div>
 							<ul className="plan-route-places" aria-label={`Places for ${task.title}`}>
 								<li>
@@ -861,5 +899,136 @@ function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: F
 				.
 			</p>
 		</div>
+	);
+}
+
+/**
+ * A subtask the feature could not place once it got there (question kind "placement_refused",
+ * blueprint.ts `askPlacement`): a machine was removed, its owner's policy changed, or it lacks what the
+ * subtask needs. Three answers: revise the placement (the planner files the remaining subtasks again;
+ * a place picked here goes to it as the owner's note), retry the approved places (after the owner
+ * changed what refused it), or give up the subtask: it is cancelled, and the feature re-plans or stops.
+ */
+export function PlacementQuestion({ view, question, review, acting, when }: { view: ItemView; question: ItemQuestion; review: PlanReview; acting: PlanActing; when: ReactNode }) {
+	const ids = { title: useId(), note: useId() };
+	const about = refusedSubtask(view.plan ?? null, question.text);
+	const task = about?.task ?? null;
+	const [revising, setRevising] = useState(false);
+	const [draft, setDraft] = useState<PlaceDraft>(() => (task ? placeDraftOf(task) : { prefer: null, allow: [] }));
+	const [note, setNote] = useState("");
+	const busy = acting.busy !== null;
+	const offered = (id: string) => question.choices.find((choice) => choice.id === id) ?? null;
+	const revise = offered("revise");
+	const again = offered("again");
+	const giveUp = offered("give_up");
+	const machines = review.machines;
+	const parent = parentPlaceName(view.place, machines);
+	const overflow = view.plan?.overflow === true;
+	const route = task ? routeWords(task, parent, overflow) : null;
+	const moved = task !== null && placeChanged(task, draft);
+	const picked = task && moved ? withPlace(task, draft) : null;
+	const check = picked && machines ? placementFit(picked, view.place, overflow, machines) : null;
+	const pickRefused = check && "refused" in check ? check.refused : null;
+	const pickWait = check && "wait" in check ? check.wait : null;
+	const row: PlaceRow = { machines, parent, overflow, draft, problem: pickRefused, wait: null, ahead: pickWait, secrets: (name) => secretsFor(name, view.placementReview, machines), onPlace: setDraft };
+	const send = (choice: "revise" | "again" | "give_up") => {
+		const words = [
+			...(picked ? [`Run “${picked.title}” on ${placeWord(draft.prefer ?? parent)}${draft.allow.length ? `, or ${draft.allow.map(placeWord).join(", ")}` : ""}.`] : []),
+			...(note.trim() ? [note.trim()] : []),
+		].join(" ").slice(0, MAX_NOTE_CHARS);
+		return acting.act({ kind: "answer", question: question.id, choice, ...(choice === "revise" && words ? { note: words } : {}) });
+	};
+	return (
+		<section className="item-question placement-question" aria-labelledby={ids.title}>
+			<p className="item-question-head" id={ids.title}>
+				It asks you
+				<span className="item-question-when">{when}</span>
+			</p>
+			<p className="item-question-text">{task ? <>“{task.title}” can't be placed</> : "A subtask can't be placed"}</p>
+			<dl className="placement-question-facts">
+				<div className="plan-place-problem">
+					<dt>refused</dt>
+					<dd role="alert">{about?.reason ?? question.text}</dd>
+				</div>
+				{route ? (
+					<div className="plan-place">
+						<dt>approved</dt>
+						<dd>
+							<strong className="plan-place-name">{placeWord(route.prefer)}</strong>
+							{route.inherited ? <span className="tone-faint"> as the feature</span> : null}
+							{route.alternatives.length > 0 ? (
+								<span className={overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
+									{" "}
+									or {route.alternatives.map(placeWord).join(", ")}
+									{overflow ? null : " · overflow off"}
+								</span>
+							) : null}
+						</dd>
+					</div>
+				) : null}
+			</dl>
+
+			{revising && task ? (
+				<div className="placement-revise">
+					<dl className="placement-question-facts">
+						<SubtaskPlace task={task} child={null} row={row} editing disabled={busy} />
+					</dl>
+					<div>
+						<label className="label" htmlFor={ids.note}>
+							A note to the planner<span className="label-optional">optional</span>
+						</label>
+						<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS - 200} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+					</div>
+					<div className="item-choices">
+						<button type="button" className="button button-primary" disabled={busy || pickRefused !== null} onClick={() => void send("revise")} aria-describedby={`${ids.title}-revise`}>
+							{acting.busy === "revise" ? "Sending…" : "Ask for a revised plan"}
+						</button>
+						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRevising(false)}>
+							Back
+						</button>
+					</div>
+					<p className="field-note" id={`${ids.title}-revise`}>
+						{pickRefused
+							? "Choose a place that can take it."
+							: picked
+								? "The planner files the remaining subtasks again with this place; the new plan comes to you for approval."
+								: "Pick where it should run, or leave the place to the planner. The new plan comes to you for approval."}
+					</p>
+				</div>
+			) : (
+				<>
+					<div className="item-choices">
+						{revise && task ? (
+							<button type="button" className="button button-primary" disabled={busy} onClick={() => setRevising(true)}>
+								{revise.label}…
+							</button>
+						) : null}
+						{again ? (
+							<button type="button" className={`button ${revise && task ? "button-outline" : "button-primary"}`} disabled={busy} onClick={() => void send("again")}>
+								{acting.busy === "again" ? "Checking…" : again.label}
+							</button>
+						) : null}
+						{giveUp ? (
+							<button type="button" className="button button-quiet" disabled={busy} onClick={() => void send("give_up")}>
+								{acting.busy === "give_up" ? "Sending…" : giveUp.label}
+							</button>
+						) : null}
+					</div>
+					<p className="field-note">
+						Retry once you have changed what refused it, on{" "}
+						<a className="link" {...linkProps({ name: "machines" })}>
+							Machines
+						</a>
+						. Giving up cancels the subtask; the planner then revises what is left for you to approve, or the feature stops.
+					</p>
+				</>
+			)}
+			{acting.error ? (
+				<p className="callout callout-bad" role="alert">
+					<WarnIcon />
+					<span>{acting.error}</span>
+				</p>
+			) : null}
+		</section>
 	);
 }
