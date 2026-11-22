@@ -382,6 +382,49 @@ describe("what the start composer starts on", () => {
 		expect(created[0]).toMatchObject({ repository: { id: 7101 }, profile: "docker-hardened", model: "gpt-6-luna" });
 	});
 
+	/** Claude Code on "nas" in Plan, started and then deleted: only the server's memory of it is left. */
+	const claudeOnNasDeleted = async (mock: MockClient) => {
+		const user = mock.user(ada);
+		const made = await user.createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
+		await user.deleteSession(made.id);
+	};
+
+	it("starts where the last agent started, with its agent and mode, after that agent is deleted", async () => {
+		await show({ before: claudeOnNasDeleted });
+		created = [];
+		expect(value("on")).toContain("nas");
+		expect(value("agent")).toContain("Claude Code");
+		expect(value("mode")).toBe("Plan");
+		write("Look around");
+		await enter();
+		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
+	});
+
+	it("starts on the platform's own once the last start is forgotten, whatever the list of agents says", async () => {
+		await show({ before: async (mock) => (await lastOnNas(mock), void (await mock.user(ada).forgetLastStart())) });
+		created = [];
+		expect(value("on")).toBe("Hosted");
+		write("Look around");
+		await enter();
+		expect(created[0]?.place).toBeUndefined();
+		expect(created[0]?.harness).toBeUndefined();
+	});
+
+	it("falls back to a hosted Windlass agent when the last machine is gone, and says why", async () => {
+		await show({ before: claudeOnNasDeleted, machines: (list) => list.filter((machine) => machine.machineId !== "m_nas") });
+		created = [];
+		expect(value("on")).toBe("Hosted");
+		expect(value("agent")).toContain("Windlass");
+		expect(pill("on")?.classList.contains("ui-pill-warn")).toBe(true);
+		open("agent");
+		expect(pop().textContent).toContain("Your last agent was Claude Code, which runs only on a machine of yours, so this one is Windlass.");
+		act(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+		write("Look around");
+		await enter();
+		expect(created[0]?.place).toBeUndefined();
+		expect(created[0]?.harness).toBeUndefined();
+	});
+
 	it("puts a choice made here before every default", async () => {
 		await show({ repositoryId: 7101 });
 		open("agent");
@@ -417,5 +460,89 @@ describe("the start composer and the visit to GitHub", () => {
 		expect(value("mode")).toBe("Ask");
 		await enter();
 		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, mode: "ask" });
+	});
+});
+
+describe("connecting GitHub from the start composer in a popup", () => {
+	/** A window `window.open` hands back: where it was sent, and whether it was closed. */
+	let opened: { location: { href: string }; closed: boolean; close(): void; focus(): void; document: Document } | null;
+	let realOpen: typeof window.open;
+	/** A demo user of each test's own: the GitHub connection's state is one per user, for the page's life. */
+	let who: AuthResult;
+	let made = 0;
+	beforeEach(() => {
+		realOpen = window.open;
+		opened = null;
+		made += 1;
+		who = { token: `mock:demo:demo_popup${made}:`, profile: { uid: `demo_popup${made}`, email: null, demo: true } };
+	});
+	afterEach(() => {
+		window.open = realOpen;
+	});
+	const popupOpens = () => {
+		window.open = (() => {
+			opened = { location: { href: "about:blank" }, closed: false, close() { this.closed = true; }, focus() {}, document: document.implementation.createHTMLDocument("") };
+			return opened as unknown as Window;
+		}) as typeof window.open;
+	};
+	/** The popup back from GitHub: its message, from a window this page opened. */
+	const popupAnswers = async (hash: string) => {
+		const frame = document.createElement("iframe");
+		document.body.append(frame);
+		const from = frame.contentWindow as Window;
+		Object.defineProperty(from, "opener", { value: window });
+		await act(async () => void window.dispatchEvent(new MessageEvent("message", { origin: location.origin, source: from, data: { type: "wlp.github.return", hash } })));
+		if (opened) opened.closed = true;
+		frame.remove();
+		// The picker lists again after its search's pause.
+		await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 400))));
+		await settle(20);
+	};
+
+	it("keeps the page and the task, and lists the repositories once GitHub answers", async () => {
+		popupOpens();
+		await show({ who });
+		write("Add a health check");
+		open("repo");
+		press("Connect GitHub");
+		await settle(40);
+		// The window went to GitHub; this page stayed, and kept nothing for a way back.
+		expect(opened?.location.href).toContain(`#github=mock.${who.profile.uid}`);
+		expect(sessionStorage.getItem("wlp.new-agent.draft")).toBeNull();
+		expect(pop()?.textContent).toContain("Finish connecting in the GitHub window.");
+		await popupAnswers(`#github=mock.${who.profile.uid}`);
+		expect(field().value).toBe("Add a health check");
+		// Connected: the repository's picker lists them, without going anywhere.
+		expect(pop()?.textContent).toContain("Your repositories");
+		expect(pop()?.textContent).toContain("acme/harbor");
+		expect(await client.user(who).github()).toMatchObject({ connection: { login: expect.any(String) } });
+	});
+
+	it("says so when the window is closed before GitHub answered, and connects nothing", async () => {
+		popupOpens();
+		await show({ who });
+		write("Add a health check");
+		open("repo");
+		press("Connect GitHub");
+		await settle(40);
+		act(() => opened?.close());
+		// It looks every half second, and waits a moment for a message that may be on its way.
+		await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 1500))));
+		await settle();
+		expect(host.textContent + (pop()?.textContent ?? "")).toContain("GitHub was not connected: its window was closed before it finished.");
+		expect(field().value).toBe("Add a health check");
+		expect(await client.user(who).github()).toEqual({ connection: null });
+	});
+
+	it("leaves the page for GitHub when the browser blocks the popup, keeping the task for the way back", async () => {
+		let asked = 0;
+		window.open = (() => (asked++, null)) as typeof window.open;
+		await show({ who });
+		write("Add a health check");
+		open("repo");
+		press("Connect GitHub");
+		await settle();
+		expect(asked).toBe(1);
+		expect(JSON.parse(sessionStorage.getItem("wlp.new-agent.draft") ?? "null")).toMatchObject({ prompt: "Add a health check" });
 	});
 });

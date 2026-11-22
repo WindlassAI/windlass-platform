@@ -209,8 +209,8 @@ function AccessNotice({ page, github }: { page: RepositoryPage; github: Github }
 						{access.reason === "github_not_connected" ? (
 							<>
 								{" "}
-								<button type="button" className="link" onClick={() => github.connect({ where: "menu" })} disabled={github.busy !== null}>
-									{github.busy === "leaving" ? "Going to GitHub…" : "Connect GitHub"}
+								<button type="button" className="link" onClick={() => github.connect({ where: "menu" })} disabled={github.busy !== null && github.busy !== "popup"}>
+									{github.busy === "leaving" ? "Opening GitHub…" : github.busy === "popup" ? "In the GitHub window…" : "Connect GitHub"}
 								</button>
 							</>
 						) : null}

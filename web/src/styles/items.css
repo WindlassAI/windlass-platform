@@ -2060,3 +2060,11 @@ a.plan-task-title:hover {
 		gap: 2px;
 	}
 }
+
+/* Under the ended rows: the next page, set as the fold above them is. */
+.factory-more {
+	padding-top: 10px;
+}
+.factory-more .machine-chevron {
+	transform: rotate(90deg);
+}

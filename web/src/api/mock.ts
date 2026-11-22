@@ -87,6 +87,7 @@ import {
 	type RepositoryChecks,
 	type Verified,
 	type AccountDefaults,
+	type LastStart,
 	type AccountSecrets,
 	type AccountSettings,
 	type AuthResult,
@@ -1261,6 +1262,8 @@ interface World {
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
 		defaults: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null;
+		/** Where the newest agent the user started ran, its agent and mode (`AccountSettings.lastStart`). */
+		lastStart: LastStart | null;
 		servers: Map<string, { definition: Record<string, unknown>; unasked: boolean; updatedAt: number }>;
 		secrets: Map<string, { scope: SecretScope; updatedAt: number }>;
 	};
@@ -1316,6 +1319,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	};
 	/** The time a request takes. */
 	const latency = (ms = 140) => new Promise<void>((resolve) => later(ms, resolve));
+	/** What `createSession` is asked for an item's agent. */
+	const itemStarts = new WeakSet<object>();
 	// Work items, API tokens and the factory's limits live in mock-items.ts; an item's agent is made here, as `createSession` makes one.
 	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
 	const items = createMockItems({
@@ -1325,7 +1330,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		latency,
 		later,
 		feeds: (auth) => worldOf(auth).feeds,
-		session: (auth, { profile, ...input }) => userApi(auth).createSession({ ...input, profile: profile ?? (profiles.find((candidate) => candidate.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" }),
+		session: (auth, { profile, ...input }) => {
+			const asked = { ...input, profile: profile ?? (profiles.find((candidate) => candidate.available) ?? profiles[0])?.id ?? "docker-windlass-sandbox" };
+			// An item's agent is not one the user started: it is not where their next agent starts.
+			itemStarts.add(asked);
+			return userApi(auth).createSession(asked);
+		},
 		seededSession: (auth, item) => seedItemSession(auth, item),
 		itemChanged: (auth, item) => {
 			const world = worldOf(auth);
@@ -1353,7 +1363,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -2958,6 +2968,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const servers = [...world.account.servers.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
 		return {
 			defaults: accountDefaultsOf(world),
+			lastStart: world.account.lastStart,
 			servers: servers.map(([name, server]): PersonalServer => {
 				const remote = typeof server.definition.url === "string";
 				const argv = remote ? [] : [String(server.definition.command ?? ""), ...(Array.isArray(server.definition.args) ? server.definition.args.map(String) : [])];
@@ -3380,7 +3391,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency();
 				return listOf(world());
 			},
-			async createSession({ idempotencyKey, ...input }: CreateSessionInput) {
+			async createSession(asked: CreateSessionInput) {
+				const { idempotencyKey, ...input } = asked;
 				await latency(260);
 				// With a key, the agent its first attempt made, for as long as that agent exists.
 				const key = keyOf(idempotencyKey);
@@ -3431,6 +3443,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				setSummary(world(), session, {});
 				if (key !== null) world().created.set(key, { content: JSON.stringify(input), answer: session.summary.id });
+				if (!itemStarts.has(asked)) world().account.lastStart = { place: session.summary.place, harness, mode: session.summary.mode, startedAt: session.summary.createdAt };
 				return session.summary;
 			},
 			async renameSession(id: string, title: string) {
@@ -3552,6 +3565,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// The same rules as a repository's defaults.
 				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile));
 				return accountDefaultsOf(current);
+			},
+			async forgetLastStart(): Promise<AccountSettings> {
+				await latency(200);
+				world().account.lastStart = null;
+				return accountOf(world());
 			},
 			async savePersonalServer(server: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings> {
 				await latency(320);

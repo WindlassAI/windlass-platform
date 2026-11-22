@@ -212,7 +212,7 @@ The Factory page lists your items by what you must do:
 - **Ready for you**: items in review.
 - **In progress**: working, queued or waiting.
 - **Drafts**.
-- **Ended**: done, failed or cancelled, folded away.
+- **Ended**: done, failed or cancelled, folded away. Unfolded, they show 25 at a time, the newest first. Choose **Show 25 more** for the next ones.
 
 Filter it with **repo** and **from**: filed from the web, the API or a GitHub issue. The filters are kept in the address, as `?repository=` and `?from=`.
 

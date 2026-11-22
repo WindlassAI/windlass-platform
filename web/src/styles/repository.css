@@ -567,3 +567,29 @@ a.agent-group-name:hover .agent-group-owner {
 :is(.repo-form, .repo-fields) :is(.input, .select) {
 	background-color: var(--bg);
 }
+
+/* Where the last agent started: a full-width row at the foot of the defaults' box, read like their values. */
+.last-start {
+	grid-column: 1 / -1;
+	padding-top: 14px;
+	border-top: 1px solid var(--line);
+}
+.last-start-value {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 8px;
+	margin: 0 0 6px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink);
+}
+.last-start-none,
+.last-start-sep {
+	color: var(--ink-faint);
+}
+.last-start-forget {
+	margin-left: auto;
+	font-family: var(--font-text);
+	font-size: var(--size-small);
+}

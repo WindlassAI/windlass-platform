@@ -13,7 +13,7 @@
  * (`useModels`), and a line under the field says whose list it is.
  */
 import type { AccountDefaults, SandboxProfileId } from "@contract";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { modelIds, modelsNote } from "../lib/models";
 import { type StartingChoices, startingChoices } from "../lib/repositories";
 import { useApp } from "../state/app";
@@ -28,6 +28,7 @@ export function DefaultsSection({
 	models,
 	save,
 	onSaved,
+	children,
 }: {
 	/** The id of the section's heading. */
 	id: string;
@@ -43,6 +44,8 @@ export function DefaultsSection({
 	/** Saves the fields the change names and answers with what is saved then. */
 	save(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
 	onSaved(next: AccountDefaults): void;
+	/** More of the section, under the fields: on the account's page, where the last agent started. */
+	children?: ReactNode;
 }) {
 	const { platform, explain } = useApp();
 	const ids = { profile: useId(), model: useId(), profileNote: useId(), modelNote: useId() };
@@ -137,6 +140,7 @@ export function DefaultsSection({
 							{models.list ? modelsNote(models.list) : models.reading ? "Reading your models…" : (models.error ?? "Your models could not be read.")}
 						</p>
 					</div>
+					{children}
 				</div>
 			)}
 			<p className={`repo-said${said?.tone === "bad" ? " tone-bad" : ""}`} role={said?.tone === "bad" ? "alert" : "status"}>

@@ -17,7 +17,12 @@ nothing of this, and a repository is a public address pasted into the launch for
   where they pick an account and its repositories. GitHub sends the browser back to `GET /github/callback` on a
   server's own port, with a code. The server exchanges it, asks GitHub who this is and which installations of
   the app they can reach, deletes the token it was given, and sends the browser on to the web app, which
-  hands what GitHub confirmed to the user's `user` actor. That is the connection: a GitHub login and the
+  hands what GitHub confirmed to the user's `user` actor. The web app does this in a popup window, so the
+  page and the launch form's text stay: back at the web app, the popup posts the fragment to its opener with
+  `postMessage` at its own origin and closes, and the opener takes it only from that origin, from a window it
+  opened, and of that shape (`web/src/state/github.ts`). Where the browser blocks the popup, the page itself
+  goes to GitHub and back, keeping the launch form's text in the tab. Either way it is the same state, the
+  same callback and the same ticket. That is the connection: a GitHub login and the
   accounts the app is installed on. Disconnecting forgets it; the app stays installed at GitHub, which is the
   account owner's to change.
 - **No credential of the user's is kept.** Not a token, not a refresh token. What the platform does at GitHub
@@ -902,7 +907,7 @@ hold whatever the repository, and have a page of their own (`/settings`, from th
 top bar; `web/src/screens/Settings.tsx`): defaults for new sessions, MCP servers of the user's own, and
 the secrets those servers read. All three are kept in the user's `user` actor, in tables of their own
 beside the repositories', and each is read and changed by its own actions (`account`,
-`saveAccountDefaults`, `savePersonalServer`, `deletePersonalServer`, `accountSecrets`,
+`saveAccountDefaults`, `forgetLastStart`, `savePersonalServer`, `deletePersonalServer`, `accountSecrets`,
 `saveAccountSecret`, `deleteAccountSecret`). Where the deployment offers work items, the same page has the
 user's API tokens, with which a script files them ([Work items](work-items.md)).
 
@@ -924,6 +929,12 @@ user's API tokens, with which a script files them ([Work items](work-items.md)).
   the account's default where there is one.
 - **Saves that run together.** As a repository's: a save names the fields it changes and is one
   statement that writes those columns, so a save of the sandbox and a save of the model both stay.
+- **Where the last agent started.** Not a saved default: the place, the agent and the mode of the newest
+  agent the user started, which the server writes in a row of its own when it makes that agent
+  (`AccountSettings.lastStart`; a work item's agents never do). The launch form starts those three
+  from it, and from nothing else (`startedOn`), so forgetting it is what it says; a machine that
+  cannot be used, or an agent it no longer offers, leaves it hosted with Windlass, and the form says
+  so. `forgetLastStart` removes it.
 
 ### MCP servers of the user's own
 

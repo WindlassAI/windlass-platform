@@ -80,7 +80,7 @@ import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
-import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemSummary, ItemView } from "../contract.js";
+import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -133,7 +133,7 @@ import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
 import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
-import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../account-defaults.js";
+import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
@@ -696,11 +696,13 @@ const logged = (text: string) => text.replace(/[^\x21-\x7e]/g, "?");
 /** The account's settings as their page shows them. No value of a secret is read. */
 async function accountView(db: RawAccess): Promise<AccountSettings> {
 	const defaults = await readAccountDefaults(db);
+	const lastStart = await readLastStart(db);
 	const servers = await readServers(db);
 	const secrets = await accountSecretNames(db);
 	const { sandboxes } = await getLayer();
 	return {
 		defaults,
+		lastStart,
 		servers: servers.map((server) => listedServer(server, secrets)),
 		serverReach: personalServerReach(sandboxes.profiles()),
 		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
@@ -1055,6 +1057,12 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	if (submission) c.vars.created.set(submission.key, { ...submission, id: summary.id });
 	await storeSession(c, summary, submission);
 	broadcastSessions(c);
+	// What the next agent starts on. An agent the user started, not a work item's: one that cannot be remembered is still made.
+	if (!item) {
+		await recordLastStart(c.db, { place: summary.place, harness: summary.harness ?? "windlass", mode: summary.mode, startedAt: summary.createdAt }).catch((error: unknown) => {
+			c.log.error({ msg: "the last start could not be remembered", error: String(error) });
+		});
+	}
 	return summary;
 }
 
@@ -1231,6 +1239,8 @@ export const user = actor({
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
+			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
+			await db.execute(LAST_START_TABLE);
 			// The models of the user's ChatGPT plan as Windlass last listed them (account-models.ts): one row.
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
@@ -1419,7 +1429,7 @@ export const user = actor({
 		[ATTACHMENT_SWEEP_ACTION]: (c) => itemActions.internalAttachmentSweep(c),
 		itemAttachmentLinks: (c, input: string) => itemActions.itemAttachmentLinks(c, input),
 		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
-		listItems: (c): ItemSummary[] => itemActions.listItems(c),
+		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
@@ -1989,6 +1999,17 @@ export const user = actor({
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
+			}
+		},
+
+		forgetLastStart: async (c): Promise<AccountSettings> => {
+			const profile = requireUser(c);
+			try {
+				await forgetLastStart(c.db);
+				console.log(`[wlp] last_start.forgotten uid=${profile.uid}`);
+				return await accountView(c.db);
+			} catch (error) {
+				throw clientError(c.log, error, "Where your last agent ran could not be forgotten. Try again.");
 			}
 		},
 
