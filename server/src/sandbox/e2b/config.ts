@@ -51,11 +51,26 @@ export interface E2bConfig {
 	windlassVersion: string | null;
 	/** WLP_E2B_NETWORK and WLP_E2B_NETWORK_ALLOW (network.ts). Absent: `open`, as before network modes. */
 	network?: E2bNetwork;
+	/** WLP_E2B_SNAPSHOTS=on and its limits (snapshots.ts). Absent: off, no snapshot is looked up, saved or swept. */
+	snapshots?: E2bSnapshotLimits;
 	/** Where Windlass's model requests go instead of api.openai.com (network.ts `e2bModelRelay`). Absent or null: the turn's token goes into the sandbox. */
 	modelRelayOrigin?: string | null;
 	/** Why the relay is off, when `modelRelayOrigin` is null: said once at startup. */
 	modelRelayOff?: string;
 }
+
+export interface E2bSnapshotLimits {
+	/** WLP_E2B_SNAPSHOT_MAX: the deployment's snapshots at E2B, all users together. */
+	maxTotal: number;
+	/** WLP_E2B_SNAPSHOT_USER_MAX: one user's, over all their repositories (one each). */
+	maxPerUser: number;
+	/** WLP_E2B_SNAPSHOT_MAX_GB: the most a sandbox's disk may hold to be saved. */
+	maxBytes: number;
+	/** A snapshot older than this is removed, used or not. */
+	ttlMs: number;
+}
+
+export const DEFAULT_SNAPSHOT_LIMITS: E2bSnapshotLimits = { maxTotal: 10, maxPerUser: 3, maxBytes: 4 * 2 ** 30, ttlMs: 14 * 86_400_000 };
 
 /** Everything but the API key: what the provider's logic needs. The key is the client's (sdk.ts). */
 export type E2bSettings = Omit<E2bConfig, "apiKey">;
@@ -113,11 +128,25 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 		openProfile: flag(env, "WLP_E2B_OPEN_PROFILE", false),
 		windlassVersion: version === "" ? null : version,
 		network: readE2bNetwork(env),
+		...(readSnapshotSwitch(env) ? { snapshots: {
+			maxTotal: integer(env, "WLP_E2B_SNAPSHOT_MAX", DEFAULT_SNAPSHOT_LIMITS.maxTotal, 1, 1000),
+			maxPerUser: integer(env, "WLP_E2B_SNAPSHOT_USER_MAX", DEFAULT_SNAPSHOT_LIMITS.maxPerUser, 1, 100),
+			maxBytes: integer(env, "WLP_E2B_SNAPSHOT_MAX_GB", DEFAULT_SNAPSHOT_LIMITS.maxBytes / 2 ** 30, 1, 64) * 2 ** 30,
+			ttlMs: DEFAULT_SNAPSHOT_LIMITS.ttlMs,
+		} } : {}),
 		...(() => {
 			const relay = e2bModelRelay(env);
 			return "origin" in relay ? { modelRelayOrigin: relay.origin } : { modelRelayOrigin: null, modelRelayOff: relay.off };
 		})(),
 	};
+}
+
+/** WLP_E2B_SNAPSHOTS: "on" or "off" (the default), as server/src/config.ts reads it for the session's side. */
+function readSnapshotSwitch(env: NodeJS.ProcessEnv): boolean {
+	const raw = (env.WLP_E2B_SNAPSHOTS ?? "").trim();
+	if (raw === "" || raw === "off") return false;
+	if (raw === "on") return true;
+	throw new Error(`WLP_E2B_SNAPSHOTS must be on or off; got "${raw}"`);
 }
 
 /** The settings of a server or a script that talks to E2B. Throws, with what to set, when there is no API key. */

@@ -7,8 +7,8 @@
  * The API key is passed with every call and never put into the environment, a log line or an error.
  */
 
-import { CommandExitError, GuestUnresponsiveError, NotFoundError, RateLimitError, Sandbox, type SandboxInfo, ServiceBusyError } from "e2b";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
+import { CommandExitError, GuestUnresponsiveError, NotFoundError, RateLimitError, Sandbox, SandboxError, type SandboxInfo, ServiceBusyError, Template } from "e2b";
+import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo } from "./client.js";
 
 /** The user of the template (sandbox/e2b/template.ts), named with every call so that a template built otherwise cannot make commands run as another. */
 const USER = "agent";
@@ -27,6 +27,9 @@ function infoOf(info: SandboxInfo): E2bSandboxInfo {
 		memoryMB: info.memoryMB,
 	};
 }
+
+/** At most this many pages of the account's snapshots are read: this layer keeps far fewer, and a longer list is someone else's. */
+const SNAPSHOT_PAGES = 20;
 
 /** The SDK's errors for "E2B cannot now" and "the plan's limit", as this layer names them; anything else as it is. */
 function translated(error: unknown): unknown {
@@ -148,6 +151,45 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 				return await Sandbox.kill(sandboxId, api);
 			} catch (error) {
 				if (error instanceof NotFoundError) return false;
+				throw translated(error);
+			}
+		},
+		async createSnapshot(sandboxId, name) {
+			try {
+				// Filesystem only, never memory: a memory image would hold what setup's processes had in memory.
+				const made = await Sandbox.createSnapshot(sandboxId, { ...api, requestTimeoutMs: 10 * 60_000, name, mode: "filesystem" });
+				return { snapshotId: made.snapshotId, names: made.names };
+			} catch (error) {
+				// 400 snapshot_filesystem_only_disabled, 409 snapshot_filesystem_only_unsupported_node: the SDK keeps only the status.
+				if (error instanceof SandboxError && (error.statusCode === 400 || error.statusCode === 409)) throw new E2bSnapshotModeError(error.message);
+				throw translated(error);
+			}
+		},
+		async listSnapshots() {
+			const paginator = Sandbox.listSnapshots({ ...api, limit: 100 });
+			const found: E2bSnapshotInfo[] = [];
+			try {
+				for (let page = 0; paginator.hasNext && page < SNAPSHOT_PAGES; page += 1) for (const item of await paginator.nextItems()) found.push({ snapshotId: item.snapshotId, names: item.names ?? [] });
+			} catch (error) {
+				throw translated(error);
+			}
+			return found;
+		},
+		async deleteSnapshot(snapshotId) {
+			try {
+				return await Sandbox.deleteSnapshot(snapshotId, api);
+			} catch (error) {
+				if (error instanceof NotFoundError) return false;
+				throw translated(error);
+			}
+		},
+		async templateBuild(template) {
+			const [name, tag = "default"] = template.split(":");
+			try {
+				const tags = await Template.getTags(name, api);
+				return tags.find((found) => found.tag === tag)?.buildId ?? null;
+			} catch (error) {
+				if (error instanceof NotFoundError) return null;
 				throw translated(error);
 			}
 		},

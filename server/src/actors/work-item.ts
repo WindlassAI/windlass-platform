@@ -731,12 +731,14 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 }
 
 /** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
-async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined): Promise<PlacementInventory> {
+async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
-	const [machines, limited, dailyTokenWait, models] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels()]);
+	const [machines, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
+		// Only a hint for ranking places: a failure leaves it out.
+		snapshotRepository === undefined ? undefined : user.internalSnapshotPlaces(snapshotRepository).catch(() => undefined)]);
 	const { sandboxes } = await getLayer();
 	const hostedProfiles = sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }) };
+	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
 }
 
 /**
@@ -1307,7 +1309,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			}
 			if (effect.kind === "dispatch" && item.pr && job) {
 				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
-					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid, item.agent?.model), at: Date.now() });
+					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
 					return true;
 				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });

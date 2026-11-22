@@ -103,7 +103,10 @@ export interface UserInternal {
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
-	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number): Promise<void>;
+	/** A post-setup snapshot of the project was saved at `place` ("hosted" or a machine id): remembered for placement (`internalSnapshotPlaces`). */
+	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number, place?: string): Promise<void>;
+	/** The places ("hosted", machine ids) that saved a snapshot of the repository for this user under its current setup and GitHub connection, in the last 14 days. A hint: the place may have evicted it since. */
+	internalSnapshotPlaces(repositoryId: GithubId): Promise<string[]>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** "Allow for this repository" from a session: `by` is who asked. Someone who may change the repository's settings allows the host; anyone else would file a request, but today only the session's own user calls it (repository-network.ts). */
 	internalAllowHost(input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: import("../contract.js").RepositoryNetwork }>;

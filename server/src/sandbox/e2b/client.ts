@@ -113,6 +113,34 @@ export interface E2bClient {
 	updateNetwork(sandboxId: string, network: E2bNetworkConfig | null): Promise<void>;
 	/** `Sandbox.kill(id)`: running or paused, it is gone with its files. False when there was none. https://docs.e2b.dev/sandbox/persistence.md ("Removing paused sandboxes") */
 	kill(sandboxId: string): Promise<boolean>;
+	/**
+	 * `Sandbox.createSnapshot(id, { name, mode: "filesystem" })`: a persistent image of the sandbox's disk, without its
+	 * memory, from which `create` makes new sandboxes (its `snapshotId` in place of a template). The sandbox is paused
+	 * for a moment and goes on running; its open command streams are dropped. A sandbox made from it boots from the
+	 * disk: no process of the source runs in it. Throws `E2bSnapshotModeError` where the account cannot take a
+	 * filesystem-only snapshot. https://docs.e2b.dev/sandbox/snapshots.md (read 2026-11-22, SDK 2.63.0)
+	 */
+	createSnapshot(sandboxId: string, name: string): Promise<E2bSnapshotInfo>;
+	/** `Sandbox.listSnapshots()`, every page: the account's snapshots, of every deployment. */
+	listSnapshots(): Promise<E2bSnapshotInfo[]>;
+	/** `Sandbox.deleteSnapshot(snapshotId)`. False when there was none. */
+	deleteSnapshot(snapshotId: string): Promise<boolean>;
+	/** `Template.getTags(name)`: the build the template's tag points at now; null when the template or the tag is unknown. https://docs.e2b.dev/template/tags.md */
+	templateBuild(template: string): Promise<string | null>;
+}
+
+/** `SnapshotInfo` of the SDK: an id `create` takes, and the snapshot template's full names (`team/name:tag`). */
+export interface E2bSnapshotInfo {
+	snapshotId: string;
+	names: string[];
+}
+
+/** E2B refused a filesystem-only snapshot (`snapshot_filesystem_only_disabled`, `..._unsupported_node`). A memory snapshot is never taken in its place. */
+export class E2bSnapshotModeError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "E2bSnapshotModeError";
+	}
 }
 
 /** E2B answered 503: it cannot do this now (a pause while an earlier snapshot is still being written, no capacity for a new sandbox). Trying again in a few seconds may work. */

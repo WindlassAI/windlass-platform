@@ -91,7 +91,8 @@ import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, disconnectRevoked, userActorCaller, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
-import { config, githubConfig } from "../config.js";
+import { config, githubConfig, snapshotsFor } from "../config.js";
+import { snapshotPlaces } from "../snapshot-places.js";
 import {
 	type AccountDefaults,
 	type AccountSecrets,
@@ -510,7 +511,7 @@ async function readSetup(db: RawAccess, project: string): Promise<RepositorySetu
 }
 
 async function dropHostedSnapshots(uid: string, repo?: string) {
-	if (config.snapshots && config.sandbox === "docker") await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
+	if ((config.snapshots && config.sandbox === "docker") || (config.e2bSnapshots && config.sandbox === "e2b")) await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
 		console.warn("[wlp] snapshot cleanup deferred");
 	});
 }
@@ -1363,6 +1364,8 @@ export const user = actor({
 					await db.execute("UPDATE sessions SET disconnect_pending = (SELECT gen FROM token_generation WHERE id = 1) WHERE EXISTS (SELECT 1 FROM token_generation WHERE gen > disconnected)");
 				}
 			}
+			// Where a post-setup snapshot of a project was last saved (`internalSnapshotSaved`), for placement's snapshot bonus.
+			await db.execute("CREATE TABLE IF NOT EXISTS snapshot_place (project TEXT NOT NULL, place TEXT NOT NULL, saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, PRIMARY KEY (project, place))");
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
 			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
 			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
@@ -2035,10 +2038,16 @@ export const user = actor({
 			requireService(c);
 			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
 		},
-		internalSnapshotSaved: async (c, project: string, updatedAt: number | null, connectedAt: number) => {
+		internalSnapshotSaved: async (c, project: string, updatedAt: number | null, connectedAt: number, place?: string) => {
 			requireService(c);
-			if (c.vars.github?.connectedAt === connectedAt)
-				await c.db.execute("UPDATE setup_command SET snapshot_connection = ? WHERE project = ? AND updated_at = ?", connectedAt, project, updatedAt);
+			if (c.vars.github?.connectedAt !== connectedAt) return;
+			await c.db.execute("UPDATE setup_command SET snapshot_connection = ? WHERE project = ? AND updated_at = ?", connectedAt, project, updatedAt);
+			if (typeof place === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(place) && updatedAt !== null)
+				await c.db.execute("INSERT INTO snapshot_place (project, place, saved_at, updated_at, connected_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (project, place) DO UPDATE SET saved_at = excluded.saved_at, updated_at = excluded.updated_at, connected_at = excluded.connected_at", project, place, Date.now(), updatedAt, connectedAt);
+		},
+		internalSnapshotPlaces: async (c, repositoryId: GithubId): Promise<string[]> => {
+			requireService(c);
+			return snapshotPlaces(c.db, setupKeyOf(repositoryId), c.vars.github?.connectedAt);
 		},
 		internalSnapshotGenerations: async (c): Promise<string[]> => {
 			requireService(c);
@@ -2129,7 +2138,7 @@ export const user = actor({
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
 			const connectedAt = c.vars.github?.connectedAt;
-			const setup = includeSnapshotSetup && config.snapshots && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
+			const setup = includeSnapshotSetup && snapshotsFor(session.place) && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
 			return { project, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };

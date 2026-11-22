@@ -9,6 +9,9 @@
  *                                                                                      (default "default"); scripts/e2b-check.ts
  *                                                                                      prints the label of its own
  *
+ * The deployment's post-setup snapshots (WLP_E2B_SNAPSHOTS, server/src/sandbox/e2b/snapshots.ts) are listed
+ * too, by their names, and deleted with --kill: turning the switch off leaves the ones saved before.
+ *
  * Only sandboxes whose metadata carries the deployment's mark (`wlp_deployment`) are listed or killed:
  * nothing else on the account is touched. Each line says what a running sandbox has cost at most in its
  * current stretch, by E2B's published prices: an estimate. Listing is a few requests and costs nothing.
@@ -36,9 +39,21 @@ async function main(): Promise<number> {
 	}
 	// Loaded here and not before: without a key E2B's SDK is not needed.
 	const { createE2bSdkClient } = await import("../server/src/sandbox/e2b/sdk.js");
-	const report = await cleanupDeployment(createE2bSdkClient(apiKey), deployment, { kill });
+	const client = createE2bSdkClient(apiKey);
+	const report = await cleanupDeployment(client, deployment, { kill });
 	for (const line of report.lines) console.log(line);
-	return report.failed.length === 0 ? 0 : 1;
+	const { E2bSnapshots } = await import("../server/src/sandbox/e2b/snapshots.js");
+	const { DEFAULT_SNAPSHOT_LIMITS } = await import("../server/src/sandbox/e2b/config.js");
+	const store = new E2bSnapshots(client, { ...readE2bSettings(), deployment, snapshots: DEFAULT_SNAPSHOT_LIMITS }, () => undefined, Date.now);
+	const snapshots = await store.rows();
+	let failed = report.failed.length;
+	for (const row of snapshots) {
+		let outcome = kill ? "deleted" : "would be deleted";
+		if (kill && !(await client.deleteSnapshot(row.id).catch(() => false))) { outcome = "could not be deleted"; failed += 1; }
+		console.log(`${row.id}  snapshot made ${new Date(row.created).toISOString()}: ${outcome}`);
+	}
+	console.log(snapshots.length === 0 ? `The deployment "${deployment}" has no setup snapshots at E2B.` : `${snapshots.length} setup snapshots of the deployment "${deployment}"${kill ? "" : ". A dry run: run again with --kill to delete them"}.`);
+	return failed === 0 ? 0 : 1;
 }
 
 main().then(

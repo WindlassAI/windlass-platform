@@ -38,6 +38,8 @@ import { ALIAS } from "../factory/feature-plan.js";
 import { crossRepoFactory } from "../config.js";
 import type { FeatureRepoInput, FeatureRepository } from "../contract.js";
 import { isGithubId } from "../github/ids.js";
+import { snapshotPlaces } from "../snapshot-places.js";
+import { setupProjectKey } from "../setup-command.js";
 import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
@@ -848,7 +850,7 @@ export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
  * for a subtask that chose a model or effort) and the feature's model, so overflow never picks a place that
  * cannot run the subtask's model.
  */
-async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>): Promise<ReturnType<typeof choosePlacement>> {
+async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>, repositoryId?: GithubId): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	// A partial creation stays pinned, and must still pass current owner policy.
@@ -857,8 +859,10 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
+	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
+	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
 	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(),
-		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }) };
+		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {
@@ -907,7 +911,7 @@ export const itemActions = {
 				// A cross-repo feature's child is on its subtask's repository; any other on the feature's.
 				const target = request.repository ?? { id: feature.repository.id, base: feature.repository.branch };
 				const route = job.route ?? { preferred: feature.place, alternatives: [] };
-				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile, session.model, agentModels);
+				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile, session.model, agentModels, target.id);
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),

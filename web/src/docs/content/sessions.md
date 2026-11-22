@@ -131,6 +131,8 @@ Hosted Docker and supported machine runners can reuse Git objects from your earl
 
 On deployments with prepared Docker sandboxes enabled, a successful setup on the repository’s default branch can be saved before the first agent turn. Setup must take at least 30 seconds and receive no repository secrets. A later session on the same machine can reuse your snapshot when its dependency files, setup command, sandbox image, and platform match. Subtasks and reviewers can reuse a prepared sandbox. Only the original builder or a personal session can save one.
 
+Hosted E2B deployments can enable the same for E2B sandboxes. The snapshot is kept at E2B for your account on this platform only, never for another user, and expires after 14 days. Changing the setup command, reconnecting GitHub or adding a repository secret stops it being used.
+
 On a match, the platform fetches and checks out the session’s source and skips setup. The timeline and the agent’s first prompt identify the base commit that produced the build outputs. The agent can rebuild them if the source has changed.
 
 If setup fails or runs out of time, the session goes on. The agent is told before its next prompt, with the command, how it ended and the last 20 lines it printed.

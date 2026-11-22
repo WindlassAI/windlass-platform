@@ -45,6 +45,9 @@
         "sandbox/relay/**",
         "server/src/actors/agent-session.ts",
         "scripts/e2b-provider-test.ts",
+        "scripts/e2b-snapshot-check.ts",
+        "server/src/factory/placement.ts",
+        "server/src/snapshot-places.ts",
         "scripts/workflow-lint.ts"
       ],
       "checks": {
@@ -70,6 +73,7 @@
         "web-files": "tsx ../scripts/web-files-check.ts",
         "github": "tsx ../scripts/github-check.ts",
         "e2b-provider": "tsx ../scripts/e2b-provider-test.ts",
+        "e2b-snapshot": "tsx ../scripts/e2b-snapshot-check.ts",
         "shot": "tsx ../scripts/shot-check.ts",
         "sizing": "tsx ../scripts/sizing-check.ts",
         "model-relay-route": "tsx ../scripts/model-relay-route-check.ts",
@@ -212,11 +216,12 @@
         "scripts/{sandbox,mcp,github,verified,sizing,model-relay-docker}-check.ts",
         "sandbox/relay/**",
         "runner/src/egress-proxy.mjs",
-        "scripts/e2b-provider-test.ts"
+        "scripts/e2b-provider-test.ts",
+        "scripts/e2b-snapshot-check.ts"
       ],
       "shards": {
         "1": { "only": ["sandbox-1", "github-docker", "verified-docker"] },
-        "2": { "only": ["sandbox-2", "e2b-provider-docker", "sizing-docker"] },
+        "2": { "only": ["sandbox-2", "e2b-provider-docker", "e2b-snapshot-docker", "sizing-docker"] },
         "mcp": { "only": ["mcp", "model-relay-docker"] }
       },
       "checks": {
@@ -227,6 +232,7 @@
         "github-docker": "tsx ../scripts/github-check.ts --docker",
         "verified-docker": "tsx ../scripts/verified-check.ts --docker",
         "e2b-provider-docker": "tsx ../scripts/e2b-provider-test.ts --docker",
+        "e2b-snapshot-docker": "tsx ../scripts/e2b-snapshot-check.ts --docker",
         "sizing-docker": "tsx ../scripts/sizing-check.ts docker"
       }
     },

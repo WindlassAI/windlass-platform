@@ -20,7 +20,7 @@ import { runnerResponse } from "./runner-routes.js";
 import { modelRelayRoute } from "./model-relay-route.js";
 import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
-import { config, githubConfig, ownEngineEndpoint } from "./config.js";
+import { config, githubConfig, ownEngineEndpoint, snapshotsFor } from "./config.js";
 import { DEFAULT_ENDPOINT, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
 import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
@@ -70,7 +70,7 @@ if (layer.sandboxes.sweepSnapshots) {
 		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
 		try {
 			const generations = await client.user.get([uid], { params: serviceParams() }).internalSnapshotGenerations();
-			return new Set(config.snapshots ? generations : []);
+			return new Set(snapshotsFor({ kind: "hosted" }) ? generations : []);
 		}
 		catch (error) { if (isActorGone(error)) return null; throw error; }
 	}).catch(() => console.warn("[wlp] snapshot expiry deferred"));

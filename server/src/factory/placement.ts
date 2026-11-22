@@ -38,7 +38,20 @@ export interface PlacementInventory {
 	models?: AgentModels;
 	/** The feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
 	featureModel?: string;
+	/**
+	 * The places (`placeKey`: "hosted", machine ids) that hold a fresh post-setup snapshot of the subtask's
+	 * repository for this user (user.ts `snapshotPlaces`): a sandbox there may skip setup. A bonus only.
+	 */
+	snapshotPlaces?: string[];
 }
+
+/**
+ * What a fresh snapshot adds to a ready place's score: as much as two free slots. It ranks places the
+ * person allowed and that can run the subtask now; it never makes a refused or waiting place ready, and
+ * never puts an alternative before the preferred place unless that alternative outranks it without it
+ * (`choosePlacement`).
+ */
+export const SNAPSHOT_BONUS = 2;
 export interface PlacementRoute {
 	preferred: SandboxPlace;
 	alternatives: SandboxPlace[];
@@ -77,7 +90,7 @@ export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boo
  * profile). Approval refuses only a subtask whose every allowed place is permanently refused. A busy or
  * offline machine is a wait, never a refusal.
  */
-type Candidate = { refused: string; permanent: boolean } | { wait: string; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number };
+type Candidate = { refused: string; permanent: boolean } | { wait: string; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number; snapshot?: boolean };
 export function placementRetryAt(at: number, providerUntil?: number, dailyCap?: boolean) {
 	return Math.min(providerUntil ?? retryAt(at, 0), dailyCap ? nextUtcDay(at) : Infinity, at + MAX_PROVIDER_WAIT);
 }
@@ -213,7 +226,11 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
  */
 export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
 	const candidates = [route.preferred, ...route.alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, at, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
-	const ready = candidates.filter(c => "decision" in c).sort((a, b) => b.score - a.score)[0];
+	const decided = candidates.flatMap(c => "decision" in c ? [{ ...c, snapshot: !!inventory.snapshotPlaces?.includes(placeKey(c.decision.place)) }] : []);
+	// The preferred place keeps every alternative that does not outrank it on its own behind it; the bonus then orders what is left.
+	const preferred = "decision" in candidates[0]! ? decided[0] : undefined;
+	const ranked = decided.filter(c => !preferred || c === preferred || c.score > preferred.score);
+	const ready = ranked.sort((a, b) => (b.score + (b.snapshot ? SNAPSHOT_BONUS : 0)) - (a.score + (a.snapshot ? SNAPSHOT_BONUS : 0)))[0];
 	if (ready) return { decision: ready.decision } as const;
 	const waits = candidates.filter(c => "wait" in c);
 	const deadline = (wait: typeof waits[number]) => placementRetryAt(at, wait.providerUntil, wait.dailyCap);

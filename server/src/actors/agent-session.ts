@@ -128,7 +128,7 @@ import {
 } from "../agent-publish.js";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, checkGeneration, disconnectRevoked, requireService, requireServiceFor } from "../auth.js";
-import { config } from "../config.js";
+import { config, snapshotsFor } from "../config.js";
 import {
 	generatedSessionTitle,
 	isMachineIdName,
@@ -1173,7 +1173,7 @@ async function setupRevision(app: NonNullable<ReturnType<typeof githubApp>>, con
 }
 
 async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, layer: SandboxLayer): Promise<SnapshotPlan | null> {
-	if (!secrets?.snapshotSetup || !layer.sandboxes.hasSnapshot || !canReuseSnapshot(config.snapshots, meta.harness, secrets.opened.length)) return null;
+	if (!secrets?.snapshotSetup || !layer.sandboxes.hasSnapshot || !canReuseSnapshot(snapshotsFor(meta.place), meta.harness, secrets.opened.length)) return null;
 	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
 	if (!project || !app || !repo) return null;
 	try {
@@ -1794,7 +1794,7 @@ const PULL_FRESH_MS = 20_000;
 async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
 	const networkAt = Date.now();
-	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId, config.snapshots && (meta.place.kind === "hosted" || !!config.machines?.identity)), RECALL_WAIT_MS);
+	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId, meta.place.kind === "hosted" ? snapshotsFor(meta.place) : config.snapshots && !!config.machines?.identity), RECALL_WAIT_MS);
 	if (sealed === null) {
 		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
 	}
@@ -2048,7 +2048,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 		const began = Date.now();
 		note(c, turn, "info", "Saving a prepared sandbox for later sessions");
 		const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: original, created: began }).catch(() => false);
-		if (saved) await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt).catch(() => undefined);
+		if (saved) await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt, meta.place.kind === "hosted" ? "hosted" : meta.place.machineId).catch(() => undefined);
 		note(c, turn, "info", saved ? `Saved the prepared sandbox in ${Math.round((Date.now()-began)/1000)} seconds.` : "The prepared sandbox could not be saved.");
 	}
 }

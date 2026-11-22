@@ -80,8 +80,10 @@ import {
 } from "../provider.js";
 import { tokenFilePath } from "../token-file.js";
 import { openRelayLease } from "../relay-leases.js";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
-import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, type E2bSettings } from "./config.js";
+import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError } from "./client.js";
+import { ADOPT_SCRIPT, AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, RECORD_SCRIPT, SNAP_META, type SnapshotRecord } from "./snapshots.js";
+import { DEFERRED_INPUTS, HASH, SHA, type SnapshotSource } from "../snapshot-key.js";
+import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings } from "./config.js";
 import { describeUsage, pricePerSecond } from "./pricing.js";
 import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, networkConfig, withHosts } from "./network.js";
 import type { EgressMode } from "../../contract.js";
@@ -193,6 +195,15 @@ export class E2bSandboxHandle implements TurnSandbox {
 
 	/** `TurnSandbox.modelRelay`, where the deployment's sandboxes reach the relay route. */
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
+
+	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bSandboxes` before the handle is handed out. */
+	snapshot?: SnapshotSource;
+
+	/** One of the provider's own fixed scripts as root (snapshots.ts): never a command of a session's. Its last line of output, or null. */
+	async rootAnswer(script: string, args: string[], options: { stdin?: string; timeoutMs: number }): Promise<{ code: number | null; stdout: string } | null> {
+		const result = await this.plain(["sh", "-c", script, "sh", ...args], { root: true, stdin: options.stdin, timeoutMs: options.timeoutMs }).catch(() => null);
+		return result === null || result.timedOut ? null : { code: result.code, stdout: result.stdout };
+	}
 
 	/** The names its lookup stub was asked for that it may not reach (network.ts `DNS_STUB`); none in `open`, or when the log cannot be read. */
 	async blockedHosts(skip: Iterable<string> = []): Promise<string[]> {
@@ -376,11 +387,11 @@ export class E2bSandboxHandle implements TurnSandbox {
 	 * Runs argv to its end, not under wlp-run: what a plain `docker exec` is on Docker. `stdin` is written
 	 * and closed. Rejects when the command could not be started or the connection to it broke.
 	 */
-	private async plain(argv: string[], options: { gitUser?: true; stdin?: string; env?: Record<string, string>; timeoutMs: number }): Promise<PlainResult> {
+	private async plain(argv: string[], options: { gitUser?: true; root?: true; stdin?: string; env?: Record<string, string>; timeoutMs: number }): Promise<PlainResult> {
 		let stdout = "";
 		let stderr = "";
 		const command = await this.connection.start(argv.map(shellQuote).join(" "), {
-			gitUser: options.gitUser, cwd: options.gitUser ? "/" : this.cwd,
+			gitUser: options.gitUser, root: options.root, cwd: options.gitUser || options.root ? "/" : this.cwd,
 			envs: options.gitUser ? GIT_USER_ENV : options.env,
 			stdin: options.stdin !== undefined,
 			onStdout: (text) => (stdout += text),
@@ -509,6 +520,18 @@ export class E2bSandboxes implements Sandboxes {
 	private readonly log: (line: string) => void;
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
+	/** WLP_E2B_SNAPSHOTS=on: the deployment's post-setup snapshots. Null: off, and the four snapshot calls are absent. */
+	private readonly snapshotStore: E2bSnapshots | null;
+	/** Reads the names and records of snapshots whatever the switch says: a sandbox made from one before it was turned off is still judged by its record. */
+	private readonly snapshotRecords: E2bSnapshots;
+	/** What each sandbox this process made from a snapshot was saved from, so a connect needs no read of its record. */
+	private readonly sources = new Map<string, SnapshotSource>();
+	readonly hasSnapshot?: (uid: string, repo: string) => Promise<boolean>;
+	readonly saveSnapshot?: (id: string, source: SnapshotSource) => Promise<boolean>;
+	readonly dropSnapshots?: (uid: string, repo?: string) => Promise<void>;
+	readonly sweepSnapshots?: (retained: (uid: string) => Promise<ReadonlySet<string> | null>) => Promise<void>;
+	/** E2B refused a filesystem-only snapshot once: said once, and no other save is tried by this process. */
+	private snapshotsRefused = false;
 
 	constructor(
 		private readonly client: E2bClient,
@@ -520,6 +543,17 @@ export class E2bSandboxes implements Sandboxes {
 		this.sleep = options.sleep ?? realSleep;
 		this.holdCommandsAfterMs = Math.floor(settings.idleTimeoutMs / 3);
 		this.idleStopMs = settings.idleTimeoutMs;
+		const limits = settings.snapshots;
+		this.snapshotStore = limits ? new E2bSnapshots(client, { ...settings, snapshots: limits }, this.log, this.now) : null;
+		this.snapshotRecords = this.snapshotStore ?? new E2bSnapshots(client, { ...settings, snapshots: DEFAULT_SNAPSHOT_LIMITS }, this.log, this.now);
+		if (this.snapshotStore !== null) {
+			const store = this.snapshotStore;
+			this.hasSnapshot = (uid, repo) => store.has(uid, repo);
+			this.saveSnapshot = (id, source) => this.saveSetupSnapshot(store, id, source);
+			this.dropSnapshots = (uid, repo) => store.drop(uid, repo);
+			// The names hold no user id to ask about: expiry and the caps are the sweep (snapshots.ts, "The index is the names").
+			this.sweepSnapshots = async () => { await store.prune(); };
+		}
 		this.log(settings.modelRelayOrigin
 			? `[wlp] e2b.model_relay: Windlass's model requests go through ${settings.modelRelayOrigin}/model-relay/v1, and sandboxes may reach that host instead of api.openai.com; they never hold the access token`
 			: `[wlp] e2b.model_relay: off (${settings.modelRelayOff ?? "not configured"}): each turn's access token is written into its sandbox`);
@@ -645,12 +679,14 @@ export class E2bSandboxes implements Sandboxes {
 		const network = this.networkFor(`session=${input.sessionId}`, input.network);
 		const config = networkConfig(network);
 		await this.assertRoom();
+		// A post-setup snapshot of this user and repository, when the session asks for one and one fits (snapshots.ts).
+		const selected = input.fromSnapshot && this.snapshotStore ? await this.snapshotStore.select(input.fromSnapshot, input.uid, input.profile, !!input.screenshots).catch(() => null) : null;
 		let connection: E2bConnection;
 		try {
 			connection = await this.client.create({
-				template: input.screenshots ? this.settings.shotsTemplate : this.settings.template,
+				template: selected?.template ?? (input.screenshots ? this.settings.shotsTemplate : this.settings.template),
 				timeoutMs: this.settings.idleTimeoutMs,
-				metadata: { [META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile, ...(network.mode === "open" ? {} : { [META.network]: network.mode }) },
+				metadata: { [META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile, ...(network.mode === "open" ? {} : { [META.network]: network.mode }), ...(selected?.metadata ?? {}) },
 				envs: SANDBOX_ENVS,
 				onTimeout: this.settings.pause ? "pause" : "kill",
 				...(config === null ? {} : { network: config }),
@@ -658,6 +694,11 @@ export class E2bSandboxes implements Sandboxes {
 		} catch (error) {
 			if (error instanceof E2bLimitError) throw new SandboxUserError(ACCOUNT_LIMIT);
 			if (error instanceof E2bBusyError) throw new SandboxUserError(E2B_BUSY);
+			// The snapshot went (another server's eviction) or E2B could not boot it: the ordinary way, as on Docker.
+			if (selected?.hit) {
+				this.log(`[wlp] e2b.snapshot.miss name=${selected.name} session=${input.sessionId}: a sandbox could not be made from it (${messageOf(error).slice(0, 200)}), so setup runs`);
+				return this.create({ ...input, fromSnapshot: undefined });
+			}
 			throw new Error(`could not create the sandbox: ${messageOf(error)}`);
 		}
 		const id = connection.sandboxId;
@@ -673,10 +714,25 @@ export class E2bSandboxes implements Sandboxes {
 			throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 		}
 		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval, network, input.sessionId);
+		if (selected?.hit && input.fromSnapshot) {
+			// The snapshot's own record must name this deployment, this user, the repository and the key, or nothing of it is used.
+			const adopted = await handle.rootAnswer(ADOPT_SCRIPT, [DNS_LOG], { timeoutMs: 30_000 });
+			let record: unknown = null;
+			try { record = adopted?.code === 0 ? JSON.parse(adopted.stdout) : null; } catch { record = null; }
+			if (!this.snapshotStore!.recordFits(record, selected.name, input.uid, input.fromSnapshot, selected.key)) {
+				await discard();
+				this.log(`[wlp] e2b.snapshot.refused name=${selected.name} id=${id}: the sandbox made from it does not hold its record for this user and repository; it was removed, and setup runs`);
+				return this.create({ ...input, fromSnapshot: undefined });
+			}
+			const source = this.snapshotStore!.sourceOf(record, input.fromSnapshot.attempt);
+			handle.snapshot = source;
+			this.sources.set(id, source);
+		}
 		try {
 			// Before anything of the session's runs in it: from the first command on, only the allowed names resolve.
 			if (config !== null) await this.guestNetwork(connection, network);
-			const init = await handle.exec(["sh", "-c", INIT_WORKSPACE + " && windlass --version"], { timeoutMs: 60_000 });
+			// A workspace from a snapshot holds the repository as setup left it: it is not made again.
+			const init = await handle.exec(["sh", "-c", selected?.hit ? "windlass --version" : INIT_WORKSPACE + " && windlass --version"], { timeoutMs: 60_000 });
 			if (init.exitCode !== 0) throw new Error(`could not set up the workspace: ${(init.stderr.trim() || init.stdout.trim() || `exit ${init.exitCode}`).slice(-500)}`);
 			// "Windlass 0.4.0 (linux-x64)"
 			const version = /^\S+\s+(\S+)/.exec(init.stdout.trim().split("\n").pop() ?? "")?.[1];
@@ -693,7 +749,7 @@ export class E2bSandboxes implements Sandboxes {
 		const info = await this.client.info(id).catch(() => undefined);
 		if (info !== undefined && info.cpuCount > 0 && info.memoryMB > 0) this.size = { cpuCount: info.cpuCount, memoryMB: info.memoryMB };
 		this.known.set(id, { uid: input.uid, session: input.sessionId, cpuCount: info?.cpuCount ?? 0, memoryMB: info?.memoryMB ?? 0, runningSince: began, deadline: began + this.settings.idleTimeoutMs, holds: 0, keepalive: undefined });
-		this.log(`[wlp] e2b.sandbox.created id=${id} uid=${input.uid} session=${input.sessionId} template=${this.settings.template}${running === null ? "" : `: ${running.length} of at most ${this.settings.maxRunning} running`}`);
+		this.log(`[wlp] e2b.sandbox.created id=${id} uid=${input.uid} session=${input.sessionId} template=${selected?.hit ? `snapshot ${selected.name}` : this.settings.template}${running === null ? "" : `: ${running.length} of at most ${this.settings.maxRunning} running`}`);
 		return id;
 	}
 
@@ -718,6 +774,8 @@ export class E2bSandboxes implements Sandboxes {
 		const made = sandboxProfile(info.metadata);
 		const network = this.networkFor(`id=${id}`, options.network);
 		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval, network, info.metadata[META.session]);
+		const from = info.metadata[SNAP_META.from];
+		if (from) handle.snapshot = await this.sourceFor(handle, info, from);
 		if (paused) {
 			const running = await this.running().catch(() => null);
 			if (running !== null && running.length > this.settings.maxRunning) {
@@ -870,6 +928,82 @@ export class E2bSandboxes implements Sandboxes {
 				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
 			}),
 		);
+	}
+
+	/** The source of a sandbox made from snapshot `from`: as this process recorded it at create, else from the record in it. Throws when that record is not the snapshot's. */
+	private async sourceFor(handle: E2bSandboxHandle, info: E2bSandboxInfo, from: string): Promise<SnapshotSource> {
+		const cached = this.sources.get(info.sandboxId);
+		if (cached) return cached;
+		let record: unknown = null;
+		try { record = JSON.parse(await handle.readTextFile(RECORD_PATH)); } catch { record = null; }
+		const attempt = info.metadata[SNAP_META.attempt] ?? "";
+		// Snapshots turned off since: the sandbox is still one made from a snapshot, and is judged by its record.
+		if (!this.snapshotRecords.recordFits(record, from, handle.uid) || !/^[a-f0-9]{32}$/.test(attempt)) throw new Error("Invalid prepared sandbox record");
+		const r = record as SnapshotRecord;
+		const source = { attempt, repo: r.repo, inputs: r.inputs, generation: r.generation, commit: r.commit, created: r.created };
+		this.sources.set(info.sandboxId, source);
+		return source;
+	}
+
+	/**
+	 * Saves the sandbox's disk as the post-setup snapshot of its user and repository (snapshots.ts). Only a
+	 * sandbox made cold for this very request and template build, as a writer, and only when the audit
+	 * finds nothing on its disk that must not be in one. False for every refusal, with a log line that says
+	 * which; never throws.
+	 */
+	private async saveSetupSnapshot(store: E2bSnapshots, id: string, source: SnapshotSource): Promise<boolean> {
+		if (this.snapshotsRefused) return false;
+		if (!/^[1-9]\d{0,19}$/.test(source.repo) || !HASH.test(source.generation) || !HASH.test(source.inputs) || source.inputs === DEFERRED_INPUTS || !SHA.test(source.commit) || !Number.isSafeInteger(source.created) || !/^[a-f0-9]{32}$/.test(source.attempt)) return false;
+		const refused = (why: string) => {
+			this.log(`[wlp] e2b.snapshot.not_saved id=${id}: ${why}`);
+			return false;
+		};
+		try {
+			const info = await this.ours(id);
+			if (info === undefined || info.state !== "running") return false;
+			const m = info.metadata, uid = m[META.uid] ?? "";
+			if (!NAME.test(uid) || m[SNAP_META.from] || m[SNAP_META.attempt] !== source.attempt || !m[SNAP_META.candidate]) return refused("it was not made for this save");
+			const screenshots = m[SNAP_META.variant] === "shots";
+			const build = await store.build(store.templateOf(screenshots));
+			if (build === null || build !== m[SNAP_META.build]) return refused("the template was rebuilt since the sandbox was made");
+			const profile = sandboxProfile(m);
+			const key = store.key(source, uid, profile, screenshots, build);
+			if (m[SNAP_META.candidate] !== key && m[SNAP_META.candidate] !== store.coldKey(source, uid, profile)) return refused("its setup is not the one it was made for");
+			const connection = await this.client.connect(id, this.settings.idleTimeoutMs);
+			if (connection === undefined) return false;
+			const handle = new E2bSandboxHandle(this, connection, id, uid, profile, this.profile(profile).approval);
+			// E2B writes the image while the sandbox is paused for a moment; its own short timeout must not run out meanwhile.
+			const release = await this.holdFor(handle, { refresh: false });
+			try {
+				const audit = await handle.rootAnswer(AUDIT_SCRIPT, [DATA_DIR], { timeoutMs: 120_000 });
+				const answer = audit?.stdout.trim().split("\n").pop() ?? "";
+				const ok = /^ok (\d+)$/.exec(answer);
+				if (ok === null) return refused(/^refused [a-z-]+$/.test(answer) ? `the disk check ${answer} it` : "the disk check gave no answer");
+				const used = Number(ok[1]);
+				if (used > store.limits.maxBytes) return refused(`its disk holds ${Math.round(used / 2 ** 20)} MiB, more than WLP_E2B_SNAPSHOT_MAX_GB allows`);
+				const record: SnapshotRecord = { v: 1, deployment: this.settings.deployment, uid, repo: source.repo, key, inputs: source.inputs, generation: source.generation, commit: source.commit, created: source.created };
+				const written = await handle.rootAnswer(RECORD_SCRIPT, [], { stdin: JSON.stringify(record), timeoutMs: 30_000 });
+				if (written?.stdout.trim() !== "written") return refused("its record could not be written");
+				const name = store.nameFor(uid, source.repo, source.generation, key, this.now());
+				const began = this.now();
+				try {
+					await this.client.createSnapshot(id, name);
+				} catch (error) {
+					if (error instanceof E2bSnapshotModeError) {
+						this.snapshotsRefused = true;
+						return refused(`E2B takes no filesystem-only snapshot for this account (${messageOf(error).slice(0, 200)}); a memory snapshot is never taken instead, and this server tries no other save until it restarts`);
+					}
+					return refused(`E2B could not make the snapshot: ${messageOf(error).slice(0, 200)}`);
+				}
+				this.log(`[wlp] e2b.snapshot.saved name=${name} id=${id} uid=${uid}: ${Math.round(used / 2 ** 20)} MiB on its disk, ${Math.round((this.now() - began) / 1000)} s to save`);
+				await store.prune(name).catch((error: unknown) => this.log(`[wlp] e2b.snapshot.prune_deferred: ${messageOf(error)}`));
+				return true;
+			} finally {
+				await release();
+			}
+		} catch (error) {
+			return refused(messageOf(error).slice(0, 300));
+		}
 	}
 
 	/** The deployment's sandboxes that run now, by E2B's own list. */

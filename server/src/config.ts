@@ -327,6 +327,8 @@ export interface Config {
 	modelRelay: { on: boolean; requests: number; url: ModelRelayUrl | null };
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
+	/** WLP_E2B_SNAPSHOTS=on: post-setup snapshots of hosted E2B sessions (e2b/snapshots.ts). Docker and machines keep `snapshots`. */
+	e2bSnapshots: boolean;
 	snapshotMinSetupMs: number;
 	/** How long a repository's setup command may run before the platform stops it. */
 	setupTimeoutMs: number;
@@ -804,6 +806,7 @@ export const config: Config = {
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
+	e2bSnapshots: process.env.WLP_E2B_SNAPSHOTS === "on",
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
@@ -818,3 +821,11 @@ export const config: Config = {
 
 /** Whether a Plan-first feature may be filed over two repositories (WLP_FACTORY_CROSS_REPO=1). Read when it is asked, as WLP_FACTORY_ORCHESTRATE is. */
 export const crossRepoFactory = (): boolean => process.env.WLP_FACTORY_CROSS_REPO === "1";
+
+/**
+ * Whether post-setup snapshots are on for a session's place: a hosted session on E2B follows
+ * WLP_E2B_SNAPSHOTS, every other place (hosted Docker, a machine's runner) WLP_SNAPSHOTS.
+ */
+export function snapshotsFor(place: { kind: "hosted" | "machine" }, settings: Pick<Config, "sandbox" | "snapshots" | "e2bSnapshots"> = config): boolean {
+	return place.kind === "hosted" && settings.sandbox === "e2b" ? settings.e2bSnapshots : settings.snapshots;
+}

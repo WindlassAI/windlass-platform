@@ -17,7 +17,7 @@
  */
 
 import type { E2bNetworkConfig } from "./network.js";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bSandboxInfo, type E2bState } from "./client.js";
+import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo, type E2bState } from "./client.js";
 
 /** What runs a fake sandbox's commands. */
 export interface FakeMachine {
@@ -31,6 +31,8 @@ export interface FakeMachine {
 	killed?(): Promise<void>;
 	/** What E2B now lets out of the sandbox: at create, and at every `updateNetwork`. Null: E2B's default. */
 	network?(config: E2bNetworkConfig | null): Promise<void>;
+	/** A filesystem snapshot of it is taken: what a sandbox made from it starts with (`FakeE2bOptions.machine`'s second argument). */
+	snapshot?(): unknown;
 }
 
 /** A command that has ended already, with this result. */
@@ -88,6 +90,10 @@ export class ScriptedMachine implements FakeMachine {
 	async writeFile(path: string, content: string): Promise<void> {
 		this.files.set(path, content);
 	}
+
+	snapshot(): Map<string, string> {
+		return new Map(this.files);
+	}
 }
 
 interface FakeSandbox {
@@ -111,8 +117,8 @@ interface FakeSandbox {
 export interface FakeE2bOptions {
 	/** The clock sandboxes' timeouts are measured on. Default `Date.now`. */
 	now?: () => number;
-	/** Makes the machine of a new sandbox. Default a `ScriptedMachine` that answers everything with exit code 0. */
-	machine?: (sandboxId: string) => FakeMachine | Promise<FakeMachine>;
+	/** Makes the machine of a new sandbox; `from` is what its snapshot's machine gave (`FakeMachine.snapshot`), when made from one. Default a `ScriptedMachine` that answers everything with exit code 0. */
+	machine?: (sandboxId: string, from?: unknown) => FakeMachine | Promise<FakeMachine>;
 	/** The account's own limit on sandboxes running at once (the Hobby plan: 10). */
 	accountMaxRunning?: number;
 	/** What every sandbox is made with, as a template's build decides. */
@@ -128,6 +134,12 @@ export class FakeE2b implements E2bClient {
 	pauseBusy = 0;
 	/** Set to make `setTimeout` fail (the keepalive's failure path). */
 	failSetTimeout: Error | null = null;
+	/** The account's snapshots, by id: the template the source was made from, and what its machine gave. */
+	readonly snapshots = new Map<string, { names: string[]; template: string; from: unknown }>();
+	/** False: the account takes no filesystem-only snapshot (`E2bSnapshotModeError`). */
+	filesystemSnapshots = true;
+	/** The build each template's default tag points at; a template not here is unknown. */
+	readonly builds = new Map<string, string>([["windlass-platform-sandbox", "build-1"], ["windlass-platform-sandbox-shots", "shots-1"]]);
 	private next = 1;
 	private readonly now: () => number;
 
@@ -174,7 +186,14 @@ export class FakeE2b implements E2bClient {
 		if ([...this.sandboxes.values()].filter((sandbox) => sandbox.state === "running").length >= limit) throw new E2bLimitError(`fake E2B: the account runs ${limit} sandboxes at once and no more`);
 		const id = `fake${String(this.next++).padStart(4, "0")}${Math.random().toString(36).slice(2, 10)}`;
 		const now = this.now();
-		const machine: FakeMachine = (await this.options.machine?.(id)) ?? new ScriptedMachine();
+		const snapshot = this.snapshots.get(input.template);
+		if (snapshot === undefined && input.template.includes(":")) throw new Error(`fake E2B: no template or snapshot ${input.template}`);
+		const machine: FakeMachine = (await this.options.machine?.(id, snapshot?.from)) ?? new ScriptedMachine();
+		const scripted: unknown = machine;
+		if (snapshot !== undefined && snapshot.from instanceof Map && scripted instanceof ScriptedMachine) {
+			const files = scripted.files;
+			for (const [path, content] of snapshot.from) files.set(path, content as string);
+		}
 		this.sandboxes.set(id, {
 			id,
 			template: input.template,
@@ -268,6 +287,32 @@ export class FakeE2b implements E2bClient {
 		if (sandbox === undefined) return false;
 		await this.killNow(sandbox);
 		return true;
+	}
+
+	async createSnapshot(sandboxId: string, name: string): Promise<E2bSnapshotInfo> {
+		this.calls.push(`createSnapshot ${sandboxId} ${name}`);
+		await this.settle();
+		const sandbox = this.sandboxes.get(sandboxId);
+		if (sandbox === undefined) throw new Error(`fake E2B: sandbox ${sandboxId} not found`);
+		if (!this.filesystemSnapshots) throw new E2bSnapshotModeError("fake E2B: filesystem-only snapshots are not enabled for this team");
+		const snapshotId = `fake-team/${name}:default`;
+		this.snapshots.set(snapshotId, { names: [snapshotId], template: sandbox.template, from: sandbox.machine.snapshot?.() });
+		return { snapshotId, names: [snapshotId] };
+	}
+
+	async listSnapshots(): Promise<E2bSnapshotInfo[]> {
+		this.calls.push("listSnapshots");
+		return [...this.snapshots].map(([snapshotId, { names }]) => ({ snapshotId, names: [...names] }));
+	}
+
+	async deleteSnapshot(snapshotId: string): Promise<boolean> {
+		this.calls.push(`deleteSnapshot ${snapshotId}`);
+		return this.snapshots.delete(snapshotId);
+	}
+
+	async templateBuild(template: string): Promise<string | null> {
+		this.calls.push(`templateBuild ${template}`);
+		return this.builds.get(template) ?? null;
 	}
 
 	// ---- inside ----
