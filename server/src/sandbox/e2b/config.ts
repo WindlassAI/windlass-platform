@@ -8,6 +8,8 @@
  * 10 GiB of disk, paused sandboxes kept without limit and without charge.
  */
 
+import { type E2bNetwork, readE2bNetwork } from "./network.js";
+
 /** The template sandbox/e2b/build.ts builds. */
 export const DEFAULT_TEMPLATE = "windlass-platform-sandbox";
 /**
@@ -47,6 +49,8 @@ export interface E2bConfig {
 	openProfile: boolean;
 	/** WLP_E2B_WINDLASS_VERSION: the Windlass in the template, when the owner wants it shown before the first sandbox was made. */
 	windlassVersion: string | null;
+	/** WLP_E2B_NETWORK and WLP_E2B_NETWORK_ALLOW (network.ts). Absent: `open`, as before network modes. */
+	network?: E2bNetwork;
 }
 
 /** Everything but the API key: what the provider's logic needs. The key is the client's (sdk.ts). */
@@ -104,6 +108,7 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 		windlassSandbox: flag(env, "WLP_E2B_WINDLASS_SANDBOX", false),
 		openProfile: flag(env, "WLP_E2B_OPEN_PROFILE", false),
 		windlassVersion: version === "" ? null : version,
+		network: readE2bNetwork(env),
 	};
 }
 

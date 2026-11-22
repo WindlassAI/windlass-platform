@@ -30,14 +30,24 @@ nobody can file, read or act on an item.
 
 ## The list, and its pages
 
-The `user` actor keeps every item's summary and sends the whole list to `listItems` without arguments
-and on the live feed (`UserEvents.items`) after any change. `listItems` also takes a page
+The `user` actor keeps every item's summary and sends the whole list to `listItems` without arguments,
+for API clients and scripts. `listItems` also takes a page
 (`ItemListPage`, `server/src/item-pages.ts`): at most `limit` items (25 by default, 100 at most), newest
 filed first, after a cursor that is the last item of the page before (its `createdAt` and id, which never
 change, so no item is skipped or repeated when states change), kept to ended items, one repository or
-one way of filing where it says so. A page shorter than its limit is the last. The Factory page reads its
-ended items this way, a page at a time. The live feed still carries every item: a user with thousands
-would need the feed to carry only open items and the newest ended ones, with counts beside them.
+one way of filing where it says so. A page shorter than its limit is the last.
+
+The live feed (`UserEvents.items`, after any change) and `itemFeed` (the web app's first read) carry an
+`ItemFeed`, so that what is sent stays small however many items a user has filed: every open item, the
+`ITEM_FEED_ENDED` (25) newest filed ended ones, which are exactly the first page of
+`listItems({ ended: true })`, and counts: how many ended items there are, and for each repository and way
+of filing how many are open, done, failed and cancelled. The feed and the counts hold the items the
+whole list does: top-level items, and a feature's child while it asks a question. An old item that ends
+is counted at once but is not carried unless it is among the 25 newest filed. The Factory page and a
+repository's page say their ended items from the counts and read them from `listItems` a page at a time
+when they are unfolded, each row with the day it was filed; Usage lists the items the feed carries and
+says how many older ended ones there are. An item's page reloads when the feed carries it with a newer
+revision, so an old ended item's page is read again only when it is opened or the feed reconnects.
 
 ## Where an item runs
 

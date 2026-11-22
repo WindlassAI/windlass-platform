@@ -2,10 +2,10 @@
  * The deployment's GitHub App, as the server talks to GitHub: the app's own token, installation
  * tokens, the exchange of a user's authorization code, and the few REST calls the platform makes.
  *
- * Three credentials exist, and none of them is ever stored, logged, or put into an error:
+ * The app uses three kinds of credential:
  *
  *   the app's JWT            signed here with the app's private key (RS256), good for nine minutes, sent
- *                            to GitHub and to nothing else. It can only ask for installation tokens
+ *                            to GitHub for app-level requests
  *   an installation token    GitHub's, good for an hour at most. Every one is asked for with the one
  *                            repository and the permissions the step at hand needs (`TokenScope`), is
  *                            used for that step and dropped; one that went into a sandbox is revoked
@@ -80,6 +80,11 @@ export class GithubError extends Error {
 	) {
 		super(`${what}: ${status === 0 ? said : `GitHub answered ${status}${said ? ` (${said})` : ""}`}`);
 		this.name = "GithubError";
+	}
+
+	get rateLimited(): boolean {
+		return this.status === 429 || (this.status === 403 &&
+			(this.headers.has("retry-after") || this.headers.get("x-ratelimit-remaining") === "0" || /rate limit/i.test(this.said)));
 	}
 
 	get unreachable(): boolean {
@@ -390,24 +395,31 @@ export class GithubApp {
 	async userInstallations(userToken: string): Promise<Installation[]> {
 		const { items } = await this.pages({ path: "/user/installations", auth: { bearer: userToken }, what: "list the user's installations" }, (body) => {
 			const list = record(body).installations;
-			return Array.isArray(list) ? list : [];
+			if (!Array.isArray(list)) throw new GithubError(502, "the answer holds no installations list", "could not list installations");
+			return list;
 		});
-		const installations: Installation[] = [];
-		for (const item of items) {
-			const fields = record(item);
-			const account = record(fields.account);
-			const id = githubId(fields.id);
-			const login = text(account.login);
-			// An enterprise's installation has a `slug` and no `login`: the platform works on repositories of users and organizations.
-			if (id === null || login === "") continue;
-			installations.push({
-				id,
-				account: { id: githubId(account.id) ?? 0, login, type: text(account.type) === "Organization" ? "Organization" : "User" },
-				htmlUrl: text(fields.html_url),
-				suspended: fields.suspended_at !== null && fields.suspended_at !== undefined,
-			});
+		return items.map(item => this.installationOf(item)).filter((item): item is Installation => item !== null);
+	}
+
+	private installationOf(value: unknown): Installation | null {
+		const fields = record(value), account = record(fields.account);
+		const id = githubId(fields.id), accountId = githubId(account.id), login = text(account.login);
+		if (!id || !accountId || !login || (account.type !== "User" && account.type !== "Organization")) return null;
+		return { id, account: { id: accountId, login, type: account.type }, htmlUrl: text(fields.html_url), suspended: fields.suspended_at != null };
+	}
+
+	/** Read the current account and suspension state before applying an installation webhook. */
+	async activeInstallation(id: GithubId): Promise<Installation | null> {
+		let installation;
+		try {
+			const { body } = await this.call({ path: `/app/installations/${id}`, auth: { bearer: this.jwt() }, what: "read the installation" });
+			installation = this.installationOf(body);
+		} catch (error) {
+			if (error instanceof GithubError && error.status === 404) return null;
+			throw error;
 		}
-		return installations;
+		if (!installation || installation.id !== id || installation.suspended) return null;
+		return installation;
 	}
 
 	/** Deletes the user access token at GitHub: the platform has asked what it needed. Never throws. */
@@ -482,10 +494,12 @@ export class GithubApp {
 	 * repository's, a team's, the organization's): "admin", "write", "read" or "none". A user GitHub
 	 * does not know there is "none".
 	 */
-	async permission(token: string, owner: string, name: string, login: string, deadline?: number): Promise<"admin" | "write" | "read" | "none"> {
+	async permission(token: string, owner: string, name: string, login: string, deadline?: number, userId?: GithubId): Promise<"admin" | "write" | "read" | "none"> {
 		try {
 			const answer = await this.call({ path: `/repos/${owner}/${name}/collaborators/${encodeURIComponent(login)}/permission`, auth: { bearer: token }, what: `read what ${login} may do in ${owner}/${name}`, deadline });
-			const level = text(record(answer.body).permission);
+			const row = record(answer.body);
+			if (userId !== undefined && githubId(record(row.user).id) !== userId) return "none";
+			const level = text(row.permission);
 			return level === "admin" || level === "write" || level === "read" ? level : "none";
 		} catch (error) {
 			if (!(error instanceof GithubError) || error.status !== 404) throw error;

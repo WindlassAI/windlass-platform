@@ -211,7 +211,7 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 
 /** `machine`: the machine the session runs on, as `useSessionMachine` says. */
 export function Session({ sessionId, state, machine }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null }) {
-	const { client, explain } = useApp();
+	const { client, explain, platform } = useApp();
 	const models = useModels();
 	const auth = useAuth();
 	const api = useMemo(() => client.session(auth, sessionId), [client, auth, sessionId]);
@@ -371,7 +371,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					Session details, tokens and changes
 				</a>
 			</div>
-			<SidePanel egress={machine?.egress} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

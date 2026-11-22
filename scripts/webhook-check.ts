@@ -88,6 +88,28 @@ async function testNode() {
 	const { user } = await import("../server/src/actors/user.js");
 	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalGithubIntake"]>[0];
 	Object.assign(user.config.actions!, {
+		// Exercise the real migration on a populated legacy table in a disposable actor.
+		checkMigrateGrant: async (c: UserCtx) => {
+			requireServiceFor(c, "call");
+			await c.db.execute("CREATE TABLE github_grant (id INTEGER PRIMARY KEY, sealed TEXT)");
+			await c.db.execute("INSERT INTO github_grant VALUES (1, 'legacy-grant')");
+			assert.ok("db" in user.config);
+			await user.config.db.onMigrate(c.db);
+		},
+		checkGithubStorage: async (c: UserCtx) => {
+			requireServiceFor(c, "call");
+			const tables = await c.db.execute<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'");
+			for (const { name } of tables) {
+				if (name === "github_grant") return false;
+				const rows = await c.db.execute(`SELECT * FROM "${name.replaceAll('"', '""')}"`);
+				// This demo actor has no other sealed credentials. Check text and blob columns.
+				for (const row of rows) for (const value of Object.values(row)) {
+					const text = value instanceof Uint8Array ? Buffer.from(value).toString() : String(value);
+					if (/gh[ur]_|wlps1\./.test(text)) return false;
+				}
+			}
+			return true;
+		},
 		checkInterruptedFiling: async (c: UserCtx, id: string, at: number) => {
 			requireServiceFor(c, "call");
 			await c.db.execute("DELETE FROM items WHERE id=?", id);
@@ -251,19 +273,22 @@ async function run() {
 		const installation = standin.addInstallation(owner, "User");
 		const projectG2 = standin.addRepository({ owner, name: "factory", installation });
 		Object.assign(standin.appPermissions, { checks: "read", statuses: "read", actions: "read" });
+		const authorize = async (user: ReturnType<typeof client.user.getOrCreate>, login: string) => {
+			const connect = await user.githubConnect({ origin });
+			const back = await fetch(standin.authorize(login, connect.url), { redirect: "manual" });
+			return user.githubComplete(back.headers.get("location")!.split("#github=")[1]);
+		};
 		const connectUser = async (login: string) => {
 			const auth = await client.login.getOrCreate([randomUUID()]).demo();
 			const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
-			const connect = await user.githubConnect({ origin });
-			const back = await fetch(standin.authorize(login, connect.url), { redirect: "manual" });
-			await user.githubComplete(back.headers.get("location")!.split("#github=")[1]);
+			await authorize(user, login);
 			return { uid: auth.profile.uid, token: auth.token, user };
 		};
 		const { uid, token: ownerToken, user: g2User } = await connectUser(owner);
 		standin.addUser("g2-neighbour");
 		const neighbour = standin.addInstallation("g2-neighbour", "User");
 		standin.addRepository({ owner: "g2-neighbour", name: "other", installation: neighbour });
-		await connectUser("g2-neighbour");
+		const { user: neighbourUser } = await connectUser("g2-neighbour");
 		const directory = () => client.githubRepository.getOrCreate([String(projectG2.id)], service());
 		const push = async () => {
 			const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title: "A webhook check", body: "Add a short program.", start: true });
@@ -283,6 +308,98 @@ async function run() {
 				return row && ["done", "ignored"].includes(row.state) ? row : null;
 			});
 		};
+		const hasRepo = async (user: typeof g2User, id: number, fresh = false) =>
+			(await user.githubRepositories("", fresh)).repositories.some(r => r.id === id);
+		await check("connect revokes the user token and keeps no grant in the user actor", async () => {
+			const tokens = [...standin.tokens.values()].filter(t => t.kind === "user" && t.user === standin.users.get(owner)!.id);
+			assert.equal(tokens.length, 1);
+			assert.ok(tokens[0].refreshToken && tokens[0].revoked);
+			const probe = client.user.get([uid], service()) as unknown as { checkGithubStorage(): Promise<boolean>; checkMigrateGrant(): Promise<void> };
+			assert.equal(await probe.checkGithubStorage(), true);
+			await probe.checkMigrateGrant();
+			assert.equal(await probe.checkGithubStorage(), true);
+		});
+		await check("installation access follows the signed sender and removals reach every linked user", async () => {
+			const org = standin.addInstallation("hook-org", "Organization");
+			const repo = standin.addRepository({ owner: org.account.login, name: "private", private: true, installation: org });
+			const hidden = standin.addRepository({ owner: org.account.login, name: "hidden", private: true, installation: org });
+			repo.access.set(owner, "write");
+			const stranger = standin.addUser("unconnected-installer");
+			const sender = standin.users.get(owner)!;
+			const neighbourSender = standin.users.get("g2-neighbour")!;
+			const hasAccount = async (user: typeof g2User) => (await user.github()).connection!.accounts.some(a => a.installationId === org.id);
+			const fields = (action: string, by: typeof sender) => ({
+				action, installation: { id: org.id, account: org.account }, sender: by,
+				...(action === "added" && { repositories_added: [{ id: repo.id }] }),
+				...(action === "removed" && { repositories_removed: [{ id: repo.id }] }),
+			});
+			const event = (name: string, action: string, by: typeof sender) => delivered(name, fields(action, by), org.id);
+			try {
+				// A login can change. Even a connected user's login paired with another ID attaches nothing.
+				await event("installation", "created", { ...stranger, login: owner });
+				assert.equal(await hasAccount(g2User), false);
+				assert.equal(await hasAccount(neighbourUser), false);
+				const bad = await standin.deliver(web, "installation", fields("created", sender), { secret: "wrong-secret" });
+				assert.equal(bad.status, 401);
+				assert.equal(await hasAccount(g2User), false);
+				const guid = randomUUID();
+				await delivered("installation", fields("created", sender), org.id, guid);
+				// The ordinary picker sees the new repository immediately and still filters unreadable ones.
+				assert.ok(await hasAccount(g2User));
+				assert.equal(await hasRepo(g2User, hidden.id), false);
+				assert.equal(await hasAccount(neighbourUser), false);
+				assert.ok(await hasRepo(g2User, repo.id));
+				await event("installation", "new_permissions_accepted", neighbourSender);
+				assert.ok(await hasAccount(neighbourUser));
+				assert.equal(await hasRepo(neighbourUser, repo.id), false);
+				org.suspended = true;
+				await event("installation", "suspend", stranger);
+				for (const user of [g2User, neighbourUser]) assert.equal(await hasAccount(user), false);
+				org.suspended = false;
+				// Replaying an already handled creation after removal cannot restore access.
+				const duplicate = await standin.deliver(web, "installation", fields("created", sender), { secret, guid });
+				assert.deepEqual(await duplicate.json(), { taken: "duplicate" });
+				assert.equal(await hasAccount(g2User), false);
+				await event("installation", "unsuspend", sender);
+				assert.ok(await hasRepo(g2User, repo.id));
+				await event("installation_repositories", "added", neighbourSender);
+				assert.ok(await hasAccount(neighbourUser));
+				org.repositories.delete(repo.id);
+				await event("installation_repositories", "removed", stranger);
+				for (const user of [g2User, neighbourUser]) assert.equal(await hasAccount(user), false);
+				org.repositories.add(repo.id);
+				await event("installation_repositories", "added", sender);
+				await event("installation", "created", neighbourSender);
+				assert.ok(await hasRepo(g2User, repo.id));
+				assert.ok(await hasAccount(neighbourUser));
+				standin.uninstall(org);
+				await event("installation", "deleted", stranger);
+				for (const user of [g2User, neighbourUser]) assert.equal(await hasAccount(user), false);
+				assert.equal(await hasRepo(g2User, repo.id), false);
+			} finally { standin.uninstall(org); }
+		});
+		await check("installation picker reload reads known installations and reconnect discovers someone else's installation", async () => {
+			const person = standin.addUser("picker-user");
+			const own = standin.addInstallation(person.login, "User");
+			const { user } = await connectUser(person.login);
+			assert.deepEqual((await user.githubRepositories("")).repositories, []);
+			const added = standin.addRepository({ owner: person.login, name: "added", installation: own });
+			const org = standin.addInstallation("picker-org", "Organization");
+			const repo = standin.addRepository({ owner: org.account.login, name: "private", private: true, installation: org });
+			repo.access.set(person.login, "read");
+			try {
+				const before = standin.requests.length;
+				const list = await user.githubRepositories("", true);
+				assert.deepEqual(list.repositories.map(r => r.id), [added.id]);
+				const calls = standin.requests.slice(before);
+				assert.ok(calls.some(r => r.auth === "installation" && r.path.includes("/installation/repositories")));
+				assert.ok(calls.every(r => r.auth !== "user" && !r.path.includes("/user/installations") && !r.path.includes("/login/oauth")));
+				await authorize(user, person.login);
+				assert.ok(await hasRepo(user, repo.id));
+				repo.access.delete(person.login);
+				assert.equal(await hasRepo(user, repo.id, true), false);
+			} finally { await user.githubDisconnect(); standin.uninstall(org); }
+		});
 		const countReads = (head: string) => standin.requests.filter(r => r.path.includes("/commits/" + head + "/check-runs")).length;
 		const ci = (head: string, state: string) => projectG2.ci.set(head, { runs: [], statuses: [{ context: "required", state }] });
 		const waitForWrites = async (id: string) => {
@@ -1051,7 +1168,7 @@ async function run() {
 			assert.equal(res.status, 202); assert.deepEqual(await res.json(), { taken: false });
 			await assert.rejects(client.githubInbox.get([String(id)]).resolve(), absent);
 			for (const event of ["installation", "installation_repositories"]) {
-				const lifecycle = await standin.deliver(web, event, { action: "created", installation: { id } }, { secret });
+				const lifecycle = await standin.deliver(web, event, { action: "created", installation: { id, account: { id: 1 } }, repositories_added: [] }, { secret });
 				assert.deepEqual(await lifecycle.json(), { taken: true });
 			}
 			assert.equal(await known(guid, id), false);
@@ -1101,7 +1218,9 @@ async function run() {
 			for (const state of ["success", "failure", "error"]) assert.deepEqual(take("status", { state })?.data, { head: HEAD });
 			assert.equal(take("status", { state: "pending" }), null);
 			for (const event of ["installation", "installation_repositories"])
-				assert.deepEqual(take(event, { repositories_added: [{ id: 9 }], repositories_removed: [{ id: 8 }] })?.data, { repositoryIds: [9, 8] });
+				assert.deepEqual(take(event, { installation: { id: 1, account: { id: 2 } }, repositories_added: [{ id: 9 }], repositories_removed: [{ id: 8 }] })?.data, { senderId: user.id });
+			assert.equal(take("installation", {}), null);
+			assert.equal(take("installation_repositories", {}), null);
 			assert.equal(take("push", {}), null);
 			assert.equal(take("status", { installation: {} }), null);
 			assert.equal(isAddressed(" \n@WINDLASS-FK4W fix it", standin.slug), "fix it");
@@ -1134,7 +1253,7 @@ async function run() {
 		await check("installation events finish with one metadata log", async () => {
 			for (const event of ["installation", "installation_repositories"]) {
 				const guid = randomUUID(), id = 91234;
-				const payload = { installation: { id }, action: "created", repositories: [{ id: 13 }], description: bodyMarker };
+				const payload = { installation: { id, account: { id: 1 } }, action: "created", repositories_added: [], repositories: [{ id: 13 }], description: bodyMarker };
 				assert.equal((await standin.deliver(web, event, payload, { secret, guid })).status, 202);
 				await until("installation handled", async () => (await fixture(id).checkRow(guid))?.state === "done");
 				assert.equal(logs.split(`github.installation event=${event}.created installation=${id} delivery=${guid}`).length - 1, 1);
@@ -1228,7 +1347,7 @@ async function run() {
 		for (const [action, total, terminal] of [["created", 4, "done"], ["suspended", 8, "failed"]] as const) {
 			await check("retry to " + terminal + " in " + total + " attempts", async () => {
 				const guid = randomUUID(), id = RETRY_INSTALLATION;
-				const res = await standin.deliver(web, "installation", { action, installation: { id } }, { secret, guid });
+				const res = await standin.deliver(web, "installation", { action, installation: { id, account: { id: 1 } } }, { secret, guid });
 				assert.equal(res.status, 202);
 				for (let attempt = 1; attempt <= total; attempt++) {
 					const row = await until("handler attempt " + attempt, async () => {
@@ -1317,11 +1436,23 @@ async function run() {
 			const taken = async () => (await (await send(payload)).json()).taken;
 			const a = await connect(); assert.equal(await taken(), true); assert.deepEqual(await account.internalWho(), { uid: a.uid, installations: [install.id] });
 			const b = await connect(); assert.deepEqual(await account.internalWho(), { uid: b.uid, installations: [install.id] });
+			assert.deepEqual(new Set(await account.internalUsers()), new Set([a.uid, b.uid]));
+			await a.user.githubRepositories("", true);
+			assert.equal((await account.internalWho())?.uid, b.uid);
+			// The installation account matches both connections even when someone else sent the event.
+			standin.uninstall(install);
+			await delivered("installation", { action: "deleted", installation: { id: install.id, account: install.account } }, install.id);
+			const personal = standin.addInstallation("ada", "User");
+			await delivered("installation", { action: "created", installation: { id: personal.id, account: personal.account }, sender: { id: 1 } }, personal.id);
+			for (const { user } of [a, b]) assert.deepEqual((await user.github()).connection?.accounts.map(i => i.installationId), [personal.id]);
+			payload.installation.id = personal.id;
 			await a.user.githubDisconnect(); assert.equal((await account.internalWho())?.uid, b.uid); assert.equal(await taken(), true);
 			await b.user.githubDisconnect(); assert.equal(await account.internalWho(), null); assert.equal(await taken(), false);
 		});
 		await check("service-only actors", async () => {
 			await assert.rejects(client.githubAccount.getOrCreate(["1"]).internalWho());
+			await assert.rejects(client.githubHooks.getOrCreate(["app"]).internalInstallationUsers(installation.id));
+			await assert.rejects(g2User.internalUpdateGithubInstallation({ kind: "remove", installationId: installation.id }));
 			await assert.rejects(client.githubInbox.getOrCreate(["1"]).internalKnows(randomUUID()));
 			await assert.rejects(client.githubRepository.getOrCreate(["1"]).internalFind({ pr: 1 }));
 			await assert.rejects(client.githubHooks.getOrCreate(["app"]).internalSweep());

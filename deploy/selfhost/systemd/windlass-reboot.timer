@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly conditional reboot for pending updates
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 UTC
+# A missed run waits for the next Sunday rather than firing at boot.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

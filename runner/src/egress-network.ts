@@ -2,7 +2,7 @@ import { RUNNER_HTTP_PROXY as proxy } from "../../server/src/runner/egress.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { docker, LABEL, LABEL_ARG } from "../../server/src/sandbox/docker.js";
+import { docker, LABEL, LABEL_ARG, NO_LOGS } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
 import { relaySocketVolume } from "./claude-relay.js";
 import { providerHosts } from "./opencode-providers.js";
@@ -82,7 +82,7 @@ export class EgressNetwork {
 			"--label", LABEL_ARG, ...this.machine.pairingLabelFlags, "--label", roleLabel + "=" + role,
 			"--label", revisionLabel + "=" + revision, "--network", network, "--user", "agent", "--cap-drop", "ALL",
 			"--read-only", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--memory", "128m", "--cpus", "0.5",
-			"--log-driver", "none", ...mounts.flatMap(mount => ["--mount", mount]),
+			...NO_LOGS, ...mounts.flatMap(mount => ["--mount", mount]),
 			image, "node", "--input-type=module", "-e", source, "--", "wlp-egress-" + role, ...args]);
 		const id = started.stdout.trim();
 		try { for (const probe of probes) await waitForListener(id, probe); }

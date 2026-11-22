@@ -168,6 +168,7 @@ import {
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview } from "../github/git.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
+import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
@@ -2325,7 +2326,7 @@ async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers
 	// A session whose project names no server asks nobody: the user's own have no approval.
 	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
-	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project, machine: machineOf(meta) };
+	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
 	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
 	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
 	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
@@ -3492,6 +3493,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				dataInSandbox: privateSessionData(meta, layer.sandboxes),
 				project: projectOf(meta),
 				machine: machineOf(meta),
+				hostedEgress: meta.place.kind === "hosted" ? layer.sandboxes.egress?.() : undefined,
 				// Null for a session that is not on a repository of the GitHub connection: it can have none.
 				secrets: setupProjectOf(meta) ? held.opened.map(({ name, scope }) => ({ name, scope })) : null,
 				accountSecrets: accountSecretsFor(held.account, held.opened).map((secret) => secret.name),
@@ -4045,6 +4047,8 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		const facts = meta.place.kind === "machine" && (meta.repoUrl || caps.signIn === "machine")
 			? await runnerLink(c, meta.place.machineId).facts() : null;
 		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
+		// The operator can change WLP_E2B_NETWORK between a session's launch and its turn.
+		if (meta.repoUrl && meta.place.kind === "hosted" && (await layerOf(c, meta)).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		if (caps.signIn === "machine" && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
 			if (!offered) throw new UserError(`This machine does not offer ${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"}.`, { code: "bad_input" });

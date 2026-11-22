@@ -244,6 +244,61 @@ removes it; opening a session's changes in the browser resumes its sandbox for t
 and a turn whose command stream to E2B breaks ends as a failed turn, though the sandbox goes on until its
 timeout.
 
+### Network
+
+`WLP_E2B_NETWORK` sets what every sandbox of the deployment may reach: the hosted counterpart of a machine's
+`--egress` ([Machines of your own](machines.md)). E2B enforces it outside the microVM with its own network
+configuration ([internet access](https://docs.e2b.dev/network/internet-access.md)), so nothing inside the
+sandbox can lift it. The agent's commands, Windlass's engine and the platform's own steps all run in the same
+microVM and share it, so the server adds the hosts its own steps need, from its own configuration
+(`server/src/sandbox/e2b/network.ts`):
+
+| Step in the microVM | Host |
+|---|---|
+| Model requests of the turn's engine | `api.openai.com` |
+| Clone, fetch and push, as the transport user | the host of `WLP_GITHUB_URL` (`github.com`) |
+| Memory backups and screenshots, with a signed link | the bucket's host (`WLP_BUCKET_ENDPOINT`, with the bucket before it in `virtual` style) |
+
+| Mode | What E2B is asked for | Repositories |
+|---|---|---|
+| `open` (default) | nothing: as before network modes. E2B still blocks private and link-local ranges | allowed |
+| `restricted` | every destination denied, the hosts above and `WLP_E2B_NETWORK_ALLOW` allowed by name, no DNS server | allowed |
+| `none` | every destination denied, the model API and the bucket allowed by name, no DNS server | refused at launch and when a turn starts; the factory does not place items on hosted |
+
+`WLP_E2B_NETWORK_ALLOW` takes exact host names and presets, comma-separated, and only with `restricted`:
+`@npm` (`registry.npmjs.org`, `registry.yarnpkg.com`), `@pypi` (`pypi.org`, `files.pythonhosted.org`), `@github`
+(`github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`,
+`release-assets.githubusercontent.com`), `@crates`, `@go`. Default `@npm,@pypi,@github`; at most 64 hosts in all.
+No addresses, ports or wildcards. E2B matches names only on ports 443 and 80, so in `restricted` and `none` the
+server does not start when `WLP_GITHUB_URL` or the bucket endpoint is not an `https` address on the default
+port.
+
+How it is built:
+
+- E2B lets all traffic to its default resolver (`8.8.8.8`) through as soon as one name is allowed, which carries
+  any name a command wants to look up. So no DNS server is allowed (`dnsServers: []`), and the server writes the
+  allowed names into the sandbox's `/etc/hosts` and empties `/etc/resolv.conf`, as root, before anything else
+  runs in it and again at every resume. Every other lookup fails at once. E2B routes an allowed request by its
+  name, so the pinned address does not matter.
+- A sandbox carries its mode in its metadata (`wlp_network`). On every connect where either the recorded or the
+  current mode is not `open`, the server replaces the sandbox's E2B configuration (`updateNetwork`) and writes
+  the names again, so a changed setting reaches kept sandboxes at their next turn. Open to open changes nothing.
+- The profiles' texts follow the mode (the **sandbox** chip, a setup command's note, what an MCP server can
+  reach in Settings), and `PlatformInfo.hostedEgress` carries it to the web app when it is not `open`.
+
+What it does not do: an allowed host is still a way out (a command can push to someone else's repository on
+GitHub with a credential of its own); `api.openai.com` is reachable by commands in every mode, since the engine
+needs it and runs as the same user; a remote MCP server by `url` is reachable in `restricted` only when its host
+is in `WLP_E2B_NETWORK_ALLOW`; and `169.254.169.254` answers in every mode, as the microVM's own Firecracker
+metadata service, which holds nothing of the account or other sandboxes (E2B,
+[restricting public access](https://docs.e2b.dev/network/restrict-public-access.md)). Our runner's filtering proxy
+is not used inside the microVM: without a guest firewall it could be bypassed, and the engine and the commands
+are the same user.
+
+`scripts/e2b-provider-test.ts --docker` proves the modes on the platform's real clone, push, model and bucket
+steps against a stand-in of E2B's filter; `WLP_E2B_CHECK_NETWORK=1 scripts/e2b-check.ts` proves them at E2B
+(two short sandboxes, no turn).
+
 ## The GitHub App
 
 What the platform does with GitHub, and why each permission is needed, is in

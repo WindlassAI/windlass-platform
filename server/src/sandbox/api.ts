@@ -32,7 +32,7 @@
 
 import type { SnapshotSelection, SnapshotSource } from "./snapshot-key.js";
 
-import type { AcpContext, AcpUpdate, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
+import type { AcpContext, AcpUpdate, EgressMode, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -155,6 +155,11 @@ export interface Sandboxes {
 	 * (`SandboxLayer.backups`) or, where there is none, start a new Windlass session at once.
 	 */
 	readonly sessionsLiveInSandbox: boolean;
+	/**
+	 * What this provider's sandboxes may reach, where the deployment sets it: on E2B, WLP_E2B_NETWORK
+	 * (e2b/network.ts). Absent where the provider has no such setting (Docker).
+	 */
+	egress?(): EgressMode;
 	/** Every profile, available or not, in the order the picker shows them. */
 	profiles(): SandboxProfile[];
 	profile(id: SandboxProfileId): SandboxProfile;

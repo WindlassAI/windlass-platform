@@ -10,7 +10,8 @@ c=json.load(sys.stdin)
 print(c["name"], c["services"]["engine"]["image"], c["volumes"]["engine-data"]["name"], sep="\n")')
 [[ ${#stack[@]} == 3 ]] || exit 1
 project=${stack[0]} image=${stack[1]} volume=${stack[2]}
-root="$kit/../../.data/selfhost"
+# Locks, the age cache and the plaintext copy live beside the stack env file, as private as it is.
+root=$(cd -- "$(dirname -- "$1")" && pwd)
 mkdir -p "$root"
 exec 9>"$root/$project.archive.lock"
 flock -n 9 || { echo "Another archive operation is active for $project" >&2; exit 1; }

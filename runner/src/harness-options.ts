@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { boundedCodexOptions, validHarnessOptions } from "../../server/src/runner/control.js";
 import { AcpConnection, LineSplitter, MethodNotFound } from "../../server/src/sandbox/acp.js";
 import { configChoices, modeSelection, objects, optionsOf, type Fields } from "../../server/src/sandbox/acp-options.js";
-import { LABEL_ARG, docker, tmpName } from "../../server/src/sandbox/docker.js";
+import { LABEL_ARG, NO_LOGS, docker, tmpName } from "../../server/src/sandbox/docker.js";
 import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { WORKSPACE } from "../../server/src/sandbox/provider.js";
@@ -43,7 +43,7 @@ export async function probeHarnessOptions(machine: MachineDocker, pin: string, p
 	// container. Signed-out inventory reads the native catalog with an offline gateway.
 	const forward = lease ? `node -e 'const net=require("net"); net.createServer(c=>{const u=net.connect("/run/wlp-relay/relay.sock");u.write("${lease.nonce}");c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u).pipe(c)}).listen(17892,"127.0.0.1")' &` : "";
 	const child = spawn("docker", ["run", "--rm", "-i", "--name", name, "--label", LABEL_ARG,
-		...machine.pairingLabelFlags, "--pull", "never", "--log-driver", "none", ...commonRunFlags(1, "none"),
+		...machine.pairingLabelFlags, "--pull", "never", ...NO_LOGS, ...commonRunFlags(1, "none"),
 		...(codex ? flags : provider ? projection(provider, "options-only") : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=options-only"]), ...PROFILE_RUN_FLAGS["docker-hardened"]!,
 		pin, ...(codex ? ["sh","-ec",forward + " exec wlp-codex-acp"] : [provider ? "wlp-opencode-acp" : "wlp-claude-acp"])], { stdio: ["pipe", "pipe", "ignore"] });
 	const rpc = new AcpConnection(line => child.stdin.write(line + "\n"), {

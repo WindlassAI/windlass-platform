@@ -1,6 +1,6 @@
 import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
-import { docker, LABEL, LABEL_ARG } from "../../server/src/sandbox/docker.js";
+import { docker, LABEL, LABEL_ARG, NO_LOGS } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
 import { image, type MachineHarness, type MachineDocker } from "./policy.js";
 import { loadPair, Refusal, RunnerError } from "./state.js";
@@ -101,7 +101,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	if (!box) {
 		await docker(["create", "--pull", "never", "--name", relayName(m, harness), ...flags(m), "--label", role + ".version=" + version,
 			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-			"--log-driver", "none", "--memory", "192m", "--pids-limit", "48",
+			...NO_LOGS, "--memory", "192m", "--pids-limit", "48",
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,

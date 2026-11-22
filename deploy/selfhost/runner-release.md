@@ -8,6 +8,6 @@
    docker run --rm --network none -e WLP_RUNNER_IMAGE "$WLP_RUNNER_IMAGE" capabilities
    ```
 
-3. Update `WLP_RUNNER_IMAGE` and `WLP_RUNNER_CAPABILITIES` together in the optional server env file, then recreate the server services with that configuration. By default the file is `.data/selfhost/<compose-project>.server.env`. Set `WLP_RUNNER_CAPABILITIES` to the single-line JSON output of the command. Single quotes around the JSON value preserve the double quotes in a Compose env file. The Machines page offers the harnesses listed for the matching image digest.
+3. Update `WLP_RUNNER_IMAGE` and `WLP_RUNNER_CAPABILITIES` together in the optional server env file, then recreate the server services with that configuration. It is the file `SELFHOST_SERVER_ENV_FILE` names, by default `.data/selfhost/<compose-project>.server.env`. Set `WLP_RUNNER_CAPABILITIES` to the single-line JSON output of the command. Single quotes around the JSON value preserve the double quotes in a Compose env file. The Machines page offers the harnesses listed for the matching image digest.
 
 [Example server env file](.env.example)

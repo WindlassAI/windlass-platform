@@ -1,0 +1,13 @@
+[Unit]
+Description=Reboot for pending updates when no Windlass sandbox is active
+After=docker.service
+
+[Service]
+Type=oneshot
+# Installed as a root-owned copy, never run from a checkout that other users can write.
+ExecStart=/usr/local/sbin/windlass-reboot-if-required
+Environment=WLP_REBOOT_BACKUP=/home/ubuntu/backups/windlass-live-backup.sh
+Environment=WLP_REBOOT_BACKUP_USER=ubuntu
+Environment=WLP_RUNNER_CONTAINER=windlass-runner
+Environment=WLP_REBOOT_WAIT_MINUTES=90
+TimeoutStartSec=3h

@@ -226,7 +226,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
 	const anchors = { repo: useRef<HTMLButtonElement>(null), plus: useRef<HTMLButtonElement>(null), criteria: useRef<HTMLButtonElement>(null), settings: useRef<HTMLButtonElement>(null) };
-	const search = useRepositorySearch(open === "repo" || open === "settings", github.status?.connection?.login ?? null);
+	const search = useRepositorySearch(open === "repo" || open === "settings", github.status?.connection?.connectedAt ?? null);
 	const branches = useBranches();
 
 	// Back from GitHub: the repository's picker is open, where its user left. Connected from the popup, it
@@ -555,6 +555,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				.
 			</p>
 		) : null;
+	const connectGithub = () => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } });
 	const connectLine =
 		github.enabled && !connection ? (
 			<p className={`ui-menu-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
@@ -574,7 +575,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				) : (
 					<>
 						{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } })} disabled={busy !== null}>
+						<button type="button" className="link" onClick={connectGithub} disabled={busy !== null}>
 							Connect GitHub
 						</button>{" "}
 						to choose one of your own repositories, private ones included, and get the work back as a pull request. It opens in a new window; what you wrote here stays.
@@ -609,6 +610,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					footer: (
 						<>
 							{repoActions}
+							<p className="ui-menu-note">
+								Installed by someone else? <button type="button" className="link" onClick={connectGithub} disabled={busy !== null}>Reconnect GitHub</button> to pick it up.
+							</p>
 							{repoNoteWarn || item ? <p className={`ui-menu-note${repoNoteWarn ? " tone-warn" : ""}`}>{repoNote}</p> : null}
 							{shots}
 						</>
@@ -956,7 +960,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
 		<div className="start-setup">
-			<SetupField egress={chosenMachine?.egress} setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
+			<SetupField egress={chosenMachine?.egress ?? (chosenMachine ? undefined : info?.hostedEgress)} hosted={!chosenMachine} setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
 			{!other ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
 		</div>
 	) : null;

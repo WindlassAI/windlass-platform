@@ -37,6 +37,7 @@ A box is shown only for an agent the platform's runner image includes.
 
 ```sh
 docker run -d --name windlass-runner --restart unless-stopped \
+  --log-driver json-file --log-opt max-size=16m --log-opt max-file=3 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v windlass-runner:/var/lib/windlass-runner \
   <runner image> --platform <platform address>

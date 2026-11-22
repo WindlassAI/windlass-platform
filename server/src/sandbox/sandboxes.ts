@@ -35,7 +35,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type SandboxProfileId } from "../contract.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
-import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
+import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
 import { codexDefaultMode } from "./codex-modes.js";
 import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
@@ -536,13 +536,14 @@ export class DockerSandboxes implements Sandboxes {
 				...(selected && input.fromSnapshot ? ["--label", candidateLabel + "=" + (input.fromSnapshot.writer ? selected.key : ""), "--label", variantLabel + "=" + (input.screenshots ? "shots" : "base"), "--label", attemptLabel + "=" + input.fromSnapshot.attempt] : []),
 				...(this.options.slots ? ["--label", `${LABEL}.slots=${size}`] : []),
 				...(this.options.slots && requested > size ? ["--label", `${LABEL}.requested-slots=${requested}`] : []),
+				...NO_LOGS,
 				...commonRunFlags(limits.cpus, this.options.network?.name, limits.memoryBytes, limits.pids),
 				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
 					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
 				// Windlass reads its handed-in token in this container's /dev/shm.
 				...(!harness ? ["--ipc", "private"] : []),
-				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, "--log-driver", "none", ...relay.env] : []),
+				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, ...relay.env] : []),
 				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
 				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
