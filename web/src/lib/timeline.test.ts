@@ -375,6 +375,12 @@ describe("a refused call", () => {
 		expect(notice?.text).toContain("AppArmor");
 	});
 
+	it("titles Windlass's notice about the workspace's Git metadata (0.6.0 and later)", () => {
+		const events: WindlassEvent[] = [{ type: "notice", sessionId: "ses_1", kind: "git_metadata", message: "A command added a nested repository at vendor/lib." }];
+		const notice = turn(reduce(runToFeed(events, { turn: 1, afterSeq: 0, at: 1_000_000 }))).blocks.find((block): block is NoticeBlock => block.kind === "notice");
+		expect(notice).toMatchObject({ noticeKind: "git_metadata", title: "Review the workspace's Git metadata", text: "A command added a nested repository at vendor/lib." });
+	});
+
 	it("still ends as a finished turn, with no token counts", () => {
 		expect(turn(view).end).toMatchObject({ outcome: "succeeded", steps: 2, usage: null, cachedShare: null });
 		expect(view.calls).toHaveLength(0);
