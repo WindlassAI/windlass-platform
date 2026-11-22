@@ -96,6 +96,12 @@ export interface SandboxHandle {
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
 	/**
+	 * The hosts commands in the sandbox looked up and could not reach since it was made, each once, in
+	 * the order first asked: on E2B out of `open`, what its lookup stub wrote (e2b/network.ts, `DNS_STUB`),
+	 * without the hosts it may reach. Absent where nothing records them.
+	 */
+	blockedHosts?(): Promise<string[]>;
+	/**
 	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
 	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
 	 * slot holds it. `partial` only seeds an empty slot.
@@ -103,7 +109,18 @@ export interface SandboxHandle {
 	saveMirror?(stage: string, partial: boolean): Promise<boolean>;
 }
 
+/** What a connect is told besides the sandbox's id. */
+export interface ConnectOptions {
+	/**
+	 * The hosts the session's repositories allow besides the deployment's (repository-network.ts): on E2B
+	 * with WLP_E2B_NETWORK=restricted, the sandbox's network is set to both at every connect. Ignored elsewhere.
+	 */
+	network?: readonly string[];
+}
+
 export interface CreateSandboxInput {
+	/** As `ConnectOptions.network`, from the first command in the sandbox. */
+	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
 	fromSnapshot?: SnapshotSelection;
@@ -168,6 +185,18 @@ export interface Sandboxes {
 	 * (e2b/network.ts). Absent where the provider has no such setting (Docker).
 	 */
 	egress?(): EgressMode;
+	/**
+	 * The hosts every sandbox of this provider may reach by the deployment's own settings: on E2B the
+	 * model API, the git host, the bucket and WLP_E2B_NETWORK_ALLOW (e2b/network.ts), empty in `open`.
+	 * Absent where the provider has no list of hosts (Docker).
+	 */
+	allowedHosts?(): readonly string[];
+	/**
+	 * Lets a running sandbox reach `hosts` besides the deployment's (a session's repository's network
+	 * list, repository-network.ts), at once. False when the sandbox does not run: the hosts are handed
+	 * to its next `connect` instead. Absent where the provider has no list of hosts.
+	 */
+	setNetwork?(id: string, hosts: readonly string[]): Promise<boolean>;
 	/** Every profile, available or not, in the order the picker shows them. */
 	profiles(): SandboxProfile[];
 	profile(id: SandboxProfileId): SandboxProfile;
@@ -189,7 +218,7 @@ export interface Sandboxes {
 	 * a turn runs in it (e2b/sandboxes.ts, "The dead-man switch"), so `state` may say "paused" of a
 	 * sandbox nobody suspended.
 	 */
-	connect(id: string): Promise<SandboxHandle | undefined>;
+	connect(id: string, options?: ConnectOptions): Promise<SandboxHandle | undefined>;
 	/** "none" when it does not exist. */
 	state(id: string): Promise<"none" | "running" | "paused">;
 	/**

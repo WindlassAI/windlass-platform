@@ -692,6 +692,33 @@ await section("network modes", async () => {
 	await failing.make().catch((error: unknown) => (failed = error instanceof Error ? error.message : String(error)));
 	expect("a sandbox whose names cannot be pinned is removed, not handed out", /could not set the sandbox's names/.test(failed) && /read-only file system/.test(failed) && [...failing.fake.sandboxes.values()].length === 0, failed);
 
+	// A repository's network list (server/src/repository-network.ts): its hosts on top of the deployment's.
+	const stubLog = "1795358136 1 cdn.example.org\n1795358136 28 registry.npmjs.org\n1795358136 1 registry.example.com\n";
+	let listed: ScriptedMachine | undefined;
+	const r = world({ network: restricted }, { machine: () => (listed = imageLike((command) => (command.startsWith("tail ") || command.includes("'tail'") ? { stdout: stubLog } : undefined))) });
+	const rid = await r.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b", network: ["registry.example.com"] });
+	const allowOut = r.fake.sandboxes.get(rid)?.network?.allowOut ?? [];
+	expect("a repository's hosts are allowed from the sandbox's first command, beside the deployment's", allowOut.includes("registry.example.com") && restricted.hosts.every((host) => allowOut.includes(host)) && (listed?.commands.find((entry) => entry.options.root)?.command.includes(" registry.example.com") ?? false), allowOut.join(","));
+	r.fake.calls.length = 0;
+	const rHandle = await r.sandboxes.connect(rid, { network: ["registry.example.com"] });
+	expect("each connect sets them again, with the deployment's", callsOf(r.fake, "updateNetwork").length === 1 && (callsOf(r.fake, "updateNetwork")[0] ?? "").includes("registry.example.com"));
+	await r.sandboxes.connect(rid);
+	expect("a connect that names none leaves the deployment's alone", !(callsOf(r.fake, "updateNetwork").at(-1) ?? "").includes("registry.example.com"));
+	expect("blocked hosts: the names the lookup stub wrote that the sandbox may not reach", JSON.stringify(await rHandle?.blockedHosts?.()) === JSON.stringify(["cdn.example.org"]));
+	r.fake.calls.length = 0;
+	const rootsBefore = (listed?.commands ?? []).filter((entry) => entry.options.root).length;
+	const applied = await r.sandboxes.setNetwork(rid, ["registry.example.com", "cdn.example.org"]);
+	const roots2 = (listed?.commands ?? []).filter((entry) => entry.options.root);
+	expect("a host allowed from a session reaches its running sandbox at once: E2B's configuration and the pinned names", applied && (callsOf(r.fake, "updateNetwork")[0] ?? "").includes("cdn.example.org") && roots2.length === rootsBefore + 1 && (roots2.at(-1)?.command.includes(" cdn.example.org") ?? false));
+	await r.sandboxes.suspend(rid);
+	r.fake.calls.length = 0;
+	expect("a paused sandbox is not started for it: it gets the hosts at its next connect", !(await r.sandboxes.setNetwork(rid, ["later.example.org"])) && r.fake.sandboxes.get(rid)?.state === "paused" && callsOf(r.fake, "updateNetwork").length === 0);
+	const openList = world();
+	const openListId = await openList.make();
+	const openHandle = await openList.sandboxes.connect(openListId, { network: ["registry.example.com"] });
+	expect("open: a repository's list changes nothing, reads no log, and a sandbox reaches every host anyway", openList.fake.sandboxes.get(openListId)?.network === null && JSON.stringify(await openHandle?.blockedHosts?.()) === "[]" && (await openList.sandboxes.setNetwork(openListId, ["x.example.org"])) && callsOf(openList.fake, "updateNetwork").length === 0);
+	expect("the provider names the deployment's own hosts, for a repository's settings", JSON.stringify(r.sandboxes.allowedHosts()) === JSON.stringify(restricted.hosts) && openList.sandboxes.allowedHosts().length === 0);
+
 	// What the user reads.
 	const facts = (mode: "open" | "restricted" | "none") => profilesFor("e2b", { windlassSandbox: false, openProfile: true, network: mode });
 	const [plain, microvm] = ["e2b", "e2b-open"].map((profileId) => facts("restricted").find((profile) => profile.id === profileId)!);
@@ -1006,8 +1033,10 @@ if (withDocker) {
 			for (const mode of ["open", "restricted", "none"] as const) {
 				const fake = new FakeE2b({ machine: async (id) => { const machine = await ContainerMachine.make(id, image); machines.push(machine); return machine; } });
 				const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: readE2bNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) }) }, { log: () => {}, pinAddress: address });
-				const id = await sandboxes.create({ uid: "u1", sessionId: `net-${mode}`, profile: "e2b" });
-				const handle = (await sandboxes.connect(id)) as E2bSandboxHandle;
+				// A repository's list adds a host in restricted; open and none take no list.
+				const repoHosts = ["repo-allowed.example"];
+				const id = await sandboxes.create({ uid: "u1", sessionId: `net-${mode}`, profile: "e2b", network: repoHosts });
+				const handle = (await sandboxes.connect(id, { network: repoHosts })) as E2bSandboxHandle;
 				const sh = async (script: string) => {
 					const result = await handle.exec(["sh", "-c", script], { timeoutMs: 60_000 });
 					return `${result.stdout}${result.stderr}`.trim();
@@ -1042,7 +1071,17 @@ if (withDocker) {
 				} else {
 					expect(`${mode}: the model API and the bucket are reachable from the agent's user`, model === "401" && upload === "200", said);
 					expect(`${mode}: a command reaches no other host, by name, by address or over plain HTTP`, !other.includes("fixture") && /exit=[1-9]/.test(other) && !direct.includes("fixture") && /exit=[1-9]/.test(direct) && !plain.includes("fixture") && /exit=[1-9]/.test(plain), said);
-					expect(`${mode}: an unlisted name does not resolve, and nothing is asked of a resolver`, /exit=[1-9]/.test(lookup) && (await sh("cat /etc/resolv.conf | grep -c nameserver || true")) === "0", said);
+					expect(`${mode}: an unlisted name does not resolve, and the only resolver is the sandbox's own lookup stub`, /exit=[1-9]/.test(lookup) && (await sh("grep nameserver /etc/resolv.conf || true")) === "nameserver 127.0.0.1", said);
+					const blocked = await handle.blockedHosts();
+					expect(`${mode}: the lookup stub names the host a command could not reach, and none it may`, blocked.includes("evil.example") && !blocked.includes("api.openai.com") && !blocked.includes("repo-allowed.example"), blocked.join(","));
+					const byRepo = await sh("curl -sS --max-time 10 https://repo-allowed.example/; echo exit=$?");
+					if (mode === "restricted") {
+						expect("restricted: a host of the repository's list is reachable", byRepo.includes("fixture repo-allowed.example"), byRepo);
+						const before = await sh("curl -sS --max-time 10 https://later.example/; echo exit=$?");
+						const changed = await sandboxes.setNetwork(id, [...repoHosts, "later.example"]);
+						const after = await sh("curl -sS --max-time 10 https://later.example/; echo exit=$?");
+						expect("restricted: a host allowed while the sandbox runs is reachable at once, and was not before", !before.includes("fixture") && changed && after.includes("fixture later.example"), `${before} | ${after}`);
+					} else expect("none: a repository's list is not applied", !byRepo.includes("fixture"), byRepo);
 					if (mode === "restricted") expect("restricted: the platform's own clone, fetch and push still work, as the transport user", cloned.ok && pushed !== "" && pushed === received, said);
 					else expect("none: the git host is not reachable, which is why repository sessions are refused there", !cloned.ok, said);
 				}

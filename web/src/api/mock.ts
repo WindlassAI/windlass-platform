@@ -65,6 +65,7 @@ import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
+import { NetworkProblem, cleanEntries, expandEntries, networkLimit, networkPresets } from "../../../server/src/repository-network.js";
 import {
 	MAX_IDEMPOTENCY_KEY_CHARS,
 	MAX_PROMPT_CHARS,
@@ -145,6 +146,10 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 	MAX_NOTE_CHARS,
+	type HostAllowed,
+	type NetworkRequest,
+	type NetworkScan,
+	type RepositoryNetwork,
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
@@ -1254,6 +1259,8 @@ interface World {
 	setups: Map<GithubId, { command: string; updatedAt: number }>;
 	/** The checks the user saved for a repository, by GitHub's id for it. */
 	checks: Map<GithubId, { checks: RepositoryCheck[]; updatedAt: number }>;
+	/** The network lists the user saved, and the hosts the repository's sessions could not reach, by GitHub's id for it. */
+	network: Map<GithubId, { entries: string[]; updatedAt: number | null; requests: NetworkRequest[] }>;
 	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
 	secrets: Map<GithubId, Map<string, { scope: SecretScope; updatedAt: number }>>;
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
@@ -1372,7 +1379,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -2926,8 +2933,34 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			defaults: defaultsOf(world, repositoryId),
 			approvals: [...approvals.values()],
 			forgetting: MOCK_FORGETTING,
-			saved: { setup: world.setups.has(repositoryId), secrets: world.secrets.get(repositoryId)?.size ?? 0, checks: world.checks.get(repositoryId)?.checks.length ?? 0 },
+			saved: { setup: world.setups.has(repositoryId), secrets: world.secrets.get(repositoryId)?.size ?? 0, checks: world.checks.get(repositoryId)?.checks.length ?? 0, network: world.network.get(repositoryId)?.entries.length ?? 0 },
 		};
+	}
+
+	/** What the demo's hosted sandboxes reach anyway: a deployment with WLP_E2B_NETWORK=restricted and the default presets. */
+	const MOCK_HOSTED = { mode: "restricted" as const, hosts: ["api.openai.com", "codeload.github.com", "files.pythonhosted.org", "github.com", "objects.githubusercontent.com", "pypi.org", "raw.githubusercontent.com", "registry.npmjs.org", "registry.yarnpkg.com", "release-assets.githubusercontent.com"] };
+
+	/** A repository's network list as the server answers it (server/src/repository-network.ts). */
+	function networkOf(world: World, repositoryId: GithubId): RepositoryNetwork {
+		const kept = world.network.get(repositoryId);
+		const entries = kept?.entries ?? [];
+		const hosts = expandEntries(entries);
+		const allowed = new Set([...hosts, ...MOCK_HOSTED.hosts]);
+		return { entries: [...entries], hosts, updatedAt: kept?.updatedAt ?? null, requests: (kept?.requests ?? []).filter((request) => !allowed.has(request.host)), presets: networkPresets(), hosted: { mode: MOCK_HOSTED.mode, hosts: [...MOCK_HOSTED.hosts] }, limit: networkLimit(MOCK_HOSTED.hosts) };
+	}
+
+	function saveNetworkList(world: World, repositoryId: GithubId, raw: string[]): RepositoryNetwork {
+		let entries: string[];
+		try {
+			entries = cleanEntries(raw, MOCK_HOSTED.hosts);
+		} catch (error) {
+			if (error instanceof NetworkProblem) throw new PlatformError("user", error.message, { reason: "bad_network" });
+			throw error;
+		}
+		const kept = world.network.get(repositoryId) ?? { entries: [], updatedAt: null, requests: [] };
+		const hosts = new Set(expandEntries(entries));
+		world.network.set(repositoryId, { entries, updatedAt: now(), requests: kept.requests.filter((request) => !hosts.has(request.host)) });
+		return networkOf(world, repositoryId);
 	}
 
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
@@ -3515,6 +3548,32 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				nameAtSave(world(), repositoryId);
 				return saveChecks(world(), repositoryId, checks);
 			},
+			async repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork> {
+				await latency(180);
+				return networkOf(world(), repositoryId);
+			},
+			async saveRepositoryNetwork(repositoryId: GithubId, entries: string[]): Promise<RepositoryNetwork> {
+				await latency(300);
+				nameAtSave(world(), repositoryId);
+				return saveNetworkList(world(), repositoryId, entries);
+			},
+			async dismissNetworkRequest(repositoryId: GithubId, host: string): Promise<RepositoryNetwork> {
+				await latency(200);
+				const kept = world().network.get(repositoryId);
+				if (kept) kept.requests = kept.requests.filter((request) => request.host !== host);
+				return networkOf(world(), repositoryId);
+			},
+			async scanRepositoryNetwork(repositoryId: GithubId): Promise<NetworkScan> {
+				await latency(900);
+				const allowed = new Set([...networkOf(world(), repositoryId).hosts, ...MOCK_HOSTED.hosts]);
+				const proposals = [
+					{ entry: "@playwright", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com"], sources: ["package.json devDependencies.@playwright/test", ".github/workflows/ci.yml line 24"] },
+					{ entry: "@prisma", hosts: ["binaries.prisma.sh"], sources: ["package.json dependencies.@prisma/client"] },
+					{ entry: "npm.pkg.github.com", hosts: ["npm.pkg.github.com"], sources: [".npmrc line 1"] },
+					{ entry: "sentry-cli.example-cdn.net", hosts: ["sentry-cli.example-cdn.net"], sources: ["package.json scripts.postinstall"] },
+				].filter((proposal) => !proposal.hosts.every((host) => allowed.has(host)));
+				return { proposals, commit: "4f1c2a9d0b7e3c5a8f6d2e1b0c9a8f7e6d5c4b3a", branch: "main", files: 9, incomplete: false };
+			},
 			async repositorySecrets(repositoryId: GithubId, profile: SandboxProfileId): Promise<RepositorySecrets> {
 				await latency(200);
 				return secretsOf(world(), repositoryId, profile);
@@ -3570,6 +3629,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.secrets.delete(repositoryId);
 				current.setups.delete(repositoryId);
 				current.checks.delete(repositoryId);
+				current.network.delete(repositoryId);
 				current.defaults.delete(repositoryId);
 				current.screenshotsEnabled.delete(repositoryId);
 				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
@@ -3643,7 +3703,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const current = world();
 				// A deployment that never had a GitHub App has nothing saved for a repository.
 				if (!githubOn) return [];
-				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.secrets.keys(), ...current.defaults.keys(), ...current.screenshotsEnabled.keys()]);
+				const ids = new Set<GithubId>([...current.setups.keys(), ...current.checks.keys(), ...current.network.keys(), ...current.secrets.keys(), ...current.defaults.keys(), ...current.screenshotsEnabled.keys()]);
 				for (const approval of current.approvals) {
 					const id = githubId(/^github:([1-9][0-9]*)$/.exec(approval.project)?.[1]);
 					if (id !== null && approval.expiresAt > now()) ids.add(id);
@@ -3966,6 +4026,18 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					serversChanged(world, session);
 				}
 				return serversOf(world, session);
+			},
+			async allowHost(host: string): Promise<HostAllowed> {
+				await latency(400);
+				const { world, session } = find();
+				const repository = session.summary.repository;
+				if (!repository) throw new PlatformError("user", "This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox, in WLP_E2B_NETWORK_ALLOW.", { reason: "bad_network" });
+				const kept = world.network.get(repository.id)?.entries ?? [];
+				const network = kept.includes(host) ? networkOf(world, repository.id) : saveNetworkList(world, repository.id, [...kept, host]);
+				const applied = session.summary.sandbox === "running";
+				const label = `${repository.owner}/${repository.name}`;
+				store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: applied ? `${host} is allowed for ${label}. This sandbox reaches it now, and so do the repository's other hosted agents from their next turn.` : `${host} is allowed for ${label}. This agent's sandbox reaches it from its next turn, and so do the repository's other hosted agents.` });
+				return { network, applied };
 			},
 			async forgetServer(name: string): Promise<SessionServers> {
 				const forced = nextServers === "forget";

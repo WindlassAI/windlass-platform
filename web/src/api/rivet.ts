@@ -325,6 +325,10 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			saveRepositorySetup: (repositoryId, command) => act("saveRepositorySetup", { repositoryId, command }),
 			repositoryChecks: (repositoryId) => act("repositoryChecks", repositoryId),
 			saveRepositoryChecks: (repositoryId, checks) => act("saveRepositoryChecks", { repositoryId, checks }),
+			repositoryNetwork: (repositoryId) => act("repositoryNetwork", repositoryId),
+			saveRepositoryNetwork: (repositoryId, entries) => act("saveRepositoryNetwork", { repositoryId, entries }),
+			dismissNetworkRequest: (repositoryId, host) => act("dismissNetworkRequest", { repositoryId, host }),
+			scanRepositoryNetwork: (repositoryId) => act("scanRepositoryNetwork", repositoryId),
 			repositorySecrets: (repositoryId, profile) => act("repositorySecrets", { repositoryId, profile }),
 			saveRepositorySecret: (repositoryId, profile, secret) => act("saveRepositorySecret", { repositoryId, profile, ...secret }),
 			deleteRepositorySecret: (repositoryId, profile, name) => act("deleteRepositorySecret", { repositoryId, profile, name }),
@@ -420,6 +424,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			servers: () => act("servers"),
 			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
 			forgetServer: (name) => act("forgetServer", { name }),
+			allowHost: (host) => act("allowHost", { host }),
 			resync() {
 				for (const reload of reloads) reload();
 			},

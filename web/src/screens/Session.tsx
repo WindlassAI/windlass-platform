@@ -254,7 +254,18 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	// A harness other than Windlass cannot stop one call of a turn: only the turn.
 	const harness = state.summary ? acpHarnessName(state.summary) : null;
 	const panelHidden = usePanelHidden();
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && harness === null ? stopCall : null }), [flow, stopCall, online, harness]);
+	const allowHost = useCallback(
+		async (host: string) => {
+			try {
+				return await api.allowHost(host);
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+		},
+		[api, explain],
+	);
+	const repositoryId = state.summary?.repository?.id ?? null;
+	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && harness === null ? stopCall : null, allowHost: online ? allowHost : null, repositoryId }), [flow, stopCall, online, harness, allowHost, repositoryId]);
 
 	if (state.phase === "missing") {
 		return (

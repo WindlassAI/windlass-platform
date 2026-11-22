@@ -620,6 +620,42 @@ export class GithubApp {
 		return { commit, dependencies: dependencyHash(files) };
 	}
 
+	/**
+	 * The files of a revision that `pick` chooses from its tree, as text, for the fixed reading of a
+	 * repository's network needs (repository-network.ts). Read by blob, so a lockfile over the contents
+	 * API's 1 MB is read too; a file that is not UTF-8 is passed over. `incomplete` when GitHub cut the
+	 * tree short or `pick` left files out.
+	 */
+	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; size: number | null }>) => { paths: string[]; more: boolean }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
+		const prefix = `/repos/${owner}/${name}`;
+		const auth = { bearer: token };
+		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the branch to read" });
+		const commit = text(record(body).sha), treeSha = text(record(record(record(body).commit).tree).sha);
+		if (!SHA.test(commit) || !SHA.test(treeSha)) throw new Error("GitHub named no commit for the branch.");
+		const tree = record((await this.call({ path: prefix + "/git/trees/" + treeSha, query: { recursive: "1" }, auth, what: "list the repository's files" })).body);
+		const entries = (Array.isArray(tree.tree) ? tree.tree : []).map((entry) => {
+			const e = record(entry);
+			return { path: text(e.path), type: text(e.type), sha: text(e.sha), size: typeof e.size === "number" ? e.size : null };
+		}).filter((entry) => entry.path !== "" && SHA.test(entry.sha));
+		const picked = pick(entries);
+		const shaOf = new Map(entries.map((entry) => [entry.path, entry.sha]));
+		const files: Array<{ path: string; text: string }> = [];
+		for (let at = 0; at < picked.paths.length; at += 6) {
+			const batch = picked.paths.slice(at, at + 6);
+			const read = await Promise.all(batch.map(async (path) => {
+				const blob = record((await this.call({ path: `${prefix}/git/blobs/${shaOf.get(path)}`, auth, what: "read a file of the repository" })).body);
+				if (blob.encoding !== "base64" || typeof blob.content !== "string") return null;
+				try {
+					return { path, text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(blob.content, "base64")) };
+				} catch {
+					return null;
+				}
+			}));
+			for (const file of read) if (file) files.push(file);
+		}
+		return { commit, files, incomplete: tree.truncated === true || picked.more };
+	}
+
 	async fileAt(token: string, owner: string, name: string, path: string, sha: string): Promise<string> {
 		if (!/^[0-9a-f]{40}$/.test(sha) || path.split("/").some(part => !part || part === "." || part === "..")) throw new Error("Invalid file location.");
 		const encoded = path.split("/").map(encodeURIComponent).join("/");

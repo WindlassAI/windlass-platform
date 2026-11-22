@@ -526,6 +526,20 @@ cd server && npx tsx ../scripts/verified-check.ts --docker  # the same rules aga
 The mock has two checks for acme/harbor (`?mock=1`, `/repositories/7101/settings`), one with patterns its turns
 never match; a turn where all checks have patterns ends "no check covers what changed".
 
+## A repository's network
+
+Where the deployment's hosted sandboxes run on E2B with `WLP_E2B_NETWORK=restricted`, a repository can allow
+hosts of its own: presets (`@node`, `@playwright`, `@prisma`, `@debian`, `@ubuntu`, and those the deployment may
+allow already) and exact names, on top of the model API, GitHub, the bucket and `WLP_E2B_NETWORK_ALLOW`
+(`server/src/repository-network.ts`; how it is built is in [operating.md](operating.md), "E2B", "Network").
+It is the user's, like the setup command: one row per repository in their `user` actor, by GitHub's id, never
+read from the repository. Only that user can change it (`saveRepositoryNetwork`, or `allowHost` from a session,
+which also changes the running sandbox at once); what a session's sandbox could not reach is filed as a request
+(`NetworkRequest`) that waits until it is allowed or dismissed. Every hosted session on the repository gets the
+list from its next turn. `scanRepositoryNetwork` reads the repository's manifests, lockfiles, install scripts
+and CI files at the default branch and proposes what they name, with where; nothing it finds is saved until the
+user allows it. "Delete what is saved" deletes the list and its requests too.
+
 ## What a pull request shows was verified
 
 A pull request an agent opens says what the agent claims, so the platform ends its description with a section
@@ -796,7 +810,7 @@ call or slows those calls for ten seconds.
 ## A repository's page
 
 A connected repository is the project; there is no separate object. Its saved things are tables in the user's
-`user` actor (setup command, checks, secrets, MCP approvals, defaults), created on first save and gone once
+`user` actor (setup command, checks, network list, secrets, MCP approvals, defaults), created on first save and gone once
 deleted.
 
 - **The agent list is grouped** (`web/src/lib/repositories.ts`, `web/src/screens/Home.tsx`) by repository, most
@@ -816,7 +830,7 @@ deleted.
   sessions; whether its work items' agents take screenshots ([Work items](work-items.md)); setup command and
   secrets (the panel's `SetupEditor` and `SecretsBlock`); checks (`ChecksEditor`); remembered MCP approvals with
   when given, until when, and "Forget"; and one control deleting everything saved for it. Fragments open a
-  section: `#defaults`, `#screenshots`, `#setup`, `#checks`, `#secrets`, `#servers`, `#forget`. "New agent" opens
+  section: `#defaults`, `#screenshots`, `#setup`, `#checks`, `#network`, `#secrets`, `#servers`, `#forget`. "New agent" opens
   the launch form with it chosen (`/repositories/<id>/new`, or `/repositories/<id>/settings/new`).
 - **Saved versus usable.** What is saved (`repository`) answers from the actor at once. Whether it can be
   launched on (`githubRepository`) is GitHub's answer. A repository the user lost access to, or whose connection

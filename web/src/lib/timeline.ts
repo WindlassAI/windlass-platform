@@ -95,6 +95,8 @@ export interface PlatformBlock extends BlockBase {
 	kind: "platform";
 	level: "info" | "warn" | "error";
 	text: string;
+	/** A line about a host a command could not reach (`code` "host_blocked"): the host, and whether the session's repository's list can allow it. */
+	blocked?: { host: string; repository: boolean };
 }
 
 export interface ReasoningBlock extends BlockBase {
@@ -336,7 +338,7 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 			// The platform answering a call's question itself is told once, with the call's answer. Its
 			// line carries a code and names the call, so nothing rests on its wording.
 			if ((item.code === "question_expired" || item.code === "question_allowed") && item.call) draft.patchTurn(item.turn, { platformAnswer: { key: callKey(item.call), text: item.text } });
-			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text });
+			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text, ...(item.code === "host_blocked" && item.host ? { blocked: { host: item.host, repository: item.repository === true } } : {}) });
 			break;
 		}
 		case "windlass":

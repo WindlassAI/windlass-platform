@@ -30,6 +30,10 @@ At the end of each turn, a summary line gives the outcome, the number of steps, 
 
 You can copy a prompt, an answer (as Markdown) or a code block with the copy button beside it.
 
+### A host the sandbox cannot reach
+
+Where the platform limits its hosted sandboxes' network, a command that looks up a host the sandbox may not reach fails at once. After the setup command and at the end of each turn, the timeline names each such host once: "A command in this sandbox could not reach registry.example.com…". On an agent with a repository, choose **Allow for this repository** to add the host to the repository's network list. This agent's running sandbox reaches it at once, and the repository's other hosted agents from their next turn. **Network list** opens the list in the repository's settings, where the host also waits under **Asked for by its agents** until you allow or dismiss it. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+
 ## Send a prompt
 
 When the agent is **idle**, type in **Tell the agent what to do** and press <kbd>Enter</kbd>, or choose **Send**. <kbd>Shift</kbd>+<kbd>Enter</kbd> makes a new line.

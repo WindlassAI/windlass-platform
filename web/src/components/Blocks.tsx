@@ -3,6 +3,7 @@ import type { Verified } from "@contract";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
+import { linkProps } from "../lib/router";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/markdown";
@@ -827,11 +828,62 @@ function withLinks(text: string): ReactNode {
 
 function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 	const tone = block.kind === "platform" ? (block.level === "error" ? "bad" : block.level === "warn" ? "warn" : "dim") : block.tone;
-	return (
+	const line = (
 		<p className={`system tone-${tone}`}>
 			<span className="system-rule" aria-hidden="true" />
 			<span className="system-source">{block.kind === "platform" ? "platform" : "windlass"}</span>
 			<span className="system-text">{block.kind === "platform" ? withLinks(block.text) : block.text}</span>
+		</p>
+	);
+	if (block.kind !== "platform" || !block.blocked) return line;
+	return (
+		<>
+			{line}
+			<BlockedHost host={block.blocked.host} repository={block.blocked.repository} />
+		</>
+	);
+}
+
+/**
+ * Under a line about a host a command could not reach: "Allow for this repository", which adds it to
+ * the network list of the session's repository and lets the running sandbox reach it at once, and the
+ * way to the list itself. Nothing is allowed without the click.
+ */
+function BlockedHost({ host, repository }: { host: string; repository: boolean }) {
+	const interactive = useInteractive();
+	const [state, setState] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; text: string } | { kind: "failed"; text: string }>({ kind: "idle" });
+	const allow = interactive?.allowHost ?? null;
+	const repositoryId = interactive?.repositoryId ?? null;
+	if (!repository || repositoryId === null) return null;
+	const go = async () => {
+		if (!allow || state.kind === "busy") return;
+		setState({ kind: "busy" });
+		try {
+			const answer = await allow(host);
+			setState({ kind: "done", text: answer.applied ? `${host} is allowed. This sandbox reaches it now.` : `${host} is allowed from this agent's next turn.` });
+		} catch (failure) {
+			setState({ kind: "failed", text: failure instanceof Error ? failure.message : String(failure) });
+		}
+	};
+	return (
+		<p className="system-actions">
+			{state.kind === "done" ? (
+				<span className="system-done tone-good" role="status">
+					<CheckIcon size={13} /> {state.text}
+				</span>
+			) : (
+				<button type="button" className="button button-outline button-small" onClick={() => void go()} disabled={!allow || state.kind === "busy"} aria-label={`Allow ${host} for this repository`}>
+					{state.kind === "busy" ? "Allowing…" : "Allow for this repository"}
+				</button>
+			)}
+			<a className="link" {...linkProps({ name: "repository", id: repositoryId, view: "settings", section: "network" })}>
+				Network list
+			</a>
+			{state.kind === "failed" ? (
+				<span className="system-failed tone-bad" role="alert">
+					<WarnIcon size={13} /> {state.text}
+				</span>
+			) : null}
 		</p>
 	);
 }

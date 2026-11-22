@@ -52,7 +52,7 @@
 
 import { machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
-import { type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
+import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
 import { profilesFor } from "../profiles.js";
 import {
 	BWRAP_PROBE,
@@ -80,7 +80,7 @@ import { tokenFilePath } from "../token-file.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
 import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, type E2bSettings } from "./config.js";
 import { describeUsage, pricePerSecond } from "./pricing.js";
-import { type E2bNetwork, guestDnsArgv, networkConfig } from "./network.js";
+import { DNS_LOG, type E2bNetwork, blockedLookups, guestDnsArgv, networkConfig, withHosts } from "./network.js";
 import type { EgressMode } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
@@ -173,8 +173,17 @@ export class E2bSandboxHandle implements TurnSandbox {
 		readonly uid: string,
 		readonly profile: SandboxProfileId,
 		readonly approval: "auto" | "full",
+		/** What the sandbox may reach as it was connected (`E2bSandboxes.networkFor`): its lookups of these are no blocked hosts. */
+		private readonly network: E2bNetwork = { mode: "open", hosts: [] },
 	) {
 		markTurnSandbox(this);
+	}
+
+	/** The names its lookup stub was asked for that it may not reach (network.ts `DNS_STUB`); none in `open`, or when the log cannot be read. */
+	async blockedHosts(): Promise<string[]> {
+		if (this.network.mode === "open") return [];
+		const read = await this.ask(["tail", "-c", "65536", DNS_LOG], { timeoutMs: 15_000 });
+		return read === null || read.code !== 0 ? [] : blockedLookups(read.stdout, this.network.hosts);
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -517,6 +526,37 @@ export class E2bSandboxes implements Sandboxes {
 		return this.settings.network ?? OPEN;
 	}
 
+	allowedHosts(): readonly string[] {
+		return this.network.hosts;
+	}
+
+	/**
+	 * What one sandbox may reach: the deployment's network, and in `restricted` the hosts its session's
+	 * repositories allow (repository-network.ts). Hosts beyond MAX_HOSTS are left out and said in the log.
+	 */
+	private networkFor(which: string, extra: readonly string[] | undefined): E2bNetwork {
+		const { network, dropped } = withHosts(this.network, extra);
+		if (dropped.length > 0) this.log(`[wlp] e2b.network.dropped ${which}: ${dropped.length} of the repository's hosts left out, beyond the ${network.hosts.length} a sandbox may have (${dropped.slice(0, 5).join(", ")}${dropped.length > 5 ? ", …" : ""})`);
+		return network;
+	}
+
+	async setNetwork(id: string, hosts: readonly string[]): Promise<boolean> {
+		if (this.network.mode !== "restricted") return this.network.mode === "open";
+		const info = await this.ours(id);
+		if (info === undefined || info.state !== "running") return false;
+		const connection = await this.client.connect(id, this.settings.idleTimeoutMs);
+		if (connection === undefined) return false;
+		const network = this.networkFor(`id=${id}`, hosts);
+		try {
+			await this.client.updateNetwork(id, networkConfig(network));
+			await this.guestNetwork(connection, network);
+		} catch (error) {
+			throw new Error(`could not change the sandbox's network: ${messageOf(error)}`);
+		}
+		this.log(`[wlp] e2b.network.changed id=${id}: ${network.hosts.length} hosts`);
+		return true;
+	}
+
 	egress(): EgressMode {
 		return this.network.mode;
 	}
@@ -525,11 +565,11 @@ export class E2bSandboxes implements Sandboxes {
 	 * The sandbox's name files for the deployment's mode, as root (network.ts `GUEST_DNS_SCRIPT`): the
 	 * allowed names pinned, every other lookup failing at once. A fixed script; nothing of a session's is in it.
 	 */
-	private async guestNetwork(connection: E2bConnection): Promise<void> {
-		const mode = this.network.mode;
+	private async guestNetwork(connection: E2bConnection, network: E2bNetwork = this.network): Promise<void> {
+		const mode = network.mode;
 		let stdout = "";
 		let stderr = "";
-		const command = await connection.start(guestDnsArgv(this.network, this.options.pinAddress).map(shellQuote).join(" "), { root: true, cwd: "/", stdin: false, onStdout: (text) => (stdout += text), onStderr: (text) => (stderr += text) });
+		const command = await connection.start(guestDnsArgv(network, this.options.pinAddress).map(shellQuote).join(" "), { root: true, cwd: "/", stdin: false, onStdout: (text) => (stdout += text), onStderr: (text) => (stderr += text) });
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const result = await Promise.race([command.wait(), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), 30_000)))]).finally(() => clearTimeout(timer));
 		if (result === null) await command.kill().catch(() => undefined);
@@ -547,7 +587,7 @@ export class E2bSandboxes implements Sandboxes {
 		if (typeof input.uid !== "string" || !NAME.test(input.uid)) throw new Error('invalid user id: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit');
 		const profile = this.profile(input.profile);
 		if (!profile.available || !E2B_PROFILES.includes(profile.id)) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
-		const network = this.network;
+		const network = this.networkFor(`session=${input.sessionId}`, input.network);
 		const config = networkConfig(network);
 		await this.assertRoom();
 		let connection: E2bConnection;
@@ -577,10 +617,10 @@ export class E2bSandboxes implements Sandboxes {
 			this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; the newest (id=${id}) was removed again`);
 			throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 		}
-		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval);
+		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval, network);
 		try {
 			// Before anything of the session's runs in it: from the first command on, only the allowed names resolve.
-			if (config !== null) await this.guestNetwork(connection);
+			if (config !== null) await this.guestNetwork(connection, network);
 			const init = await handle.exec(["sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace" && windlass --version'], { timeoutMs: 60_000 });
 			if (init.exitCode !== 0) throw new Error(`could not set up the workspace: ${(init.stderr.trim() || init.stdout.trim() || `exit ${init.exitCode}`).slice(-500)}`);
 			// "Windlass 0.4.0 (linux-x64)"
@@ -602,7 +642,7 @@ export class E2bSandboxes implements Sandboxes {
 		return id;
 	}
 
-	async connect(id: string): Promise<SandboxHandle | undefined> {
+	async connect(id: string, options: ConnectOptions = {}): Promise<SandboxHandle | undefined> {
 		const info = await this.ours(id);
 		if (info === undefined) return undefined;
 		const paused = info.state === "paused";
@@ -621,7 +661,8 @@ export class E2bSandboxes implements Sandboxes {
 		const known = this.remember(info);
 		// The profile the sandbox was made with, as E2B keeps it: whichever server connects runs Windlass the same way.
 		const made = sandboxProfile(info.metadata);
-		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval);
+		const network = this.networkFor(`id=${id}`, options.network);
+		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval, network);
 		if (paused) {
 			const running = await this.running().catch(() => null);
 			if (running !== null && running.length > this.settings.maxRunning) {
@@ -641,10 +682,10 @@ export class E2bSandboxes implements Sandboxes {
 		// The deployment's mode, whatever the sandbox was made with: E2B's configuration replaced as a whole and the
 		// names written again (a resume may have rewritten them). Metadata cannot be changed after create, so a
 		// sandbox once out of `open` is set at every connect. Open to open changes nothing, as before network modes.
-		if (sandboxNetwork(info.metadata) !== "open" || this.network.mode !== "open") {
+		if (sandboxNetwork(info.metadata) !== "open" || network.mode !== "open") {
 			try {
-				await this.client.updateNetwork(id, networkConfig(this.network));
-				await this.guestNetwork(connection);
+				await this.client.updateNetwork(id, networkConfig(network));
+				await this.guestNetwork(connection, network);
 			} catch (error) {
 				throw new Error(`could not set the sandbox's network to WLP_E2B_NETWORK=${this.network.mode}: ${messageOf(error)}`);
 			}

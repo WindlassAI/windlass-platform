@@ -19,7 +19,7 @@
  * call it belongs to is not waiting on Windlass, whose own question the platform answered itself.
  */
 import { MAX_NOTE_CHARS } from "@contract";
-import type { PendingQuestion, QuestionChoice } from "@contract";
+import type { GithubId, HostAllowed, PendingQuestion, QuestionChoice } from "@contract";
 import { ACP_MESSAGE } from "../lib/acp";
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { hasReason, type SessionApi } from "../api/client";
@@ -110,6 +110,10 @@ export interface Interactive {
 	flow: QuestionFlow;
 	/** Stops one running call. Null when nothing can be sent (the connection is down). */
 	stopCall: ((block: ToolBlock) => Promise<{ stopped: boolean; message: string | null }>) | null;
+	/** "Allow for this repository" on a line about a blocked host (`allowHost`). Null when nothing can be sent. */
+	allowHost?: ((host: string) => Promise<HostAllowed>) | null;
+	/** The session's repository of the GitHub connection, for a link to its settings; null without one. */
+	repositoryId?: GithubId | null;
 }
 
 const InteractiveContext = createContext<Interactive | null>(null);

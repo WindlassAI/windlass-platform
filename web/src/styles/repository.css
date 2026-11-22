@@ -593,3 +593,71 @@ a.agent-group-name:hover .agent-group-owner {
 	font-family: var(--font-text);
 	font-size: var(--size-small);
 }
+
+/* A repository's network list: presets as checkboxes, hosts one per row, and the hosts found or asked for. */
+.repo-network-presets {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+	gap: 10px 20px;
+	margin: 0 0 18px;
+	padding: 0;
+	border: 0;
+	min-width: 0;
+}
+.repo-network-presets > .label {
+	grid-column: 1 / -1;
+	padding: 0;
+	margin-bottom: 2px;
+}
+.repo-network-id {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.repo-network-presets .check-means {
+	overflow-wrap: anywhere;
+}
+.repo-network-hosts {
+	list-style: none;
+	margin: 0 0 8px;
+	padding: 0;
+}
+.repo-network-host {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--line);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	overflow-wrap: anywhere;
+}
+.repo-network-host .link {
+	font-family: var(--font-text);
+	font-size: var(--size-small);
+}
+.repo-network-add {
+	display: flex;
+	gap: 8px;
+}
+.repo-network-add .input {
+	flex: 1;
+	min-width: 0;
+	font-family: var(--font-mono);
+}
+.repo-network-subtitle {
+	margin: 22px 0 4px;
+	font-size: var(--size-text);
+	font-weight: 600;
+}
+.repo-network-requests .server-foot,
+.repo-network-proposals .server-foot {
+	justify-content: flex-start;
+	gap: 16px;
+}
+@media (max-width: 520px) {
+	.repo-network-add {
+		flex-direction: column;
+	}
+}

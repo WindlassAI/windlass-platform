@@ -1175,6 +1175,21 @@ button.output-more:hover {
 	min-width: 0;
 	overflow-wrap: anywhere;
 }
+/* Under a line about a blocked host: the way to allow it, and to the repository's list. */
+.system-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 14px;
+	margin: 4px 0 8px;
+	font-size: var(--size-small);
+}
+.system-done,
+.system-failed {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
 
 .callout-block {
 	max-width: 74ch;
