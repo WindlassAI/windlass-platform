@@ -435,7 +435,7 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	);
 }
 
-export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress, hosted }: { egress?: EgressMode; hosted?: boolean; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
+export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
 	// How many files differ from the last commit, once the list was read; and a count that asks for it again.
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
@@ -455,7 +455,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 			)}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
-			<SetupSection egress={egress} hosted={hosted} summary={summary} />
+			<SetupSection egress={egress} hosted={hosted} domains={domains} summary={summary} />
 			{harness ? null : <SecretsSection summary={summary} />}
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />
