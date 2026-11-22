@@ -541,7 +541,10 @@ require("node:module").syncBuiltinESMExports();`);
 			const options = report()?.options;
 			assert.ok(options && options.defaultModel === "default" && options.models.find(m => m.id === "default")?.efforts.includes("high"));
 			assert.deepEqual(options.models.find(m => m.id === "sonnet")?.efforts, ["default", "low"]);
-			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token" });
+			// Each login gets a generation of its own, which the platform reads to tell one login from the next.
+			const loginGeneration = report()?.loginGeneration;
+			assert.match(loginGeneration ?? "", /^[0-9a-f]{32}$/);
+			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token", loginGeneration });
 			clean(JSON.stringify(srv.state.report));
 			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
 			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);
