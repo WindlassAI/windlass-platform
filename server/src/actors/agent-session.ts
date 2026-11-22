@@ -4415,7 +4415,13 @@ async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<Activ
 	if (!asked) {
 		// Left by an earlier planning turn (a feature converted to one implementer runs its builder here next).
 		if (meta.planningInputs && item.row.agent !== "summary") {
-			await removeInputs(sandbox, INPUTS_DIRECTORY);
+			// A builder never starts beside another repository's tree: one that cannot be removed refuses the turn.
+			try {
+				await removeInputs(sandbox, INPUTS_DIRECTORY);
+			} catch (error) {
+				item.refused = `This turn did not start: ${describeError(error)}.`;
+				throw new TurnProblem(item.refused);
+			}
 			meta.planningInputs = undefined;
 		}
 		return;

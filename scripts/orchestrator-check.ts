@@ -1843,8 +1843,8 @@ test("cross-repo: the planner's copy of the sibling holds its files read-only wi
 		mkdirSync(work); mkdirSync(scratch);
 		const sandbox = { cwd: work, id: "inputs", run: (command: string, options: { stdin?: string } = {}) => new Promise(done => {
 			const child = execFile("bash", ["-c", command.replaceAll("/tmp/wlp-", scratch + "/wlp-")], { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: root }, timeout: 60_000 },
-				(error, stdout, stderr) => done({ exitCode: error ? (typeof error.code === "number" ? error.code : 1) : 0, timedOut: false, aborted: false, stdout, stderr }));
-			child.stdin?.end(options.stdin ?? "");
+				(error, stdout, stderr) => { if (process.env.WLP_DEBUG_INPUTS) console.error(JSON.stringify({ command: command.slice(0, 80), stdout, stderr, code: error?.code })); done({ exitCode: error ? (typeof error.code === "number" ? error.code : 1) : 0, timedOut: false, aborted: false, stdout, stderr }); });
+			child.stdin?.on("error", () => {}); child.stdin?.end(options.stdin ?? "");
 		}) } as never;
 		const input = { url: `${standin.url}/ada/cli.git`, branch: "main", sha: standin.branchHead(cli, "main")!, directory: ".windlass-inputs", alias: "cli" };
 		await materializeInput(sandbox, "read-cli", input);
@@ -1854,10 +1854,41 @@ test("cross-repo: the planner's copy of the sibling holds its files read-only wi
 		assert.equal(existsSync(join(work, ".windlass-inputs/cli/.git")), false, "a git directory (and its remote) was left");
 		// Fetched again for the next planning turn: replaced, not refused.
 		await materializeInput(sandbox, "read-cli", input);
-		await assert.rejects(materializeInput(sandbox, "read-cli", { ...input, sha: sha("1") }), /clone failed|not at/);
-		await assert.rejects(materializeInput(sandbox, "wrong-token", input), /refused|clone failed/);
+		await assert.rejects(materializeInput(sandbox, "read-cli", { ...input, sha: sha("1") }), /fetch failed.*not our ref|not at/);
+		await assert.rejects(materializeInput(sandbox, "wrong-token", input), /refused|fetch failed/);
+		// A tree larger than a planning input may be is refused by name.
+		await assert.rejects(materializeInput(sandbox, "read-cli", { ...input, limits: { fileMiB: 512, treeMiB: 0 } }), /larger than a planning input may be/);
 		await removeInputs(sandbox, ".windlass-inputs");
 		assert.equal(existsSync(join(work, ".windlass-inputs")), false);
+		// In the workspace's repository: the directory is excluded, and refused when the repository has it, it is a link, or it is not the platform's.
+		const git = (...args: string[]) => new Promise<string>((done, fail) => execFile("git", args, { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" } }, (e, out) => e ? fail(e) : done(out)));
+		await git("init", "-q", "-b", "main");
+		await materializeInput(sandbox, "read-cli", input);
+		assert.match(readFileSync(join(work, ".git/info/exclude"), "utf8"), /^\/\.windlass-inputs\/$/m);
+		assert.equal((await git("status", "--porcelain", "--untracked-files=all")).trim(), "", "the planner's inputs show in the repository");
+		await materializeInput(sandbox, "read-cli", input);
+		assert.equal(readFileSync(join(work, ".git/info/exclude"), "utf8").match(/windlass-inputs/g)!.length, 1, "the exclusion was written twice");
+		await removeInputs(sandbox, ".windlass-inputs");
+		const { writeFileSync, symlinkSync } = await import("node:fs");
+		// Not the platform's: left alone by removal, and refused for planning.
+		mkdirSync(join(work, ".windlass-inputs")); writeFileSync(join(work, ".windlass-inputs/notes.md"), "mine\n");
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /already in the workspace, and the platform did not put it there/);
+		await assert.rejects(removeInputs(sandbox, ".windlass-inputs"), /could not be removed: .*did not put it there/);
+		assert.equal(readFileSync(join(work, ".windlass-inputs/notes.md"), "utf8"), "mine\n");
+		// Tracked, or in the commit only.
+		await git("add", "-f", ".windlass-inputs/notes.md");
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /is tracked in the repository/);
+		await git("commit", "-q", "-m", "inputs");
+		await git("rm", "-q", "--cached", "-r", ".windlass-inputs");
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /is in the repository's commit/);
+		await git("reset", "-q", "--hard");
+		await git("rm", "-q", "-r", ".windlass-inputs"); await git("commit", "-q", "-m", "gone");
+		// A link, where removal would follow it elsewhere.
+		const elsewhere = join(root, "elsewhere"); mkdirSync(elsewhere); writeFileSync(join(elsewhere, "keep"), "x");
+		symlinkSync(elsewhere, join(work, ".windlass-inputs"));
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /is a symbolic link/);
+		await assert.rejects(removeInputs(sandbox, ".windlass-inputs"), /symbolic link/);
+		assert.ok(existsSync(join(elsewhere, "keep")), "removal followed the link");
 	} finally {
 		await standin.stop();
 		rmSync(root, { recursive: true, force: true });
