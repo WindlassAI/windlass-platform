@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 import { performance } from "node:perf_hooks";
 import { ServerChannel, RunnerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
 import { controlProof, parseRunnerFrame, parseServerFrame, sessionProof } from "../server/src/runner/control.js";
-import { certify, machineStatement, platformWelcome, readPlatformKey, runnerHandshake, signRemoval, verifyRemoval, type Trust } from "../server/src/runner/frame-auth.js";
+import { certify, machineStatement, platformWelcome, readPlatformKey, runnerHandshake, signRemoval, verifyRemoval, retentionRequest, signRetention, verifyRetention, type Trust } from "../server/src/runner/frame-auth.js";
 import { stub, until } from "./runner-stub-server.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
 import type { Executor } from "../runner/src/docker-executor.js";
@@ -328,6 +328,36 @@ async function benchmark() {
 try {
 	if (!selected || ["1","2","5","6"].includes(selected)) await controlChecks();
 	await sessions(); await oldRunner(); await startup();
+	await check(12, "retention answer requires the paired root, request nonce, generation list and current serial", () => {
+		const request = retentionRequest(who.uid, who.machineId, Date.now(), "fixture-nonce");
+		const answer = signRetention(request, ["f".repeat(64)], identity);
+		const pin = trust();
+		assert.throws(() => verifyRetention(request + "x", answer, pin), /signature/);
+		assert.throws(() => verifyRetention(request, { ...answer, generations: [] }, pin), /signature/);
+		const other = readPlatformKey(certify(generateKeyPairSync("ed25519").privateKey, 1, untilExpiry));
+		assert.throws(() => verifyRetention(request, signRetention(request, [], other), pin), /certificate/);
+		verifyRetention(request, answer, pin);
+		pin.pin.maxSerial++;
+		assert.throws(() => verifyRetention(request, answer, pin), /serial/);
+	});
+	await check(13, "protocol 1 refuses prepared creation and saving before dispatch", async () => {
+		const c = channels(false);
+		try {
+			const wire = c.connect();
+			const key = { repo: "1", attempt: "a".repeat(32), inputs: "b".repeat(64), generation: "c".repeat(64) };
+			const ops = [
+				() => c.server.request("create", { profile: "docker-hardened", prepared: { ...key, writer: true, privateData: false } }),
+				() => c.server.request("saveSnapshot", { id: "box", source: { ...key, commit: "d".repeat(40), created: 1 } }),
+			];
+			for (const op of ops) {
+				const rejected = assert.rejects(op, /authenticated session/);
+				wire.r.receive(wire.s.out.shift()!);
+				wire.s.receive(wire.r.out.shift()!);
+				await rejected;
+			}
+			assert.equal(c.ops(), 0);
+		} finally { c.close(); }
+	});
 	await check(10, "offline removal binds machine, request nonce and pruning policy", () => {
 		const pin = trust(), nonce = randomBytes(32).toString("base64url");
 		const answer = signRemoval(who.uid, who.machineId, nonce, false, identity);

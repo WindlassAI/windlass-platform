@@ -96,6 +96,7 @@ export interface UserInternal {
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
+	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;
@@ -121,6 +122,7 @@ export interface UserInternal {
 
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
 export interface SealedSecrets {
+	snapshotSetup?: { command: string; updatedAt: number; connectedAt: number; previouslySaved: boolean };
 	/** Only the server-side redactor may use these values. The machine owner disabled sending them. */
 	redactOnly?: boolean;
 	screenshots?: boolean;
@@ -139,7 +141,7 @@ export interface SealedSecrets {
 
 /** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */
 export interface UserSecretsInternal {
-	internalSessionSecrets(sessionId: string): Promise<SealedSecrets>;
+	internalSessionSecrets(sessionId: string, snapshotSetup?: boolean): Promise<SealedSecrets>;
 }
 
 /** Actions of `agentSession` that only actors may call. */

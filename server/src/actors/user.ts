@@ -1,3 +1,4 @@
+import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
@@ -502,18 +503,31 @@ function approvalText(value: unknown, max: number): string {
 // ---------------------------------------------------------------------------------------------
 
 /** The setup command saved for a project (setup-command.ts, `SetupProject.key`); none when there is no row. */
+async function setupRow(db: RawAccess, project: string) {
+	const [row] = await db.execute<{ command: string; updated_at: number; snapshot_connection: number | null }>(
+		"SELECT command, updated_at, snapshot_connection FROM setup_command WHERE project = ?", project);
+	return row;
+}
 async function readSetup(db: RawAccess, project: string): Promise<RepositorySetup> {
-	const [row] = await db.execute<{ command: string; updated_at: number }>("SELECT command, updated_at FROM setup_command WHERE project = ?", project);
+	const row = await setupRow(db, project);
 	return { command: row?.command ?? "", updatedAt: row?.updated_at ?? null, timeoutMs: config.setupTimeoutMs };
+}
+
+async function dropHostedSnapshots(uid: string, repo?: string) {
+	if (config.snapshots && config.sandbox === "docker") await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
+		console.warn("[wlp] snapshot cleanup deferred");
+	});
 }
 
 /** Saves a command that was cleaned already, in place of the project's earlier one; "" removes the row. */
 async function saveSetup(c: UserCtx, uid: string, project: string, label: string, command: string): Promise<RepositorySetup> {
+	const previous = await readSetup(c.db, project);
+	if (previous.command === command) return previous;
 	if (command === "") {
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
 		await c.db.execute(
-			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, updated_at = excluded.updated_at",
+			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, snapshot_connection = NULL, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
 			label,
 			command,
@@ -523,6 +537,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
 	}
 	// The command is the user's text and may hold what they would not want in a log: only its length is said.
+	await dropHostedSnapshots(uid, project.slice("github:".length));
 	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);
 	return readSetup(c.db, project);
 }
@@ -1259,6 +1274,7 @@ export const user = actor({
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
+				["setup_command", "snapshot_connection", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (columns.some((found) => found.name === column)) continue;
@@ -1363,6 +1379,7 @@ export const user = actor({
 		if (caller.kind === "user") await rememberProfile(c, caller.profile);
 	},
 
+	onDestroy: async c => { await dropHostedSnapshots(c.key[0]); },
 	onWake: async (c) => {
 		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
 		const connection = c.vars.github;
@@ -1701,6 +1718,7 @@ export const user = actor({
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			const wasConnected = c.vars.github !== null;
 			await saveGithubConnection(c, profile.uid, null);
+			await dropHostedSnapshots(profile.uid);
 			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
 		},
@@ -1792,6 +1810,18 @@ export const user = actor({
 			requireService(c);
 			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
 		},
+		internalSnapshotSaved: async (c, project: string, updatedAt: number | null, connectedAt: number) => {
+			requireService(c);
+			if (c.vars.github?.connectedAt === connectedAt)
+				await c.db.execute("UPDATE setup_command SET snapshot_connection = ? WHERE project = ? AND updated_at = ?", connectedAt, project, updatedAt);
+		},
+		internalSnapshotGenerations: async (c): Promise<string[]> => {
+			requireService(c);
+			const connection = c.vars.github;
+			if (!connection) return [];
+			const rows = await c.db.execute<{project: string; updated_at: number}>("SELECT project, updated_at FROM setup_command");
+			return rows.map(row => snapshotGeneration(row.project.slice("github:".length), row.updated_at, connection.connectedAt));
+		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
 			return readSetup(c.db, approvalText(project, 600));
@@ -1847,7 +1877,7 @@ export const user = actor({
 		 * sessions, not from the call: a session is handed the secrets of the repository it was launched
 		 * on and of no other, and a session this user does not have is handed none.
 		 */
-		internalSessionSecrets: async (c, sessionId: string): Promise<SealedSecrets> => {
+		internalSessionSecrets: async (c, sessionId: string, includeSnapshotSetup = false): Promise<SealedSecrets> => {
 			const id = approvalText(sessionId, 200);
 			requireServiceFor(c, secretsCaller(c.key[0]!, id));
 			// A session this user does not have is handed nothing, of the account's either.
@@ -1866,7 +1896,11 @@ export const user = actor({
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
-			return { project, ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			const connectedAt = c.vars.github?.connectedAt;
+			const setup = includeSnapshotSetup && config.snapshots && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
+			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
+				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
+			return { project, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -1946,6 +1980,7 @@ export const user = actor({
 				await c.db.execute("DELETE FROM repository_checks WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
+				await dropHostedSnapshots(profile.uid, String(repositoryId));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);
 				return await repositoryView(c, repositoryId, project);
 			} catch (error) {

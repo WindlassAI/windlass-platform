@@ -28,6 +28,9 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
+import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
+import type { SnapshotSource } from "./snapshot-key.js";
+
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type SandboxProfileId } from "../contract.js";
@@ -85,6 +88,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly profile: SandboxProfileId,
 		/** The user whose data volume the container mounts, from the container's label. */
 		readonly uid: string,
+		readonly snapshot?: SnapshotSource,
 		readonly resizePending = false,
 	) {
 		markTurnSandbox(this);
@@ -347,6 +351,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 }
 
 interface Inspected {
+	screenshots: boolean;
+	snapshot?: SnapshotSource;
 	memory: number;
 	resize?: MachineSlotCapacity["unit"];
 	status: string;
@@ -372,6 +378,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
+	deployment?: string;
 	cpus?: number;
 	slots?: MachineSlotCapacity;
 	network?: { name: string; env: Record<string, string>; mode: string };
@@ -422,15 +429,19 @@ export class DockerSandboxes implements Sandboxes {
 
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{index .Config.Labels "${LABEL}"}}|{{with index .Config.Labels "${MACHINE_LABEL}"}}{{.}}{{end}}|{{index .Config.Labels "${LABEL}.profile"}}|{{index .Config.Labels "${LABEL}.uid"}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{or (index .Config.Labels "${LABEL}.requested-slots") (index .Config.Labels "${LABEL}.slots") "1"}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
-		const [status = "", ours = "", machine = "", profile = "", uid = "", shares, nanos, memory, swap, pids, label] = result.stdout.trim().split("|");
-		if (ours !== "1" || machine !== this.machine) return null;
+		const [status, shares, nanos, memory, swap, pids, ...json] = result.stdout.trim().split("|");
+		const labels = JSON.parse(json.join("|")) as Record<string, string> | null;
+		if (labels?.[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine) return null;
+		const label = labels[LABEL + ".requested-slots"] || labels[LABEL + ".slots"] || "1";
 		const size = sandboxSlots(/^[1-4]$/.test(label) ? Number(label) : 1, this.options.slots?.max ?? 1);
 		const unit = this.resources(size);
 		const matches = shares === "256" && Number(nanos) === Math.round(unit.cpus * 1e9) && Number(memory) === unit.memoryBytes
 			&& Number(swap) === unit.memoryBytes && Number(pids) === unit.pids;
-		return { status, profile: profile as SandboxProfileId, uid, memory: Number(memory), resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
+		return { status, profile: labels[LABEL + ".profile"] as SandboxProfileId, uid: labels[LABEL + ".uid"],
+			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory),
+			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
@@ -475,7 +486,10 @@ export class DockerSandboxes implements Sandboxes {
 		if (harness !== input.harness) throw new SandboxUserError(`${harnessName} runs only on a machine offering it.`);
 		if (harness && (input.profile !== "docker-hardened" || input.screenshots))
 			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
-		const image = input.screenshots ? this.shotsImage : this.image;
+		const base = input.screenshots ? this.shotsImage : this.image;
+		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)
+			.select(input.fromSnapshot, input.uid, input.profile).catch(() => null) : null;
+		const image = selected?.image ?? base;
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
@@ -505,6 +519,7 @@ export class DockerSandboxes implements Sandboxes {
 				"--label",
 				`${LABEL}.profile=${input.profile}`,
 				...(this.machine === "" ? [] : ["--label", `${MACHINE_LABEL}=${this.machine}`]),
+				...(selected && input.fromSnapshot ? ["--label", candidateLabel + "=" + (input.fromSnapshot.writer ? selected.key : ""), "--label", variantLabel + "=" + (input.screenshots ? "shots" : "base"), "--label", attemptLabel + "=" + input.fromSnapshot.attempt] : []),
 				...(this.options.slots ? ["--label", `${LABEL}.slots=${size}`] : []),
 				...(this.options.slots && requested > size ? ["--label", `${LABEL}.requested-slots=${requested}`] : []),
 				...commonRunFlags(limits.cpus, this.options.network?.name, limits.memoryBytes, limits.pids),
@@ -520,15 +535,41 @@ export class DockerSandboxes implements Sandboxes {
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
 			const message = result.stderr.trim();
+			if (selected && /No such image|not found/i.test(message)) return this.create({ ...input, fromSnapshot: undefined });
 			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
+		if (selected?.hit) return id;
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });
 		if (init.code !== 0) {
 			await docker(["rm", "-f", name]);
 			throw new Error(`could not set up the workspace: ${init.stderr.trim()}`);
 		}
 		return id;
+	}
+
+	private snapshots(base = this.image, screenshots = false) {
+		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment);
+	}
+
+	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
+
+	async saveSnapshot(id: string, source: SnapshotSource) {
+		const found = await this.inspect(id);
+		if (!found || found.snapshot || this.options.sessionRelay) return false;
+		const name = containerName(id);
+		// Re-resolve the selected pin: a mutable tag may have moved during setup.
+		const base = found.screenshots ? this.shotsImage : this.image;
+		return this.snapshots(base, found.screenshots)
+			.save(name, found.uid, found.profile, source);
+	}
+
+	async sweepSnapshots(retained: (uid: string) => Promise<ReadonlySet<string> | null>) {
+		if (this.machine || this.options.deployment) await this.snapshots().sweepOwners(retained);
+	}
+
+	async dropSnapshots(uid: string, repo?: string) {
+		if (this.machine || this.options.deployment) await this.snapshots().drop(uid, repo);
 	}
 
 	private async reconcile(name: string, found: Inspected) {
@@ -568,7 +609,7 @@ export class DockerSandboxes implements Sandboxes {
 			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
 			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid, resizePending);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

@@ -26,6 +26,8 @@
  * a session's second `create` with the sandbox it already made for it; `run` and `start` never (the
  * caller decides, and the turn's own `stopLeftovers` ends what a lost `start` left).
  */
+
+import type { SnapshotSource } from "./snapshot-key.js";
 import { config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
@@ -149,7 +151,7 @@ export class RunnerLink {
 	) {
 		this.channel = new ServerChannel({
 			platform: config.machines?.identity && { ...who, identity: config.machines.identity },
-			accept: (hello) => this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null }),
+			accept: hello => this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null }),
 			onReset,
 			onConnect: () => this.connected(),
 			onDisconnect: () => this.lost(),
@@ -452,6 +454,7 @@ class RunnerHandle implements TurnSandbox {
 		readonly profile: SandboxProfileId,
 		readonly cwd: string,
 		readonly runnerScreenshots: boolean,
+		readonly snapshot?: SnapshotSource,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
@@ -562,14 +565,36 @@ class RunnerSandboxes implements Sandboxes {
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${input.harness === "claude" ? "Claude Code" : "OpenCode"}. Update it and start it with --harness ${input.harness}.`);
-		return await link.again("create", { profile: input.profile, ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness ? { harness: input.harness } : {}),
-			...(input.screenshots && !input.harness && report?.screenshots ? { screenshots: true } : {}) });
+		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
+		const args = { profile: input.profile, ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
+			await link.ready();
+			if (link.channel.authenticated) {
+				try { return await link.request("create", { ...args, prepared: { ...input.fromSnapshot, privateData: !!input.privateData } }); }
+				catch (error) {
+					if (!(error instanceof ConversationLost) && !(error instanceof Error && error.message === "This runner does not serve that operation.")) throw error;
+				}
+			}
+		}
+		return await link.again("create", args);
+	}
+
+	async hasSnapshot(uid: string, repo: string) {
+		if (!config.machines?.identity || uid !== this.link.who.uid) return false;
+		await this.link.ready();
+		return this.link.channel.authenticated && this.link.request("hasSnapshot", { repo });
+	}
+
+	async saveSnapshot(id: string, source: SnapshotSource) {
+		if (!config.machines?.identity) return false;
+		await this.link.ready();
+		return this.link.channel.authenticated && this.link.request("saveSnapshot", { id, source, options: { timeoutMs: 15 * 60_000 } });
 	}
 
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

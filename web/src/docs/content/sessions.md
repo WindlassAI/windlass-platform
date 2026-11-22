@@ -119,9 +119,13 @@ For a session on one of your machines, the section adds that the checks ran on t
 
 ## The repository's setup command
 
-Where the repository has a [setup command](/docs/settings#setup-command), it runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.
+Where the repository has a [setup command](/docs/settings#setup-command), it normally runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.
 
-If it fails or runs out of time, the session goes on. The agent is told before its next prompt, with the command, how it ended and the last 20 lines it printed.
+On deployments with prepared Docker sandboxes enabled, a successful setup on the repository’s default branch can be saved before the first agent turn. Setup must take at least 30 seconds and receive no repository secrets. A later session on the same machine can reuse your snapshot when its dependency files, setup command, sandbox image, and platform match. Subtasks and reviewers can reuse a prepared sandbox. Only the original builder or a personal session can save one.
+
+On a match, the platform fetches and checks out the session’s source and skips setup. The timeline and the agent’s first prompt identify the base commit that produced the build outputs. The agent can rebuild them if the source has changed.
+
+If setup fails or runs out of time, the session goes on. The agent is told before its next prompt, with the command, how it ended and the last 20 lines it printed.
 
 You can change the command in the side panel, under **Setup command**. A change applies to sandboxes made after it. A sandbox that already has its clone is not set up again.
 

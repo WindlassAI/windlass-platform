@@ -40,6 +40,8 @@
  *   pull requests            https://docs.github.com/en/rest/pulls/pulls ("Pull requests: write" to create)
  */
 
+import { dependencyHash, SHA, type TreeEntry } from "../sandbox/snapshot-key.js";
+
 import type { GithubId } from "../contract.js";
 import { VERIFIED_NAME, type CheckRunUpdate } from "./checks.js";
 import { decimalId, githubId, githubJsonInteger, parseGithubJson } from "./ids.js";
@@ -585,6 +587,23 @@ export class GithubApp {
 		const pull = this.pullOf(answer.body);
 		if (pull?.number !== number) throw new GithubError(answer.status, "the answer does not describe the requested pull request", `could not read pull request #${number} of ${owner}/${name}`);
 		return pull;
+	}
+
+	/** Resolve a branch (or pinned review base) once. Every dependency read uses immutable objects. */
+	async setupInputs(token: string, owner: string, name: string, revision: string) {
+		const prefix = `/repos/${owner}/${name}`;
+		const auth = { bearer: token };
+		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the setup revision" });
+		const commit = text(record(body).sha), treeSha = text(record(record(record(body).commit).tree).sha);
+		if (!SHA.test(commit) || !SHA.test(treeSha)) throw new Error("Missing setup revision");
+		const tree = record((await this.call({ path: prefix + "/git/trees/" + treeSha, query: { recursive: "1" }, auth, what: "read the dependency tree" })).body);
+		if (tree.sha !== treeSha || tree.truncated !== false || !Array.isArray(tree.tree)) throw new Error("Incomplete dependency tree");
+		const files = tree.tree.map((entry): TreeEntry => {
+			const e = record(entry);
+			if (!text(e.path) || !SHA.test(text(e.sha))) throw new Error("Incomplete tree entry");
+			return { path: text(e.path), sha: text(e.sha), mode: text(e.mode), type: text(e.type) };
+		});
+		return { commit, dependencies: dependencyHash(files) };
 	}
 
 	async fileAt(token: string, owner: string, name: string, path: string, sha: string): Promise<string> {

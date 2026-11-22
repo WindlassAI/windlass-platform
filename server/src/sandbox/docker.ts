@@ -31,6 +31,8 @@ export interface DockerResult {
 }
 
 export interface DockerOptions {
+	/** Consume large listings incrementally instead of retaining stdout in memory. */
+	onStdout?: (chunk: string) => void;
 	stdin?: string;
 	timeoutMs?: number;
 	/** Rejects with the command's stderr when it exits non-zero. */
@@ -46,7 +48,8 @@ export function docker(args: string[], options: DockerOptions = {}): Promise<Doc
 		let stdout = "";
 		let stderr = "";
 		let timedOut = false;
-		child.stdout.on("data", (chunk: Buffer) => (stdout += out.write(chunk)));
+		const collect = options.onStdout ?? ((chunk: string) => { stdout += chunk; });
+		child.stdout.on("data", (chunk: Buffer) => collect(out.write(chunk)));
 		child.stderr.on("data", (chunk: Buffer) => (stderr += err.write(chunk)));
 		child.stdin.on("error", () => {});
 		child.stdin.end(options.stdin ?? "");
@@ -63,7 +66,7 @@ export function docker(args: string[], options: DockerOptions = {}): Promise<Doc
 		});
 		child.on("close", (code) => {
 			if (timer) clearTimeout(timer);
-			stdout += out.end();
+			collect(out.end());
 			stderr += err.end();
 			const result = { code, stdout, stderr, timedOut };
 			if (options.check && code !== 0) reject(new Error(`docker ${args[0]} failed (${timedOut ? "timed out" : `exit ${code}`}): ${stderr.trim() || stdout.trim()}`));

@@ -264,6 +264,19 @@ export function checkoutWork(sandbox: SandboxHandle, directory: string, work: st
 	return run(sandbox, workCheckoutScript(directory, work), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
+/** A prepared reviewer's setup belongs to the pinned base, which can predate the freshly fetched branch tip. */
+export function checkoutPreparedReviewBase(sandbox: SandboxHandle, base: string, sha: string): Promise<GitOutcome> {
+	if (!isBranchName(base) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid review base");
+	const script = [
+		privateStart(),
+		`git merge-base --is-ancestor ${sha} ${shellQuote("refs/remotes/origin/" + base)}`,
+		`git checkout -q -f --detach ${sha}`,
+		"bridge export HEAD index",
+		'echo "wlp:work $(git rev-parse HEAD)"',
+	].join("\n");
+	return run(sandbox, script, { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
+}
+
 /** Record the original workspace refs before fetching. Only the transport uid opens the token. */
 async function fetchRefs(sandbox: SandboxHandle, token: string, url: string, directory: string,
 	refs: Array<{ source: string; destination: string; optional?: boolean }>, signal?: AbortSignal): Promise<GitOutcome> {

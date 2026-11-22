@@ -18,10 +18,10 @@
 
 import { imageId } from "./check-image.js";
 import { localListeners } from "./check-listeners.js";
-import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { chmodSync, createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +45,8 @@ import {
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
 const args = process.argv.slice(2);
+const snapshotBenchmark = args.includes("--snapshot-benchmark");
+const snapshotOnly = snapshotBenchmark || args.includes("--snapshots-only");
 const endpointArg = args.includes("--endpoint") ? args[args.indexOf("--endpoint") + 1] : undefined;
 const { engine: ENGINE_PORT, http: [HTTP_PORT, refusalPort] } = endpointArg === undefined
 	? await localListeners(2)
@@ -4379,6 +4381,137 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 
 // ---------------------------------------------------------------------------------------------
 
+/** Interleave short, cold setups on the same local repository and Docker image. */
+async function snapshotTimings(server: Server, client: Client, github: GithubStandin, repo: ReturnType<GithubStandin["addRepository"]>, uid: string, token: string) {
+	const params = { token }, user = client.user.get([uid], { params });
+	try {
+		await user.saveRepositorySetup({ repositoryId: repo.id, command: "node -e 'require(\"node:fs\").copyFileSync(\"base.txt\", \"built.txt\")'" });
+		for (let run = 1; run <= 3; run++) {
+			for (const mode of ["off", "on"] as const) {
+				await server.stop();
+				await waitFor("the previous server to release its ports", portsFree, 30_000, 250);
+				await server.start({ ...github.env(), WLP_SNAPSHOTS: mode });
+				const before = github.requests.length;
+				const session = await user.createSession({ profile: "docker-hardened", repository: { id: repo.id, branch: "main" } });
+				try {
+					const actor = client.agentSession.get([uid, session.id], { params });
+					await actor.prompt({ text: "Explore the workspace" });
+					await waitFor("the benchmark turn", async () => (await actor.snapshot()).timeline.some(t => t.kind === "turn.ended"), TURN_MS, 500);
+					const { timeline } = await actor.snapshot();
+					const start = timeline.find(t => t.kind === "platform" && t.text === "Creating sandbox");
+					const first = timeline.find(t => t.kind === "windlass");
+					const setup = timeline.find(t => t.kind === "setup" && t.state === "succeeded");
+					const last = timeline.at(-1);
+					assert(start && first && last?.kind === "turn.ended" && last.outcome === "succeeded", "Benchmark turn failed");
+					assert(setup?.kind === "setup" && setup.durationMs !== null, "Benchmark setup failed");
+					const startMs = first.at - start.at, setupMs = setup.durationMs;
+					console.log(JSON.stringify({ repository: repo.name, mode, run, startMs, setupMs, overheadMs: startMs - setupMs }));
+					assert(!github.requests.slice(before).some(r => r.path.includes("/git/trees/") || r.path.includes("/contents/")), "A short cold setup fetched dependency inputs");
+				} finally { await user.deleteSession(session.id); }
+			}
+		}
+	} finally { await user.forgetRepository(repo.id); }
+}
+
+/** Run the real actors, clone, setup, private fetch and scripted Windlass turn on Docker. */
+async function preparedSessions(server: Server) {
+	const github = new GithubStandin({callbackUrl: API + "/github/callback"});
+	const relayName = "snapshot-check-github-" + randomBytes(6).toString("hex");
+	const socketDir = mkdtempSync(join(tmpdir(), "snapshot-check-"));
+	const relay = createServer(socket => {
+		const upstream = createConnection(Number(new URL(localAddress).port), "127.0.0.1");
+		socket.on("error", () => upstream.destroy()); upstream.on("error", () => socket.destroy());
+		socket.pipe(upstream).pipe(socket);
+	});
+	let localAddress = "";
+	const client = newClient();
+	try {
+		await github.start();
+		localAddress = github.url;
+		// A bridge container can reach this fixture even on hosts that block container-to-host TCP.
+		const socket = join(socketDir, "github.sock");
+		await new Promise<void>(resolve => relay.listen(socket, resolve));
+		chmodSync(socketDir, 0o755); chmodSync(socket, 0o777);
+		const forward = "const net=require('node:net');net.createServer(s=>{const d=net.connect('/fixture/github.sock');s.on('error',()=>d.destroy());d.on('error',()=>s.destroy());s.pipe(d).pipe(s)}).listen(8080)";
+		execFileSync("docker", ["run", "-d", "--pull", "never", "--name", relayName, "--cap-drop", "ALL", "--read-only", "-v",socketDir+":/fixture:ro",sandboxImage!, "node","-e",forward]);
+		const address = execFileSync("docker", ["inspect", "--format", "{{.NetworkSettings.Networks.bridge.IPAddress}}", relayName], {encoding:"utf8"}).trim();
+		github.url = "http://" + address + ":8080";
+		github.addUser("ada");
+		const installation = github.addInstallation("ada", "User");
+		const repo = github.addRepository({owner:"ada", name:"snapshot-check", installation, files:{"package-lock.json":"{}", "base.txt":"first"}});
+		const base = github.branchHead(repo, "main")!;
+		await server.start({...github.env(), WLP_SNAPSHOTS: snapshotBenchmark ? "off" : "on"});
+		const auth = await client.login.getOrCreate(["snapshot-" + randomBytes(8).toString("hex")]).demo();
+		const uid = auth.profile.uid, params = {token:auth.token};
+		demoUids.push(uid);
+		const user = client.user.getOrCreate([uid], {params});
+		const {url} = await user.githubConnect({origin:"http://localhost:5173"});
+		const callback = await fetch(github.authorize("ada", url), {redirect:"manual"});
+		const ticket = new URLSearchParams(new URL(callback.headers.get("location")!).hash.slice(1)).get("github");
+		assert(ticket, "GitHub connection failed");
+		await user.githubComplete(ticket);
+		if (snapshotBenchmark) return await snapshotTimings(server, client, github, repo, uid, auth.token);
+		const command = 'test -f quick || sleep 31; mkdir -p node_modules; cp base.txt node_modules/built-at; if [ -n "${CHECK_TOKEN:-}" ]; then echo "$CHECK_TOKEN" > node_modules/secret; fi';
+		await user.saveRepositorySetup({repositoryId:repo.id, command});
+		async function turn(hit: boolean, secret = false, branch = "main") {
+			const session = await user.createSession({profile:"docker-hardened", repository:{id:repo.id, branch}});
+			try {
+				const actor = client.agentSession.get([uid, session.id], {params});
+				await actor.prompt({text:"Explore the workspace"});
+				await waitFor("the prepared sandbox turn", async () => (await actor.snapshot()).timeline.some(t => t.kind === "turn.ended"), TURN_MS, 500);
+				const snapshot = await actor.snapshot();
+				const last = snapshot.timeline.at(-1);
+				assert(last?.kind === "turn.ended" && last.outcome === "succeeded", "Turn failed: " + plain(snapshot.timeline.filter(t => t.kind === "platform" || t.kind === "turn.ended")).slice(-2000));
+				const setup = snapshot.timeline.find(t => t.kind === "setup" && t.state === "succeeded");
+				if (secret) {
+					assert(snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("CHECK_TOKEN")), "Expected setup to receive the fixture secret");
+					assert(!snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Saving a prepared sandbox")), "Secret-bearing setup attempted a commit");
+				}
+				const notice = snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Started from a prepared sandbox") && t.text.includes(base));
+				assert(!!setup === !hit && notice === hit, "Unexpected setup or snapshot notice: " + plain(snapshot.timeline.filter(t => t.kind === "platform" || t.kind === "setup")).slice(-1800));
+				if (hit) {
+					const name = execFileSync("docker", ["ps", "-q", "--filter", "label=dev.windlass-platform.uid="+uid, "--filter", "label=dev.windlass-platform.session="+session.id], {encoding:"utf8"}).trim();
+					assert(name && !name.includes("\n"), "Expected a single live sandbox");
+					execFileSync("docker", ["exec",name,"sh","-c","test \"$(cat base.txt)\" = next && test \"$(cat node_modules/built-at)\" = first && test ! -e node_modules/secret"]);
+					if (branch === "feature") execFileSync("docker", ["exec", name, "test", "-f", "/workspace/feature.txt"]);
+					execFileSync("docker", ["exec",name,"grep","-rFql","Setup came from a snapshot of the repository base at commit "+base,"/home/agent/.local/share/windlass/sessions"]);
+				}
+			} finally { await user.deleteSession(session.id); }
+		}
+		try {
+			const secret = { repositoryId: repo.id, profile: "docker-hardened", name: "CHECK_TOKEN" };
+			const putSecret = () => user.saveRepositorySecret({ ...secret, value: randomBytes(16).toString("hex"), scope: "setup" });
+			await putSecret();
+			await turn(false, true);
+			const images = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
+			assert(!images, "A secret-bearing setup left a snapshot image");
+			await user.deleteRepositorySecret(secret);
+			await turn(false);
+			github.commit(repo,"main",{"base.txt":"next", "quick":""},"Source-only change");
+			github.commit(repo, "feature", {"feature.txt": "from feature"}, "Feature source", "main");
+			await turn(true, false, "feature");
+			await turn(true);
+			await putSecret();
+			await turn(false, true);
+			await user.deleteRepositorySecret(secret);
+			pass("Secret-bearing setup runs cold and cannot publish a prepared image");
+			github.commit(repo,"main",{"package-lock.json":"{ }"},"Changed lockfile");
+			await turn(false);
+			pass("A real session skips setup only for matching inputs, checks out current source, and gives the base commit to Windlass");
+			await user.saveRepositorySetup({ repositoryId: repo.id, command: "true" });
+			const remaining = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
+			assert(!remaining, "Editing the setup command retained the old snapshot image");
+			pass("Editing setup evicts the previous image");
+		} finally { await user.forgetRepository(repo.id); }
+	} finally {
+		await client.dispose();
+		spawnSync("docker", ["rm","-fv",relayName]);
+		relay.close();
+		await github.stop();
+		rmSync(socketDir, { recursive:true, force:true });
+	}
+}
+
 let server: Server | null = null;
 let crashed = false;
 try {
@@ -4396,9 +4529,12 @@ try {
 			}
 			await server.stop();
 		}
-		if (!identityOnly) await server.start();
+		if (snapshotOnly) {
+			if (FAKE) throw new Error("--snapshots-only requires Docker");
+			await preparedSessions(server);
+		} else if (!identityOnly) await server.start();
 	}
-	if (!identityOnly) await main(server);
+	if (!identityOnly && !snapshotOnly) await main(server);
 } catch (error) {
 	crashed = true;
 	console.log(`FAIL  the run stopped early  -- ${describe(error)}`);
