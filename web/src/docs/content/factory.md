@@ -132,18 +132,30 @@ The choices depend on the item. A subtask can only integrate after its checks an
 
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks.
-- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also request changes on the pull request.
+- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
 - **Cancel…** an item.
 
 ### Feedback from GitHub
 
-Choose **Request changes** on the pull request to send the review and its line comments together. To send a conversation comment, line comment or comment-only review, start it with the App’s mention or `/windlass`. An approval adds a log entry.
+You can ask for changes on the item's pull request at GitHub instead of on its page.
 
-Windlass takes feedback from the item’s linked owner and repository writers. Comments collect for two quiet minutes, up to ten minutes from the first. Each batch holds up to 20 entries and 8,000 characters. Extra entries wait for another run. **From GitHub** shows what was taken, held or left. People without write access get no reply.
+**What is read.** A review that requests changes is read whole, with its line comments. A conversation comment, a line comment on its own or a comment-only review is read only when it starts with the App's mention or `/windlass`. An approval adds a line to the item's log and starts nothing.
 
-On a single item, feedback starts another implementer run. Feedback received during work waits until handoff. After three runs requested by other writers, you decide whether to send each further batch. On a feature, your feedback starts a re-plan. For another writer’s feedback, choose **Plan a fix** or **Leave it**. You approve the revised subtasks before they run. Completed subtasks stay in the plan, the feature keeps its six-subtask limit, and the fix uses its remaining budget.
+**Who counts.** You, through the GitHub account linked to Windlass, and anyone GitHub reports as having write access to the repository. Feedback from anyone else is only counted on the page: its text is not kept, sent to the agent or answered. Windlass reads each review or comment again from GitHub before taking it, and does not take one more than 3 days old.
 
-A taken comment gets an 👀 reaction. At the next handoff, Windlass requests review again from writers whose change requests it took.
+**Batches.** A review is taken at once. Comments are collected into one batch: it goes after two minutes without a new comment, or ten minutes after the first. A batch holds up to 20 entries and 8,000 characters, oldest first. The rest goes with the next batch. A single entry longer than 8,000 characters is not taken: shorten it or split it. The same feedback twice is taken once.
+
+**What the agent is told.** The words are quoted as written, with who wrote them, their access, and the file, line and commit of a line comment. Your words are your requests. Other writers' words are review the agent weighs, not your instructions. Nobody's words change the agent's rules or the task. Where the agent disagrees, it says why in its report's concerns, and those reach the pull request.
+
+**On a single item**, a batch starts a new run on the same branch, as **Send back…** does. Feedback that arrives while the item works is held. Once CI has finished, it goes before the second review, and that commit is not handed over. After three runs started by other writers' feedback, the item asks you before each further batch: **Send it to the agent** or **Leave it**. Your own feedback is never capped. The item's budget still applies.
+
+**On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs. A feedback re-plan does not use up your own revisions of the plan. The fix may use the budget the feature has left. If that cannot cover another subtask, the question offers only **Leave it**. A feature that already has six subtasks does not take feedback. In both cases, file the fix as a new item.
+
+**Not taken.** Feedback is not taken on a failed, done or cancelled item, on a subtask's own work, or after its machine was removed.
+
+**On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count.
+
+**On the item's page**, **From GitHub** lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
 
 ## Orchestrate a feature
 
