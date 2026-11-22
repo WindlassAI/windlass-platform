@@ -3,7 +3,12 @@ import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import { text } from 'node:stream/consumers';
 import test from 'node:test';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { request } from 'node:http';
+import { connect } from 'node:net';
+import { PassThrough } from 'node:stream';
 import { providerFor } from '../sandbox/relay/opencode.cjs';
+import { createRelay } from '../sandbox/relay/server.cjs';
 
 test('concurrent ChatGPT requests share a machine-side refresh and retain the rotated credential', async () => {
 	let record = { provider: 'chatgpt', generation: 'one', access: 'old-access', refresh: 'old-refresh', expires: 0 };
@@ -186,4 +191,52 @@ test('an OpenCode ChatGPT refresh reply without a refresh token keeps the curren
 	});
 	assert.equal((await provider.target('/openai/responses', {}))?.headers.authorization, 'Bearer next-access');
 	assert.deepEqual([record.access, record.refresh], ['next-access', 'kept-refresh']);
+});
+
+test('OpenAI rate-limit headers pass on a ChatGPT and an API-key route; account headers and secrets do not', async () => {
+	const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+	const nonce = 'd'.repeat(32);
+	const bearer = 'Bearer ' + nonce + '.' + sign(null, Buffer.from('test\nmachine\n' + nonce), privateKey).toString('base64url');
+	for (const [id, record, route] of [
+		['chatgpt', { provider: 'chatgpt', generation: 'one', access: 'access-secret', refresh: 'refresh-secret', expires: Date.now() + 3600_000 }, '/openai/responses'],
+		['openai', { provider: 'openai', generation: 'one', key: 'sk-key-secret' }, '/openai/responses'],
+	]) {
+		const secret = record.key ?? record.access;
+		let answer;
+		const relay = createRelay({ publicKey, machine: 'machine', domain: 'test', provider: providerFor(id, 'one', { load: async () => record }),
+			forward: (options, callback) => {
+				const input = new PassThrough();
+				input.resume();
+				input.on('finish', () => {
+					const reply = new PassThrough();
+					Object.assign(reply, answer);
+					callback(reply);
+					reply.end(answer.statusCode === 200 ? '{}' : secret);
+				});
+				return input;
+			} });
+		await new Promise(done => relay.listen(0, '127.0.0.1', done));
+		const limits = { 'x-ratelimit-limit-requests': '500', 'x-ratelimit-remaining-tokens': '1200', 'x-ratelimit-reset-requests': '1s', 'x-codex-primary-used-percent': '12' };
+		const hidden = { 'openai-organization': 'org', 'x-request-id': 'r', 'set-cookie': 'c', 'x-ratelimit-limit-tokens': 'Bearer ' + secret };
+		try {
+			for (const [statusCode, extra] of [[200, { 'content-type': 'application/json' }], [429, { 'retry-after': '20' }]]) {
+				answer = { statusCode, headers: { ...limits, ...hidden, ...extra } };
+				const res = await new Promise((resolve, reject) => {
+					const req = request({ createConnection() {
+						const socket = connect(relay.address().port, '127.0.0.1');
+						socket.write(nonce);
+						return socket;
+					}, method: 'POST', path: route, headers: { host: '127.0.0.1:17892', authorization: bearer } }, resolve);
+					req.on('error', reject);
+					req.end('{}');
+				});
+				const body = await text(res);
+				assert.equal(res.statusCode, statusCode, id);
+				assert.ok(!body.includes(secret));
+				for (const [name, value] of Object.entries(limits)) assert.equal(res.headers[name], value, id + ' ' + name);
+				for (const name of Object.keys(hidden)) assert.equal(res.headers[name], undefined, id + ' ' + name);
+				if (statusCode === 429) assert.deepEqual([res.headers['retry-after'], JSON.parse(body).error.type], ['20', 'rate_limit_error']);
+			}
+		} finally { relay.close(); }
+	}
 });

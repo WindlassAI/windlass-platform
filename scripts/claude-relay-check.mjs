@@ -180,3 +180,156 @@ test('upstream redirect and diagnostics cannot disclose the credential', async (
 		assert.ok(!JSON.stringify(res.headers).includes(token)); assert.ok(!body.includes(token));
 	}
 });
+
+// Caps: a relay whose fake upstream answers only when the check says so.
+async function cappedRelay() {
+	const { createRelay } = await import('../sandbox/relay/server.cjs');
+	const pending = [];
+	const relay = createRelay({ publicKey, machine, readToken: async () => token, forward: (options, callback) => {
+		const input = new PassThrough();
+		input.resume();
+		input.on('finish', () => pending.push(callback));
+		input.destroy = () => input;
+		return input;
+	} });
+	await new Promise(done => relay.listen(0, '127.0.0.1', done));
+	const at = relay.address().port;
+	const send = session => {
+		const req = request({ createConnection() {
+			const socket = connect(at, '127.0.0.1');
+			socket.write(session);
+			return socket;
+		}, method: 'POST', path: '/v1/messages?beta=true', headers: { host: '127.0.0.1:17892', authorization: 'Bearer ' + credential(privateKey, session) } });
+		const reply = new Promise((resolve, reject) => { req.on('response', resolve); req.on('error', reject); });
+		reply.catch(() => {});
+		req.end('{}');
+		return { req, reply };
+	};
+	const answer = () => {
+		const callback = pending.shift();
+		const response = new PassThrough();
+		Object.assign(response, { statusCode: 200, headers: { 'content-type': 'text/event-stream' } });
+		callback(response);
+		return response;
+	};
+	const until = async (count, ms = 5000) => {
+		for (const end = Date.now() + ms; pending.length < count;) {
+			if (Date.now() > end) throw Error(`${pending.length} of ${count} requests reached upstream`);
+			await new Promise(done => setTimeout(done, 5));
+		}
+	};
+	return { relay, pending, send, answer, until };
+}
+async function refusal(reply) {
+	const res = await reply;
+	let body = ''; for await (const chunk of res) body += chunk;
+	return { status: res.statusCode, retry: res.headers['retry-after'], message: JSON.parse(body).error.message };
+}
+
+test('a ninth request in flight from one session is refused, and counts are released on every path', async () => {
+	const { relay, pending, send, answer, until } = await cappedRelay();
+	try {
+		const session = randomBytes(16).toString('hex');
+		const first = Array.from({ length: 8 }, () => send(session));
+		await until(8);
+		assert.deepEqual(await refusal(send(session).reply), { status: 503, retry: '2', message: 'Too many model requests at once from this session (8).' });
+		assert.equal(pending.length, 8);
+		// Finish all eight. The upstream may see them in any order, so answer every one before reading.
+		for (const stream of first.map(() => answer())) stream.end('done\n');
+		for (const { reply } of first) for await (const _ of await reply) { /* drain */ }
+		// Eight more, each aborted by the client mid-stream.
+		const aborted = Array.from({ length: 8 }, () => send(session));
+		await until(8);
+		for (const stream of aborted.map(() => answer())) stream.write('partial\n');
+		for (const { req, reply } of aborted) { await reply; req.destroy(); }
+		// Eight more, aborted before the upstream answered.
+		const early = Array.from({ length: 8 }, () => send(session));
+		await until(8);
+		for (const { req } of early) req.destroy();
+		pending.splice(0);
+		await new Promise(done => setTimeout(done, 50));
+		const again = Array.from({ length: 8 }, () => send(session));
+		await until(8);
+		assert.equal((await refusal(send(session).reply)).status, 503);
+		for (const { req } of again) req.destroy();
+	} finally { relay.close(); }
+});
+
+test('the 25th request in flight on the machine is refused across sessions', async () => {
+	const { relay, pending, send, until } = await cappedRelay();
+	try {
+		const sessions = Array.from({ length: 4 }, () => randomBytes(16).toString('hex'));
+		const sent = Array.from({ length: 24 }, (_, i) => send(sessions[i % 4]));
+		await until(24);
+		assert.deepEqual(await refusal(send(sessions[0]).reply), { status: 503, retry: '2', message: 'Too many model requests at once on this machine (24).' });
+		assert.deepEqual(await refusal(send(randomBytes(16).toString('hex')).reply), { status: 503, retry: '2', message: 'Too many model requests at once on this machine (24).' });
+		assert.equal(pending.length, 24);
+		for (const { req } of sent) req.destroy();
+	} finally { relay.close(); }
+});
+
+test('a session past 32 open connections is refused on the extra ones', async () => {
+	const { relay, pending, send, until } = await cappedRelay();
+	try {
+		const session = randomBytes(16).toString('hex');
+		const sockets = [];
+		for (let i = 0; i < 32; i++) {
+			const socket = connect(relay.address().port, '127.0.0.1');
+			socket.write(session);
+			sockets.push(socket);
+		}
+		await new Promise(done => setTimeout(done, 100));
+		const refused = await refusal(send(session).reply);
+		assert.deepEqual(refused, { status: 503, retry: '2', message: 'Too many connections to the model relay from this session (32).' });
+		assert.equal(pending.length, 0);
+		for (const socket of sockets) socket.destroy();
+		await new Promise(done => setTimeout(done, 100));
+		const { req } = send(session);
+		await until(1);
+		req.destroy();
+	} finally { relay.close(); }
+});
+
+test('only allowlisted rate-limit headers pass, on success and on a limit refusal', async () => {
+	reset();
+	upstream.headers = { 'content-type': 'text/event-stream', 'anthropic-ratelimit-unified-status': 'allowed_warning',
+		'anthropic-ratelimit-unified-reset': '1763800000', 'set-cookie': ['x'], 'request-id': 'r', 'x-request-id': 'r', 'cf-ray': 'c', server: 's' };
+	let res = await call(); for await (const _ of res) { /* drain */ }
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.headers['anthropic-ratelimit-unified-status'], 'allowed_warning');
+	assert.equal(res.headers['anthropic-ratelimit-unified-reset'], '1763800000');
+	for (const name of ['set-cookie', 'request-id', 'x-request-id', 'cf-ray', 'server']) assert.equal(res.headers[name], undefined, name);
+	for (const status of [429, 503, 529]) {
+		reset();
+		upstream = { statusCode: status, headers: { 'retry-after': '30', 'anthropic-ratelimit-unified-status': 'rejected', 'request-id': 'r' } };
+		res = await call(); let body = ''; for await (const chunk of res) body += chunk;
+		assert.equal(res.statusCode, status);
+		assert.equal(JSON.parse(body).type, 'error');
+		assert.ok(!body.includes(token));
+		assert.equal(res.headers['retry-after'], '30');
+		assert.equal(res.headers['anthropic-ratelimit-unified-status'], 'rejected');
+		assert.equal(res.headers['request-id'], undefined);
+	}
+	reset();
+	upstream = { statusCode: 400, headers: { 'retry-after': '30', 'anthropic-ratelimit-unified-status': 'rejected' } };
+	res = await call(); for await (const _ of res) { /* drain */ }
+	assert.equal(res.headers['retry-after'], undefined);
+});
+
+test('a rate-limit header with a control character, an overlong value or the credential is dropped', async () => {
+	reset();
+	upstream.headers = { 'content-type': 'text/event-stream', 'anthropic-ratelimit-unified-status': 'allowed',
+		'anthropic-ratelimit-unified-overage-status': 'a'.repeat(201), 'anthropic-ratelimit-unified-fallback': 'x ' + token };
+	const res = await call(); for await (const _ of res) { /* drain */ }
+	assert.equal(res.headers['anthropic-ratelimit-unified-status'], 'allowed');
+	assert.equal(res.headers['anthropic-ratelimit-unified-overage-status'], undefined);
+	assert.equal(res.headers['anthropic-ratelimit-unified-fallback'], undefined);
+	// Node refuses to build a header with a control character, so check the filter itself.
+	const { limitHeaders } = await import('../sandbox/relay/server.cjs');
+	assert.deepEqual(limitHeaders({ 'x-ratelimit-remaining-requests': '1\u0007', 'x-ratelimit-limit-requests': '60',
+		'x-codex-primary-used-percent': '12.5', 'x-codex-other-secondary-reset-at': '1763800000', 'x-codex-credits-balance': '4',
+		'x-codex-promo-message': 'hi', 'x-codex-turn-state': 's', 'openai-organization': 'o', 'anthropic-organization-id': 'o' }, [token]),
+	{ 'x-ratelimit-limit-requests': '60', 'x-codex-primary-used-percent': '12.5', 'x-codex-other-secondary-reset-at': '1763800000', 'x-codex-credits-balance': '4' });
+	const many = Object.fromEntries(Array.from({ length: 30 }, (_, i) => ['x-ratelimit-n' + i, String(i)]));
+	assert.equal(Object.keys(limitHeaders(many)).length, 24);
+});

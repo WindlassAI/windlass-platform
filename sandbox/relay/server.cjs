@@ -181,7 +181,31 @@ exports.SIGNED_OUT = SIGNED_OUT;
 class Stopping extends Error {}
 exports.Stopping = Stopping;
 
-function reject(res, status, restarting = false) {
+// One session (nonce) and the whole relay (the machine's one credential) each have a ceiling. Over it
+// the request is refused at once and the relay queues nothing. The refusal is a 503 with retry-after, which
+// every harness retries: Claude Code never retries a 429 on a subscription login and records it as the
+// account's limit being reached, so a 429 here would end the turn and mark the machine's account limited.
+const SESSION_REQUESTS = 8, SESSION_CONNECTIONS = 32, MACHINE_REQUESTS = 24;
+exports.limits = { sessionRequests: SESSION_REQUESTS, sessionConnections: SESSION_CONNECTIONS, machineRequests: MACHINE_REQUESTS };
+
+// Rate-limit facts the harness reads to report its own limit state. Nothing that names an account or a
+// request (request-id, cookies, cf-*, organization ids), and only short printable values.
+const limitHeader = /^(?:retry-after(?:-ms)?|anthropic-ratelimit-[a-z0-9-]+|x-ratelimit-[a-z0-9-]+|x-codex(?:-[a-z0-9]+)*-(?:primary|secondary)-(?:used-percent|window-minutes|reset-at)|x-codex(?:-[a-z0-9]+)*-limit-name|x-codex-credits-(?:has-credits|unlimited|balance)|x-codex-rate-limit-reached-type)$/;
+function limitHeaders(headers, secrets = []) {
+	const result = {};
+	let count = 0;
+	for (const [name, value] of Object.entries(headers ?? {})) {
+		if (count >= 24) break;
+		if (name.length > 64 || !limitHeader.test(name) || typeof value !== 'string' || value.length > 200 || !/^[\x20-\x7e]*$/.test(value)) continue;
+		if ([...secrets].some(secret => secret && value.includes(secret))) continue;
+		result[name] = value;
+		count++;
+	}
+	return result;
+}
+exports.limitHeaders = limitHeaders;
+
+function reject(res, status, { restarting = false, message: own, headers = {} } = {}) {
 	let type = 'api_error', message = 'The provider rejected the request.';
 	if (status === 401) {
 		type = 'authentication_error';
@@ -198,14 +222,37 @@ function reject(res, status, restarting = false) {
 	} else if (status >= 500) {
 		message = "The provider failed or couldn't be reached.";
 	}
-	res.writeHead(status, { 'content-type': 'application/json' });
-	res.end(JSON.stringify({ type: 'error', error: { type, message } }));
+	res.writeHead(status, { ...headers, 'content-type': 'application/json' });
+	res.end(JSON.stringify({ type: 'error', error: { type, message: own ?? message } }));
 }
 
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT) }) {
+	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides }) {
+	const limits = { ...exports.limits, ...overrides };
 	const sessions = new WeakMap();
+	// Per nonce: open connections and requests in flight. `overConnections` marks a socket past the session's ceiling.
+	const open = new Map(), inFlight = new Map(), overConnections = new WeakSet();
+	let machineInFlight = 0;
+	const busy = (res, message) => reject(res, 503, { message, headers: { 'retry-after': '2' } });
+	// Counted from the accepted lease to the end of the response, and released once on every path.
+	function admit(res, nonce) {
+		if (overConnections.has(res.socket)) {
+			res.setHeader('connection', 'close');
+			return busy(res, `Too many connections to the model relay from this session (${limits.sessionConnections}).`), false;
+		}
+		const mine = inFlight.get(nonce) ?? 0;
+		if (mine >= limits.sessionRequests) return busy(res, `Too many model requests at once from this session (${limits.sessionRequests}).`), false;
+		if (machineInFlight >= limits.machineRequests) return busy(res, `Too many model requests at once on this machine (${limits.machineRequests}).`), false;
+		inFlight.set(nonce, mine + 1);
+		machineInFlight++;
+		res.once('close', () => {
+			machineInFlight--;
+			const left = inFlight.get(nonce) - 1;
+			if (left) inFlight.set(nonce, left); else inFlight.delete(nonce);
+		});
+		return true;
+	}
 	const httpServer = http.createServer(async (req, res) => {
 		// One request per connection: the session's forwarder then knows, for the request on a connection,
 		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
@@ -218,8 +265,10 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (!match || !verify(null, Buffer.from(domain + '\n' + machine + '\n' + match[1]),
 				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
 			if (sessions.get(req.socket) !== match[1]) return reject(res, 401);
+			if (res.destroyed || !admit(res, match[1])) return;
 			let target;
 			let claudeToken;
+			const secrets = () => claudeToken ? [claudeToken] : provider?.secrets?.() ?? [];
 			if (provider) {
 				target = await provider.target(req.url, req.headers);
 				if (!target) return reject(res, 401);
@@ -238,7 +287,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			const up = forward({ ...target, port: 443, method: req.method }, reply => {
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
-					reject(res, reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502);
+					const status = reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502;
+					// The relay's own body, never the upstream's; a limit refusal keeps its rate-limit headers.
+					reject(res, status, { headers: [429, 503, 529].includes(status) ? limitHeaders(reply.headers, secrets()) : {} });
 					reply.destroy();
 					return;
 				}
@@ -257,7 +308,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url);
 				if (filter) stages.push(filter);
 				if (provider?.catalogFilter && req.method === 'GET') stages.push(provider.catalogFilter());
-				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+				res.writeHead(200, { ...limitHeaders(reply.headers, secrets()), 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});
 			});
 			up.on('error', () => {
@@ -272,7 +323,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (res.headersSent) res.destroy();
 			else if (!(error instanceof Stopping)) reject(res, 502);
 			else if (signedOut()) reject(res, 401);
-			else reject(res, 503, true);
+			else reject(res, 503, { restarting: true });
 		}
 	});
 	// Consume exactly one identity before the HTTP parser sees this connection. The
@@ -288,6 +339,13 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (!/^[0-9a-f]{32}$/.test(nonce)) return socket.destroy();
 			socket.setTimeout(0);
 			sessions.set(socket, nonce);
+			const count = (open.get(nonce) ?? 0) + 1;
+			open.set(nonce, count);
+			if (count > limits.sessionConnections) overConnections.add(socket);
+			socket.once('close', () => {
+				const left = open.get(nonce) - 1;
+				if (left) open.set(nonce, left); else open.delete(nonce);
+			});
 			httpServer.emit('connection', socket);
 			socket.resume();
 		}

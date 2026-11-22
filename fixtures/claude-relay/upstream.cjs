@@ -10,7 +10,15 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 	if (req.url.startsWith('/v1/messages/count_tokens')) {
 		res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":3}');
 	}
-	const {model} = JSON.parse(Buffer.concat(bytes));
+	const body = Buffer.concat(bytes).toString();
+	// A prompt that asks for the limit gets the subscription's own refusal, with its unified headers.
+	if (body.includes('Rate limit check.')) {
+		res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '3600', 'request-id': 'req_fixture',
+			'anthropic-ratelimit-unified-status': 'rejected', 'anthropic-ratelimit-unified-reset': '4102444800',
+			'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-utilization': '1.0' });
+		return res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'fixture limit' } }));
+	}
+	const {model} = JSON.parse(body);
 	res.writeHead(200, { 'content-type': 'text/event-stream' });
 	const chunks = [
 		{type:'message_start',message:{id:'msg_check',type:'message',role:'assistant',model,content:[],stop_reason:null,

@@ -306,7 +306,7 @@ docker exec windlass-runner windlass-runner logout opencode
 
 No agent's login is ever inside its container. The runner keeps each login in a login volume on the machine that no session mounts. A separate relay container on the machine holds it instead, and is the only one that reads it.
 
-Each Claude Code or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
+Each Claude Code, Codex or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
 
 When the relay refuses a request, or the provider answers with an error, the agent gets one of these fixed messages. The relay does not pass the provider's own reason on.
 
@@ -317,8 +317,19 @@ When the relay refuses a request, or the provider answers with an error, the age
 | "The provider's usage or rate limit was reached." | The provider answered that a usage or rate limit was reached. |
 | "The provider failed or couldn't be reached." | The provider failed, or the relay could not reach it. |
 | "The provider rejected the request." | The provider refused it for another reason. |
+| "Too many model requests at once from this session (8)." | The session already has 8 model requests in flight. |
+| "Too many model requests at once on this machine (24)." | The machine's sessions already have 24 requests in flight through this relay. |
+| "Too many connections to the model relay from this session (32)." | The session already has 32 connections open to the relay. |
 
-So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, in every network mode, `none` included.
+The relay passes on the provider's rate-limit headers, and nothing else from its reply headers: `retry-after`, `anthropic-ratelimit-*`, `x-ratelimit-*` and Codex's `x-codex-*` usage and credit headers. It passes them on a successful reply and on a usage-limit (429) or overload (503, 529) refusal. The agent reads them as it would without a relay, so the platform sees the same "limited until" times. The relay never passes on cookies, request IDs, redirects or account names, and drops any header value with a control character, over 200 characters, or containing the login.
+
+## Limits on model requests
+
+Each relay holds one login for the whole machine, so it limits how hard sessions can use it. A session can have at most 8 model requests in flight and 32 connections open to the relay. All sessions on the machine together can have at most 24 requests in flight through one agent's relay. Claude Code, Codex and OpenCode each have their own relay and their own 24.
+
+A request over a limit is refused at once with a 503 and `retry-after: 2`, and the agent tries again a moment later. The relay does not queue it. The refusal is not a 429: Claude Code does not retry a 429 on a subscription login and would take it as your usage limit being reached. Normal work, including a few subagents at once, stays well under the limits. A runaway command that fires hundreds of requests in parallel gets most of them refused instead of spending your subscription.
+
+So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, within these limits, in every network mode, `none` included.
 
 In `restricted` mode, commands in an OpenCode session also cannot reach any model provider's host, or any bare IP address, through the proxy. `--egress-allow` does not reopen them. Model requests go only through the relay.
 

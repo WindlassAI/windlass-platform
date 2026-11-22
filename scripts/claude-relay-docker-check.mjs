@@ -7,6 +7,7 @@ import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/pro
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AcpConnection, LineSplitter } from '../server/src/sandbox/acp.ts';
+import { claudeLimit } from '../server/src/provider-usage.ts';
 
 const image = process.argv[2];
 assert.match(image ?? '', /^sha256:[a-f0-9]{64}$/);
@@ -68,6 +69,34 @@ async function turn(first, proxyEnv, scan) {
 	if (scan) await isolation(first);
 	child.stdin.end();
 }
+// The upstream refuses this prompt with a 429 and unified headers. The relay passes them through, so the
+// pinned harness reports the limit with its reset, as it does without a relay.
+async function limitedTurn(name) {
+	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
+	child.stderr.resume();
+	const events = [];
+	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
+		async request() { throw Error('No client tools in fixture'); },
+		notification(method, params) {
+			const limit = params.update?._meta?.['_claude/rateLimit'];
+			if (method === 'session/update' && params.update.sessionUpdate === 'usage_update' && limit) events.push(limit);
+		},
+	}, '');
+	const lines = new LineSplitter(line => rpc.receive(line));
+	child.stdout.setEncoding('utf8').on('data', s => lines.push(s));
+	child.on('close', () => rpc.end('Adapter closed'));
+	const call = (method, params) => rpc.request(method, params, { timeoutMs:45000 });
+	await call('initialize', {protocolVersion:1,clientCapabilities:{}});
+	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[]});
+	await call('session/set_mode',{sessionId:opened.sessionId,modeId:opened.modes.currentModeId});
+	const refused = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:'Rate limit check.'}]}).then(() => undefined, error => error);
+	child.stdin.end();
+	const reported = events.map(event => claudeLimit(event, Date.now())).find(event => event?.status === 'rejected');
+	assert.ok(reported || refused?.limit, `No rate-limit report: events=${JSON.stringify(events)} error=${refused?.message}`);
+	if (reported) assert.equal(reported.window.resetsAt, 4102444800_000);
+	if (refused?.limit) assert.equal(refused.limit.resetsAt, 4102444800_000);
+	assert.ok(!JSON.stringify(events).includes('req_fixture'));
+}
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
 try {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
@@ -117,6 +146,8 @@ try {
 	ok('Both real session containers have zero mounts. Own bearer accepted, cross-session bearer and foreign Host refused.');
 	await turn(first, [], true);
 	await turn(first, ['-e','HTTP_PROXY=http://127.0.0.1:1','-e','HTTPS_PROXY=http://127.0.0.1:1','-e','http_proxy=http://127.0.0.1:1','-e','https_proxy=http://127.0.0.1:1','-e','NO_PROXY=','-e','no_proxy='], false);
+	await limitedTurn(first);
+	ok('A 429 with unified headers reached the pinned harness through the relay; it reported the limit with its reset.');
 	const recorded = await cmd(['logs',upstream]);
 	assert.match(recorded,/POST \/v1\/messages\?beta=true bearerMatch=true beta=.*oauth-2025-04-20.*version=2023-06-01/);
 	assert.ok(!recorded.includes(token) && !recorded.includes('bearerMatch=false'));
