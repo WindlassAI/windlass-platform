@@ -680,6 +680,26 @@ async function run() {
 				assert.equal(item.pull.comments.filter(c=>c.body.startsWith("<!-- windlass-item:")).length,1);
 			} finally { await stop(item.id); }
 		});
+		await check("G4 reconcile a missed standalone line comment", async()=>{
+			const item=await feedbackItem();
+			try {
+				// GitHub files a single line comment as a "commented" review with an empty body: only the line is addressed.
+				const r=standin.submitReview(projectG2,item.pull,peer,"commented","",[
+					{ path:"src/main.ts", line:3, body:"/windlass Close the file on error." },
+					{ path:"src/main.ts", line:9, body:"Not addressed, so not taken." },
+				]);
+				await item.clock().checkAdvance("poll",0);
+				// A line comment collects with others for the quiet window, as one delivered would.
+				await until("missed line comment collected",async()=>(await item.view()).feedback.batches.some(b=>b.state==="pending"));
+				await item.clock().checkAdvance("feedback",125_000);
+				const v=await until("missed line comment taken",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
+				assert.deepEqual(v.feedback.batches.flatMap(b=>b.entries.map(e=>[e.id,e.kind,e.path,e.line,e.body,e.access])),
+					[["review_comment:"+r.lines[0].id,"review_comment","src/main.ts",3,"Close the file on error.","write"]]);
+				// A later poll finds it handled and starts nothing more.
+				await item.clock().checkAdvance("poll",0);
+				assert.equal((await item.view()).run?.n,2);
+			} finally { await stop(item.id); }
+		});
 		await check("G3 feature filing binds the fetched command and label, and explains bug overrides", async () => {
 			const author = await newWriter("g3-feature-owner");
 			const named = make(175, reader);

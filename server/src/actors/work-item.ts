@@ -648,14 +648,21 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 	const now = Date.now();
 	const [cursor] = await c.db.execute<{ since: number }>("SELECT since FROM feedback_cursor WHERE id=1");
 	const subjects: FeedbackSubject[] = [];
+	const since = Math.max(now - 3 * 86_400_000, (cursor?.since ?? meta.createdAt) - 1000);
 	await app.withToken(installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, async token => {
 		const repo = hub.repository;
 		for (const r of await app.reviews(token, repo, pr)) {
 			if (!recentSubject(r.at, now)) continue;
 			if (r.state === "approved" || r.state === "changes_requested" || (r.state === "commented" && isAddressed(r.body, app.settings.slug) !== null))
 				subjects.push({ kind: "review", sender: r.author, association: r.association, id: r.id });
+			// A single line comment comes as a "commented" review with an empty body: its lines may be addressed.
+			// Only reviews since the last poll are opened, so each costs one call once.
+			else if (r.state === "commented" && r.at >= since) {
+				for (const line of await app.reviewComments(token, repo, pr, r.id))
+					if (recentSubject(line.at, now) && isAddressed(line.body, app.settings.slug) !== null)
+						subjects.push({ kind: "review_comment", sender: line.author, association: line.association, id: line.id });
+			}
 		}
-		const since = Math.max(now - 3 * 86_400_000, (cursor?.since ?? meta.createdAt) - 1000);
 		for (const r of await app.issueComments(token, repo.owner, repo.name, pr, true, since))
 			if (r.id && r.person && isAddressed(r.body, app.settings.slug) !== null) subjects.push({ kind: "issue_comment", sender: r.person, association: r.association, id: r.id });
 	});

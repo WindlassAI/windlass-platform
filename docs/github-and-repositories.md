@@ -166,8 +166,8 @@ from people GitHub reports as having write access. The association in the payloa
 that is not an owner, member or collaborator costs no call and is only counted. For the rest the platform asks
 GitHub for the sender's permission (kept for 10 minutes), then reads the review or comment again by its id with
 an installation token, so the payload's text is never used. A subject older than 3 days is not taken. Bots are
-dropped at the edge. An item in review also reads its pull request's reviews and conversation comments when it
-polls, with the same checks, and takes what no delivery brought ([Turn on feedback from pull requests](#turn-on-feedback-from-pull-requests)). What
+dropped at the edge. An item in review also reads its pull request's reviews, their line comments and the conversation comments
+when it polls, with the same checks, and takes what no delivery brought ([Turn on feedback from pull requests](#turn-on-feedback-from-pull-requests)). What
 the agent is told is in `server/src/factory/feedback.ts`.
 
 **Reach is set by the installation, not the permissions.** Contents write holds for every repository an
@@ -185,8 +185,8 @@ event subscriptions.
 2. Under **Subscribe to events**, tick **Pull request review** and **Pull request review comment**. Leave **Issue comment** ticked, with the others already there. Do not tick **Pull request review thread**: it is not read.
 3. Click **Save changes**. No permission changed, so the installations have nothing to approve.
 
-Until then, no delivery comes. An item in review still picks up reviews and conversation comments when it polls
-its pull request (every 30 minutes with a webhook, 10 without), but not a line comment made on its own.
+Until then, no delivery comes. An item in review still picks up reviews and comments when it polls its pull
+request: every 30 minutes with a webhook, 10 without.
 
 ### Enable the Factory check on GitHub
 
