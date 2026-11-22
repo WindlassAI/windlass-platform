@@ -177,7 +177,7 @@ import { type PublishEvidence, PullProblem, type Published, type StoredRepositor
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
-import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { AccessToken, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
@@ -218,6 +218,7 @@ import { agentUnmarkedNote, hardenedRefusal, hardenedStop, hardenedUnmarkedNote,
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
+import { leaseState } from "../sandbox/relay-leases.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
@@ -5321,6 +5322,15 @@ export const agentSession = actor({
 			// Answered once the queue holds the request too: a request that did not get there fails the delivery, which the item sends again.
 			const answer = await requestTurn(c, meta.uid, row);
 			if (answer.granted) void c.keepAwake(takeDelivered(c, meta, row.key, answer.slot));
+		},
+
+		// --- Windlass's model relay route (model-relay-route.ts), from another server process -----------
+
+		/** Whether this actor's process holds a turn's relay lease, and its current token: not held, the turn has ended. */
+		internalModelRelay: (c, input: { nonce: string }): { held: boolean; token: AccessToken | null } => {
+			requireService(c);
+			const nonce = typeof input?.nonce === "string" ? input.nonce : "";
+			return leaseState(nonce, c.key[0], c.key[1]);
 		},
 
 		internalGrant: (c, input: { key: string; slot: string }): void => {

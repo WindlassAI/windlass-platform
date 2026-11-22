@@ -30,6 +30,11 @@
  *           running turns.
  *   whose   one session, one turn at a time. An unsandboxed command or local MCP server can read
  *           the current token, including a replacement during that turn.
+ *   relay   where the sandbox offers Windlass's model relay (`TurnSandbox.modelRelay`,
+ *           docs/model-relay.md), each token goes to the relay and the file holds the turn's
+ *           placeholder instead, with the token's expiry: the sandbox never holds the token. The lease
+ *           is opened before the first write and ended in `stop`. A relay that cannot be had fails the
+ *           turn (`TokenFileError`); nothing falls back to writing the token into the sandbox.
  *
  * What such a command prints is tool output, which becomes an event. Windlass takes out of tool output
  * every token it has read from the file, which it does at a model call; the platform takes every token
@@ -39,7 +44,7 @@
 
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
-import { DATA_DIR, type TurnSandbox } from "./provider.js";
+import { DATA_DIR, type TurnModelRelay, type TurnSandbox } from "./provider.js";
 
 /** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
@@ -103,6 +108,8 @@ export class TokenFile {
 	private readonly handed = new Set<string>();
 	/** How many times the file was replaced after the first write. */
 	replaced = 0;
+	/** The turn's lease of the model relay, once `start` opened it. */
+	private relay: TurnModelRelay | null = null;
 
 	constructor(
 		private readonly sandbox: TurnSandbox,
@@ -137,14 +144,33 @@ export class TokenFile {
 		return { expiresAt: this.expiresAt, problem: this.problem, lapsed };
 	}
 
-	/** Gets the user's token and writes the file. Rejects with what the token source threw when there is no token to be had, and with a TokenFileError when the file cannot be written. */
+	/** What Windlass is started with besides the file's path: the relay's address, when the turn has one. */
+	get env(): Record<string, string> {
+		return this.relay?.env ?? {};
+	}
+
+	/** Whether the turn's token goes to a relay and the file holds a placeholder. */
+	get relayed(): boolean {
+		return this.relay !== null;
+	}
+
+	/** Gets the user's token and writes the file. Rejects with what the token source threw when there is no token to be had, and with a TokenFileError when the file cannot be written or the relay cannot be had. */
 	async start(): Promise<void> {
 		const token = await this.tokens.current(this.sandbox.uid);
+		if (this.sandbox.modelRelay !== undefined && !this.stopped) {
+			try {
+				this.relay = await this.sandbox.modelRelay();
+			} catch (error) {
+				throw new TokenFileError(`the model relay could not be started: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			// A stop that came while the lease was being opened did not see it.
+			if (this.stopped) await this.relay.close();
+		}
 		const written = await this.write(token).catch((error: unknown) => {
 			throw new TokenFileError(error instanceof Error ? error.message : String(error));
 		});
 		if (!written) return;
-		this.log(`[wlp] token.handed sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more`);
+		this.log(`[wlp] token.handed sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`);
 		this.schedule();
 	}
 
@@ -153,6 +179,8 @@ export class TokenFile {
 		this.stopped = true;
 		clearTimeout(this.timer);
 		await this.writing.catch(() => undefined);
+		// After the last write: the relay forgets the token, and the placeholder in the file is good for nothing.
+		await this.relay?.close().catch(() => undefined);
 	}
 
 	/** False when the turn has ended meanwhile: nothing was written. */
@@ -160,7 +188,12 @@ export class TokenFile {
 		if (this.stopped) return false;
 		// Before the file is there: a command may read it the moment it is. Too short a string would be found everywhere.
 		if (token.accessToken.length >= 16) for (const form of [token.accessToken, JSON.stringify(token.accessToken).slice(1, -1)]) this.handed.add(form);
-		const writing = this.sandbox.writeSecretFile(this.path, tokenFileContent(token));
+		const relay = this.relay;
+		if (relay !== null) this.handed.add(relay.placeholder);
+		// With a relay: the token goes there first, then the file gets the placeholder with the token's expiry.
+		const writing = relay === null
+			? this.sandbox.writeSecretFile(this.path, tokenFileContent(token))
+			: relay.hand(token).then(() => this.sandbox.writeSecretFile(this.path, tokenFileContent({ accessToken: relay.placeholder, expiresAt: token.expiresAt })));
 		this.writing = writing.catch(() => undefined);
 		await writing;
 		const now = Date.now();

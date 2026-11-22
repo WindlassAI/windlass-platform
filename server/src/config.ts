@@ -217,6 +217,17 @@
  *   WLP_RUNNER_IMAGE           the runner image the Machines page tells users to install, pinned by
  *                              digest: <name>@sha256:<64 hex>. Unset: none is published yet, and the
  *                              page says so
+ *   WLP_MODEL_RELAY            "off": Windlass's turns are handed their access token in the sandbox, as
+ *                              before the relay (docs/model-relay.md). Unset or "on": hosted Docker
+ *                              (with Windlass 0.6.0 or later in its image) and runners that name
+ *                              `modelRelay` send model requests through the relay, and E2B does too
+ *                              with WLP_MODEL_RELAY_URL set and WLP_E2B_WINDLASS_VERSION 0.6.0 or later
+ *   WLP_MODEL_RELAY_URL        the hostname of its own that E2B sandboxes reach the relay route at:
+ *                              https://<DNS name>, no port, no path, routed to this server like
+ *                              WLP_PUBLIC_URL. On it the server answers the relay's two paths and
+ *                              nothing else. Unset: E2B turns get their access token in the sandbox
+ *   WLP_MODEL_RELAY_REQUESTS   the hosted relay's ceiling of model requests in flight for the whole
+ *                              deployment (default 64, 1 to 4096)
  *   WLP_PUBLIC_URL             the platform's address as a machine outside reaches its HTTP routes:
  *                              https://<host>, or http:// on a loopback address. Required with
  *                              WLP_MACHINES=1 and a remote engine; with the local one it defaults to
@@ -229,6 +240,7 @@
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
+import { type ModelRelayUrl, parseModelRelayUrl } from "./model-relay-url.js";
 import { SNAPSHOT_MIN_SETUP_MS } from "./sandbox/snapshot-key.js";
 
 import { readPlatformKey, type PlatformIdentity } from "./runner/frame-auth.js";
@@ -311,6 +323,8 @@ export interface Config {
 	questionTimeoutMs: number;
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
+	/** Windlass's model relay (docs/model-relay.md): WLP_MODEL_RELAY, the hosted relay's ceiling, and WLP_MODEL_RELAY_URL (null when unset). */
+	modelRelay: { on: boolean; requests: number; url: ModelRelayUrl | null };
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
 	snapshotMinSetupMs: number;
@@ -609,6 +623,17 @@ function readDuration(name: string, fallback: number, min: number): number {
 	return fallback;
 }
 
+function readModelRelay(): Config["modelRelay"] {
+	const mode = (process.env.WLP_MODEL_RELAY ?? "").trim().toLowerCase();
+	if (mode !== "" && mode !== "on" && mode !== "off") unusable.push('WLP_MODEL_RELAY must be "on" or "off", or not set for on');
+	const text = (process.env.WLP_MODEL_RELAY_REQUESTS ?? "").trim();
+	const requests = text === "" ? 64 : Number(text);
+	if (!Number.isInteger(requests) || requests < 1 || requests > 4096) unusable.push("WLP_MODEL_RELAY_REQUESTS must be a whole number from 1 to 4096, or not set for 64");
+	const url = parseModelRelayUrl(process.env.WLP_MODEL_RELAY_URL);
+	if (url !== null && "problem" in url) unusable.push(url.problem);
+	return { on: mode !== "off", requests: Number.isInteger(requests) && requests >= 1 && requests <= 4096 ? requests : 64, url: url !== null && "problem" in url ? null : url };
+}
+
 const idleSuspendMs = readDuration("WLP_IDLE_SUSPEND_MS", 10 * 60 * 1000, 1_000);
 // Removing comes after suspending, never before it.
 const idleDestroyMs = Math.max(idleSuspendMs, readDuration("WLP_IDLE_DESTROY_MS", 7 * 24 * 60 * 60 * 1000, 1_000));
@@ -768,6 +793,7 @@ export const config: Config = {
 	questionTimeoutMs: readQuestionTimeout(),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
+	modelRelay: readModelRelay(),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),

@@ -234,6 +234,23 @@ const UNUSABLE = "Windlass could not use the access token the platform handed it
  *   - a failure that is not further told, of a token that had not run out: `token_unavailable` too, with
  *     a sentence that claims neither.
  */
+/**
+ * The model relay's own refusal of a turn's placeholder (docs/model-relay.md): the relay had no live lease
+ * for it (the turn's lease ended, or the relay was restarted and lost it). The relay answers 401 with the
+ * code `relay_lease_ended`; Windlass reports any 401 of a handed-in token as `handed_in_rejected` and keeps
+ * the provider's code in its message ("rejected (<message>, relay_lease_ended)"), or on the step's error.
+ * That is the platform's failure, not the user's sign-in: `token_unavailable`, never "sign in again".
+ */
+export const RELAY_LEASE_ENDED = "relay_lease_ended";
+export function relayRefused(code: string | null, ...said: (string | null | undefined)[]): boolean {
+	if (code === RELAY_LEASE_ENDED) return true;
+	return code !== null && handedInProblem(code) === "rejected" && said.some((text) => typeof text === "string" && /\brelay_lease_ended\b/.test(text));
+}
+export const RELAY_REFUSED: Failure = {
+	reason: "token_unavailable",
+	message: "The platform's model relay no longer had this turn's lease (the turn ended, or the relay was restarted). Your ChatGPT sign-in is untouched; send the prompt again.",
+};
+
 export function handedInFailure(problem: HandedInProblem, state: TokenFileState, now: number = Date.now()): Failure {
 	const ranOut = tokenRanOut(problem, state, now);
 	if (problem === "rejected" && !ranOut) return { reason: "auth_required", message: TOKEN_REJECTED };

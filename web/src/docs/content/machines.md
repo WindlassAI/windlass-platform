@@ -85,7 +85,7 @@ A machine runs the agents you start on it. It receives what they need, and nothi
 
 - your repository's files;
 - the saved secrets each agent is allowed, while **Send saved secrets to this machine** is on;
-- a ChatGPT access token for each turn of a Windlass agent, which lasts about an hour.
+- a ChatGPT access token for each turn of a Windlass agent, which lasts about an hour. With a current runner, the token goes to the machine's model relay and never into the agent's container. See [The Windlass model relay](#the-windlass-model-relay).
 
 The platform does not control this machine. What a session there shows of checks and changes is what the machine reports. See [Sandboxes and security](/docs/security#on-your-machine) for what the platform can and cannot do there.
 
@@ -342,6 +342,14 @@ docker exec windlass-runner windlass-runner logout opencode
 ```
 
 `logout` signs the agent out for this pairing and every earlier one. `logout opencode` removes all of its providers at once.
+
+## The Windlass model relay
+
+Windlass agents use your ChatGPT sign-in, which the platform keeps. A current runner has a model relay for them: a container on the machine, `wlp-model-relay-<machine id>`. The platform hands each turn's access token to the relay, not to the agent's container. Windlass in the container gets the relay's address, `http://127.0.0.1:17893/v1`, and a placeholder in its token file. A helper in the session's network namespace forwards that address to the relay. The relay checks the placeholder on every request and sends the request on to OpenAI with the real token. When the turn ends, the relay forgets the token, and the helper goes away.
+
+So commands, MCP servers and anything left running from setup can read only the placeholder. While a turn runs, they can still use the relay to make model requests on your plan, within the limits below. The relay has the same limits as the other relays on the machine: 8 requests at once per turn, with up to 32 more waiting, and 24 at once on the machine. The relay works in every network mode, `none` included.
+
+Runners 0.3.0 and 0.3.1 don't have the relay, and a runner whose sandbox image has a Windlass older than 0.6.0 doesn't offer it. Their Windlass turns get the access token in a file in the container, as before. The machine's sandbox chip says which applies. If the relay can't be started on a runner that has it, the turn fails with "the model relay could not be started". The runner never falls back to putting the token in the container.
 
 ## Agent logins stay out of the container
 

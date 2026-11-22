@@ -37,3 +37,20 @@ it("says what a hosted workspace's setup command reaches", () => {
 	expect(html("none")).toContain("The workspace can reach only the model API.");
 	expect(html()).toContain("Network access follows the workspace’s network policy.");
 });
+
+it("says a relayed sandbox's commands read only a placeholder, from both flags", () => {
+	const [sandboxed, hardened] = profilesFor("docker", undefined, true).filter((p) => p.id.startsWith("docker-"));
+	expect(hardened!.modelRelay).toBe(true);
+	expect(hardened!.commandsCanReadAccessToken).toBe(true);
+	expect(hardened!.summary).toContain("Commands can read only a placeholder for this turn. With it they can make model requests on your ChatGPT plan through the relay while the turn runs (8 at once, 32 waiting). The access token never enters the container.");
+	expect(hardened!.summary).not.toMatch(/can read the session's access token/);
+	expect(renderToStaticMarkup(createElement(ProfileFacts, { profile: hardened! }))).toContain("Commands can read only a placeholder for this turn");
+	expect(sandboxed!.summary).toContain("cannot read the session's token file");
+	expect(renderToStaticMarkup(createElement(ProfileFacts, { profile: sandboxed! }))).toContain("processes left from setup can read only a placeholder");
+	const plain = profilesFor("docker").find((p) => p.id === "docker-hardened")!;
+	expect(plain.modelRelay).toBeUndefined();
+	expect(plain.summary).toContain("can read the session's access token and its replacements");
+	const e2b = profilesFor("e2b", { windlassSandbox: false, openProfile: true, network: "restricted" }, true);
+	expect(e2b.filter((p) => p.modelRelay).map((p) => p.id)).toEqual(["e2b", "e2b-open"]);
+	expect(e2b.find((p) => p.id === "e2b-open")!.summary).toContain("The access token never enters the microVM.");
+});

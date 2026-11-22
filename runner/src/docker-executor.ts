@@ -20,6 +20,9 @@ import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
+import { DockerModelRelay } from "../../server/src/sandbox/model-relay.js";
+import { readsModelRelay } from "../../server/src/model-relay-url.js";
+import { probeImage } from "../../server/src/sandbox/tokens.js";
 import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
 import { localSizing } from "./sizing.js";
@@ -109,12 +112,31 @@ export class Executor extends MachineDocker {
 	 * so its sandboxes mount the machine volume as before. Set by the control connection on each welcome.
 	 */
 	sessionVolumes = false;
+	/**
+	 * The connected server named `model-relay` in its welcome: its turns may use this machine's model
+	 * relay (docs/model-relay.md), and a connect says so. Set by the control connection on each welcome.
+	 */
+	modelRelays = false;
+	/** Windlass's model relay of this machine: its container and each turn's forwarder. */
+	readonly modelRelay: DockerModelRelay;
+	/**
+	 * The Windlass version of the pinned sandbox image, once looked at after the image is here (`welcome`).
+	 * The relay is offered only when it is 0.6.0 or later: an older Windlass ignores the relay's address and
+	 * would send the placeholder to api.openai.com.
+	 */
+	private sandboxWindlass: string | null = null;
+	/** Whether what a runner that died left of the relay was removed in this process (once, at the first welcome). */
+	private relaySwept = false;
+	/** The model relay leases of each sandbox (external id) that its conversations hold: ended when it is suspended or removed. */
+	private readonly relayLeases = new Map<string, Set<() => Promise<void>>>();
 	private nextVolumeSweep = 0;
 
 	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false, readonly codex = false) {
 		super(identity);
 		this.slots = limits.slots === null ? undefined : limits.slots ?? localSizing({ slots: limits.maxTurns?.toString() });
 		this.network = new EgressNetwork(this, policy);
+		// One user's machine: the relay's ceiling is the other machine relays' (sandbox/relay/server.cjs `limits`).
+		this.modelRelay = new DockerModelRelay({ machine: identity.machineId, image, labelFlags: this.pairingLabelFlags, ensureImage: () => this.ensureImage() });
 		const network = this.network.sandboxNetwork();
 		const slots = this.slots;
 		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage,
@@ -408,6 +430,7 @@ export class Executor extends MachineDocker {
 				if (signal.aborted) return;
 				if (this.signIn === "unknown") await this.refreshLogin();
 				await this.restoreRelay();
+				await this.prepareModelRelay();
 				this.inventoryStarted = true;
 				await this.refreshClaudeOptions();
 				await this.refreshOpenCodeOptions();
@@ -423,6 +446,40 @@ export class Executor extends MachineDocker {
 			this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
 		}
 	}
+	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass is 0.6.0 or later. */
+	get modelRelayReady(): boolean {
+		return readsModelRelay(this.sandboxWindlass);
+	}
+
+	/** A lease a conversation holds for sandbox `id`; returns what to call when the conversation ends it itself. */
+	trackRelay(id: string, end: () => Promise<void>): () => void {
+		let ends = this.relayLeases.get(id);
+		if (!ends) this.relayLeases.set(id, (ends = new Set()));
+		ends.add(end);
+		const mine = ends;
+		return () => {
+			mine.delete(end);
+			if (!mine.size && this.relayLeases.get(id) === mine) this.relayLeases.delete(id);
+		};
+	}
+
+	/** Ends every lease of sandbox `id` (its files in the relay, its forwarder, the conversations' entries), also one a process that died left. */
+	private async endRelays(id: string, raw: string): Promise<void> {
+		const ends = [...(this.relayLeases.get(id) ?? [])];
+		this.relayLeases.delete(id);
+		await Promise.all(ends.map((end) => end().catch(() => {})));
+		await this.modelRelay.endSandbox(raw).catch(() => {});
+	}
+
+	/** At the first welcome: the pinned image's Windlass, and what a runner that died left of the relay. */
+	private async prepareModelRelay(): Promise<void> {
+		if (this.sandboxWindlass === null) this.sandboxWindlass = await probeImage(image).catch(() => null);
+		if (!this.relaySwept) {
+			await this.modelRelay.sweep().catch(() => 0);
+			this.relaySwept = true;
+		}
+	}
+
 	private async probeAvailable(): Promise<Report["commandSandbox"]> {
 		return await this.probe() ? { ok: true } : { ok: false, reason: "Bubblewrap could not start in a sandbox on this machine." };
 	}
@@ -448,7 +505,7 @@ export class Executor extends MachineDocker {
 			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", gitMirrors: true, sessionVolumes: true, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
@@ -617,13 +674,17 @@ export class Executor extends MachineDocker {
 			await this.network.attach(box.raw, containerName(box.raw));
 			return { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
-				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}) };
+				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
+				// Windlass's own sandboxes only, and only to a server that named `model-relay`.
+				...(this.modelRelays && this.modelRelayReady && !box.harness ? { modelRelay: true as const } : {}) };
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
 		if (box.state === "running") {
 			const path = tokenFilePath(id);
 			await new DockerSandboxHandle(box.raw, box.profile, this.identity.uid).removeFiles([path, path + ".tmp"]);
 		}
+		// Its turns' leases end with it: the relay's files of them, their forwarders and the conversations' entries.
+		await this.endRelays(id, box.raw);
 		if (op === "destroy") await this.remove(id);
 		else {
 			if (box.egress === "restricted" || box.harness) await this.network.detach(box.raw);

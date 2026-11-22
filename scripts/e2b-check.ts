@@ -23,6 +23,10 @@
  *      by address, over plain HTTP), a lookup, and what 169.254.169.254 answers. `restricted` is paused and
  *      resumed once to see the configuration and the names hold; then its lookup stub must name the host that
  *      was refused, and a host allowed while it runs (a repository's list) must be reached at once.
+ *      With WLP_MODEL_RELAY_URL and WLP_E2B_WINDLASS_VERSION=0.6.0 set as on the servers, the model
+ *      relay's network instead (docs/model-relay.md): api.openai.com is not reached, the relay's own
+ *      hostname is, and answers a placeholder of no turn with `relay_lease_ended` (so the hostname must be
+ *      routed to a server of this version), and WLP_PUBLIC_URL's host, when set, is not reached.
  *
  * Limits on itself:
  *
@@ -44,7 +48,7 @@ import type { AccessTokens, ChatgptLogins, RunTurnResult, ScriptedModel, TurnQue
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bSandboxInfo } from "../server/src/sandbox/e2b/client.js";
 import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
-import { readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
+import { e2bModelRelay, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
 import { cloneWithToken } from "../server/src/github/git.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
 import { type E2bSandboxHandle, E2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
@@ -302,9 +306,14 @@ async function main(): Promise<number> {
 
 	const network = async (): Promise<void> => {
 		if (process.env.WLP_E2B_CHECK_NETWORK !== "1") return;
+		// The model relay's settings as the servers have them: with them the sandbox reaches the relay's hostname and not api.openai.com.
+		const relayEnv = Object.fromEntries(["WLP_MODEL_RELAY", "WLP_MODEL_RELAY_URL", "WLP_E2B_WINDLASS_VERSION"].map((name) => [name, process.env[name] ?? ""]));
+		const relay = e2bModelRelay(relayEnv);
+		console.log(`      model relay: ${"host" in relay ? relay.origin : `off (${relay.off})`}`);
+		const publicHost = (() => { try { return new URL(process.env.WLP_PUBLIC_URL ?? "").hostname; } catch { return null; } })();
 		for (const mode of ["restricted", "none"] as const) {
 			await step(`network: ${mode}`, async () => {
-				const boxes = new E2bSandboxes(client, { ...settings, network: readE2bNetwork({ WLP_E2B_NETWORK: mode, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
+				const boxes = new E2bSandboxes(client, { ...settings, network: readE2bNetwork({ WLP_E2B_NETWORK: mode, ...relayEnv, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
 				const id = await boxes.create({ uid: "check", sessionId: `network-${mode}`, profile: "e2b" });
 				runs();
 				try {
@@ -320,7 +329,16 @@ async function main(): Promise<number> {
 						const lookup = await sh(handle, "getent hosts example.com; echo exit=$?");
 						const github = await sh(handle, "curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://github.com/; echo");
 						const said = `model ${model} | github ${github} | other ${other} | direct ${direct} | plain ${plain} | lookup ${lookup}`;
-						expect(`${mode}${when}: the model API answers (401 without a key)`, model === "401", said);
+						if ("host" in relay) {
+							// A placeholder of no turn: what the route answers it with is all that is looked at.
+							const relayed = await sh(handle, `H="authorization: Bearer wlpm1.none"; curl -sS --max-time 15 -H "$H" https://${relay.host}/model-relay/v1/models; echo; curl -sS --max-time 15 -o /dev/null -w 'root %{http_code}' https://${relay.host}/`);
+							expect(`${mode}${when}: with the model relay, api.openai.com is not reached`, model !== "401", said);
+							expect(`${mode}${when}: the relay's own hostname is reached, answers its route with relay_lease_ended and nothing else`, relayed.includes("relay_lease_ended") && relayed.includes("root 404"), relayed);
+							if (publicHost && publicHost !== relay.host) {
+								const platform = await sh(handle, `curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://${publicHost}/; echo`);
+								expect(`${mode}${when}: the platform's public host is not reached`, !/^[1-5]\d\d/.test(platform), platform);
+							}
+						} else expect(`${mode}${when}: the model API answers (401 without a key)`, model === "401", said);
 						expect(`${mode}${when}: example.com is not reached, by name, by address or over plain HTTP`, ![other, direct, plain].some((text) => text.includes("Example Domain")), said);
 						expect(`${mode}${when}: an unlisted name does not resolve`, /exit=[1-9]/.test(lookup), said);
 						expect(`${mode}${when}: github.com is ${mode === "restricted" ? "" : "not "}reachable`, mode === "restricted" ? /^(200|301|302)/.test(github) : !/^(200|301|302)/.test(github), said);

@@ -1,7 +1,7 @@
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 
-const purposes = ["user-token", "service-token", "github-state", "github-ticket", "pairing-budget", "attach-ticket"] as const;
+const purposes = ["user-token", "service-token", "github-state", "github-ticket", "pairing-budget", "attach-ticket", "model-relay"] as const;
 type Purpose = typeof purposes[number];
 const keys = new Map(config.signingKeys.map(({ id, secret }) => [
 	id, new Map(purposes.map(label => [label, Buffer.from(hkdfSync("sha256", secret, "", "windlass-platform v2 " + label, 32))])),

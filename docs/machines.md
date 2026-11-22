@@ -288,12 +288,39 @@ sessions with credential mounts and refuses to reopen them. Recreate those sessi
 the previously exposed setup token, and sign in with a fresh one. Restore archived work selectively.
 Before rolling back to a runner that mounts credentials, log out and disable its Claude harness.
 
+### Windlass's model relay on this machine
+
+A runner that knows the `model-relay` capability runs Windlass's model relay
+([model-relay.md](model-relay.md)) as `wlp-model-relay-<machine id>`, with the socket volume
+`wlp-model-socket-<machine id>`. It uses the pinned base image and carries the pairing's labels, so `prune`
+removes it. The relay's ceiling for the machine is 24 requests in flight, the same as the other relays. It
+is used only when both sides know it:
+
+- The server names `model-relay` in its welcome (`SERVER_CAPABILITIES` in `server/src/runner/control.ts`).
+  The runner then sets `Executor.modelRelays`. Its report carries `modelRelay`, and each `connect` of a
+  Windlass sandbox (never a harness one) answers `modelRelay: true`. A server that did not name the
+  capability gets neither, because its checks refuse keys they do not know. Both say true only when the
+  pinned sandbox image's Windlass is 0.6.0 or later, which the runner reads once the image is there (at
+  its first welcome). An older Windlass would send the placeholder to `api.openai.com`.
+- The server's `RunnerHandle` offers `TurnSandbox.modelRelay` only for a sandbox whose connect said so.
+  The turn then sends `modelRelay` (a lease, with a forwarder in the sandbox's network namespace),
+  `modelRelayToken` for each token, and `modelRelayClose` at the end (`server/src/runner/protocol.ts`). A
+  conversation that is lost ends its leases on the runner (`Conversation.orphan`). Suspending or removing
+  the sandbox ends its leases: the relay's file of each, its forwarder and the conversation's `relays`
+  entry. At its first welcome the runner removes every forwarder and relay file a runner that died left,
+  and the relay itself deletes files whose token has expired.
+
+Runners 0.3.0 and 0.3.1 ignore the name and say neither. Their turns get the token in a file, as before.
+If the relay cannot be had on a runner that offers it, the turn fails, and the token is never written into
+the container. `WLP_MODEL_RELAY=off` on the server turns it off for every machine.
+
 ### What the runner cannot do, and what the platform cannot do
 
 The runner cannot start a container of
 another image, run anything on the machine outside the containers it made, touch a container or a volume
 it did not make, or reach a session that did not hand it a ticket. Each Windlass turn is
-handed a ChatGPT access token in a file, as on every place. The platform, for its part, cannot reach the
+handed a ChatGPT access token: to the machine's model relay with a current runner, or in a file in the
+container with runners 0.3.0 and 0.3.1. The platform, for its part, cannot reach the
 machine except through its runner, and does not control it: whoever runs the machine can change what
 runs there and what it reports. The launch form, the profiles and a pull request's section say so.
 

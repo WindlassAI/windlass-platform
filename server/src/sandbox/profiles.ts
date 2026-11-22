@@ -1,9 +1,11 @@
 /**
  * The sandbox profiles and what each promises. In every profile the user's ChatGPT sign-in stays out of
- * the sandbox: a turn is handed a short-lived access token in a session-private file
- * (token-file.ts). `commandsCanReadAccessToken` says whether a command the agent runs can read that
- * file: not where Windlass sandboxes commands (its sandbox replaces /dev and hides the data directory), yes where commands
- * run directly in the container. web/src/api/mock.ts repeats these texts for the web app's mock.
+ * the sandbox: a turn's token file in a session-private place (token-file.ts) holds either a short-lived
+ * access token or, where the sandbox has Windlass's model relay (`modelRelay`, docs/model-relay.md), a
+ * placeholder for the turn, while the token stays outside. `commandsCanReadAccessToken` says whether a
+ * command the agent runs can read that file: not where Windlass sandboxes commands (its sandbox replaces
+ * /dev and hides the data directory), yes where commands run directly in the container. The summary is
+ * written from both (`withModelRelay`). web/src/api/mock.ts repeats these texts for the web app's mock.
  *
  * `PROFILES` is the list of a server on local Docker; `profilesFor` gives the list of either kind of
  * server, `e2bProfile` says what the E2B profile promises and why, and `e2bOpenProfile` what the
@@ -208,12 +210,57 @@ export function e2bOpenProfile(options: ({ offered: true } | { offered: false; r
 /** What a server on E2B says of `e2b-open` when WLP_E2B_OPEN_PROFILE is not set. */
 export const OPEN_PROFILE_NOT_OFFERED = "This deployment does not offer it: its operator has not set WLP_E2B_OPEN_PROFILE=1.";
 
+/** The relay's caps per turn as a summary says them: sandbox/relay/server.cjs `limits` and relay-leases.ts `ROUTE_LIMITS`. */
+const RELAY_CAPS = "8 at once, 32 waiting";
+
+/** What a placeholder lets whoever reads it do, where the token is kept outside `where`. */
+export function relayPlaceholderSentences(reader: string, where: string): string {
+	return `${reader} can read only a placeholder for this turn. With it they can make model requests on your ChatGPT plan through the relay while the turn runs (${RELAY_CAPS}). The access token never enters the ${where}.`;
+}
+
+/**
+ * The profile as a sandbox with Windlass's model relay has it: `modelRelay`, and a summary whose sentences
+ * about the access token say what holds instead. `commandsCanReadAccessToken` keeps its meaning (the
+ * token file, which then holds the placeholder).
+ */
+export function withModelRelay(profile: SandboxProfile, network: EgressMode = "open"): SandboxProfile {
+	const summary = relaySummary(profile, network);
+	return summary === null ? profile : { ...profile, layers: [...profile.layers], summary, modelRelay: true };
+}
+
+function relaySummary(profile: SandboxProfile, mode: EgressMode): string | null {
+	const commands = relayPlaceholderSentences("Commands", profile.id.startsWith("e2b") ? "microVM" : "container");
+	const others = relayPlaceholderSentences("Approved local MCP servers and processes left from setup", profile.id.startsWith("e2b") ? "microVM" : "container");
+	const network = hostedNetworkSentence(mode);
+	switch (profile.id) {
+		case "docker-windlass-sandbox":
+			return `Windlass sandboxes each agent command inside this session's Docker container. Commands have no network and cannot read the session's token file. ${others} Your ChatGPT sign-in is never in the container.`;
+		case "docker-hardened":
+			return `Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access. The session has a data directory of its own, so they cannot read your other sessions' conversations. ${commands} Your ChatGPT sign-in is never in the container.`;
+		case "e2b":
+			return profile.commandsCanReadAccessToken
+				? `A microVM of its own, hosted by E2B. Windlass asks before running a command it cannot sandbox. If allowed, that command has network access. ${commands} Your ChatGPT sign-in is never in the microVM.${network}`
+				: `Windlass sandboxes each agent command inside this session's E2B microVM. Commands have no network and cannot read the session's token file. ${others} Your ChatGPT sign-in is never in the microVM.${network}`;
+		case "e2b-open": {
+			const reach = mode === "open" ? "They can reach any host on the network" : mode === "restricted" ? "They can reach the model API, GitHub and the hosts this deployment allows, and no other host" : "They can reach the model API and no other host";
+			return `Windlass initially runs agent commands directly in this session's E2B microVM without asking first. ${reach}, and write outside the workspace. ${commands} Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Existing home files are then read-only, and new home files are kept apart for the session. Your ChatGPT sign-in is never in the microVM.`;
+		}
+		default:
+			return null;
+	}
+}
+
 /**
  * Every profile, in the picker's order, as a server of this kind offers them. A deployment has one
  * provider: a server on Docker cannot reach E2B, and one on E2B makes no local containers, since a
  * container on one server machine is out of reach of the others.
  */
-export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean; openProfile: boolean; network?: EgressMode } = { windlassSandbox: false, openProfile: false }): SandboxProfile[] {
+export function profilesFor(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean; openProfile: boolean; network?: EgressMode } = { windlassSandbox: false, openProfile: false }, modelRelay = false): SandboxProfile[] {
+	const relayed = (profile: SandboxProfile) => (modelRelay && (provider === "e2b" ? profile.id.startsWith("e2b") : profile.id.startsWith("docker-")) ? withModelRelay(profile, provider === "e2b" ? e2b.network : "open") : profile);
+	return profilesOf(provider, e2b).map(relayed);
+}
+
+function profilesOf(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean; openProfile: boolean; network?: EgressMode }): SandboxProfile[] {
 	return PROFILES.map((profile): SandboxProfile => {
 		if (provider === "e2b" && profile.id === "e2b") return e2bProfile(e2b);
 		if (provider === "e2b" && profile.id === "e2b-open") return e2bOpenProfile({ ...(e2b.openProfile ? { offered: true as const } : { offered: false as const, reason: OPEN_PROFILE_NOT_OFFERED }), network: e2b.network });

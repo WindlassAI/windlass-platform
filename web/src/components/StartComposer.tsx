@@ -101,6 +101,8 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 			? { text: "credentials on machine", long: "Commands can use the OpenCode model relay. Provider credentials stay on the machine.", open: true }
 			: claude
 			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
+			: profile.modelRelay
+				? { text: profile.commandsCanReadAccessToken ? "placeholder readable" : "placeholder hidden from commands", long: accessTokenFact(profile), open: profile.commandsCanReadAccessToken }
 			: profile.commandsCanReadAccessToken
 				? { text: "token readable", long: accessTokenFact(profile), open: true }
 				: { text: "token hidden from commands", long: accessTokenFact(profile), open: false },

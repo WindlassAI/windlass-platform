@@ -7,4 +7,8 @@ ingress:
   - hostname: engine.example.com
     path: '^/(metadata|gateway/((login|user|agentSession)/action/[A-Za-z][A-Za-z0-9]*|(user|agentSession)/connect|machine/websocket/control|agentSession/websocket/runner))$'
     service: http://127.0.0.1:16420
+  # Windlass's model relay for E2B sandboxes (WLP_MODEL_RELAY_URL): only its two routes, to the server's port.
+  - hostname: relay.example.com
+    path: '^/model-relay/v1/(models|responses)$'
+    service: http://127.0.0.1:16440
   - service: http_status:404

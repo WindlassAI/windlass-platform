@@ -244,6 +244,39 @@ removes it; opening a session's changes in the browser resumes its sandbox for t
 and a turn whose command stream to E2B breaks ends as a failed turn, though the sandbox goes on until its
 timeout.
 
+### The model relay
+
+With the relay, an E2B sandbox never holds the user's access token: Windlass sends its model requests to the
+server's relay route with a placeholder ([model-relay.md](model-relay.md)). It needs three settings on every
+server of the deployment:
+
+- `WLP_MODEL_RELAY_URL=https://<relay hostname>`, a DNS name of the relay's own, such as
+  `https://windlass-relay.example.com`.
+- `WLP_E2B_WINDLASS_VERSION=0.6.0` (or the template's later version): an older Windlass would send the
+  placeholder to `api.openai.com`.
+- `WLP_MODEL_RELAY` unset or `on`.
+
+Route the relay's hostname to the same server port as `WLP_PUBLIC_URL`, over HTTPS on 443, and keep the
+`Host` header. With the self-hosted Cloudflare Tunnel, that is one more ingress rule and one DNS route
+([deploy/selfhost/README.md](../deploy/selfhost/README.md#the-model-relays-hostname)). The server answers only
+the relay's two paths on that name. Without `WLP_MODEL_RELAY_URL` E2B turns get the token in the sandbox, as
+before, and the server logs `e2b.model_relay: off (WLP_MODEL_RELAY_URL is not set)` once at startup.
+
+The relay's limits are per server process: 8 requests in flight and 32 waiting per turn, 16 in flight and 300
+a minute per user, and `WLP_MODEL_RELAY_REQUESTS` (64) in all. With several server processes each has its
+own. They bound how many requests run at once, not what a user spends: a user's turns can still use their
+plan's quota through the relay while they run.
+
+Once a server of this version answers on the relay's hostname, check the network of the real service. One
+short sandbox in `restricted`, then one in `none`: `api.openai.com` is not reached, the relay's hostname
+answers its route with `relay_lease_ended` and every other path with a 404, and the platform's public host is
+not reached:
+
+```sh
+cd server && E2B_API_KEY=e2b_... WLP_E2B_CHECK_NETWORK=1 WLP_MODEL_RELAY_URL=https://<relay hostname> \
+  WLP_E2B_WINDLASS_VERSION=0.6.0 WLP_PUBLIC_URL=https://<platform hostname> npx tsx ../scripts/e2b-check.ts
+```
+
 ### Network
 
 `WLP_E2B_NETWORK` sets what every sandbox of the deployment may reach: the hosted counterpart of a machine's
@@ -255,7 +288,7 @@ microVM and share it, so the server adds the hosts its own steps need, from its 
 
 | Step in the microVM | Host |
 |---|---|
-| Model requests of the turn's engine | `api.openai.com` |
+| Model requests of the turn's engine | `api.openai.com`; with the model relay the host of `WLP_MODEL_RELAY_URL` instead ([model-relay.md](model-relay.md)), in `none` too. The platform's own public host is never added |
 | Clone, fetch and push, as the transport user | the host of `WLP_GITHUB_URL` (`github.com`) |
 | Memory backups and screenshots, with a signed link | the bucket's host (`WLP_BUCKET_ENDPOINT`, with the bucket before it in `virtual` style) |
 

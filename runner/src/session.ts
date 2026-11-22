@@ -4,6 +4,9 @@ import type { Hello, Operation, Value } from "../../server/src/runner/protocol.j
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
+import { containerName } from "../../server/src/sandbox/sandboxes.js";
+import type { DockerTurnRelay } from "../../server/src/sandbox/model-relay.js";
+import { randomBytes } from "node:crypto";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
 import { cleanClaudeOutput, claudeStream } from "./claude-output.js";
@@ -35,6 +38,8 @@ class Conversation {
 	private pipes = new Set<DockerProcess>();
 	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string }>();
 	private runs = new Map<string, AbortController>();
+	/** The turns' leases of the model relay this conversation opened, by the name the server knows them by. */
+	private relays = new Map<string, { relay: DockerTurnRelay; id: string; untrack: () => void }>();
 	constructor(private owner: Executor, private session: string, private channel: RunnerChannel) {}
 	input(id: string, data: string) { this.processes.get(id)?.p.write(data); }
 	eof(id: string) { this.processes.get(id)?.p.closeStdin(); }
@@ -46,6 +51,10 @@ class Conversation {
 	async orphan() {
 		this.active = false;
 		this.pause(false);
+		// The server that opened them is gone: their turns end, and the relay forgets their tokens.
+		const leases = [...this.relays.values()].map(({ relay, untrack }) => { untrack(); return relay.close(); });
+		this.relays.clear();
+		await Promise.all(leases);
 		const stops = [...this.processes.values()].map(async ({ p, acp, handle, id }) => {
 			p.closeStdin();
 			if (acp) {
@@ -141,6 +150,31 @@ class Conversation {
 				case "removeFiles": await h.removeFiles(op.args.paths); return null;
 				case "stopLeftovers": return await h.stopLeftovers(op.args.program);
 				case "sweep": return await h.sweep(op.args.tag, op.args.options);
+				case "modelRelay": {
+					if (box.harness || !o.modelRelays || !o.modelRelayReady) throw new Refusal("This sandbox's turns cannot use the model relay.");
+					const relay = await o.modelRelay.open(containerName(box.raw), box.raw);
+					if (!this.active) { await relay.close(); throw new Refusal("The session conversation ended."); }
+					const lease = randomBytes(16).toString("hex");
+					// A suspend or removal of the sandbox ends it too, and takes it out of this conversation.
+					const untrack = o.trackRelay(id, async () => { this.relays.delete(lease); await relay.close(); });
+					this.relays.set(lease, { relay, id, untrack });
+					return { lease, placeholder: relay.placeholder, env: relay.env };
+				}
+				case "modelRelayToken": {
+					const held = this.relays.get(op.args.lease);
+					if (held?.id !== id) throw new Refusal("This model relay lease is not this sandbox's, or it has ended.");
+					await held.relay.hand({ accessToken: op.args.accessToken, expiresAt: op.args.expiresAt });
+					return null;
+				}
+				case "modelRelayClose": {
+					const held = this.relays.get(op.args.lease);
+					if (held?.id === id) {
+						this.relays.delete(op.args.lease);
+						held.untrack();
+						await held.relay.close();
+					}
+					return null;
+				}
 			}
 		} finally { box.busy--; box.usedAt = Date.now(); }
 	}

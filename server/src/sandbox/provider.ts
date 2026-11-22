@@ -14,7 +14,7 @@
 
 import { randomBytes } from "node:crypto";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
-import type { ExecResult, SandboxHandle } from "./api.js";
+import type { AccessToken, ExecResult, SandboxHandle } from "./api.js";
 
 /** Windlass's data directory inside a sandbox (`$XDG_DATA_HOME` is unset, so `~/.local/share/windlass`). */
 export const DATA_DIR = "/home/agent/.local/share/windlass";
@@ -149,6 +149,26 @@ export interface TurnSandbox extends SandboxHandle {
 	 * cannot be kept running.
 	 */
 	holdForTurn(): Promise<() => Promise<void>>;
+	/**
+	 * Windlass's model relay for one turn (docs/model-relay.md). Where it is there, the turn's token file
+	 * holds the lease's placeholder and the token goes to the relay instead; where it is not, the token
+	 * goes into the file as before (a runner older than `model-relay`, a deployment with
+	 * WLP_MODEL_RELAY=off). Rejects when the relay cannot be had: the turn then fails, and nothing is
+	 * written into the sandbox.
+	 */
+	modelRelay?(): Promise<TurnModelRelay>;
+}
+
+/** One turn's lease of the model relay. */
+export interface TurnModelRelay {
+	/** What Windlass is started with besides its token file: WINDLASS_MODEL_BASE_URL, and WINDLASS_MODEL_ALLOWED_ORIGIN for a relay outside loopback. Names and an address: no secret. */
+	readonly env: Record<string, string>;
+	/** What the sandbox's token file holds in place of the token: a bearer only this relay takes, for this turn. */
+	readonly placeholder: string;
+	/** Gives the relay the turn's current token; a request that starts after it carries the new one. */
+	hand(token: AccessToken): Promise<void>;
+	/** Ends the lease: the relay forgets the turn's token and refuses its placeholder. Never rejects. */
+	close(): Promise<void>;
 }
 
 /** Sets the mark `isTurnSandbox` looks for. Called by a provider's handle in its constructor. */

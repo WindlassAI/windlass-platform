@@ -8,7 +8,9 @@
  * the same microVM. So the hosts the platform's own steps need are always in the list, computed from the
  * server's configuration and never typed by hand:
  *
- *   the model API      Windlass's engine calls api.openai.com (its RESPONSES_BASE_URL) from the sandbox
+ *   the model API      Windlass's engine calls api.openai.com (its RESPONSES_BASE_URL) from the sandbox,
+ *                      or, with the model relay, WLP_MODEL_RELAY_URL's host and not api.openai.com
+ *                      (`e2bModelRelay`): the relay's own name, which the server serves nothing else on
  *   the git host       clone, fetch and push run in the sandbox as the transport user, against
  *                      WLP_GITHUB_URL (github.com): `restricted` only, `none` refuses repositories
  *   the bucket         memory backups and screenshots are sent from the sandbox with a signed link to
@@ -27,6 +29,7 @@
  * network, no cloud metadata) already holds there; the stricter step on E2B is a list of hosts.
  */
 
+import { MODEL_RELAY_WINDLASS, parseModelRelayUrl, readsModelRelay } from "../../model-relay-url.js";
 import { type EgressMode, NETWORK_PRESETS, type NetworkPreset } from "../../contract.js";
 
 /** Windlass's engine sends its model requests here (light-harness packages/core/src/provider/openai-responses.ts, RESPONSES_BASE_URL). */
@@ -108,6 +111,31 @@ export function allowList(raw: string): string[] {
 	return out;
 }
 
+/**
+ * Whether E2B sandboxes send Windlass's model requests to the relay route instead of api.openai.com
+ * (docs/model-relay.md), and where: the origin of WLP_MODEL_RELAY_URL, a hostname of the relay's own. Off,
+ * and the turn's token goes into the sandbox as before, with WLP_MODEL_RELAY=off, without
+ * WLP_MODEL_RELAY_URL (never the platform's whole public host instead), or when the template's Windlass
+ * (WLP_E2B_WINDLASS_VERSION) is not known to be 0.6.0 or later: an older one ignores the relay's address
+ * and would send the placeholder to api.openai.com.
+ */
+export function e2bModelRelay(env: NodeJS.ProcessEnv = process.env): { origin: string; host: string } | { off: string } {
+	if ((env.WLP_MODEL_RELAY ?? "").trim().toLowerCase() === "off") return { off: "WLP_MODEL_RELAY=off" };
+	const url = parseModelRelayUrl(env.WLP_MODEL_RELAY_URL);
+	if (url === null) return { off: "WLP_MODEL_RELAY_URL is not set" };
+	if ("problem" in url) return { off: url.problem };
+	const version = (env.WLP_E2B_WINDLASS_VERSION ?? "").trim();
+	if (!readsModelRelay(version))
+		return { off: `WLP_E2B_WINDLASS_VERSION is ${version === "" ? "not set" : version}, and the relay needs Windlass ${MODEL_RELAY_WINDLASS} or later in the template` };
+	return url;
+}
+
+/** `e2bModelRelay`'s origin, or null when the relay is off for E2B. */
+export function e2bModelRelayOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
+	const relay = e2bModelRelay(env);
+	return "origin" in relay ? relay.origin : null;
+}
+
 /** WLP_E2B_NETWORK and WLP_E2B_NETWORK_ALLOW, with the platform's own hosts added. */
 export function readE2bNetwork(env: NodeJS.ProcessEnv = process.env): E2bNetwork {
 	const raw = (env.WLP_E2B_NETWORK ?? "").trim().toLowerCase();
@@ -115,7 +143,10 @@ export function readE2bNetwork(env: NodeJS.ProcessEnv = process.env): E2bNetwork
 	const allow = env.WLP_E2B_NETWORK_ALLOW;
 	if (allow !== undefined && allow.trim() !== "" && mode !== "restricted") throw new Error("WLP_E2B_NETWORK_ALLOW applies only with WLP_E2B_NETWORK=restricted");
 	if (mode === "open") return { mode, hosts: [] };
-	const hosts = [...MODEL_HOSTS];
+	// With the model relay, its own host in place of the model API's, in `none` too: Windlass's requests go
+	// there (docs/model-relay.md), and nothing in the sandbox has a token api.openai.com would take.
+	const relay = e2bModelRelay(env);
+	const hosts = "host" in relay ? [relay.host] : [...MODEL_HOSTS];
 	const bucket = bucketName(env);
 	if (bucket !== null) hosts.push(bucket);
 	if (mode === "restricted") {

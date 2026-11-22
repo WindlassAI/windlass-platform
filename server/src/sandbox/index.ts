@@ -15,6 +15,8 @@ import { DockerLoginRunner } from "./logins.js";
 import { DockerSandboxes } from "./sandboxes.js";
 import { dropSessionVolume, ensureSessionVolume, ensureUserVolume, removeTokenFiles, sessionVolume, userVolume } from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
+import { IMAGE } from "./docker.js";
+import { DockerModelRelay, type DockerModelRelayOptions, HOSTED_RELAY_USER_REQUESTS } from "./model-relay.js";
 
 export interface DockerSandboxLayer extends SandboxLayer {
 	sandboxes: DockerSandboxes;
@@ -42,6 +44,13 @@ export interface SandboxLayerOptions {
 	tokenNetwork?: "bridge" | "none";
 	/** With "memory": more `docker run` flags for that helper (a volume a stand-in for the sign-in service reads its plan from). */
 	signInHelperFlags?: string[];
+	/**
+	 * Windlass's model relay (docs/model-relay.md). Left out: the server's layer has it unless
+	 * WLP_MODEL_RELAY=off, and a check's layer (`signIns: "memory"`) does not, so the checks of the token
+	 * file in the sandbox, which runners older than `model-relay` still use, go on checking that. "off":
+	 * none. Options: a relay with them (the relay's own checks).
+	 */
+	modelRelay?: "off" | Partial<DockerModelRelayOptions>;
 }
 
 export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSandboxLayer {
@@ -56,12 +65,16 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 					ensureUserData,
 				})
 			: { ...actorSignIns({ ensureUserData }), directory: null };
+	const relayOptions = options.modelRelay ?? (options.signIns !== "memory" && config.modelRelay.on ? {} : "off");
+	const modelRelay = relayOptions === "off" ? undefined
+		: new DockerModelRelay({ machine: "", image: image ?? IMAGE, requests: config.modelRelay.requests, userRequests: HOSTED_RELAY_USER_REQUESTS, ...relayOptions });
 	return {
 		// The hosted provider: its containers carry no machine, and mount the user's volume of this machine.
 		sandboxes: new DockerSandboxes({
 			image,
 			shotsImage: options.shotsImage,
 			machine: null,
+			modelRelay,
 			deployment: snapshotDeployment(config.storagePath, config.snapshots),
 			mirrorScope: mirrorDeployment(config.storagePath),
 			dataVolume: async (uid, sandbox) => {

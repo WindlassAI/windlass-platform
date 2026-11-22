@@ -67,6 +67,7 @@ import {
 	SWEEP_SCRIPT,
 	type SandboxProcess,
 	type StartOptions,
+	type TurnModelRelay,
 	type TurnSandbox,
 	WORKSPACE,
 	assertEnvNames,
@@ -78,6 +79,7 @@ import {
 	shellQuote,
 } from "../provider.js";
 import { tokenFilePath } from "../token-file.js";
+import { openRelayLease } from "../relay-leases.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
 import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, type E2bSettings } from "./config.js";
 import { describeUsage, pricePerSecond } from "./pricing.js";
@@ -176,9 +178,21 @@ export class E2bSandboxHandle implements TurnSandbox {
 		readonly approval: "auto" | "full",
 		/** What the sandbox may reach as it was connected (`E2bSandboxes.networkFor`): its lookups of these are no blocked hosts. */
 		private readonly network: E2bNetwork = { mode: "open", hosts: [] },
+		/** The session the sandbox was made for (its `wlp_session`): a relay lease names it, so any server process finds the turn. */
+		session?: string,
 	) {
 		markTurnSandbox(this);
+		const relay = owner.modelRelayOrigin;
+		// A sandbox that names no session cannot have a lease any server process finds: its turns fail, and
+		// never get the token in the sandbox in its place.
+		if (relay !== null) this.modelRelay = async () => {
+			if (!session) throw new Error("this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay");
+			return openRelayLease({ uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs });
+		};
 	}
+
+	/** `TurnSandbox.modelRelay`, where the deployment's sandboxes reach the relay route. */
+	readonly modelRelay?: () => Promise<TurnModelRelay>;
 
 	/** The names its lookup stub was asked for that it may not reach (network.ts `DNS_STUB`); none in `open`, or when the log cannot be read. */
 	async blockedHosts(skip: Iterable<string> = []): Promise<string[]> {
@@ -506,6 +520,19 @@ export class E2bSandboxes implements Sandboxes {
 		this.sleep = options.sleep ?? realSleep;
 		this.holdCommandsAfterMs = Math.floor(settings.idleTimeoutMs / 3);
 		this.idleStopMs = settings.idleTimeoutMs;
+		this.log(settings.modelRelayOrigin
+			? `[wlp] e2b.model_relay: Windlass's model requests go through ${settings.modelRelayOrigin}/model-relay/v1, and sandboxes may reach that host instead of api.openai.com; they never hold the access token`
+			: `[wlp] e2b.model_relay: off (${settings.modelRelayOff ?? "not configured"}): each turn's access token is written into its sandbox`);
+	}
+
+	/** Where Windlass's model requests go (E2bSettings.modelRelayOrigin), or null. */
+	get modelRelayOrigin(): string | null {
+		return this.settings.modelRelayOrigin ?? null;
+	}
+
+	/** How long a relay placeholder's signature counts: the longest turn, and some room. The lease itself ends with the turn. */
+	get relayLeaseMs(): number {
+		return this.settings.turnLimitMs + 15 * 60_000;
 	}
 
 	/** By E2B's published prices for the size of the deployment's sandboxes (pricing.ts): an estimate. */
@@ -522,7 +549,7 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	profiles(): SandboxProfile[] {
-		return profilesFor("e2b", { ...this.settings, network: this.network.mode });
+		return profilesFor("e2b", { ...this.settings, network: this.network.mode }, this.modelRelayOrigin !== null);
 	}
 
 	/** WLP_E2B_NETWORK: what every sandbox of the deployment may reach (network.ts). */
@@ -645,7 +672,7 @@ export class E2bSandboxes implements Sandboxes {
 			this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; the newest (id=${id}) was removed again`);
 			throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 		}
-		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval, network);
+		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval, network, input.sessionId);
 		try {
 			// Before anything of the session's runs in it: from the first command on, only the allowed names resolve.
 			if (config !== null) await this.guestNetwork(connection, network);
@@ -690,7 +717,7 @@ export class E2bSandboxes implements Sandboxes {
 		// The profile the sandbox was made with, as E2B keeps it: whichever server connects runs Windlass the same way.
 		const made = sandboxProfile(info.metadata);
 		const network = this.networkFor(`id=${id}`, options.network);
-		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval, network);
+		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval, network, info.metadata[META.session]);
 		if (paused) {
 			const running = await this.running().catch(() => null);
 			if (running !== null && running.length > this.settings.maxRunning) {

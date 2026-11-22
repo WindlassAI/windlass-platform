@@ -219,6 +219,12 @@ In neither profile can a command read the ChatGPT sign-in: it is not in the cont
 can read in the hardened profile expires about an hour after issue. During a turn, an unsandboxed command or an approved local MCP server can also read replacements. When such a command
 prints the token as it is, the platform takes it out of the turn's events, so it does not reach the timeline.
 
+With the model relay ([model-relay.md](model-relay.md)), on by default for hosted Docker and for machines whose
+runner offers it, the container never holds the token in either profile. The token file holds a placeholder
+that only the turn's own relay connection accepts, and "can read the turn's access token" means only that
+placeholder. The profiles' `commandsCanReadAccessToken` stays as the table says. It also decides how saved
+secrets and MCP questions are treated, and a command can still use the model on the user's plan through the relay.
+
 The Windlass profile ships Docker 29.1.3’s default seccomp filter (moby/profiles
 `seccomp/v0.1.0`) with one rule for bubblewrap’s namespace and mount setup. The Docker CLI reads
 `sandbox/seccomp-bwrap.json` locally and sends its contents to the daemon. Bubblewrap still needs

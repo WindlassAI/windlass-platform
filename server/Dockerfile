@@ -59,6 +59,9 @@ COPY --from=deps --chown=node:node /app/.data .data
 COPY server/tsconfig.json server/
 COPY server/src server/src
 COPY sandbox/seccomp-bwrap.json sandbox/seccomp-bwrap.LICENSE sandbox/
+# Windlass's model relay (docs/model-relay.md): the route reads the relay's filters, and hosted Docker runs the relay and its forwarder from these.
+COPY sandbox/relay sandbox/relay
+COPY runner/src/egress-proxy.mjs runner/src/
 # The fake layer replays these; config.ts names the directory.
 COPY fixtures fixtures
 

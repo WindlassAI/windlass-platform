@@ -11,6 +11,14 @@ const http = require('node:http');
 const https = require('node:https');
 
 const decoders = new Map([['gzip', createGunzip], ['deflate', createInflate], ['br', createBrotliDecompress], ['zstd', createZstdDecompress]]);
+const { gunzipSync, inflateSync, brotliDecompressSync, zstdDecompressSync } = require('node:zlib');
+const syncDecoders = new Map([['gzip', gunzipSync], ['deflate', inflateSync], ['br', brotliDecompressSync], ['zstd', zstdDecompressSync]]);
+/** An upstream error body as text, decoded when compressed; at most 64 KiB in and out. */
+function decodeError(bytes, encoding) {
+	const decode = encoding && encoding.toLowerCase() !== 'identity' ? syncDecoders.get(encoding.toLowerCase()) : undefined;
+	if (encoding && encoding.toLowerCase() !== 'identity' && !decode) return '';
+	return (decode ? decode(bytes, { maxOutputLength: 65536 }) : bytes).toString('utf8');
+}
 const messages = new Set(['/v1/messages', '/v1/messages?beta=true', '/v1/messages/count_tokens', '/v1/messages/count_tokens?beta=true']);
 const requestHeaders = new Set(['accept', 'content-type', 'anthropic-beta', 'anthropic-version', 'user-agent', 'x-app',
 	'anthropic-dangerous-direct-browser-access', 'x-client-request-id', 'x-claude-code-session-id']);
@@ -210,7 +218,7 @@ function limitHeaders(headers, secrets = []) {
 }
 exports.limitHeaders = limitHeaders;
 
-function reject(res, status, { restarting = false, message: own, headers = {} } = {}) {
+function reject(res, status, { restarting = false, message: own, headers = {}, code } = {}) {
 	let type = 'api_error', message = 'The provider rejected the request.';
 	if (status === 401) {
 		type = 'authentication_error';
@@ -228,24 +236,33 @@ function reject(res, status, { restarting = false, message: own, headers = {} } 
 		message = "The provider failed or couldn't be reached.";
 	}
 	res.writeHead(status, { ...headers, 'content-type': 'application/json' });
-	res.end(JSON.stringify({ type: 'error', error: { type, message: own ?? message } }));
+	res.end(JSON.stringify({ type: 'error', error: { type, ...(code && { code }), message: own ?? message } }));
 }
 
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides }) {
+	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892' }) {
 	const limits = { ...exports.limits, ...overrides };
 	const sessions = new WeakMap();
 	// Per nonce: open connections, requests in flight and requests waiting. `waiting` is the relay's one FIFO.
 	const open = new Map(), inFlight = new Map(), queued = new Map(), waiting = [];
+	// Per user, where the provider names one for a nonce (a relay of many users' turns): requests in flight.
+	const userInFlight = new Map();
+	// Per nonce: how to stop each of its requests at once, when its lease ends (`endSession`).
+	const active = new Map();
+	// The relay's own 401: where the provider gives it a code, the client can tell it from the provider's.
+	const unauthorized = res => reject(res, 401, provider?.unauthorizedCode ? { code: provider.unauthorizedCode,
+		message: 'The model relay has no lease for this turn any more: the turn ended, or the relay was restarted.' } : {});
 	// Per socket: what to run when it closes (one listener, however many requests are pipelined on it).
 	const onClose = new WeakMap();
 	let machineInFlight = 0;
 	const add = (map, key, n) => { const v = (map.get(key) ?? 0) + n; if (v) map.set(key, v); else map.delete(key); };
 	const busy = (res, message) => reject(res, 503, { message, headers: { 'retry-after': '2' } });
-	const room = nonce => (inFlight.get(nonce) ?? 0) < limits.sessionRequests && machineInFlight < limits.machineRequests;
-	const full = nonce => (inFlight.get(nonce) ?? 0) >= limits.sessionRequests
+	const userRoom = user => user === undefined || (userInFlight.get(user) ?? 0) < (limits.userRequests ?? Infinity);
+	const room = (nonce, user) => (inFlight.get(nonce) ?? 0) < limits.sessionRequests && userRoom(user) && machineInFlight < limits.machineRequests;
+	const full = (nonce, user) => (inFlight.get(nonce) ?? 0) >= limits.sessionRequests
 		? `Too many model requests at once from this session (${limits.sessionRequests}).`
+		: !userRoom(user) ? `Too many model requests at once from your sessions (${limits.userRequests}).`
 		: `Too many model requests at once on this machine (${limits.machineRequests}).`;
 	function leave(entry) {
 		const at = waiting.indexOf(entry);
@@ -258,12 +275,12 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	function drain() {
 		for (let i = 0; i < waiting.length && machineInFlight < limits.machineRequests;) {
 			const entry = waiting[i];
-			if (room(entry.nonce)) { leave(entry); entry.grant(); } else i++;
+			if (room(entry.nonce, entry.user)) { leave(entry); entry.grant(); } else i++;
 		}
 	}
 	// Counted from the accepted lease to the end of the response, and released once on every path. Uses
 	// req.socket: a pipelined request's response is not attached to its socket until the ones before it finish.
-	function admit(req, res, nonce) {
+	function admit(req, res, nonce, user) {
 		const closing = onClose.get(req.socket);
 		return new Promise(resolve => {
 			let released = false;
@@ -273,15 +290,17 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				res.off('close', release); closing.delete(release);
 				machineInFlight--;
 				add(inFlight, nonce, -1);
+				if (user !== undefined) add(userInFlight, user, -1);
 				drain();
 			};
 			const start = () => {
 				add(inFlight, nonce, 1);
+				if (user !== undefined) add(userInFlight, user, 1);
 				machineInFlight++;
 				res.once('close', release); closing.add(release);
 				resolve(true);
 			};
-			if (room(nonce)) return start();
+			if (room(nonce, user)) return start();
 			if ((queued.get(nonce) ?? 0) >= limits.sessionWaiting)
 				return busy(res, `Too many model requests waiting from this session (${limits.sessionWaiting}).`), resolve(false);
 			if (waiting.length >= limits.machineWaiting)
@@ -289,8 +308,8 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			const done = () => { clearTimeout(timer); res.off('close', gone); closing.delete(gone); };
 			// The client went away while waiting: it leaves the queue and never reaches the provider.
 			const gone = () => { if (leave(entry)) { done(); resolve(false); } };
-			const entry = { nonce, grant: () => { done(); start(); } };
-			const timer = setTimeout(() => { if (leave(entry)) { done(); busy(res, full(nonce)); resolve(false); } }, limits.waitMs);
+			const entry = { nonce, user, grant: () => { done(); start(); } };
+			const timer = setTimeout(() => { if (leave(entry)) { done(); busy(res, full(nonce, user)); resolve(false); } }, limits.waitMs);
 			res.once('close', gone); closing.add(gone);
 			waiting.push(entry);
 			add(queued, nonce, 1);
@@ -303,20 +322,37 @@ exports.createRelay = function createRelay({ publicKey, machine,
 		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
 		if (provider?.closeEachReply) res.setHeader('connection', 'close');
 		try {
-			if (req.headers.host !== '127.0.0.1:17892' || (provider?.methodFor ? req.method !== provider.methodFor(req.url) : req.method !== 'POST') || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
+			if (req.headers.host !== host || (provider?.methodFor ? req.method !== provider.methodFor(req.url) : req.method !== 'POST') || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
 				return reject(res, 403);
 			const bearer = provider ? provider.bearer(req.headers, req.url) : req.headers.authorization;
-			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? '');
-			if (!match || !verify(null, Buffer.from(domain + '\n' + machine + '\n' + match[1]),
-				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
-			if (sessions.get(req.socket) !== match[1]) return reject(res, 401);
-			if (req.socket.destroyed || res.destroyed || !await admit(req, res, match[1])) return;
+			const nonce = sessions.get(req.socket);
+			let user;
+			if (provider?.authorize) {
+				// A relay without a signing key: the provider checks the bearer against the lease of the connection's nonce.
+				const lease = nonce ? await provider.authorize(bearer, nonce) : false;
+				if (!lease) return unauthorized(res);
+				if (typeof lease === 'object' && typeof lease.user === 'string') user = lease.user;
+			} else {
+				const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? '');
+				if (!match || !verify(null, Buffer.from(domain + '\n' + machine + '\n' + match[1]),
+					publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
+				if (nonce !== match[1]) return reject(res, 401);
+			}
+			if (req.socket.destroyed || res.destroyed || !await admit(req, res, nonce, user)) return;
+			// From here until the response ends, the lease's end stops this request (`endSession`).
+			const stop = () => { res.destroy(); };
+			let mine = active.get(nonce);
+			if (!mine) active.set(nonce, mine = new Set());
+			mine.add(stop);
+			res.once('close', () => { mine.delete(stop); if (!mine.size && active.get(nonce) === mine) active.delete(nonce); });
 			let target;
-			let claudeToken;
-			const secrets = () => claudeToken ? [claudeToken] : provider?.secrets?.() ?? [];
+			let claudeToken, own;
+			// `own`: the credentials of this one request, where the provider names them (a relay of many sessions' tokens).
+			const secrets = () => claudeToken ? [claudeToken] : own ?? provider?.secrets?.() ?? [];
 			if (provider) {
-				target = await provider.target(req.url, req.headers);
-				if (!target) return reject(res, 401);
+				target = await provider.target(req.url, req.headers, nonce);
+				if (!target) return unauthorized(res);
+				({ secrets: own, ...target } = target);
 			} else {
 				const token = await readToken().catch(() => undefined);
 				if (!token || token.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(token)) return reject(res, 401);
@@ -329,10 +365,28 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				target = { hostname: 'api.anthropic.com', path: req.url, headers };
 			}
 			if (res.destroyed) return;
-			const up = forward({ ...target, port: 443, method: req.method }, reply => {
+			const up = forward({ port: 443, ...target, method: req.method }, reply => {
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					const status = reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502;
+					if (provider?.errorBody && status !== 502) {
+						// The provider's own error, cut down to what the client classifies it by: read whole, bounded, then rewritten.
+						const parts = [];
+						let size = 0;
+						reply.on('data', chunk => { size += chunk.length; if (size <= 65536) parts.push(chunk); else reply.destroy(); });
+						// Cut off or too large: the relay's own body for the status.
+						reply.on('close', () => { if (!reply.complete && !res.headersSent && !res.destroyed) reject(res, status); });
+						reply.on('error', () => {});
+						reply.on('end', () => {
+							if (res.headersSent || res.destroyed) return;
+							let text = '';
+							try { text = decodeError(Buffer.concat(parts), reply.headers['content-encoding']); } catch {}
+							res.writeHead(status, { ...([429, 503, 529].includes(status) ? limitHeaders(reply.headers, secrets()) : {}),
+								'content-type': 'application/json', 'cache-control': 'no-store' });
+							res.end(provider.errorBody(status, text, secrets()));
+						});
+						return;
+					}
 					// The relay's own body, never the upstream's; a limit refusal keeps its rate-limit headers.
 					reject(res, status, { headers: [429, 503, 529].includes(status) ? limitHeaders(reply.headers, secrets()) : {} });
 					reply.destroy();
@@ -350,7 +404,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 					if (!decode) { reject(res, 502); reply.destroy(); return; }
 					stages.push(decode());
 				}
-				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url);
+				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url, own);
 				if (filter) stages.push(filter);
 				if (provider?.catalogFilter && req.method === 'GET') stages.push(provider.catalogFilter());
 				res.writeHead(200, { ...limitHeaders(reply.headers, secrets()), 'content-type': type, 'cache-control': 'no-store' });
@@ -408,6 +462,16 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	ingress.on('listening', () => httpServer.emit('listening'));
 	ingress.on('close', () => httpServer.close());
 	ingress.maxConnections = 256;
+	/** Stops every request of a nonce at once: its lease has ended. Its next requests are refused by the provider. */
+	ingress.endSession = nonce => {
+		const mine = active.get(nonce);
+		active.delete(nonce);
+		for (const stop of mine ?? []) stop();
+		return mine?.size ?? 0;
+	};
+	/** The nonces with a request running now. */
+	ingress.activeSessions = () => [...active.keys()];
+	provider?.watch?.(ingress);
 	return ingress;
 };
 

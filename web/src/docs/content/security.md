@@ -1,6 +1,21 @@
 ## The rule that holds everywhere
 
-Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, it hands the sandbox a short-lived access token in a file. A demo turn receives no token. Each token expires about an hour after issue. The platform replaces it during a long turn and removes the file when the turn ends. A copy remains usable until its own expiry. A process that can read the file during the turn can read each replacement.
+Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, the sandbox gets a file for that turn. Where the [model relay](#the-model-relay) runs, the file holds only a placeholder for the turn, and the access token stays outside the sandbox. Elsewhere the file holds a short-lived access token, as described [without the relay](#without-the-relay). A demo turn receives neither. The **sandbox** chip says which applies to each sandbox.
+
+### The model relay
+
+Where the platform runs Windlass's model requests through its relay, the sandbox never holds the access token at all. This is on by default for hosted Docker with Windlass 0.6.0 or later, for E2B when the operator has given the relay a hostname of its own, and for machines whose runner offers it. Windlass gets the relay's address and a placeholder in its token file. The placeholder is good only for this turn's model requests through the relay. The relay checks it on every request and sends the request on to OpenAI with your real token. Commands, approved MCP servers and anything left running from setup can read only the placeholder.
+
+- **Docker, here or on your machine.** The placeholder works only on the session's own `127.0.0.1:17893`. A helper in the session's network namespace takes it to the relay. Taken anywhere else, it is of no use.
+- **E2B.** The microVM reaches the relay at a hostname of its own, which serves nothing else. The microVM's allowed hosts include that name and not the platform's own address. The placeholder is signed by the platform and works only while its turn runs. It works only for model requests, within the limits below.
+
+When the turn ends, the relay forgets the token, stops the turn's requests still running, and the placeholder stops working. Anything in the sandbox can still make model requests on your plan through the relay while a turn runs, within the limits: 8 requests at once per session, with up to 32 more waiting, and 16 at once across your sessions. These limits bound how many requests run at once, not how much of your plan they use.
+
+If the relay cannot be started, the turn fails with "the model relay could not be started". The platform never falls back to putting the token in the sandbox. If the relay refuses a turn's placeholder (the turn ended, or the relay restarted), the turn fails with "send the prompt again". Your sign-in is untouched. Machines with an older runner (0.3.0 or 0.3.1), or whose sandbox image has an older Windlass, don't offer the relay. Their turns get the token in a file, as described below.
+
+### Without the relay
+
+The platform hands the sandbox a short-lived access token in a file. Each token expires about an hour after issue. The platform replaces it during a long turn and removes the file when the turn ends. A copy remains usable until its own expiry. A process that can read the file during the turn can read each replacement.
 
 Whether the agent's commands can read that token depends on the sandbox. Setup runs before handoff. The platform clears leftover processes after setup and before handing the next turn a token. Docker keeps the file on the container's private tmpfs. E2B keeps it on the session microVM's own disk. Other sessions cannot open that file. An approved MCP server started locally by Windlass runs outside the command sandbox and can read it. If the server runs code from the workspace, changes to that code can take effect under the existing approval.
 
@@ -48,9 +63,9 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 | --- | --- | --- |
 | Commands sandboxed again | Yes, by Windlass | No |
 | Network for commands | No | Follows the container’s network policy |
-| Commands can read the access token | No | Yes |
+| Commands can read the access token | No | Without the model relay, yes. With it, they read only a placeholder |
 | Setup can read the token | No, setup ends before handoff | No, setup ends before handoff |
-| Approved local MCP servers can read the token during the turn | Yes | Yes |
+| Approved local MCP servers can read the token during the turn | Without the model relay, yes. With it, only the placeholder | Without the model relay, yes. With it, only the placeholder |
 | Your ChatGPT sign-in in the container | Never | Never |
 | Windlass modes | Ask, Auto | Ask, Full |
 | Claude Code and OpenCode | No | Yes |

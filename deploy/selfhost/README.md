@@ -50,6 +50,25 @@ The gateway URL clients dial (`WLP_PUBLIC_ENDPOINT`) and the engine's canonical 
 
 The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for workloads on a separate machine. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, go in the mode-600 server env file the stack env file selects. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
 
+### The model relay's hostname
+
+E2B sandboxes reach Windlass's model relay at a hostname of its own, so that their allow list opens only the relay and not the web app (see [the model relay](../../docs/model-relay.md#where-the-relay-runs)). Choose a name, for example `windlass-relay.example.com`, and set it in the server env file:
+
+```sh
+WLP_MODEL_RELAY_URL=https://windlass-relay.example.com
+WLP_E2B_WINDLASS_VERSION=0.6.0
+```
+
+Add one ingress rule for it, before the final `http_status:404` rule, to the same loopback port as the application hostname (26440 on live, 16440 on staging). The path pattern lets only the relay's two routes through at the edge; the server refuses everything else on that name too:
+
+```yaml
+  - hostname: windlass-relay.example.com
+    path: '^/model-relay/v1/(models|responses)$'
+    service: http://127.0.0.1:26440
+```
+
+Then route the name to the tunnel (`cloudflared tunnel route dns <tunnel> windlass-relay.example.com`, or a proxied CNAME to `<tunnel UUID>.cfargotunnel.com`) and restart the connector. Leave the `Host` header as it comes (no `httpHostHeader`): the server serves the relay only when the request's `Host` is that name. Check from outside: `curl -s https://windlass-relay.example.com/model-relay/v1/models -H 'authorization: Bearer x'` answers `relay_lease_ended`, and `https://windlass-relay.example.com/` answers 404. The server logs `e2b.model_relay: Windlass's model requests go through https://windlass-relay.example.com/model-relay/v1` at startup. Without `WLP_MODEL_RELAY_URL` it logs that E2B turns are handed their access token instead.
+
 ## Agents never run on the platform host
 
 An agent container escape or a compromised runner with the Docker socket can expose the engine data, tunnel credentials and every user's sealed sign-ins and their decryption key. Keep hosted sandboxes set to `fake` or `e2b` and pair a runner on a separate machine, since running the owner's development agents under a root-equivalent account on the platform host exposes the same secrets.

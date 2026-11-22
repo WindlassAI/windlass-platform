@@ -1,12 +1,14 @@
 // Runs as agent in the immutable base image. Only the broker has an uplink.
 // Both ends of the filesystem socket live in helpers, outside every agent mount namespace.
 import { lookup } from "node:dns/promises";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 
 const socket = "/workspace/egress.sock";
+/** Where the model relay's forwarder says it holds its port: a tmpfs of the forwarder's own container. */
+export const MODEL_FORWARD_READY = "/run/wlp-model/ready/listening";
 function subnets(cidrs) {
 	const list = new net.BlockList();
 	for (const cidr of cidrs) {
@@ -255,4 +257,13 @@ export function forward(port, path, nonce, signedOutOnDisconnect = false) {
 if (process.argv[1] === "wlp-egress-forward") {
 	if (process.argv[2] === "restricted") forward(17891, socket);
 	if (process.argv[3]) forward(17892, "/run/wlp-relay/relay.sock", process.argv[3], process.argv[4] === "codex");
+}
+// Windlass's model relay (docs/model-relay.md): one forwarder per turn, in the session's network namespace,
+// with the turn's nonce. Only it and the relay mount the relay's socket volume. It says it is ready, in a
+// tmpfs of its own the session cannot reach, only once it holds 127.0.0.1:17893 itself: a process of the
+// session that took the port first makes it exit instead, and the turn fails (server/src/sandbox/model-relay.ts).
+if (process.argv[1] === "wlp-model-forward" && /^[0-9a-f]{32}$/.test(process.argv[2] ?? "")) {
+	const server = forward(17893, "/run/wlp-model/socket/relay.sock", process.argv[2]);
+	server.once("error", () => process.exit(3));
+	server.once("listening", () => writeFileSync(MODEL_FORWARD_READY, String(process.pid), { mode: 0o600 }));
 }

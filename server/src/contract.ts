@@ -54,6 +54,12 @@ export interface SandboxProfile {
 	 * command can read it in any profile.
 	 */
 	commandsCanReadAccessToken: boolean;
+	/**
+	 * Windlass's turns in this sandbox send their model requests through the platform's model relay
+	 * (docs/model-relay.md): the token file holds a placeholder for the turn, and the access token never
+	 * enters the sandbox. Absent: the token file holds the access token itself.
+	 */
+	modelRelay?: true;
 	available: boolean;
 	/** Why it cannot be chosen yet. Set when `available` is false. */
 	unavailableReason?: string;

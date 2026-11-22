@@ -43,6 +43,9 @@ import { codexDefaultMode } from "./codex-modes.js";
 import { SESSION_VOLUME_PROFILES, commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
+import { type DockerModelRelay, type DockerTurnRelay, MODEL_RELAY_WINDLASS } from "./model-relay.js";
+import { readsModelRelay } from "../model-relay-url.js";
+import { probeImage } from "./tokens.js";
 
 const SANDBOX_ID = /^(?:(?:claude|opencode|codex)-)?[a-f0-9]{12}$/;
 const STDOUT_CAP = 4 * 1024 * 1024;
@@ -109,9 +112,16 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly helperImage = IMAGE,
 		/** Its data directory is a volume of its own (`SandboxHandle.ownData`). */
 		readonly ownData = false,
+		/** Windlass's model relay of this provider (docs/model-relay.md); none: the turn's token goes into the sandbox. */
+		relay?: DockerModelRelay,
 	) {
 		markTurnSandbox(this);
+		// The user names the lease in the relay, whose ceiling per user counts by it.
+		if (relay) this.modelRelay = () => relay.open(this.container, this.id, this.uid);
 	}
+
+	/** `TurnSandbox.modelRelay`, where the provider has a relay. */
+	readonly modelRelay?: () => Promise<DockerTurnRelay>;
 
 	get approval(): "auto" | "full" {
 		return findProfile(this.profile).approval;
@@ -452,6 +462,10 @@ export type DockerSandboxOptions = {
 	cpus?: number;
 	slots?: MachineSlotCapacity;
 	network?: { name: string; env: Record<string, string>; mode: string };
+	/** Windlass's model relay (docs/model-relay.md) for the Windlass sandboxes of this provider; none: their turns' tokens go into the sandbox. */
+	modelRelay?: DockerModelRelay;
+	/** The Windlass version of the image, which decides whether `modelRelay` is used (0.6.0 or later): the one the layer's `windlass.problem()` reads. */
+	modelRelayWindlass?: () => Promise<string | null>;
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
 	shotsImage?: string;
@@ -563,7 +577,36 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	profiles(): SandboxProfile[] {
-		return profilesFor("docker");
+		return profilesFor("docker", undefined, this.relayOn === true);
+	}
+
+	/** Whether the image's Windlass reads the relay's address, once known (`modelRelayReady`). */
+	private relayOn: boolean | null = null;
+
+	/**
+	 * Whether this provider's Windlass sandboxes use the model relay: it has one, and the image's Windlass is
+	 * 0.6.0 or later, which reads WINDLASS_MODEL_BASE_URL. An older one would send the placeholder to
+	 * api.openai.com, so its turns get the token file as before. An image that cannot be looked at is
+	 * asked about again next time.
+	 */
+	async modelRelayReady(): Promise<boolean> {
+		if (this.options.modelRelay === undefined) return false;
+		if (this.relayOn !== null) return this.relayOn;
+		const version = await (this.options.modelRelayWindlass ?? (() => probeImage(this.image)))().catch(() => null);
+		if (version === null) return false;
+		this.relayOn = readsModelRelay(version);
+		return this.relayOn;
+	}
+
+	async prepareModelRelay(): Promise<string> {
+		const relay = this.options.modelRelay;
+		if (relay === undefined) return "[wlp] model_relay: off (WLP_MODEL_RELAY=off): each turn's access token is written into its sandbox";
+		const on = await this.modelRelayReady();
+		const removed = await relay.sweep().catch(() => 0);
+		const left = removed ? `; removed ${removed} forwarder(s) and the relay's token files a stopped server left` : "";
+		return on
+			? `[wlp] model_relay: Windlass's model requests go through the relay container ${relay.relayName}; sandboxes never hold the access token${left}`
+			: `[wlp] model_relay: off (the image's Windlass is not ${MODEL_RELAY_WINDLASS} or later, or could not be read): each turn's access token is written into its sandbox${left}`;
 	}
 
 	profile(id: SandboxProfileId): SandboxProfile {
@@ -798,7 +841,9 @@ export class DockerSandboxes implements Sandboxes {
 			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
 			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData);
+		// Only Windlass's own sandboxes: a harness session has a relay of its own (runner/src/claude-relay.ts).
+		const relay = /^[a-f0-9]{12}$/.test(id) && this.options.sessionRelay === undefined && await this.modelRelayReady() ? this.options.modelRelay : undefined;
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
@@ -808,6 +853,8 @@ export class DockerSandboxes implements Sandboxes {
 
 	async suspend(id: string): Promise<void> {
 		const found = await this.inspect(id);
+		// Its lease ends too: the relay's file of its turn, and its forwarder.
+		if (found !== null) await this.options.modelRelay?.endSandbox(id).catch(() => undefined);
 		if (found === null || found.status !== "running") return;
 		await forgetTokenFile(id);
 		// SIGTERM to the container's init, SIGKILL after 5 s. A turn still running is cut off: stop it first.
@@ -824,6 +871,7 @@ export class DockerSandboxes implements Sandboxes {
 			return;
 		}
 		if (found.status === "running") await forgetTokenFile(id);
+		await this.options.modelRelay?.endSandbox(id).catch(() => undefined);
 		await docker(["rm", "-f", "-v", containerName(id)], { timeoutMs: 60_000, check: true });
 		if (found.ownData) await this.dropOwnVolume(found.uid, id);
 	}

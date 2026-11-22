@@ -8,7 +8,7 @@
  * 10 GiB of disk, paused sandboxes kept without limit and without charge.
  */
 
-import { type E2bNetwork, readE2bNetwork } from "./network.js";
+import { type E2bNetwork, e2bModelRelay, readE2bNetwork } from "./network.js";
 
 /** The template sandbox/e2b/build.ts builds. */
 export const DEFAULT_TEMPLATE = "windlass-platform-sandbox";
@@ -51,6 +51,10 @@ export interface E2bConfig {
 	windlassVersion: string | null;
 	/** WLP_E2B_NETWORK and WLP_E2B_NETWORK_ALLOW (network.ts). Absent: `open`, as before network modes. */
 	network?: E2bNetwork;
+	/** Where Windlass's model requests go instead of api.openai.com (network.ts `e2bModelRelay`). Absent or null: the turn's token goes into the sandbox. */
+	modelRelayOrigin?: string | null;
+	/** Why the relay is off, when `modelRelayOrigin` is null: said once at startup. */
+	modelRelayOff?: string;
 }
 
 /** Everything but the API key: what the provider's logic needs. The key is the client's (sdk.ts). */
@@ -109,6 +113,10 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 		openProfile: flag(env, "WLP_E2B_OPEN_PROFILE", false),
 		windlassVersion: version === "" ? null : version,
 		network: readE2bNetwork(env),
+		...(() => {
+			const relay = e2bModelRelay(env);
+			return "origin" in relay ? { modelRelayOrigin: relay.origin } : { modelRelayOrigin: null, modelRelayOff: relay.off };
+		})(),
 	};
 }
 

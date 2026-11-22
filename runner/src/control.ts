@@ -275,6 +275,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000; named = f.capabilities;
 						// Sandboxes of their own data only for a server that knows they are (Executor.sessionVolumes).
 						owner.sessionVolumes = named?.includes("session-volumes" satisfies Capability) === true;
+						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);
 						mayMaintain = true;
 						status("Online");

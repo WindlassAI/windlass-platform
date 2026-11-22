@@ -39,7 +39,7 @@ import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/prot
 import { AttachTickets } from "../machines/ticket.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
-import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
+import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
 
 /** The raw socket's path: `agentSession.get([uid, sessionId]).webSocket(RUNNER_SOCKET)` on the runner's side. */
@@ -457,9 +457,30 @@ class RunnerHandle implements TurnSandbox {
 		readonly snapshot?: SnapshotSource,
 		/** As the runner's connect said (`SandboxHandle.ownData`): false from a runner that does not say. */
 		readonly ownData = false,
+		/** The runner's connect said `modelRelay` (docs/model-relay.md): false from a runner 0.3.x, whose turns get the token in the sandbox. */
+		relay = false,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
+		if (relay) this.modelRelay = () => this.openRelay();
+	}
+
+	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
+	readonly modelRelay?: () => Promise<TurnModelRelay>;
+
+	/** Not repeated: a lease lost with its conversation was ended by the runner (its `orphan`), and the turn fails. */
+	private async openRelay(): Promise<TurnModelRelay> {
+		const { lease, placeholder, env } = await this.link.request("modelRelay", { id: this.id });
+		return {
+			placeholder,
+			env,
+			hand: async (token) => {
+				await this.link.again("modelRelayToken", { id: this.id, lease, accessToken: token.accessToken, expiresAt: token.expiresAt });
+			},
+			close: async () => {
+				await this.link.again("modelRelayClose", { id: this.id, lease }).catch(() => undefined);
+			},
+		};
 	}
 
 	get uid(): string {
@@ -612,7 +633,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

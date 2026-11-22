@@ -122,8 +122,11 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *   egress-domains   the report's `egressDomains`
  *   session-volumes  the report's `sessionVolumes` and a connect's `ownData`; without it, a runner
  *                    gives no hardened sandbox a data volume of its own
+ *   model-relay      the report's `modelRelay`, a connect's `modelRelay`, and the `modelRelay`,
+ *                    `modelRelayToken` and `modelRelayClose` operations (docs/model-relay.md); without
+ *                    it, or from a runner that says neither, a turn's token goes into the sandbox
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -247,6 +250,8 @@ const report = object({
 	gitMirrors: optional(boolean),
 	/** A Windlass session in a new hardened sandbox gets a data volume of its own (SESSION_VOLUME_PROFILES). */
 	sessionVolumes: optional(boolean),
+	/** Windlass's turns can send their model requests through the machine's model relay (docs/model-relay.md). */
+	modelRelay: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
@@ -260,7 +265,7 @@ export type Report = Of<typeof report>;
 
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
-	const fields: Record<Capability, keyof Report> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes" };
+	const fields: Record<Capability, keyof Report> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay" };
 	const kept: Report = { ...report };
 	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
 		if (!named?.includes(capability)) delete kept[field];

@@ -62,6 +62,9 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_SNAPSHOTS` | `on` enables post-setup snapshots for Docker Windlass sessions. Defaults to `off`. |
 | `WLP_SNAPSHOT_MIN_SETUP_MS` | Minimum successful setup duration for saving a snapshot. Defaults to 30000 and can be raised. |
 | `WLP_SETUP_TIMEOUT_MS` | how long a repository's setup command may run in a new sandbox before the platform stops it (default 10 minutes) |
+| `WLP_MODEL_RELAY` | `off`: Windlass turns get their access token in a file in the sandbox, as before the relay. Unset or `on` (default): hosted Docker sends Windlass's model requests through the relay when its image's Windlass is 0.6.0 or later. So do machines whose runner says `modelRelay`, and E2B with `WLP_MODEL_RELAY_URL` set and `WLP_E2B_WINDLASS_VERSION` 0.6.0 or later ([model-relay.md](model-relay.md)) |
+| `WLP_MODEL_RELAY_URL` | the hostname of its own at which E2B sandboxes reach the model relay route: `https://<DNS name>`, no port and no path, routed to this server as `WLP_PUBLIC_URL` is. On it the server answers only `/model-relay/v1/models` and `/model-relay/v1/responses`. E2B's `restricted` and `none` allow it in place of `api.openai.com`. Unset (default): E2B turns get their access token in the sandbox, and the server says so at startup ([model-relay.md](model-relay.md#where-the-relay-runs)) |
+| `WLP_MODEL_RELAY_REQUESTS` | the most model requests in flight through the hosted relay, and through the E2B relay route of one server process (each process has its own), for the whole deployment (default 64, 1 to 4096). Per turn the limit stays 8, and per user 16 |
 | `WLP_IDLE_SUSPEND_MS` | how long after a session's last turn ended its sandbox is suspended (default 10 minutes) |
 | `WLP_IDLE_DESTROY_MS` | how long after its last use a sandbox is removed with its files; the timeline stays (default 7 days). E2B keeps a paused sandbox for as long as it is not killed and does not bill it, so a deployment there can set this to years: then a sandbox goes only with its agent |
 
@@ -90,7 +93,7 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | `WLP_E2B_PAUSE` | `0` for an account that cannot pause: sandboxes are killed where they would be paused (default 1) |
 | `WLP_E2B_WINDLASS_SANDBOX` | `1`: promise Windlass's own sandbox in the E2B profile, once `scripts/e2b-check.ts` has shown it works (default 0) |
 | `WLP_E2B_OPEN_PROFILE` | `1`: also offer "E2B, microVM only" (`e2b-open`) (default 0: listed, not offered) |
-| `WLP_E2B_WINDLASS_VERSION` | the Windlass version in the template, to show before the first sandbox was made (default: learned from the first sandbox) |
+| `WLP_E2B_WINDLASS_VERSION` | the Windlass version in the template, to show before the first sandbox was made (default: learned from the first sandbox). The model relay is used on E2B only when this says 0.6.0 or later |
 | `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` | `sandbox/e2b/build.sh` only: the size of every sandbox made from the template (default 1 vCPU, 1024 MiB) |
 
 ## The bucket for agent memory and screenshots

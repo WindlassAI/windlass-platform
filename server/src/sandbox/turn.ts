@@ -116,7 +116,7 @@ import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, WINDLASS
 import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
-import { ACCESS_TOKEN_FILE_ENV, type Failure, handedInFailure, handedInProblem, tokenRanOut, tokenSourceFailure } from "./handoff.js";
+import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, handedInProblem, relayRefused, tokenRanOut, tokenSourceFailure } from "./handoff.js";
 import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
@@ -486,6 +486,8 @@ class Turn {
 	/** Windlass's code for `failure`, when the error it came from carried one (`data.windlass.code`). */
 	private failureCode: string | null = null;
 	private stepFailureCode: string | null = null;
+	/** The message of the provider error of the model call that failed: with the model relay, it says whether the relay refused the lease (`relayRefused`). */
+	private stepFailureMessage: string | null = null;
 
 	constructor(
 		private readonly sandbox: TurnSandbox,
@@ -542,6 +544,8 @@ class Turn {
 					...(scriptPath === null ? {} : { WINDLASS_ACP_SCRIPT: scriptPath }),
 					// The file Windlass reads its access token from at every model call; it never looks for a saved sign-in then.
 					...(tokenFile === null ? {} : { [ACCESS_TOKEN_FILE_ENV]: tokenFile.path }),
+					// With the model relay (docs/model-relay.md): where Windlass sends its model requests, with the file's placeholder.
+					...(tokenFile === null ? {} : tokenFile.env),
 				};
 				// The repository's secrets that Windlass may have, for the MCP servers that name them: never one of the turn's own variables.
 				const secretEnv = Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env)));
@@ -624,6 +628,8 @@ class Turn {
 		const tokenFile = this.tokenFile;
 		if (failure === null || tokenFile === null) return failure;
 		const code = this.failureCode ?? this.stepFailureCode;
+		// The relay's own refusal of the turn's placeholder: never the user's sign-in.
+		if (tokenFile.relayed && relayRefused(code, failure.message, this.stepFailureMessage)) return { ...RELAY_REFUSED };
 		const problem = code === null ? null : handedInProblem(code);
 		if (problem === null) return failure;
 		let state = tokenFile.state;
@@ -896,10 +902,14 @@ class Turn {
 			this.undelivered.delete(data.messageId);
 		}
 		// Why the model call the turn is at failed, as Windlass names it: a code, when it has one.
-		if (event.type === "step.started") this.stepFailureCode = null;
+		if (event.type === "step.started") {
+			this.stepFailureCode = null;
+			this.stepFailureMessage = null;
+		}
 		if (event.type === "step.failed") {
-			const provider = (data.error as { error?: { code?: unknown } } | undefined)?.error;
+			const provider = (data.error as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
 			this.stepFailureCode = typeof provider?.code === "string" && provider.code !== "" ? provider.code : null;
+			this.stepFailureMessage = typeof provider?.message === "string" ? provider.message.slice(0, 4096) : null;
 		}
 		// The engine has withdrawn what was pending: a question may be answered `cancelled` now.
 		if (event.type === "execution.interrupt_requested") this.resolveInterrupted();

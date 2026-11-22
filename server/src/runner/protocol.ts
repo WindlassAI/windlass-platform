@@ -54,6 +54,7 @@ export const machineProfile = oneOf(...MACHINE_PROFILES);
 export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
 const harness = optional(oneOf("claude", "opencode", "codex"));
 const sandbox = { id };
+const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
 const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
 /**
@@ -70,7 +71,9 @@ const operations = {
 	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
 	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
 	/** `ownData`: its Windlass data directory is a volume of its own (SandboxHandle.ownData), said only to a server that named `session-volumes`. */
-	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean), ownData: optional(oneOf(true)) }))],
+	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean), ownData: optional(oneOf(true)),
+		/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
+		modelRelay: optional(oneOf(true)) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],
@@ -89,6 +92,14 @@ const operations = {
 	sweep: [object({ ...sandbox, tag, options: optional(object({ waitMs: optional(duration), files: optional(list(string)) })) }), count],
 	writeSecretFile: [object({ ...sandbox, path: string, content: string }), nil],
 	removeFiles: [object({ ...sandbox, paths: list(string) }), nil],
+	/**
+	 * Windlass's model relay (docs/model-relay.md), only to a runner whose connect said `modelRelay`: a
+	 * lease for one turn (its forwarder listens in the sandbox), the turn's token handed to the relay, and
+	 * the lease's end. `lease` names the lease on the runner; it is no credential.
+	 */
+	modelRelay: [object(sandbox), object({ lease: relayLease, placeholder: is<string>(v => typeof v === "string" && /^wlp-model\.[a-f0-9]{32}$/.test(v)), env })],
+	modelRelayToken: [object({ ...sandbox, lease: relayLease, accessToken: is<string>(v => typeof v === "string" && /^[\x21-\x7e]{16,16384}$/.test(v)), expiresAt: count }), nil],
+	modelRelayClose: [object({ ...sandbox, lease: relayLease }), nil],
 } as const satisfies Record<string, readonly [Check<unknown>, Check<unknown>]>;
 
 export type Name = keyof typeof operations;

@@ -17,6 +17,7 @@ import { isActorGone } from "./actors/internal.js";
 import { RETENTION_PATH } from "./runner/frame-auth.js";
 
 import { runnerResponse } from "./runner-routes.js";
+import { modelRelayRoute } from "./model-relay-route.js";
 import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
 import { config, githubConfig, ownEngineEndpoint } from "./config.js";
@@ -89,6 +90,11 @@ if (windlassProblem) {
 	console.error(`[wlp] ${windlassProblem}`);
 	process.exit(1);
 }
+// Windlass's model relay of hosted Docker (docs/model-relay.md): on with the image's Windlass 0.6.0 or later, and what a stopped server left removed.
+if (layer.sandboxes.prepareModelRelay) console.log(await layer.sandboxes.prepareModelRelay().catch((error: unknown) => `[wlp] model_relay: could not be prepared (${error instanceof Error ? error.message : String(error)})`));
+// Its route for E2B answers only on the relay's own hostname (WLP_MODEL_RELAY_URL), which serves nothing else.
+const relayHost = config.modelRelay.on ? config.modelRelay.url?.host ?? null : null;
+if (config.sandbox === "e2b" && config.modelRelay.on && relayHost === null) console.log("[wlp] model_relay: WLP_MODEL_RELAY_URL is not set, so E2B turns are handed their access token in the sandbox; the platform's public host is never opened to E2B sandboxes in its place");
 // An admin token the engine refuses: said now, not to the first visitor.
 void warnAboutConnectionTokens(connectionTokens());
 
@@ -117,6 +123,9 @@ if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
 async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);
+	// Windlass's model requests from E2B sandboxes (docs/model-relay.md): on the relay's own hostname, and only there; nothing else is.
+	const relayRoute = modelRelayRoute(request, pathname, relayHost);
+	if (relayRoute) return relayRoute;
 	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	const api = await apiRoute(request);

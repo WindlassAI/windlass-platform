@@ -150,3 +150,17 @@ The check uses unique pairings and a TLS recording origin. It exercises device
 approval, expired credentials, API keys, public models, isolated session grants,
 and native ACP turns over the runner channel. The captured arm64 initialize and
 session/new replies are in `fixtures/opencode/handshake.jsonl`.
+
+## Windlass 0.6.0
+
+`windlass.cjs` is Windlass's model relay ([docs/model-relay.md](../../docs/model-relay.md)). The hosted
+server and each runner run it from the pinned base image as `wlp-model-relay[-<machine id>]`, through
+`server/src/sandbox/model-relay.ts`. It is the same `createRelay`. It has no signing key. The provider's
+`authorize` checks the bearer against the lease of the connection's nonce instead, and it reads that lease
+from the relay's own tmpfs (`/run/wlp-model/tokens/<nonce>.json`) on every request. It listens for
+`Host: 127.0.0.1:17893` and takes only `GET /v1/models` and `POST /v1/responses`, the two requests
+Windlass 0.6.0 makes with `WINDLASS_MODEL_BASE_URL`. It sends them to `api.openai.com` with
+`content-type`, `accept`, `session-id`, `user-agent` and the real bearer. An error reply keeps the
+provider's `error.code`, `type`, `param` and a scrubbed message (`errorBody`), so Windlass still tells a
+usage limit, a rate limit and a context overflow apart. `scripts/windlass-relay-check.mjs` holds these,
+and `scripts/model-relay-docker-check.ts` holds them with real containers and the image's Windlass.

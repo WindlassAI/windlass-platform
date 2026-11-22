@@ -63,7 +63,16 @@ export function commandNetworkFact(profile: SandboxProfile, claude: ClaudeFacts 
 	return profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network");
 }
 
+/** The relay's caps per turn, as the server's summaries say them (server/src/sandbox/profiles.ts `relayPlaceholderSentences`). */
+const RELAY_CAPS = "8 at once, 32 waiting";
+
 export function accessTokenFact(profile: SandboxProfile): string {
+	// With Windlass's model relay the token file holds only a placeholder for the turn; the token stays outside.
+	if (profile.modelRelay) {
+		const where = profile.id.startsWith("e2b") ? "microVM" : "container";
+		const reader = profile.commandsCanReadAccessToken ? "Commands" : "The agent's commands cannot read the turn's token file. Approved local MCP servers and processes left from setup";
+		return `${reader} can read only a placeholder for this turn. With it they can make model requests on your ChatGPT plan through the relay while the turn runs (${RELAY_CAPS}). The access token never enters the ${where}.`;
+	}
 	const commands = !profile.commandsCanReadAccessToken ? "The agent's commands cannot read the session's access token."
 		: profile.id === "e2b" ? "A command you allow outside the Windlass sandbox can read the session's access token and its replacements."
 		: "Unsandboxed commands can read the session's access token and its replacements during the turn.";

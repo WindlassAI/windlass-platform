@@ -16,7 +16,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
-import { validValue } from "../server/src/runner/protocol.js";
+import { validArgs, validValue } from "../server/src/runner/protocol.js";
 import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
@@ -78,6 +78,20 @@ expect("each field goes only with its own capability", (() => {
 	return !("sessionVolumes" in none) && !("gitMirrors" in none) && mirrors.gitMirrors === true && !("sessionVolumes" in mirrors)
 		&& volumes.sessionVolumes === true && !("gitMirrors" in volumes) && both.gitMirrors === true && both.sessionVolumes === true;
 })());
+// Windlass's model relay (docs/model-relay.md): named to every runner that reads capabilities; runners 0.3.0 and 0.3.1
+// ignore the name, say nothing, and their turns get the token in the sandbox as before.
+const relayReport = { ...mirrorReport, modelRelay: true };
+expect("this server's checks take a report with modelRelay, and name model-relay to a runner that reads capabilities",
+	parseRunnerFrame(JSON.stringify(relayReport))?.kind === "report" && welcomeCapabilities(CAPABILITIES_RUNNER_VERSION).capabilities?.includes("model-relay") === true
+	&& welcomeCapabilities("0.3.1").capabilities?.includes("model-relay") === true && !("capabilities" in welcomeCapabilities("0.2.1")));
+expect("modelRelay goes only with its own capability", !("modelRelay" in reportFor(relayReport as unknown as Report, ["git-mirrors", "session-volumes"]))
+	&& reportFor(relayReport as unknown as Report, ["model-relay"]).modelRelay === true);
+expect("the three relay operations take only a lease, a placeholder of the relay's form and a token, and a connect may say modelRelay",
+	validArgs("modelRelay", { id: "x" }) && validValue("modelRelay", { lease: "a".repeat(32), placeholder: "wlp-model." + "b".repeat(32), env: { WINDLASS_MODEL_BASE_URL: "http://127.0.0.1:17893/v1" } })
+	&& !validValue("modelRelay", { lease: "a".repeat(32), placeholder: "sk-real-token", env: {} })
+	&& validArgs("modelRelayToken", { id: "x", lease: "a".repeat(32), accessToken: "t".repeat(40), expiresAt: 5 }) && !validArgs("modelRelayToken", { id: "x", lease: "a".repeat(32), accessToken: "short", expiresAt: 5 })
+	&& validArgs("modelRelayClose", { id: "x", lease: "a".repeat(32) }) && !validArgs("modelRelayClose", { id: "x", lease: "nope" })
+	&& validValue("connect", { cwd: "/workspace", profile: "docker-hardened", modelRelay: true }) && !validValue("connect", { cwd: "/workspace", profile: "docker-hardened", modelRelay: false }));
 expect("a machine whose report has no sessionVolumes (a 0.2.1 runner) describes hardened sessions as sharing the machine volume, one that has it as having their own", (() => {
 	const plain = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] } as unknown as Report;
 	const hardened = (report: Report) => machineProfiles("box", report).find(profile => profile.id === "docker-hardened")!;
@@ -213,7 +227,7 @@ async function withControl(answers: Response[], exercise: (runner: {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
 		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {},
-		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true }),
+		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true, modelRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
@@ -335,6 +349,62 @@ try {
 				// And makes hardened sandboxes with data of their own only then: an older server would take the data for shared.
 				assert.equal(r.owner.sessionVolumes, sent, `owner.sessionVolumes after welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
+		}
+	});
+	await checkControl("a runner sends modelRelay, and lets turns use its relay, only for a server whose welcome names model-relay", async () => {
+		for (const [capabilities, sent] of [[undefined, false], [[], false], [["git-mirrors", "session-volumes"], false], [["git-mirrors", "model-relay"], true]] as const) {
+			await withControl([lease()], async r => {
+				const ws = await r.online(0, capabilities && [...capabilities]);
+				const report = ws.sent.find(f => f.kind === "report");
+				assert.equal(Object.hasOwn(report ?? {}, "modelRelay"), sent, `welcome capabilities ${JSON.stringify(capabilities)}`);
+				assert.equal(r.owner.modelRelays, sent, `owner.modelRelays after welcome capabilities ${JSON.stringify(capabilities)}`);
+			});
+		}
+	});
+	await checkControl("a connect says modelRelay only to a server that named model-relay, only for Windlass's own sandboxes, and only when the pinned image's Windlass is 0.6.0 or later", async () => {
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		for (const [named, windlass, said] of [[false, "0.6.0", false], [true, "0.6.0", true], [true, "0.5.0", false], [true, null, false]] as const) {
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+			owner.modelRelays = named;
+			// What `welcome` probes from the pinned sandbox image.
+			(owner as unknown as { sandboxWindlass: string | null }).sandboxWindlass = windlass;
+			assert.equal(owner.report().modelRelay, windlass === "0.6.0", `the report says modelRelay for Windlass ${windlass}`);
+			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			owner.provider.create = async () => "0123456789ab";
+			owner.provider.connect = async () => ({ cwd: "/workspace" }) as unknown as DockerSandboxHandle;
+			const id = await owner.create("s_relay", "docker-hardened");
+			const found = await owner.lifecycle("connect", id, "s_relay");
+			assert.equal(found && typeof found === "object" && "modelRelay" in found, said, `named ${named}, Windlass ${windlass}`);
+			assert.ok(validValue("connect", found));
+		}
+	});
+	await checkControl("suspending or removing a sandbox ends its turns' relay leases: the relay's file, the forwarder and the conversation's entry", async () => {
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		for (const op of ["suspend", "destroy"] as const) {
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			owner.network.detach = async () => {};
+			owner.provider.create = async () => "0123456789ab";
+			owner.provider.suspend = async () => {};
+			owner.provider.destroy = async () => {};
+			owner.provider.state = async () => "paused";
+			const ended: string[] = [];
+			owner.modelRelay.endSandbox = async (raw: string) => { ended.push(`relay:${raw}`); };
+			const id = await owner.create("s_relay", "docker-hardened");
+			const untrack = owner.trackRelay(id, async () => { ended.push("lease"); });
+			const kept = owner.trackRelay("other", async () => { ended.push("other"); });
+			const box = owner.boxes.get(id)!;
+			box.state = "paused";
+			await owner.lifecycle(op, id, "s_relay");
+			assert.deepEqual(ended, ["lease", "relay:0123456789ab"], `${op}: ${ended.join()}`);
+			untrack();
+			kept();
 		}
 	});
 	await checkControl("the runner asks its provider for a sandbox with data of its own, and says a connect has it, only for a server that named session-volumes", async () => {
