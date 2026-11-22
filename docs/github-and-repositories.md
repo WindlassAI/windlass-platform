@@ -542,7 +542,9 @@ It is the user's, like the setup command: one row per repository in their `user`
 read from the repository. Only that user can change it (`saveRepositoryNetwork`, or `allowHost` from a session,
 which also changes the sandbox at once while a turn holds it, and otherwise from the next turn); what a session's sandbox could not reach is filed as a request
 (`NetworkRequest`) that waits until it is allowed or dismissed. Every hosted session on the repository gets the
-list from its next turn. `scanRepositoryNetwork` reads the repository's manifests, lockfiles, install scripts
+list from its next turn. The own session of a cross-repo feature (its planner, which reads both repositories,
+and its summary) gets the union of every repository's list (`unionHosts`; past the sandbox's limit the primary's
+list comes first); each of its subtasks is on one repository and gets that one's. `scanRepositoryNetwork` reads the repository's manifests, lockfiles, install scripts
 and CI files at the default branch and proposes what they name, with where; nothing it finds is saved until the
 user allows it. "Delete what is saved" deletes the list and its requests too.
 

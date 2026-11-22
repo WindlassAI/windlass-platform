@@ -1624,6 +1624,25 @@ test("cross-repo: the Windlass CLI's CI on main and PRs only is refused by name,
 	const moved = await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", input);
 	assert.match(moved[0], /moved from 2222222 to 9999999/);
 	assert.deepEqual(await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("9") }), []);
+	// The repository the combined run starts from needs the integration workflow, enabled, in its base's tree.
+	const workflow = (state: string | null) => ({
+		settings: { slug: "windlass", appId: "1" },
+		call: async ({ path, query }: { path: string; query?: Record<string, string> }) => {
+			if (path.endsWith("/git/ref/heads/main")) return { body: { object: { sha: sha("2") } } };
+			if (path.endsWith("/actions/workflows/windlass-integration.yml")) {
+				if (state === null) { const { GithubError } = await import("../server/src/github/app.js"); throw new GithubError(404, "Not Found", "look"); }
+				return { body: { state } };
+			}
+			if (path.endsWith("/actions/workflows")) return { body: { workflows: [{ path: ".github/workflows/ci.yml", state: "active" }] }, next: false };
+			if (path.includes("/contents/")) { assert.equal(query?.ref, sha("2"), "the workflow was not read at the base's commit"); return { body: {} }; }
+			throw new Error("unexpected " + path);
+		},
+		fileAt: async (_t: string, _o: string, _r: string, path: string, at: string) => { assert.match(at, /^[0-9a-f]{40}$/); return path.endsWith("ci.yml") ? any : "on: workflow_dispatch\n"; },
+	}) as never;
+	const runs = { ...input, runsIntegration: true };
+	assert.deepEqual(await repositoryAdmission(workflow("active"), "t", "ada", "platform", runs), []);
+	assert.match((await repositoryAdmission(workflow(null), "t", "ada", "platform", runs))[0], /needs \.github\/workflows\/windlass-integration\.yml/);
+	assert.match((await repositoryAdmission(workflow("disabled_manually"), "t", "ada", "platform", runs))[0], /windlass-integration/);
 });
 
 test("cross-repo: the managed PR section links the counterpart by full URL, keeps the person's text and never closes the issue", async () => {

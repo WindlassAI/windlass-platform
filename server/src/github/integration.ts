@@ -10,6 +10,7 @@
  */
 
 import { GithubError, type GithubApp } from "./app.js";
+import { refHead } from "./feature.js";
 
 /** The workflow file the platform dispatches, in `.github/workflows/` of the `runFrom` repository. */
 export const INTEGRATION_WORKFLOW = "windlass-integration.yml";
@@ -24,7 +25,8 @@ export async function hasIntegrationWorkflow(app: GithubApp, token: string, owne
 	try {
 		const { body } = await app.call({ path: `/repos/${owner}/${repo}/actions/workflows/${INTEGRATION_WORKFLOW}`, auth: { bearer: token }, what: "look for the integration workflow" });
 		if (record(body).state !== "active") return false;
-		await app.fileAt(token, owner, repo, ".github/workflows/" + INTEGRATION_WORKFLOW, ref);
+		const sha = /^[0-9a-f]{40}$/.test(ref) ? ref : await refHead(app, token, owner, repo, ref);
+		await app.fileAt(token, owner, repo, ".github/workflows/" + INTEGRATION_WORKFLOW, sha);
 		return true;
 	} catch (error) {
 		if (error instanceof GithubError && error.status === 404) return false;

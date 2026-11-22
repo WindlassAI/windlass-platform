@@ -88,6 +88,8 @@ export interface StandinPull {
 	base: string;
 	state: "open" | "closed";
 	merged: boolean;
+	/** The commit a merge made on the base: a squash or rebase merge's own commit, which a check sets with `merged`. */
+	mergeCommit?: string;
 	mergeable: boolean | null;
 	draft: boolean;
 	requestedReviewers: string[];
@@ -183,6 +185,8 @@ export class GithubStandin {
 	readonly installations = new Map<number, StandinInstallation>();
 	readonly repositories = new Map<number, StandinRepository>();
 	readonly checks: StandinCheck[] = [];
+	/** Runs of a repository's integration workflow, as dispatched: a check finishes one by setting its status and conclusion. */
+	readonly integrationRuns: Array<{ id: number; repository: number; ref: string; inputs: Record<string, string>; status: string; conclusion: string | null; display_title: string; html_url: string; created_at: string; run_started_at: string; updated_at: string }> = [];
 	checkFault: 403 | 422 | "lose_reply" | null = null;
 	checkTokenFault: 403 | 422 | null = null;
 	readonly pulls: StandinPull[] = [];
@@ -583,6 +587,7 @@ export class GithubStandin {
 			merged: pull.merged,
 			mergeable: pull.mergeable,
 			merged_at: pull.merged ? new Date().toISOString() : null,
+			merge_commit_sha: pull.merged ? pull.mergeCommit ?? null : null,
 			title: pull.title,
 			body: pull.body,
 			head: { ref: pull.head, ...(pull.headSha && { sha: pull.headSha }), ...(pull.head.startsWith("windlass/feature-i_") && { sha: this.branchHead(repository, pull.head) }) },
@@ -865,6 +870,36 @@ export class GithubStandin {
 				return answer(200, { permission: level, role_name: level, user: this.users.get(login) });
 			}
 
+			// The integration workflow of a cross-repo feature (server/src/github/integration.ts): dispatched runs, listed and read.
+			const integration = /^\/actions\/workflows\/windlass-integration\.yml(\/dispatches|\/runs)?$/.exec(rest);
+			if (integration) {
+				const file = ".github/workflows/windlass-integration.yml";
+				const present = git(["ls-tree", "--name-only", repository.defaultBranch, "--", file], repository.path).trim() === file;
+				if (!this.allows(token, repository, "actions", integration[1] === "/dispatches" ? "write" : "read")) return denied();
+				if (!present) return answer(404, { message: "Not Found" });
+				if (!integration[1] && method === "GET") return answer(200, { id: 1, path: file, state: "active" });
+				if (integration[1] === "/dispatches" && method === "POST") {
+					const fields = (body ?? {}) as { ref?: string; inputs?: Record<string, string> };
+					if (!fields.ref || !this.branchHead(repository, fields.ref)) return answer(422, { message: "No ref found for: " + fields.ref });
+					const id = ++this.nextId;
+					this.integrationRuns.push({ id, repository: repository.id, ref: fields.ref, inputs: fields.inputs ?? {}, status: "queued", conclusion: null,
+						display_title: `windlass-integration ${fields.inputs?.feature} ${fields.inputs?.attempt}`, html_url: `${this.url}/${repository.owner}/${repository.name}/actions/runs/${id}`,
+						created_at: new Date().toISOString(), run_started_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+					response.writeHead(204).end();
+					entry.status = 204;
+					return;
+				}
+				if (integration[1] === "/runs" && method === "GET") {
+					const branch = url.searchParams.get("branch");
+					return answer(200, { workflow_runs: this.integrationRuns.filter(r => r.repository === repository.id && (!branch || r.ref === branch)).reverse() });
+				}
+			}
+			const actionRun = /^\/actions\/runs\/(\d+)$/.exec(rest);
+			if (actionRun && method === "GET") {
+				if (!this.allows(token, repository, "actions", "read")) return denied();
+				const run = this.integrationRuns.find(r => r.repository === repository.id && r.id === Number(actionRun[1]));
+				return run ? answer(200, run) : answer(404, { message: "Not Found" });
+			}
 			if (rest === "/actions/workflows" && method === "GET") {
 				if (!this.allows(token, repository, "actions", "read")) return denied();
 				const paths = git(["ls-tree","-r","--name-only",repository.defaultBranch,"--",".github/workflows"],repository.path);

@@ -179,9 +179,8 @@ export function plannerText(item: FactoryItem): string {
 // The combined run and the merges
 // ---------------------------------------------------------------------------------------------
 
-/** How often a running combined run, or a handed-over feature's pull requests, are read. */
-export const INTEGRATION_POLL_MS = 60_000;
-export const MERGE_POLL_MS = 5 * 60_000;
+/** How often a running combined run, and a handed-over feature's pull requests, are read (a webhook wakes the latter sooner). Shortened by the checks. */
+export const CROSS_POLLING = { integrationMs: 60_000, mergeMs: 5 * 60_000 };
 /** A run GitHub has not finished this long after its timeout is taken as timed out. */
 const RUN_GRACE_MS = 15 * 60_000;
 
@@ -233,8 +232,8 @@ export function crossFact(f: Flow, fact: Extract<Fact, { kind: "integration_star
 		integration.dispatchedAt ??= fact.at;
 		integration.state = "running";
 		run.step.attempt++;
-		f.effects.push({ kind: "poll_integration", key: f.key, attempt: integration.attempt, at: f.at + INTEGRATION_POLL_MS });
-		f.state("waiting", { reason: "integration", sentence: `Testing ${sentence(integration.heads ?? {})} together${fact.url ? ": " + fact.url : ""}.`, retryAt: f.at + INTEGRATION_POLL_MS });
+		f.effects.push({ kind: "poll_integration", key: f.key, attempt: integration.attempt, at: f.at + CROSS_POLLING.integrationMs });
+		f.state("waiting", { reason: "integration", sentence: `Testing ${sentence(integration.heads ?? {})} together${fact.url ? ": " + fact.url : ""}.`, retryAt: f.at + CROSS_POLLING.integrationMs });
 		return true;
 	}
 	if (fact.url) integration.url = fact.url;
@@ -243,7 +242,7 @@ export function crossFact(f: Flow, fact: Extract<Fact, { kind: "integration_star
 	if (state === "queued" || state === "running") {
 		integration.state = state;
 		run.step.attempt++;
-		f.effects.push({ kind: "poll_integration", key: f.key, attempt: integration.attempt, at: f.at + INTEGRATION_POLL_MS });
+		f.effects.push({ kind: "poll_integration", key: f.key, attempt: integration.attempt, at: f.at + CROSS_POLLING.integrationMs });
 		return true;
 	}
 	integration.state = state;
@@ -305,7 +304,7 @@ export function handOver(f: Flow): void {
 
 function pollPrs(f: Flow): void {
 	for (const repo of f.item.repos!) if (repo.pr && repo.prState !== "merged")
-		f.effects.push({ kind: "poll_repo_pr", key: `${f.key}/${repo.alias}`, repo: repo.alias, pr: repo.pr.number, at: f.at + MERGE_POLL_MS });
+		f.effects.push({ kind: "poll_repo_pr", key: `${f.key}/${repo.alias}`, repo: repo.alias, pr: repo.pr.number, at: f.at + CROSS_POLLING.mergeMs });
 }
 
 /** Whether `repo` merged before every repository the merge order puts first. */
@@ -351,7 +350,7 @@ function prRead(f: Flow, fact: Extract<Fact, { kind: "repo_pr_read" }>): boolean
 			return true;
 		}
 	}
-	if (repo.prState !== "merged") f.effects.push({ kind: "poll_repo_pr", key: fact.key, repo: fact.repo, pr: repo.pr!.number, at: f.at + MERGE_POLL_MS });
+	if (repo.prState !== "merged") f.effects.push({ kind: "poll_repo_pr", key: fact.key, repo: fact.repo, pr: repo.pr!.number, at: f.at + CROSS_POLLING.mergeMs });
 	return true;
 }
 
