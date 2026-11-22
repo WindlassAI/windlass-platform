@@ -130,7 +130,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
+import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
@@ -1212,6 +1212,8 @@ export const user = actor({
 				)
 			`);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
+			// A retry series for the webhook directories after a failed update (user-github.ts).
+			await db.execute(GITHUB_SYNC_TABLE);
 			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
 			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
 			await db.execute(`
@@ -1392,6 +1394,8 @@ export const user = actor({
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
 			try {
+				// A series whose next try was set and not stored would block every later one: wake starts afresh.
+				await c.db.execute("DELETE FROM github_sync");
 				await syncGithubWebhooks(c, c.key[0]);
 			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
 		}
@@ -1746,7 +1750,7 @@ export const user = actor({
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
-			await replaceGithubConnection(c, profile.uid, connection);
+			await replaceGithubConnection(c, profile.uid, connection, confirmed.readAt);
 			c.vars.reached = true;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
@@ -2199,6 +2203,11 @@ export const user = actor({
 		internalUpdateGithubInstallation: async (c, change: InstallationChange) => {
 			requireServiceFor(c, "call");
 			await updateGithubInstallation(c, c.key[0], change);
+		},
+
+		[GITHUB_SYNC.action]: async (c, attempt: number) => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			await retryGithubSync(c, c.key[0]!, c.scheduledFire.id, attempt);
 		},
 
 		/** The connection, for a session that is about to clone or push. */

@@ -67,14 +67,34 @@ which only the `user` actor of the named user takes, from a caller signed in as 
 
 Signed `installation.created`, `installation.new_permissions_accepted`, `installation.unsuspend`, and
 `installation_repositories.added` deliveries can add an installation after connect. The platform reads its
-current account and suspension state from GitHub. It attaches an active installation to connections whose
-stored GitHub user ID matches the sender, or the owner of a personal installation. Repository permission
+current account and suspension state from GitHub. An installation on a personal account attaches only to
+connections whose stored GitHub user ID is that account's owner, whoever sent the event. An organization
+installation attaches to connections whose stored GitHub user ID matches the sender. Repository permission
 checks still apply. Repeated deliveries with the same GUID share one inbox entry.
 
-An uninstall, suspension, or `installation_repositories.removed` drops the installation from every linked
-user, even when only one repository was removed. **Reload** in the picker reads the repositories and
-permissions of the user's known installations with installation tokens. **Reconnect GitHub** discovers
-other installations the user can reach, including an organization installation someone else made.
+An uninstall or suspension drops the installation from every linked user. `installation_repositories.removed`
+keeps the installation and marks the user's connection refreshed, so every server discards its older lists
+and permission answers. The next read from GitHub no longer lists the removed repositories, and an
+installation token cannot reach them. A session that already cloned one keeps its clone and local commits,
+but can no longer fetch or push it. A connection that is not linked in the webhook directory yet relies on
+its cached lists expiring instead. **Reload** in the picker reads the repositories and permissions of the
+user's known installations with installation tokens. **Reconnect GitHub** discovers other installations the
+user can reach, including an organization installation someone else made.
+
+The webhook directory (`githubHooks`) records each uninstall or suspension with the time its delivery was
+received. It records a later activation the same way, and the newer record wins. Linking a user to
+installations happens in the same actor and refuses one that is recorded as removed. A connection made from
+a ticket keeps an installation only when GitHub listed it more than a minute after its last recorded removal.
+So when a user connects while an uninstall is being delivered, the result does not depend on the order. If
+the removal is recorded first, the link refuses the installation and the user's connection drops it. If the
+link is made first, the removal finds the user and drops it. A suspension is checked against GitHub's current
+state before it is recorded, so one delivered late, after its unsuspend, changes nothing. The order relies on
+the servers' clocks agreeing to within a minute; on one host they do.
+
+A user's connection is saved first and the directories are updated after. If a directory update fails after
+the save, for example while recording a removal, the `user` actor retries it on a schedule: after 15 seconds,
+then 1, 4, 15 and 60 minutes. After the last try it waits for the actor's next wake. The retry state is stored
+in the actor, so a retry pending when the actor stops still runs.
 
 ### Who may do what
 
