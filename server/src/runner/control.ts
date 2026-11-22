@@ -130,10 +130,10 @@ export type Capability = typeof SERVER_CAPABILITIES[number];
 export const CAPABILITIES_RUNNER_VERSION = "0.3.0";
 const capabilities = list(line(64), 32);
 /**
- * The first runner release whose checks take `gitHost` in a welcome (the same as `capabilities`'s, since
- * both came before that release was published). Raise it if a runner without the field is ever released.
+ * The first runner release whose checks take `gitHost` in a welcome. runner-v0.3.0 shipped before the field
+ * existed and refuses unknown welcome keys, so it must never get one. Raise it if another release ships without it.
  */
-export const GIT_HOST_RUNNER_VERSION = "0.3.0";
+export const GIT_HOST_RUNNER_VERSION = "0.3.1";
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** A DNS name of two labels or more, lower case, no address: what an --egress-domains list can hold. */
 const gitHost = is<string>((v) => typeof v === "string" && v.length <= 253 && v.split(".").length >= 2

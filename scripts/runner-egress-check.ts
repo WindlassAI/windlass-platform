@@ -292,6 +292,7 @@ test("the welcome names the platform's git host to a runner that reads it, and t
 	assert.equal(welcomeCapabilities(GIT_HOST_RUNNER_VERSION, "https://git.example.com").gitHost, "git.example.com");
 	assert.equal(welcomeCapabilities("1.0.0", "https://GitHub.com/").gitHost, "github.com");
 	assert.equal("gitHost" in welcomeCapabilities(MIN_RUNNER_VERSION, "https://git.example.com"), false, "an older runner refuses unknown keys");
+	assert.equal("gitHost" in welcomeCapabilities("0.3.0", "https://git.example.com"), false, "runner 0.3.0 shipped before gitHost and refuses unknown keys");
 	for (const url of ["http://git.example.com", "https://git.example.com:8443", "https://10.0.0.5", "not a url", undefined])
 		assert.equal("gitHost" in welcomeCapabilities("1.0.0", url), false, String(url));
 	const welcome = { kind: "welcome", idleSuspendMs: 1000, capabilities: ["git-mirrors"] };
