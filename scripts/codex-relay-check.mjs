@@ -158,3 +158,16 @@ test('the catalog filter keeps model ids whose UTF-8 bytes are split across chun
 	const out = await text(Readable.from(Array.from(bytes, (b) => Buffer.from([b]))).pipe(auth.catalogFilter()));
 	assert.deepEqual(JSON.parse(out), { data: [{ id: 'gpt-é-π-模型' }, { id: 'plain' }] });
 });
+test('a refresh reply without a refresh token keeps the current one', async () => {
+	let record = { generation: 'g', provider: 'chatgpt', access: 'expired', refresh: 'kept', expires: 1 };
+	const auth = codexProvider('chatgpt', 'g', {
+		load: async () => record,
+		persist: async (value) => {
+			record = value;
+		},
+		exchange: async () => ({ ok: true, json: async () => ({ access_token: 'new-access', expires_in: 300 }) }),
+	});
+	assert.equal((await auth.target('/codex/v1/responses', {}))?.headers.authorization, 'Bearer new-access');
+	assert.equal(record.refresh, 'kept');
+	assert.equal(record.access, 'new-access');
+});

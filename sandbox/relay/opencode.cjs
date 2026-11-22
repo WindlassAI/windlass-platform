@@ -82,9 +82,11 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 			});
 			if (!res.ok) return;
 			const tokens = await res.json();
-			if (!tokens.access_token || !tokens.refresh_token || !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0) return;
+			if (typeof tokens.access_token !== 'string' || !tokens.access_token || (tokens.refresh_token !== undefined && (typeof tokens.refresh_token !== 'string' || !tokens.refresh_token))
+				|| !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0) return;
 			const id = accountId(tokens.id_token) || accountId(tokens.access_token);
-			const next = { ...latest, access: tokens.access_token, refresh: tokens.refresh_token,
+			// The token endpoint may keep the refresh token unchanged and omit it from the reply.
+			const next = { ...latest, access: tokens.access_token, refresh: tokens.refresh_token ?? latest.refresh,
 				accountId: id || latest.accountId, expires: Date.now() + 1000 * tokens.expires_in };
 			await persist(store.records ? { ...store, records: { ...store.records, [provider]: next } } : next);
 			remember(next);

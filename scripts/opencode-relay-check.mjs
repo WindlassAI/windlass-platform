@@ -177,3 +177,13 @@ test('catalog API keys select the provider-specific inference host, base path an
 		assert.equal(target.headers[header],bearer ? 'Bearer fixture-key' : 'fixture-key',id);
 	}
 });
+test('an OpenCode ChatGPT refresh reply without a refresh token keeps the current one', async () => {
+	let record = { provider: 'chatgpt', generation: 'one', access: 'old-access', refresh: 'kept-refresh', expires: 0 };
+	const provider = providerFor('chatgpt', 'one', {
+		load: async () => ({ ...record }),
+		persist: async next => { record = next; },
+		exchange: async () => Response.json({ access_token: 'next-access', expires_in: 3600 }),
+	});
+	assert.equal((await provider.target('/openai/responses', {}))?.headers.authorization, 'Bearer next-access');
+	assert.deepEqual([record.access, record.refresh], ['next-access', 'kept-refresh']);
+});
