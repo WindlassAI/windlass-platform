@@ -95,12 +95,20 @@ export interface SandboxHandle {
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
+	/**
+	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
+	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
+	 * slot holds it. `partial` only seeds an empty slot.
+	 */
+	saveMirror?(stage: string, partial: boolean): Promise<boolean>;
 }
 
 export interface CreateSandboxInput {
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
 	fromSnapshot?: SnapshotSelection;
+	/** Immutable GitHub repository ID for a transport-owned Docker mirror. */
+	mirrorRepo?: string;
 	/** Machine-only. The default harness uses the ordinary Windlass image. */
 	harness?: Exclude<HarnessId, "windlass">;
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */

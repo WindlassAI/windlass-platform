@@ -40,7 +40,9 @@ gateway origin. Compare the fingerprint printed by the runner with the owner's o
 Pairing establishes initial trust over TLS. A signed runner checks the online certificate against the
 stored Ed25519 root, its expiry and the highest serial already seen on either socket. The runner signs
 its ephemeral X25519 key, nonce and hello fields. The certified platform key signs the corresponding
-welcome, including resume state and idle policy. On the session socket the one-use random attach ticket
+welcome, including resume state, idle policy and, for runners 0.3.0 or later, the server's
+capabilities. A runner sends a report field such as `gitMirrors` only to a server that names it,
+because a server refuses a frame with a key it does not read. On the session socket the one-use random attach ticket
 from the authenticated control socket serves as the platform challenge. Each connection derives fresh
 directional HMAC keys. A counter starts at zero in each direction. Verification precedes dispatch for
 control, catalog, report, host, session data and acknowledgments. A resumed conversation retains its

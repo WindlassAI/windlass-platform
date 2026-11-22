@@ -1227,7 +1227,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		const vars = c.vars;
 		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;
 		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
-		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot });
+		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot, mirrorRepo: meta.repo ? String(meta.repo.id) : undefined });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1759,7 +1759,7 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	const work = meta.origin?.role === "reviewer" ? undefined : (meta.pushedHead && meta.publishBranch) || (childSeed ? repo.branch : undefined);
 	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${pinnedBase ?? repo.branch}`);
 	try {
-		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase);
+		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase, meta.uid);
 		if (!cloned || signal.aborted) return false;
 		const directory = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 		if (cloned.workAt && work) {

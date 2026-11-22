@@ -17,7 +17,7 @@ import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
-	REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, secondHello, versionAtLeast,
+	CAPABILITIES_RUNNER_VERSION, REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, reportFor, secondHello, versionAtLeast, welcomeCapabilities, type Report,
 } from "../server/src/runner/control.js";
 
 let failures = 0;
@@ -50,6 +50,20 @@ const junk: unknown[] = [
 expect("a runner's frame that is not one is null, and nothing throws", never(parseRunnerFrame, junk));
 expect("the same for the server's frames", never(parseServerFrame, [...junk, JSON.stringify({ kind: "attach", sessionId: "../x", ticket: "t" }), JSON.stringify({ kind: "welcome", idleSuspendMs: -5 })]));
 expect("and for the HTTP answers", never(parsePairStatus, [...junk, { state: "approved", uid: "u_1", machineId: "m_short", githubLogin: null }]) && never(parseConnectionRefusal, [...junk, { reason: "clock" }]));
+
+// An older server refuses a report with a key it does not know. This server reads gitMirrors,
+// names it in the welcome only to runners that read the welcome's capabilities, and a new runner
+// takes a welcome from a server that names none.
+const mirrorReport = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [], gitMirrors: true };
+expect("this server's checks take a report with gitMirrors", parseRunnerFrame(JSON.stringify(mirrorReport))?.kind === "report");
+expect("the actor names capabilities only to a runner that reads them", !("capabilities" in welcomeCapabilities(MIN_RUNNER_VERSION)) && !("capabilities" in welcomeCapabilities("0.2.1"))
+	&& welcomeCapabilities(CAPABILITIES_RUNNER_VERSION).capabilities?.includes("git-mirrors") === true && welcomeCapabilities("1.0.0").capabilities?.includes("git-mirrors") === true);
+expect("a welcome with or without capabilities passes, and unknown names are kept for the runner to ignore",
+	parseServerFrame(JSON.stringify({ kind: "welcome", idleSuspendMs: 1 }))?.kind === "welcome"
+	&& parseServerFrame(JSON.stringify({ kind: "welcome", idleSuspendMs: 1, capabilities: ["git-mirrors", "later"] }))?.kind === "welcome"
+	&& parseServerFrame(JSON.stringify({ kind: "welcome", idleSuspendMs: 1, capabilities: "git-mirrors" })) === null);
+expect("a report without the capability drops gitMirrors and keeps the rest", !("gitMirrors" in reportFor(mirrorReport as unknown as Report, undefined)) && reportFor(mirrorReport as unknown as Report, ["git-mirrors"]).gitMirrors === true
+	&& reportFor(mirrorReport as unknown as Report, []).freeDiskBytes === 12);
 
 expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kind === "hello"
 	&& parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: false, reason: "permission denied" }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [{ id: "m_0123456789abcdef-0123456789ab", sessionId: "s_0123456789abcdef", state: "paused", usedAt: 5 }] }))?.kind === "report");
@@ -163,7 +177,7 @@ const lease = (validForMs?: number) => Response.json({ endpoint: null, namespace
 const answer = (status: number, body: unknown = {}) => Response.json(body, { status });
 
 async function withControl(answers: Response[], exercise: (runner: {
-	status: string[]; online(socketIndex?: number): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
+	status: string[]; online(socketIndex?: number, capabilities?: string[]): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
 }) => Promise<void>) {
 	const abort = new AbortController();
 	const status: string[] = [];
@@ -178,19 +192,19 @@ async function withControl(answers: Response[], exercise: (runner: {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
 		checkAuthenticatedNetwork: async () => {}, welcome: async () => {},
-		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true }),
+		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
 	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host", null);
 	try {
 		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
-			async online(socketIndex = 0) {
+			async online(socketIndex = 0, capabilities?: string[]) {
 				await until(() => sockets.length > socketIndex);
 				const socket = sockets[socketIndex];
 				socket.frame({ kind: "challenge", nonce: "a".repeat(43) });
 				await until(() => socket.sent.some(f => f.kind === "hello"));
-				socket.frame({ kind: "welcome", idleSuspendMs: 60_000 });
+				socket.frame({ kind: "welcome", idleSuspendMs: 60_000, ...(capabilities && { capabilities }) });
 				await until(() => socket.sent.some(f => f.kind === "report"));
 				const report = socket.sent.find(f => f.kind === "report");
 				for (const kind of ["hello", "report"]) {
@@ -279,6 +293,15 @@ try {
 				ws.frame({ kind: "attach", sessionId: "s_new", ticket: "refused" });
 				await until(() => ws.readyState === 3);
 				assert.equal(sockets.length, 1);
+			});
+		}
+	});
+	await checkControl("a runner sends gitMirrors only to a server whose welcome names git-mirrors", async () => {
+		for (const [capabilities, sent] of [[undefined, false], [[], false], [["something-newer"], false], [["something-newer", "git-mirrors"], true]] as const) {
+			await withControl([lease()], async r => {
+				const ws = await r.online(0, capabilities && [...capabilities]);
+				const report = ws.sent.find(f => f.kind === "report");
+				assert.equal(Object.hasOwn(report ?? {}, "gitMirrors"), sent, `welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
 		}
 	});

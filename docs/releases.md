@@ -35,7 +35,7 @@ Compare the full reference printed above with the runner digest in the Machines 
 ## Cut a release
 
 1. Push the branch with `git push git@github.com:WindlassAI/windlass-platform.git release-images`, open a PR into `main`, and merge it after review and CI. GitHub requires the workflow file on the default branch before accepting its first manual dispatch. [GitHub workflow dispatch requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
-2. Dispatch a build from `main`. Choose an unused Docker-compatible semantic version. The current runner reports `0.2.0`.
+2. Dispatch a build from `main`. Choose an unused Docker-compatible semantic version. The current runner reports `0.3.0`. Release it as 0.3.0 or later: a server names its capabilities, such as `git-mirrors`, only to runners that report 0.3.0 or later.
 
    ```sh
    repo=WindlassAI/windlass-platform

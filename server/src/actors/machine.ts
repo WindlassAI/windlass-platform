@@ -9,7 +9,7 @@ import { config } from "../config.js";
 import { isMachineIdName, machineLabel, sandboxSlots, type MachineSummary, MACHINE_EXPIRY_MS, type HarnessOptions, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
-import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MAX_REPORT_BYTES, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
+import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MAX_REPORT_BYTES, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, welcomeCapabilities, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
 
 const minimum = () => config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
@@ -331,7 +331,7 @@ export const machine = actor({
 					const r = await record(c);
 					const statement = frame.protocol === 2 ? machineStatement(context, frame) : controlProof(uid!, id!, nonce);
 					if (!r || !signed(r.public_key, statement, frame.signature)) { reject(ws, refuse("unknown")); return; }
-					const base = { kind: "welcome" as const, idleSuspendMs: config.idleSuspendMs };
+					const base = { kind: "welcome" as const, idleSuspendMs: config.idleSuspendMs, ...welcomeCapabilities(frame.runnerVersion) };
 					const greeting = (refusal?: Refusal) => identity && frame.protocol === 2
 						? platformWelcome(context, frame, { ...base, refusal }, identity) : undefined;
 					const decline = (refusal: Refusal) => {

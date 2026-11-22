@@ -5,7 +5,7 @@
  * Docker mounts the user's data volume in session containers. The user's actor holds the ChatGPT sign-in.
  */
 
-import { snapshotDeployment } from "./snapshot-deployment.js";
+import { mirrorDeployment, snapshotDeployment } from "./snapshot-deployment.js";
 import { config } from "../config.js";
 import type { SandboxLayer } from "./api.js";
 import { WindlassSignIns } from "../signin/commands.js";
@@ -63,6 +63,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 			shotsImage: options.shotsImage,
 			machine: null,
 			deployment: snapshotDeployment(config.storagePath, config.snapshots),
+			mirrorScope: mirrorDeployment(config.storagePath),
 			dataVolume: async (uid) => {
 				await ensureUserData(uid);
 				return userVolume(uid);

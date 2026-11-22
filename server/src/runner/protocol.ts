@@ -65,8 +65,9 @@ const fingerprint = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.te
 const snapshotKey = { attempt: is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v)), generation: fingerprint, repo: is<string>(v => typeof v === "string" && /^[1-9]\d{0,19}$/.test(v)), inputs: fingerprint };
 const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v === "string" && /^[a-f0-9]{40}$/.test(v)), created: count });
 const operations = {
-	create: [object({ profile: machineProfile, size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	create: [object({ profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
+	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
 	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],

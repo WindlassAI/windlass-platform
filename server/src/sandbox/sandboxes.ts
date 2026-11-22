@@ -28,6 +28,7 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
+import { gitMirrorMount, type MirrorStore, restoreGitMirror, saveSessionMirror } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
 import type { SnapshotSource } from "./snapshot-key.js";
 
@@ -82,6 +83,18 @@ function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
 	return Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * Starts a stopped sandbox container. Docker resolves a mirror's volume-subpath again here.
+ * Should its slot be gone, an empty one is put back (the clone treats that as no mirror) and
+ * the start is tried once more. The common start pays for nothing extra.
+ */
+export async function startContainer(name: string, helperImage: string, store?: MirrorStore): Promise<void> {
+	let started = await docker(["start", name], { timeoutMs: 60_000 });
+	if (started.code !== 0 && await restoreGitMirror(name, helperImage, store).catch(() => false))
+		started = await docker(["start", name], { timeoutMs: 60_000 });
+	if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
+}
+
 export class DockerSandboxHandle implements TurnSandbox {
 	readonly cwd = WORKSPACE;
 	constructor(
@@ -91,6 +104,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly uid: string,
 		readonly snapshot?: SnapshotSource,
 		readonly resizePending = false,
+		/** Runs the Git mirror save helper (`DockerSandboxOptions.helperImage`). */
+		readonly helperImage = IMAGE,
 	) {
 		markTurnSandbox(this);
 	}
@@ -101,6 +116,10 @@ export class DockerSandboxHandle implements TurnSandbox {
 
 	get container(): string {
 		return containerName(this.id);
+	}
+
+	saveMirror(stage: string, partial: boolean): Promise<boolean> {
+		return saveSessionMirror(this.container, stage, partial, { image: this.helperImage });
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -401,13 +420,21 @@ export async function removeRunningTokenFiles(uid: string, machine: string, file
 
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
+	/** The snapshot store's deployment identity. Left out where snapshots were never on. */
 	deployment?: string;
+	/** Scopes Git mirror slots to this deployment, whether or not snapshots are on. */
+	mirrorScope?: string;
 	cpus?: number;
 	slots?: MachineSlotCapacity;
 	network?: { name: string; env: Record<string, string>; mode: string };
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
 	shotsImage?: string;
+	/**
+	 * Runs the Git mirror allocator and save helpers: the pinned base sandbox image, never a
+	 * session's own (a harness image, or a snapshot committed after setup). `image` when left out.
+	 */
+	helperImage?: string;
 	/**
 	 * Null for the hosted provider. A runner's machine id: every container it makes carries it as
 	 * MACHINE_LABEL, and each provider lists and acts on only the containers whose machine label is its
@@ -435,12 +462,14 @@ export type DockerSandboxOptions = {
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
 	private readonly shotsImage: string;
+	private readonly helperImage: string;
 	private readonly machine: string;
 
 	constructor(private readonly options: DockerSandboxOptions) {
 		if (options.machine !== null && !NAME.test(options.machine)) throw new Error("invalid machine id");
 		this.image = options.image ?? IMAGE;
 		this.shotsImage = options.shotsImage ?? SHOTS_IMAGE;
+		this.helperImage = options.helperImage ?? this.image;
 		// A container without the label reads as "" (Go templates), which is the hosted provider's.
 		this.machine = options.machine ?? "";
 	}
@@ -512,6 +541,8 @@ export class DockerSandboxes implements Sandboxes {
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
 		const id = (harness ? harness + "-" : "") + randomId(6);
 		const name = containerName(id);
+		const scope = this.mirrorScope;
+		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
 		const relay = await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
@@ -546,6 +577,7 @@ export class DockerSandboxes implements Sandboxes {
 				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, ...relay.env] : []),
 				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
 				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
+				...(mirror ? ["--mount", mirror] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],
@@ -554,6 +586,8 @@ export class DockerSandboxes implements Sandboxes {
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
 			const message = result.stderr.trim();
+			// Eviction can race docker run. Older daemons also lack volume-subpath.
+			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message)) return this.create({ ...input, mirrorRepo: undefined });
 			if (selected && /No such image|not found/i.test(message)) return this.create({ ...input, fromSnapshot: undefined });
 			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
@@ -567,8 +601,12 @@ export class DockerSandboxes implements Sandboxes {
 		return id;
 	}
 
+	private get mirrorScope() {
+		return this.options.mirrorScope ?? this.options.deployment ?? this.machine;
+	}
+
 	private snapshots(base = this.image, screenshots = false) {
-		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment);
+		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment, this.mirrorScope);
 	}
 
 	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
@@ -625,8 +663,7 @@ export class DockerSandboxes implements Sandboxes {
 		const resizePending = await this.reconcile(containerName(id), found);
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
 		else if (found.status !== "running" && found.status !== "restarting") {
-			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
-			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
+			await startContainer(containerName(id), this.helperImage);
 		}
 		// An interrupted pre-upgrade turn may have left a file on the shared volume. Clear
 		// those before returning a handle that could run setup or commands against it.
@@ -634,7 +671,7 @@ export class DockerSandboxes implements Sandboxes {
 			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
 			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

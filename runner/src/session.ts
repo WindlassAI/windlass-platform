@@ -74,9 +74,11 @@ class Conversation {
 				await o.ensureImage(); // The disk-space helper always uses the base pin.
 				if (harness) await o.prepareHarness(profile, harness);
 				if (screenshots) await o.ensureImage(shotsImage);
-				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, op.args.size, prepared); });
+				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo); });
 			}
 			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
+			// Not serial: a save runs for minutes in its own helper container, outside the sandbox.
+			case "saveMirror": return o.saveMirror(this.session, op.args.id, op.args.stage, op.args.partial);
 			case "saveSnapshot": {
 				const { id, source } = op.args;
 				return o.serial(() => { this.requireActive(); return o.saveSnapshot(this.session, id, source); });

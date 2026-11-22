@@ -19,6 +19,7 @@ import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
 import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
+import { saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
 import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
 import { localSizing } from "./sizing.js";
@@ -125,7 +126,7 @@ export class Executor extends MachineDocker {
 		if (opencode) {
 			this.opencodePin = harnessImage("opencode");
 			if (!this.opencodePin) throw new Refusal("This runner was built without the OpenCode image.");
-			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin,
+			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin, helperImage: image,
 				harness: "opencode", sessionRelay: async () => {
 					const login = currentProvider(this);
 					if (!login) throw new Refusal("Run windlass-runner login opencode on this machine.");
@@ -135,7 +136,7 @@ export class Executor extends MachineDocker {
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, sessionRelay: () => this.prepareClaudeRelay() });
+			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, sessionRelay: () => this.prepareClaudeRelay() });
 		}
 	}
 	/** Caller holds the login lock while preparing the relay and issuing a session credential. */
@@ -416,7 +417,7 @@ export class Executor extends MachineDocker {
 			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", gitMirrors: true, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
@@ -468,7 +469,7 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }) {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string) {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
@@ -479,7 +480,7 @@ export class Executor extends MachineDocker {
 		await this.network.prepare();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
-		const input = { uid: this.identity.uid, sessionId, profile, size };
+		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
 		const raw = harness ? await withLoginVolume(this, () => (harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
@@ -498,6 +499,11 @@ export class Executor extends MachineDocker {
 		}
 		this.publishReport?.();
 		return id;
+	}
+	async saveMirror(session: string, id: string, stage: string, partial: boolean) {
+		const box = this.running(id, session);
+		// The base pin, never the session's image: a harness image, or a snapshot committed after setup.
+		return saveSessionMirror(containerName(box.raw), stage, partial, { image });
 	}
 	async saveSnapshot(session: string, id: string, source: SnapshotSource) {
 		const box = this.running(id, session);

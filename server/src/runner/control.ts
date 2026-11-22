@@ -10,7 +10,8 @@
  *
  *   challenge  actor → runner   first frame on every socket: a nonce for the runner to sign
  *   hello      runner → actor   the signature, the runner's release, its process epoch and its clock
- *   welcome    actor → runner   accepted: the idle time the runner applies to sandboxes on its own
+ *   welcome    actor → runner   accepted: the idle time the runner applies to sandboxes on its own, and
+ *                               to a runner that reads them, the server's capabilities (SERVER_CAPABILITIES)
  *   refused    actor → runner   not accepted, or no longer (the machine was removed), with a sentence to
  *                               show; the actor then closes the socket
  *   report     runner → actor   what the machine has: Docker, the probe, free disk, its sandboxes. Sent
@@ -110,6 +111,27 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
 
 // ---- Actor → runner ----
 
+/**
+ * What a server reads beyond what every server this runner may meet reads, named in its welcome. A
+ * runner sends a field of this kind only to a server that named it: the server's checks refuse a
+ * frame with a key they do not know. A name this runner does not know is ignored, so a later
+ * server can name more without a new gate.
+ *
+ *   git-mirrors   the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
+ */
+export const SERVER_CAPABILITIES = ["git-mirrors"] as const;
+export type Capability = typeof SERVER_CAPABILITIES[number];
+/**
+ * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
+ * welcome with it, so the actor names capabilities only to a runner whose hello reports this or later.
+ */
+export const CAPABILITIES_RUNNER_VERSION = "0.3.0";
+const capabilities = list(line(64), 32);
+/** The welcome's `capabilities`, for a runner whose hello reported `runnerVersion`. */
+export function welcomeCapabilities(runnerVersion: string): { capabilities?: string[] } {
+	return versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION) ? { capabilities: [...SERVER_CAPABILITIES] } : {};
+}
+
 const refusal = either(
 	either(
 		object({ kind: oneOf("refused"), reason: oneOf("outdated"), minimum: version, message: line(500) }),
@@ -124,7 +146,7 @@ const refusal = either(
 );
 const serverFrame = either(
 	either(
-		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count }), object({ kind: oneOf("welcome"), idleSuspendMs: count, refusal: optional(refusal), ...welcomeFields }))),
+		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), refusal: optional(refusal), ...welcomeFields }))),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
 	),
 	either(
@@ -197,6 +219,7 @@ const report = object({
 	commandSandbox: probe,
 	/** The runner was started with --screenshots and has a pinned screenshots image. */
 	screenshots: optional(boolean),
+	gitMirrors: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
@@ -207,6 +230,13 @@ const report = object({
 const runnerFrame = either(either(hello, either(report, either(catalog, hostFrame))), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
 export type Hello = Of<typeof hello>;
 export type Report = Of<typeof report>;
+
+/** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
+export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
+	if (named?.includes("git-mirrors" satisfies Capability)) return report;
+	const { gitMirrors: _, ...rest } = report;
+	return rest as R;
+}
 export type RunnerFrame = Of<typeof runnerFrame>;
 
 /** Bound pending work before parsing another frame. Include the frame currently being processed. */

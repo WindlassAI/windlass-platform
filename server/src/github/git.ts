@@ -29,6 +29,8 @@
  * a script reports (`wlp:` lines) is read where it is there and never required.
  */
 
+import { mirrorStage } from "../sandbox/git-mirrors.js";
+import { MIRROR_BYTES, MIRROR_CONFIG, MIRROR_ROOT } from "../sandbox/store-limits.js";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -38,6 +40,9 @@ import { GithubProblem } from "./repos.js";
 import { redact } from "./redact.js";
 
 const CLONE_TIMEOUT_MS = 3 * 60 * 1000;
+// A reference clone that receives nothing for this long is abandoned for a plain clone.
+// Local work (the dissociating repack, checkout, checks) is not on this clock.
+const MIRROR_STALL_SECONDS = 8;
 // A push is one action of the session's actor, which may take two minutes in all: the commit and the push fit in it together.
 const COMMIT_TIMEOUT_MS = 30 * 1000;
 const PUSH_TIMEOUT_MS = 70 * 1000;
@@ -192,8 +197,61 @@ mkdir -m 700 -- "$private"
 cd -- "$private"`;
 }
 
-async function removeTransport(sandbox: SandboxHandle, id: string): Promise<void> {
-	await sandbox.run(`/bin/rm -rf -- ${shellQuote(transportDirectory(id))}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+async function removeTransport(sandbox: SandboxHandle, id: string, keepStage = false): Promise<void> {
+	const paths = [transportDirectory(id), ...(keepStage ? [] : [transportDirectory(id) + ".mirror"])].map(shellQuote).join(" ");
+	await sandbox.run(`/bin/rm -rf -- ${paths}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+}
+
+/**
+ * Stage what a mirror would be built from, in a directory private to the transport uid: the
+ * clone's remote refs as branches, its HEAD, and hard links to its objects. No second network
+ * fetch, workspace file, remote config or credential. Nothing here writes the slot, which the
+ * session sees read-only: a helper container outside the session verifies the stage with a full
+ * fsck and installs it (git-mirrors.ts, `saveSessionMirror`). A stage whose refs match the
+ * slot's mirror is not made unless `repair`, which marks the stage (`seed/repair`) so the helper
+ * replaces the mirror anyway. The helper compares the refs again under the slot's save lock, since
+ * another clone's save may have landed since. `partial` (a single-branch clone) only seeds an empty slot.
+ */
+function stageMirror(partial: boolean, repair: boolean): string {
+	const stage = [
+		"set -euo pipefail",
+		PLAIN_GIT,
+		'mkdir -m 700 -- "$3"',
+		'cd -- "$3"',
+		...(partial ? ['[ ! -e "$2/repo.git" ] || exit 1'] : []),
+		'plain_git init -q --bare --template= seed',
+		'if ref=$(plain_git -C "$1/repo" symbolic-ref -q refs/remotes/origin/HEAD); then head="refs/heads/${ref#refs/remotes/origin/}"; else head=$(plain_git -C "$1/repo" symbolic-ref HEAD); fi',
+		'plain_git --git-dir=seed symbolic-ref HEAD "$head"',
+		`plain_git -C "$1/repo" for-each-ref --format='%(objectname) %(refname) %(symref)' refs/remotes/origin refs/tags |`,
+		`  awk 'NF == 2 { sub(/^refs\\/remotes\\/origin\\//, "refs/heads/", $2); print $1, $2 }' | LC_ALL=C sort -k2 > seed/packed-refs`,
+		// The same refs as the slot's mirror: nothing to save. The helper compares again under its lock.
+		...(repair ? [': > seed/repair'] : ['if cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD"; then exit 1; fi']),
+		'rm -r seed/objects',
+		'cp -al "$1/repo/.git/objects" seed/objects',
+		`[ "$(du -s -B1 seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
+		`[ "$(du -sb seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
+	].join("\n");
+	return [
+		`if mirror_ok && timeout -k 1s 10s /bin/bash -c ${shellQuote(stage)} mirror "$private" "$mirror" "$save" </dev/null >/dev/null 2>&1; then`,
+		'	echo "wlp:mirrorsave"',
+		'else rm -rf -- "$save"; fi',
+	].join("\n");
+}
+
+/** `repair`: the reference attempt just failed on the mirror, so a plain clone replaces it even with the same refs. */
+type MirrorAttempt = { owner: string; reference: boolean; repair?: boolean };
+
+function mirrorPath(owner: string): string {
+	if (!/^[0-9a-f]{64}$/.test(owner)) throw new Error("Invalid Git mirror owner.");
+	return shellQuote(MIRROR_ROOT + "/" + owner);
+}
+
+/** Check before minting a token. The authenticated operation rechecks under its directory lock. */
+export async function hasMirror(sandbox: SandboxHandle, owner: string, signal?: AbortSignal) {
+	const path = mirrorPath(owner);
+	const result = await sandbox.run(`mountpoint -q -- ${path} && test -d ${path}/repo.git/objects`,
+		{ gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS, signal }).catch(() => null);
+	return result?.exitCode === 0;
 }
 
 /**
@@ -210,7 +268,7 @@ async function removeTransport(sandbox: SandboxHandle, id: string): Promise<void
  * the network and every secret saved for the repository). `workCheckoutScript` puts it on the branch
  * afterwards. Neither step needs a token, and neither gets one.
  */
-export function cloneScript(url: string, branch: string, id: string, work?: string, pinnedBase?: string): string {
+export function cloneScript(url: string, branch: string, id: string, work?: string, pinnedBase?: string, mirror?: MirrorAttempt): string {
 	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid setup base SHA.");
 	// Review clones need only the base ref. A pinned subtask also restores its feature or published branch.
 	const cloneFlags = pinnedBase ? (work ? "--no-checkout " : "--single-branch --no-checkout ") : "";
@@ -220,15 +278,50 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
 		READ_TOKEN,
 		tokenGit(hostOf(url)),
 		"target=repo",
-		`wlp_git clone --quiet ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+		...(mirror ? [
+			`mirror=${mirrorPath(mirror.owner)}`,
+			`save=${shellQuote(mirrorStage(id))}`,
+			// A stage left by a save that never ran (an interrupted turn, a lost server) goes now.
+			'find /tmp -mindepth 1 -maxdepth 1 -user 65534 -name "wlp-transport-*.mirror" -exec rm -rf -- {} + 2>/dev/null || true',
+			// The mount and its ancestors are platform-created, and read-only here. Older runners have no mount.
+			'mirror_ok() { mountpoint -q -- "$mirror" && [ "$(stat -c %u:%a -- "$mirror")" = 65534:700 ]; }',
+			// Readers share the slot lock; the helper's install swap and eviction take it exclusively.
+			'lock_mirror() { mirror_ok && exec 9<"$mirror" && flock -s "$@" 9; }',
+			// Only these failures are the mirror's: the clone is tried again without it.
+			'mirror_fail() { echo "wlp:mirrorfail"; exit 4; }',
+		] : []),
+		...(mirror?.reference ? [
+			'lock_mirror -w 3 && [ -d "$mirror/repo.git/objects" ] || mirror_fail',
+			`printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} | cmp -s - "$mirror/repo.git/config" || mirror_fail`,
+			'for f in alternates http-alternates; do p="$mirror/repo.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || mirror_fail; done',
+			// A reference clone that stalls is the mirror's failure; any other is GitHub's or the network's.
+			`if ! wlp_git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=${MIRROR_STALL_SECONDS} clone --quiet --reference-if-able "$mirror/repo.git" --dissociate ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target" 2>"$private/clone.err"; then`,
+			'	cat -- "$private/clone.err" >&2',
+			'	if grep -q "Operation too slow" -- "$private/clone.err"; then echo "wlp:mirrorfail"; fi',
+			"	exit 1",
+			"fi",
+		] : [
+			`wlp_git clone --quiet ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+		]),
+		"WLP_T=",
 		PLAIN_GIT,
-		...(pinnedBase ? ["WLP_T=", `plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
+		...(mirror ? [
+			`for f in alternates http-alternates; do p="$target/.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || ${mirror.reference ? "mirror_fail" : "exit 4"}; done`,
+			...(mirror.reference ? [
+				// Connectivity, not a rehash of every blob: every object in a slot was rehashed by
+				// the helper's full fsck before it was installed, and sessions mount the slot
+				// read-only. --dissociate copied what was used, and no alternates remain.
+				'plain_git -C "$target" fsck --connectivity-only --no-reflogs --no-dangling --no-progress >/dev/null || mirror_fail',
+				'echo "wlp:mirror reference"',
+			] : []),
+			stageMirror(cloneFlags.includes("--single-branch"), !!mirror.repair && !mirror.reference),
+		] : []),
+		...(pinnedBase ? [`plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
 		`base_sha=$(plain_git -C "$target" rev-parse --verify ${work && pinnedBase ? featureRef : "HEAD"})`,
 		'echo "wlp:base $base_sha"',
 	];
 	if (work !== undefined) {
 		lines.push(
-			"WLP_T=",
 			`if at=$(plain_git -C "$target" rev-parse -q --verify ${shellQuote(`refs/remotes/origin/${work}^{commit}`)} 2>/dev/null); then`,
 			`	echo "wlp:haswork $at"`,
 			"else",
@@ -559,6 +652,8 @@ function said(result: ExecResult, secrets: string[]): string {
 }
 
 export type GitFailure =
+	/** The bounded reference clone failed before any workspace files were installed. */
+	| "mirror"
 	/** GitHub did not accept the token, or the app may not do this in the repository. */
 	| "denied"
 	/** The repository is not there (any more), or the app cannot see it. */
@@ -614,22 +709,43 @@ async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: 
 }
 
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
-export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal }): Promise<GitOutcome> {
-	const id = randomBytes(16).toString("hex");
+export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt }): Promise<GitOutcome> {
+	const stage = randomBytes(16).toString("hex");
+	let saved = false;
 	try {
-		const cloned = await run(sandbox, cloneScript(input.url, input.branch, id, input.work, input.pinnedBase),
+		const cloned = await run(sandbox, cloneScript(input.url, input.branch, stage, input.work, input.pinnedBase, input.mirror),
 			{ gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
-		if (!cloned.ok) return cloned;
+		if (!cloned.ok) {
+			if (input.mirror?.reference && cloned.failure !== "aborted" && cloned.marks.has("mirrorfail")) return { ...cloned, failure: "mirror" };
+			return cloned;
+		}
 		const copy = await run(sandbox, ["set -eu", `export PATH=${SYSTEM_PATH}`,
 			'if [ -z "$(ls -A | grep -vxF .git || true)" ]; then rm -rf -- .git; target=.; else',
 			`target=${shellQuote(input.directory)}; if [ -d "$target" ] && [ ! -L "$target" ]; then [ -z "$(ls -A -- "$target")" ]; else mkdir -- "$target"; fi; fi`,
-			`cp -R -- ${shellQuote(transportDirectory(id))}/repo/. "$target/"`, 'echo "wlp:dir $target"'].join("\n"),
+			`cp -R -- ${shellQuote(transportDirectory(stage))}/repo/. "$target/"`, 'echo "wlp:dir $target"'].join("\n"),
 			{ stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal });
 		if (copy.ok) for (const [key, value] of cloned.marks) copy.marks.set(key, value);
+		// The stage is named by this call, never by what the script printed.
+		if (copy.ok && copy.marks.has("mirrorsave")) {
+			copy.marks.set("mirrorsave", stage);
+			if (input.pinnedBase && !input.work) copy.marks.set("mirrorpartial", "");
+		} else copy.marks.delete("mirrorsave");
+		saved = copy.marks.has("mirrorsave");
 		return copy;
 	} finally {
-		await removeTransport(sandbox, id);
+		await removeTransport(sandbox, stage, saved);
 	}
+}
+
+/**
+ * After a clone GitHub confirmed: have the sandbox layer install the clone's staged objects in the
+ * slot, off the clone's path (the promise is not awaited). A clone that is not kept loses its stage.
+ */
+export function saveMirrorAfterClone(sandbox: SandboxHandle, outcome: GitOutcome): void {
+	const stage = outcome.marks.get("mirrorsave");
+	if (!stage) return;
+	if (outcome.ok && sandbox.saveMirror) void sandbox.saveMirror(stage, outcome.marks.has("mirrorpartial")).catch(() => false);
+	else void sandbox.run(`/bin/rm -rf -- ${shellQuote(mirrorStage(stage))}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
 }
 
 // Only the remote receipt is shared. Each publisher carries its own attempt through all three steps.
