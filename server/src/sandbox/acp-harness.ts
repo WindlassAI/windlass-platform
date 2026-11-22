@@ -213,6 +213,8 @@ export class AcpHarness implements Harness {
 			rpc.end(forbidden);
 		};
 		const allowedMode = (mode: unknown) => profile.id !== "codex" || codexModes(handle.profile).some(m => m.id === mode);
+		// The mode Codex last reported in a current_mode_update, for the session/set_mode path below.
+		let reportedMode: string | undefined;
 		const readConfigs = (raw: unknown, freshSession = false) => {
 			configs = optionsOf(raw, acp.models ?? input.harnessModels, freshSession);
 			acp.models = configs.list;
@@ -233,7 +235,10 @@ export class AcpHarness implements Harness {
 					stream.push({ sessionUpdate: "usage_update", ...acp.usage, ...(rateLimit && { rateLimit }) });
 					return;
 				}
-				if (update.sessionUpdate === "current_mode_update" && !allowedMode(update.currentModeId)) return forbid(text(update.currentModeId));
+				if (update.sessionUpdate === "current_mode_update") {
+					if (!allowedMode(update.currentModeId)) return forbid(text(update.currentModeId));
+					reportedMode = text(update.currentModeId);
+				}
 				if (update.sessionUpdate === "config_option_update") {
 					const reported = objects(update.configOptions).find(option => option.category === "mode")?.currentValue;
 					if (reported !== undefined && !allowedMode(reported)) return forbid(text(reported));
@@ -329,6 +334,13 @@ export class AcpHarness implements Harness {
 				if (!modes.current || !modes.modes.some(m => m.id === modes.current)) throw new Error(`${profile.name} did not acknowledge its mode.`);
 				if (input.unattended && modes.current !== requested) throw new Error(`${profile.name} did not switch to the mode “${requested}”, which a work item needs.`);
 				input.onAcpModes?.(modes.current, modes.modes, modes.current === requested ? undefined : requested);
+			} else if (profile.id === "codex") {
+				// No reply reports the mode here: Codex must have opened in it or reported switching to it.
+				const opened = modes.current;
+				reportedMode = undefined;
+				await request("session/set_mode", { sessionId, modeId: chosen });
+				if ((reportedMode ?? opened) !== requested) throw new Error(innerModesReason);
+				input.onAcpModes?.(requested, modes.modes);
 			} else {
 				input.onAcpModes?.(chosen, modes.modes, chosen === requested ? undefined : requested);
 				await request("session/set_mode", { sessionId, modeId: chosen });

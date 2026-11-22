@@ -118,13 +118,16 @@ test("Codex reports its sign-in generation, so a usage limit ends with that sign
  * handshake; the permission requests are the shapes codex-acp 2.9.0 sends for `exec_command` with
  * `sandbox_permissions: "require_escalated"` and for `apply_patch` outside the writable roots.
  */
-async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-sandbox", during: (emit: (frame: unknown) => void, sessionId: string) => void,
-	answered: (frame: { id: unknown; result?: unknown }) => boolean) {
+async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-sandbox", during: (emit: (frame: unknown) => void, sessionId: string, promptId: unknown) => void,
+	answered: (frame: { id: unknown; result?: unknown }) => boolean,
+	/** legacy: modes only in session/new's `modes` (no mode config option), so the client uses session/set_mode. */
+	legacy?: { openIn: string; reportSetMode: boolean }) {
 	const { readFileSync } = await import("node:fs");
 	const { harnessOf } = await import("../server/src/sandbox/harness.js");
 	const { markTurnSandbox } = await import("../server/src/sandbox/provider.js");
 	const opened = JSON.parse(readFileSync(new URL("../fixtures/codex/handshake.jsonl", import.meta.url), "utf8").split("\n")[2]).result;
 	const signals: string[] = [];
+	const methods: string[] = [];
 	const notes: string[] = [];
 	const permissions: unknown[] = [];
 	let finished = false;
@@ -136,13 +139,15 @@ async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-s
 			let finish!: (end: { code: number | null; signal: string | null; error: null }) => void;
 			const ended = new Promise<{ code: number | null; signal: string | null; error: null }>((resolve) => { finish = resolve; });
 			const emit = (frame: unknown) => queueMicrotask(() => opts.onStdout!(JSON.stringify({ jsonrpc: "2.0", ...(frame as object) }) + "\n"));
-			let mode = profile === "docker-hardened" ? "agent-full-access" : "workspace-write";
-			const options = (current: string) => opened.configOptions.map((o: { id: string }) => (o.id === "mode" ? { ...o, currentValue: current } : o));
+			let mode = legacy?.openIn ?? (profile === "docker-hardened" ? "agent-full-access" : "workspace-write");
+			const options = (current: string) => opened.configOptions.filter((o: { id: string }) => !legacy || o.id !== "mode")
+				.map((o: { id: string }) => (o.id === "mode" ? { ...o, currentValue: current } : o));
 			let prompt: unknown;
 			const process = {
 				tag: "fixture", ended, hasEnded: false,
 				write(line: string) {
 					const frame = JSON.parse(line);
+					methods.push(frame.method);
 					if (frame.method === "initialize") emit({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {} } });
 					else if (frame.method === "providers/set") emit({ id: frame.id, result: {} });
 					else if (frame.method === "session/new") emit({ id: frame.id, result: { ...opened, configOptions: options(mode), modes: { ...opened.modes, currentModeId: mode } } });
@@ -150,11 +155,14 @@ async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-s
 						if (frame.params.configId === "mode") mode = frame.params.value;
 						emit({ id: frame.id, result: { configOptions: options(mode) } });
 					} else if (frame.method === "session/set_mode") {
-						mode = frame.params.modeId;
+						if (!legacy || legacy.reportSetMode) {
+							mode = frame.params.modeId;
+							if (legacy) emit({ method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "current_mode_update", currentModeId: mode } } });
+						}
 						emit({ id: frame.id, result: {} });
 					} else if (frame.method === "session/prompt") {
 						prompt = frame.id;
-						during(emit, frame.params.sessionId);
+						during(emit, frame.params.sessionId, frame.id);
 					} else if (frame.method === undefined && frame.id !== undefined) {
 						permissions.push(frame.result);
 						if (answered(frame)) emit({ id: prompt, result: { stopReason: "end_turn" } });
@@ -174,7 +182,7 @@ async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-s
 		prompt: "go", onAcpNote: (text) => notes.push(text),
 		onQuestion: async (question) => { asked.push(question); return { choice: question.choices.find((c) => c.approve)?.id ?? "" }; },
 	});
-	return { result, notes, permissions, asked, signals };
+	return { result, notes, permissions, asked, signals, methods };
 }
 const escalated = (sessionId: string) => ({ method: "session/request_permission", id: 0, params: { sessionId,
 	toolCall: { toolCallId: "exec-1", title: "id > /home/agent/escalated; echo wrote", rawInput: { command: "id > /home/agent/escalated; echo wrote", cwd: "/workspace" }, kind: "execute", status: "pending" },
@@ -218,5 +226,18 @@ test("a Codex mode the profile forbids, reported by the agent, ends the turn and
 		assert.equal(turn.result.failure?.reason, "engine");
 		assert.match(turn.result.failure.message, /^Codex switched to the mode “(Container access|agent)”, which this sandbox profile does not allow\. The turn was stopped\.$/);
 		assert.deepEqual(turn.signals, ["TERM"], "the agent process was left running");
+	}
+});
+test("on the session/set_mode path a Codex mode counts only once Codex opened in it or reported it", { timeout: 10_000 }, async () => {
+	const { innerModesReason } = await import("../server/src/sandbox/codex-modes.js");
+	const end = (emit: (frame: unknown) => void, _: string, id: unknown) => emit({ id, result: { stopReason: "end_turn" } });
+	const ignored = await scriptedCodexTurn("docker-windlass-sandbox", () => {}, () => false, { openIn: "read-only", reportSetMode: false });
+	assert.equal(ignored.result.failure?.message, innerModesReason);
+	assert.ok(ignored.methods.includes("session/set_mode"));
+	assert.ok(!ignored.methods.includes("session/prompt"), "a turn was prompted in a mode Codex never reported");
+	for (const legacy of [{ openIn: "read-only", reportSetMode: true }, { openIn: "workspace-write", reportSetMode: false }]) {
+		const turn = await scriptedCodexTurn("docker-windlass-sandbox", end, () => false, legacy);
+		assert.equal(turn.result.failure, null, JSON.stringify(legacy));
+		assert.ok(turn.methods.includes("session/prompt"));
 	}
 });
