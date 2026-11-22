@@ -32,6 +32,7 @@ env:
 
 jobs:
   plan:
+    name: Choose the checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -59,6 +60,7 @@ jobs:
 
   # Each sandbox image once per run, into the Actions cache that the Docker jobs load it from.
   images:
+    name: Build the ${{ matrix.variant == 'shots' && 'screenshots' || 'sandbox' }} image
     needs: plan
     if: needs.plan.outputs.images-any == 'true'
     strategy:
@@ -87,7 +89,7 @@ jobs:
   checks:
     needs: plan
     if: needs.plan.outputs.plain-any == 'true'
-    name: ${{ matrix.job }}
+    name: ${{ matrix.title }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.plain) }}
@@ -111,7 +113,7 @@ jobs:
   docker:
     needs: [plan, images]
     if: ${{ !cancelled() && needs.plan.outputs.docker-any == 'true' && needs.images.result == 'success' }}
-    name: ${{ matrix.job }}
+    name: ${{ matrix.title }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.docker) }}
