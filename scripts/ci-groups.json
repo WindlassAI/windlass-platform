@@ -308,7 +308,7 @@
         "scripts/opencode-provider-registry.mjs"
       ],
       "shards": {
-        "runner": { "only": ["runner"], "images": ["base", "shots"], "history": true },
+        "runner": { "only": ["runner"], "images": ["base"], "history": true },
         "suites": { "only": ["runner-profiles", "runner-harness", "runner-sizing", "runner-snapshots", "runner-screenshots"], "images": ["base", "shots"], "history": true },
         "harness": { "only": ["claude-relay-docker", "opencode-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "harness"] }
       },
