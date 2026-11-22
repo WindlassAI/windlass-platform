@@ -118,7 +118,7 @@ Three credentials exist. None is stored, logged, or put in a timeline item, an e
 | Credential | Made | Good for | Where it goes |
 |---|---|---|---|
 | the App's JWT | signed by the server with the App's private key, per request | nine minutes; asking for an installation token | GitHub |
-| an installation token | by GitHub, per step, for one repository and that step's permissions | an hour at most; one that went into a sandbox is revoked when its git command ends | below |
+| an installation token | by GitHub, per step, for one repository and that step's permissions | an hour at most; one that went into a sandbox is revoked when its git command ends. The read-only ones of a work item's polls (the repository, its CI, its pull request) are kept in the server's memory and used again until ten minutes before they expire | below |
 | a user access token | by GitHub, for the code a user's authorization ended with | two questions (who is this, which installations), then deleted at GitHub | GitHub |
 
 | Step | Token permissions (one repository, plus metadata: read) | Token is in |
@@ -128,7 +128,7 @@ Three credentials exist. None is stored, logged, or put in a timeline item, an e
 | cloning | contents: read | the sandbox, for one `git clone`; then revoked |
 | pushing | contents: write | the sandbox, for one `git push`; then revoked |
 | the pull request | pull requests: write, contents: read (GitHub opens no pull request for a token that cannot read both branches) | the server |
-| reading a commit's CI, for a work item | checks, statuses, actions: read, for one reading | the server. A job's log redirects to GitHub's short-lived storage, fetched without the token |
+| reading a commit's CI, for a work item | checks, statuses, actions: read, kept for the next readings | the server. A job's log redirects to GitHub's short-lived storage, fetched without the token |
 | a work item's handoff: review request and verdict comment | pull requests: write | the server |
 | posting `windlass/verified` | checks: write | the server |
 | an orchestrated feature's preflight: does push CI report on its branches | contents, actions, checks, statuses, pull requests: read | the server |

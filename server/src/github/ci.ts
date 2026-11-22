@@ -309,6 +309,8 @@ async function readRuns(app: GithubApp, token: string, target: CiTarget, head: s
 
 /** Reads the CI of a commit. Never throws for anything GitHub answers: every outcome is a `CiReading`. */
 export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReading> {
+	// GitHub's answer to a call of the reading, as against one to the request for its token.
+	let answered: GithubError | null = null;
 	try {
 		return await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", checks: "read", statuses: "read", actions: "read" } }, async (token) => {
 			try {
@@ -328,12 +330,14 @@ export async function readCi(app: GithubApp, target: CiTarget): Promise<CiReadin
 				const head = answeredFor || (/^[0-9a-f]{40}$/i.test(target.head) ? target.head : text(record(checks.items[0]).head_sha) || target.head);
 				return await readRuns(app, token, target, head, checks.items, statuses.items, checks.truncated || statuses.truncated);
 			} catch (error) {
-				if (error instanceof GithubError) return refusal(error);
+				// Thrown on, so that a kept token GitHub no longer takes is replaced by a new one (`withToken`'s `reuse`).
+				if (error instanceof GithubError) answered = error;
 				throw error;
 			}
-		});
+		}, { reuse: true });
 	} catch (error) {
 		if (!(error instanceof GithubError)) throw error;
+		if (error === answered) return refusal(error);
 		// The token itself was refused: 422 when the installation does not have, or has not accepted, a permission asked for.
 		if (error.status === 422) return { kind: "not_permitted", said: error.said };
 		// Otherwise as any answer of GitHub's: a limit by its headers, before a 403 is taken for a refusal.

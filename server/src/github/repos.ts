@@ -292,7 +292,7 @@ export async function resolveBoundRepository(app: GithubApp, connection: StoredC
 		if (need === "write" && repository.archived && allows(level, need)) throw new GithubProblem("github_denied", `${repository.owner}/${repository.name} is archived on GitHub, so nothing can be pushed to it.`);
 		if (!allows(level, need) || (need === "write" && repository.archived)) throw new GithubProblem("github_denied", "GitHub no longer permits this action on the item's repository.");
 		return { installation, repository, described: described(repository, level) };
-	});
+	}, { reuse: true });
 }
 
 /** A repository's branch names, the default first. The connected user must be able to read it. */

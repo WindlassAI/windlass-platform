@@ -9,7 +9,8 @@
  *   an installation token    GitHub's, good for an hour at most. Every one is asked for with the one
  *                            repository and the permissions the step at hand needs (`TokenScope`), is
  *                            used for that step and dropped; one that went into a sandbox is revoked
- *                            when its git command has ended
+ *                            when its git command has ended. A read-only one that stays in this
+ *                            process may be kept in memory and used again (`withToken`'s `reuse`)
  *   a user access token      what a user's authorization code is exchanged for when they connect. It
  *                            is used for two questions (who is this, which installations can they
  *                            reach), deleted at GitHub, and forgotten. The platform keeps no
@@ -55,6 +56,12 @@ const USER_AGENT = "windlass-platform";
 const REQUEST_TIMEOUT_MS = 20_000;
 /** Listings are read a hundred a page (GitHub's most), up to this many pages. */
 const MAX_PAGES = 10;
+/** A kept read-only token is not used again within this long of its expiry (GitHub's tokens last an hour). */
+const KEEP_MARGIN_MS = 10 * 60 * 1000;
+/** At most this many read-only tokens are kept at once, the oldest dropped first. */
+const MAX_KEPT_TOKENS = 2000;
+
+const readsOnly = (scope: TokenScope) => Object.values(scope.permissions).every((level) => level === "read");
 
 export interface GithubAppSettings {
 	appId: string;
@@ -358,14 +365,66 @@ export class GithubApp {
 	/**
 	 * Runs `step` with a token of the installation for exactly `scope`. The token is not kept: one that
 	 * `step` took into a sandbox (`revokeAfter`) is revoked when the step has ended, however it ended.
+	 *
+	 * With `reuse`, for a scope that only reads and a step that keeps the token in this process, a token
+	 * asked for earlier with exactly the same installation, repository and permissions is used again
+	 * until `KEEP_MARGIN_MS` before it expires (see `keptToken`).
 	 */
-	async withToken<T>(installationId: GithubId, scope: TokenScope, step: (token: string) => Promise<T>, options: { revokeAfter?: boolean } = {}): Promise<T> {
+	async withToken<T>(installationId: GithubId, scope: TokenScope, step: (token: string) => Promise<T>, options: { revokeAfter?: boolean; reuse?: boolean } = {}): Promise<T> {
+		if (options.reuse && !options.revokeAfter && readsOnly(scope)) return this.withKeptToken(installationId, scope, step);
 		const issued = await this.installationToken(installationId, scope);
 		try {
 			return await step(issued.token);
 		} finally {
 			if (options.revokeAfter) await this.revoke(issued);
 		}
+	}
+
+	/**
+	 * Read-only installation tokens kept for reuse, by installation, repository and permissions. They are
+	 * held in this process's memory only: never written anywhere, never logged, never handed to a sandbox.
+	 * A poll of an item's CI reads GitHub three times (the repository, the commit's checks, the pull
+	 * request), and every item polls for as long as its CI runs; without this each read asked for a token.
+	 */
+	private readonly kept = new Map<string, { pending: Promise<InstallationToken>; expiresAt: number | null }>();
+
+	/** Forgets every kept token: for the checks, and when GitHub's answers about an installation changed. */
+	forgetTokens(): void {
+		this.kept.clear();
+	}
+
+	private async withKeptToken<T>(installationId: GithubId, scope: TokenScope, step: (token: string) => Promise<T>): Promise<T> {
+		const key = `${installationId}:${scope.repositoryId ?? "all"}:${Object.entries(scope.permissions).sort(([a], [b]) => a.localeCompare(b)).map(([name, level]) => `${name}=${level}`).join(",")}`;
+		const kept = this.kept.get(key);
+		if (kept) {
+			const issued = await kept.pending.catch(() => null);
+			if (issued && issued.expiresAt - Date.now() > KEEP_MARGIN_MS) {
+				try {
+					return await step(issued.token);
+				} catch (error) {
+					// A kept token GitHub no longer takes (revoked, or the installation or its repositories changed since)
+					// is dropped and the step tried once with a new one, which answers as a token asked for now would.
+					if (!(error instanceof GithubError) || error.rateLimited || ![401, 403, 404].includes(error.status)) throw error;
+				}
+			}
+			if (this.kept.get(key) === kept) this.kept.delete(key);
+		}
+		const entry: { pending: Promise<InstallationToken>; expiresAt: number | null } = { pending: this.installationToken(installationId, scope), expiresAt: null };
+		entry.pending.then(
+			(issued) => { entry.expiresAt = issued.expiresAt; },
+			() => { if (this.kept.get(key) === entry) this.kept.delete(key); },
+		);
+		if (this.kept.size >= MAX_KEPT_TOKENS) {
+			const now = Date.now();
+			for (const [name, other] of this.kept) if (other.expiresAt !== null && other.expiresAt - now <= KEEP_MARGIN_MS) this.kept.delete(name);
+			// Then the oldest first: a Map keeps the order its keys were set in.
+			for (const name of this.kept.keys()) {
+				if (this.kept.size < MAX_KEPT_TOKENS) break;
+				this.kept.delete(name);
+			}
+		}
+		this.kept.set(key, entry);
+		return step((await entry.pending).token);
 	}
 
 	// ---- a user who connects ------------------------------------------------------------------

@@ -673,7 +673,7 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	const installationId = await binding(c) ?? (await resolveRepository(app, connection, meta.repository.id, "read")).installation.id;
 	const resolved = await resolveBoundRepository(app, connection, meta.repository.id, installationId, access);
 	const { owner, name } = resolved.repository;
-	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
+	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number), { reuse: true });
 	return { app, installationId: resolved.installation.id, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
 }
 
@@ -700,6 +700,8 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 	const subjects: FeedbackSubject[] = [];
 	const since = Math.max(now - 3 * 86_400_000, (cursor?.since ?? meta.createdAt) - 1000);
 	await app.withToken(installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, async token => {
+		// Run again with a new token when a kept one is refused: nothing of a refused try is kept.
+		subjects.length = 0;
 		const repo = hub.repository;
 		for (const r of await app.reviews(token, repo, pr)) {
 			if (!recentSubject(r.at, now)) continue;
@@ -715,7 +717,7 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 		}
 		for (const r of await app.issueComments(token, repo.owner, repo.name, pr, true, since))
 			if (r.id && r.person && isAddressed(r.body, app.settings.slug) !== null) subjects.push({ kind: "issue_comment", sender: r.person, association: r.association, id: r.id });
-	});
+	}, { reuse: true });
 	for (const s of subjects) {
 		const id = feedbackId(s);
 		if ((await c.db.execute("SELECT 1 FROM feedback WHERE id=? UNION ALL SELECT 1 FROM issue_actions WHERE subject IN (?,?) LIMIT 1", id, id, "feedback-denied:" + id)).length) continue;

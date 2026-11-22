@@ -1763,6 +1763,7 @@ try {
 	lines.push("2026-11-19T20:09:59.0000000Z Error: expected 3, got -1 (token ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789)");
 	repo.jobLogs.set("9007199254740993", lines.join("\n"));
 
+	const mintedBefore = standin.minted.length;
 	const read = await readCi(app, target);
 	const minted = standin.minted.at(-1);
 	expect("a reading's token is asked for with this repository and the three CI read permissions only", JSON.stringify(minted?.permissions) === JSON.stringify({ metadata: "read", checks: "read", statuses: "read", actions: "read" }) && minted?.repositoryIds?.join() === String(repo.id));
@@ -1782,6 +1783,23 @@ try {
 	expect("without GitHub's timestamps, terminal codes or a token", !/2026-11-19T|\x1b|ghs_/.test(tail));
 	const downloads = standin.requests.filter(({ path }) => path.startsWith("/storage/"));
 	expect("the log's storage is fetched without the token", downloads.length === 1 && downloads[0].auth === "none" && downloads[0].status === 200);
+	{
+		const again = await readCi(app, target);
+		expect("the next reading uses the same token again: one token for two polls", again.kind === "read" && standin.minted.length === mintedBefore + 1, `${standin.minted.length - mintedBefore} tokens`);
+		await app.revoke(minted!.token);
+		const revoked = await readCi(app, target);
+		expect("a kept token GitHub no longer takes is replaced by one new token, and the reading is unchanged", revoked.kind === "read" && revoked.runs.length === 251 && standin.minted.length === mintedBefore + 2, `${revoked.kind}, ${standin.minted.length - mintedBefore} tokens`);
+		const nearExpiry = new (class extends GithubApp {
+			override async installationToken(id: number, scope: Parameters<InstanceType<typeof GithubApp>["installationToken"]>[1]) {
+				return { ...(await super.installationToken(id, scope)), expiresAt: Date.now() + 5 * 60 * 1000 };
+			}
+		})(app.settings, secrets);
+		const from = standin.minted.length;
+		await readCi(nearExpiry, target);
+		await readCi(nearExpiry, target);
+		expect("a token within ten minutes of its expiry is not used again", standin.minted.length === from + 2, `${standin.minted.length - from} tokens`);
+		expect("nothing printed holds a kept token", !output.some((line) => line.includes(minted!.token)));
+	}
 
 	repo.jobLogs.set("9007199254740993", "x".repeat(17 * 1024 * 1024));
 	const huge = await readCi(app, target);
@@ -1973,6 +1991,8 @@ try {
 	standin.ciRateLimit = null;
 
 	standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write" };
+	// The stand-in checks a token's permissions when it is asked for: one kept from before the change still has them.
+	app.forgetTokens();
 	const ungranted = await readCi(app, target);
 	expect("an app without the CI permissions (decision 2 not granted): not permitted, with GitHub's reason", ungranted.kind === "not_permitted" && /permissions/.test(ungranted.said), JSON.stringify(ungranted));
 	const handed = advance(
