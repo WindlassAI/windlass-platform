@@ -267,7 +267,12 @@ try:
             raise ValueError("invalid metadata path")
         if any(part in ("", ".", "..") for part in arg.split("/")):
             raise ValueError("invalid metadata path")
-    if operation == "capture":
+    if operation == "pack":
+        # The workspace uid grants traversal and access to just this regular file.
+        fd = os.open(private, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+        with regular(fd, "transfer.pack") as source:
+            shutil.copyfileobj(source, sys.stdout.buffer)
+    elif operation == "capture":
         capture()
     else:
         try:

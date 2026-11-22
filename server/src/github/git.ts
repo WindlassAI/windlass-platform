@@ -18,8 +18,8 @@
  *   - That git runs with an empty environment (`env -i`), without the system's and the user's
  *     configuration, and without hooks: nothing writes the token down. A clone's `.git/config` holds the
  *     plain address and no credential.
- *   - The commit, outgoing-history scan and push use the same private object database. The
- *     worktree supplies content, and the agent's refs and objects supply its commit history.
+ *   - The transport uid owns the outgoing-history scan and push database. It accepts an
+ *     object pack from the workspace user's staging step and builds its own index and config.
  *   - The token is revoked when the command has ended (`GithubApp.withToken`), so what a command could
  *     have kept of it is of no use afterwards.
  *
@@ -71,17 +71,22 @@ const PROXY_ENV = 'http_proxy="$wlp_proxy" https_proxy="$wlp_proxy"';
  * `store` and `erase`.
  */
 function tokenGit(host: string): string {
+	const transportFlags = [
+		'-c http.proxy="$wlp_proxy"', "-c http.sslVerify=true", "-c http.sslCAInfo=/etc/ssl/certs/ca-certificates.crt",
+		"-c http.followRedirects=false", "-c core.sshCommand=/bin/false", "-c core.askPass=/bin/false",
+		"-c push.followTags=false", "-c push.recurseSubmodules=no",
+	].join(" ");
 	const helper = `!f() { test "$1" = get || exit 0; echo username=x-access-token; printf password=; cat <&3; echo; }; f`;
 	return [
 		GIT_PROXY,
 		"wlp_git() {",
 		`	printf '%s' "$WLP_T" | {`,
 		`		env -i ${PROXY_ENV} PATH=${SYSTEM_PATH} HOME=/nonexistent LANG=C.UTF-8 \\`,
-		"			GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1 GIT_ATTR_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=http:https \\",
+		"			GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CEILING_DIRECTORIES=/tmp GIT_NO_REPLACE_OBJECTS=1 GIT_ATTR_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=http:https GIT_SSH=/bin/false \\",
 		"			GIT_CONFIG_COUNT=2 \\",
 		"			GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \\",
 		`			GIT_CONFIG_KEY_1=${shellQuote(`credential.${host}.helper`)} GIT_CONFIG_VALUE_1=${shellQuote(helper)} \\`,
-		`			git ${SAFE_FLAGS} "$@" 3<&0 0</dev/null`,
+		`			git ${SAFE_FLAGS} ${transportFlags} "$@" 3<&0 0</dev/null`,
 		"	}",
 		"}",
 	].join("\n");
@@ -121,8 +126,8 @@ const WORKSPACE_GUARD = [
 
 const READ_TOKEN = `PATH=${SYSTEM_PATH}\nexport PATH\nIFS= read -r WLP_T || true`;
 
-// Each operation has a temporary repo, index and config. Direct agent commands share
-// this /tmp on some profiles. Never use workspace objects as Git alternates.
+// Workspace staging has a temporary repo, index and config. Direct agent commands share
+// this uid. Only a verified object pack crosses into the transport user's repository.
 function privateStart(options: { refs?: string[]; missing?: "nothing" | "norepo"; fetch?: boolean } = {}): string {
 	const refs = (options.refs ?? []).map(shellQuote).join(" ");
 	const missing = options.missing ? ` || { rc=$?; if [ "$rc" = 2 ]; then echo "wlp:${options.missing}"; exit 0; fi; exit "$rc"; }` : "";
@@ -173,9 +178,27 @@ export function unsafeWorkspace(what: string): string {
 	return `The workspace's git settings were changed in a way the platform does not run: ${named}, under which git would start a program of the repository's outside the agent's sandbox. Nothing was pushed or read. Undo that change in the workspace (git config --unset, or put .git back), or start a new agent.`;
 }
 
+function transportDirectory(id: string): string {
+	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error("Invalid Git transport directory identifier.");
+	return `/tmp/wlp-transport-${id}`;
+}
+
+function startTransport(id: string): string {
+	return `set -eu
+export PATH=${SYSTEM_PATH}
+umask 077
+private=${shellQuote(transportDirectory(id))}
+mkdir -m 700 -- "$private"
+cd -- "$private"`;
+}
+
+async function removeTransport(sandbox: SandboxHandle, id: string): Promise<void> {
+	await sandbox.run(`/bin/rm -rf -- ${shellQuote(transportDirectory(id))}`, { gitUser: true, cwd: "/", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+}
+
 /**
- * Clones `url` at `branch` into the workspace, as the plain clone of a pasted address does: a new
- * sandbox's workspace holds an empty repository and nothing else, which the clone replaces.
+ * Clones `url` at `branch` into a new transport directory. Only the clone's files are made
+ * readable to the workspace user after the authenticated operation finishes.
  *
  * With `work`, the branch the platform pushed the session's work to: the clone is of a sandbox made in
  * place of a lost one, and what was pushed is all that is left of the work. The clone has that branch
@@ -186,26 +209,18 @@ export function unsafeWorkspace(what: string): string {
  * is the fetched feature tip. Setup never runs on what a session pushed (the command runs with
  * the network and every secret saved for the repository). `workCheckoutScript` puts it on the branch
  * afterwards. Neither step needs a token, and neither gets one.
- *
- * `wlp:dir <directory>` says where the clone is, relative to the workspace: "." or `directory`.
  */
-export function cloneScript(url: string, branch: string, directory: string, work?: string, pinnedBase?: string): string {
+export function cloneScript(url: string, branch: string, id: string, work?: string, pinnedBase?: string): string {
 	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid setup base SHA.");
 	// Review clones need only the base ref. A pinned subtask also restores its feature or published branch.
 	const cloneFlags = pinnedBase ? (work ? "--no-checkout " : "--single-branch --no-checkout ") : "";
 	const featureRef = shellQuote("refs/remotes/origin/" + branch);
 	const lines = [
-		"set -eu",
+		startTransport(id),
 		READ_TOKEN,
 		tokenGit(hostOf(url)),
-		`if [ -z "$(ls -A | grep -v '^\\.git$' || true)" ]; then`,
-		"	rm -rf .git",
-		"	target=.",
-		"else",
-		`	target=${shellQuote(directory)}`,
-		"fi",
+		"target=repo",
 		`wlp_git clone --quiet ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
-		`echo "wlp:dir $target"`,
 		PLAIN_GIT,
 		...(pinnedBase ? ["WLP_T=", `plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
 		`base_sha=$(plain_git -C "$target" rev-parse --verify ${work && pinnedBase ? featureRef : "HEAD"})`,
@@ -222,6 +237,7 @@ export function cloneScript(url: string, branch: string, directory: string, work
 			"fi",
 		);
 	}
+	lines.push('chmod -R a+rX -- "$target"', 'chmod 711 -- "$private"');
 	return lines.join("\n");
 }
 
@@ -248,48 +264,38 @@ export function checkoutWork(sandbox: SandboxHandle, directory: string, work: st
 	return run(sandbox, workCheckoutScript(directory, work), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
-/** Both fetches use fresh private objects and export the requested refs after dropping the token. */
-function fetchPrefix(url: string, directory: string, refs: string[]): string[] {
-	return [
-		"set -eu",
-		READ_TOKEN,
-		`cd ${shellQuote(directory)}`,
-		privateStart({ refs, fetch: true }),
-		tokenGit(hostOf(url)),
-		// Negotiate from an empty database so the remote supplies the complete history.
-		'rm -rf "$private/repo"',
-		'plain_git -C "$private" init --quiet --bare --template= "$private/repo"',
-		`fetch_ref() { (cd "$private" && wlp_git --git-dir="$private/repo" fetch --quiet --no-tags -- ${shellQuote(url)} "$1"); }`,
-	];
-}
-
-/** Make origin/<base> and the available work branch visible for the agent to merge. */
-export function fetchBaseScript(url: string, base: string, work: string | null = null): string {
-	const tracking = (name: string) => `refs/remotes/origin/${name}`;
-	const refs = [tracking(base), ...(work === null ? [] : [tracking(work)])];
-	const fetch = (name: string) => `fetch_ref ${shellQuote(`+refs/heads/${name}:${tracking(name)}`)}`;
-	return [
-		...fetchPrefix(url, ".", refs),
-		fetch(base),
-		`set -- ${shellQuote(tracking(base))}`,
-		...(work === null ? [] : [`if ${fetch(work)}; then set -- "$@" ${shellQuote(tracking(work))}; echo "wlp:fetchedwork"; fi`]),
-		"WLP_T=",
-		'bridge export "$@"',
-		`base_sha=$(git rev-parse --verify ${shellQuote(`${tracking(base)}^{commit}`)})`,
-		'echo "wlp:base $base_sha"',
-		'echo "wlp:fetched"',
-	].join("\n");
-}
-
-/** Fetch only the pull ref, with a read token isolated from the workspace. */
-export function fetchHeadScript(url: string, pr: number, directory = "."): string {
-	if (!Number.isSafeInteger(pr) || pr < 1) throw new Error("Invalid pull request number.");
-	return [
-		...fetchPrefix(url, directory, ["refs/wlp/review"]),
-		`fetch_ref '+refs/pull/${pr}/head:refs/wlp/review'`,
-		"WLP_T=",
-		"bridge export refs/wlp/review",
-	].join("\n");
+/** Record the original workspace refs before fetching. Only the transport uid opens the token. */
+async function fetchRefs(sandbox: SandboxHandle, token: string, url: string, directory: string,
+	refs: Array<{ source: string; destination: string; optional?: boolean }>, signal?: AbortSignal): Promise<GitOutcome> {
+	const id = randomBytes(16).toString("hex");
+	const stage = shellQuote(handoverDirectory(id));
+	const transport = shellQuote(transportDirectory(id));
+	const local = { stdin: "", timeoutMs: PROBE_TIMEOUT_MS, signal };
+	const cd = `cd -- ${shellQuote(directory)}`;
+	const prepare = await run(sandbox, [cd + " || exit 1", privateStart({ refs: refs.map(r => r.destination), fetch: true }),
+		`mv -T "$private" ${stage}`].join("\n"), local);
+	if (!prepare.ok) return prepare;
+	try {
+		const commands = [startTransport(id), READ_TOKEN, PLAIN_GIT, tokenGit(hostOf(url)),
+			'plain_git init --bare --quiet --template= repo'];
+		for (const ref of refs) {
+			const fetch = `wlp_git --git-dir="$private/repo" fetch --quiet --no-tags -- ${shellQuote(url)} ${shellQuote("+" + ref.source + ":" + ref.destination)}`;
+			commands.push(ref.optional ? `if ${fetch}; then echo wlp:fetchedwork; fi` : fetch);
+		}
+		const base = refs[0]!;
+		commands.push("WLP_T=", `base_sha=$(plain_git --git-dir=repo rev-parse --verify ${shellQuote(base.destination + "^{commit}")})`,
+			'echo "wlp:base $base_sha"', "chmod -R a+rX repo", 'chmod 711 "$private"');
+		const fetched = await run(sandbox, commands.join("\n"), { gitUser: true, stdin: token + "\n", secrets: [token], timeoutMs: PUSH_TIMEOUT_MS, signal });
+		if (!fetched.ok) return fetched;
+		const destinations = refs.filter(ref => !ref.optional || fetched.marks.has("fetchedwork")).map(ref => shellQuote(ref.destination));
+		const install = await run(sandbox, ["set -eu", cd, `private=${stage}`, BRIDGE, 'rm -rf "$private/repo"',
+			`cp -R -- ${transport}/repo "$private/repo"`, `bridge export ${destinations.join(" ")}`, "echo wlp:fetched"].join("\n"), local);
+		if (install.ok) for (const [key, value] of fetched.marks) install.marks.set(key, value);
+		return install;
+	} finally {
+		await removeTransport(sandbox, id);
+		await sandbox.run(`/bin/rm -rf -- ${stage}`, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
+	}
 }
 
 export function reviewCheckoutScript(directory: string, head: string): string {
@@ -311,7 +317,8 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 }
 
 export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {
-	const fetch = await run(sandbox, fetchHeadScript(url, pr, directory), { stdin: token + "\n", timeoutMs: PUSH_TIMEOUT_MS, secrets: [token], signal });
+	if (!Number.isSafeInteger(pr) || pr < 1) throw new Error("Invalid pull request number.");
+	const fetch = await fetchRefs(sandbox, token, url, directory, [{ source: `refs/pull/${pr}/head`, destination: "refs/wlp/review" }], signal);
 	if (!fetch.ok) {
 		if (fetch.marks.has("unsafe")) throw new GithubProblem("github_denied", unsafeWorkspace(fetch.marks.get("unsafe")!));
 		if (fetch.failure === "denied" || fetch.failure === "gone" || (fetch.failure === "other" && /couldn't find remote ref/i.test(fetch.said))) {
@@ -341,10 +348,11 @@ export async function changedReviewPaths(sandbox: SandboxHandle, directory: stri
 
 /** Fetches the base branch with `token`, which is given to the command on its standard input and to nothing else. */
 export function fetchWithToken(sandbox: SandboxHandle, token: string, input: { url: string; base: string; work?: string | null }): Promise<GitOutcome> {
-	return run(sandbox, fetchBaseScript(input.url, input.base, input.work ?? null), { stdin: `${token}\n`, timeoutMs: PUSH_TIMEOUT_MS, secrets: [token] });
+	const ref = (name: string, optional = false) => ({ source: "refs/heads/" + name, destination: "refs/remotes/origin/" + name, optional });
+	return fetchRefs(sandbox, token, input.url, ".", [ref(input.base), ...(input.work ? [ref(input.work, true)] : [])]);
 }
 
-/** One commit, scan and push share this directory in the outer mount namespace. */
+/** Workspace-side staging and the exchange pack, separate from the protected scan. */
 function handoverDirectory(attempt: string): string {
 	return `/tmp/wlp-git-attempt-${attempt.replace(/[^A-Za-z0-9_-]/g, "")}`;
 }
@@ -366,12 +374,18 @@ function nothingNew(baseSha: string | null, pushed: string | null): string[] {
 	return lines;
 }
 
-/** A missing object never excludes history. Both IDs come from platform state. */
-function outgoingBoundaries(baseSha: string | null, pushed: string | null): string[] {
+/** Require a confirmed lower bound. A previous push can also exclude history if present. */
+function outgoingBoundaries(baseSha: string | null, pushed: string | null, head: string): string[] {
+	const missing = 'echo "Call fetch_base to refresh the missing publishing base." >&2; exit 9';
 	const lines = ["set --"];
-	for (const id of [baseSha, pushed]) {
-		if (id) lines.push(`if git cat-file -e '${commitId(id)}^{commit}' 2>/dev/null; then set -- "$@" ${id}; fi`);
+	if (baseSha) {
+		lines.push(`git cat-file -e '${commitId(baseSha)}^{commit}' 2>/dev/null || { ${missing}; }`, `set -- ${baseSha}`);
 	}
+	if (pushed) lines.push(`if git cat-file -e '${commitId(pushed)}^{commit}' 2>/dev/null; then set -- "$@" ${pushed}; fi`);
+	lines.push(
+		`[ "$#" -gt 0 ] || { ${missing}; }`,
+		`git merge-base ${head} "$@" >/dev/null || { echo "Call fetch_base and reconcile the workspace with its publishing base." >&2; exit 9; }`,
+	);
 	return lines;
 }
 
@@ -417,14 +431,16 @@ export function commitScript(input: CommitInput, attempt = input.sessionId): str
 		VERIFY_OBJECTS,
 		...nothingNew(input.baseSha, input.pushed),
 		'[ "$nothing" = 0 ] || exit 0',
-		...outgoingBoundaries(input.baseSha, input.pushed),
+		...outgoingBoundaries(input.baseSha, input.pushed, '"$head"'),
 		// An earlier agent commit could contain a screenshot already removed from HEAD.
 		// Look up the root entry of each outgoing tree, including either side of a merge.
 		"set -o pipefail",
 		`git rev-list --no-commit-header --format='%T:.wlp-shots' "$head" --not "$@" | ${GIT_ENV} git ${SAFE_FLAGS} --git-dir="$private/repo" cat-file --batch-check > "$private/shots"`,
 		'if grep -qv " missing$" "$private/shots"; then echo "An outgoing commit contains .wlp-shots. Remove it from the commits to push." >&2; exit 1; fi',
-		// Only immutable private objects and metadata survive the handover.
-		`echo "$head" > "$private/head"; rm -rf "$private/tree" "$private/message"; mv -T "$private" ${destination}`,
+		// The transport user accepts only a pack. Metadata, paths, refs and config stay here.
+		`printf '%s\\n' "$head" "$@" | ${GIT_ENV} git ${SAFE_FLAGS} --git-dir="$private/repo" pack-objects --stdout --revs > "$private/transfer.pack"`,
+		'chmod 444 "$private/transfer.pack"; chmod 711 "$private"',
+		`rm -rf "$private/tree" "$private/message"; mv -T "$private" ${destination}`,
 	].join("\n");
 }
 
@@ -443,6 +459,16 @@ export function probeScript(baseSha: string | null, pushed: string | null): stri
 	].join("\n");
 }
 
+interface PushAttempt {
+	id: string;
+	head: string;
+	baseSha: string | null;
+	pushed: string | null;
+	objects?: string;
+}
+
+const rangeDigest = 'git rev-list --objects --no-object-names "$sha" --not "$@" -- | sha256sum';
+
 /**
  * Push exactly the commit and object database that the platform staged and scanned. After the
  * transport reports its result, install the branch and index if the workspace still matches.
@@ -453,18 +479,25 @@ export function probeScript(baseSha: string | null, pushed: string | null): stri
  * since makes GitHub refuse it (`wlp:stale`). The plain push comes first, so that a fast-forward over
  * someone else's commit (one the agent merged) is never taken for a rebase.
  */
-export function pushScript(attempt: string, url: string, branch: string, lease: string | null = null): string {
-	const directory = shellQuote(handoverDirectory(attempt));
-	if (lease !== null && !/^[0-9a-f]{40,64}$/.test(lease)) throw new Error("a lease is a commit's full name");
+function pushScript(range: PushAttempt, url: string, branch: string, lease: string | null): string {
+	if (!range.objects || !/^[0-9a-f]{64}$/.test(range.objects)) throw new Error("Invalid scanned object digest.");
+	if (lease !== null) commitId(lease);
 	const target = shellQuote(`refs/heads/${branch}`);
 	return [
-		"set -eu",
+		"set -eu -o pipefail",
 		READ_TOKEN,
 		tokenGit(hostOf(url)),
-		`private=${directory}`,
-		`IFS= read -r sha < "$private/head" || { echo "wlp:nohandover"; exit 4; }`,
-		`case "$sha" in *[!0-9a-f]* | "") echo "wlp:nohandover"; exit 4 ;; esac`,
-		`send() { (cd "$private" && wlp_git --git-dir="$private/repo" push --porcelain "$@"); }`,
+		PLAIN_GIT,
+		`private=${shellQuote(transportDirectory(range.id))}`,
+		'cd -- "$private" || { echo wlp:nohandover; exit 4; }',
+		'git() { plain_git --git-dir="$private/repo" "$@"; }',
+		`sha=${commitId(range.head)}`,
+		"verify_range() {",
+		...outgoingBoundaries(range.baseSha, range.pushed, '"$sha"'),
+		`actual=$(${rangeDigest}); [ "\${actual%% *}" = ${range.objects} ] || { echo wlp:changedrange; exit 4; }`,
+		"}",
+		"verify_range",
+		`send() { wlp_git --git-dir="$private/repo" push --porcelain "$@"; }`,
 		// One refspec means exactly one porcelain status. "=" is also possible when the lease retry races another push.
 		"pushed() {",
 		`	status=$(printf '%s\\n' "$said" | awk -F '\\t' 'NF >= 3 {print $1}')`,
@@ -482,6 +515,7 @@ export function pushScript(attempt: string, url: string, branch: string, lease: 
 			: [
 					// Refused as no fast-forward (a branch the agent rebased): once more, now replacing the platform's own last push and nothing else.
 					`if printf '%s\\n' "$said" | grep -qE 'non-fast-forward|fetch first|\\[rejected\\]'; then`,
+					"	verify_range",
 					`	if said=$(send ${shellQuote(`--force-with-lease=refs/heads/${branch}:${lease}`)} -- ${shellQuote(url)} "$sha:"${target} 2>&1); then pushed; exit 0; fi`,
 					// The lease refused it: what is at GitHub is not the platform's last push.
 					`	if printf '%s\\n' "$said" | grep -q 'stale info'; then echo "wlp:stale"; fi`,
@@ -549,11 +583,11 @@ function classify(text: string): GitFailure {
 	return "other";
 }
 
-async function run(sandbox: SandboxHandle, script: string, options: { stdin: string; timeoutMs: number; signal?: AbortSignal; secrets?: string[] }): Promise<GitOutcome> {
+async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: true; stdin: string; timeoutMs: number; signal?: AbortSignal; secrets?: string[] }): Promise<GitOutcome> {
 	const secrets = options.secrets ?? [];
 	let result: ExecResult;
 	try {
-		result = await sandbox.run(script, { stdin: options.stdin, timeoutMs: options.timeoutMs, signal: options.signal });
+		result = await sandbox.run(script, { ...(options.gitUser ? { gitUser: true, cwd: "/" } as const : {}), stdin: options.stdin, timeoutMs: options.timeoutMs, signal: options.signal });
 	} catch (error) {
 		// Whatever the sandbox layer says of a command it could not run, it does not say with the token in it.
 		throw new Error(redact(error instanceof Error ? error.message : String(error), secrets));
@@ -567,63 +601,89 @@ async function run(sandbox: SandboxHandle, script: string, options: { stdin: str
 }
 
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
-export function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal }): Promise<GitOutcome> {
-	return run(sandbox, cloneScript(input.url, input.branch, input.directory, input.work, input.pinnedBase), { stdin: `${token}\n`, timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal }): Promise<GitOutcome> {
+	const id = randomBytes(16).toString("hex");
+	try {
+		const cloned = await run(sandbox, cloneScript(input.url, input.branch, id, input.work, input.pinnedBase),
+			{ gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+		if (!cloned.ok) return cloned;
+		const copy = await run(sandbox, ["set -eu", `export PATH=${SYSTEM_PATH}`,
+			'if [ -z "$(ls -A | grep -vxF .git || true)" ]; then rm -rf -- .git; target=.; else',
+			`target=${shellQuote(input.directory)}; if [ -d "$target" ] && [ ! -L "$target" ]; then [ -z "$(ls -A -- "$target")" ]; else mkdir -- "$target"; fi; fi`,
+			`cp -R -- ${shellQuote(transportDirectory(id))}/repo/. "$target/"`, 'echo "wlp:dir $target"'].join("\n"),
+			{ stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal });
+		if (copy.ok) for (const [key, value] of cloned.marks) copy.marks.set(key, value);
+		return copy;
+	} finally {
+		await removeTransport(sandbox, id);
+	}
 }
 
-// commitAndPush passes the same handle to both steps. Pin the scan to this commit even if HEAD moves.
-const attempts = new WeakMap<SandboxHandle, { head: string; sessionId: string; id: string; sent: boolean }>();
+// Only the remote receipt is shared. Each publisher carries its own attempt through all three steps.
+const receipts = new WeakMap<SandboxHandle, string>();
 
 /** Commits the workspace's changes on the session's branch. `message` is the commit's whole message. */
-export async function commitWork(sandbox: SandboxHandle, input: CommitInput, message: string): Promise<GitOutcome> {
-	attempts.delete(sandbox);
+export async function commitWork(sandbox: SandboxHandle, input: CommitInput, message: string): Promise<GitOutcome & { attempt?: PushAttempt }> {
+	receipts.delete(sandbox);
 	const id = randomBytes(16).toString("hex");
 	const result = await run(sandbox, commitScript(input, id), { stdin: message.endsWith("\n") ? message : `${message}\n`, timeoutMs: COMMIT_TIMEOUT_MS });
 	const head = result.marks.get("head");
 	if (result.ok && head && !result.marks.has("nothing")) {
-		attempts.set(sandbox, { head, sessionId: input.sessionId, id, sent: false });
+		return { ...result, attempt: { head: commitId(head), baseSha: input.baseSha, pushed: input.pushed, id } };
 	}
 	return result;
 }
 
 /** Read the commit handed to the push, excluding only commits the platform observed at GitHub. */
-export async function outgoingPatch(sandbox: SandboxHandle, baseSha: string | null, pushed: string | null): Promise<string | null> {
-	const pending = attempts.get(sandbox);
+export async function outgoingPatch(sandbox: SandboxHandle, pending?: PushAttempt): Promise<string | null> {
 	const limit = 8_000_000;
 	const script = [
 		"set -eu",
 		...(pending ? [] : ["exit 1"]), // A real scan requires the commit step's pinned head.
-		`export PATH=${SYSTEM_PATH}`,
+		startTransport(pending?.id ?? "missing"),
 		PLAIN_GIT,
-		`private=${shellQuote(handoverDirectory(pending?.id ?? ""))}`,
-		'git() { plain_git -C "$private" --git-dir="$private/repo" "$@"; }',
+		'plain_git init --bare --quiet --template= repo',
+		'git() { plain_git --git-dir="$private/repo" "$@"; }',
 		"set -o pipefail",
-		...outgoingBoundaries(baseSha, pushed),
-		'patch=$(mktemp /tmp/wlp-scan.XXXXXXXX)',
-		`trap 'rm -f "$patch"' EXIT`,
+		// Open the exchange file without following agent-owned symlinks. index-pack verifies
+		// object IDs and rebuilds the index inside a directory only the transport uid can write.
+		BRIDGE,
+		`(private=${shellQuote(handoverDirectory(pending?.id ?? "missing"))}; bridge pack) | ${GIT_ENV} git ${SAFE_FLAGS} --git-dir=repo index-pack --stdin --strict >/dev/null`,
+		`sha=${pending ? commitId(pending.head) : "missing"}`,
+		...outgoingBoundaries(pending?.baseSha ?? null, pending?.pushed ?? null, '"$sha"'),
+		'git fsck --full --no-reflogs --no-dangling --no-progress "$sha" "$@" >/dev/null',
+		`git rev-list --no-commit-header --format='%T:.wlp-shots' "$sha" --not "$@" | ${GIT_ENV} git ${SAFE_FLAGS} --git-dir=repo cat-file --batch-check > shots`,
+		'if grep -qv " missing$" shots; then exit 1; fi',
+		`objects=$(${rangeDigest})`,
+		'patch="$private/patch"',
 		"status=0",
-		`GIT_NO_REPLACE_OBJECTS=1 git -c core.quotePath=false log -p -m --text --no-color --no-ext-diff --no-textconv --format='%H%n%B' ${shellQuote(pending?.head ?? "")} --not "$@" -- 2>/dev/null | head -c ${limit} > "$patch" || status=$?`,
+		`GIT_NO_REPLACE_OBJECTS=1 git -c core.quotePath=false log -p -m --text --no-color --no-ext-diff --no-textconv --format='%H%n%B%x00' ${shellQuote(pending?.head ?? "")} --not "$@" -- 2>/dev/null | head -c ${limit} > "$patch" || status=$?`,
 		'bytes=$(wc -c < "$patch")',
 		`[ "$bytes" -lt ${limit} ] || exit 8`,
 		'[ "$status" = 0 ] || exit 1',
-		'echo "$bytes"',
+		'echo "$bytes ${objects%% *}"',
 		// Preserve arbitrary bytes across UTF-8 chunks. The runner caps buffered stdout but streams it all.
 		'base64 -w0 "$patch"',
 	].join("\n");
 	const chunks: string[] = [];
-	const result = await sandbox.run(script, { timeoutMs: PROBE_TIMEOUT_MS, onStdout: (chunk) => chunks.push(chunk) }).catch(() => null);
+	const result = await sandbox.run(script, { gitUser: true, cwd: "/", timeoutMs: PUSH_TIMEOUT_MS, onStdout: (chunk) => chunks.push(chunk) }).catch(() => null);
 	const output = chunks.length ? chunks.join("") : (result?.stdout ?? "");
+	if (result?.exitCode === 9) {
+		await discardHandover(sandbox, pending);
+		throw new GithubProblem("github_failed", "Call fetch_base to refresh the missing publishing base before pushing.");
+	}
 	if (result?.exitCode === 8 || (!pending && Buffer.byteLength(output) >= limit)) {
-		if (pending) await discardHandover(sandbox, pending.sessionId);
+		await discardHandover(sandbox, pending);
 		throw new GithubProblem("github_failed", "Nothing was pushed. The change is too large to check for saved secrets (8 MB limit).");
 	}
 	if (!result || result.exitCode !== 0 || result.timedOut || result.aborted) return null;
 	// The fake interpreter executes no shell or Git and gives redaction its synthetic diff directly.
 	if (!pending) return output;
 	const newline = output.indexOf("\n");
-	const length = output.slice(0, newline);
+	const [length, objects] = output.slice(0, newline).split(" ");
 	const encoded = output.slice(newline + 1);
-	if (newline < 1 || !/^\d+$/.test(length) || encoded.length !== 4 * Math.ceil(Number(length) / 3)) return null;
+	if (newline < 1 || !length || !/^\d+$/.test(length) || !objects || !/^[0-9a-f]{64}$/.test(objects) || encoded.length !== 4 * Math.ceil(Number(length) / 3)) return null;
+	pending.objects = objects;
 	return Buffer.from(encoded, "base64").toString("utf8");
 }
 
@@ -675,31 +735,39 @@ export async function readWork(sandbox: SandboxHandle, baseSha: string | null): 
 }
 
 /** Removes what `commitWork` left for a push that is not going to run. Never throws. */
-export async function discardHandover(sandbox: SandboxHandle, sessionId: string): Promise<void> {
-	const attempt = attempts.get(sandbox);
-	if (!attempt || attempt.sessionId !== sessionId) return;
+export async function discardHandover(sandbox: SandboxHandle, attempt?: PushAttempt): Promise<void> {
+	if (!attempt) return;
+	delete attempt.objects;
+	await removeTransport(sandbox, attempt.id);
 	await sandbox.run(`/bin/rm -rf -- ${shellQuote(handoverDirectory(attempt.id))}`, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => undefined);
 }
 
 /** The receipt for the current serialized publish, including when a later PR operation failed. */
 export function actuallyPushed(sandbox: SandboxHandle, head: string): boolean {
-	const attempt = attempts.get(sandbox);
-	return attempt?.head === head && attempt.sent;
+	return receipts.get(sandbox) === head;
 }
 
 /** Pushes what `commitWork` left, with `token` on the command's standard input; `lease` as `pushScript` takes it. */
-export async function pushWithToken(sandbox: SandboxHandle, token: string, input: { sessionId: string; url: string; branch: string; lease?: string | null }): Promise<GitOutcome> {
-	const attempt = attempts.get(sandbox);
-	const id = attempt?.sessionId === input.sessionId ? attempt.id : "missing";
-	const result = await run(sandbox, pushScript(id, input.url, input.branch, input.lease ?? null), { stdin: `${token}\n`, timeoutMs: PUSH_TIMEOUT_MS, secrets: [token] });
-	if (result.ok && attempt && result.marks.get("pushed") === attempt.head) attempt.sent = true;
-	if (result.ok && attempt && attempt.id === id) {
+export async function pushWithToken(sandbox: SandboxHandle, token: string, input: { attempt?: PushAttempt; url: string; branch: string; lease?: string | null }): Promise<GitOutcome> {
+	const { attempt } = input;
+	// The in-memory sandbox interpreter has no shell or Git and simulates a push with empty output.
+	// A real shell with no scanned range exits before it receives a credential.
+	if (!attempt?.objects) return run(sandbox, 'echo wlp:nohandover; exit 4', { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
+	let result: GitOutcome;
+	try {
+		result = await run(sandbox, pushScript(attempt, input.url, input.branch, input.lease ?? null),
+			{ gitUser: true, stdin: token + "\n", timeoutMs: PUSH_TIMEOUT_MS, secrets: [token] });
+	} finally {
+		await removeTransport(sandbox, attempt.id);
+	}
+	if (result.ok && result.marks.get("pushed") === attempt.head) receipts.set(sandbox, attempt.head);
+	if (result.ok) {
 		// Keep the remote receipt even when a competing command moved the workspace refs.
 		// The token process has exited. This step has its own timeout and invokes no Git.
 		const sync = [
 			"set -eu",
 			`export PATH=${SYSTEM_PATH}`,
-			`private=${shellQuote(handoverDirectory(id))}`,
+			`private=${shellQuote(handoverDirectory(attempt.id))}`,
 			`trap 'rm -rf -- "$private"' EXIT`,
 			BRIDGE,
 			`bridge export HEAD index MERGE_HEAD ${shellQuote(`refs/heads/${input.branch}`)}`,
@@ -707,7 +775,7 @@ export async function pushWithToken(sandbox: SandboxHandle, token: string, input
 		const local = await run(sandbox, sync, { stdin: "", timeoutMs: PROBE_TIMEOUT_MS }).catch(() => null);
 		if (!local?.ok) result.marks.set("workspacechanged", "");
 	} else {
-		await discardHandover(sandbox, input.sessionId);
+		await discardHandover(sandbox, attempt);
 	}
 	return result;
 }

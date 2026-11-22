@@ -40,6 +40,8 @@ import type { ProjectChecks } from "../windlass-config.js";
 // ---------------------------------------------------------------------------------------------
 
 export interface ExecOptions {
+	/** Run as the unprivileged transport user, outside the workspace. */
+	gitUser?: true;
 	/** Defaults to the sandbox's workspace. */
 	cwd?: string;
 	env?: Record<string, string>;

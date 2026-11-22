@@ -23,6 +23,7 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
+import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { imageId } from "./check-image.js";
 import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -844,6 +845,72 @@ await section("provider credentials are refused before any push token is issued"
 		standin.branchHead(harbor, branch) === null);
 });
 
+await section("credential shape scope and scan limits", async () => {
+	const remote = standin.addRepository({ owner: "ada", name: "shape-scope", private: true, installation: adaInstallation });
+	repos.forgetGithubCaches();
+	const key = "sk-proj-" + "f".repeat(40);
+	const path = "checks/fixtures.txt";
+	const sources = ["factory-check.ts", "github-check.ts", "reviewer-task-check.ts"];
+	const existing = sources.map(file => {
+		const lines = readFileSync(new URL(file, import.meta.url), "utf8").split("\n");
+		const fixture = lines.find(line => pushTokenKinds(line).includes("GitHub token"));
+		if (!fixture) throw Error("Missing existing credential fixture in " + file);
+		return fixture;
+	}).join("\n");
+	standin.commit(remote, "main", { [path]: existing + "\n" + key + "\nafter\n" }, "Existing fixtures");
+	const sandbox = localSandbox("shape-scope");
+	const repository = stored(remote, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const input = { app, connection: adaConnection, repository, sandbox, branch: "windlass/scope", sessionId: "scope", pushed: null };
+	for (const [label, contents] of [["context", existing + "\n" + key + "\nchanged\n"], ["deletion", "changed\n"]] as const) {
+		writeFileSync(join(sandbox.cwd, path), contents);
+		expect(label + " allows an ordinary push", await problem(() => publish.pushWork(input, label)) === null);
+	}
+	writeFileSync(join(sandbox.cwd, path), "++" + key + "\n");
+	const refused = await problem(() => publish.pushWork(input, "added"));
+	expect("the refusal names the safe path for an added line that resembles a header", !!refused?.message.includes(path) && !refused.message.includes(key));
+	writeFileSync(join(sandbox.cwd, path), "normal\n");
+	const message = await problem(() => publish.pushWork(input, "example patch\n\ndiff --git a/a b/a\n-" + key));
+	expect("a patch quoted in a commit message is still checked", !!message?.message.includes("OpenAI API key"));
+	writeFileSync(join(sandbox.cwd, path), "sk-proj-" + "a".repeat(7_900_000));
+	const large = await problem(() => publish.pushWork(input, "Large addition"));
+	expect("a near-limit credential gets a bounded diagnostic", !!large?.message.includes("OpenAI API key") && large.message.length < 300);
+});
+
+await section("a mismatched outgoing object digest refuses the push", async () => {
+	const sandbox = localSandbox("range");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	writeFileSync(join(sandbox.cwd, "change"), "change");
+	const original = sandbox.run.bind(sandbox);
+	sandbox.run = async (command, options) => {
+		const result = await original(command, options);
+		if (command.includes('base64 -w0 "$patch"')) result.stdout = result.stdout.replace(/^([0-9]+) [a-f0-9]{64}/, "$1 " + "0".repeat(64));
+		return result;
+	};
+	const branch = "windlass/object-digest";
+	const refused = await problem(() => publish.pushWork({ app, connection: adaConnection, sandbox, repository, branch, sessionId: "range", pushed: null }, "Range"));
+	expect("only the digest recorded for the scanned head authorizes transport", !!refused?.message.includes("no longer match") && standin.branchHead(harbor, branch) === null);
+});
+
+await section("missing recovered base requires fetch_base", async () => {
+	const remote = standin.addRepository({ owner: "ada", name: "base-recovery", private: true, installation: adaInstallation });
+	repos.forgetGithubCaches();
+	const sandbox = localSandbox("missing-base");
+	const repository = stored(remote, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	repository.baseSha = null;
+	standin.commit(remote, "main", { "remote.txt": "new base" }, "Advance remote");
+	writeFileSync(join(sandbox.cwd, "local.txt"), "work");
+	const input = { app, connection: adaConnection, repository, sandbox, branch: "windlass/missing-base", sessionId: "missing-base", pushed: null };
+	const from = standin.minted.length;
+	const refused = await problem(() => publish.pushWork(input, "Local work"));
+	expect("a recovered SHA missing locally stops before a write token", !!refused?.message.includes("fetch_base") &&
+		!standin.minted.slice(from).some(entry => entry.permissions?.contents === "write"));
+	await publish.fetchBase(app, adaConnection, repository, sandbox);
+	expect("the same changes publish after a confirmed fetch", (await publish.pushWork(input, "Local work")).pushed);
+});
+
 await section("nested repositories are refused before turn-end diff, panel probe or commit", async () => {
 	const { DIFF_COMMAND } = await import("../server/src/actors/agent-session.js");
 	const sandbox = localSandbox("nested");
@@ -1358,19 +1425,43 @@ await section("docker: the same git commands in a container of the sandbox image
 	docker(["run", "-d", "--rm", "--name", name, "--label", "dev.windlass-platform=1", "--network", "host", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", await imageId(), "sleep", "600"]);
 	try {
 		const inside = app;
+		const handle = new (class extends DockerSandboxHandle { override get container() { return name; } })(name, "docker-hardened", "fixture");
 		const stdins: string[] = [];
+		let protectedPush = false;
 		const sandbox: SandboxHandle = {
 			id: name,
 			cwd: "/workspace",
 			profile: "docker-hardened",
-			run(command, options = {}) {
+			async run(command, options = {}) {
 				if (options.stdin) stdins.push(options.stdin);
-				// As the Docker layer runs a command: `docker exec -i`, the script as one argument, standard input from the server.
-				return run(["docker", "exec", "-i", "-w", options.cwd ?? "/workspace", name, "bash", "-c", command], { ...options, cwd: scratch, env: { PATH: process.env.PATH ?? "" } });
+				if (command.includes("push --porcelain")) {
+					expect("the authenticated push requires the transport uid", options.gitUser === true);
+					if (!options.gitUser) throw new Error("missing transport uid");
+					// Inert sentinels in the workspace user's exchange directory. The transport
+					// repository must remain inaccessible from that same container and mount namespace.
+					const privateDir = command.match(/private='(\/tmp\/wlp-transport-[a-f0-9]{32})'/)?.[1];
+					if (!privateDir) throw new Error("missing transport directory");
+					const exchange = privateDir.replace("wlp-transport-", "wlp-git-attempt-");
+					const checked = docker(["exec", name, "sh", "-ec", [
+						'test "$(stat -c %u:%a "$1")" = 65534:700',
+						'test ! -w "$1/repo/config"',
+						'test ! -r "$1/patch"',
+						'git rev-parse HEAD > "$2/head"',
+						'git config --file "$2/repo/config" http.proxy http://invalid.invalid',
+						'echo isolated',
+					].join("\n"), "fixture", privateDir, exchange]);
+					protectedPush = checked.trim() === "isolated";
+				}
+				return handle.run(command, options);
 			},
 			readTextFile: async () => "",
 			writeTextFile: async () => undefined,
 		};
+		const identity = await handle.run('id -u; pwd; test -z "${GIT_CONFIG_COUNT-}${GIT_SSH_COMMAND-}${SSL_CERT_FILE-}${LD_LIBRARY_PATH-}"', {
+			gitUser: true, cwd: "/workspace", env: { GIT_CONFIG_COUNT: "7", GIT_SSH_COMMAND: "fixture", SSL_CERT_FILE: "/fixture", LD_LIBRARY_PATH: "/fixture" },
+		});
+		expect("the transport starts as uid 65534 outside the workspace with inherited overrides removed",
+			identity.exitCode === 0 && identity.stdout === "65534\n/\n");
 		const version = await sandbox.run("git --version; id -un; git init --quiet . && echo ready");
 		expect("the container is the sandbox image's: its git, its user", version.stdout.includes("git version") && version.stdout.includes("agent") && version.stdout.includes("ready"), version.stdout.trim().replace(/\n/g, ", "));
 		// A watcher inside the container, as the agent's user: every process's arguments and environment, over and over.
@@ -1383,14 +1474,14 @@ await section("docker: the same git commands in a container of the sandbox image
 		await sandbox.run("echo container >> CHANGES.md");
 		const branch = "windlass/container-000000";
 		const published = await publish.publishWork({ evidence: NOTHING_VERIFIED, app: inside, connection: adaConnection, repository, sandbox, sessionId: "s_container", branch, pull: null, pushed: null, message: { title: "Pushed from the sandbox image", body: "" } });
-		expect("and the work is pushed from it and the pull request opened", published.opened && standin.fileOn(harbor, branch, "CHANGES.md")?.includes("container") === true);
+		expect("and the work is pushed from it and the pull request opened", protectedPush && published.opened && published.head === standin.branchHead(harbor, branch) && standin.fileOn(harbor, branch, "CHANGES.md")?.includes("container") === true);
 		const tokens = tokensSince(from);
 		const used = tokens.filter((token) => stdins.includes(`${token}\n`));
 		const search = await sandbox.run("kill $(cat /home/agent/watcher.pid); sleep 0.3; wc -c < /home/agent/watcher.log; grep -c 'git-remote-http' /home/agent/watcher.log; ls /tmp; echo searched");
 		const grep = docker(["exec", "-i", name, "bash", "-c", `while IFS= read -r t; do grep -r -l -F -- "$t" /workspace /home/agent /tmp 2>/dev/null; done; echo searched`], `${tokens.join("\n")}\n`);
 		expect("two tokens went into the container, on standard input", used.length === 2, `${used.length} of ${tokens.length} issued`);
 		expect("no file in the workspace, the home directory or /tmp holds one, and the watcher saw none in any process's arguments or environment", grep.trim() === "searched" && search.stdout.includes("searched") && /^[1-9]\d{3,}\n[1-9]/.test(search.stdout.trim()), `the watcher recorded ${search.stdout.trim().split("\n")[0]} bytes and saw git's own processes ${search.stdout.trim().split("\n")[1]} times; files holding a token: ${grep.trim() === "searched" ? "none" : grep.trim()}`);
-		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message|wlp-git[.-]/.test(search.stdout));
+		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message|wlp-git[.-]|wlp-transport-/.test(search.stdout));
 		const arguments_ = execFileSync("ps", ["-eo", "args"], { encoding: "utf8" });
 		expect("and the server's own process list never had one either", tokens.every((token) => !arguments_.includes(token)));
 		const reviewDir = "/tmp/reviewer-workspace";
@@ -1511,10 +1602,21 @@ await section("replaced subtask sandbox: setup at the seed, then recover the sub
 		const box = localSandbox("replaced-subtask");
 		const cloned = await publish.cloneRepository(app, adaConnection, repository, box, undefined, work, seed);
 		expect("setup starts on the feature seed, before either child's changes", (await box.run("git rev-parse HEAD")).stdout.trim() === seed && !existsSync(join(box.cwd, "sibling.txt")));
+		expect("the publishing base is the independently confirmed feature tip", repository.baseSha === standin.branchHead(harbor, feature));
 		const branch = work === child ? child : feature;
 		expect("restore the published work or fall back to the integrated feature", cloned !== false && cloned.workAt === standin.branchHead(harbor, branch)
 			&& cloned.workGone === (work !== child) && await publish.putOnWork(box, cloned.directory, branch) === cloned.workAt);
 	}
+	const racing = localSandbox("racing-subtask");
+	const original = racing.run.bind(racing);
+	racing.run = async (command, options) => {
+		const result = await original(command, options);
+		if (command.includes("wlp_git clone --quiet")) standin.commit(harbor, feature, { "sibling-2.txt": "later" }, "Advance feature");
+		return result;
+	};
+	await publish.cloneRepository(app, adaConnection, repository, racing, undefined, child, seed);
+	expect("a feature ref that moved during clone leaves the subtask base unconfirmed", repository.baseSha === null);
+
 });
 
 async function verifyReviewCheckout(box: SandboxHandle) {

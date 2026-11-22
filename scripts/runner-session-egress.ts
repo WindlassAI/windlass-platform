@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createClient, type Registry } from "../server/src/client.js";
 import { LABEL, MACHINE_LABEL } from "../server/src/sandbox/docker.js";
-import { cloneScript, commitScript, fetchBaseScript, pushScript } from "../server/src/github/git.js";
+import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
+import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
+import type { ExecOptions } from "../server/src/sandbox/api.js";
 import type { TimelineItem } from "../server/src/contract.js";
 import { until } from "./runner-standin.js";
 import { writeProofDocker } from "./runner-proof-docker.js";
@@ -79,21 +81,32 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 				assert.match(result, /^([0-9a-f]{40})\n\1\s+HEAD\n\d+\.\d+\.\d+\nblocked$/);
 				console.log("PASS", harness, "session launch, public clone, agent git/npm and blocked destinations", result);
 				if (harness === "claude") {
-					const result = await docker("exec", name, "bash", "-ec", "mkdir /tmp/token-clone && cd /tmp/token-clone\n" + cloneScript(repoUrl, "master", "hello") + "\ntest -s README");
-					assert.match(result, /^wlp:dir \.$/m);
-					const git = (script: string) => docker("exec", "-w", "/tmp/token-clone", name, "bash", "-ec", script);
+					const cwd = "/tmp/token-clone";
+					await docker("exec", name, "mkdir", cwd);
+					const git = (script: string) => docker("exec", "-w", cwd, name, "bash", "-ec", script);
+					const box = new (class extends DockerSandboxHandle {
+						override get container() { return name; }
+						override run(command: string, options: ExecOptions = {}) { return super.run(command, { cwd, ...options }); }
+					})(name, "docker-hardened", uid);
+					const cloned = await cloneWithToken(box, "", { url: repoUrl, branch: "master", directory: "hello" });
+					assert(cloned.ok && cloned.marks.get("dir") === ".");
 					const url = "http://git-fixture.test:8080/cgi-bin/git/remote.git";
 					const denied = await git("curl --max-time 5 -so /dev/null -w '%{http_code}' http://unlisted.test:8080/");
 					assert.equal(denied, "403");
-					const fetched = await git(fetchBaseScript(repoUrl, "master"));
-					assert.match(fetched, /wlp:fetched/);
+					const fetched = await fetchWithToken(box, "", { url: repoUrl, base: "master" });
+					const baseSha = fetched.marks.get("base");
+					assert(fetched.ok && baseSha);
 					const branch = "egress-proof";
-					await git("echo egress > proof.txt\n{\n" + commitScript({ branch, baseSha: null, sessionId: session.id, pushed: null,
-						author: { name: "Fixture", email: "test@example.invalid" } }) + "\n} <<< 'Fixture commit'");
-					const pushed = await git(pushScript(session.id, url, branch));
-					const received = await docker("exec", remote, "git", "-C", "/tmp/remote.git", "rev-parse", "refs/heads/" + branch);
-					assert(pushed.includes("wlp:pushed " + received), pushed);
-					console.log("PASS platform clone and fetch, allowlisted push and denied alias", received);
+					await git("echo egress > proof.txt");
+					const committed = await commitWork(box, { branch, baseSha, sessionId: session.id, pushed: null,
+						author: { name: "Fixture", email: "test@example.invalid" } }, "Fixture commit");
+					try {
+						assert(committed.ok && await outgoingPatch(box, committed.attempt) !== null);
+						const pushed = await pushWithToken(box, "", { attempt: committed.attempt, url, branch });
+						const received = await docker("exec", remote, "git", "-C", "/tmp/remote.git", "rev-parse", "refs/heads/" + branch);
+						assert.equal(pushed.marks.get("pushed"), received);
+					} finally { await discardHandover(box, committed.attempt); }
+					console.log("PASS platform clone and fetch, allowlisted push and denied alias");
 				}
 			} finally { await conn.dispose(); }
 		}

@@ -659,6 +659,8 @@ async function cases() {
 		const repo = join(root, "git");
 		mkdirSync(repo);
 		run("git", ["init", "--quiet", "-b", "work"], repo);
+		run("git", ["-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "Base", "--allow-empty"], repo);
+		const baseSha = run("git", ["rev-parse", "HEAD"], repo);
 		mkdirSync(join(repo, ".wlp-shots"));
 		writeFileSync(join(repo, name), one);
 		writeFileSync(join(repo, "normal"), "change");
@@ -669,7 +671,7 @@ async function cases() {
 		try {
 			run(
 				"bash",
-				["-c", commitScript({ sessionId, branch: "work", baseSha: null, pushed: "0".repeat(40), author: { name: "test", email: "test@example.org" } })],
+				["-c", commitScript({ sessionId, branch: "work", baseSha, pushed: null, author: { name: "test", email: "test@example.org" } })],
 				repo,
 				"normal change\n",
 			);

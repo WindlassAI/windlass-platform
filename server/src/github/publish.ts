@@ -28,7 +28,7 @@ import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, wor
 import { type GithubApp, GithubError, type Pull, type Repository } from "./app.js";
 import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { refHead } from "./feature.js";
-import { pushTokenKinds, redact } from "./redact.js";
+import { outgoingCredentials, redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
 
 /** What a session keeps of the repository it was launched on. */
@@ -108,7 +108,7 @@ function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: str
 }
 
 /** Only a base confirmed by GitHub may exclude history. A branch that moves during
- * the operation leaves the scan unbounded until the next successful observation. */
+ * the operation requires a new observation before publication. */
 async function confirmBase(app: GithubApp, token: string, repo: StoredRepository, remote: Repository, outcome: GitOutcome, pinnedBase?: string) {
 	if (outcome.ok) {
 		const observed = outcome.marks.get("base");
@@ -341,15 +341,21 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 
 	// Nothing that holds the value of a saved secret leaves the sandbox: a setup command may have written one into a file,
 	// and the agent's push is never asked about. The proposed commit stays private until the scan and push succeed.
-	const patch = await outgoingPatch(sandbox, baseSha, input.pushed);
-	const kinds = patch === null ? [] : pushTokenKinds(patch);
+	const patch = await outgoingPatch(sandbox, committed.attempt);
+	let kinds: string[];
+	try {
+		kinds = patch === null ? [] : outgoingCredentials(patch, input.redact);
+	} catch {
+		await discardHandover(sandbox, committed.attempt);
+		throw new GithubProblem("github_failed", "Nothing was pushed. The outgoing commits could not be checked for credentials.");
+	}
 	if (kinds.length) {
-		await discardHandover(sandbox, input.sessionId);
+		await discardHandover(sandbox, committed.attempt);
 		throw new GithubProblem("github_failed", `Nothing was pushed. Remove the following credentials from the commits to push: ${kinds.join(", ")}.`);
 	}
 	const leaking = secretFiles(patch, input.redact);
 	if (leaking.files.length > 0) {
-		await discardHandover(sandbox, input.sessionId);
+		await discardHandover(sandbox, committed.attempt);
 		throw new GithubProblem("github_failed", secretRefusal(leaking));
 	}
 
@@ -358,15 +364,16 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 		pushed = await app.withToken(
 			installation.id,
 			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "write" } },
-			(token) => pushWithToken(sandbox, token, { sessionId: input.sessionId, url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch, lease: input.lease ?? null }),
+			(token) => pushWithToken(sandbox, token, { attempt: committed.attempt, url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch, lease: input.lease ?? null }),
 			{ revokeAfter: true },
 		);
 	} catch (error) {
 		// No token was to be had, so the push never ran: what the commit step left for it goes.
-		await discardHandover(sandbox, input.sessionId);
+		await discardHandover(sandbox, committed.attempt);
 		throw problemOf(error, account, name);
 	}
 	if (!pushed.ok) {
+		if (pushed.marks.has("changedrange")) throw new GithubProblem("github_failed", "The outgoing objects no longer match the scanned commits. Nothing was pushed. Try again.");
 		if (pushed.marks.has("nohandover")) throw new GithubProblem("github_failed", "The commit to push could not be found in the sandbox. Try again.");
 		if (pushed.marks.has("stale")) {
 			throw new GithubProblem(

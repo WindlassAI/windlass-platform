@@ -104,7 +104,7 @@ test("both platform clone paths hand only the runner proxy to clean Git", () => 
 		const inspect = `env() { local args=(); while [ "$1" != git ]; do args+=("$1"); shift; done; command env "\${args[@]}" /usr/bin/env; exit 72; }`;
 		for (const script of [CLONE_GIT_START + "\ngit clone fixture", cloneScript("https://example.invalid/repo", "main", "repo")]) {
 			for (const proxy of ["http://127.0.0.1:17891", "http://untrusted.invalid"]) {
-				const result = spawnSync("bash", ["-ec", inspect + "\n" + script], {
+				const result = spawnSync("bash", ["-ec", inspect + "\n" + script.replace("/tmp/wlp-transport-repo", join(dir, proxy.includes("127.0.0.1") ? "known" : "unknown"))], {
 					cwd: dir, input: "fixture-token\n", encoding: "utf8", env: { https_proxy: proxy, SECRET: "fixture-secret" },
 				});
 				assert.equal(result.status, 72, result.stderr);
