@@ -114,6 +114,31 @@ try {
 	await first.request("connect", { id: a });
 	await probe(agent, "resume restores proxy", "curl -fsS --max-time 20 -o /dev/null -w '%{http_code}' https://example.com", /^200$/);
 	await stop();
+	// An owner's list of public hosts: same mode, so the kept sandbox resumes with a replaced broker.
+	srv.reset(srv.sessionId); srv.reset(srv.other);
+	await start(["--egress-domains", "@npm"]);
+	assert.match(output, /Only these public hosts: api\.openai\.com \(always[^)]*\), github\.com \(always[^)]*\), registry\.npmjs\.org, registry\.yarnpkg\.com\./);
+	await srv.attach();
+	first = srv.channel(srv.sessionId);
+	await first.request("connect", { id: a });
+	await probe(agent, "listed host", "curl -fsS --max-time 20 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/", /^200$/);
+	await probe(agent, "unlisted HTTPS host", "curl --max-time 10 -s -o /dev/null -w '%{http_connect}' https://example.com/ || true", /^403$/);
+	await probe(agent, "unlisted plain HTTP host", "curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://example.com/ || true", /^403$/);
+	await probe(agent, "listed host on another port", "curl --max-time 10 -s -o /dev/null -w '%{http_connect}' https://registry.npmjs.org:8443/ || true", /^403$/);
+	await probe(agent, "listed IP literal", "curl --max-time 10 -s -o /dev/null -w '%{http_connect}' https://104.16.0.34/ || true", /^403$/);
+	// A tunnel to a listed host whose TLS names another: the ClientHello is checked before anything is sent on.
+	const tunnel = (servername: string) => `const http=require("http"),tls=require("tls");http.request({host:"127.0.0.1",port:17891,method:"CONNECT",path:"registry.npmjs.org:443"}).on("connect",(res,socket)=>{
+		if(res.statusCode!==200){console.log("status "+res.statusCode);process.exit(0)}
+		const t=tls.connect({socket,servername:${JSON.stringify(servername)},rejectUnauthorized:false});let done=false;const end=w=>{if(!done){done=true;console.log(w);process.exit(0)}};
+		t.on("secureConnect",()=>end("passed"));t.on("error",()=>end("refused"));t.on("close",()=>end("refused"));setTimeout(()=>end("timeout"),15000)}).end();`;
+	await first.request("writeTextFile", { id: a, path: "/tmp/sni-match.cjs", content: tunnel("registry.npmjs.org") });
+	await first.request("writeTextFile", { id: a, path: "/tmp/sni-other.cjs", content: tunnel("example.com") });
+	await probe(agent, "tunnel with the listed name in TLS", "node /tmp/sni-match.cjs", /^passed$/);
+	await probe(agent, "tunnel with another name in TLS", "node /tmp/sni-other.cjs", /^refused$/);
+	await probe(agent, "git clone with a list", "rm -rf /tmp/egress-git && git clone -q --depth=1 https://github.com/octocat/Hello-World.git /tmp/egress-git && git -C /tmp/egress-git rev-parse --short HEAD", /^[a-f0-9]+$/);
+	await probe(agent, "npm install with @npm", "rm -rf /tmp/egress-npm && mkdir /tmp/egress-npm && cd /tmp/egress-npm && npm install --no-audit --no-fund --ignore-scripts is-number@7.0.0 && node -p \"require('is-number')(7)\"", /true$/);
+	await probe(agent, "Windlass model transport with a list", "bun -e \"console.log((await fetch('https://api.openai.com/v1/models')).status)\"", /^401$/);
+	await stop();
 	srv.reset(srv.sessionId); srv.reset(srv.other);
 	await start(["--egress", "none"]);
 	await srv.attach(); await srv.attach(srv.other);

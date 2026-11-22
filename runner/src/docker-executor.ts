@@ -358,6 +358,10 @@ export class Executor extends MachineDocker {
 			this.signIn = "unknown";
 		}
 	}
+	/** The welcome's `gitHost`, which an --egress-domains list takes in place of github.com. */
+	platformGitHost(host: string | undefined) {
+		this.network.platformGitHost(host);
+	}
 	async checkAuthenticatedNetwork() {
 		this.enforceEgress = true;
 		await this.serial(() => this.refresh());
@@ -422,6 +426,7 @@ export class Executor extends MachineDocker {
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin && { claudeRelay: true as const }),
+			...(this.network.policy.domains && { egressDomains: this.network.domains()!.length }),
 			...(harnesses.length ? { harnesses } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,

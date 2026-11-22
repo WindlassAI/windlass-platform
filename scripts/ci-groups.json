@@ -36,7 +36,8 @@
         "scripts/github-standin.ts",
         "scripts/check-image.ts",
         "scripts/e2b-network-standin.mjs",
-        "scripts/{access,account,attachments,backup,connection,harness,models,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing}-check.ts",
+        "scripts/{access,account,attachments,backup,connection,harness,models,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config}-check.ts",
+        "server/src/actors/agent-session.ts",
         "scripts/e2b-provider-test.ts",
         "scripts/workflow-lint.ts"
       ],
@@ -55,6 +56,7 @@
         "runner-protocol": "tsx ../scripts/runner-protocol-check.ts",
         "secrets": "tsx ../scripts/secrets-check.ts",
         "setup": "tsx ../scripts/setup-check.ts",
+        "git-config": "tsx ../scripts/git-config-check.ts",
         "usage": "tsx ../scripts/usage-check.ts",
         "verified": "tsx ../scripts/verified-check.ts",
         "web-files": "tsx ../scripts/web-files-check.ts",
@@ -227,10 +229,13 @@
         "server/src/sandbox/**",
         "server/src/factory/attachments.ts",
         "scripts/check-image.ts",
-        "scripts/{shot,attachments}-check.ts"
+        "scripts/{shot,attachments}-check.ts",
+        "scripts/browser-hello-check.ts",
+        "runner/src/egress-proxy.mjs"
       ],
       "checks": {
         "shot-docker": "WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots tsx ../scripts/shot-check.ts --docker",
+        "browser-hello-docker": "WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots tsx ../scripts/browser-hello-check.ts --docker",
         "attachments-docker": "tsx ../scripts/attachments-check.ts --docker"
       }
     },

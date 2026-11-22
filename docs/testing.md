@@ -15,6 +15,8 @@ Two workflows run the checks on GitHub Actions.
 each group (or each shard of one) is one job. `scripts/ci-heavy.mjs select` reads the changed files
 against the merge base (the pull request's base, or `main` for a branch) and picks the groups:
 
+In the Actions UI each job shows a readable title (for example "Factory 1 of 3" for `factory/1`, "Runner: full check" for `runner-docker/runner`); the titles live in `TITLES` in `scripts/ci-heavy.mjs`. Use the group/shard id with `node scripts/ci-heavy.mjs run <group>[/<shard>]`.
+
 - a file that a group lists runs that group;
 - a core file (the package files, the lockfile, `server/src/contract.ts`, the CI files) runs every group;
 - documentation (`docs/**`, any `*.md`) runs nothing, and neither does a file no group lists;
@@ -43,10 +45,10 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 
 | Class | Checks | Where |
 | --- | --- | --- |
-| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, repository, review, reviewer-task, runner-control, runner-protocol, secrets, setup, usage, verified, web-files, github, shot, sizing, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections) | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook` |
+| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, repository, review, reviewer-task, runner-control, runner-protocol, secrets, setup, git-config, usage, verified, web-files, github, shot, sizing, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections) | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook` |
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
 | (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
-| (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker` | CI heavy: `shots-docker` |
+| (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker`, browser-hello `--docker` | CI heavy: `shots-docker` |
 | (b) Docker, base image; builds its own runner and Claude images | runner-check `--main-only` (the five-minute outage and two-minute sleep are wall time) | CI heavy: `runner-docker/runner` |
 | (b) Docker, base and screenshots images | runner-check `--profiles-only`, `--harness-only`, `--sizing-only`, `--snapshots-only`, `--screenshots-only` | CI heavy: `runner-docker/suites` |
 | (b) Docker, Claude and OpenCode images built on base (`sandbox/harness/build.sh`) | claude-relay-docker, opencode-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |

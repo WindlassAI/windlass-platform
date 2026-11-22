@@ -12,6 +12,7 @@
  *   hello      runner → actor   the signature, the runner's release, its process epoch and its clock
  *   welcome    actor → runner   accepted: the idle time the runner applies to sandboxes on its own, and
  *                               to a runner that reads them, the server's capabilities (SERVER_CAPABILITIES)
+ *                               and its git host (`gitHost`, which an --egress-domains list always has)
  *   refused    actor → runner   not accepted, or no longer (the machine was removed), with a sentence to
  *                               show; the actor then closes the socket
  *   report     runner → actor   what the machine has: Docker, the probe, free disk, its sandboxes. Sent
@@ -117,9 +118,10 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  * frame with a key they do not know. A name this runner does not know is ignored, so a later
  * server can name more without a new gate.
  *
- *   git-mirrors   the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
+ *   git-mirrors     the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
+ *   egress-domains  the report's `egressDomains`
  */
-export const SERVER_CAPABILITIES = ["git-mirrors"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -127,9 +129,28 @@ export type Capability = typeof SERVER_CAPABILITIES[number];
  */
 export const CAPABILITIES_RUNNER_VERSION = "0.3.0";
 const capabilities = list(line(64), 32);
-/** The welcome's `capabilities`, for a runner whose hello reported `runnerVersion`. */
-export function welcomeCapabilities(runnerVersion: string): { capabilities?: string[] } {
-	return versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION) ? { capabilities: [...SERVER_CAPABILITIES] } : {};
+/**
+ * The first runner release whose checks take `gitHost` in a welcome. runner-v0.3.0 shipped before the field
+ * existed and refuses unknown welcome keys, so it must never get one. Raise it if another release ships without it.
+ */
+export const GIT_HOST_RUNNER_VERSION = "0.3.1";
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** A DNS name of two labels or more, lower case, no address: what an --egress-domains list can hold. */
+const gitHost = is<string>((v) => typeof v === "string" && v.length <= 253 && v.split(".").length >= 2
+	&& v.split(".").every((label) => LABEL.test(label)) && !/^\d+$/.test(v.split(".").at(-1)!));
+/**
+ * The welcome's `capabilities` and `gitHost`, for a runner whose hello reported `runnerVersion`. `gitUrl`:
+ * where the platform's git clones from (WLP_GITHUB_URL). Its host is named only for an https address on
+ * the default port with a DNS name, the only kind a runner's list can reach (as hosted's, e2b/network.ts).
+ */
+export function welcomeCapabilities(runnerVersion: string, gitUrl?: string): { capabilities?: string[]; gitHost?: string } {
+	if (!versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION)) return {};
+	let host: string | undefined;
+	try {
+		const url = new URL(gitUrl ?? "");
+		if (url.protocol === "https:" && url.port === "" && gitHost(url.hostname)) host = url.hostname;
+	} catch {}
+	return { capabilities: [...SERVER_CAPABILITIES], ...(host && versionAtLeast(runnerVersion, GIT_HOST_RUNNER_VERSION) && { gitHost: host }) };
 }
 
 const refusal = either(
@@ -146,7 +167,7 @@ const refusal = either(
 );
 const serverFrame = either(
 	either(
-		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), refusal: optional(refusal), ...welcomeFields }))),
+		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), refusal: optional(refusal), ...welcomeFields }))),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
 	),
 	either(
@@ -204,6 +225,8 @@ const host = object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegat
 const hostFrame = object({ kind: oneOf("host"), host: nullable(host) });
 const report = object({
 	egress: optional(egressMode),
+	/** How many public hosts the owner's `--egress-domains` list names (github.com included); absent: any public host. The list stays on the machine. */
+	egressDomains: optional(is<number>(v => positiveLimit(v) && v <= 64)),
 	name: optional(validMachineName),
 	host: optional(host),
 	slots: optional(slots),
@@ -233,9 +256,10 @@ export type Report = Of<typeof report>;
 
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
-	if (named?.includes("git-mirrors" satisfies Capability)) return report;
-	const { gitMirrors: _, ...rest } = report;
-	return rest as R;
+	const rest = { ...report };
+	if (!named?.includes("git-mirrors" satisfies Capability)) delete rest.gitMirrors;
+	if (!named?.includes("egress-domains" satisfies Capability)) delete rest.egressDomains;
+	return rest;
 }
 export type RunnerFrame = Of<typeof runnerFrame>;
 

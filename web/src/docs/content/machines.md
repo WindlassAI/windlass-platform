@@ -139,6 +139,46 @@ To let commands reach a host on your private network, name it:
 
 Give exact DNS names, up to 64, separated by commas. IP addresses are refused. A listed name is still refused if it resolves to the machine itself, a Docker network or a metadata address. `--egress-allow` alone means `restricted`. `--egress restricted` without `--egress-allow` empties the list.
 
+### Only some public hosts
+
+By default `restricted` lets commands reach any public host. To let them reach only the hosts you name, give `--egress-domains`:
+
+```sh
+<runner image> --platform <platform address> --egress restricted --egress-domains @npm,@pypi,@github,mirror.example.com
+```
+
+Each entry is an exact DNS name, `*.` and a name for any of its subdomains (`*.example.com` takes `cdn.example.com`, not `example.com`), or a preset. The presets are the same as a hosted deployment's `WLP_E2B_NETWORK_ALLOW`, so one list can be used in both places:
+
+| Preset | Hosts |
+| --- | --- |
+| `@npm` | `registry.npmjs.org`, `registry.yarnpkg.com` |
+| `@pypi` | `pypi.org`, `files.pythonhosted.org` |
+| `@github` | `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `release-assets.githubusercontent.com` |
+| `@crates` | `crates.io`, `index.crates.io`, `static.crates.io` |
+| `@go` | `proxy.golang.org`, `sum.golang.org` |
+
+A wildcard reaches every site under its name, whoever runs it. On a shared hosting domain that means any customer's site, an attacker's among them: `*.s3.amazonaws.com` would let a command upload to anyone's bucket. So a wildcard on a public suffix is refused: a name under which different owners' sites live, as the [Public Suffix List](https://publicsuffix.org/) records them (a copy of its version of 21 November 2026 is built into the runner), or a name with one under it. `*.co.uk`, `*.github.io`, `*.amazonaws.com`, `*.workers.dev`, `*.vercel.app`, `*.appspot.com` and `*.blob.core.windows.net` are refused: "--egress-domains: *.github.io is refused. github.io is a public suffix (publicsuffix.org): different owners' sites live under it, so the wildcard would let commands reach anyone's site there. Name the exact hosts instead." `*.githubusercontent.com` is refused too: every GitHub user's files, gists and uploads are served under it, so it would reach anyone's content there, not only GitHub's own. `@github` names its exact hosts instead. A hosting domain that is not on the list is not refused, so check what a wildcard covers before you give it.
+
+Two hosts are always in the list, because the platform's own steps use the same proxy: the platform's git host, for its clone, fetch and push, and `api.openai.com`, for Windlass's model requests. The git host is the one the platform names when the runner connects (its `WLP_GITHUB_URL`, `github.com` unless it uses GitHub Enterprise). A platform older than this runner names none, and the runner uses `github.com`; with such a platform and another git host, add that host to `--egress-domains` yourself. Commands can reach these two hosts too, except `api.openai.com` in Codex and OpenCode sessions, whose proxy refuses the model hosts to commands. The whole list, these two included, holds up to 64 hosts. IP addresses and ports are refused.
+
+The list limits which services commands can reach. It does not stop a command from sending data out through one of them. `github.com` and `api.openai.com` take uploads to any account a command has a token for: a command can push your repository's contents to a repository of its own on GitHub, or send them in a request to OpenAI with its own key. So can any listed host that stores what it is sent, such as a package registry a command can publish to.
+
+With a list, the proxy:
+
+- refuses an unlisted name before any DNS lookup. With exact names only, a command cannot send data out in the names it looks up. A `*.name` entry lets any name under it be looked up, `<data>.example.com` included, so whoever runs `example.com`'s DNS can read what a command puts in those names;
+- refuses a name under a wildcard that is not a valid DNS name (an empty label, a label over 63 characters or with characters a name cannot have) before any lookup;
+- refuses IP addresses;
+- connects HTTPS only to port 443 and plain `http:` only to port 80;
+- reads the start of each HTTPS connection and sends it on only if the TLS server name is the host the command asked for. A connection without a server name, with another one, or with Encrypted Client Hello is closed;
+- still refuses your private network (unless the name is also in `--egress-allow`), the machine itself, Docker's networks and metadata addresses, even for a listed name;
+- lets an `--egress-allow` name that is not in the list reach only your private network. If it answers with a public address, the connection is refused.
+
+A browser must turn Encrypted Client Hello off to reach listed hosts over HTTPS, since the proxy cannot see which site such a connection is for. Chrome and Firefox send it on every connection, even with no key for the site. In Firefox, set `network.dns.echconfig.enabled` to `false` and `security.tls.ech.grease_probability` to `0`. Chrome has no command-line switch for it any more, only the full browser's `EncryptedClientHelloEnabled` policy, and the sandbox's browser has neither (`wlp-headless-shell`, Chrome's headless shell, which `wlp-shot` uses): with a list, it can load pages from `127.0.0.1` but no listed HTTPS host. Without `--egress-domains` the proxy does not read the connection, and browsers work as they do elsewhere.
+
+The list narrows what commands can reach; it does not seal it. A listed host behind a shared CDN can be asked, inside its encrypted connection, for another site on the same CDN.
+
+The runner saves the list with the mode and prints it, expanded, when it starts and in `status`: "Network egress is restricted. Only these public hosts: api.openai.com (always: Windlass's model requests use it; refused to commands in Codex and OpenCode sessions), github.com (always until the platform names its git host: the platform's git uses it), registry.npmjs.org, …". When the runner connects to a platform whose git host is another, it says so: "The platform's git host is git.example.com: the list of public hosts has it in place of github.com." `--egress-domains` alone means `restricted`. `--egress` or `--egress-allow` without `--egress-domains` takes the list away, and the runner says so: "The --egress-domains list was removed: commands can reach any public host again. Give --egress-domains with the other --egress flags to keep a list." The platform learns only how many hosts the list has, not which.
+
 ### None
 
 In `none` mode commands have no network. A repository cannot be cloned there, so an agent on a repository is refused: "This machine uses --egress none. Start the session without a repository or restart the runner with --egress restricted." Start it with **No repository**, or change the mode.
@@ -158,6 +198,7 @@ When you choose **Hardened Docker on your machine "…"**, the **sandbox** chip 
 | Mode | The network fact |
 | --- | --- |
 | `restricted` | "commands can reach public sites and hosts allowed by the owner through the web proxy" |
+| `restricted` with `--egress-domains` | "commands can reach only the 9 public hosts the owner allows, through the web proxy", with the list's size |
 | `open` | "commands can reach the internet and the local network" |
 | `none` | "commands have no network" |
 

@@ -97,13 +97,14 @@ These options go after the runner image, with the `run` command or with no comma
 | `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
 | `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code, OpenCode and Codex keep their model relay in all three. |
 | `--egress-allow HOST[,HOST]` | Empty | In `restricted` mode, let commands reach these hosts on your private network. Exact DNS names, up to 64. Given alone, it means `--egress restricted`. The machine's own addresses, Docker's networks and metadata addresses stay blocked. |
+| `--egress-domains ENTRY[,ENTRY]` | Any public host | In `restricted` mode, let commands reach only these public hosts: DNS names, `*.name` for subdomains, or the presets `@npm`, `@pypi`, `@github`, `@crates` and `@go`. The platform's git host and `api.openai.com` are always added. Up to 64 hosts. A wildcard on a public suffix (`*.github.io`, `*.amazonaws.com`) is refused. Given alone, it means `--egress restricted`. See [Only some public hosts](/docs/machines#only-some-public-hosts). |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
 | `--harness opencode` | Off | Offers OpenCode on this machine. Needs a runner built with the OpenCode image. Repeat `--harness` to offer more than one agent. |
 | `--harness codex` | Off | Offers Codex on this machine. Uses your personal login on this machine. See [Codex sign-in](#codex-sign-in). |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |
 
-The runner saves `--name`, `--egress`, `--egress-allow` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.
+The runner saves `--name`, `--egress`, `--egress-allow`, `--egress-domains` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.
 
 `N` is a positive whole number. A turn that would pass `--max-running` or `--max-sandboxes` ends with, for example, "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." The Machines page shows these limits under **Sandbox limit**, and says they are set on the machine, not there.
 
@@ -143,7 +144,9 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "Docker needs at least 5 GB free to create a sandbox." | Free disk space on the machine. |
 | "Use --egress open, restricted or none." | Give `--egress` one of the three modes. |
 | "Use --egress-allow with restricted and up to 64 comma-separated DNS hostnames." | List DNS names, not IP addresses, and leave out `--egress open` or `none`. |
-| "Use --egress and --egress-allow with setup or run." | Give them to `setup` or `run`, or with no command, not to `pair` or another command. |
+| "Use --egress-domains with restricted and up to 62 comma-separated public DNS names, *.name for any subdomain, or the presets @npm, @pypi, @github, @crates, @go." | Give names, `*.name` entries or presets, no addresses, ports or `https://`, at most 64 hosts with the two always added, and leave out `--egress open` or `none`. |
+| "--egress-domains: *.github.io is refused. github.io is a public suffix (publicsuffix.org): …" | A wildcard on a name where different owners' sites live would reach any of them. Name the exact hosts. See [Only some public hosts](/docs/machines#only-some-public-hosts). |
+| "Use --egress, --egress-allow and --egress-domains with setup or run." | Give them to `setup` or `run`, or with no command, not to `pair` or another command. |
 | "Use --name with setup, run or pair and a printable name of 1 to 64 characters." | Shorten the name, or take out control characters. |
 | "Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox." | Give one of the two profile IDs. |
 | "Use --slots, --slot-cpus, --slot-memory and --sandbox-memory with run or setup." | Give the sizing options to `run` or `setup` only. |
