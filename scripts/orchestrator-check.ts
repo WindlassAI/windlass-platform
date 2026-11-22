@@ -1749,6 +1749,10 @@ test("cross-repo: the Windlass CLI's CI on main and PRs only is refused by name,
 	const moved = await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", input);
 	assert.match(moved[0], /moved from 2222222 to 9999999/);
 	assert.deepEqual(await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("9") }), []);
+	// A reconfirmed base is taken only when it is the head read now, and never for a branch already opened.
+	assert.match((await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("5") }))[0], /bases names 5555555 for cli, but main is at 9999999/);
+	assert.match((await repositoryAdmission(app(any), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("5") }))[0], /bases names 5555555 for cli, but main is at 2222222/);
+	assert.match((await repositoryAdmission(app(any), "t", "WindlassAI", "windlass", { ...input, opened: true, reconfirmed: sha("2") }))[0], /feature branch is open already/);
 	// The repository the combined run starts from needs the integration workflow, enabled, in its base's tree.
 	const workflow = (state: string | null) => ({
 		settings: { slug: "windlass", appId: "1" },

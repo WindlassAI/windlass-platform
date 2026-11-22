@@ -76,9 +76,14 @@ export async function repositoryAdmission(app: GithubApp, token: string, owner: 
 	const label = owner + "/" + repo, problems: string[] = [];
 	if (!await hasPushCi(app, token, owner, repo, input.ciBase, input.branches))
 		problems.push(`${label}: push CI does not run on windlass/** branches (${input.branches.join(", ")}). Add a push trigger for them, or for every branch.`);
-	if (!input.opened && input.planningBaseSha) {
+	// A reconfirmed base is taken only when it is the head read here: the feature never starts from a commit nobody read.
+	if (input.reconfirmed !== undefined && (input.opened || !input.planningBaseSha))
+		problems.push(`${label}: bases names ${input.alias}, whose ${input.opened ? "feature branch is open already" : "base was not recorded"}; leave it out.`);
+	else if (!input.opened && input.planningBaseSha) {
 		const now = await refHead(app, token, owner, repo, input.baseRef);
-		if (now !== input.planningBaseSha && input.reconfirmed !== now)
+		if (input.reconfirmed !== undefined && input.reconfirmed !== now)
+			problems.push(`${label}: bases names ${input.reconfirmed.slice(0, 7)} for ${input.alias}, but ${input.baseRef} is at ${now.slice(0, 7)}. Reconfirm the commit it is at (bases: {"${input.alias}": "${now}"}), or revise the plan.`);
+		else if (now !== input.planningBaseSha && input.reconfirmed !== now)
 			problems.push(`${label}: ${input.baseRef} moved from ${input.planningBaseSha.slice(0, 7)} to ${now.slice(0, 7)} since the planner read it. Revise the plan on the new base, or reconfirm it (bases: {"${input.alias}": "${now}"}).`);
 	}
 	if (input.runsIntegration) {

@@ -1576,7 +1576,8 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	const p = c.item.featurePlan;
 	if (!p || p.status !== "proposed" || p.questions.some(q => !q.answer) || p.singleSuggested || c.item.filedTurn !== c.key) return false;
 	// A base the person reconfirmed after it moved (the actor refuses an approval that does not name a moved one).
-	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
+	// The actor took it only when it is the head its admission read (`repositoryAdmission`).
+	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && c.item.repos!.some(r => r.alias === alias) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
 	const completed = completedKeys(c.item);
 	const unconfirmed = p.subtasks.filter(s => unattendedKeys(p, completed).includes(s.key) && !agents.includes(s.key));
 	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(s.agent!.harness)}, which works without asking.`).join(" "));

@@ -681,14 +681,14 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
  * bound to it at filing (never another one it may have moved to), with `perform` given a token scoped to
  * that one repository and `permissions`.
  */
-async function repoHub<T>(c: Ctx, meta: ItemMeta, repo: FeatureRepoState, access: "read" | "write", permissions: Record<string, "read" | "write">, perform: (hub: { app: GithubApp; token: string; owner: string; name: string; author: ReturnType<typeof authorOf> }) => Promise<T>): Promise<T> {
+async function repoHub<T>(c: Ctx, meta: ItemMeta, repo: FeatureRepoState, access: "read" | "write", permissions: Record<string, "read" | "write">, perform: (hub: { app: GithubApp; token: string; owner: string; name: string; private: boolean; author: ReturnType<typeof authorOf> }) => Promise<T>): Promise<T> {
 	const app = githubApp();
 	if (!app) throw new Error("the deployment has no GitHub App");
 	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
 	if (!connection) throw new GithubProblem("github_gone", "The user’s GitHub connection is gone.");
 	const resolved = await resolveBoundRepository(app, connection, repo.repositoryId, repo.installationId, access);
 	const { owner, name } = resolved.repository;
-	return app.withToken(repo.installationId, { repositoryId: repo.repositoryId, permissions: { metadata: "read", ...permissions } }, token => perform({ app, token, owner, name, author: authorOf(connection) }));
+	return app.withToken(repo.installationId, { repositoryId: repo.repositoryId, permissions: { metadata: "read", ...permissions } }, token => perform({ app, token, owner, name, private: resolved.repository.private, author: authorOf(connection) }));
 }
 
 async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType<typeof github>>, pr: number) {
@@ -744,15 +744,20 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 	const plan = item.featurePlan!;
 	const pending = plan.subtasks.filter(s => !item.jobs?.some(j => j.task.key === s.key && j.state === "done"));
 	const problems: string[] = [];
+	const unknown = Object.keys(bases).filter(alias => !item.repos!.some(r => r.alias === alias));
+	if (unknown.length) problems.push(`bases names ${unknown.join(", ")}, which ${unknown.length === 1 ? "is" : "are"} not a repository of this feature.`);
 	for (const repo of item.repos!) {
 		const label = `${repo.owner}/${repo.name}`;
 		try {
 			if (!await userActor(c, meta.uid).internalHasChecks(repo.repositoryId)) problems.push(`${label}: add saved repository checks.`);
 			const branches = [featureBranch(item.id), ...pending.filter(s => (s.repo ?? item.repos![0].alias) === repo.alias).map(s => branchFor(s.title, itemSessionId(childItemId(item.id, plan.version, s.key))))];
-			problems.push(...await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, ({ app, token, owner, name }) =>
-				repositoryAdmission(app, token, owner, name, { alias: repo.alias, baseRef: repo.baseRef, ciBase: repo.pr ? featureBranch(item.id) : repo.baseRef, branches, planningBaseSha: repo.planningBaseSha,
-					reconfirmed: bases[repo.alias], runsIntegration: plan.finalIntegration?.runFrom === repo.alias, opened: !!repo.pr })));
-			if (plan.finalIntegration?.runFrom !== repo.alias && repo.private) problems.push(`${label}: the combined run checks out the other repositories without a token, so ${label} must be public.`);
+			problems.push(...await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, async ({ app, token, owner, name, private: hidden }) => {
+				const found = await repositoryAdmission(app, token, owner, name, { alias: repo.alias, baseRef: repo.baseRef, ciBase: repo.pr ? featureBranch(item.id) : repo.baseRef, branches, planningBaseSha: repo.planningBaseSha,
+					reconfirmed: bases[repo.alias], runsIntegration: plan.finalIntegration?.runFrom === repo.alias, opened: !!repo.pr });
+				// As GitHub says it now, not as it was at filing: a repository made private since is checked out by no one.
+				if (plan.finalIntegration?.runFrom !== repo.alias && hidden) found.push(`${label}: the combined run checks out the other repositories without a token, so ${label} must be public.`);
+				return found;
+			}));
 		} catch (error) {
 			problems.push(`${label}: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
 		}

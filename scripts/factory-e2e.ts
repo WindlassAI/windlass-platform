@@ -498,13 +498,20 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			assert(page.repositories?.length === 2 && page.repositories[1].planningBaseSha === standin.branchHead(cli, "main") && page.integration?.state === "not_run", "Repositories not bound: " + JSON.stringify(page.repositories));
 			assert(page.plan.subtasks.map(s => s.repo).join() === "cli,platform", "Subtasks not on their repositories");
 			const approve = (bases?: Record<string, string>) => user.actOnItem({ id, action: { kind: "approve_plan", version: page.plan!.version, ...(bases && { bases }) } });
+			// Made private since the filing: the run could not check it out, and approval says so from what GitHub says now.
+			cli.private = true;
 			const noCi = await refused(() => approve(), "bad_input");
+			cli.private = false;
 			assert(/ada\/xcli: push CI does not run on windlass\/\*\* branches/.test(noCi) && !/ada\/xplatform/.test(noCi), "Admission did not name the CLI's CI: " + noCi);
+			assert(/ada\/xcli must be public/.test(noCi), "A sibling made private since filing was admitted: " + noCi);
 			assert(!standin.pulls.some(p => p.repository === platform.id || p.repository === cli.id), "A PR was opened before admission passed");
 			// The owner's reviewed change: CI on pushes to any branch. The CLI's base moved, so approval names that too.
 			const moved = standin.commit(cli, "main", { ".github/workflows/ci.yml": readFileSync(join(root, "fixtures/windlass-ci/any-branch.yml"), "utf8") }, "ci: run on pushes to any branch");
 			const stale = await refused(() => approve(), "bad_input");
 			assert(stale.includes("moved from") && stale.includes(moved), "A moved base was not named: " + stale);
+			// A reconfirmed base must be the head approval read: never a commit nobody read.
+			const unread = await refused(() => approve({ cli: "f".repeat(40) }), "bad_input");
+			assert(/bases names fffffff for cli, but main is at/.test(unread), "An unread base was accepted: " + unread);
 			await approve({ cli: moved });
 			const children = new Set<string>();
 			const integrating = await untilItem(user, id, "the combined run", v => {
