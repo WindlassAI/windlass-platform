@@ -16,6 +16,8 @@ import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
+import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
+
 interface Ctx {
 	db: RawAccess; key: string[]; client(): unknown; conn?: { params: unknown } | null;
 	vars: { tokenGen: number; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
@@ -37,6 +39,15 @@ export function launchPlace(raw: unknown): SandboxPlace {
 }
 
 export async function machineTables(db: RawAccess) {
+	await db.execute(PROVIDER_TABLE);
+	// Consolidate pre-account Windlass rows before per-machine cleanup can remove them.
+	// Repeating either statement after an interrupted migration keeps the same strongest cooldown.
+	await db.execute(`INSERT OR REPLACE INTO provider_usage (place,harness,generation,data)
+		SELECT '*', harness, generation, json_set(data, '$.account.key', '*/windlass/' || generation)
+		FROM provider_usage WHERE harness='windlass' AND EXISTS (SELECT 1 FROM provider_usage WHERE harness='windlass' AND place<>'*')
+		ORDER BY CAST(generation AS INTEGER) DESC, json_extract(data, '$.account.limitedUntil') DESC,
+			json_extract(data, '$.lastRefusal') DESC, place LIMIT 1`);
+	await db.execute("DELETE FROM provider_usage WHERE harness='windlass' AND place<>'*'");
 	await db.execute(`CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, facts TEXT NOT NULL,
 		send INTEGER NOT NULL DEFAULT 1, login TEXT, expires INTEGER)`);
 	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machines)")).some(column => column.name === "host"))
@@ -49,6 +60,15 @@ export async function machineTables(db: RawAccess) {
 		const { host, ...report } = facts.report;
 		await db.execute("UPDATE machines SET facts = ?, host = ? WHERE id = ?", JSON.stringify({ ...facts, report: compactReport(report) }), host ? JSON.stringify(host) : null, row.id);
 	}
+	await db.execute("CREATE TRIGGER IF NOT EXISTS forget_machine_usage AFTER DELETE ON machines BEGIN DELETE FROM provider_usage WHERE place=OLD.id; END");
+	// Legacy runners have no generation marker. An explicit logout still retires the old account.
+	await db.execute(`CREATE TRIGGER IF NOT EXISTS forget_harness_usage AFTER UPDATE OF facts ON machines BEGIN
+		DELETE FROM provider_usage WHERE place=NEW.id AND EXISTS (
+			SELECT 1 FROM json_each(NEW.facts, '$.report.harnesses') AS h
+			WHERE json_extract(h.value,'$.id')=harness AND (
+				json_extract(h.value,'$.signIn')='none' OR
+				(json_extract(h.value,'$.signIn')='token' AND COALESCE(json_extract(h.value,'$.loginGeneration'),'legacy')<>generation)));
+	END`);
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_details (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
 }
@@ -63,6 +83,7 @@ async function pairing(c: Ctx, input: { code: string }) {
 
 export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "sessions"> }): Promise<MachineSummary[]> {
 	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; host: string | null; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, host, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
+	const accounts = await providerAccounts(c.db, Date.now());
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
@@ -70,6 +91,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		return {
 			whenToUse: "", tags: [], orchestrator: "yes" as const,
 			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
+			providerAccounts: accountsAt(accounts, row.id),
 			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
 			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
@@ -83,7 +105,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}) };
 	});
 }
-async function changed(c: Ctx) {
+export async function changed(c: Ctx) {
 	const machines = await listMachines(c);
 	c.vars.machines = new Map(machines.map(m => [m.machineId, m]));
 	c.broadcast("machines", machines);

@@ -389,7 +389,7 @@ try {
 		const rx = runner.finish(server.welcome, trust(), endpoint);
 		const options = { models: [{ id: "one", name: "One", efforts: [] }], modes: [], defaultModel: "one", checkedAt: 1 };
 		for (const frame of [{ kind: "catalog", id: "opencode", options }, { kind: "host", host: null },
-			{ kind: "report", slots, docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
+			{ kind: "report", slots, harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", loginGeneration: "a".repeat(32) }], docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
 			const text = rx.seal(frame);
 			const fields = JSON.parse(text);
 			assert.throws(() => server.auth.open(JSON.stringify({ ...fields, unknown: "fixture" }), 131072), /mac/);

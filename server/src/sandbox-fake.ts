@@ -733,7 +733,9 @@ class FakeWindlass implements Windlass {
 		const gap = this.eventDelayMs * (text.includes("(slow)") ? 20 : 1);
 		const crashAfter = text.includes("(crash)") ? 6 : Number.POSITIVE_INFINITY;
 		const invalidEffort = text.includes("(invalid-effort)");
-		const executionFailure = invalidEffort ? "The model rejected the request." : EXEC_FAIL_MESSAGE;
+		const resetKnown = text.includes("(usage-limit)");
+		const usageLimit = resetKnown || text.includes("(usage-limit-unknown)");
+		const executionFailure = invalidEffort || usageLimit ? "The model rejected the request." : EXEC_FAIL_MESSAGE;
 		const execFailAfter = text.includes("(exec-fail)") ? 8 : Number.POSITIVE_INFINITY;
 		const approval = !text.includes("(auth-fail)") && APPROVAL_WORDS.test(text) ? approvalScenario() : null;
 		const signal = input.signal;
@@ -1068,11 +1070,11 @@ class FakeWindlass implements Windlass {
 						failure: { reason: "engine", message: "Windlass stopped before the turn was finished (exit code 1)." },
 					};
 				}
-				if ((emitted >= execFailAfter || (invalidEffort && currentStep !== null)) && recorded.type !== "step.failed" && !TERMINAL.has(recorded.type)) {
-					const provider = invalidEffort
+				if ((emitted >= execFailAfter || ((invalidEffort || usageLimit) && currentStep !== null)) && recorded.type !== "step.failed" && !TERMINAL.has(recorded.type)) {
+					const provider = usageLimit ? { kind: "usage_limit", retryable: false, status: 429, message: "Usage limit reached for canary@example.invalid.", token: "canary-token", accountId: "canary-account" } : invalidEffort
 						? { kind: "invalid_request", retryable: false, status: 400, message: "HTTP 400: Invalid value: 'ultra'. Supported values are: 'none','minimal','low','medium','high','xhigh','max'. [param: reasoning.effort] (fixture-secret-value)" }
 						: { kind: "server", retryable: true, status: 503, message: "The provider answered 503." };
-					const error = { kind: "provider", error: { ...provider, code: null, retryAfterMs: null, requestId: null } };
+					const error = { kind: "provider", error: { ...provider, code: null, retryAfterMs: resetKnown ? 2 * 3600_000 : null, requestId: null } };
 					queue = [
 						{ type: "step.failed", v: 1, data: { messageId: currentStep, error, usage: null }, seq: 0, time: 0 },
 						{ type: "execution.failed", v: 1, data: { executionId, message: executionFailure }, seq: 0, time: 0 },
@@ -1084,7 +1086,7 @@ class FakeWindlass implements Windlass {
 				if (recorded.type === "step.started" || TERMINAL.has(recorded.type)) deliverSteers();
 
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
-				if (TERMINAL.has(recorded.type) && !invalidEffort && !platformCalled) {
+				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {
 					platformCalled = true;
 					const offered = turnHostTools(input);
 					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots) });

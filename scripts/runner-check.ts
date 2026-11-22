@@ -374,6 +374,23 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 			await stopRunner();
 			assert.deepEqual((await start()).allowedProfiles, [hardened, windlass]);
 			ok("An upgraded pairing keeps both profiles and an explicit opt-in survives restart.");
+			await srv.attach();
+			const handoff = srv.channel(sessionId);
+			for (const profile of allowed.commandSandbox.ok ? [hardened, windlass] as const : [hardened] as const) {
+				const id = await handoff.request("create", { profile });
+				const path = tokenFilePath(id);
+				await handoff.request("writeSecretFile", { id, path, content: JSON.stringify({ accessToken: "fake-runner-fixture", expiresAt: Date.now() + 3_600_000 }) });
+				const fs = await handoff.request("ask", { id, argv: ["stat", "-f", "-c", "%T", path] });
+				assert.equal(fs?.stdout.trim(), "tmpfs");
+				const login = await handoff.request("ask", { id, argv: ["windlass", "login", "status"], options: { env: { WINDLASS_ACCESS_TOKEN_FILE: path } } });
+				assert.equal(login?.code, 0);
+				assert.ok(login?.stdout.includes(path));
+				srv.send({ kind: "logout" });
+				await until(async () => (await handoff.request("ask", { id, argv: ["test", "!", "-e", path] }))?.code === 0, "Logout left the private file.");
+				await handoff.request("destroy", { id });
+				ok(profile + " passes the private tmpfs file to Windlass and removes it on logout.");
+			}
+
 			// Even a runner on a host without user namespaces can discover a pre-existing container.
 			await stopRunner();
 			const raw = randomBytes(6).toString("hex"), id = "m" + machineId + "-" + raw;

@@ -9,7 +9,7 @@ at `/docs`, for example at <https://windlass.parthg.dev/docs>.
 | [architecture.md](architecture.md) | The actors and how a turn runs; a message sent twice; sleep, shutdown and idle sandboxes; ChatGPT sign-ins and access tokens; the users' models; the sandbox profiles; the copy of the agent's memory; how sandbox time is counted |
 | [github-and-repositories.md](github-and-repositories.md) | The GitHub connection, its tokens and the agent's publish tools; a repository's setup command, checks, secrets and MCP servers; the "What was verified" section of a pull request; the repository page; account settings |
 | [work-items.md](work-items.md) | The Factory: how a work item runs, verdicts, waits and budgets, feature orchestration, the second review, the items API and screenshots |
-| [machines.md](machines.md) | Users' own machines: pairing, what the runner does and cannot do, the link and its failures, Claude Code and its credential relay, building the runner |
+| [machines.md](machines.md) | Users' own machines: pairing, what the runner does and cannot do, the link and its failures, Claude Code, OpenCode and their credential relays, building the runner |
 | [operating.md](operating.md) | Running a deployment: several servers on one engine, Rivet Cloud, public HTTP rate limits, E2B, registering the GitHub App, the bucket |
 | [configuration.md](configuration.md) | Every environment variable, grouped, with defaults and how bad values are reported |
 | [development.md](development.md) | Running from a checkout, the repository layout, every check, and the public pages' build |

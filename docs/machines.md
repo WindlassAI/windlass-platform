@@ -151,8 +151,9 @@ answer **n** to skip its sign-in. For OpenCode, enter a provider ID or search by
 for a Go subscription key or **opencode** for a Zen pay-as-you-go key, and paste the key at the hidden
 prompt. **chatgpt** starts a separate OpenAI device login, and **free** enables OpenCode's public models.
 Public sessions use OpenCode’s anonymous catalog and carry their own ACP client identity. If the
-provider returns HTTP 429, the turn reports that its usage or rate limit was reached. A working
-interactive terminal session can coexist with a refused anonymous ACP request on the same machine.
+provider returns HTTP 429, the turn reports that its usage or rate limit was reached. The public models'
+allowance is small and counted per public IP address, so every session behind that address shares it.
+A working interactive terminal session can coexist with a refused anonymous ACP request on the same machine.
 
 To import existing API keys, add
 `--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"` before the image name
@@ -172,7 +173,14 @@ ChatGPT tokens and checks each session's signed placeholder; agent commands can 
 configured providers. Adding a provider or changing a key keeps existing sessions working, because the
 relay looks up the current key on each request. A full `logout opencode` or a new pairing invalidates the
 placeholders, and affected sessions must be recreated. Open and restricted sessions both send inference
-through the loopback relay. See [the relay's provider routes](../sandbox/relay/README.md#opencode-1196).
+through the loopback relay. In `restricted` mode the OpenCode session's command proxy also refuses every
+catalog inference hostname and every bare IP address, and `--egress-allow` does not reopen them.
+See [the relay's provider routes](../sandbox/relay/README.md#opencode-1196).
+
+Both relays answer a refusal or a provider error with a fixed message per status and never pass the
+provider's own body on: 401 "Provider sign-in is missing or the session placeholder is no longer valid.",
+403 "This request is not allowed by the relay.", 429 "The provider's usage or rate limit was reached.",
+5xx "The provider failed or couldn't be reached." and any other status "The provider rejected the request."
 
 The credential relay checks decoded JSON strings in successful responses. For Anthropic Messages
 streams it joins text deltas by content-block index and holds a possible credential prefix across
@@ -328,10 +336,9 @@ key (`MACHINE_EXPIRY_MS`); its agents keep their timelines, and its sandboxes ar
 ### Forgetting the ChatGPT sign-in
 
 Each machine whose runner is connected at that moment is told, and
-its runner removes the token files of running turns from its data volume. A machine that is offline then
+its runner removes each running turn’s token from the container’s private tmpfs and clears old copies on its data volume. A machine that is offline then
 is not told, and is not told later: the platform keeps no logout for it. A token in a file there, which a
-turn cut off by the machine going away can leave, lasts about an hour from when it was handed out, and
-whoever reads it cannot renew it. To remove such files sooner, the machine's owner removes the runner's
+turn cut off by the machine going away can leave, expires about an hour after issue. To remove such files sooner, the machine's owner removes the runner's
 sandboxes and its data volume there with `prune`. It refuses to run while the runner does ("The runner
 service or another command is using this state volume. Stop the runner container or finish the command,
 then run prune in a one-off runner container with the same state volume and Docker socket."), so the

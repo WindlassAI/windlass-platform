@@ -85,11 +85,15 @@ An agent asks before it starts an MCP server that the repository names: **Start 
 
 ## Usage
 
-The **Usage** page shows the sandbox time your agents use on this platform, and the sandboxes you keep. Agents on your own machines are not counted.
+The **Usage** page shows your effective limits, model tokens, hosted sandbox time and kept sandboxes. The deployment operator sets account limits.
+
+### Daily model tokens
+
+Input and output count once for hosted agents and for Windlass on a paired machine, which uses the model sign-in supplied by the platform. Claude Code and OpenCode on your machine use your own local subscription and are excluded. The allowance resets at 00:00 UTC. If a cap is set and you reach it, running turns finish, new Factory turns wait and new interactive prompts show when you can try again.
 
 ### Sandbox time
 
-Sandbox time is the time your agents' sandboxes run: while an agent works, and for a short while after. A paused sandbox uses none. You have 2 hours of sandbox time a day, for all your sandboxes together. The allowance is whole again at 00:00 UTC.
+Sandbox time is the time your agents' sandboxes run: while an agent works, and for a short while after. A paused sandbox uses none. The default is 2 hours of sandbox time a day, for all your sandboxes together. The allowance is whole again at 00:00 UTC.
 
 **Sandbox time today** shows what is counted, what is held, what is left and when it resets. A running sandbox holds 5 minutes at a time ahead. A turn needs at least 30 seconds left to start.
 
@@ -118,6 +122,7 @@ These are the platform's defaults. Whoever runs the platform can change them.
 
 | Limit | Default |
 | --- | --- |
+| Model tokens | Unlimited |
 | Sandbox time on this platform | 2 hours a day, reset at 00:00 UTC |
 | Sandboxes kept on this platform | 5 |
 | Agents working at once on this platform | 6 |
@@ -135,4 +140,4 @@ These are the platform's defaults. Whoever runs the platform can change them.
 | Secrets per repository | 50 |
 | API tokens | 20 |
 
-A paused sandbox on this platform is removed after 7 days without use. On your own machines, only the limits you set with the runner apply. See [Runner reference](/docs/runner#run-options).
+A paused sandbox on this platform is removed after 7 days without use. On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).

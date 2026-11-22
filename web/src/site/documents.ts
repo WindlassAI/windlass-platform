@@ -118,7 +118,7 @@ export function llmsTxt(pages: PublicPage[]): string {
 		"",
 		`> ${ONE_LINER}`,
 		"",
-		"Windlass is also the name of the platform's own agent, a coding agent for the terminal. The platform runs it and Claude Code today; OpenCode and Codex are planned and not available yet. Access is by invitation: there is no public sign-up and no pricing yet.",
+		"Windlass is also the name of the platform's own agent, a coding agent for the terminal. The platform runs it, Claude Code and OpenCode today; Codex is planned and not available yet. Access is by invitation: there is no public sign-up and no pricing yet.",
 		"",
 	];
 	for (const [section, members] of sections) {

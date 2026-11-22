@@ -271,7 +271,7 @@ describe("a tooltip", () => {
 		const matches = Element.prototype.matches;
 		Element.prototype.matches = function (this: Element, selector: string) {
 			return selector === ":focus-visible" ? true : matches.call(this, selector);
-		};
+		} as typeof matches;
 		try {
 			act(() => button.focus());
 		} finally {

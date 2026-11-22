@@ -93,9 +93,48 @@ export interface FeatureJob {
 	report: string;
 }
 
+export interface FeedbackInput {
+	ids: string[];
+	text: string;
+	fingerprint: string;
+	others: boolean;
+	by: string;
+	writers?: string[];
+}
+
+export interface FeedbackDecision {
+	ids: string[];
+	state: "held" | "question" | "taken" | "declined";
+	reason: string;
+	run?: number;
+	plan?: number;
+}
+
 export interface FactoryItem {
+	feedbackReplans?: number;
+	/**
+	 * What the planner had spent, closing work and subtasks left out, when the latest feedback re-plan began.
+	 * Planning counts its share from here, so each feedback re-plan gets a share of its own; the feature budget
+	 * and its closing reserve still bound it.
+	 */
+	planningBase?: ItemBudget;
+	/** Closing work is charged to the feature, outside its planner allowance. */
+	beforeClosing?: ItemBudget;
+	closingSpend?: ItemBudget;
+	feedback?: {
+		held: string[] | null;
+		heldText: string;
+		heldFingerprint: string;
+		heldWriters: string[];
+		heldOthers: boolean;
+		awaiting: FeedbackInput | null;
+		taken: string[];
+		runs: Record<string, number>;
+		othersRuns: number;
+		lastIds: string[];
+	};
 	/** Checks opened by this run, including a handed head reopened for rework. */
-	pendingChecks?: { sha: string; existingOnly: boolean }[];
+	pendingChecks?: { sha: string; existingOnly: boolean; feedback?: boolean }[];
 	lastReverifyAt?: number;
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
@@ -163,6 +202,8 @@ export interface TurnPlan {
 	to?: "work" | "review";
 	checkout?: ReviewCheckout | null;
 	text: string;
+	/** Range occupied by the quoted batch. A held batch's line locations are rendered against the head at handoff. */
+	feedbackQuote?: { head: string | null; start: number; length: number };
 	/** False: another attempt of the current step (after an interruption). */
 	newStep: boolean;
 	/** The round counter the turn uses (§2.4); "interruptions": the step's cut-off turns, counted when they end. */
@@ -179,6 +220,8 @@ export interface TurnPlan {
 
 /** The owner's explicit retry replays this delivery, including a conflict step's base fetch. */
 export interface ItemProviderRefusal extends ProviderRefusal {
+	accountKey?: string;
+	placeName?: string;
 	retry: Pick<TurnPlan, "text" | "fetchBase">;
 }
 
@@ -192,13 +235,14 @@ export interface TurnSpend {
 }
 
 export type Fact =
+	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
 	| { kind: "feature_seed"; at: number; key: string; sha: string }
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
-	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
 	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
@@ -215,6 +259,7 @@ export type Fact =
 	| { kind: "send_back"; at: number; by: Cause; note: string }
 	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
+	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
 	| { kind: "turn_started"; at: number; key: string }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
@@ -272,13 +317,14 @@ export type VerifiedCheckEffect = {
 
 export type Effect =
 	| VerifiedCheckEffect
+	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
 	| { kind: "describe_feature"; key: string }
 	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }
@@ -291,7 +337,7 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; reviewDone?: true } & HandoffReview);
+	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true } & HandoffReview);
 
 /** A transaction-only effect, consumed before the actor performs any deliveries. */
 export interface VerdictEffect {
@@ -301,6 +347,7 @@ export interface VerdictEffect {
 }
 
 export interface Outcome {
+	feedback?: FeedbackDecision[];
 	/** The same object as given when the fact changed nothing. */
 	item: FactoryItem;
 	/** Store beside the item before performing the outbox. This effect never goes to GitHub. */

@@ -2,10 +2,9 @@
  * The access token file of one turn: how a turn that is not scripted gets to use its user's ChatGPT
  * sign-in without the sandbox ever holding it.
  *
- *   where   <Windlass's data directory>/access-token-<sandbox id>.json in the session's sandbox, that is
- *           /home/agent/.local/share/windlass/access-token-<sandbox id>.json. The data directory is the
- *           place Windlass recommends: its own command sandbox hides that directory as a whole, so a
- *           sandboxed command cannot see the file, also not at the moment it is renamed into place.
+ *   where   Docker's per-container /dev/shm tmpfs, or Windlass's data directory on E2B's private disk.
+ *           Bubblewrap mounts a fresh /dev and hides the data directory, so neither path is visible
+ *           to sandboxed commands. Docker's shared user volume never receives the token.
  *   what    `{"accessToken":"...","expiresAt":<ms>}`, as `windlass login token --json` prints it. With
  *           the expiry Windlass refuses an expired token before it sends anything.
  *   how     written to a file beside it (`<file>.tmp`) and renamed into place, mode 0600, the content on
@@ -29,16 +28,9 @@
  *           Removed when the turn ends; `Sandboxes.suspend` and `destroy` remove what a turn that was
  *           cut off with its server left there, and `ChatgptLogins.logout` the files of all the user's
  *           running turns.
- *   whose   one file per sandbox, so per session, not per user. On Docker a user's sessions share the data
- *           volume and may run turns at the same time (on E2B each sandbox has a data directory of its
- *           own, and the file is named the same way): with one file each, a turn writes, replaces and removes
- *           only what is its own, the file is there only while a turn runs, and no turn's schedule
- *           depends on a token another turn wrote. (One file per user would have to stay for as long as
- *           any of the user's turns runs, and an older token written late by one turn could outlive
- *           the schedule of another.) Sandboxes have one turn at a time.
+ *   whose   one session, one turn at a time. An unsandboxed command or local MCP server can read
+ *           the current token, including a replacement during that turn.
  *
- * In the hardened profile (no Windlass sandbox) a command the agent runs can read the file, and through
- * the shared volume those of the same user's other running turns: all hold that user's own token.
  * What such a command prints is tool output, which becomes an event. Windlass takes out of tool output
  * every token it has read from the file, which it does at a model call; the platform takes every token
  * it handed this turn out of everything the engine sends as well (`scrub`), so that a token never gets
@@ -49,13 +41,15 @@ import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js"
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
 import { DATA_DIR, type TurnSandbox } from "./provider.js";
 
-/** The name of a turn's access token file in Windlass's data directory, before the sandbox id. */
+/** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
 
-/** Where a sandbox's turn finds its access token. */
-export function tokenFilePath(sandboxId: string): string {
+/** Docker mounts this tmpfs privately. Bubblewrap replaces /dev inside agent commands. */
+const DOCKER_TOKEN_DIR = "/dev/shm";
+
+export function tokenFilePath(sandboxId: string, directory: typeof DATA_DIR | typeof DOCKER_TOKEN_DIR = DOCKER_TOKEN_DIR): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(sandboxId)) throw new Error("invalid sandbox id");
-	return `${DATA_DIR}/${TOKEN_FILE_PREFIX}${sandboxId}.json`;
+	return `${directory}/${TOKEN_FILE_PREFIX}${sandboxId}.json`;
 }
 
 /**
@@ -115,7 +109,7 @@ export class TokenFile {
 		private readonly tokens: AccessTokens,
 		options: TokenFileOptions = {},
 	) {
-		this.path = tokenFilePath(sandbox.id);
+		this.path = tokenFilePath(sandbox.id, sandbox.profile.startsWith("e2b") ? DATA_DIR : DOCKER_TOKEN_DIR);
 		this.leadMs = options.leadMs ?? TOKEN_REPLACE_LEAD_MS;
 		this.retryMs = options.retryMs ?? TOKEN_REPLACE_RETRY_MS;
 		this.log = options.log ?? ((line) => (line.includes("token.replace_failed") ? console.warn(line) : console.log(line)));

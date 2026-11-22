@@ -664,6 +664,20 @@ test("placement preserves the editable proposal and bounds its reason, needs and
 		assert.throws(() => proposed({ ...p, subtasks: [{ ...p.subtasks[0], ...invalid }, p.subtasks[1]] } as FeaturePlanEdit));
 	assert.throws(() => proposed({ ...p, overflow: "yes" } as never));
 });
+test("a daily token cap waits on hosted and machine routes, including approved overflow", () => {
+	const machines = [machineReport()];
+	for (const [prefer, allow] of [["hosted", ["Mac"]], ["Mac", ["hosted"]]] as const) {
+		const item = placementFeature(machines, {}, [...allow], true, prefer);
+		const wait = "Your daily model token cap has been reached until 00:00 UTC.";
+		const waiting = advance(item, { kind: "place_child", at: 6, key: currentKey(item)!,
+			inventory: { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"], dailyTokenWait: wait } }).item;
+		assert.equal(waiting.wait?.reason, "capacity");
+		assert.equal(waiting.wait?.sentence, wait);
+		assert.equal(waiting.question, null);
+		assert.equal(waiting.jobs!.at(-1)!.placement, undefined);
+		assert.ok(dispatch(waiting, machines).jobs!.at(-1)!.placement);
+	}
+});
 test("placement 1 binds the approved Mac by id and keeps the reason after a rename", () => {
 	const mac = machineReport();
 	const item = placementFeature([mac]);
@@ -804,28 +818,29 @@ test("placement 7 scores available slots, queue, personal turns and direct depen
 	assert.deepEqual(dispatch(next, [busy, { ...linux, personalRunning: 2 }]).jobs![1].placement?.place, { kind: "machine", machineId: macId });
 });
 
-async function childCreation(t: import("node:test").TestContext) {
+async function childCreation(t: import("node:test").TestContext, overflow = false) {
 	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { DatabaseSync } = await import("node:sqlite");
 	const mac = machineReport("Mac", macId, {
 		allowedProfiles: ["docker-windlass-sandbox", "docker-hardened"],
 		profiles: ["docker-windlass-sandbox", "docker-hardened"].map(id => ({ id, available: true } as never)), slots: { max: 3, busy: 0, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } });
-	const feature = placementFeature([mac], { cpus: 8 });
+	const linux = { ...mac, machineId: linuxId, name: "Linux box" };
+	const feature = placementFeature([mac, linux], { cpus: 8 }, ["Linux box"], overflow);
 	const selected = dispatch(feature, [mac]), job = selected.jobs![0];
 	const raw = new DatabaseSync(":memory:");
 	t.after(() => raw.close());
 	for (const sql of ITEM_TABLES) raw.exec(sql);
 	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
-	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}" };
-	const machines = new Map([[macId, mac]]);
+	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}", previous: { place: { kind: "machine", machineId: macId }, head, report: "Prior subtask report" } };
+	const machines = new Map([[macId, mac], ...(overflow ? [[linuxId, linux] as const] : [])]);
 	const itemIndex = new Map();
 	let child: typeof feature | undefined;
 	const facts: import("../server/src/factory/types.js").Fact[] = [];
 	const parent = { internalChildRequest: async () => request, internalFact: async (fact: typeof facts[number]) => facts.push(fact) };
 	const childActor = { internalSummary: async () => ({ ...child, title: "Child", createdAt: 1, sessionId: "s_child" }), internalView: async () => child, internalAct: async () => child };
 	const ctx = { key: [owner], conn: { params: serviceParams() }, broadcast() {}, log: { error() {}, warn() {} },
-		vars: { items: { items: itemIndex }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
+		vars: { usage: { modelTokens: () => 0 }, items: { items: itemIndex, limits: { id: 0, overrides: {} } }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
 		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
 		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
 			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
@@ -834,7 +849,7 @@ async function childCreation(t: import("node:test").TestContext) {
 		delivered.push({ place: input.place, size: origin.size, profile: input.profile });
 		return { ...input, repository, id: origin.sessionId } as never;
 	});
-	return { create, delivered, facts, machines, mac, child: () => child };
+	return { create, delivered, facts, machines, mac, raw, child: () => child };
 }
 
 test("session sandbox creation retains a reported multi-slot size for replacement", async () => {
@@ -896,6 +911,48 @@ test("a limited account waits or uses an approved alternative at the child bound
 	}
 });
 
+test("fresh placement retries the soonest approved wait and caps a long provider reset", () => {
+	const at = 1000, hour = 3600_000;
+	const machines = [machineReport(), machineReport("Linux box", linuxId, { turns: { running: 1, max: 1, queued: 0 } })];
+	const place = (overflow: boolean, reset: number) => {
+		const item = placementFeature(machines, {}, ["Linux box"], overflow);
+		return advance(item, { kind: "place_child", at, key: currentKey(item)!, inventory: {
+			machines: plannerMachines(machines), hostedProfiles: [], limited: [{ machineId: macId, harness: "windlass", limitedUntil: at + reset }],
+		} });
+	};
+	for (const [overflow, reset, delay] of [[true, 4 * hour, 30_000], [true, 10_000, 10_000], [false, 168 * hour, 6 * hour]] as const) {
+		const result = place(overflow, reset);
+		assert.equal(result.item.wait?.retryAt, at + delay);
+		assert.equal(result.effects.find(e => e.kind === "dispatch")?.at, at + delay);
+	}
+});
+
+test("provider placement rechecks at UTC rollover when the daily cap also holds", () => {
+	const machines = [machineReport()];
+	const item = placementFeature(machines);
+	const midnight = Date.UTC(2026, 10, 23), at = midnight - 1000, providerUntil = midnight + 3600_000;
+	const key = currentKey(item)!;
+	const inventory = { machines: plannerMachines(machines), hostedProfiles: [], dailyTokenWait: "Daily tokens used.",
+		limited: [{ machineId: "*", harness: "windlass", limitedUntil: providerUntil }] };
+	for (const result of [advance(item, { kind: "place_child", key, at, inventory }),
+		advance(item, { kind: "placement_wait", key, child: item.jobs![0].id, at, dailyCap: true, providerUntil, sentence: "Waiting." })]) {
+		assert.equal(result.item.wait?.retryAt, midnight);
+		assert.equal(result.effects.find(e => e.kind === "dispatch")?.at, midnight);
+	}
+});
+
+test("shared Windlass cooldown covers hosted and every approved machine, in either order", () => {
+	const machines = [machineReport(), machineReport("Linux box", linuxId)];
+	for (const prefer of ["Mac", "hosted"]) {
+		const item = placementFeature(machines, {}, prefer === "Mac" ? ["Linux box", "hosted"] : ["Mac"], true, prefer);
+		const result = advance(item, { kind: "place_child", at: 6, key: currentKey(item)!, inventory: {
+			machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"], limited: [{ machineId: "*", harness: "windlass", limitedUntil: 1000 }],
+		} });
+		assert.equal(result.item.wait?.reason, "provider");
+		assert.equal(result.item.jobs![0].placement, undefined);
+	}
+});
+
 test("hosted requires an approved route and a deployment profile", () => {
 	const mac = machineReport();
 	const item = placementFeature([mac]);
@@ -909,4 +966,104 @@ test("hosted requires an approved route and a deployment profile", () => {
 test("a signed-in Claude installation cannot silently launch a Windlass child", () => {
 	const mac = machineReport("Mac", macId, { harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }] });
 	assert.throws(() => placementFeature([mac], { harness: "claude" }), /work items.*Windlass/i);
+});
+
+test("5c.5 a Windlass limit still gates every approved machine at child creation", async t => {
+	for (const overflow of [false, true]) {
+		const { raw, create, delivered, facts } = await childCreation(t, overflow);
+		const until = Date.now() + 3600_000;
+		raw.exec("CREATE TABLE machines(id TEXT PRIMARY KEY, facts TEXT, expires INTEGER); CREATE TABLE signin(id INTEGER, generation INTEGER)");
+		raw.prepare("INSERT INTO machines VALUES(?, '{}', NULL)").run(macId);
+		raw.exec("CREATE TABLE IF NOT EXISTS provider_usage(place TEXT,harness TEXT,generation TEXT,data TEXT,PRIMARY KEY(place,harness))");
+		const { recordProviderUsage } = await import("../server/src/actors/provider-accounts.js");
+		type Db = Parameters<typeof recordProviderUsage>[0];
+		const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args),
+			transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
+		await recordProviderUsage(db, { place: macId, harness: "windlass" }, "0", { kind: "refusal", at: Date.now(), resetsAt: until - 60_000 });
+		await create();
+		assert.equal(delivered.length, 0);
+		assert.ok(facts[0]?.kind === "placement_wait" && !facts[0].refused && facts[0].providerUntil === until);
+	}
+});
+
+test("5c.2 unknown resets back off per login, and only a successful real probe clears the streak", async t => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { machineTables } = await import("../server/src/actors/user-machines.js");
+	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
+	type Db = Parameters<typeof machineTables>[0];
+	const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args),
+		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
+	await machineTables(db);
+	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,1)");
+	assert.ok(raw.prepare("SELECT 1 FROM sqlite_master WHERE name='provider_usage'").get(), "the user has no account cooldown ledger");
+	const { recordProviderUsage, providerAccounts } = await import("../server/src/actors/provider-accounts.js");
+	const location = { place: "hosted", harness: "windlass" as const };
+	let now = Date.now();
+	for (const minutes of [15, 30, 60, 120, 240, 300, 300]) {
+		const refusal = { kind: "refusal" as const, at: now, resetsAt: null };
+		await recordProviderUsage(db, location, "1", refusal);
+		await recordProviderUsage(db, location, "1", refusal);
+		assert.deepEqual(raw.prepare("SELECT place FROM provider_usage WHERE harness='windlass'").all().map(r => r.place), ["*"]);
+		const account = (await providerAccounts(db, now)).get("*")?.[0];
+		assert.equal(account?.state, "limited");
+		assert.equal(account.limitedUntil, now + minutes * 60_000);
+		now = account.limitedUntil!;
+		assert.equal((await providerAccounts(db, now)).get("*")?.[0].state, "ok");
+	}
+	await recordProviderUsage(db, location, "1", { kind: "success", startedAt: now, at: now + 1 });
+	await recordProviderUsage(db, location, "1", { kind: "refusal", at: now + 2, resetsAt: null });
+	assert.equal((await providerAccounts(db, now + 2)).get("*")?.[0].limitedUntil, now + 2 + 15 * 60_000);
+});
+
+test("legacy Windlass rows retain the longest cooldown for the latest sign-in on upgrade", async t => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { machineTables } = await import("../server/src/actors/user-machines.js");
+	const { PROVIDER_TABLE, providerAccounts } = await import("../server/src/actors/provider-accounts.js");
+	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
+	const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) } as Parameters<typeof machineTables>[0];
+	raw.exec(PROVIDER_TABLE);
+	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,2)");
+	for (const [place, generation, until] of [[macId, "1", 900], ["hosted", "2", 200], [linuxId, "2", 400]] as const) {
+		const account = { key: `${place}/windlass/${generation}`, harness: "windlass", state: "limited", limitedUntil: until, windows: [] };
+		raw.prepare("INSERT INTO provider_usage VALUES(?,?,?,?)").run(place, "windlass", generation, JSON.stringify({ account, backoff: 1, lastRefusal: 1, lastSuccess: -1 }));
+	}
+	await machineTables(db);
+	await machineTables(db);
+	const accounts = await providerAccounts(db, 100);
+	assert.equal(accounts.get("*")?.[0]?.key, "*/windlass/2");
+	assert.equal(accounts.get("*")?.[0]?.limitedUntil, 400);
+	assert.equal(raw.prepare("SELECT count(*) AS n FROM provider_usage").get()?.n, 1);
+});
+
+test("5c.7 new machine login ignores a stale refusal; page and stored reading contain only public window data", async t => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { machineTables, listMachines } = await import("../server/src/actors/user-machines.js");
+	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
+	type Db = Parameters<typeof machineTables>[0];
+	const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args),
+		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
+	await machineTables(db);
+	const generation = "a".repeat(32), next = "b".repeat(32), at = Date.now();
+	const facts = (loginGeneration: string) => JSON.stringify({ status: "online", report: { docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [],
+		harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", loginGeneration }] } });
+	raw.prepare("INSERT INTO machines(id, name,os,arch,facts) VALUES(?, 'Mac','darwin','arm64',?)").run(macId, facts(generation));
+	assert.ok(raw.prepare("SELECT 1 FROM sqlite_master WHERE name='provider_usage'").get(), "new logins have no account state to reset");
+	const { recordProviderUsage, providerAccounts } = await import("../server/src/actors/provider-accounts.js");
+	const { claudeLimit } = await import("../server/src/provider-usage.js");
+	const location = { place: macId, harness: "claude" as const };
+	const reset = Math.floor(at / 1000) + 7200;
+	const event = claudeLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: reset, utilization: 1, email: "canary@example.invalid", token: "canary-token", accountId: "canary-account" }, at)!;
+	await recordProviderUsage(db, location, generation, { kind: "event", event });
+	assert.equal((await providerAccounts(db, at)).get(macId)?.[0].limitedUntil, reset * 1000);
+	await recordProviderUsage(db, location, generation, { kind: "refusal", at: at + 1, resetsAt: reset * 1000 });
+	await recordProviderUsage(db, location, generation, { kind: "event", event: { status: "allowed", window: { ...event.window, usedPct: 0, observedAt: at + 2 } } });
+	const [machine] = await listMachines({ db, vars: { sessions: new Map() } });
+	assert.equal(machine?.providerAccounts?.[0].limitedUntil, reset * 1000 + 60_000);
+	assert.doesNotMatch(JSON.stringify([machine, raw.prepare("SELECT * FROM provider_usage").all()]), /canary/);
+	raw.prepare("UPDATE machines SET facts=? WHERE id=?").run(facts(next), macId);
+	assert.equal(await recordProviderUsage(db, location, generation, { kind: "refusal", at: at + 3, resetsAt: null }), false);
+	assert.equal((await providerAccounts(db, at + 3)).size, 0);
 });

@@ -198,7 +198,8 @@ import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf 
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { turnTokens } from "../factory/budget.js";
+import { reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
@@ -206,7 +207,8 @@ import { REPORT_TAKEN } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
-import { type ProviderRefusal, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
+import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
+import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
@@ -217,7 +219,7 @@ import { machineHarnesses, initialHarnessModels, machineLoginMessage } from "../
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
-import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -745,8 +747,8 @@ function serial<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	return run;
 }
 
-async function insertItems(c: Ctx, batch: TimelineItem[]): Promise<void> {
-	await c.db.execute(
+async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]): Promise<void> {
+	await db.execute(
 		`INSERT OR REPLACE INTO timeline (seq, turn, kind, at, item) VALUES ${batch.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
 		...batch.flatMap(item => [item.seq, item.turn, item.kind, item.at, JSON.stringify(item)]),
 	);
@@ -757,7 +759,21 @@ async function writeItems(c: Ctx): Promise<void> {
 	const waiting = c.vars.unwritten;
 	while (waiting.length > 0) {
 		const batch = waiting.slice(0, WRITE_BATCH);
-		await insertItems(c, batch);
+		const meta = c.vars.meta;
+		const receipts = meta && usesPlatformModel(meta.place, meta.harness) ? batch.flatMap(item => {
+			if (item.kind !== "windlass") return [];
+			const tokens = turnTokens(reportedModelUsage(item.event));
+			return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
+		}) : [];
+		if (receipts.length) {
+			// These are the model requests summed by the turn summary. Keep their original UTC day
+			// and sequence number, including when a turn is interrupted or a delivery is retried.
+			await c.db.transaction(async tx => {
+				await insertItems(tx, batch);
+				for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
+			}, { name: "timeline.usage" });
+			if (!c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
+		} else await insertItems(c.db, batch);
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
 	}
@@ -775,7 +791,7 @@ function persist(c: Ctx): Promise<void> {
 		// sequence number without closing it to live clients. Its next real item replaces
 		// this row; on wake MAX(seq) includes it as the final text before interruption.
 		const partial = c.vars.turn?.stopping && c.vars.turn.openAcp?.();
-		if (partial) await insertItems(c, [numberItem(c, partial)]);
+		if (partial) await insertItems(c.db, [numberItem(c, partial)]);
 		if (c.vars.meta) await c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(c.vars.meta));
 	}).catch((error) => {
 		// The items stay in `unwritten`, so the next write tries again and snapshots still show them.
@@ -1782,7 +1798,7 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
 /**
  * Runs the setup command the user saved for the session's repository, in the sandbox that was just
  * cloned into. It is read from the user's `user` actor here, each time: that is the only place a
- * setup command comes from. Whatever becomes of the run, the turn goes on: a run that did not succeed
+ * setup command comes from. Once its processes are gone, the turn goes on: a run that did not succeed
  * is in the timeline, and is told to the agent with its next prompt (`meta.setupUnfinished`). It is
  * marked as done for this sandbox before it starts, so a server that stops under it does not make
  * the next turn run it a second time. True when a command ran. A command that could not be read refuses
@@ -1851,9 +1867,10 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	meta.setupRunning = null;
 	append(c, { turn, kind: "setup", id, command, state: result.state, exitCode: result.exitCode, durationMs: result.durationMs, limitMs, output, truncated: tail.truncated });
 	if (result.problem !== null) note(c, turn, "warn", `The setup command for ${project.label} could not be run. ${result.problem}`);
-	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
+	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.cleanupPending ? "interrupted" : result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
+	if (result.cleanupPending) throw new TurnProblem("The platform could not stop leftover setup processes. Send the prompt again to retry cleanup.");
 	if (plan && original && (!plan.commit || original === plan.commit) && !signal.aborted &&
 		layer.sandboxes.saveSnapshot && canSaveSnapshot(meta.origin, handed.length, result.state === "succeeded", result.durationMs, config.snapshotMinSetupMs)) {
 		// The setup can outlive an edit or a disconnect. Do not replace the newer image with its result.
@@ -3164,8 +3181,10 @@ function idleDue(meta: SessionMeta): number | null {
 
 /**
  * Sets the durable schedule to look at the session when its sandbox is next due, not before `notBefore`.
- * A check already set for that moment is kept; one set for another is replaced. Queued, so two calls
- * cannot both schedule; never rejects.
+ * A check already set for that moment is kept; one set for another is replaced. A later look
+ * (`notBefore`, from a check that found the sandbox taken or failed) keeps a check set for sooner: what
+ * had the sandbox set it since, as a read that resumed it does for its idle time from then, and the
+ * queue may run that arming before this one. Queued, so two calls cannot both schedule; never rejects.
  */
 function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
 	const run = c.vars.arming.then(async () => {
@@ -3177,6 +3196,7 @@ function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
 		// the next (a deploy or a crash while it ran) would otherwise stand for ever, the wake's repair included.
 		const armed = current !== null && current.at > Date.now() ? current : null;
 		if (armed?.at === at || (armed === null && at === null)) return;
+		if (notBefore > 0 && armed !== null && at !== null && armed.at < at) return;
 		meta.idleCheck = at === null ? null : { id: await c.schedule.at(at, "internalIdle"), at };
 		// Written before the old one is cancelled: a crash in between leaves the old one, which still works.
 		await persist(c);
@@ -3317,6 +3337,27 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
 	let lastStepRefusal: ProviderRefusal | null = null;
+	const account = { place: meta.place.kind === "machine" ? meta.place.machineId : "hosted", harness: meta.harness ?? "windlass" as const };
+	let generation: string | null = null;
+	const observe = async (observation: UsageObservation) => {
+		if (generation !== null) await userActor(c, meta.uid).internalObserveUsage(account, generation, observation)
+			.catch(() => c.log.warn({ msg: "Could not record provider usage" }));
+	};
+	// Coalesce successive readings by window while an actor write is in flight.
+	const pendingLimits = new Map<string, LimitEvent>();
+	let writingLimits: Promise<void> | null = null;
+	const recordLimit = (event: LimitEvent) => {
+		if (event.status === "rejected" || pendingLimits.get(event.window.kind)?.status !== "rejected")
+			pendingLimits.set(event.window.kind, event);
+		writingLimits ??= (async () => {
+			while (pendingLimits.size) {
+				const next = pendingLimits.values().next().value!;
+				pendingLimits.delete(next.window.kind);
+				await observe({ kind: "event", event: next });
+			}
+			writingLimits = null;
+		})();
+	};
 	const acpTimeline = acpRecorder(c, turn);
 	let events = 0;
 	let open = true;
@@ -3370,6 +3411,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
+		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
+			c.log.warn({ msg: "Provider login generation unavailable for this turn" });
+			return null;
+		});
 		const harness = harnessOf(layer, meta.harness ?? "windlass");
 		const caps = await harness.capabilities(sandbox);
 		const platformTool = (tool: (typeof caps.platformTools)[number]) => caps.platformTools.includes(tool);
@@ -3394,6 +3439,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			onControl: control => { if (open) active.control = control; },
 			onAcpUpdate: update => {
 				if (!open) return;
+				if (update.sessionUpdate === "usage_update" && update.rateLimit) recordLimit(update.rateLimit);
 				if (caps.events === "acp") acpTimeline.update(update);
 				const title = generatedSessionTitle(update, { typed: meta.titleIsTyped, item: meta.origin }, active.secrets?.redactor);
 				if (title && title !== meta.title) meta.title = title;
@@ -3578,7 +3624,10 @@ fi`, { signal, timeoutMs: 5000 });
 							event = { ...event, data: { ...event.data, content: [{ type: "text", text: storedBrief }] } };
 							storedBrief = null;
 						}
+						event = publicUsageEvent(event, lastStepRefusal);
 						lastStepRefusal = stepRefusal(lastStepRefusal, event);
+						if (event.type === "step.failed" && lastStepRefusal?.retryAfterMs !== undefined)
+							lastStepRefusal.resetsAt = resetTime(Date.now() + lastStepRefusal.retryAfterMs);
 						if (reviewer) commands.note(event);
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
@@ -3645,6 +3694,12 @@ fi`, { signal, timeoutMs: 5000 });
 	try {
 		const caps = capabilitiesOf(meta.harness);
 		const summary = result?.summary ?? null;
+		const usage = usageOf(summary?.usage);
+		// Settle all reported requests before this turn's completion can admit more work.
+		if (usesPlatformModel(meta.place, meta.harness)) {
+			await serial(c, () => writeItems(c));
+			await sendOutbox(c, meta.uid);
+		}
 		let outcome: TurnOutcome;
 		let message: string | null = null;
 		if (caps.events === "acp") {
@@ -3704,7 +3759,11 @@ fi`, { signal, timeoutMs: 5000 });
 			outcome = reviewer && !active.item?.refused ? "interrupted" : "error";
 			message = problem ?? "The turn could not be run.";
 		}
+		await writingLimits;
 		const refusal = turnRefusal(outcome, result, lastStepRefusal);
+		const limitReading = limitObservation(refusal, Date.now());
+		if (limitReading) await observe(limitReading);
+		else if (outcome === "succeeded") await observe({ kind: "success", at: Date.now(), startedAt });
 		if (refusal) {
 			// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
 			if (result?.failure?.reason === "auth_required" && message) {
@@ -3716,7 +3775,7 @@ fi`, { signal, timeoutMs: 5000 });
 			message = refusalMessage(safe);
 			if (active.item) {
 				const { text, fetchBase } = active.item.row;
-				active.item.providerRefusal = { ...safe, retry: { text: redactor?.text(text) ?? text, fetchBase } };
+				active.item.providerRefusal = { ...safe, accountKey: generation === null ? undefined : windlassAccountKey(generation), placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase } };
 			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
 				message += " You can change the model or reasoning effort with your next prompt.";
 			}
@@ -3748,7 +3807,7 @@ fi`, { signal, timeoutMs: 5000 });
 			exitCode: result?.exitCode ?? null,
 			steps: typeof summary?.steps === "number" ? summary.steps : null,
 			durationMs: typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
-			usage: usageOf(summary?.usage),
+			usage,
 			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
 			message,
@@ -3783,7 +3842,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
-		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage: usageOf(summary?.usage), checks: active.secrets?.checks ?? [] });
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [] });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -3890,6 +3949,10 @@ function machineAway(c: Ctx, meta: SessionMeta): boolean {
  * running slot and no title, and it is stored only once Windlass has admitted it.
  */
 async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string, submission: Submission | null): Promise<PromptAnswer> {
+	if (usesPlatformModel(meta.place, meta.harness)) {
+		const wait = await userActor(c, meta.uid).internalDailyTokenWait();
+		if (wait) throw new UserError(wait, { code: "daily_token_cap" });
+	}
 	const control = active?.control;
 	const next = (turn: number) => {
 		note(c, turn, "info", "Sent when this turn ends.");
@@ -3996,9 +4059,15 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
 			throw error;
 		}) : null;
+		if (usesPlatformModel(meta.place, meta.harness)) {
+			await settleTokenReceipts(c, meta.uid).catch(() => {
+				throw new UserError("Your previous turn’s model usage could not be settled. Try again in a moment.", { code: "usage_unavailable" });
+			});
+		}
 		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
+			if (claim.dailyTokenWait) throw new UserError(claim.dailyTokenWait, { code: "daily_token_cap" });
 			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
@@ -5082,6 +5151,8 @@ export const agentSession = actor({
 				// Done here as well as in `onDestroy`, so that the caller can retry if the machine could not record the removals.
 				await stopTurn(c);
 				try {
+					await serial(c, () => writeItems(c));
+					await settleTokenReceipts(c, meta.uid);
 					await destroySessionSandboxes(c, meta);
 				} catch (error) {
 					c.log.error({ msg: "could not record the session's sandbox removals", session: meta.sessionId, error: describeError(error) });
@@ -5089,7 +5160,7 @@ export const agentSession = actor({
 					await persist(c);
 					// What a turn stopped above could not set while the session was being destroyed.
 					void armIdle(c, meta);
-					throw new UserError("The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment.", { code: "machine_unreachable" });
+					throw new UserError("The agent could not finish settling its usage or removing its sandbox. Try again in a moment.", { code: "machine_unreachable" });
 				}
 				// What its sandbox ran is reported, and its place among the user's sandboxes given back.
 				await leaveUsage(c, meta);

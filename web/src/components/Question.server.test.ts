@@ -40,7 +40,7 @@ describe("the question's words", () => {
 		expect(words.subject).toBe("python3 tools/harbor_mcp.py");
 		// On Docker Windlass's own record is in the data all of the user's sessions share: it reaches further than the repository.
 		expect(words.details).toEqual([
-			"It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
+			"It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue.",
 			"Approving starts it now and is remembered for 30 days for exactly this definition, in all your sessions: they share Windlass's data.",
 			COVERS,
 		]);
@@ -52,13 +52,13 @@ describe("the question's words", () => {
 
 	it("say that it has what the agent's commands have, where they run directly in the container", () => {
 		const words = serverQuestionWords(harbor(), { profile: profile("docker-hardened"), demo: false, dataInSandbox: false, project: own });
-		expect(words.details[0]).toBe("It runs in this session's container, as the agent's commands do here: like them, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.");
+		expect(words.details[0]).toBe("It runs in this session's container, as the agent's commands do here: like them, it has the network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue.");
 	});
 
 	it("promise nothing of commands on E2B before its check has passed, and are certain of the server", () => {
 		const words = serverQuestionWords(harbor(), { profile: e2bProfile({ windlassSandbox: false }), demo: false, dataInSandbox: true, project: repo });
 		expect(words.details).toEqual([
-			"It runs in this session's microVM and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
+			"It runs in this session's microVM and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue.",
 			"Approving starts it now and is remembered for 30 days for exactly this definition: your sessions on acme/harbor then start it without asking, until you forget the approval in a session's panel.",
 			COVERS,
 		]);
@@ -83,7 +83,7 @@ describe("the question's words", () => {
 		expect(serverPanelWords({ name: "harbor", remote: false }, context)).toEqual({
 			title: 'Start this project\'s MCP server "harbor"?',
 			details: [
-				"It runs in this session's microVM, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
+				"It runs in this session's microVM, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue.",
 				"Approving starts it with this session's next turn and is remembered for 30 days for exactly this definition: your sessions on acme/harbor then start it without asking, until you forget the approval in a session's panel.",
 				COVERS,
 			],
@@ -104,7 +104,7 @@ describe("the question's words", () => {
 	it("say the same as the first Docker profile on E2B where Windlass's sandbox is promised, of a microVM", () => {
 		const words = serverQuestionWords(harbor(), { profile: e2bProfile({ windlassSandbox: true }), demo: false, dataInSandbox: true, project: repo });
 		expect(words.details[0]).toBe(
-			"It runs in this session's microVM, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.",
+			"It runs in this session's microVM, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue.",
 		);
 	});
 

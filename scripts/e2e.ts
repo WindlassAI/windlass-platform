@@ -13,6 +13,8 @@
  * The server's state and log go to a new directory under WLP_E2E_DIR (default: the system's temporary
  * directory), removed when everything passed unless WLP_E2E_KEEP=1.
  *
+ * --idle-only runs the platform and sign-in checks, then only the idle sandbox checks (`IDLE_CHECKS`).
+ *
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
@@ -59,6 +61,8 @@ const OWN_SERVER = endpointArg === undefined;
 const FAKE = MODE === "fake";
 const identityOnly = args.includes("--identity-only");
 if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
+const idleOnly = args.includes("--idle-only");
+if (idleOnly && !OWN_SERVER) throw new Error("--idle-only requires a server of its own");
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
@@ -814,6 +818,12 @@ async function main(server: Server | null): Promise<void> {
 	const uid = userA.profile.uid;
 	const token = userA.token;
 	const userHandle = client.user.getOrCreate([uid], { params: { token } });
+
+	if (idleOnly && server) {
+		await idleChecks(server, client, uid, token, availableProfile, ASK, LONG);
+		await client.dispose().catch(() => undefined);
+		return;
+	}
 
 	// --- authentication ---------------------------------------------------------------------------
 
@@ -3196,19 +3206,27 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 				const sleptAt = Date.now();
 				await forceSleep(idle.id);
 				await sleep(sleptAt + DESTROY_MS - 2_000 - Date.now());
+				const id = sandboxOf();
 				const busyBefore = busyLines();
 				const removals = logged("idle_removed").length;
+				const suspends = logged("idle_suspended").length;
 				const readAt = Date.now();
 				const files = await handle.changes();
-				assert(Date.now() - readAt >= PROVIDER_MS, `the read took ${Date.now() - readAt} ms: it answered from a copy, not from the sandbox`);
-				await sleep(PROVIDER_MS + 1_000);
-				const after = await handle.snapshot();
-				assert(logged("idle_removed").length === removals && after.summary.sandbox === "running", `the sandbox was removed under the read (sandbox ${after.summary.sandbox})`);
+				const answered = Date.now();
+				assert(answered - readAt >= PROVIDER_MS, `the read took ${answered - readAt} ms: it answered from a copy, not from the sandbox`);
+				// The read marks the sandbox used as it resumes it, and sets the check for its idle time from then
+				// (`markUsed`); the removal that fell due under it was deferred (IDLE_RETRY_MS in agent-session.ts).
+				// So what comes next is that check, which suspends the sandbox the read left running. When it does
+				// depends on the host: no sample at a set time after the read can expect "running".
+				const next = await waitFor("the sandbox to be suspended or removed after the read", () => (logged("idle_removed").length > removals ? "removed" : logged("idle_suspended").length > suspends ? "suspended" : undefined), SUSPEND_MS + 2 * PROVIDER_MS + 15_000, 200);
+				assert(next === "suspended", "the sandbox was removed under the read");
+				assert(logged("idle_suspended").at(-1) === id && sandboxOf() === id, `the suspended sandbox is ${logged("idle_suspended").at(-1)}, the session's was ${id}`);
 				assert(busyLines() > busyBefore, "the removal did not fall due while the read resumed the sandbox");
-				// A check that finds the sandbox taken looks again within a minute (IDLE_RETRY_MS in agent-session.ts).
-				const deferred = firings();
-				await waitFor("the idle check to come back", () => firings() > deferred, 60_000 + 3 * PROVIDER_MS + 10_000, 200);
-				return `${files.length} files read from the resumed sandbox; the removal deferred, and the check came back`;
+				const after = await handle.snapshot();
+				const line = after.timeline.filter((item) => item.kind === "platform" && item.text === SUSPENDED).at(-1);
+				// The sandbox ran the idle time from the read before it was suspended: the read had resumed it, and the check came back for it.
+				assert(line && line.at >= readAt + PROVIDER_MS + SUSPEND_MS - 100, `the suspend line is ${plain(line)}; the read began at ${readAt}`);
+				return `${files.length} files read from the resumed sandbox in ${answered - readAt} ms; the removal deferred, and the check came back and suspended it ${line.at - answered} ms after the read`;
 			});
 
 			await step(IDLE_CHECKS[8], async () => {
@@ -4525,7 +4543,7 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
-		if (FAKE) {
+		if (FAKE && !idleOnly) {
 			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {

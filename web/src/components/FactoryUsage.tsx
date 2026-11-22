@@ -1,15 +1,15 @@
 /**
  * The usage page's part for work items: the factory's limits for the user, which the deployment's
  * owner sets and nobody can raise from here, and what each item has cost so far against its budget.
- * The limits are read once when the page opens; the items are the user's live list (`useItems`).
+ * The usage view supplies the effective limits alongside the user's live item list.
  * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
  * hosted sandbox: an item on one of the user's machines shows none.
  */
-import { compact, count, plural, sandboxTime } from "../lib/format";
+import { compact, count, plural, sandboxTime, sandboxClock } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useItems } from "../screens/Items";
 import { useApp } from "../state/app";
-import { useFactoryLimits } from "../state/hooks";
+import type { FactoryLimits } from "@contract";
 
 /** A figure spent, and of how much: "1.2M of 4M". */
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
@@ -21,13 +21,11 @@ function Of({ spent, budget, spell }: { spent: number; budget: number; spell(val
 	);
 }
 
-export function FactoryUsage() {
+export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
 	const items = useItems(offered);
-	const limits = useFactoryLimits(offered);
 	if (!offered) return null;
-	const { value } = limits;
 	const list = items.list;
 	const machines = Boolean(platform.info?.machines);
 	return (
@@ -36,45 +34,47 @@ export function FactoryUsage() {
 				Work items
 			</h2>
 			<p className="usage-lede">What the factory may run for you at once, and what each item may spend. Set by this deployment's owner.</p>
-			{value === null ? (
-				limits.error ? (
-					<p className="usage-empty tone-bad">The limits could not be loaded: {limits.error}</p>
-				) : (
-					<p className="usage-empty" aria-busy="true">
-						Reading the limits…
-					</p>
-				)
-			) : (
-				<dl className="usage-facts factory-limits">
-					<div>
-						<dt>Running turns</dt>
-						<dd className="usage-number">{count(value.runningTurns)}</dd>
-						<dd className="usage-gloss">of yours at once: the factory's and your own prompts; your own agents on your machines are not counted</dd>
-					</div>
-					<div>
-						<dt>Factory turns</dt>
-						<dd className="usage-number">{count(value.factoryTurns)}</dd>
-						<dd className="usage-gloss">of those, for work items; the rest stay free for your own prompts</dd>
-					</div>
-					<div>
-						<dt>Sandboxes</dt>
-						<dd className="usage-number">{count(value.hostedRunning)}</dd>
-						<dd className="usage-gloss">hosted sandboxes of yours running at once</dd>
-					</div>
-					<div>
-						<dt>In review</dt>
-						<dd className="usage-number">{count(value.reviewCap)}</dd>
-						<dd className="usage-gloss">items of yours in review before new ones wait; work already started goes on</dd>
-					</div>
-					<div>
-						<dt>Each item</dt>
-						<dd className="usage-number">{compact(value.item.tokens)} tokens</dd>
-						<dd className="usage-gloss">
-							and {plural(value.item.turns, "turn")}, {sandboxTime(value.item.activeSeconds)} of work and {sandboxTime(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}; when one is used up, the item asks you
-						</dd>
-					</div>
-				</dl>
-			)}
+			<dl className="usage-facts factory-limits">
+				<div>
+					<dt>Running turns</dt>
+					<dd className="usage-number">{count(value.runningTurns)}</dd>
+					<dd className="usage-gloss">of yours at once: the factory's and your own prompts; your own agents on your machines are not counted</dd>
+				</div>
+				<div>
+					<dt>Factory turns</dt>
+					<dd className="usage-number">{count(value.factoryTurns)}</dd>
+					<dd className="usage-gloss">of those, for work items; the rest stay free for your own prompts</dd>
+				</div>
+				<div>
+					<dt>Sandboxes</dt>
+					<dd className="usage-number">{count(value.hostedRunning)}</dd>
+					<dd className="usage-gloss">hosted sandboxes of yours running at once</dd>
+				</div>
+				<div>
+					<dt>In review</dt>
+					<dd className="usage-number">{count(value.reviewCap)}</dd>
+					<dd className="usage-gloss">items of yours in review before new ones wait; work already started goes on</dd>
+				</div>
+				<div>
+					<dt>Each item</dt>
+					<dd className="usage-number">{count(value.item.tokens)} tokens</dd>
+					<dd className="usage-gloss">
+						and {plural(value.item.turns, "turn")}, {sandboxClock(value.item.activeSeconds)} of work and {sandboxClock(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}; when one is used up, the item asks you
+					</dd>
+				</div>
+				<div>
+					<dt>Feature budget</dt>
+					<dd className="usage-number">{value.featureMultiplier}× the item budget</dd>
+				</div>
+				<div>
+					<dt>Items from GitHub</dt>
+					<dd>{count(value.githubItemsPerDay)} per UTC day · {count(value.githubDrafts)} open drafts</dd>
+				</div>
+				<div>
+					<dt>Screenshots</dt>
+					<dd>{count(value.attachments.bytes)} bytes each · {count(value.attachments.perItem)} per item · {count(value.attachments.accountBytes)} bytes per account · kept for {plural(value.attachments.days, "day")} after an item ends</dd>
+				</div>
+			</dl>
 
 			{list === null ? (
 				items.error ? <p className="usage-empty tone-bad">The work items could not be loaded: {items.error}</p> : null

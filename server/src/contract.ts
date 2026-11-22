@@ -1002,6 +1002,9 @@ export interface UsagePrice {
 
 /** What the usage page shows. */
 export interface UsageView extends UsageNumbers {
+	/** Model usage reported by requests using the platform credential on this UTC day. */
+	usedModelTokens: number;
+	factoryLimits: FactoryLimits;
 	/** Today's sandbox time by agent, the most first; an agent whose sandbox runs now is among them. */
 	today: UsageSession[];
 	/** The last USAGE_HISTORY_DAYS days, the oldest first and today last. */
@@ -1090,6 +1093,7 @@ export function sandboxSlots(requested: number, max: number) {
 
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
+	providerAccounts?: ProviderAccount[];
 	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
 	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & { reserve?: MachineSlotCapacity["reserve"]; busy: number; queued: number };
 	personalRunning?: number;
@@ -1100,7 +1104,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; loginGeneration?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1183,10 +1187,12 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
+	/** The sign-in whose cooldown holds this item, when known. */
+	accountKey?: string;
 	reason: WaitReason;
 	/** "Waiting for one of your 5 factory turns; 5 are running (…)." */
 	sentence: string;
@@ -1220,6 +1226,8 @@ export interface ItemStep {
 	checks: number;
 	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
 	interruptions: number;
+	/** Consecutive automatic retries after a provider refusal on this step. */
+	providerRetries?: number;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
@@ -1252,8 +1260,13 @@ export interface ItemBudget {
 	hostedSeconds: number;
 }
 
-/** The factory's limits for a user: the deployment's settings (WLP_FACTORY_*), which its owner sets; a user cannot raise them. */
+/** Effective account limits after applying the operator’s overrides to the deployment defaults. */
 export interface FactoryLimits {
+	dailyTokens: number | null;
+	featureMultiplier: number;
+	githubItemsPerDay: number;
+	githubDrafts: number;
+	attachments: { bytes: number; perItem: number; accountBytes: number; days: number };
 	/** All factory turns and the person's own hosted turns count toward this ceiling. */
 	runningTurns: number;
 	/** Of those, the factory's: the rest are always free for the person's own prompts. */
@@ -1267,7 +1280,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1279,7 +1292,7 @@ export type QuestionKind = "placement_refused" | "single_suggested" | "replan_ap
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  */
-export type ChoiceId = "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1293,6 +1306,8 @@ export interface ItemQuestion {
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */
 export interface ItemEvent {
+	/** Why a run ended before its normal handoff. */
+	stopReason?: "feedback";
 	at: number;
 	/** "person:<uid>" or "platform". */
 	by: string;
@@ -1560,7 +1575,30 @@ export interface ItemSummary {
 /** An item's page. */
 export type CheckConclusion = "success" | "action_required" | "failure" | "cancelled";
 
+export interface FeedbackEntry {
+	id: string;
+	author: string;
+	access: "owner" | "write";
+	kind: "changes_requested" | "commented" | "issue_comment" | "review_comment";
+	body: string;
+	path: string | null;
+	line: number | null;
+	commit: string | null;
+	url: string;
+	at: number;
+}
+
+export interface FeedbackBatch {
+	savedPlan?: { goal: string; subtasks: string[] };
+	entries: FeedbackEntry[];
+	state: "pending" | "held" | "question" | "taken" | "declined";
+	reason: string;
+	run: number | null;
+	plan: number | null;
+}
+
 export interface ItemView extends ItemSummary {
+	feedback: { batches: FeedbackBatch[]; notTaken: number };
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
@@ -1938,7 +1976,22 @@ export interface TurnUsage {
 	reasoningTokens: number;
 }
 
+export interface UsageWindow {
+	kind: "5h" | "7d" | "model" | "rpm" | "other";
+	usedPct: number | null;
+	resetsAt: number | null;
+	observedAt: number;
+	source: "refusal" | "event" | "header";
+}
+export interface ProviderAccount {
+	key: string;
+	harness: HarnessId;
+	state: "ok" | "warning" | "limited";
+	limitedUntil: number | null;
+	windows: UsageWindow[];
+}
 export interface AcpContext {
+	fiveHourUsedPct?: number;
 	used: number;
 	size: number;
 	cost: { amount: number; currency: string } | null;
@@ -1959,7 +2012,7 @@ export type AcpUpdate = (
 	| { sessionUpdate: "current_mode_update"; currentModeId: string }
 	| { sessionUpdate: "config_option_update"; configOptions: unknown[] }
 	| { sessionUpdate: "session_info_update"; title?: string; updatedAt?: string }
-	| { sessionUpdate: "usage_update"; used: number; size: number; cost?: AcpContext["cost"] }
+	| { sessionUpdate: "usage_update"; rateLimit?: { status: "allowed" | "allowed_warning" | "rejected"; window: UsageWindow }; fiveHourUsedPct?: number; used: number; size: number; cost?: AcpContext["cost"] }
 	| { sessionUpdate: "notice" }
 	| { sessionUpdate: "compaction_update" }
 	| { sessionUpdate: "unknown"; originalSessionUpdate: string }

@@ -61,6 +61,13 @@ export function commandNetworkFact(profile: SandboxProfile, claude: ClaudeFacts 
 	return profile.commandNetworkText ?? (profile.commandNetwork ? "commands can reach the network" : "commands have no network");
 }
 
+export function accessTokenFact(profile: SandboxProfile): string {
+	const commands = !profile.commandsCanReadAccessToken ? "The agent's commands cannot read the session's access token."
+		: profile.id === "e2b" ? "A command you allow outside the Windlass sandbox can read the session's access token and its replacements."
+		: "Unsandboxed commands can read the session's access token and its replacements during the turn.";
+	return commands + " Setup finishes before handoff. Approved local MCP servers can read each token. Each token lasts about an hour from issue.";
+}
+
 export function claudeLoginFact(profile: SandboxProfile) {
 	return profile.claudeRelay ? "The machine’s relay holds the setup token." : "Runners without a credential relay also expose the setup token.";
 }
@@ -99,7 +106,7 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 					<span className="fact-value">
 						your ChatGPT sign-in is never in the sandbox
 						<span className={`fact-gloss${profile.commandsCanReadAccessToken ? " fact-open" : ""}`}>
-							{profile.commandsCanReadAccessToken ? "commands can read the session's access token: it lasts about an hour and cannot be renewed" : "commands cannot read the session's access token either"}
+							{accessTokenFact(profile)}
 						</span>
 					</span>
 				)}
