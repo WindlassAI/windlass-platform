@@ -143,8 +143,8 @@ function Hero() {
 						<div>
 							<dt>agents</dt>
 							<dd>
-								<b>Windlass and Claude Code</b>
-								<span>OpenCode and Codex coming</span>
+								<b>Windlass, Claude Code and OpenCode</b>
+								<span>Codex coming</span>
 							</dd>
 						</div>
 						<div>
