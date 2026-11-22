@@ -340,9 +340,14 @@ function RowTitle({ item }: { item: ItemSummary }) {
  */
 /** "filed 3 Nov" this year, "filed Nov 2025" before it: an ended list is in the order items were filed, and says so. */
 export function filedDay(at: number, now: number): string {
+	return dayWord("filed", at, now);
+}
+
+/** "ended 5 Nov" this year, "ended Nov 2025" before it. */
+export function dayWord(word: string, at: number, now: number): string {
 	const date = new Date(at);
 	const thisYear = date.getFullYear() === new Date(now).getFullYear();
-	return `filed ${date.toLocaleDateString("en-GB", thisYear ? { day: "numeric", month: "short" } : { month: "short", year: "numeric" })}`;
+	return `${word} ${date.toLocaleDateString("en-GB", thisYear ? { day: "numeric", month: "short" } : { month: "short", year: "numeric" })}`;
 }
 
 /** `filed`: the row says when the item was filed, not when it last changed (an ended list, in filing order). */
@@ -403,9 +408,16 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 			</div>
 			<ItemTrack item={item} reviewer={reviewer} />
 			{filed ? (
-				<time className="agent-time" dateTime={new Date(item.createdAt).toISOString()} title={`Filed ${absoluteTime(item.createdAt)}; last changed ${absoluteTime(item.updatedAt)}`}>
-					{filedDay(item.createdAt, now)}
-				</time>
+				<span className="agent-time item-row-dates">
+					<time dateTime={new Date(item.createdAt).toISOString()} title={`Filed ${absoluteTime(item.createdAt)}; last changed ${absoluteTime(item.updatedAt)}`}>
+						{filedDay(item.createdAt, now)}
+					</time>
+					{item.endedAt !== undefined ? (
+						<time dateTime={new Date(item.endedAt).toISOString()} title={`Ended ${absoluteTime(item.endedAt)}`}>
+							{dayWord("ended", item.endedAt, now)}
+						</time>
+					) : null}
+				</span>
 			) : (
 				<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
 					{relativeTime(item.updatedAt, now)}

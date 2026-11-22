@@ -265,12 +265,35 @@ describe("the live feed's ended items beyond its first page", () => {
 		const ended = byFiling((await listed()).filter((item) => item.question === null && isEnded(item)));
 		act(() => button(`Show ${ended.length} ended items`).click());
 		await settle();
-		const times = [...host.querySelectorAll(".factory-group")].find((group) => group.querySelector(".agent-group-name")?.textContent === "Ended")?.querySelectorAll(".agent-time") ?? [];
-		expect(times.length).toBe(ITEM_PAGE_DEFAULT);
+		const dates = [...([...host.querySelectorAll(".factory-group")].find((group) => group.querySelector(".agent-group-name")?.textContent === "Ended")?.querySelectorAll(".agent-time") ?? [])];
+		expect(dates.length).toBe(ITEM_PAGE_DEFAULT);
 		const first = ended[0] as ItemSummary;
-		expect(times[0]?.getAttribute("dateTime")).toBe(new Date(first.createdAt).toISOString());
-		expect(times[0]?.textContent).toMatch(/^filed \d{1,2} [A-Z][a-z]{2}/);
-		expect([...times].some((time) => time.textContent?.includes("ago"))).toBe(false);
+		const [filed, endedAt] = [...(dates[0]?.querySelectorAll("time") ?? [])];
+		expect(filed?.getAttribute("dateTime")).toBe(new Date(first.createdAt).toISOString());
+		expect(filed?.textContent).toMatch(/^filed \d{1,2} [A-Z][a-z]{2}/);
+		// And when it ended, under it.
+		expect(first.endedAt).toBeDefined();
+		expect(endedAt?.getAttribute("dateTime")).toBe(new Date(first.endedAt!).toISOString());
+		expect(endedAt?.textContent).toMatch(/^ended \d{1,2} [A-Z][a-z]{2}/);
+		expect(dates.some((time) => time.textContent?.includes("ago"))).toBe(false);
+	});
+
+	it("an ended item's page says when it was filed and when it ended", async () => {
+		await show("/factory", { items: "many" });
+		const one = (await listed()).find((item) => isEnded(item) && item.endedAt !== undefined) as ItemSummary;
+		const open = (await listed()).find((item) => !isEnded(item)) as ItemSummary;
+		const facts = async (id: string) => {
+			act(() => {
+				history.pushState(null, "", `/items/${id}`);
+				window.dispatchEvent(new PopStateEvent("popstate"));
+			});
+			await settle();
+			return [...host.querySelectorAll(".repo-fact")].map((fact) => fact.textContent ?? "");
+		};
+		const ended = await facts(one.id);
+		expect(ended.some((fact) => fact.startsWith("filed "))).toBe(true);
+		expect(ended.some((fact) => fact.startsWith("ended "))).toBe(true);
+		expect((await facts(open.id)).some((fact) => fact.startsWith("ended "))).toBe(false);
 	});
 
 	it("on a repository's page: the fold is said from the counts, and unfolded reads a page at a time", async () => {

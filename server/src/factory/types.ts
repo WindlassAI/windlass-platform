@@ -254,6 +254,8 @@ export interface FactoryItem {
 	agent?: import("../contract.js").ItemAgent;
 	/** Since when the item is "working": active time (§2.4) is the sum of such stretches. */
 	workingSince: number | null;
+	/** When it last entered done, failed or cancelled; absent while it is not ended, and on items that ended before this was kept. */
+	endedAt?: number;
 	run: Run | null;
 	pr: { number: number; url: string } | null;
 	/** The commit pushed last. */

@@ -206,6 +206,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		sessionId: meta.sessionId,
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
+		...(item.endedAt !== undefined && ENDED.has(item.state) && { endedAt: item.endedAt }),
 		revision: item.revision,
 	};
 }

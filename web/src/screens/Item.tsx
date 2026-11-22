@@ -1034,6 +1034,11 @@ export function Item({ page }: { page: ItemPage }) {
 						<span className="repo-fact tone-dim" title={absoluteTime(view.createdAt)}>
 							filed {relativeTime(view.createdAt, now)}
 						</span>
+						{view.endedAt !== undefined ? (
+							<span className="repo-fact tone-dim" title={absoluteTime(view.endedAt)}>
+								ended {relativeTime(view.endedAt, now)}
+							</span>
+						) : null}
 					</p>
 					{!view.parent && !view.plan ? <p className="field-note">{ITEM_MODE_WORDS[view.mode ?? "single"].description}</p> : null}
 					{view.origin ? <IssueOrigin origin={view.origin} /> : null}

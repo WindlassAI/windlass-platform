@@ -209,6 +209,9 @@ class Change {
 		}
 		if (next === "working" && item.workingSince === null) item.workingSince = this.at;
 		item.wait = next === "waiting" && wait !== null ? { ...wait, since: item.state === "waiting" && item.wait?.reason === wait.reason ? item.wait.since : this.at } : null;
+		const ended = (state: ItemState) => state === "done" || state === "failed" || state === "cancelled";
+		if (!ended(next)) delete item.endedAt;
+		else if (!ended(item.state) || item.endedAt === undefined) item.endedAt = this.at;
 		item.state = next;
 	}
 

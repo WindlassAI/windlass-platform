@@ -46,6 +46,13 @@
 .item-row .agent-time {
 	font-size: 11.5px;
 }
+/* An ended row's two days, filed over ended. */
+.item-row-dates {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 1px;
+}
 /* What asks its person: the word in its hue on a neutral badge, never a tinted one. */
 .item-row .status-badge-waiting {
 	border-color: var(--line-strong);

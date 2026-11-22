@@ -1144,6 +1144,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		sessionId: "",
 		createdAt: ago(seed.filed),
 		updatedAt,
+		...((seed.state === "done" || seed.state === "failed" || seed.state === "cancelled") && { endedAt: updatedAt }),
 		revision: events.length + 1,
 		task: { title: seed.title, body: seed.body ?? "", acceptance: seed.acceptance ?? [], base: repository.branch },
 		run,
@@ -1558,6 +1559,11 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (item.verifiedCheck?.state === "in_progress" && (patch.state === "cancelled" || patch.state === "failed"))
 			item.verifiedCheck = { ...item.verifiedCheck, state: "completed", conclusion: "cancelled", said: "Stopped before it was verified" };
 		Object.assign(item, patch);
+		const ended = (state: ItemView["state"]) => state === "done" || state === "failed" || state === "cancelled";
+		if (patch.state !== undefined) {
+			if (!ended(patch.state)) delete item.endedAt;
+			else if (item.endedAt === undefined) item.endedAt = at;
+		}
 		const run = item.run;
 		const step = run === null ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt };
 		for (const line of said) item.events.push({ at, by: by === "person" ? `person:${auth.profile.uid}` : "platform", step, said: line });

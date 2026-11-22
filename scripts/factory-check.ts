@@ -1612,6 +1612,8 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	const fromIssue = (more: Parameters<typeof newItem>[0] = {}) => ({ ...newItem(more), untrusted: [ISSUE] });
 
 	const trusted = walk(newItem(), [{ kind: "start" }]);
+	const cancelled = walk(newItem(), [{ kind: "start" }, { kind: "cancel", by: "person:u1" }]);
+	expect("an item keeps when it ended, and an open one has no end", cancelled.item.state === "cancelled" && cancelled.item.endedAt === T0 + 2 * MINUTE && trusted.item.endedAt === undefined, `${cancelled.item.state} at ${cancelled.item.endedAt}`);
 	expect("an item of the person's own: its first turn carries no source", !("untrusted" in effect(trusted.last, "deliver")!), JSON.stringify(sourcesOf(trusted.last)));
 	const issue = walk(fromIssue(), [{ kind: "start" }]);
 	expect("an item from someone else's issue: its first turn names the issue", same(issue.last, ["issue #42 by @someone"]), JSON.stringify(sourcesOf(issue.last)));

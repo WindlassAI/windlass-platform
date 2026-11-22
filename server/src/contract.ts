@@ -1813,6 +1813,8 @@ export interface ItemSummary {
 	createdAt: number;
 	/** When the item last changed. */
 	updatedAt: number;
+	/** When it ended (done, failed or cancelled). Absent while it is open, and on an item that ended before the platform kept the time. */
+	endedAt?: number;
 	/** Increased by every change: a client that holds an `ItemView` of a lower revision asks for it again. */
 	revision: number;
 }
