@@ -350,7 +350,11 @@ panel's own code and per-step tokens (`server/src/github/publish.ts`). The tools
   missing base requires `fetch_base` first. After a refusal, the platform's own commit's changes stay in the
   workspace.
 - **The workspace's `.git` cannot run a program.** Status, diff, probe, commit, scan, fetch and push use a
-  private git directory loading only platform configuration, with hooks and filesystem monitors off. The
+  private git directory loading only platform configuration (no system or home configuration, which a setup
+  can write), with hooks, filesystem monitors, SSH programs, the home's attributes file, credential helpers and
+  every transport but HTTP(S) off on the command line (`github/git-flags.ts`). The workspace's first commit, made
+  as the sandbox's user before setup, reads no system or home configuration either. `scripts/git-config-check.ts`
+  plants a program in every place a hostile `~/.gitconfig` and `.git/config` can name one and runs each script. The
   agent's objects, refs and index are copied in as data, keeping its commits, merges and rebases; files are read
   with directory-relative reads that refuse symlinks (a symlink contributes its target text). A `.gitattributes`
   filter has no driver there. Windlass gives sandboxed commands their own `/tmp`; direct commands share the

@@ -38,6 +38,7 @@ import type { ExecResult, SandboxHandle } from "../sandbox/api.js";
 import type { WorkDiff } from "../verified.js";
 import { GithubProblem } from "./repos.js";
 import { redact } from "./redact.js";
+import { SAFE_FLAGS, TRANSPORT_FLAGS } from "./git-flags.js";
 
 const CLONE_TIMEOUT_MS = 3 * 60 * 1000;
 // A reference clone that receives nothing for this long is abandoned for a plain clone.
@@ -91,18 +92,12 @@ function tokenGit(host: string): string {
 		"			GIT_CONFIG_COUNT=2 \\",
 		"			GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \\",
 		`			GIT_CONFIG_KEY_1=${shellQuote(`credential.${host}.helper`)} GIT_CONFIG_VALUE_1=${shellQuote(helper)} \\`,
-		`			git ${SAFE_FLAGS} ${transportFlags} "$@" 3<&0 0</dev/null`,
+		`			git ${TRANSPORT_FLAGS} ${transportFlags} "$@" 3<&0 0</dev/null`,
 		"	}",
 		"}",
 	].join("\n");
 }
 
-/**
- * What every git the platform runs in the workspace is given on its command line, whatever the
- * repository's configuration says: no hooks, no file-system monitor, no recursion into submodules, no
- * automatic housekeeping. Each of those would start a program the repository names.
- */
-const SAFE_FLAGS = "-c core.hooksPath=/dev/null -c core.fsmonitor=false -c submodule.recurse=false -c gc.auto=0 -c maintenance.auto=false";
 
 /** Git with an empty environment and no configuration but its own, for the steps of a token script that need no token. */
 const GIT_ENV = `env -i PATH=${SYSTEM_PATH} HOME=/nonexistent LANG=C.UTF-8 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1`;
