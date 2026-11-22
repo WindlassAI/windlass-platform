@@ -4,7 +4,11 @@
 /** Snapshot budgets, and `free`: the free bytes disk-pressure eviction keeps and below which no store writes. */
 export const snapshotLimits = { machine: 10_000_000_000, user: 2_000_000_000, free: 15_000_000_000 };
 
-export const MIRROR_VOLUME = "wlp-git-mirrors-v1";
+/**
+ * v2: slots keyed as `mirrorSlot` keys them, written only by the save helper. v1 slots came from
+ * the earlier design and were never rehashed, so nothing reads that volume.
+ */
+export const MIRROR_VOLUME = "wlp-git-mirrors-v2";
 /** Where a session container mounts its one slot, read-only, at `<root>/<mirrorOwner>`. */
 export const MIRROR_ROOT = "/var/cache/windlass-git";
 /** The most one slot's mirror may hold. A save charges twice this against the floor: old and new copies coexist until the swap. */

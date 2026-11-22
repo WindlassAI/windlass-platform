@@ -87,9 +87,9 @@ function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
  * Should its slot be gone, an empty one is put back (the clone treats that as no mirror) and
  * the start is tried once more. The common start pays for nothing extra.
  */
-export async function startContainer(name: string, store?: MirrorStore): Promise<void> {
+export async function startContainer(name: string, helperImage: string, store?: MirrorStore): Promise<void> {
 	let started = await docker(["start", name], { timeoutMs: 60_000 });
-	if (started.code !== 0 && await restoreGitMirror(name, store).catch(() => false))
+	if (started.code !== 0 && await restoreGitMirror(name, helperImage, store).catch(() => false))
 		started = await docker(["start", name], { timeoutMs: 60_000 });
 	if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 }
@@ -103,6 +103,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly uid: string,
 		readonly snapshot?: SnapshotSource,
 		readonly resizePending = false,
+		/** Runs the Git mirror save helper (`DockerSandboxOptions.helperImage`). */
+		readonly helperImage = IMAGE,
 	) {
 		markTurnSandbox(this);
 	}
@@ -116,7 +118,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 	}
 
 	saveMirror(stage: string, partial: boolean): Promise<boolean> {
-		return saveSessionMirror(this.container, stage, partial);
+		return saveSessionMirror(this.container, stage, partial, { image: this.helperImage });
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -428,6 +430,11 @@ export type DockerSandboxOptions = {
 	image?: string;
 	shotsImage?: string;
 	/**
+	 * Runs the Git mirror allocator and save helpers: the pinned base sandbox image, never a
+	 * session's own (a harness image, or a snapshot committed after setup). `image` when left out.
+	 */
+	helperImage?: string;
+	/**
 	 * Null for the hosted provider. A runner's machine id: every container it makes carries it as
 	 * MACHINE_LABEL, and each provider lists and acts on only the containers whose machine label is its
 	 * own (none for the hosted one), so a runner and a hosted server on one Docker daemon never see each
@@ -454,12 +461,14 @@ export type DockerSandboxOptions = {
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
 	private readonly shotsImage: string;
+	private readonly helperImage: string;
 	private readonly machine: string;
 
 	constructor(private readonly options: DockerSandboxOptions) {
 		if (options.machine !== null && !NAME.test(options.machine)) throw new Error("invalid machine id");
 		this.image = options.image ?? IMAGE;
 		this.shotsImage = options.shotsImage ?? SHOTS_IMAGE;
+		this.helperImage = options.helperImage ?? this.image;
 		// A container without the label reads as "" (Go templates), which is the hosted provider's.
 		this.machine = options.machine ?? "";
 	}
@@ -532,7 +541,7 @@ export class DockerSandboxes implements Sandboxes {
 		const id = (harness ? harness + "-" : "") + randomId(6);
 		const name = containerName(id);
 		const scope = this.mirrorScope;
-		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(base, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
+		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
 		const relay = await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
@@ -651,7 +660,7 @@ export class DockerSandboxes implements Sandboxes {
 		const resizePending = await this.reconcile(containerName(id), found);
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
 		else if (found.status !== "running" && found.status !== "restarting") {
-			await startContainer(containerName(id));
+			await startContainer(containerName(id), this.helperImage);
 		}
 		// An interrupted pre-upgrade turn may have left a file on the shared volume. Clear
 		// those before returning a handle that could run setup or commands against it.
@@ -659,7 +668,7 @@ export class DockerSandboxes implements Sandboxes {
 			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
 			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

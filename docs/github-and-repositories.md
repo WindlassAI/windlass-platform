@@ -245,12 +245,14 @@ That leaves two things a session can do to its own slot. It can put in valid but
 objects or refs, up to the 512 MiB cap; a later clone only takes the objects GitHub's
 negotiation asks for. It can also keep a mirror small or stale, which only makes later clones
 slower. What remains trusted is Git's SHA-1 object naming with collision detection, as for any
-fetch, plus the Docker daemon and the sandbox image's `git`. The reference clone's
+fetch, plus the Docker daemon and the `git` and Python of the pinned base sandbox image. That
+image runs the allocator and the save helper, never a session's own image, which for a prepared
+sandbox is a commit taken after setup ran. The reference clone's
 connectivity-only check is enough under these rules: the objects were rehashed when they were
 installed, and nothing in a session can change them afterwards. A slot missing objects fails
 that check, and the clone falls back to the plain path.
 
-A Docker daemon keeps up to 16 slots of 512 MiB each in `wlp-git-mirrors-v1`. Each slot is
+A Docker daemon keeps up to 16 slots of 512 MiB each in `wlp-git-mirrors-v2`. Each slot is
 keyed by deployment, machine, platform user and immutable GitHub repository ID. Hosted Docker
 keeps the mirrors' deployment identity in its own file in the state directory
 (`git-mirror-deployment`), so mirrors work with snapshots disabled and never create the snapshot
@@ -271,10 +273,15 @@ Refresh happens on demand. After a successful clone whose base GitHub confirmed,
 stages its refs and hard links to its objects in its own private directory in the session's
 `/tmp`. It skips this when the refs match the slot's mirror. The server, or the runner on a
 machine, then starts the save helper without waiting for it: networking disabled, UID 65534,
-no capabilities, one save per process at a time. The stage is removed afterwards, and any stage
+no capabilities, only its own slot mounted (as a volume subpath), 1 GiB of memory and swap, and
+its own 9-minute deadline inside the container. Saves run one per process at a time. A save still
+waiting to start gives way to a later clone's stage for the same slot, so a slow save holds up
+each slot once. The helper compares the refs again while it holds the slot's save lock, and
+leaves a mirror with the same HEAD and packed-refs alone unless the clone marked its stage for
+repair (the mirror had failed that clone). The stage is removed afterwards, and any stage
 left by an interrupted save is removed at the start of the next clone. A save needs the
 free-space floor plus 512 MiB free, because the old and new copies coexist until the swap. It
-copies to `incoming.<n>` and waits for readers, which share the slot lock. Then it renames
+clears any `incoming` or `incoming.*` left behind, copies to `incoming.<n>` and waits for readers, which share the slot lock. Then it renames
 `repo.git` to `old.<n>` and `incoming.<n>` to `repo.git`, and removes `old.*`. A save killed
 between the two renames is repaired by the next one. A session's per-turn process sweep cannot
 touch a save, since nothing of it runs in the session. A failed or killed save leaves the
@@ -286,9 +293,11 @@ from GitHub for 8 seconds is abandoned. So is one whose mirror fails the lock, c
 alternates or connectivity check. Its token is revoked and a plain clone gets a fresh
 repository-scoped read token. Any other failure (a timeout, a refused token, a missing
 repository or branch) is reported as it is, without a second clone. The deadline does not cover
-local work, so a large repository does not fall back for being large. A runner advertises
-mirror support under either session protocol. A runner or Docker daemon without support takes
-the plain clone path.
+local work, so a large repository does not fall back for being large. A runner reports
+mirror support only to a server whose control welcome names the `git-mirrors` capability. A
+server names its capabilities only to a runner whose hello reports 0.3.0 or later, since older
+runners refuse a welcome with fields they do not know. A runner or Docker daemon without
+support takes the plain clone path.
 
 ### Enable the Factory check on GitHub
 

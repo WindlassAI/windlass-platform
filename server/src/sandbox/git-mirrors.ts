@@ -122,8 +122,9 @@ export function slotsInInspect(info: { code: number | null; stdout: string; stde
 	return slots;
 }
 
-// The allocator and save helpers mount the whole store, name no slot, and are `--rm`. They carry
-// LABEL too (the image has it), so they are told apart by name.
+// The allocator mounts the whole store and names no slot. A save helper names its slot but holds
+// the slot's lock while it runs, which eviction skips. Both are `--rm` and carry LABEL too (the
+// image has it), so they are told apart by name.
 const HELPER = /^wlp-git-(?:allocate|save)-/;
 
 /**
@@ -147,7 +148,7 @@ async function runAllocator(image: string, volume: string, args: string[]) {
 	const result = await docker(["run", "--rm", "--pull", "never", "--name", helper, ...NO_LOGS, "--network", "none",
 		"--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges",
 		"--mount", `type=volume,src=${volume},dst=/store,volume-nocopy`, "--entrypoint", "/usr/bin/python3", image,
-		"-I", "-c", allocate, ...args], { timeoutMs: 15_000 });
+		"-I", "-S", "-c", allocate, ...args], { timeoutMs: 15_000 });
 	if (result.timedOut) await docker(["rm", "-f", helper], { timeoutMs: 5000 });
 	return result.code === 0;
 }
@@ -161,6 +162,7 @@ export interface MirrorStore {
 	graceSeconds?: number;
 }
 
+/** `image` runs the allocator: the pinned base sandbox image. */
 export async function gitMirrorMount(image: string, deployment: string, machine: string, uid: string, repo: string,
 	{ volume = MIRROR_VOLUME, slots = SLOTS, floor = snapshotLimits.free, graceSeconds = 120 }: MirrorStore = {}): Promise<string | null> {
 	if (!deployment || !/^[1-9]\d{0,19}$/.test(repo)) return null;
@@ -173,12 +175,15 @@ export async function gitMirrorMount(image: string, deployment: string, machine:
 	return admitted ? mountOf(volume, slot, uid, repo) : null;
 }
 
-/** Before starting `container`: put back its slot if it is missing, so the start cannot fail on it. */
-export async function restoreGitMirror(container: string, { volume = MIRROR_VOLUME, slots = SLOTS, graceSeconds = 120 }: MirrorStore = {}): Promise<boolean> {
-	const info = await docker(["container", "inspect", "--format", "{{.Image}}|{{json .HostConfig.Mounts}}", container], { timeoutMs: 10_000 });
+/**
+ * Before starting `container`: put back its slot if it is missing, so the start cannot fail on it.
+ * `image` is the pinned base sandbox image, never the container's own (a snapshot is a commit taken
+ * after the session's setup ran).
+ */
+export async function restoreGitMirror(container: string, image: string, { volume = MIRROR_VOLUME, slots = SLOTS, graceSeconds = 120 }: MirrorStore = {}): Promise<boolean> {
+	const info = await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", container], { timeoutMs: 10_000 });
 	if (info.code !== 0) return false;
-	const [image = "", ...json] = info.stdout.trim().split("|");
-	const slot = slotOf(JSON.parse(json.join("|") || "null"), volume);
+	const slot = slotOf(JSON.parse(info.stdout.trim() || "null"), volume);
 	if (!slot) return false;
 	if (!await platformStore(volume, false)) return false;
 	const referenced = await referencedSlots(volume);
@@ -191,21 +196,21 @@ export function mirrorStage(stage: string): string {
 	return `/tmp/wlp-transport-${stage}.mirror`;
 }
 
-// The save helper: uid 65534 (the slot's owner), no capabilities, no network, the whole store
-// mounted, the stage arriving on stdin as the tar `docker cp` makes of it. Everything in the tar
-// is the session's to choose, so only a fixed set of regular files is taken (HEAD, packed-refs,
-// packs with their indexes, loose objects), written with fresh names and modes, and a full fsck
-// rehashes every object before anything replaces the slot's mirror. The clone decided that the
-// refs changed (or that the mirror failed it); the helper does not compare. The swap waits for readers
-// (they share the slot lock) and leaves `repo.git` in place at every moment but between two
-// renames, which the next save repairs. One save per slot at a time (`.save`).
+// The save helper: uid 65534 (the slot's owner), no capabilities, no network, only its slot
+// mounted (at /slot), the stage arriving on stdin as the tar `docker cp` makes of it. Everything in
+// the tar is the session's to choose, so only a fixed set of regular files is taken (HEAD,
+// packed-refs, packs with their indexes, loose objects, and the clone's `repair` mark), written
+// with fresh names and modes, and a full fsck rehashes every object before anything replaces the
+// slot's mirror. One save per slot at a time (`.save`, held throughout): a stage whose HEAD and
+// packed-refs match the slot's mirror is not installed unless the clone marked it `repair` (the
+// mirror failed it). The swap waits for readers (they share the slot lock) and leaves `repo.git`
+// in place at every moment but between two renames, which the next save repairs.
 const save = `import fcntl, os, re, shutil, subprocess, sys, tarfile, time
-slot, partial, floor, limit, config = sys.argv[1], sys.argv[2] == "1", int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+partial, floor, limit, config = sys.argv[1] == "1", int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 NAME = r"(?!.*(?:\\.\\.|@\\{|//|/\\.|\\.lock(?:/|$)))[^\\x00-\\x20\\x7f~^:?*\\[\\\\]+(?<![/.])"
 HEAD = re.compile(r"ref: refs/heads/" + NAME + r"\\n")
 REF = re.compile(r"[0-9a-f]{40} refs/(?:heads|tags)/" + NAME)
-store = os.open("/store", os.O_DIRECTORY | os.O_NOFOLLOW)
-here = os.open(slot, os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=store)
+here = os.open("/slot", os.O_DIRECTORY | os.O_NOFOLLOW)
 os.fchdir(here)
 writer = os.open(".save", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
 try:
@@ -214,15 +219,25 @@ except BlockingIOError:
     sys.exit(3)
 # Held throughout: eviction skips a slot whose lock it cannot take.
 fcntl.flock(here, fcntl.LOCK_SH)
-def clear(prefix):
+def clear(name):
+    # "incoming" without a suffix is an earlier design's.
     for p in os.listdir("."):
-        if p.startswith(prefix):
-            shutil.rmtree(p)
+        if p == name or p.startswith(name + "."):
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.unlink(p)
+def current(name):
+    try:
+        with open("repo.git/" + name, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
 olds = sorted((p for p in os.listdir(".") if p.startswith("old.")), key=lambda p: os.lstat(p).st_mtime_ns)
 if olds and not os.path.lexists("repo.git"):
     os.rename(olds[-1], "repo.git")
-clear("old.")
-clear("incoming.")
+clear("old")
+clear("incoming")
 if partial and os.path.lexists("repo.git"):
     sys.exit(0)
 s = os.statvfs(".")
@@ -235,12 +250,16 @@ try:
         os.mkdir(incoming + "/" + d, 0o755)
     total = 0
     small = {}
+    repair = False
     with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tar:
         for m in tar:
             if not m.isreg() or not m.name.startswith("seed/"):
                 continue
             rel = m.name[5:]
             loose = re.fullmatch(r"objects/([0-9a-f]{2})/[0-9a-f]{38}", rel)
+            if rel == "repair":
+                repair = True
+                continue
             if rel in ("HEAD", "packed-refs"):
                 if m.size > 16 << 20:
                     sys.exit(5)
@@ -259,12 +278,17 @@ try:
     head, refs = small.get("HEAD", b"").decode("utf-8", "strict"), small.get("packed-refs", b"").decode("utf-8", "strict")
     if not HEAD.fullmatch(head) or not refs.endswith("\\n") or not all(REF.fullmatch(line) for line in refs[:-1].split("\\n")):
         sys.exit(5)
+    # The clone compared too, but another clone's save may have landed since. Only a save changes
+    # repo.git, and this one holds .save until it ends, so the answer holds through the swap.
+    if not repair and current("HEAD") == small["HEAD"] and current("packed-refs") == small["packed-refs"]:
+        sys.exit(0)
     for name, text in (("HEAD", head), ("packed-refs", refs), ("config", config + "\\n")):
         with open(incoming + "/" + name, "x") as f:
             f.write(text)
     env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "LC_ALL": "C"}
-    subprocess.run(["git", "--git-dir=" + incoming, "fsck", "--full", "--no-dangling", "--no-reflogs", "--no-progress"],
-        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
+    # Bounded memory for large blobs and deltas: the helper runs under --memory.
+    subprocess.run(["git", "-c", "core.bigFileThreshold=64m", "-c", "core.deltaBaseCacheLimit=32m", "--git-dir=" + incoming,
+        "fsck", "--full", "--no-dangling", "--no-reflogs", "--no-progress"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
     deadline = time.monotonic() + 60
     while True:
         try:
@@ -282,17 +306,31 @@ try:
         os.rename("repo.git", "old.%d" % os.getpid())
     os.rename(incoming, "repo.git")
     fcntl.flock(here, fcntl.LOCK_SH)
-    clear("old.")
+    clear("old")
     os.utime(here)
 finally:
     shutil.rmtree(incoming, ignore_errors=True)
 `;
 
 const SAVE_TIMEOUT_MS = 10 * 60_000;
+/**
+ * The helper's own deadline, inside its container (coreutils `timeout`, then SIGKILL 10 s later).
+ * Below SAVE_TIMEOUT_MS, so a helper whose client died, or that Docker could not be asked to remove,
+ * still ends.
+ */
+const HELPER_SECONDS = SAVE_TIMEOUT_MS / 1000 - 60;
+/** The most saves waiting to start. Each is a full fsck on a shared host. */
+const MAX_WAITING = 4;
 
-// Saves run one at a time per server or runner process: each is a full fsck on a shared host.
+type Target = { volume: string; slot: string };
+type Save = Target & { container: string; path: string; partial: boolean; image: string; floor: number; order: number; done?: Promise<boolean> };
+
+// Saves run one at a time per server or runner process. A save waiting to start stands for its
+// slot: a later stage for that slot takes its place (its refs are newer) and the older stage is
+// removed, so a slow save holds up each slot once, not once per clone.
 let queue: Promise<unknown> = Promise.resolve();
-let waiting = 0;
+const waiting = new Map<string, Save>();
+let calls = 0;
 const pending = new Set<Promise<boolean>>();
 
 /** Resolves when every save started so far has ended. */
@@ -304,42 +342,71 @@ export async function mirrorSavesSettled(): Promise<void> {
  * Install the mirror a clone staged in `container`, then remove the stage. Nothing runs in the
  * session container for it: `docker cp` reads the stage and a helper container writes the slot.
  * A sweep of the session's processes cannot interrupt it, and a failed or killed helper leaves
- * the slot's previous mirror in place.
+ * the slot's previous mirror in place. `image` runs the helper: the pinned base sandbox image,
+ * never the session's own (a snapshot is a commit taken after the session's setup ran). True when
+ * the slot holds the stage, or a later one that took its place.
  */
-export function saveSessionMirror(container: string, stage: string, partial: boolean, { floor = snapshotLimits.free }: { floor?: number } = {}): Promise<boolean> {
-	const path = mirrorStage(stage);
-	if (waiting >= 4) return dropStage(container, path).then(() => false);
-	waiting++;
-	const run = queue.then(async () => {
-		waiting--;
-		try { return await installMirror(container, path, partial, floor); }
-		catch { return false; }
-		finally { await dropStage(container, path); }
-	});
-	queue = run;
+export function saveSessionMirror(container: string, stage: string, partial: boolean, { image, floor = snapshotLimits.free }: { image: string; floor?: number }): Promise<boolean> {
+	const path = mirrorStage(stage), order = ++calls;
+	const run = (async () => {
+		const target = await targetOf(container).catch(() => null);
+		if (!target) { await dropStage(container, path); return false; }
+		return enqueue({ ...target, container, path, partial, image, floor, order });
+	})();
 	pending.add(run);
 	void run.finally(() => pending.delete(run));
 	return run;
+}
+
+async function enqueue(next: Save): Promise<boolean> {
+	const key = next.volume + "/" + next.slot;
+	const queued = waiting.get(key);
+	if (queued) {
+		// The later clone's stage, by call: the inspects before this can end in any order. A full
+		// stage over a single-branch one, whichever came later.
+		const wins = next.partial !== queued.partial ? !next.partial : next.order > queued.order;
+		const dropped = wins ? { container: queued.container, path: queued.path } : next;
+		if (wins) Object.assign(queued, { container: next.container, path: next.path, partial: next.partial, image: next.image, floor: next.floor, order: next.order });
+		await dropStage(dropped.container, dropped.path);
+		return queued.done!;
+	}
+	if (waiting.size >= MAX_WAITING) { await dropStage(next.container, next.path); return false; }
+	waiting.set(key, next);
+	const done = queue.then(async () => {
+		waiting.delete(key);
+		try { return await installMirror(next); }
+		catch { return false; }
+		finally { await dropStage(next.container, next.path); }
+	});
+	next.done = done;
+	queue = done;
+	return done;
 }
 
 async function dropStage(container: string, path: string) {
 	await docker(["exec", "--user", "65534:65534", "-w", "/", container, "/bin/rm", "-rf", "--", path], { timeoutMs: 30_000 }).catch(() => undefined);
 }
 
-async function installMirror(container: string, path: string, partial: boolean, floor: number): Promise<boolean> {
-	const info = await docker(["container", "inspect", "--format", "{{.Image}}|{{json .HostConfig.Mounts}}", container], { timeoutMs: 10_000 });
-	if (info.code !== 0) return false;
-	const [image = "", ...json] = info.stdout.trim().split("|");
-	const mounts: Mount[] = JSON.parse(json.join("|") || "null") ?? [];
+/** The slot `container` mounts read-only, in a store of the platform's. */
+async function targetOf(container: string): Promise<Target | null> {
+	const info = await docker(["container", "inspect", "--format", "{{json .HostConfig.Mounts}}", container], { timeoutMs: 10_000 });
+	if (info.code !== 0) return null;
+	const mounts: Mount[] = JSON.parse(info.stdout.trim() || "null") ?? [];
 	const mount = mounts.find(m => m.Type === "volume" && m.ReadOnly === true && m.Target?.startsWith(MIRROR_ROOT + "/") && SLOT.test(m.VolumeOptions?.Subpath ?? ""));
 	const volume = mount?.Source, slot = mount?.VolumeOptions?.Subpath;
-	if (!volume || !slot || !/^sha256:[0-9a-f]{64}$/.test(image) || !await platformStore(volume, false)) return false;
+	if (!volume || !slot || !await platformStore(volume, false)) return null;
+	return { volume, slot };
+}
+
+async function installMirror({ container, path, partial, image, floor, volume, slot }: Save): Promise<boolean> {
 	const helper = "wlp-git-save-" + randomId(6);
 	const copy = spawn("docker", ["cp", `${container}:${path}/seed`, "-"], { stdio: ["ignore", "pipe", "ignore"] });
 	const install = spawn("docker", ["run", "--rm", "-i", "--pull", "never", "--name", helper, ...NO_LOGS, "--network", "none",
-		"--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--cpus", "1", "--pids-limit", "64",
-		"--mount", `type=volume,src=${volume},dst=/store,volume-nocopy`, "--entrypoint", "/usr/bin/python3", image,
-		"-I", "-c", save, slot, partial ? "1" : "0", String(floor), String(MIRROR_BYTES - 65536), MIRROR_CONFIG], { stdio: ["pipe", "ignore", "ignore"] });
+		"--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
+		"--cpus", "1", "--memory", "1g", "--memory-swap", "1g", "--pids-limit", "64",
+		"--mount", `type=volume,src=${volume},volume-subpath=${slot},dst=/slot,volume-nocopy`,
+		"--entrypoint", "/usr/bin/timeout", image, "-k", "10s", `${HELPER_SECONDS}s`,
+		"/usr/bin/python3", "-I", "-S", "-c", save, partial ? "1" : "0", String(floor), String(MIRROR_BYTES - 65536), MIRROR_CONFIG], { stdio: ["pipe", "ignore", "ignore"] });
 	copy.stdout.pipe(install.stdin);
 	install.stdin.on("error", () => copy.kill("SIGKILL"));
 	const ended = (child: ReturnType<typeof spawn>) => new Promise<number | null>(resolve => {

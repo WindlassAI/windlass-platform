@@ -104,7 +104,7 @@ export class Executor extends MachineDocker {
 		if (opencode) {
 			this.opencodePin = harnessImage("opencode");
 			if (!this.opencodePin) throw new Refusal("This runner was built without the OpenCode image.");
-			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin,
+			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin, helperImage: image,
 				harness: "opencode", sessionRelay: async () => {
 					const login = currentProvider(this);
 					if (!login) throw new Refusal("Run windlass-runner login opencode on this machine.");
@@ -114,7 +114,7 @@ export class Executor extends MachineDocker {
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, sessionRelay: () => this.prepareClaudeRelay() });
+			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, sessionRelay: () => this.prepareClaudeRelay() });
 		}
 	}
 	/** Caller holds the login lock while preparing the relay and issuing a session credential. */
@@ -422,7 +422,8 @@ export class Executor extends MachineDocker {
 	}
 	async saveMirror(session: string, id: string, stage: string, partial: boolean) {
 		const box = this.running(id, session);
-		return saveSessionMirror(containerName(box.raw), stage, partial);
+		// The base pin, never the session's image: a harness image, or a snapshot committed after setup.
+		return saveSessionMirror(containerName(box.raw), stage, partial, { image });
 	}
 	async saveSnapshot(session: string, id: string, source: SnapshotSource) {
 		const box = this.running(id, session);

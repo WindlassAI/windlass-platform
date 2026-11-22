@@ -208,7 +208,9 @@ async function removeTransport(sandbox: SandboxHandle, id: string, keepStage = f
  * fetch, workspace file, remote config or credential. Nothing here writes the slot, which the
  * session sees read-only: a helper container outside the session verifies the stage with a full
  * fsck and installs it (git-mirrors.ts, `saveSessionMirror`). A stage whose refs match the
- * slot's mirror is not made unless `repair`. `partial` (a single-branch clone) only seeds an empty slot.
+ * slot's mirror is not made unless `repair`, which marks the stage (`seed/repair`) so the helper
+ * replaces the mirror anyway. The helper compares the refs again under the slot's save lock, since
+ * another clone's save may have landed since. `partial` (a single-branch clone) only seeds an empty slot.
  */
 function stageMirror(partial: boolean, repair: boolean): string {
 	const stage = [
@@ -223,7 +225,7 @@ function stageMirror(partial: boolean, repair: boolean): string {
 		`plain_git -C "$1/repo" for-each-ref --format='%(objectname) %(refname) %(symref)' refs/remotes/origin refs/tags |`,
 		`  awk 'NF == 2 { sub(/^refs\\/remotes\\/origin\\//, "refs/heads/", $2); print $1, $2 }' | LC_ALL=C sort -k2 > seed/packed-refs`,
 		// The same refs as the slot's mirror: nothing to save. The helper compares again under its lock.
-		...(repair ? [] : ['if cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD"; then exit 1; fi']),
+		...(repair ? [': > seed/repair'] : ['if cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD"; then exit 1; fi']),
 		'rm -r seed/objects',
 		'cp -al "$1/repo/.git/objects" seed/objects',
 		`[ "$(du -s -B1 seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
