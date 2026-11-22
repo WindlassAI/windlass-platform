@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import type { AuthResult, ItemSummary, ItemView, PlatformInfo } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner } from "./runner-standin.js";
+import { optionsDigest } from "../server/src/runner/catalog.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
@@ -1296,7 +1297,8 @@ async function memoryChecks(): Promise<void> {
 							lost = false;
 							throw new Error("the reply was lost");
 						}
-						return { id: made?.id, title: made?.task.title, place: made?.place, repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main" }, source: "web", createdAt: T, revision: 0 };
+						// The live feed groups by repository and source (item-pages.ts, `itemFeed`).
+						return { id: made?.id, title: made?.task.title, place: made?.place, createdAt: T, revision: 0, state: "draft", source: "web", repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main", private: true, url: "" } };
 					},
 				}),
 			},
@@ -1530,7 +1532,8 @@ if (only.length > 0 && only.every(name => name.startsWith("memory") || name.star
 
 async function machineChecks(): Promise<void> {
 	const server = new Server();
-	const runner = new StandInRunner(API, ENDPOINT);
+	// Its machine also offers a signed-in Claude Code, played by the fake ACP agent (fixtures/acp-agent).
+	const runner = new StandInRunner(API, ENDPOINT, { claude: true });
 	try {
 		const { user, client, auth } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
 		await runner.pair(user);
@@ -1625,6 +1628,117 @@ async function machineChecks(): Promise<void> {
 			assert(open?.approval === "full" && open.attended === false && open.unattended === "deny", "the hardened container was not opened in unattended full mode");
 			assert(review.verdicts.at(-1)?.attestedBy === `machine:${place.machineId}` && review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
 			return "overlapping turns, one machine-attested verdict, zero hosted seconds";
+		});
+
+		await check("machine: a Claude Code item runs in the hardened container without asking, publishes the platform's commit and CI decides", async () => {
+			const hosted = await refused(() => user.createItem({ ...task, place: undefined, harness: "claude" }), "bad_input");
+			const planFirst = await refused(() => user.createItem({ ...task, mode: "orchestrate", harness: "claude" }), "bad_input");
+			const unknown = await refused(() => user.createItem({ ...task, harness: "nonesuch" as never }), "bad_input");
+			const sent = runner.acpInput.length;
+			// "itemwork": the fake agent asks before an edit and before a test command, then reports its tokens.
+			const item = await user.createItem({ ...task, title: "Claude on my machine", body: "Fix the program (itemwork).", harness: "claude", start: true });
+			assert(item.agent?.harness === "claude" && item.agent.model === "default" && item.agent.tokens === "not_reported", JSON.stringify(item.agent));
+			const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
+			assert(builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions", JSON.stringify(builder && { harness: builder.harness, profile: builder.profile, mode: builder.mode }));
+			const pushed = await untilItem(user, item.id, "the Claude Code item's pull request", view => !!view.pullRequest);
+			const frames = runner.acpInput.slice(sent).join("").split("\n").filter(Boolean).map(line => JSON.parse(line));
+			const mode = frames.find(f => f.method === "session/set_mode" || (f.method === "session/set_config_option" && f.params?.configId === "mode"));
+			const answers = frames.filter(f => f.method === undefined && f.result?.outcome).map(f => f.result.outcome.optionId);
+			const prompt = frames.find(f => f.method === "session/prompt")?.params?.prompt?.[0]?.text ?? "";
+			assert((mode?.params?.modeId ?? mode?.params?.value) === "bypassPermissions", "the item's agent was not put in bypassPermissions: " + JSON.stringify(mode));
+			assert(answers.join() === "allow-once,allow-once", "the edit and the test command were not allowed once: " + answers.join());
+			assert(prompt.includes("Fix the program (itemwork)."), "the item's text did not reach the agent");
+			const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!;
+			setCi(harbor, pull.head, "success");
+			const review = await untilItem(user, item.id, "the Claude Code item in review", view => view.state === "review", CI_WAIT_MS);
+			assert(review.agent?.tokens === "subscription" && review.agent.reportedTokens === 33_500 && review.spent.tokens === 0 && review.spent.turns === 1, JSON.stringify({ agent: review.agent, spent: review.spent }));
+			// The stand-in runner has no git, so its pushed head is no commit id and no check run is posted on a machine here:
+			// the check's words for this item are factory-check's ("the windlass/verified summary says CI decides …").
+			assert(review.verdicts.at(-1)?.result === "pass" || review.verdict?.ci === "passed", "CI green did not decide the verdict: " + JSON.stringify(review.verdict));
+			// A Windlass item's model is the item's own choice from the account's list.
+			const windlass = await user.createItem({ ...task, title: "Windlass on a chosen model", model: "gpt-6-luna" });
+			const windlassSession = (await user.listSessions()).find(s => s.id === windlass.sessionId);
+			assert(windlass.agent?.harness === "windlass" && windlass.agent.model === "gpt-6-luna" && windlassSession?.model === "gpt-6-luna", JSON.stringify(windlass.agent));
+			await refused(() => user.createItem({ ...task, model: "gpt-nonesuch" }), "bad_model");
+			await user.actOnItem({ id: windlass.id, action: { kind: "cancel" } });
+			return `refused hosted (${hosted}), Plan first (${planFirst}), unknown (${unknown}); bypassPermissions, two allow-once answers, 33,500 tokens reported, CI decides`;
+		});
+
+		await check("machine: a Claude Code item is filed only where it is known to be signed in, and its turn checks again", async () => {
+			const reported = async (signIn: "token" | "none" | "unknown") => {
+				runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn }];
+				runner.report();
+				await waitFor(`the machine reports Claude Code ${signIn}`, async () => (await user.machines())[0]?.harnesses?.find(h => h.id === "claude")?.signIn === signIn, 15_000);
+			};
+			try {
+				await reported("unknown");
+				const unknown = await refused(() => user.createItem({ ...task, title: "Claude, sign-in unknown", harness: "claude" }), "harness_signed_out");
+				assert(/could not say whether Claude Code is signed in/.test(unknown), unknown);
+				await reported("token");
+				const draft = await user.createItem({ ...task, title: "Claude, signed out before its turn", body: "Fix the program (itemwork).", harness: "claude" });
+				await reported("none");
+				const sent = runner.acpInput.length;
+				await user.actOnItem({ id: draft.id, action: { kind: "start" } });
+				const asked = await untilItem(user, draft.id, "the sign-in question", view => view.question?.kind === "turn_refused");
+				assert(/Claude Code on “Test machine” is not signed in\. Run windlass-runner login claude there\./.test(asked.question!.text), asked.question!.text);
+				assert(!runner.acpInput.slice(sent).join("").includes("session/prompt"), "the signed-out item's turn reached the agent");
+				assert(asked.spent.tokens === 0 && asked.agent?.tokens === "not_reported", JSON.stringify({ spent: asked.spent, agent: asked.agent }));
+				await user.actOnItem({ id: draft.id, action: { kind: "cancel" } });
+				return `refused at filing (${unknown}); paused at its turn (${asked.question!.text})`;
+			} finally {
+				await reported("token");
+			}
+		});
+
+		await check("machine: an item's effort is one its agent offers, and its turns run at it, for Windlass and Claude Code", async () => {
+			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: ["default", "low", "medium", "high", "max"] }, { id: "sonnet", name: "Sonnet", efforts: [] }], checkedAt: Date.now(), modes: [] };
+			const harnesses = runner.fake.report.harnesses;
+			runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token", options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt }];
+			runner.report();
+			try {
+				await waitFor("the reported Claude Code options", async () => (await user.machines())[0]?.harnesses?.[0]?.optionsDigest === optionsDigest(options), 15_000);
+				// Unknown efforts are refused, for each agent: not one it reported, or one for a model that takes none.
+				const refusals: string[] = [];
+				for (const [what, input] of [
+					["Claude Code, not offered", { harness: "claude", effort: "ultra" }],
+					["Claude Code, a model whose efforts come on selection", { harness: "claude", model: "sonnet", effort: "ultra" }],
+					["Windlass, not offered", { model: "gpt-6.1-sol", effort: "ultra" }],
+					["not text", { effort: 7 }],
+				] as const) {
+					try {
+						refusals.push(await refused(() => user.createItem({ ...task, ...input } as never), "bad_effort"));
+					} catch (error) {
+						throw new Error(`${what}: ${(error as Error).message}`);
+					}
+				}
+				// Claude Code: the effort goes to the adapter before the item's prompt.
+				const sent = runner.acpInput.length;
+				const claude = await user.createItem({ ...task, title: "Claude at high effort", body: "Fix the program (itemwork).", harness: "claude", effort: "high", start: true });
+				assert(claude.agent?.effort === "high", JSON.stringify(claude.agent));
+				const frames = await waitFor("the Claude Code item's prompt", async () => {
+					const all = runner.acpInput.slice(sent).join("").split("\n").filter(Boolean).map(line => JSON.parse(line));
+					return all.some(f => f.method === "session/prompt") ? all : null;
+				}, 60_000);
+				const prompt = frames.findIndex(f => f.method === "session/prompt");
+				const effort = frames.findIndex(f => f.method === "session/set_config_option" && f.params?.configId === "effort" && f.params?.value === "high");
+				assert(effort >= 0 && effort < prompt, "the effort was not set before the item's prompt: " + JSON.stringify(frames.map(f => f.method + (f.params?.configId ? ":" + f.params.configId + "=" + f.params.value : ""))));
+				await user.actOnItem({ id: claude.id, action: { kind: "cancel" } });
+				// Windlass: the item's turn is given the effort.
+				const windlass = await user.createItem({ ...task, title: "Windlass at xhigh effort", model: "gpt-6.1-sol", effort: "xhigh", start: true });
+				assert(windlass.agent?.harness === "windlass" && windlass.agent.effort === "xhigh", JSON.stringify(windlass.agent));
+				const session = client.agentSession.get([auth.profile.uid, windlass.sessionId], { params: { token: auth.token } });
+				const asked = await waitFor("the Windlass item's prompt", async () => (await session.snapshot()).timeline.find(e => e.kind === "user"), 60_000);
+				assert(asked.kind === "user" && asked.effort === "xhigh" && asked.model === "gpt-6.1-sol", JSON.stringify(asked));
+				await user.actOnItem({ id: windlass.id, action: { kind: "cancel" } });
+				// Left out: the agent's default.
+				const plain = await user.createItem({ ...task, title: "Windlass at its default effort" });
+				assert(plain.agent?.effort === undefined, JSON.stringify(plain.agent));
+				await user.actOnItem({ id: plain.id, action: { kind: "cancel" } });
+				return `refused ${refusals.length} unknown efforts (${refusals[0]}); Claude Code set effort high before its prompt; Windlass's turn ran at xhigh`;
+			} finally {
+				runner.fake.report.harnesses = harnesses;
+				runner.report();
+			}
 		});
 
 		await check("machine: offline at launch waits without spend and resumes to review", async () => {

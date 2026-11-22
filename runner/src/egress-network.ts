@@ -90,14 +90,14 @@ export class EgressNetwork {
 	}
 	async attach(raw: string, container: string) {
 		const proxyEnabled = this.policy.mode === "restricted";
-		const harness = raw.startsWith("claude-") ? "claude" : raw.startsWith("opencode-") ? "opencode" : undefined;
+		const harness = raw.startsWith("claude-") ? "claude" : raw.startsWith("opencode-") ? "opencode" : raw.startsWith("codex-") ? "codex" : undefined;
 		if (!proxyEnabled && !harness) return;
 		const source = typeof EGRESS_SOURCE === "string" ? EGRESS_SOURCE : readFileSync(join(import.meta.dirname, "egress-proxy.mjs"), "utf8");
-		const denied = harness === "opencode" && proxyEnabled ? providerHosts : [];
+		const denied = !proxyEnabled ? [] : harness === "codex" ? ["api.openai.com", "auth.openai.com", "chatgpt.com"] : harness === "opencode" ? providerHosts : [];
 		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy, denied])).digest("hex");
 		const mounts: string[] = [], probes: string[] = [];
 		if (proxyEnabled) {
-			const broker = denied.length ? this.prefix + "-opencode-broker" : this.prefix;
+			const broker = denied.length ? `${this.prefix}-${harness}-broker` : this.prefix;
 			const volume = broker + "-socket";
 			await this.machine.ownedVolume(true, volume);
 			const mount = `type=volume,src=${volume},dst=/workspace`;
@@ -117,7 +117,7 @@ export class EgressNetwork {
 			probes.push("17892");
 		}
 		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, nonce].join("-"), "container:" + container,
-			source, mounts, [this.policy.mode, ...(harness ? [nonce] : [])], probes);
+			source, mounts, [this.policy.mode, ...(harness ? [nonce] : []), ...(harness === "codex" ? ["codex"] : [])], probes);
 	}
 	async detach(raw: string) {
 		const helper = await this.helper(this.prefix + "-" + raw, "forward");
@@ -127,7 +127,7 @@ export class EgressNetwork {
 		const flags = Object.entries(this.machine.labels).flatMap(([k, v]) => ["--filter", "label=" + k + "=" + v]);
 		const rows = await checked(["ps", "-a", "--filter", "label=" + LABEL_ARG, ...flags, "--filter", "label=" + roleLabel, "--format", "{{.Names}}"]);
 		for (const name of rows.stdout.trim().split("\n").filter(Boolean)) {
-			if (name === this.prefix || name === this.prefix + "-opencode-broker") {
+			if (name === this.prefix || name === this.prefix + "-opencode-broker" || name === this.prefix + "-codex-broker") {
 				if (this.policy.mode === "restricted" && running.size) continue;
 				const helper = await this.helper(name, "broker");
 				if (helper) await checked(["rm", "-f", helper.id]);

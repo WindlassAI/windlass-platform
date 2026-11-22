@@ -1,4 +1,5 @@
-import type { CheckConclusion, ItemBudget, Verdict } from "../contract.js";
+import type { CheckConclusion, ItemAgent, ItemBudget, Verdict } from "../contract.js";
+import { tokenWords } from "./budget.js";
 import { spellSeconds } from "../usage.js";
 import { flagWords } from "../verified.js";
 import { commentText } from "./review.js";
@@ -27,7 +28,7 @@ export function evidenceLine(itemUrl: string): string {
 }
 
 /** The public output accepts only platform observations. Never interpolate a filing, diagnostic or acceptance criterion. */
-export function checkSummary(v: Verdict, review: CheckReview | null, spent: ItemBudget, budget: ItemBudget, itemUrl: string): string {
+export function checkSummary(v: Verdict, review: CheckReview | null, spent: ItemBudget, budget: ItemBudget, itemUrl: string, agent?: ItemAgent): string {
 	const sha = commentText(v.head.slice(0, 7), 7);
 	const head = `Windlass at ${v.moved ? commentText(v.moved.slice(0, 7), 7) : sha}: ${checkTitle(v, review)}.`;
 	// ci.said can include raw API or job output. Render the CI sentence without that diagnostic.
@@ -52,7 +53,7 @@ export function checkSummary(v: Verdict, review: CheckReview | null, spent: Item
 	const footer = [
 		review ? `Second review: ${words[review.recommendation]}, ${review.blocking} blocking finding${review.blocking === 1 ? "" : "s"}.` : "No second review was filed for this commit.",
 		`${n} acceptance ${n === 1 ? "criterion is" : "criteria are"} left to you.`,
-		`Spent: ${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens, ${spent.turns} of ${budget.turns} turns, ${spellSeconds(spent.activeSeconds)} of ${spellSeconds(budget.activeSeconds)} working time.`,
+		`Spent: ${tokenWords(spent, budget, agent)}, ${spent.turns} of ${budget.turns} turns, ${spellSeconds(spent.activeSeconds)} of ${spellSeconds(budget.activeSeconds)} working time.`,
 		evidenceLine(itemUrl),
 	].join("\n\n");
 	// Shorten names and paths before dropping a row. Reserve the headline, totals and evidence link.

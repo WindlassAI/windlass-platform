@@ -1,5 +1,6 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { FeaturePlan, FeaturePlanEdit, ItemBudget, PlanSubtask } from "../contract.js";
+import { harnessName, knownHarness } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
@@ -121,8 +122,11 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 			needs.profile = n.profile;
 		}
 		if (n.harness !== undefined) {
-			requirePlan(n.harness === "windlass" || n.harness === "claude", "Choose a supported harness.");
-			needs.harness = n.harness;
+			const harness = knownHarness(n.harness);
+			requirePlan(harness !== null, "Choose a supported harness.");
+			// A child is made with the feature's Windlass model, and its approval does not say it would run an agent that never asks.
+			requirePlan(harness === "windlass", `A Plan-first subtask runs only with Windlass, not ${harnessName(harness!)}. File a Quick item to use ${harnessName(harness!)}.`);
+			needs.harness = harness!;
 		}
 		for (const key of ["cpus", "memoryGiB"] as const) if (n[key] !== undefined) {
 			const value = n[key];

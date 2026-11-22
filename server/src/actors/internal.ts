@@ -27,6 +27,7 @@ export interface SessionCreateInput {
 	mode?: string;
 	harness?: HarnessId;
 	harnessOptions?: HarnessOptions;
+	codexModes?: HarnessOptions["modes"];
 	/** A service token bound to this actor's key: proof that `user` created it. */
 	grant: string;
 	title: string;
@@ -44,7 +45,7 @@ export interface SessionCreateInput {
 	demo: boolean;
 	createdAt: number;
 	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number; effort?: string };
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
@@ -208,7 +209,7 @@ export function grantIsValid(grant: unknown, key: readonly string[], kind: strin
 
 export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {
 	if (input.origin && input.mode !== undefined) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
-	if (input.origin && input.harness !== undefined && input.harness !== "windlass") throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
+	if (input.origin?.role === "reviewer" && input.harness !== undefined && input.harness !== "windlass") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
 	const full: SessionCreateInput = { ...input, grant: createGrant("agentSession", [uid, sessionId]) };
 	await c.client().agentSession.create([uid, sessionId], { input: full, params: serviceParams() });
 }

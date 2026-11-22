@@ -5,14 +5,14 @@ import { Session } from '../../runner/src/session.ts';
 import { ServerChannel } from '../../server/src/runner/channel.ts';
 import { RunnerLink, machineLayer } from '../../server/src/sandbox/runner-layer.ts';
 import { AcpHarness } from '../../server/src/sandbox/acp-harness.ts';
-import { OPENCODE } from '../../server/src/sandbox/harnesses.ts';
+import { OPENCODE, CODEX } from '../../server/src/sandbox/harnesses.ts';
 import { turnRefusal } from '../../server/src/provider-refusal.ts';
 
-export async function channelTurn(owner, session, id, model, expectedFailure) {
+export async function channelTurn(owner, session, id, model, expectedFailure, codex) {
 	const runner = new Session(session, owner, () => {});
 	const messages = [new EventEmitter(),new EventEmitter()];
 	const endpoint = side => ({
-		send: data => queueMicrotask(() => messages[1-side].emit('message',data)),
+		send: data => { codex?.observe(data); queueMicrotask(() => messages[1-side].emit('message',data)); },
 		onMessage: fn => messages[side].on('message',fn),
 		close() {}, onClose() {},
 	});
@@ -31,22 +31,25 @@ export async function channelTurn(owner, session, id, model, expectedFailure) {
 		const layer = machineLayer(link, {});
 		const box = await layer.sandboxes.connect(id);
 		assert.ok(box);
-		await box.writeTextFile('/workspace/opencode.json', JSON.stringify({enabled_providers: [], default_agent: 'nonexistent'}));
-		const harness = new AcpHarness(OPENCODE, 'fixture');
+		if (!codex) await box.writeTextFile('/workspace/opencode.json', JSON.stringify({enabled_providers: [], default_agent: 'nonexistent'}));
+		const harness = new AcpHarness(codex ? CODEX : OPENCODE, 'fixture');
 		let previous;
-		for (const mode of (session === 'third' ? ['build', 'plan'] : ['plan'])) {
+		for (const mode of (codex ? ['agent-full-access'] : session === 'third' ? ['build', 'plan'] : ['plan'])) {
 			let reply = '', selected;
 			const turn = await harness.runTurn(box, {
 				prompt: 'Say relay proof.', mode, model, windlassSessionId: previous,
 				signal: AbortSignal.timeout(expectedFailure ? 150000 : 90000),
 				onAcpModes(current, choices) {
-					assert.deepEqual(choices.map(c => c.id), ['build','plan']);
+					assert.deepEqual(choices.map(c => c.id), codex ? ['agent-full-access'] : ['build','plan']);
 					selected = current;
 				},
 				onAcpUpdate(update) {
+					codex?.observe(JSON.stringify(update));
+					codex?.onUpdate?.(update);
 					if (update.sessionUpdate === 'agent_message_chunk') reply += update.content.text;
 				},
 			});
+			if (codex?.signedOut) { assert.equal(turn.failure?.reason,'harness_signed_out',JSON.stringify(turn.failure)); return; }
 			if (expectedFailure) {
 				assert.deepEqual(turn.failure, expectedFailure);
 				assert.deepEqual(turnRefusal('error', turn, null), {kind:expectedFailure.reason, message:expectedFailure.message});
@@ -57,7 +60,7 @@ export async function channelTurn(owner, session, id, model, expectedFailure) {
 			assert.equal(turn.acp.stopReason, 'end_turn');
 			assert.ok(turn.acp.models.models.length);
 			assert.equal(selected, mode);
-			assert.equal(reply, 'relay proof');
+			assert.equal(reply, codex ? 'Fixture turn complete.' : 'relay proof');
 			if (previous) { assert.equal(turn.resumed, true); assert.equal(turn.windlassSessionId, previous); }
 			previous = turn.windlassSessionId;
 		}

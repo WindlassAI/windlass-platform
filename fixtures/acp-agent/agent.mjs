@@ -182,7 +182,7 @@ export class FixturePeer {
 		while (this.turns.get(turn.sessionId) === turn) {
 			const { done, value } = turn.script.next(answer);
 			answer = undefined;
-			if (done) return this.finish(turn, value?.error ? value : { result: { stopReason: value ?? "end_turn" } });
+			if (done) return this.finish(turn, value?.error ? value : value?.usage ? { result: { stopReason: value.stopReason, usage: value.usage } } : { result: { stopReason: value ?? "end_turn" } });
 			if (value.sessionUpdate) {
 				if (value.sessionUpdate === "current_mode_update") this.save(turn.sessionId, { ...this.sessions.get(turn.sessionId), mode: value.currentModeId });
 				this.update(turn.sessionId, value);

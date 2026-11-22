@@ -40,7 +40,9 @@ gateway origin. Compare the fingerprint printed by the runner with the owner's o
 Pairing establishes initial trust over TLS. A signed runner checks the online certificate against the
 stored Ed25519 root, its expiry and the highest serial already seen on either socket. The runner signs
 its ephemeral X25519 key, nonce and hello fields. The certified platform key signs the corresponding
-welcome, including resume state and idle policy. On the session socket the one-use random attach ticket
+welcome, including resume state, idle policy and, for runners 0.3.0 or later, the server's
+capabilities. A runner sends a report field such as `gitMirrors` only to a server that names it,
+because a server refuses a frame with a key it does not read. On the session socket the one-use random attach ticket
 from the authenticated control socket serves as the platform challenge. Each connection derives fresh
 directional HMAC keys. A counter starts at zero in each direction. Verification precedes dispatch for
 control, catalog, report, host, session data and acknowledgments. A resumed conversation retains its
@@ -100,12 +102,18 @@ adapter's default model. Later prompts can select a model and reasoning effort i
 
 The session streams messages, reasoning, tool calls and permission questions over ACP v1. You
 can stop a turn and send a follow-up during a turn when the adapter offers steering. The turn
-reports context use and cost when available. Its conversation stays in the machine’s sandbox
+reports context use and cost when available. The tokens the adapter answers a prompt with
+(`session/prompt` `usage`) are recorded on the turn's end for Claude Code and OpenCode turns, in
+personal sessions as in work items (`agent-session.ts`, `usage`; `promptUsage` in
+`sandbox/acp-harness.ts`). Its conversation stays in the machine’s sandbox
 across turns and sleeps. Removing the sandbox removes that conversation.
 
 Publish from the session panel. The adapter receives no platform tools, saved secrets or user MCP
-servers. Individual tool-call cancellation, required checks, token accounting and conversation
-backups are unavailable for Claude Code. Work items, reviewers and hosted sessions use Windlass.
+servers. Individual tool-call cancellation, required checks and conversation
+backups are unavailable for Claude Code. A personal session's reported tokens are recorded, not
+counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Reviewers and hosted sessions use Windlass. A Quick work item
+filed on the machine can run Claude Code or OpenCode where it is signed in there; see
+[Work items](work-items.md#the-items-agent).
 
 ### What the platform keeps
 

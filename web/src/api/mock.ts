@@ -62,6 +62,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  */
 import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
+import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import {
@@ -234,6 +235,7 @@ const MOCK_OPENCODE_MODELS: ModelList = {
 	source: "harness", defaultModel: "openai/gpt-5.4", fetchedAt: null,
 	models: [{ id: "openai/gpt-5.4", name: "OpenAI/GPT-5.4", efforts: ["low", "medium", "high", "xhigh", "default"] }, { id: "openai/gpt-5.4-mini", name: "OpenAI/GPT-5.4 mini", efforts: ["low", "medium", "high", "default"] }],
 };
+const MOCK_CODEX_MODELS: ModelList = { source:"harness", defaultModel:"gpt-6.2-sol", models:[{id:"gpt-6.2-sol",name:"6.2 Sol",efforts:["low","high"]}], fetchedAt:null };
 const MOCK_OPENCODE_MODES = [
 	{ id: "build", name: "build", description: "The default agent. Executes tools based on configured permissions." },
 	{ id: "plan", name: "plan", description: "Plan mode. Disallows all edit tools." },
@@ -1337,6 +1339,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			// An item's agent is not one the user started: it is not where their next agent starts.
 			itemStarts.add(asked);
 			return userApi(auth).createSession(asked);
+		},
+		models: async (auth, harness, machineId) => {
+			if (harness === "windlass") return modelsFor(worldOf(auth).profile);
+			const options = machineId ? machinesOf(auth).list.find((one) => one.machineId === machineId)?.harnesses?.find((entry) => entry.id === harness)?.options : undefined;
+			return initialHarnessModels(options);
 		},
 		seededSession: (auth, item) => seedItemSession(auth, item),
 		itemChanged: (auth, item) => {
@@ -2497,7 +2504,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const outcome = acpOutcome(stopReason);
 		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
 		// Once it has run, the session has the models Claude Code listed.
-		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), harnessModels: { ...(session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
+		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), harnessModels: { ...(session.summary.harness === "codex" ? MOCK_CODEX_MODELS : session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
 		if (clock === null) {
 			session.pauseTimer = later(2 * MINUTE, () => {
 				if (session.run !== null || session.summary.sandbox !== "running") return;
@@ -3184,6 +3191,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const at = realNow();
 		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
 		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
+		externalHarnesses.push({id:"codex", image:MOCK_CLAUDE.image, adapter:"codex-acp 2.9.0", signIn:"token", method:"api-key", modes:["agent-full-access"],
+			options:{defaultModel:MOCK_CODEX_MODELS.defaultModel,models:MOCK_CODEX_MODELS.models, modes:codexModes("docker-hardened"),checkedAt:at}});
 		const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: Math.ceil(2.1 * 2 ** 30) } });
 		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({
 			machineId: "m_nas",
@@ -3842,7 +3851,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						play(session, plan(world, session, { ...input, text }, { events: [], platformFailure: unreachable, unreachable: true }));
 						return take({ turn, steered: false });
 					}
-					play(session, acpTurn(world, session, { ...input, text }, harness === "claude" ? claudeScript(session, text) : { entries: [{ wait: 200, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "OpenCode completed the mock turn." } } }], stopReason: "end_turn" }));
+					play(session, acpTurn(world, session, { ...input, text }, harness === "claude" ? claudeScript(session, text) : { entries: [{ wait: 200, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${HARNESS_NAMES[harness]} completed the mock turn.` } } }], stopReason: "end_turn" }));
 					return take({ turn, steered: false });
 				}
 				const models = modelsFor(world.profile);
@@ -4053,7 +4062,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		endpoint: null,
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
-			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode"] as Array<"claude" | "opencode">, platformUrl: origin } };
+			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode", "codex"] as Array<"claude" | "opencode" | "codex">, platformUrl: origin } };
 			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true } }) };
 		},
 		login: {

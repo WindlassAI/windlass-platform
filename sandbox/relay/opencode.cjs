@@ -2,7 +2,7 @@
 const { createPublicKey, randomUUID } = require('node:crypto');
 const { readFile, rename, unlink, writeFile } = require('node:fs/promises');
 const { rmSync } = require('node:fs');
-const { createRelay, scrubStream } = require('./server.cjs');
+const { createRelay, scrubStream, stopOnSignal, SIGNED_OUT, Stopping } = require('./server.cjs');
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
@@ -52,10 +52,10 @@ async function save(record) {
 		await rename(temp, filename);
 	} finally { await unlink(temp).catch(() => {}); }
 }
-function providerFor(provider, generation, { load = async () => JSON.parse(await readFile(filename, 'utf8')), persist = save, exchange = fetch } = {}) {
+function providerFor(provider, generation, { load = async () => JSON.parse(await readFile(filename, 'utf8')), persist = save, exchange = fetch, responses = false } = {}) {
 	const allowed = new Set(Array.isArray(provider) ? provider : [provider]);
 	for (const id of allowed) if (!['chatgpt','free'].includes(id) && !Object.hasOwn(providers,id)) throw new Error('Unsupported provider.');
-	let refresh;
+	let refresh, stopping = false;
 	const secrets = new Set();
 	function remember(record) {
 		for (const value of [record.key, record.refresh, record.access]) if (value) secrets.add(value);
@@ -70,6 +70,8 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		if (!record) return;
 		remember(record);
 		if (provider !== 'chatgpt' || record.expires > Date.now() + 30000) return record;
+		// A stopping relay starts no refresh it might not live to save. The relay answers 503, or 401 after a logout.
+		if (stopping && !refresh) throw new Stopping();
 		// Re-read inside the single flight: a concurrent request may have already rotated.
 		return refresh ??= (async () => {
 			const store = await load();
@@ -82,9 +84,11 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 			});
 			if (!res.ok) return;
 			const tokens = await res.json();
-			if (!tokens.access_token || !tokens.refresh_token || !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0) return;
+			if (typeof tokens.access_token !== 'string' || !tokens.access_token || (tokens.refresh_token !== undefined && (typeof tokens.refresh_token !== 'string' || !tokens.refresh_token))
+				|| !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0) return;
 			const id = accountId(tokens.id_token) || accountId(tokens.access_token);
-			const next = { ...latest, access: tokens.access_token, refresh: tokens.refresh_token,
+			// The token endpoint may keep the refresh token unchanged and omit it from the reply.
+			const next = { ...latest, access: tokens.access_token, refresh: tokens.refresh_token ?? latest.refresh,
 				accountId: id || latest.accountId, expires: Date.now() + 1000 * tokens.expires_in };
 			await persist(store.records ? { ...store, records: { ...store.records, [provider]: next } } : next);
 			remember(next);
@@ -92,7 +96,12 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		})().finally(() => { refresh = undefined; });
 	}
 	return {
-		responseFilter: type => secrets.size ? scrubStream(secrets, type) : undefined,
+		/** Starts no further refresh and settles once an in-flight refresh has been saved or abandoned. */
+		async drain() {
+			stopping = true;
+			await refresh?.catch(() => {});
+		},
+		responseFilter: type => secrets.size ? scrubStream(secrets, type, responses) : undefined,
 		accepts: url => Boolean(endpointFor(allowed, url)),
 		bearer(h, url) {
 			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;
@@ -148,6 +157,7 @@ if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
-	createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE,
-		domain, provider: providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation) }).listen(socket);
+	rmSync(SIGNED_OUT, { force: true });
+	const provider = providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation);
+	stopOnSignal(createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider }).listen(socket), provider);
 }

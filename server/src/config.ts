@@ -685,7 +685,7 @@ export function publishedHarnesses(image: string, raw?: string): MachinesInfo["r
 	try {
 		const report = JSON.parse(raw);
 		if (report?.image !== image || !Array.isArray(report.harnesses)) return undefined;
-		return (["claude", "opencode"] as const).filter(id => report.harnesses.includes(id));
+		return (["claude", "opencode", "codex"] as const).filter(id => report.harnesses.includes(id));
 	} catch { return undefined; }
 }
 

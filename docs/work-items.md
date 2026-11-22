@@ -134,7 +134,34 @@ or hand over the commit the run already pushed.
 **CI needs the GitHub App's three read permissions** ([The GitHub App](operating.md#the-github-app)). Without them, or before an
 installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
 
-An item's turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
+### The item's agent
+
+`CreateItemInput.effort` is the reasoning effort of every turn of the builder, Windlass or not: one
+the agent reported for the item's model (`checkItemEffort` in `server/src/account-models.ts`; a machine
+harness model whose efforts come only once selected takes one reported for any model), else `bad_effort`.
+It is kept on the session's `origin.effort` and on `ItemAgent.effort`; a Plan-first feature's children
+take the feature's. Left out, a builder runs at its agent's default and a planner at `plannerEffort`.
+
+`CreateItemInput.harness` picks the builder: `windlass` (the default), or a machine harness by id
+(`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in (`signIn: "token"`; `makeSession` refuses
+"none" and "unknown"). Each item turn checks the machine's report again before its sandbox opens
+(`itemSignInRefusal` in `agent-session.ts`): a signed-out agent refuses the turn, and the item asks
+with the login hint.
+A machine harness runs only Quick, only on a machine, in `docker-hardened`. A Plan-first subtask's
+`needs.harness` other than `windlass` is refused by plan validation and by placement (`machineAgentRefusal`). It starts every turn in
+its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `build`), and the ACP
+harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
+agent still asks for is allowed once. The reviewer stays Windlass and runs only hosted, so these
+items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
+snapshot), and no platform tools: the PR body is the item's, and CI decides the verdict.
+`ItemSummary.agent` holds the harness, the model and what the agent reported: tokens counted against
+the budget (`itemTokens: "budget"`), shown but not counted for a subscription, or "not reported";
+the conversation's cost; Claude Code's 5h window at the first and latest turn
+(`server/src/factory/budget.ts`, `agentTurn`, `noteAgentTurn`). A turn of an agent whose tokens count
+that reports none stops the item with a `budget` question and no way on but hand over or give up
+(`unmeasuredTurn`); it is never taken as 0 tokens. The reported cost is shown, not capped.
+
+An item's Windlass turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
 tools"). A single item starts by implementing; an
 orchestrated one starts with a planner ([Feature orchestration](#feature-orchestration) above).
 

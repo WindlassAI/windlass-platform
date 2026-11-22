@@ -14,7 +14,7 @@ import type { Body } from "../server/src/runner/protocol.js";
 import {
 	CLOCK_TOLERANCE_MS, CONTROL_HEARTBEAT_MS, RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH,
 	connectionProof, parseRunnerFrame, parseConnectionRequest, parsePairPoll, parsePairRequest,
-	refuse, secondHello, type PairStatus, type PairStarted, type Refusal, type Report, type ServerFrame,
+	refuse, secondHello, welcomeCapabilities, type PairStatus, type PairStarted, type Refusal, type Report, type ServerFrame,
 } from "../server/src/runner/control.js";
 
 export async function until(test: () => boolean | Promise<boolean>, message: string, ms = 45_000) {
@@ -91,7 +91,7 @@ export async function stub(storage: string, tls?: ServerOptions) {
 				const context = { uid, machineId, challenge: nonce };
 				if (f.protocol !== 2 || !signed(machineStatement(context, f), f.signature)) { ws.close(); return; }
 				const refused = state.refusal ?? (secondHello(live, f, Date.now()) === "refuse" ? refuse("key-in-use") : null);
-				const greeting = platformWelcome(context, f, { kind: "welcome" as const, idleSuspendMs: state.idleMs, refusal: refused ?? undefined }, platformIdentity);
+				const greeting = platformWelcome(context, f, { kind: "welcome" as const, idleSuspendMs: state.idleMs, ...welcomeCapabilities(f.runnerVersion), refusal: refused ?? undefined }, platformIdentity);
 				send(ws, greeting.welcome); codecs.set(ws, greeting.auth);
 				if (refused) { ws.close(); return; }
 				live?.ws.close(); live = { ws, epoch: f.epoch, heardAt: Date.now() };

@@ -392,12 +392,12 @@ async function linkChecks(): Promise<void> {
 			await advance(50);
 			assert(refused.at instanceof Error && refused.at.message.includes("--harness claude") && !old.log.attaches.length, "missing preflight refusal");
 			const offered = fresh({ serve, report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: true },
-				freeDiskBytes: null, sandboxes: [], harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
-			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create({ ...input, fromSnapshot: { writer: true, attempt: "a".repeat(32), repo: "1", generation: "b".repeat(64), inputs: "c".repeat(64) } })]) {
+				freeDiskBytes: null, sandboxes: [], gitMirrors: true, harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
+			for (const create of [offered.sandboxes.create({ ...input, harness: "claude", mirrorRepo: "1" }), old.sandboxes.create({ ...input, mirrorRepo: "1", fromSnapshot: { writer: true, attempt: "a".repeat(32), repo: "1", generation: "b".repeat(64), inputs: "c".repeat(64) } })]) {
 				await advance(50);
 				await create;
 			}
-			assert(received.length === 2 && received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile, harness: "claude" }))
+			assert(received.length === 2 && received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile, mirrorRepo: "1", harness: "claude" }))
 				&& received.some(args => JSON.stringify(args) === JSON.stringify({ profile: input.profile })), "wrong create arguments");
 			return "checked both wire requests and the refusal before attach";
 		});
@@ -956,15 +956,19 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(code === "bad_input", String(code));
 				return code;
 			});
-			await check("work items and their builder and reviewer sessions refuse Claude", async () => {
-				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" };
-				const item = await refusal(user.createItem(raw));
+			await check("a Claude Code work item runs on the machine without asking; hosted, Plan first and reviewers stay Windlass", async () => {
+				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" as const };
+				const hosted = await refusal(user.createItem(raw));
+				const planFirst = await refusal(user.createItem({ ...raw, place, mode: "orchestrate" }));
 				const { createSessionActor } = await import("../server/src/actors/internal.js");
-				const roles = await Promise.all((["builder", "reviewer"] as const).map(role =>
-					refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role, itemId: "i_fixture" } }))
-				));
-				assert([item, ...roles].every(code => code === "bad_input"), `item, builder, reviewer: ${[item, ...roles].join(", ")}`);
-				return "item, builder, reviewer refused";
+				const reviewer = await refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role: "reviewer", itemId: "i_fixture" } }));
+				assert([hosted, planFirst, reviewer].every(code => code === "bad_input"), `hosted, plan first, reviewer: ${[hosted, planFirst, reviewer].join(", ")}`);
+				const item = await user.createItem({ ...raw, place, mode: "single", profile: "docker-windlass-sandbox" });
+				const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
+				assert(item.agent?.harness === "claude" && builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions",
+					JSON.stringify({ agent: item.agent, harness: builder?.harness, profile: builder?.profile, mode: builder?.mode }));
+				await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
+				return "hosted, plan first and reviewer refused; the builder is Claude Code in bypassPermissions";
 			});
 			await check("Claude bounds the serialized item, live deltas and reconnect text", async () => {
 				const { id } = await acpSession();
@@ -1047,6 +1051,7 @@ async function main(): Promise<void> {
 			const options = { models: [{ id: "opus", name: "Reported Opus", efforts: ["high"] }, { id: "sonnet", name: "Reported Sonnet", efforts: ["low"] }],
 				defaultModel: "opus", modes: [{ id: "plan", name: "Plan", description: "Plan first" }], checkedAt: Date.now() };
 			runner.fake.report.harnesses![0]!.options = options;
+			runner.fake.report.harnesses!.push({id:"codex",adapter:"codex-acp 2.9.0",image:"fixture",signIn:"none",modes:["agent-full-access"],options:{...options,modes:[{id:"agent-full-access",name:"Container access",description:null}]}});
 			runner.fake.maxTurns = 2;
 			runner.fake.report.slots = { max: 2, unit: { cpus: 1, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } };
 			await runner.connectControl();
@@ -1069,6 +1074,55 @@ async function main(): Promise<void> {
 					assert(after.availableModes?.some(m => m.id === "auto"), "first turn did not replace modes");
 				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
 				return "model names, efforts, modes and report timestamp persisted before ACP opened";
+			});
+			await check("Codex refuses a forged sandbox mode and prompts with the machine login command", async () => {
+				const launch = {place,profile:"docker-hardened" as const,harness:"codex" as const};
+				assert(await refusal(user.createSession({...launch,mode:"workspace-write"})) === "bad_input","forged launch mode accepted");
+				const created = await user.createSession(launch);
+				const seen = new Watch(client,uid,created.id,token);
+				try {
+					assert(await refusal(seen.conn.setMode({mode:"workspace-write"})) === "bad_input","forged session mode accepted");
+					assert(await refusal(seen.conn.prompt({text:"hello"})) === "harness_signed_out","wrong signed-out failure");
+				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
+				return "restricted mode refused at create and setMode, signed-out turn refused";
+			});
+			await check("Codex keeps a saved restricted mode when the machine loses its inner sandbox", async () => {
+				const report = runner.fake.report;
+				const codex = report.harnesses!.find(h => h.id === "codex")!;
+				report.allowedProfiles = ["docker-hardened", "docker-windlass-sandbox"];
+				codex.modes = ["agent-full-access", "workspace-write"];
+				codex.signIn = "token";
+				runner.report();
+				const hasInner = async () => (await user.machines()).find(m => m.machineId === place.machineId)
+					?.harnesses?.find(h => h.id === "codex")?.modes?.includes("workspace-write");
+				await until("Codex sandbox probe passed", hasInner);
+				// A runner from before Auto review was withdrawn still reports it: the platform never offers it.
+				codex.modes = ["agent-full-access", "read-only", "workspace-write", "agent"];
+				runner.report();
+				await until("Codex reported every mode", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.find(h => h.id === "codex")?.modes?.length === 4);
+				assert(await refusal(user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex", mode:"agent-full-access"})) === "bad_input", "Container access offered on the Windlass sandbox profile");
+				assert(await refusal(user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex", mode:"agent"})) === "bad_input", "Auto review offered on the Windlass sandbox profile");
+				const plain = await user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex"});
+				const plainSeen = new Watch(client, uid, plain.id, token);
+				try {
+					const summary = (await plainSeen.conn.snapshot()).summary;
+					assert(summary.mode === "workspace-write", `default Codex mode on the Windlass sandbox profile is ${summary.mode}`);
+					assert(summary.availableModes.map(m => m.id).join() === "read-only,workspace-write", "Windlass sandbox profile offered more than Read-only and Workspace access");
+					assert(await refusal(plainSeen.conn.setMode({mode:"agent"})) === "bad_input", "setMode reached Auto review on the Windlass sandbox profile");
+					assert(await refusal(plainSeen.conn.setMode({mode:"agent-full-access"})) === "bad_input", "setMode reached Container access on the Windlass sandbox profile");
+				} finally { await plainSeen.conn.dispose(); await user.deleteSession(plain.id); }
+				const created = await user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex", mode:"workspace-write"});
+				const seen = new Watch(client, uid, created.id, token);
+				try {
+					codex.modes = ["agent-full-access"];
+					codex.modeReason = "The machine's Codex sandbox probe failed.";
+					runner.report();
+					await until("Codex sandbox probe failed", async () => (await hasInner()) === false);
+					const denied = await seen.conn.prompt({text:"hello"}).then(() => "", (error: Error) => error.message);
+					assert(denied.includes(codex.modeReason), "turn omitted the probe failure");
+					assert((await seen.conn.snapshot()).summary.mode === "workspace-write", "saved mode escalated");
+				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
+				return "turn refused before creating a container and the saved mode is preserved";
 			});
 			if (process.argv[2] === "inventory") return;
 			const { machineFairnessChecks } = await import("./machine-fairness-check.js");

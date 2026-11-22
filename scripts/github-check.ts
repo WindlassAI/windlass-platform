@@ -23,7 +23,12 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
-import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
+import assert from "node:assert/strict";
+import { gitMirrorMount, MIRROR_ROOT, MIRROR_VOLUME, type MirrorStore, mirrorOwner, mirrorSavesSettled, mirrorSlot, referencedSlots, saveSessionMirror, slotsInInspect } from "../server/src/sandbox/git-mirrors.js";
+import { sweepSessionProcesses } from "../server/src/sandbox/provider.js";
+import { snapshotLimits } from "../server/src/sandbox/snapshots.js";
+import { docker as dockerCli } from "../server/src/sandbox/docker.js";
+import { DockerSandboxHandle, startContainer } from "../server/src/sandbox/sandboxes.js";
 import { imageId } from "./check-image.js";
 import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -352,7 +357,7 @@ await section("connect: a user with an installation", async () => {
 	expect("connect exchanges the code, reads identity and installations, and revokes the token",
 		calls[0] === "POST /login/oauth/access_token as none" && calls.includes("GET /api/v3/user as user") &&
 		calls.includes("GET /api/v3/user/installations as user") && calls[3] === `DELETE /api/v3/applications/${standin.clientId}/token as basic` && calls.length === 4);
-	expect("the ticket carries only connection metadata", Object.keys(back.ticket ?? {}).sort().join(",") === "exp,installations,k,nonce,uid,user");
+	expect("the ticket carries only connection metadata", Object.keys(back.ticket ?? {}).sort().join(",") === "exp,installations,k,nonce,readAt,uid,user");
 	const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
 	expect("no user access token is left alive: the platform keeps no credential of the user's", userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)));
 	const forged = state.verifyTicket(`${back.location.slice(back.location.indexOf("=") + 1, -4)}AAAA`);
@@ -594,13 +599,25 @@ await section("publish: a pull request is opened, then the same branch is update
 	const third = await publish.publishWork({ ...input, pull: second.pull, pushed: second.head, message: { title: "unused", body: "" } });
 	expect("it is pushed as it is, with no commit of the platform's on top", third.committedFiles === 0 && standin.lastCommit(harbor, BRANCH).message === "The agent commits by itself" && !third.opened);
 
+	// Claude Code and OpenCode commit with trailers of their own, and may try to push: the platform's push takes the commit as it is.
+	const trailers = "Fix the sign\n\nGenerated with Claude Code\n\nCo-Authored-By: Claude <noreply@anthropic.invalid>";
+	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- add() adds\n- and says so\n- twice\n- with trailers\n");
+	await sandbox.run(`git commit --quiet -a -F - <<'MSG'\n${trailers}\nMSG`);
+	const ownPush = await sandbox.run(`GIT_TERMINAL_PROMPT=0 git push origin HEAD:${BRANCH} 2>&1; echo exit=$?`);
+	expect("an agent's own git push fails: the sandbox holds no GitHub credential", /exit=(?!0)/.test(ownPush.stdout) && standin.branchHead(harbor, BRANCH) === third.head, ownPush.stdout.trim().split("\n").slice(-1).join(""));
+	writeFileSync(join(sandbox.cwd, "src/sub.ts"), "export const sub = (a: number, b: number) => a - b\n");
+	const trailed = await publish.publishWork({ ...input, pull: third.pull, pushed: third.head, message: { title: "Add sub()", body: "" } });
+	const pushedLog = await sandbox.run(`git log --format=%B -n 2 ${trailed.head}`);
+	expect("the agent's commit with its trailers goes as it is, and what it left uncommitted in the platform's commit on top", trailed.committedFiles === 1 && standin.lastCommit(harbor, BRANCH).message === "Add sub()" && pushedLog.stdout.includes("Co-Authored-By: Claude") && pushedLog.stdout.includes("Generated with Claude Code") && standin.branchHead(harbor, BRANCH) === trailed.head, pushedLog.stdout.replace(/\n+/g, " | "));
+	const thirdHead = trailed;
+
 	// Merged at GitHub: the next push opens a new pull request from the same branch.
 	(standin.pulls[0] as (typeof standin.pulls)[number]).state = "closed";
 	(standin.pulls[0] as (typeof standin.pulls)[number]).merged = true;
-	const seen = await publish.refreshPull(app, adaConnection, repository, third.pull);
+	const seen = await publish.refreshPull(app, adaConnection, repository, thirdHead.pull);
 	expect("a pull request that was merged at GitHub is seen as merged", seen.state === "merged" && seen.number === 1);
 	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- more\n");
-	const fourth = await publish.publishWork({ ...input, pull: seen, pushed: third.head, message: { title: "More after the merge", body: "Follow-up." } });
+	const fourth = await publish.publishWork({ ...input, pull: seen, pushed: thirdHead.head, message: { title: "More after the merge", body: "Follow-up." } });
 	expect("after a merge, the next push opens a new pull request", fourth.opened && fourth.pull.number === 2 && fourth.pull.state === "open" && standin.pulls.length === 2);
 
 	// The pull request exists but the session lost track of it: GitHub's is taken up, not doubled.
@@ -1498,6 +1515,506 @@ await section("docker: the same git commands in a container of the sandbox image
 		}
 	}
 });
+
+await section("mirror units: failure labels, deployment scope and module imports", async () => {
+	// Only a failure of the mirror's own makes a second, plain clone. Any other is reported as it is.
+	const owner = "a".repeat(64);
+	const failure = async (result: Partial<ExecResult>, reference = true) => {
+		const fake: SandboxHandle = {
+			id: "fake", profile: "docker-hardened", cwd: "/workspace",
+			run: async (command, options) => ({ exitCode: options?.gitUser && command.includes(" clone ") ? 1 : 0, timedOut: false, aborted: false, stdout: "", stderr: "",
+				...(options?.gitUser && command.includes(" clone ") ? result : {}) }),
+			readTextFile: async () => "", writeTextFile: async () => {},
+		};
+		return (await gitSteps.cloneWithToken(fake, "t", { url: "https://github.com/ada/r.git", branch: "main", directory: "r", mirror: { owner, reference } })).failure;
+	};
+	assert.equal(await failure({ stderr: "fatal: Remote branch main not found in upstream origin" }), "no_branch");
+	assert.equal(await failure({ stderr: "remote: Repository not found.\nfatal: repository 'https://github.com/ada/r.git/' not found" }), "gone");
+	assert.equal(await failure({ stderr: "fatal: Authentication failed for 'https://github.com/ada/r.git/'" }), "denied");
+	assert.equal(await failure({ exitCode: null, timedOut: true }), "timeout");
+	assert.equal(await failure({ stderr: "fatal: the remote end hung up unexpectedly" }), "other");
+	assert.equal(await failure({ exitCode: 4, stdout: "wlp:mirrorfail\n" }), "mirror");
+	assert.equal(await failure({ stdout: "wlp:mirrorfail\n", stderr: "error: RPC failed; curl 28 Operation too slow. Less than 1 bytes/sec transferred the last 8 seconds" }), "mirror");
+	assert.equal(await failure({ exitCode: 4, stdout: "wlp:mirrorfail\n" }, false), "other");
+	expect("a reference clone is relabelled only for the mirror's lock, config, alternates, connectivity or stall failures", true);
+	// Snapshots are off here (WLP_SNAPSHOTS unset): no snapshot identity, but mirrors still scoped,
+	// also on the next start, when the mirror's identity exists already.
+	// The configuration was read before this script set its storage path: give the layer a fresh one.
+	const { config } = await import("../server/src/config.js");
+	const storagePath = config.storagePath;
+	(config as { storagePath: string }).storagePath = join(scratch, "layer-state");
+	try {
+		const { createSandboxLayer } = await import("../server/src/sandbox/index.js");
+		const scopes = [createSandboxLayer(), createSandboxLayer()].map(l => (l.sandboxes as unknown as { options: { deployment?: string; mirrorScope?: string } }).options);
+		assert.equal(config.snapshots, false);
+		assert.deepEqual(scopes.map(o => o.deployment), [undefined, undefined], "a deployment without snapshots got a snapshot identity");
+		assert.ok(!existsSync(join(config.storagePath, "snapshot-deployment")), "the snapshot identity was created");
+		assert.match(scopes[0]!.mirrorScope ?? "", /^[0-9a-f]{32}$/);
+		assert.equal(scopes[1]!.mirrorScope, scopes[0]!.mirrorScope);
+		const layer = createSandboxLayer();
+		let asked = 0;
+		await layer.sandboxes.sweepSnapshots?.(async () => { asked++; return null; });
+		await layer.sandboxes.dropSnapshots?.("fixtureA");
+		assert.equal(asked, 0);
+	} finally { (config as { storagePath: string }).storagePath = storagePath; }
+	expect("snapshot sweeps stay off where snapshots are, while mirrors keep a deployment scope", true);
+	const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+	assert.ok(!/^\s*(?:import|export\s.*\sfrom)\b/m.test(source("../server/src/sandbox/store-limits.ts")), "store-limits.ts imports something");
+	assert.ok(!source("../server/src/sandbox/git-mirrors.ts").includes('"./snapshots.js"'), "git-mirrors.ts imports snapshots.ts");
+	expect("the mirror and snapshot stores share their limits from a module that imports nothing", true);
+	// v1 slots came from the earlier design and were never rehashed by the save helper.
+	expect("mirrors live in the v2 store, never the v1 one", MIRROR_VOLUME === "wlp-git-mirrors-v2");
+});
+
+// One throwaway store, fixture repository and set of containers per mirror section.
+async function mirrorFixture(name: string) {
+	const volume = "mirror-proof-" + randomBytes(8).toString("hex");
+	const image = await imageId();
+	const fixture = standin.addRepository({ owner: "ada", name, private: true, installation: adaInstallation });
+	repos.forgetGithubCaches();
+	const repo = String(fixture.id);
+	const store = { volume, slots: 2, graceSeconds: 0 };
+	const boxes: string[] = [], allocations: number[] = [];
+	const cli = async (...args: string[]) => (await dockerCli(args, { check: true })).stdout.trim();
+	const pathOf = (user: string) => MIRROR_ROOT + "/" + mirrorOwner(user, repo);
+	async function mount(user: string, deployment = "proof", machine = "", options: MirrorStore = {}) {
+		const start = performance.now();
+		const m = await gitMirrorMount(image, deployment, machine, user, repo, { ...store, ...options });
+		allocations.push(Math.round(performance.now() - start));
+		return m;
+	}
+	async function admitted(...args: Parameters<typeof mount>) {
+		const m = await mount(...args);
+		assert.ok(m, "allocator refused a fixture slot");
+		return m;
+	}
+	// Not --rm: a stopped container keeps naming its slot.
+	async function box(user: string, mounted?: string | null, from = image) {
+		const name = volume + "-" + boxes.length;
+		boxes.push(name);
+		// The keepalive a session has, so the per-turn process sweep accepts the container.
+		await cli("run", "-d", "--init", "--pull", "never", "--name", name, "--network", "host",
+			"--user", "agent", "--cpus", "1", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+			...(mounted ? ["--mount", mounted] : []), from, "sleep", "infinity");
+		return new (class extends DockerSandboxHandle { override get container() { return name; } })(name, "docker-hardened", user, undefined, false, image);
+	}
+	// What only root can see: the store itself. The first line is the script's.
+	async function inStore(script: string) {
+		const result = await dockerCli(["run", "--rm", "--pull", "never", "--network", "none", "--user", "0:0",
+			"--mount", `type=volume,src=${volume},dst=/store`, "--entrypoint", "/bin/sh", image, "-c", "cd /store; " + script + "; echo; ls -l --time-style=full-iso"]);
+		return result.stdout.split("\n")[0]!.trim() || result.stdout;
+	}
+	const slotOf = (user: string, deployment = "proof", machine = "") => mirrorSlot(deployment, machine, user, repo);
+	// A save runs on in a helper container after the clone returns.
+	const settled = () => mirrorSavesSettled();
+	// What the last clone's probe and script did: `probeMs` is the mirror probe's timeout.
+	const seen = { probeMs: 0, staged: false, hideMirror: false };
+	async function clone(handle: DockerSandboxHandle, user?: string, remote = fixture, pinnedBase?: string, settle = true) {
+		await cli("exec", handle.container, "bash", "-ec", "cd /workspace; find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +");
+		let hit = false;
+		seen.staged = false;
+		const sandbox: SandboxHandle = {
+			id: handle.id, profile: handle.profile, cwd: handle.cwd,
+			run: async (cmd, opts) => {
+				if (cmd.startsWith("mountpoint -q -- ")) {
+					seen.probeMs = opts?.timeoutMs ?? 0;
+					// A probe that timed out: the clone takes the plain path with the mirror in place.
+					if (seen.hideMirror) return { exitCode: null, timedOut: true, aborted: false, stdout: "", stderr: "" };
+				}
+				const result = await handle.run(cmd, opts);
+				const marks = gitSteps.markers(result.stdout);
+				if (marks.has("mirror")) hit = true;
+				if (marks.has("mirrorsave")) seen.staged = true;
+				return result;
+			}, readTextFile: handle.readTextFile.bind(handle), writeTextFile: handle.writeTextFile.bind(handle),
+			saveMirror: handle.saveMirror.bind(handle),
+		};
+		const start = performance.now(), bytes = standin.gitResponseBytes, from = standin.minted.length;
+		const repository = stored(remote, adaInstallation);
+		const result = await publish.cloneRepository(app, adaConnection, repository, sandbox, undefined, undefined, pinnedBase, user);
+		const ms = Math.round(performance.now() - start);
+		assert.ok(result);
+		assert.equal(repository.baseSha, standin.branchHead(remote, "main"));
+		const tokens = standin.minted.slice(from).filter(t => t.permissions?.contents);
+		assert.ok(tokens.length > 0);
+		assert.ok(tokens.every(t => !standin.alive(t.token) && t.permissions?.contents === "read" && t.repositoryIds?.join() === String(remote.id)));
+		await cli("exec", handle.container, "sh", "-ec", "test ! -e .git/objects/info/alternates && test ! -e .git/objects/info/http-alternates && git fsck --full --no-dangling");
+		if (user && settle) await settled();
+		return { ms, bytes: standin.gitResponseBytes - bytes, hit, tokens: tokens.length };
+	}
+	const mirrorRefs = (handle: DockerSandboxHandle, user: string) =>
+		cli("exec", "--user", "65534", handle.container, "git", "--git-dir", pathOf(user) + "/repo.git", "for-each-ref", "--format=%(refname)");
+	async function cleanup() {
+		for (const name of boxes) await dockerCli(["rm", "-fv", name]);
+		const removed = await dockerCli(["volume", "rm", volume]);
+		if (removed.code !== 0 && !/no such volume/i.test(removed.stderr)) throw new Error("could not remove " + volume + ": " + removed.stderr);
+	}
+	// The slot's mirror as a session reads it: its directory's inode (a save replaces it) and HEAD.
+	const mirrorState = async (handle: DockerSandboxHandle, user: string) =>
+		cli("exec", "--user", "65534", handle.container, "sh", "-ec", 'stat -c %i "$0/repo.git"; git --git-dir="$0/repo.git" rev-parse HEAD; git --git-dir="$0/repo.git" fsck --full --no-dangling --no-progress', pathOf(user));
+	return { volume, image, fixture, repo, store, allocations, cli, pathOf, mount, admitted, box, inStore, slotOf, settled, seen, clone, mirrorRefs, mirrorState, cleanup };
+}
+
+async function mirrorSection(name: string, repository: string, body: (f: Awaited<ReturnType<typeof mirrorFixture>>) => Promise<void>, enabled = DOCKER) {
+	await section(name, async () => {
+		if (!enabled) { skips++; return; }
+		const f = await mirrorFixture(repository);
+		const floor = snapshotLimits.free;
+		try { await body(f); }
+		finally {
+			snapshotLimits.free = floor;
+			await f.cleanup();
+		}
+	});
+}
+
+await mirrorSection("mirror: Docker scope, authenticated clone and fallback", "mirror-proof", async ({ cli, admitted, box, clone, pathOf, fixture, inStore, slotOf }) => {
+	const uid = "fixtureA", other = "fixtureB", path = pathOf(uid);
+	const a = await box(uid, await admitted(uid)), b = await box(other, await admitted(other));
+	const plain = await clone(a), seed = await clone(a, uid), warm = await clone(a, uid);
+	assert.ok(!plain.hit && !seed.hit && warm.hit && warm.bytes < plain.bytes);
+	console.log("Small fixture clone (ms and HTTP Git bytes)", JSON.stringify({ plain, seed, warm }));
+	assert.equal(await cli("exec", "--user", "65534", a.container, "stat", "-c", "%u:%a", path), "65534:700");
+	assert.equal(await cli("exec", "--user", "65534", a.container, "git", "--git-dir", path + "/repo.git", "rev-parse", "HEAD"), standin.branchHead(fixture, "main"));
+	assert.equal(await cli("exec", "--user", "65534", a.container, "find", path, "!", "-uid", "65534", "-print", "-quit"), "");
+	assert.equal(await cli("exec", "--user", "65534", a.container, "git", "--git-dir", path + "/repo.git", "config", "--local", "--list"), "core.bare=true\ncore.repositoryformatversion=0");
+	assert.notEqual((await dockerCli(["exec", a.container, "touch", path + "/from-agent"])).code, 0);
+	assert.notEqual((await dockerCli(["exec", a.container, "cat", path + "/repo.git/config"])).code, 0);
+	assert.equal((await clone(a, uid, notes)).hit, false, "a different repository used this slot");
+	assert.equal((await clone(b, other)).hit, false);
+	assert.equal((await clone(b, uid)).hit, false, "another user's mounted slot was used");
+	assert.equal((await clone(b, other)).hit, true);
+	standin.commit(fixture, "main", { "moved.txt": "fresh" }, "Advance origin");
+	assert.equal((await clone(a, uid)).hit, true);
+	assert.equal(await cli("exec", a.container, "cat", "moved.txt"), "fresh");
+
+	standin.hangNextGitRead = true;
+	const slow = await clone(a, uid);
+	assert.ok(!standin.hangNextGitRead && !slow.hit && slow.tokens === 2 && slow.ms < 30_000, "stalled reference did not fall back promptly");
+	// Only the host can damage a slot now. The plain retry replaces it even with the same refs.
+	await inStore(`touch ${slotOf(uid)}/repo.git/objects/info/alternates`);
+	const repaired = await clone(a, uid);
+	assert.ok(!repaired.hit && repaired.tokens === 2, "bad alternates must fall back under a new token");
+	assert.equal((await clone(a, uid)).hit, true, "the plain retry did not repair the mirror");
+	await inStore(`rm -rf -- ${slotOf(uid)}/repo.git`);
+	await cli("exec", a.container, "git", "fsck", "--full", "--no-dangling");
+	assert.equal((await clone(a, uid)).hit, false);
+	assert.equal((await clone(a, uid)).hit, true);
+	expect("only the selected transport-owned slot is used, a stalled, bad or absent mirror falls back", true);
+});
+
+await mirrorSection("mirror: a single-branch review clone", "mirror-review", async ({ admitted, box, clone, mirrorRefs, fixture }) => {
+	const uid = "fixtureA";
+	const a = await box(uid, await admitted(uid));
+	standin.commit(fixture, "side", { "side.txt": "side" }, "Side branch", "main");
+	assert.equal((await clone(a, uid)).hit, false);
+	assert.match(await mirrorRefs(a, uid), /refs\/heads\/side/);
+	// A review clone fetches one branch. It reads the mirror but must not narrow it.
+	assert.equal((await clone(a, uid, fixture, standin.branchHead(fixture, "main")!)).hit, true);
+	assert.match(await mirrorRefs(a, uid), /refs\/heads\/side/, "a single-branch clone replaced the full mirror");
+	expect("a single-branch review clone uses the mirror and leaves its other branches", true);
+});
+
+await mirrorSection("mirror: the free-space floor", "mirror-floor", async ({ admitted, mount, box, clone, pathOf, inStore, slotOf }) => {
+	const uid = "fixtureA", other = "fixtureB";
+	const a = await box(uid, await admitted(uid));
+	const floor = snapshotLimits.free;
+	snapshotLimits.free = Number.MAX_SAFE_INTEGER;
+	try { assert.equal((await clone(a, uid)).hit, false); }
+	finally { snapshotLimits.free = floor; }
+	assert.equal((await dockerCli(["exec", "--user", "65534", a.container, "test", "-e", pathOf(uid) + "/repo.git"])).code, 1, "a mirror was saved below the free-space floor");
+	expect("no mirror is written below the free-space floor", true);
+	await admitted(other);
+	assert.equal(await mount(uid, "proof", "another-machine", { floor: Number.MAX_SAFE_INTEGER }), null, "a slot was admitted below the floor");
+	assert.equal(await inStore(`test ! -e ${slotOf(other)} && test -d ${slotOf(uid)} && echo ok`), "ok", "disk pressure did not evict the unused slot");
+	expect("below the floor no slot is admitted and unused slots are evicted", true);
+});
+
+await mirrorSection("mirror: concurrent admission", "mirror-lock", async ({ volume, image, admitted, mount, cli }) => {
+	// Admission waits briefly for the store lock instead of failing. Docker would create the
+	// store without its labels for the holder, so admit once first.
+	const holder = volume + "-lock";
+	await admitted("fixtureB");
+	try {
+		await cli("run", "-d", "--pull", "never", "--name", holder, "--network", "none", "--mount", `type=volume,src=${volume},dst=/store`,
+			"--entrypoint", "/usr/bin/python3", image, "-c", "import fcntl, os, time\nfd = os.open('/store', os.O_DIRECTORY)\nfcntl.flock(fd, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(2.5)");
+		for (let i = 0; !(await cli("logs", holder)).includes("locked"); i++) { assert.ok(i < 400); await new Promise(r => setTimeout(r, 50)); }
+		assert.ok(await mount("fixtureA"), "admission failed while another admission held the store");
+		expect("an admission waits for one in progress", true);
+	} finally {
+		await dockerCli(["rm", "-f", holder]);
+	}
+});
+
+await mirrorSection("mirror: a slot a container names", "mirror-named", async ({ admitted, box, repo, store }) => {
+	await box("fixtureA", await admitted("fixtureA"));
+	// An image that cannot run proves that no allocator container ran.
+	assert.ok(await gitMirrorMount("wlp-no-such-image:never", "proof", "", "fixtureA", repo, store), "a named slot ran the allocator");
+	expect("a slot a container already names is mounted without an allocator container", true);
+});
+
+await mirrorSection("mirror: eviction around stopped containers", "mirror-evict", async ({ image, admitted, mount, box, clone, cli, inStore, slotOf, store }) => {
+	const uid = "fixtureA", other = "fixtureB";
+	const a = await box(uid, await admitted(uid));
+	assert.equal((await clone(a, uid)).hit, false);
+	assert.equal((await clone(a, uid)).hit, true);
+	// Stop A while its slot is the least recently used, then fill the store. The slot must
+	// survive, and A must start again with its mirror.
+	await admitted(other);
+	await cli("stop", "-t", "0", a.container);
+	const isolated = await box(uid, await admitted(uid, "another-deployment"));
+	await startContainer(a.container, image, store);
+	assert.equal((await clone(a, uid)).hit, true, "a stopped container's slot was evicted");
+	assert.equal(await inStore(`test ! -e ${slotOf(other)} && echo gone`), "gone", "the unused slot was not the victim");
+	expect("a slot named by a stopped container survives eviction and its container starts", true);
+	// Every slot is named: no victim, no admission.
+	assert.equal(await mount(uid, "proof", "another-machine"), null, "a named slot was evicted");
+	// A slot admitted moments ago may be about to be mounted.
+	await cli("rm", "-f", isolated.container);
+	assert.equal(await mount(other, "proof", "", { graceSeconds: 120 }), null, "a just-admitted slot was evicted");
+	assert.ok(await mount(other));
+	expect("no slot a container names, nor one admitted moments ago, is evicted", true);
+});
+
+await mirrorSection("mirror: a start with its slot gone", "mirror-restore", async ({ image, admitted, box, clone, cli, inStore, slotOf, pathOf, store }) => {
+	const uid = "fixtureA", path = pathOf(uid);
+	const a = await box(uid, await admitted(uid));
+	assert.equal((await clone(a, uid)).hit, false);
+	// Should a slot go anyway (an older allocator, a hand removal), the start puts it back.
+	await cli("stop", "-t", "0", a.container);
+	await inStore(`rm -rf -- ${slotOf(uid)}`);
+	assert.notEqual((await dockerCli(["start", a.container])).code, 0, "docker started without its subpath");
+	await startContainer(a.container, image, store);
+	assert.equal(await cli("exec", "--user", "65534", a.container, "sh", "-c", `stat -c %u:%a ${path}; ls -A ${path}`), "65534:700");
+	assert.equal((await clone(a, uid)).hit, false);
+	assert.equal((await clone(a, uid)).hit, true);
+	expect("a start puts back a missing slot, empty and transport-owned", true);
+});
+
+await mirrorSection("mirror: sessions cannot write their slot", "mirror-readonly", async ({ admitted, box, clone, cli, pathOf, mirrorState }) => {
+	const uid = "fixtureA", path = pathOf(uid);
+	const a = await box(uid, await admitted(uid));
+	assert.equal((await clone(a, uid)).hit, false);
+	const before = await mirrorState(a, uid);
+	for (const user of ["65534", "agent"]) {
+		for (const command of [["touch", path + "/x"], ["rm", "-rf", path + "/repo.git"], ["mv", path + "/repo.git", path + "/y"], ["touch", path + "/repo.git/objects/info/alternates"]]) {
+			const tried = await dockerCli(["exec", "--user", user, a.container, ...command]);
+			assert.notEqual(tried.code, 0, `${user} could ${command.join(" ")}`);
+		}
+	}
+	assert.match(await cli("exec", "--user", "65534", a.container, "awk", "-v", "p=" + path, "$5 == p { print $6 }", "/proc/self/mountinfo"), /^ro(,|$)/, "the slot is not mounted read-only");
+	assert.equal(await mirrorState(a, uid), before);
+	expect("neither the transport uid nor the agent can write, rename or remove anything in its slot", true);
+});
+
+await mirrorSection("mirror: the save helper rehashes what a session staged", "mirror-forge", async ({ image, admitted, box, clone, cli, pathOf, mirrorState, fixture }) => {
+	const uid = "fixtureA";
+	const a = await box(uid, await admitted(uid));
+	assert.equal((await clone(a, uid)).hit, false);
+	const before = await mirrorState(a, uid);
+	// A stage as anything running as the transport uid could leave it: a commit whose blob, under
+	// its genuine name, holds other content.
+	const staged = async (forge: boolean) => {
+		const stage = randomBytes(16).toString("hex");
+		await cli("exec", "--user", "65534", "-w", "/", "-e", "FORGE=" + (forge ? "1" : ""), a.container, "bash", "-ec", [
+			`dir=/tmp/wlp-transport-${stage}.mirror; mkdir -m 700 "$dir"; cd "$dir"`,
+			"git init -q --bare seed; export GIT_DIR=seed",
+			"blob=$(echo good | git hash-object -w --stdin)",
+			"tree=$(printf '100644 blob %s\\tf\\n' \"$blob\" | git mktree)",
+			"commit=$(git -c user.name=f -c user.email=f@example.org commit-tree \"$tree\" -m forged)",
+			'echo "$commit refs/heads/main" > seed/packed-refs; echo "ref: refs/heads/main" > seed/HEAD',
+			'f="seed/objects/${blob:0:2}/${blob:2}"; chmod u+w "$f"',
+			`if [ -n "$FORGE" ]; then python3 -c 'import sys, zlib; sys.stdout.buffer.write(zlib.compress(b"blob 5\\0evil\\n"))' > "$f"; fi`,
+			'echo "$commit"',
+		].join("\n"));
+		return stage;
+	};
+	assert.equal(await saveSessionMirror(a.container, await staged(true), false, { image }), false, "a forged object was installed");
+	assert.equal(await mirrorState(a, uid), before, "a refused save changed the mirror");
+	expect("a stage with an object whose content does not match its name is refused and the mirror kept", true);
+	const honest = await staged(false);
+	assert.equal(await saveSessionMirror(a.container, honest, false, { image }), true, "the helper refused an honest stage");
+	assert.notEqual(await mirrorState(a, uid), before);
+	assert.equal((await dockerCli(["exec", "--user", "65534", a.container, "test", "-e", `/tmp/wlp-transport-${honest}.mirror`])).code, 1, "the stage was left behind");
+	// The next clone's refs differ from that hand-made mirror, and it puts GitHub's back.
+	assert.equal((await clone(a, uid)).hit, true);
+	assert.equal(await cli("exec", "--user", "65534", a.container, "git", "--git-dir", pathOf(uid) + "/repo.git", "rev-parse", "HEAD"), standin.branchHead(fixture, "main"));
+	expect("the same stage, unforged, is installed and its stage removed", true);
+});
+
+await mirrorSection("mirror: the save helper's image, mount, limits and queue", "mirror-helper", async ({ volume, image, admitted, box, cli, inStore, slotOf, pathOf, store, mirrorState }) => {
+	const uid = "fixtureA", path = pathOf(uid), slot = slotOf(uid);
+	await admitted("fixtureB");
+	const mounted = await admitted(uid);
+	// A session image without python3, as a snapshot committed after setup could be. The helpers
+	// must run the base image instead.
+	const maker = volume + "-image";
+	await cli("run", "--pull", "never", "--name", maker, "--user", "0:0", "--network", "none", image, "/bin/sh", "-c", "rm -f /usr/bin/python3 /usr/bin/python3.*");
+	const committed = await cli("commit", "--change", "USER agent", "--change", 'CMD ["sleep", "infinity"]', maker);
+	await cli("rm", maker);
+	let session: DockerSandboxHandle | undefined;
+	try {
+		const a = session = await box(uid, mounted, committed);
+		// The same message gives the same commit: the dates are fixed.
+		const stage = async (message: string, repair = false) => {
+			const id = randomBytes(16).toString("hex");
+			await cli("exec", "--user", "65534", "-w", "/", "-e", "GIT_AUTHOR_DATE=@1700000000 +0000", "-e", "GIT_COMMITTER_DATE=@1700000000 +0000", "-e", "MSG=" + message, a.container, "bash", "-ec", [
+				`dir=/tmp/wlp-transport-${id}.mirror; mkdir -m 700 "$dir"; cd "$dir"`,
+				"git init -q --bare seed; export GIT_DIR=seed",
+				'commit=$(git -c user.name=h -c user.email=h@example.org commit-tree "$(git mktree </dev/null)" -m "$MSG")',
+				'echo "$commit refs/heads/main" > seed/packed-refs; echo "ref: refs/heads/main" > seed/HEAD',
+				...(repair ? [": > seed/repair"] : []),
+			].join("\n"));
+			return id;
+		};
+		const staged = async (id: string) => (await dockerCli(["exec", "--user", "65534", a.container, "test", "-e", `/tmp/wlp-transport-${id}.mirror`])).code === 0;
+		const subject = () => cli("exec", "--user", "65534", a.container, "git", "--git-dir", path + "/repo.git", "log", "-1", "--format=%s");
+		// An earlier design's suffix-less incoming directory.
+		assert.equal(await inStore(`mkdir ${slot}/incoming && touch ${slot}/incoming/x && chown -R 65534:65534 ${slot}/incoming && echo ok`), "ok");
+		// A reader holds the slot lock, so the first save waits for it after its fsck.
+		await cli("exec", "-d", "--user", "65534", a.container, "flock", "-s", path, "sleep", "20");
+		let firstDone = false;
+		const first = saveSessionMirror(a.container, await stage("first"), false, { image });
+		void first.finally(() => { firstDone = true; });
+		let helper: any;
+		for (let i = 0; i < 200 && !helper; i++) {
+			const ids = (await dockerCli(["ps", "-q", "--filter", "volume=" + volume, "--filter", "name=^wlp-git-save-"])).stdout.trim();
+			if (ids) [helper] = JSON.parse((await dockerCli(["inspect", ids.split("\n")[0]!])).stdout || "[null]");
+			else await new Promise(resolve => setTimeout(resolve, 50));
+		}
+		assert.ok(helper, "no save helper was seen");
+		assert.deepEqual(helper.HostConfig.Mounts.map((m: any) => [m.Type, m.Source, m.VolumeOptions?.Subpath, m.Target]), [["volume", volume, slot, "/slot"]], "the helper mounts more than its slot");
+		assert.equal(helper.Mounts.length, 1);
+		assert.deepEqual([helper.HostConfig.Memory, helper.HostConfig.MemorySwap], [2 ** 30, 2 ** 30], "the helper has no memory limit");
+		assert.deepEqual(helper.Config.Entrypoint, ["/usr/bin/timeout"], "the helper has no deadline of its own");
+		assert.deepEqual(helper.Config.Cmd.slice(0, 6), ["-k", "10s", "540s", "/usr/bin/python3", "-I", "-S"]);
+		assert.ok(/core\.bigFileThreshold=64m".*core\.deltaBaseCacheLimit=32m".*"fsck", "--full"/s.test(helper.Config.Cmd[7]), "fsck runs without memory bounds");
+		assert.equal(helper.Image, image, "the helper does not run the base image");
+		expect("the save helper runs the base image with only its slot mounted, 1 GiB of memory and its own deadline", true);
+		// Two more clones stage while the first save waits: the third takes the second's place.
+		const second = await stage("second"), third = await stage("third");
+		const later = [saveSessionMirror(a.container, second, false, { image }), saveSessionMirror(a.container, third, false, { image })];
+		for (let i = 0; i < 100 && await staged(second); i++) await new Promise(resolve => setTimeout(resolve, 50));
+		assert.ok(!await staged(second), "a stage replaced in the queue was kept");
+		assert.ok(!firstDone && await staged(third), "the queue check ran after the first save");
+		assert.deepEqual(await Promise.all([first, ...later]), [true, true, true]);
+		assert.equal(await subject(), "third");
+		assert.equal(await inStore(`test ! -e ${slot}/incoming && echo gone`), "gone", "a suffix-less incoming directory was left");
+		expect("a save waiting for its slot gives way to a later stage, and leftovers of the earlier design are cleared", true);
+		const before = await mirrorState(a, uid);
+		assert.equal(await saveSessionMirror(a.container, await stage("third"), false, { image }), true);
+		assert.equal(await mirrorState(a, uid), before, "the helper installed refs the mirror already has");
+		assert.equal(await saveSessionMirror(a.container, await stage("third", true), false, { image }), true);
+		assert.notEqual(await mirrorState(a, uid), before, "a repair stage was not installed");
+		assert.equal(await subject(), "third");
+		expect("the helper keeps a mirror whose refs match a stage, unless the clone marked it for repair", true);
+		// The restore allocator runs the base image too.
+		await cli("stop", "-t", "0", a.container);
+		await inStore(`rm -rf -- ${slot}`);
+		await startContainer(a.container, image, store);
+		assert.equal(await cli("exec", "--user", "65534", a.container, "stat", "-c", "%u:%a", path), "65534:700");
+		expect("a start of a session whose image has no python3 still puts back its slot", true);
+	} finally {
+		if (session) await dockerCli(["rm", "-fv", session.container]);
+		await dockerCli(["rmi", committed]);
+	}
+});
+
+await mirrorSection("mirror: the per-turn sweep right after a clone", "mirror-sweep", async ({ admitted, box, clone, cli, pathOf, mirrorState, settled, fixture }) => {
+	const uid = "fixtureA";
+	const a = await box(uid, await admitted(uid));
+	assert.equal((await clone(a, uid)).hit, false);
+	// New refs: this clone's save replaces the mirror after the clone returns.
+	standin.commit(fixture, "main", { "swept.txt": "after" }, "Advance before the sweep");
+	const warm = await clone(a, uid, fixture, undefined, false);
+	assert.ok(warm.hit);
+	await sweepSessionProcesses(a);
+	await settled();
+	const [, head] = (await mirrorState(a, uid)).split("\n");
+	assert.equal(head, standin.branchHead(fixture, "main"), "the save did not survive the sweep");
+	assert.equal(await cli("exec", "--user", "65534", a.container, "sh", "-c", 'ls -A /tmp | grep -c "^wlp-transport-" || true'), "0");
+	assert.equal((await clone(a, uid)).hit, true);
+	expect("sweeping the session's processes right after a clone leaves the slot a usable, updated repo.git", true);
+	// A stage a lost save left behind goes with the next clone.
+	await cli("exec", "--user", "65534", a.container, "mkdir", "-m", "700", "/tmp/wlp-transport-" + "0".repeat(32) + ".mirror");
+	await clone(a, uid);
+	assert.equal(await cli("exec", "--user", "65534", a.container, "sh", "-c", 'ls -A /tmp | grep -c "^wlp-transport-" || true'), "0", "a stale stage survived the next clone");
+	expect("a stale stage is removed at the start of the next clone", true);
+});
+
+await mirrorSection("mirror: unchanged refs are not saved again", "mirror-same", async ({ admitted, box, clone, mirrorState, seen }) => {
+	const uid = "fixtureA";
+	const a = await box(uid, await admitted(uid));
+	assert.equal((await clone(a, uid)).hit, false);
+	const before = await mirrorState(a, uid);
+	assert.ok(seen.probeMs >= 10_000, `the mirror probe allows only ${seen.probeMs} ms`);
+	assert.equal((await clone(a, uid)).hit, true);
+	assert.ok(!seen.staged);
+	seen.hideMirror = true;
+	try { assert.equal((await clone(a, uid)).hit, false); }
+	finally { seen.hideMirror = false; }
+	assert.ok(!seen.staged, "a plain clone with the mirror's refs staged a save");
+	assert.equal(await mirrorState(a, uid), before, "the mirror was rewritten");
+	expect("neither a reference nor a plain clone rewrites a mirror whose refs it matches, and the probe waits 10 s or more", true);
+});
+
+await mirrorSection("mirror: helpers name no slot", "mirror-helpers", async ({ volume, image, admitted, box, slotOf, cli }) => {
+	const uid = "fixtureA";
+	await box(uid, await admitted(uid));
+	await admitted("fixtureB");
+	// A helper's name (and, from the image, the platform label) with another slot's mount: never
+	// inspected, so one can exit at any time.
+	const fake = "wlp-git-save-" + randomBytes(6).toString("hex");
+	await cli("create", "--pull", "never", "--name", fake, "--mount", `type=volume,src=${volume},volume-subpath=${slotOf("fixtureB")},dst=/x,volume-nocopy`, image);
+	try {
+		const named = await referencedSlots(volume);
+		assert.ok(named?.has(slotOf(uid)), "the session's slot was not found");
+		assert.equal(named?.size, 1, "a helper-named container was inspected");
+	} finally { await dockerCli(["rm", "-f", fake]); }
+	const mounts = JSON.stringify([{ Type: "volume", Source: volume, VolumeOptions: { Subpath: slotOf(uid) } }]);
+	assert.deepEqual(slotsInInspect({ code: 1, stdout: mounts + "\n", stderr: "Error: No such container: 0123abcd\n" }, volume), new Set([slotOf(uid)]));
+	assert.equal(slotsInInspect({ code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon\n" }, volume), null);
+	expect("helper containers are not inspected, and a container gone before its inspect names no slot", true);
+});
+
+await mirrorSection("mirror-benchmark: a large repository", "mirror-large", async ({ admitted, box, clone, cli, fixture, allocations }) => {
+	// Loose history forces the HTTP server to build a pack as it would after new pushes.
+	// Only the last 512 KiB blob is checked out. Every version is in the clone.
+	const git = (args: string[], input?: Buffer | string) => execFileSync("git", ["-C", fixture.path, ...args], {
+		input, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "fixture", GIT_COMMITTER_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.org", GIT_COMMITTER_EMAIL: "fixture@example.org" },
+	}).trim();
+	const versions = Number(process.env.WLP_MIRROR_BENCHMARK_VERSIONS ?? 352);
+	let parent = git(["rev-parse", "main"]);
+	for (let i = 0; i < versions; i++) {
+		const blob = git(["hash-object", "-w", "--stdin"], randomBytes(512 * 1024));
+		const tree = git(["mktree"], "100644 blob " + blob + "\tpayload\n");
+		parent = git(["commit-tree", tree, "-p", parent, "-m", "Version " + i]);
+	}
+	git(["update-ref", "refs/heads/main", parent]);
+	const uid = "benchmark";
+	const bench = await box(uid, await admitted(uid));
+	const baseline = await clone(bench), fill = await clone(bench, uid);
+	const trials = [await clone(bench, uid), await clone(bench), await clone(bench, uid)];
+	const size = await cli("exec", bench.container, "sh", "-ec", "du -sm .git | cut -f1");
+	const timed = async (command: string) => { const t = performance.now(); await cli("exec", bench.container, "sh", "-ec", command); return Math.round(performance.now() - t); };
+	const fsck = { full: await timed("git fsck --full --no-dangling --no-progress >/dev/null"), connectivity: await timed("git fsck --connectivity-only --no-dangling --no-progress >/dev/null") };
+	console.log(`${size} MiB fixture clone (ms and HTTP Git bytes)`, JSON.stringify({ baseline, fill, warm1: trials[0], plain2: trials[1], warm2: trials[2] }));
+	console.log("fsck of that clone (ms)", JSON.stringify(fsck));
+	// A busy machine: the local work of a warm clone takes well over the stall deadline,
+	// while GitHub answers at once. The mirror must still be used.
+	await cli("update", "--cpus", "0.1", bench.container);
+	const busy = await clone(bench, uid);
+	const busyFsck = await timed("git fsck --full --no-dangling --no-progress >/dev/null");
+	await cli("update", "--cpus", "1", bench.container);
+	console.log("Warm clone at 0.1 CPU (ms and HTTP Git bytes)", JSON.stringify(busy), "full fsck there (ms)", busyFsck);
+	assert.ok(busy.hit, "slow local work made the warm clone fall back");
+	assert.ok(busy.ms > 8000, "the throttled clone was too quick to test the deadline");
+	console.log("Mirror slot allocation (ms)", JSON.stringify(allocations));
+	assert.ok(!fill.hit && fill.tokens === 1, "expected a cold mirror");
+	assert.ok(trials[0]!.hit && trials[2]!.hit && trials[0]!.bytes < baseline.bytes / 100, "the warm clone did not use the mirror");
+	assert.ok(Math.max(trials[0]!.ms, trials[2]!.ms) < Math.min(baseline.ms, trials[1]!.ms), "a warm clone was not faster than a plain one");
+	expect(`a warm clone of a ${size} MiB repository uses the mirror and beats a plain clone`, true);
+}, DOCKER && process.argv.includes("--mirror-benchmark"));
 
 // ---------------------------------------------------------------------------------------------
 // A sandbox made in place of a lost one

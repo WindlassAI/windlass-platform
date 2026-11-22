@@ -154,6 +154,8 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 		}
 
 		let confirmed: ConfirmedConnection;
+		// Taken before the read, so an uninstall recorded during it still counts as later (user-github.ts).
+		const readAt = Date.now();
 		try {
 			const [user, installations] = await Promise.all([app.viewer(userToken), app.userInstallations(userToken)]);
 			confirmed = { user, installations: installations.filter((installation) => !installation.suspended).slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account, htmlUrl })) };
@@ -173,7 +175,7 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 			return redirect(app.installUrl(await store.next(uid, origin)));
 		}
 		log(`[wlp] github.connect.confirmed uid=${uid} github=${confirmed.user.login} installations=${confirmed.installations.map((installation) => installation.id).join(",")}`);
-		return back(origin, `github=${issueTicket(uid, confirmed)}`);
+		return back(origin, `github=${issueTicket(uid, confirmed, Date.now(), readAt)}`);
 	} catch (error) {
 		const unreachable = error instanceof GithubError && error.unreachable;
 		console.error(`[wlp] github.connect.failed uid=${uid}: ${error instanceof Error ? error.message : "unknown error"}`);

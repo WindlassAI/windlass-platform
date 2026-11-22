@@ -21,6 +21,10 @@ import { isAddressed, githubIdKey, type Delivery } from "../github/events.js";
 const DAY = 86_400_000;
 const SWEEP = 10 * 60_000;
 const FIRST_RETRY = 15_000;
+/** Servers' clocks may differ this much. A removal this close to a list's read is taken as later. */
+const CLOCK_SKEW = 60_000;
+/** Inbox rows are kept seven days, so no older event can be retried against an installation's state. */
+const STATE_KEPT = 7 * DAY;
 type Vars = { writing: Promise<unknown>; draining: boolean; drainAgain: boolean };
 type Ctx = {
 	key: string[]; db: RawAccess; vars: Vars; client(): any;
@@ -53,12 +57,22 @@ async function refreshInstallation(d: Delivery, c: Ctx) {
 	console.log(`github.installation event=${d.event}.${d.action} installation=${d.installationId} delivery=${d.guid}`);
 	if (d.event !== "installation" && d.event !== "installation_repositories") return;
 	const params = { params: serviceParams() };
+	const hooks = c.client().githubHooks.getOrCreate(["app"], params);
 	let change: InstallationChange;
 	let users: Set<string>;
-	const remove = d.event === "installation" ? ["suspend", "deleted"].includes(d.action) : d.action === "removed";
-	if (remove) {
+	if (d.event === "installation" && ["suspend", "deleted"].includes(d.action)) {
+		// A missed suspension redelivered after its unsuspend would be received last. GitHub's current state decides.
+		const app = d.action === "suspend" ? githubApp() : null;
+		if (app && await app.activeInstallation(d.installationId)) {
+			await hooks.internalInstallationActive(d.installationId, d.at);
+			return;
+		}
 		change = { kind: "remove", installationId: d.installationId };
-		const hooks = c.client().githubHooks.getOrCreate(["app"], params);
+		// One write records the removal and reads the linked users, so a connection linked after it is refused.
+		users = new Set(await hooks.internalInstallationRemoved(d.installationId, d.at));
+	} else if (d.event === "installation_repositories" && d.action === "removed") {
+		// Only the listed repositories left. The installation stays, and the next read lists what is left.
+		change = { kind: "repositories", installationId: d.installationId };
 		users = new Set(await hooks.internalInstallationUsers(d.installationId));
 	} else {
 		const attach = d.event === "installation" ? ["created", "new_permissions_accepted", "unsuspend"].includes(d.action) : d.action === "added";
@@ -67,12 +81,14 @@ async function refreshInstallation(d: Delivery, c: Ctx) {
 		if (!app) throw new Error("GitHub App unavailable.");
 		const installation = await app.activeInstallation(d.installationId);
 		if (!installation) return;
+		await hooks.internalInstallationActive(d.installationId, d.at);
 		const { id, account, htmlUrl } = installation;
 		const senderId = d.data.senderId ?? null;
 		change = { kind: "attach", installation: { id, account, htmlUrl }, senderId };
 		users = new Set();
-		for (const candidate of new Set([senderId, account.type === "User" ? account.id : null])) {
-			if (candidate === null) continue;
+		// A personal account's installation belongs to that account's owner, whoever sent the event.
+		const candidate = account.type === "User" ? account.id : senderId;
+		if (candidate !== null) {
 			try {
 				const connected: string[] = await c.client().githubAccount.get([String(candidate)], params).internalUsers();
 				for (const uid of connected) users.add(uid);
@@ -461,6 +477,8 @@ export const githubHooks = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS sweeps (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_at INTEGER NOT NULL, started_at INTEGER NOT NULL, cursor TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS installation_links (installation INTEGER NOT NULL, uid TEXT NOT NULL, PRIMARY KEY (installation, uid))");
 		await db.execute("CREATE INDEX IF NOT EXISTS links_by_user ON installation_links(uid)");
+		// The latest removal or activation seen for an installation, by the time its event was received.
+		await db.execute("CREATE TABLE IF NOT EXISTS installation_state (installation INTEGER PRIMARY KEY, removed INTEGER NOT NULL, at INTEGER NOT NULL)");
 		const pending = "CREATE TABLE IF NOT EXISTS pending_redelivery (guid TEXT PRIMARY KEY, delivery TEXT NOT NULL, installation INTEGER NOT NULL, at INTEGER NOT NULL)";
 		await db.execute(pending);
 		const columns = await db.execute<{ name: string; type: string }>("PRAGMA table_info(pending_redelivery)");
@@ -483,16 +501,43 @@ export const githubHooks = actor({
 		if (!timer || timer.at <= Date.now()) void c.keepAwake(runSweep(c).catch(() => console.warn("github.webhook.sweep_failed")));
 	},
 	actions: {
-		internalSetInstallations: async (c, uid: string, ids: GithubId[]) => {
+		/** Links the user to the installations, except one removed since the list was read. Returns the ids linked.
+		 * `readAt` is when GitHub listed them all as active. Without it, any recorded removal wins. */
+		internalSetInstallations: async (c, uid: string, ids: GithubId[], readAt?: number): Promise<GithubId[]> => {
 			requireServiceFor(c, "call");
-			await c.db.transaction(async tx => {
+			return c.db.transaction(async tx => {
+				const removed = new Set((await tx.execute<{ installation: string; at: number }>(`SELECT CAST(s.installation AS TEXT) AS installation, s.at
+					FROM installation_state s JOIN json_each(?) d ON s.installation = d.value WHERE s.removed = 1`, JSON.stringify(ids)))
+					.filter(r => readAt === undefined || r.at >= readAt - CLOCK_SKEW).map(r => r.installation));
+				const accepted = ids.filter(id => !removed.has(String(id)));
+				// A list read well after a removal shows the installation active again, as after a lifted suspension.
+				if (readAt !== undefined) await tx.execute(`UPDATE installation_state SET removed = 0, at = ? WHERE removed = 1 AND at < ?
+					AND installation IN (SELECT value FROM json_each(?))`, readAt, readAt - CLOCK_SKEW, JSON.stringify(accepted));
 				const old = await tx.execute<{ installation: string }>("DELETE FROM installation_links WHERE uid = ? RETURNING CAST(installation AS TEXT) AS installation", uid);
-				await tx.execute("INSERT OR IGNORE INTO installation_links SELECT value, ? FROM json_each(?)", uid, JSON.stringify(ids));
+				await tx.execute("INSERT OR IGNORE INTO installation_links SELECT value, ? FROM json_each(?)", uid, JSON.stringify(accepted));
 				for (const { installation } of old) {
 					await tx.execute(`DELETE FROM pending_redelivery WHERE installation = ?
 						AND NOT EXISTS (SELECT 1 FROM installation_links WHERE installation = ?)`, installation, installation);
 				}
+				return accepted;
 			});
+		},
+		/** Records a removal received at `at` and returns the users to drop it from. A later activation wins. */
+		internalInstallationRemoved: async (c, installation: GithubId, at: number): Promise<string[]> => {
+			requireServiceFor(c, "call");
+			return c.db.transaction(async tx => {
+				await tx.execute("DELETE FROM installation_state WHERE at <= ?", Date.now() - STATE_KEPT);
+				await tx.execute(`INSERT INTO installation_state VALUES (?, 1, ?) ON CONFLICT(installation)
+					DO UPDATE SET removed = 1, at = excluded.at WHERE excluded.at >= installation_state.at`, installation, at);
+				const [state] = await tx.execute<{ removed: number }>("SELECT removed FROM installation_state WHERE installation = ?", installation);
+				if (!state?.removed) return [];
+				return (await tx.execute<{ uid: string }>("SELECT uid FROM installation_links WHERE installation = ?", installation)).map(r => r.uid);
+			});
+		},
+		internalInstallationActive: async (c, installation: GithubId, at: number) => {
+			requireServiceFor(c, "call");
+			await c.db.execute(`INSERT INTO installation_state VALUES (?, 0, ?) ON CONFLICT(installation)
+				DO UPDATE SET removed = 0, at = excluded.at WHERE excluded.at > installation_state.at`, installation, at);
 		},
 		internalInstallationUsers: async (c, installation: GithubId): Promise<string[]> => {
 			requireServiceFor(c, "call");

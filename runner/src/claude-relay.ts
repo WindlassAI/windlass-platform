@@ -1,15 +1,16 @@
 import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
-import { docker, LABEL, LABEL_ARG, NO_LOGS } from "../../server/src/sandbox/docker.js";
+import { docker, helperFlags, LABEL, LABEL_ARG, NO_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
 import { image, type MachineHarness, type MachineDocker } from "./policy.js";
 import { loadPair, Refusal, RunnerError } from "./state.js";
 
 declare const CLAUDE_RELAY_SCRIPT: string;
+declare const CODEX_RELAY_SCRIPT: string;
 declare const OPENCODE_RELAY_SCRIPT: string;
-export interface ProviderLogin { provider: string; providers?: string[]; generation: string; sessionGeneration?: string }
+export interface ProviderLogin { harness?: "codex"; provider: string; providers?: string[]; generation: string; sessionGeneration?: string }
 // Pre-upgrade metadata used its credential generation as the signing epoch.
-const sessionDomain = (login: ProviderLogin) => "windlass-opencode-relay-v1-" + (login.sessionGeneration ?? login.generation);
+const sessionDomain = (login: ProviderLogin) => "windlass-" + (login.harness ?? "opencode") + "-relay-v1-" + (login.sessionGeneration ?? login.generation);
 export function projection(selected: string | string[], placeholder: string) {
 	const ids = typeof selected === "string" ? [selected] : selected;
 	const auth: Record<string, unknown> = {}, config: Record<string, unknown> = {};
@@ -54,9 +55,36 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 }
 
 // Call under the login lock, including logout from a standalone runner command.
-export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude") {
+/** `signedOut` for a logout: sessions are then told signed out, not to try again (sandbox/relay/server.cjs SIGNED_OUT). */
+export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude", signedOut = false) {
 	const box = await ownedRelay(m, harness);
-	if (box) await docker(["rm", "-f", box.Id], { check: true });
+	const mark = signedOut && harness !== "claude";
+	// Written by the relay's own user into its socket volume, before the relay stops answering.
+	const marked = mark && box?.State?.Running === true &&
+		(await docker(["exec", box.Id, "touch", SIGNED_OUT_MARKER], { timeoutMs: 15_000 })).code === 0;
+	if (box) await retireRelay(box.Id, harness);
+	if (mark && !marked) await markSignedOut(m, harness);
+}
+const SIGNED_OUT_MARKER = "/workspace/signed-out";
+/** The marker without a running relay: a short container of the pinned base image, as the relay's user, on the socket volume. */
+async function markSignedOut(m: MachineDocker, harness: MachineHarness) {
+	const volume = relaySocketVolume(m, harness);
+	// Without the volume no session can reach a relay; there is no one to tell.
+	if (!await m.ownedVolume(false, volume)) return;
+	const name = tmpName();
+	const result = await runHelper([...helperFlags(name, "none"), ...m.pairingLabelFlags, "--pull", "never", "--user", "1000:1000", "--read-only",
+		"--mount", `type=volume,src=${volume},dst=/workspace,volume-nocopy`], name, ["touch", SIGNED_OUT_MARKER], { image, timeoutMs: 30_000 });
+	if (result.code !== 0) throw new RunnerError(`Could not tell ${harness === "codex" ? "Codex" : "OpenCode"} sessions they are signed out: ${result.stderr.trim() || "exit " + result.code}.`);
+}
+/**
+ * A relay that refreshes a login saves a refresh already sent before it exits on SIGTERM, since that
+ * refresh spent the old refresh token (sandbox/relay/server.cjs stopOnSignal). Its token request
+ * times out after 20 s, so give it that and the write before Docker kills it.
+ */
+export const RELAY_STOP_SECONDS = 30;
+async function retireRelay(id: string, harness: MachineHarness) {
+	if (harness !== "claude") await docker(["stop", "-t", String(RELAY_STOP_SECONDS), id], { timeoutMs: (RELAY_STOP_SECONDS + 15) * 1000 });
+	await docker(["rm", "-f", id], { check: true });
 }
 // The old image gave every session a volume reference. Preserve its workspace, but stop
 // the process before replacing the token. Docker cannot detach a container's volume.
@@ -69,10 +97,10 @@ export async function stopLegacyClaude(m: MachineDocker) {
 
 /** Caller holds the pairing login lock through credential and relay setup. */
 export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
-	const harness = login ? "opencode" : "claude";
-	const script = login ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
-	const prefix = login ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
-	const credentials = login ? m.opencodeVolume : m.claudeVolume;
+	const harness = login ? login.harness ?? "opencode" : "claude";
+	const script = harness === "codex" ? CODEX_RELAY_SCRIPT : login ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
+	const prefix = harness === "codex" ? "WLP_CODEX_RELAY_" : login ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
+	const credentials = harness === "codex" ? m.codexVolume : login ? m.opencodeVolume : m.claudeVolume;
 	const pair = loadPair();
 	if (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid)
 		throw new Refusal("The machine pairing changed while preparing the credential relay.");
@@ -85,7 +113,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	let box = await ownedRelay(m, harness);
 	if (box && (box.Config.Labels[role + ".version"] !== version || box.Config.Image !== image ||
 		!box.Config.Env.includes(prefix + "PUBLIC_KEY=" + publicKey))) {
-		await docker(["rm", "-f", box.Id], { check: true }); box = undefined;
+		await retireRelay(box.Id, harness); box = undefined;
 	}
 	if (!box) {
 		await docker(["create", "--pull", "never", "--name", relayName(m, harness), ...flags(m), "--label", role + ".version=" + version,
@@ -94,7 +122,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,
-			...(login ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
+			...(login?.harness === "codex" ? ["-e", "WLP_CODEX_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_CODEX_GENERATION=" + login.generation, "-e", "WLP_CODEX_PROVIDER=" + login.provider] : login ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
 			image, "node", "-e", script], { check: true });
 		box = await ownedRelay(m, harness);
 	}
@@ -112,7 +140,7 @@ export async function prepareRelay(m: MachineDocker, login?: ProviderLogin) {
 	const nonce = randomBytes(16).toString("hex");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
 	return {
-		env: login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
+		env: login?.harness === "codex" ? ["-e", "WLP_SESSION_BEARER=" + nonce + "." + signature.toString("base64url")] : login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
 		nonce,
 	};
 }

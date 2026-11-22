@@ -150,7 +150,7 @@ function channels(secure = true) {
 	const server = new ServerChannel({ platform: secure ? { ...who, identity } : undefined,
 		accept: hello => tickets.admits(hello, { ...who, publicKey: spki }) });
 	const runner = new RunnerChannel({
-		onOperation(op) { ops++; if (op.name === "start") { processId = op.id; runner.respond(op, null); } },
+		onOperation(op) { ops++; if (op.name === "create") runner.respond(op, op.args.mirrorRepo ?? "plain"); if (op.name === "start") { processId = op.id; runner.respond(op, null); } },
 		onInput(_id, line) { input.push(line); acp.input(line); },
 		onCloseIn() {}, onCancel() {}, onDrain() {}, onRefused() {},
 	});
@@ -339,6 +339,18 @@ try {
 		verifyRetention(request, answer, pin);
 		pin.pin.maxSerial++;
 		assert.throws(() => verifyRetention(request, answer, pin), /serial/);
+	});
+	await check(14, "ordinary mirror creation reaches the runner under both session protocols", async () => {
+		for (const signed of [false, true]) {
+			const c = channels(signed);
+			try {
+				const wire = c.connect();
+				const reply = c.server.request("create", { profile: "docker-hardened", mirrorRepo: "123" });
+				wire.r.receive(wire.s.out.shift()!);
+				wire.s.receive(wire.r.out.shift()!);
+				assert.equal(await reply, "123");
+			} finally { c.close(); }
+		}
 	});
 	await check(13, "protocol 1 refuses prepared creation and saving before dispatch", async () => {
 		const c = channels(false);

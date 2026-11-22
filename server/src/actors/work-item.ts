@@ -47,7 +47,7 @@ import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine }
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
 import type { ItemReview } from "../contract.js";
-import { ledgerSeconds, retryAt } from "../factory/budget.js";
+import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -189,6 +189,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		review: secondReview(item, meta),
 		budget: item.budget,
 		spent: item.spent,
+		agent: itemAgent(item),
 		sessionId: meta.sessionId,
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
@@ -318,7 +319,7 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 		const hostedSeconds = stored.item.place.kind === "hosted"
 			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta))) + childSeconds(stored.item)
 			: 0;
-		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
+		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds, ...(fact.spend?.agent && { agent: fact.spend.agent }) } });
 	} else {
 		await take(c, fact);
 	}
@@ -745,7 +746,7 @@ async function prepareCompletedCheck(tx: Pick<RawAccess, "execute">, item: Facto
 	}
 	effect.title = checkTitle(handoff.verdict, assessment);
 	effect.conclusion = checkConclusion(handoff.verdict, assessment);
-	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id));
+	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id), itemAgent(item));
 }
 
 /** Only the token request and the write treat a permission refusal as a finished effect. */

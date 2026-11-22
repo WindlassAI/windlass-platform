@@ -1,0 +1,10 @@
+{
+  "name": "windlass-codex-harness",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "2.9.0",
+    "@openai/codex": "0.171.0"
+  }
+}

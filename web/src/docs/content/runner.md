@@ -31,11 +31,19 @@ The runner takes one command. With none, it runs `run`.
 | `run` | Runs the runner's service. This is the default. |
 | `setup` | Pairs the machine in your terminal, asks to sign in each agent given with `--harness`, then prints the command that starts the runner in the background. See [Add a machine](/docs/machines#1-start-the-runner). |
 | `pair` | Makes a new pairing code, for example after the code expired or after the machine was removed. |
-| `status` | Says whether the runner is connected, its network mode, the limits in force, and for each pairing whether Claude Code and OpenCode are signed in, its sandboxes and its data volume. |
+| `status` | Says whether the runner is connected, its network mode, the limits in force, and for each pairing each enabled agent’s sign-in status, its sandboxes and its data volume. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
 | `prune` | Removes all containers and data volumes of this runner's pairings. |
-| `login claude`, `login opencode` | Signs that agent in on this machine, in your terminal. The machine must be paired first. With `opencode`, `--provider ID` skips the list of providers. See [Sign agents in](/docs/machines#sign-agents-in). |
-| `logout claude`, `logout opencode` | Signs that agent out, for this pairing and every earlier one. |
+| `login claude`, `login opencode`, `login codex` | Signs that agent in on this machine, in your terminal. The machine must be paired first. With `opencode`, `--provider ID` skips the list of providers. See [Sign agents in](/docs/machines#sign-agents-in) and [Codex sign-in](#codex-sign-in). |
+| `logout claude`, `logout opencode`, `logout codex` | Signs that agent out, for this pairing and every earlier one. |
+
+### Codex sign-in
+
+Enable Codex during `windlass-runner setup`, or start the runner with `--harness codex`. Run `windlass-runner login codex` in the machine’s terminal and enter your own OpenAI API key at the hidden prompt. Usage is billed to the API account. ChatGPT device login is available on installations where the owner has enabled it for validation.
+
+The machine’s relay holds the credential. Commands in a session can use its relay to make model requests. On the hardened Docker profile, **Container access** runs commands as `agent` in the session’s container under the machine’s egress setting; the container is the boundary. On the Windlass sandbox profile, once the machine passes its Codex probe, Codex offers **Read-only** and **Workspace access** (the default). In both, commands run in Codex’s own sandbox without network. Read-only changes no files, and Workspace access changes files only in the workspace. Codex may ask to run a command outside its sandbox or to edit outside it, and on this profile every such request is refused, even one you would allow. The timeline notes each refusal. Container access and Auto review are not offered there, because that profile’s container is loosened so that a sandbox can run inside it. Choose **Plan first** to request a plan before changes.
+
+Run `windlass-runner logout codex` to end access through the machine. The Machines page shows the sign-in state and the terminal command.
 
 ### Status
 
@@ -87,11 +95,12 @@ These options go after the runner image, with the `run` command or with no comma
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
 | `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
-| `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code and OpenCode keep their model relay in all three. |
+| `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code, OpenCode and Codex keep their model relay in all three. |
 | `--egress-allow HOST[,HOST]` | Empty | In `restricted` mode, let commands reach these hosts on your private network. Exact DNS names, up to 64. Given alone, it means `--egress restricted`. The machine's own addresses, Docker's networks and metadata addresses stay blocked. |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
-| `--harness opencode` | Off | Offers OpenCode on this machine. Needs a runner built with the OpenCode image. Repeat `--harness` to offer both agents. |
+| `--harness opencode` | Off | Offers OpenCode on this machine. Needs a runner built with the OpenCode image. Repeat `--harness` to offer more than one agent. |
+| `--harness codex` | Off | Offers Codex on this machine. Uses your personal login on this machine. See [Codex sign-in](#codex-sign-in). |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |
 
 The runner saves `--name`, `--egress`, `--egress-allow` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.
@@ -138,7 +147,7 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "Use --name with setup, run or pair and a printable name of 1 to 64 characters." | Shorten the name, or take out control characters. |
 | "Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox." | Give one of the two profile IDs. |
 | "Use --slots, --slot-cpus, --slot-memory and --sandbox-memory with run or setup." | Give the sizing options to `run` or `setup` only. |
-| "Choose --harness claude or --harness opencode." | Those are the two agents a runner can offer. |
+| "Choose --harness claude, --harness opencode or --harness codex." | Those are the agents a runner can offer. |
 | "Use --harness opencode with a runner built with the pinned OpenCode image." | This runner image has no OpenCode. Use the image from the Machines page. Claude Code says the same for `--harness claude`. |
 | "The runner is already using this state. Use login <agent> in the running runner." | Setup cannot run beside the runner. Use `login` in the running container, or remove it first. |
 | "Mount the Docker socket and runner state for setup." | Copy the setup command from the Machines page: it mounts both. |

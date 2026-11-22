@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// Fill the gateway header inside the sandbox. Neither side of the ACP link
+// needs to read a login file or send the session lease over a control frame.
+const { spawn } = require('node:child_process');
+const { createInterface } = require('node:readline');
+const { once } = require('node:events');
+// codex-acp reaches Codex through wlp-codex-app-server, which keeps a repository's .codex/ unloaded.
+const child = spawn(process.execPath, ['/opt/wlp-codex/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], {
+  stdio: ['pipe', 'inherit', 'inherit'],
+  env: { ...process.env, CODEX_PATH: '/usr/local/bin/wlp-codex-app-server' },
+});
+child.on('exit', code => process.exit(code ?? 1));
+child.stdin.on('error', () => process.exit(1));
+(async () => {
+  for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+    const msg = JSON.parse(line);
+    if (msg.method === 'providers/set') {
+      if (!process.env.WLP_SESSION_BEARER) {
+        process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, error:{code:-32000,message:'Authentication required'} }) + '\n');
+        continue;
+      }
+      msg.params = { providerId:'openai', apiType:'openai', baseUrl:'http://127.0.0.1:17892/codex/v1',
+        headers:{authorization:'Bearer ' + process.env.WLP_SESSION_BEARER} };
+    }
+    if (!child.stdin.write(JSON.stringify(msg) + '\n')) await once(child.stdin, 'drain');
+  }
+  child.stdin.end();
+})().catch(() => { child.kill(); process.exitCode = 1; });
