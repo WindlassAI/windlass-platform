@@ -61,7 +61,7 @@ The body names the repository, the title, the body and, optionally, the acceptan
 
 ## Choose the agent
 
-An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code** or **OpenCode** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
+An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code** or **OpenCode** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those, and an item is refused where the machine does not report the agent signed in. If the agent is signed out by the time a turn would start, the turn does not run: the item asks you, with the `windlass-runner login` command to run. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
 
 What changes with Claude Code or OpenCode:
 

@@ -1662,6 +1662,32 @@ async function machineChecks(): Promise<void> {
 			return `refused hosted (${hosted}), Plan first (${planFirst}), unknown (${unknown}); bypassPermissions, two allow-once answers, 33,500 tokens reported, CI decides`;
 		});
 
+		await check("machine: a Claude Code item is filed only where it is known to be signed in, and its turn checks again", async () => {
+			const reported = async (signIn: "token" | "none" | "unknown") => {
+				runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn }];
+				runner.report();
+				await waitFor(`the machine reports Claude Code ${signIn}`, async () => (await user.machines())[0]?.harnesses?.find(h => h.id === "claude")?.signIn === signIn, 15_000);
+			};
+			try {
+				await reported("unknown");
+				const unknown = await refused(() => user.createItem({ ...task, title: "Claude, sign-in unknown", harness: "claude" }), "harness_signed_out");
+				assert(/could not say whether Claude Code is signed in/.test(unknown), unknown);
+				await reported("token");
+				const draft = await user.createItem({ ...task, title: "Claude, signed out before its turn", body: "Fix the program (itemwork).", harness: "claude" });
+				await reported("none");
+				const sent = runner.acpInput.length;
+				await user.actOnItem({ id: draft.id, action: { kind: "start" } });
+				const asked = await untilItem(user, draft.id, "the sign-in question", view => view.question?.kind === "turn_refused");
+				assert(/Claude Code on “Test machine” is not signed in\. Run windlass-runner login claude there\./.test(asked.question!.text), asked.question!.text);
+				assert(!runner.acpInput.slice(sent).join("").includes("session/prompt"), "the signed-out item's turn reached the agent");
+				assert(asked.spent.tokens === 0 && asked.agent?.tokens === "not_reported", JSON.stringify({ spent: asked.spent, agent: asked.agent }));
+				await user.actOnItem({ id: draft.id, action: { kind: "cancel" } });
+				return `refused at filing (${unknown}); paused at its turn (${asked.question!.text})`;
+			} finally {
+				await reported("token");
+			}
+		});
+
 		await check("machine: offline at launch waits without spend and resumes to review", async () => {
 			await runner.setOffline(true);
 			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);

@@ -57,3 +57,10 @@ export function initialHarnessModels(options?: HarnessOptions): ModelList {
 export function machineLoginMessage(profile: AcpProfile, machine: string): string {
 	return `${profile.name} on “${machine}” is not signed in. Run windlass-runner login ${profile.id} there.`;
 }
+
+/** Why a work item cannot run this agent, by the machine's reported sign-in: only "token" is known to be signed in. */
+export function itemSignInMessage(profile: AcpProfile, machine: string, signIn: "token" | "none" | "unknown"): string | null {
+	if (signIn === "token") return null;
+	if (signIn === "none") return machineLoginMessage(profile, machine);
+	return `“${machine}” could not say whether ${profile.name} is signed in there, and a work item runs only where it is. Check that Docker runs there, or run windlass-runner login ${profile.id} there.`;
+}

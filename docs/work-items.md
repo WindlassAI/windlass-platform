@@ -137,7 +137,10 @@ installation has accepted them, an item waits for no CI: it is handed over sayin
 ### The item's agent
 
 `CreateItemInput.harness` picks the builder: `windlass` (the default), or a machine harness by id
-(`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in.
+(`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in (`signIn: "token"`; `makeSession` refuses
+"none" and "unknown"). Each item turn checks the machine's report again before its sandbox opens
+(`itemSignInRefusal` in `agent-session.ts`): a signed-out agent refuses the turn, and the item asks
+with the login hint.
 A machine harness runs only Quick, only on a machine, in `docker-hardened`. A Plan-first subtask's
 `needs.harness` other than `windlass` is refused by plan validation and by placement (`machineAgentRefusal`). It starts every turn in
 its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `build`), and the ACP

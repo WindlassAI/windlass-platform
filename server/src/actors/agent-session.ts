@@ -216,7 +216,7 @@ import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
@@ -1315,6 +1315,21 @@ function megabytes(bytes: number): string {
  */
 const FRESH_WORKSPACE =
 	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. A repository that was cloned has been cloned again, with whatever of your work had been pushed to its branch; anything else you created or changed earlier is not in it. Look at what is there before you rely on earlier work.]\n\n";
+
+/**
+ * Why an item's turn on a machine harness cannot start: the machine's last report does not offer the
+ * agent, or does not say it is signed in (`signIn` "token", as filing requires). Null where it can, and for
+ * Windlass. A machine that cannot be asked is left to the turn, which waits for it.
+ */
+async function itemSignInRefusal(c: Ctx, meta: SessionMeta): Promise<string | null> {
+	const machine = machineHarness(meta.harness);
+	if (!machine || meta.place.kind !== "machine") return null;
+	const facts = await runnerLink(c, meta.place.machineId).facts().catch(() => null);
+	if (!facts?.report) return null;
+	const offered = facts.report.harnesses?.find(entry => entry.id === machine.id);
+	if (!offered) return `This machine does not offer ${machine.name}.`;
+	return itemSignInMessage(machine, facts.name, offered.signIn);
+}
 
 /** The platform's notes before an item's ACP prompt, as the Windlass turn has them, and how to mark them told. */
 function acpItemNotes(meta: SessionMeta): { text: string; told(): void } {
@@ -3420,6 +3435,12 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 
 		layer = await layerOf(c, meta);
 		if (reviewer && meta.harness && meta.harness !== "windlass") throw new TurnProblem("A work item's reviewer runs only with Windlass.");
+		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
+		const signedOut = active.item ? await itemSignInRefusal(c, meta) : null;
+		if (signedOut) {
+			active.item!.refused = signedOut;
+			throw new TurnProblem(signedOut);
+		}
 		if (reviewer && (!checkout || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
 			const reason = REVIEW_PROFILE_REASON;
 			if (active.item) active.item.refused = reason;
