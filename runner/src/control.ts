@@ -273,6 +273,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							if ("refusal" in f && f.refusal) { refusal = f.refusal; mayMaintain = false; discarding = stopSessions(); disconnect(); return; }
 						}
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000; named = f.capabilities;
+						owner.network.platformGitHost(f.gitHost);
 						mayMaintain = true;
 						status("Online");
 						lastRefresh = Date.now();

@@ -6,7 +6,8 @@ import { docker, LABEL, LABEL_ARG, NO_LOGS } from "../../server/src/sandbox/dock
 import { waitForListener } from "./helper-ready.js";
 import { relaySocketVolume } from "./claude-relay.js";
 import { providerHosts } from "./opencode-providers.js";
-import { type Egress } from "./egress-policy.js";
+import { DEFAULT_GIT_HOST, listedHosts, type Egress } from "./egress-policy.js";
+import { audit } from "./audit.js";
 import { image, type MachineDocker } from "./policy.js";
 import { Refusal } from "./state.js";
 
@@ -22,6 +23,20 @@ export class EgressNetwork {
 	constructor(private readonly machine: MachineDocker, readonly policy: Egress) {
 		this.prefix = "wlp-egress-" + machine.identity.machineId;
 		this.openNet = "wlp-open-" + machine.identity.machineId;
+	}
+	/** The git host the platform named in its welcome; absent from an older platform. */
+	private gitHost?: string;
+	/** With --egress-domains, the hosts the proxy takes: the owner's and the platform's. */
+	domains() {
+		return this.policy.domains && listedHosts(this.policy.domains, this.gitHost);
+	}
+	platformGitHost(host: string | undefined) {
+		if (host === this.gitHost) return;
+		this.gitHost = host;
+		if (!this.policy.domains || (host ?? DEFAULT_GIT_HOST) === DEFAULT_GIT_HOST) return;
+		const note = `The platform's git host is ${host}: the list of public hosts has it in place of ${DEFAULT_GIT_HOST}.`;
+		console.log(note);
+		audit(null, null, "egress", note);
 	}
 	sandboxNetwork() {
 		const env: Record<string, string> = {};
@@ -94,14 +109,14 @@ export class EgressNetwork {
 		if (!proxyEnabled && !harness) return;
 		const source = typeof EGRESS_SOURCE === "string" ? EGRESS_SOURCE : readFileSync(join(import.meta.dirname, "egress-proxy.mjs"), "utf8");
 		const denied = !proxyEnabled ? [] : harness === "codex" ? ["api.openai.com", "auth.openai.com", "chatgpt.com"] : harness === "opencode" ? providerHosts : [];
-		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy, denied])).digest("hex");
+		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy, this.domains() ?? null, denied])).digest("hex");
 		const mounts: string[] = [], probes: string[] = [];
 		if (proxyEnabled) {
 			const broker = denied.length ? `${this.prefix}-${harness}-broker` : this.prefix;
 			const volume = broker + "-socket";
 			await this.machine.ownedVolume(true, volume);
 			const mount = `type=volume,src=${volume},dst=/workspace`;
-			await this.ensure("broker", broker, revision, "host", source, [mount], [JSON.stringify(this.policy.allow), JSON.stringify(denied), JSON.stringify(this.policy.domains ?? null)], ["/workspace/egress.sock"]);
+			await this.ensure("broker", broker, revision, "host", source, [mount], [JSON.stringify(this.policy.allow), JSON.stringify(denied), JSON.stringify(this.domains() ?? null)], ["/workspace/egress.sock"]);
 			mounts.push(mount + ",readonly");
 			probes.push("17891");
 		}

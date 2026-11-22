@@ -20,7 +20,8 @@ const blocked = subnets(["0.0.0.0/8", "127.0.0.0/8", "100.64.0.0/10", "169.254.0
 	"192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
 	"224.0.0.0/4", "240.0.0.0/4", "fd00:ec2::/32", "fd20:ce::254/128", "2001::/23", "2001:db8::/32", "2002::/16"]);
 const globalV6 = subnets(["2000::/3"]);
-export async function selectAddress(host, allow, resolve = lookup, interfaces = networkInterfaces(), denied = []) {
+// `privateOnly`: an --egress-allow name that is not on the owner's list of public hosts may reach only the private network.
+export async function selectAddress(host, allow, resolve = lookup, interfaces = networkInterfaces(), denied = [], privateOnly = false) {
 	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase().replace(/\.$/, "")))) throw Error("blocked");
 	const answers = net.isIP(host) ? [{ address: host }] : await resolve(host, { all: true });
 	const hostAndBridges = new net.BlockList();
@@ -36,7 +37,7 @@ export async function selectAddress(host, allow, resolve = lookup, interfaces = 
 		const family = net.isIPv4(address) ? "ipv4" : "ipv6";
 		const privateLan = lan.check(address, family);
 		if (!net.isIP(address) || blocked.check(address, family) || hostAndBridges.check(address, family)
-			|| (privateLan && !allow.includes(host)) || (family === "ipv6" && !privateLan && !globalV6.check(address, family))
+			|| (privateLan && !allow.includes(host)) || (privateOnly && !privateLan) || (family === "ipv6" && !privateLan && !globalV6.check(address, family))
 			|| (family === "ipv6" && address.toLowerCase().startsWith("::ffff:")))
 			throw Error("blocked");
 	}
@@ -46,15 +47,18 @@ export async function selectAddress(host, allow, resolve = lookup, interfaces = 
 }
 // With an owner's list of public hosts (--egress-domains): the name is matched before any DNS lookup,
 // so an unlisted name never reaches the machine's resolver. `*.name` is any subdomain, not the name.
-export function listedHost(host, domains, allow = []) {
+// Each label is checked as the list's own are (egress-policy.ts), so `a..x.example` matches nothing.
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+export function listedHost(host, domains) {
 	const name = host.toLowerCase().replace(/\.$/, "");
-	if (!name || net.isIP(name)) return false;
-	return allow.includes(name) || domains.some(entry => entry.startsWith("*.") ? name.endsWith(entry.slice(1)) && name.length > entry.length - 1 : name === entry);
+	if (!name || name.length > 253 || net.isIP(name) || !name.split(".").every(label => LABEL.test(label))) return false;
+	return domains.some(entry => entry.startsWith("*.") ? name.endsWith(entry.slice(1)) : name === entry);
 }
 const MAX_RECORD = 16384;
 // The one server_name of the ClientHello in the first TLS record. Undefined while the record is still
 // incomplete; null for anything refused: not TLS, a hello split across records, a malformed length,
-// no name, two names, a duplicated extension or Encrypted Client Hello (its outer name says nothing).
+// no name, two names, a duplicated extension or Encrypted Client Hello (its outer name says nothing), under
+// its final code point or any of the drafts' (0xfe00 to 0xfe0d, and 0xffce).
 export function clientHelloName(data) {
 	if (data.length < 1) return undefined;
 	if (data[0] !== 0x16) return null;
@@ -98,7 +102,7 @@ export function clientHelloName(data) {
 			seen.add(type);
 			const body = extensions.subarray(p, p + len);
 			p += len;
-			if (type === 0xfe0d || type === 0xffce) return null;
+			if ((type >= 0xfe00 && type <= 0xfe0d) || type === 0xffce) return null;
 			if (type !== 0) continue;
 			if (len < 2 || body.readUInt16BE(0) !== len - 2 || len < 5 || body[2] !== 0) return null;
 			const nameLength = body.readUInt16BE(3);
@@ -130,9 +134,17 @@ export async function targetAddress(url, tunnel, allow, denied, domains = null, 
 	const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
 	if (device && (host !== "auth.openai.com" || url.port !== "443")) throw Error("blocked");
 	if (!host || url.username || url.password) throw Error("blocked");
-	// A list also limits the ports: HTTPS tunnels to 443, plain HTTP to 80.
-	if (domains && (!listedHost(host, domains, allow) || url.port !== (tunnel ? "443" : ""))) throw Error("blocked");
-	return selectAddress(host, allow, resolve, interfaces, denied);
+	// A list also limits the ports: HTTPS tunnels to 443, plain HTTP to 80. A name only in --egress-allow
+	// passes it, but then only to a private address: the allow list never adds a public host.
+	let privateOnly = false;
+	if (domains) {
+		if (url.port !== (tunnel ? "443" : "")) throw Error("blocked");
+		if (!listedHost(host, domains)) {
+			if (!allow.includes(host.toLowerCase())) throw Error("blocked");
+			privateOnly = true;
+		}
+	}
+	return selectAddress(host, allow, resolve, interfaces, denied, privateOnly);
 }
 function broker(allow, denied, device = false, domains = null) {
 	const target = (url, tunnel) => targetAddress(url, tunnel, allow, denied, domains, device);

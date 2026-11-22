@@ -7,7 +7,7 @@ import { MACHINE_PROFILES, type MachineProfile } from "../../server/src/runner/p
 import { MACHINE_ID, validAllowedProfiles } from "../../server/src/runner/control.js";
 import { list, object, is, text, json, nullable, optional, count } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
-import { egressFlags, open, PLATFORM_HOSTS, restricted, type Egress } from "./egress-policy.js";
+import { egressFlags, listedHosts, open, platformHostNote, restricted, type Egress } from "./egress-policy.js";
 import { egressMode } from "../../server/src/runner/control.js";
 import manifest from "../package.json";
 
@@ -90,8 +90,12 @@ export function pairingProfiles(id: string, requested?: MachineProfile[]): Machi
 }
 const egressFile = (id: string) => `egress-${id}.json`;
 const validEgress = object({ mode: egressMode, allow: list(text(253), 64), domains: optional(list(text(255), 64)) });
+/** Printed when egress flags without --egress-domains replace a saved list: the flags are saved whole. */
+export const DOMAINS_REMOVED = "The --egress-domains list was removed: commands can reach any public host again. Give --egress-domains with the other --egress flags to keep a list.";
 export function pairingEgress(id: string, requested?: Egress): Egress {
 	if (requested) {
+		const prior = read(egressFile(id));
+		if (!requested.domains && validEgress(prior) && prior.domains) console.log(DOMAINS_REMOVED);
 		save(egressFile(id), requested);
 		return requested;
 	}
@@ -103,7 +107,7 @@ export function pairingEgress(id: string, requested?: Egress): Egress {
 export function egressNote(id: string) {
 	if (read(egressFile(id)) === undefined) return "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in.";
 	const { mode, allow, domains } = pairingEgress(id);
-	const only = domains?.map(host => PLATFORM_HOSTS[host] ? `${host} (always: ${PLATFORM_HOSTS[host]})` : host);
+	const only = domains && listedHosts(domains).map(host => platformHostNote(host) ? `${host} (${platformHostNote(host)})` : host);
 	return `Network egress is ${mode}.${only ? " Only these public hosts: " + only.join(", ") + "." : ""}${allow.length ? " Allowed hosts: " + allow.join(", ") : ""}`;
 }
 export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"], pin?: Pin) {

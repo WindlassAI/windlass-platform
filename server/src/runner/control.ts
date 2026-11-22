@@ -12,6 +12,7 @@
  *   hello      runner → actor   the signature, the runner's release, its process epoch and its clock
  *   welcome    actor → runner   accepted: the idle time the runner applies to sandboxes on its own, and
  *                               to a runner that reads them, the server's capabilities (SERVER_CAPABILITIES)
+ *                               and its git host (`gitHost`, which an --egress-domains list always has)
  *   refused    actor → runner   not accepted, or no longer (the machine was removed), with a sentence to
  *                               show; the actor then closes the socket
  *   report     runner → actor   what the machine has: Docker, the probe, free disk, its sandboxes. Sent
@@ -128,9 +129,28 @@ export type Capability = typeof SERVER_CAPABILITIES[number];
  */
 export const CAPABILITIES_RUNNER_VERSION = "0.3.0";
 const capabilities = list(line(64), 32);
-/** The welcome's `capabilities`, for a runner whose hello reported `runnerVersion`. */
-export function welcomeCapabilities(runnerVersion: string): { capabilities?: string[] } {
-	return versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION) ? { capabilities: [...SERVER_CAPABILITIES] } : {};
+/**
+ * The first runner release whose checks take `gitHost` in a welcome (the same as `capabilities`'s, since
+ * both came before that release was published). Raise it if a runner without the field is ever released.
+ */
+export const GIT_HOST_RUNNER_VERSION = "0.3.0";
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** A DNS name of two labels or more, lower case, no address: what an --egress-domains list can hold. */
+const gitHost = is<string>((v) => typeof v === "string" && v.length <= 253 && v.split(".").length >= 2
+	&& v.split(".").every((label) => LABEL.test(label)) && !/^\d+$/.test(v.split(".").at(-1)!));
+/**
+ * The welcome's `capabilities` and `gitHost`, for a runner whose hello reported `runnerVersion`. `gitUrl`:
+ * where the platform's git clones from (WLP_GITHUB_URL). Its host is named only for an https address on
+ * the default port with a DNS name, the only kind a runner's list can reach (as hosted's, e2b/network.ts).
+ */
+export function welcomeCapabilities(runnerVersion: string, gitUrl?: string): { capabilities?: string[]; gitHost?: string } {
+	if (!versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION)) return {};
+	let host: string | undefined;
+	try {
+		const url = new URL(gitUrl ?? "");
+		if (url.protocol === "https:" && url.port === "" && gitHost(url.hostname)) host = url.hostname;
+	} catch {}
+	return { capabilities: [...SERVER_CAPABILITIES], ...(host && versionAtLeast(runnerVersion, GIT_HOST_RUNNER_VERSION) && { gitHost: host }) };
 }
 
 const refusal = either(
@@ -147,7 +167,7 @@ const refusal = either(
 );
 const serverFrame = either(
 	either(
-		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), refusal: optional(refusal), ...welcomeFields }))),
+		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), refusal: optional(refusal), ...welcomeFields }))),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
 	),
 	either(

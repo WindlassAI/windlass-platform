@@ -81,9 +81,18 @@ What each `--egress` mode allows is in the in-app docs
   every port but 443 for `CONNECT` and 80 for plain HTTP. After `200 Connection Established` the broker
   holds the client's bytes until the first TLS record is complete (5 s, at most 16 KiB), and
   `clientHelloName` must find exactly one `server_name` equal to the tunnel's host and no Encrypted Client
-  Hello before anything is written upstream. `github.com` and `api.openai.com` are always added, for the
-  platform's git and Windlass's model requests through this proxy. The report carries only the list's size
-  (`egressDomains`, behind the `egress-domains` server capability).
+  Hello (`0xfe0d`, the drafts' `0xfe00`–`0xfe0c` and `0xffce`) before anything is written upstream.
+  `listedHost` checks each label as the list's own are checked, so a malformed name under a wildcard never
+  reaches the resolver; an `--egress-allow` name that is not listed passes with `privateOnly`, and
+  `selectAddress` then refuses any public answer. The saved list holds only the owner's entries;
+  `EgressNetwork.domains()` adds `api.openai.com` and the platform's git host (`listedHosts`) for the broker
+  and the report. The git host is the welcome's `gitHost` (`welcomeCapabilities`, from `WLP_GITHUB_URL`,
+  sent to runners at `GIT_HOST_RUNNER_VERSION` or later, whose checks take the key), else `github.com`.
+  One of the 64 places is kept for it. A wildcard whose base is a public suffix, or has one under it, is
+  refused (`sharedSuffix`, over `runner/src/public-suffixes.ts`, generated from publicsuffix.org by
+  `scripts/public-suffix-update.mjs`). Chrome's GREASE Encrypted Client Hello cannot be turned off any more,
+  so the sandbox's browser cannot reach listed HTTPS hosts; `scripts/browser-hello-check.ts` holds that.
+  The report carries only the list's size (`egressDomains`, behind the `egress-domains` server capability).
 - Windlass's inner command sandbox has its own loopback and cannot use the proxy.
 
 In `open` mode sessions use a machine bridge with inter-container communication disabled. In `none` mode a

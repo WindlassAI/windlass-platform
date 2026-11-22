@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -44,13 +44,25 @@ test("new pairing, migration, persisted opt-in and invalid owner flags", async (
 		for (const [mode, hosts] of [["bad", undefined], ["none", "host"], ["restricted", "*.lan"], ["restricted", "http://x/"]]) {
 			assert.throws(() => policy.egressFlags(mode, hosts));
 		}
-		// An owner's list of public hosts is kept, shown expanded, and emptied by --egress without it.
+		// An owner's list of public hosts is kept, shown expanded with the platform's hosts, and emptied by
+		// --egress without it, which says so.
 		const listed = "m_0000000000000003";
-		state.pairingEgress(listed, policy.egressFlags("restricted", "git.internal", "@npm")!);
-		assert.deepEqual(state.pairingEgress(listed), { mode: "restricted", allow: ["git.internal"], domains: ["api.openai.com", "github.com", "registry.npmjs.org", "registry.yarnpkg.com"] });
-		assert.equal(state.egressNote(listed), "Network egress is restricted. Only these public hosts: api.openai.com (always: Windlass's model requests use it), github.com (always: the platform's git uses it), registry.npmjs.org, registry.yarnpkg.com. Allowed hosts: git.internal");
-		state.pairingEgress(listed, policy.egressFlags("restricted")!);
-		assert.equal(state.pairingEgress(listed).domains, undefined);
+		const printed: string[] = [];
+		const log = console.log;
+		console.log = (line: string) => { printed.push(line); };
+		try {
+			state.pairingEgress(listed, policy.egressFlags("restricted", "git.internal", "@npm")!);
+			state.pairingEgress(listed, policy.egressFlags("restricted", "git.internal", "@npm")!);
+			assert.deepEqual(printed, [], "kept the list");
+			assert.deepEqual(state.pairingEgress(listed), { mode: "restricted", allow: ["git.internal"], domains: ["registry.npmjs.org", "registry.yarnpkg.com"] });
+			assert.equal(state.egressNote(listed), "Network egress is restricted. Only these public hosts: api.openai.com (always: Windlass's model requests use it; refused to commands in Codex and OpenCode sessions), github.com (always until the platform names its git host: the platform's git uses it), registry.npmjs.org, registry.yarnpkg.com. Allowed hosts: git.internal");
+			state.pairingEgress(listed, policy.egressFlags("restricted", "git.internal")!);
+			assert.deepEqual(printed, [state.DOMAINS_REMOVED]);
+			assert.match(printed[0]!, /--egress-domains list was removed/);
+			assert.equal(state.pairingEgress(listed).domains, undefined);
+			state.pairingEgress(listed, policy.egressFlags("restricted")!);
+			assert.equal(printed.length, 1, "no list, nothing removed");
+		} finally { console.log = log; }
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test("proxy pins DNS results, fails closed on mixed answers, and scopes private exceptions", async () => {
@@ -139,9 +151,12 @@ test("--egress-domains: presets as hosted names them, the platform's hosts alway
 	const { PRESETS } = await import("../server/src/sandbox/e2b/network.js");
 	const listed = policy.egressFlags(undefined, undefined, "@npm, @github, *.Example.org.")!;
 	assert.equal(listed.mode, "restricted");
-	assert.deepEqual(listed.domains, [...new Set(["*.example.org", "api.openai.com", ...PRESETS["@npm"]!, ...PRESETS["@github"]!])].sort());
-	assert.deepEqual(policy.egressFlags("restricted", undefined, "registry.npmjs.org")!.domains, ["api.openai.com", "github.com", "registry.npmjs.org"]);
-	assert.deepEqual(policy.egressFlags("restricted", undefined, Array.from({ length: 62 }, (_, i) => `h${i}.example`).join(","))!.domains!.length, 64);
+	assert.deepEqual(listed.domains, [...new Set(["*.example.org", ...PRESETS["@npm"]!, ...PRESETS["@github"]!])].sort());
+	assert.deepEqual(policy.egressFlags("restricted", undefined, "registry.npmjs.org")!.domains, ["registry.npmjs.org"]);
+	assert.deepEqual(policy.listedHosts(["registry.npmjs.org"]), ["api.openai.com", "github.com", "registry.npmjs.org"]);
+	const most = policy.egressFlags("restricted", undefined, Array.from({ length: 62 }, (_, i) => `h${i}.example`).join(","))!.domains!;
+	assert.equal(policy.listedHosts(most).length, 64);
+	assert.equal(policy.listedHosts(most, "git.example.com").length, 64, "the platform's git host takes github.com's place");
 	assert.equal(policy.egressFlags("restricted")!.domains, undefined);
 	const many = Array.from({ length: 63 }, (_, i) => `h${i}.example`).join(",");
 	for (const [mode, domains] of [["restricted", many], ["restricted", "93.184.216.34"], ["restricted", "*.com"], ["restricted", "*.com."], ["restricted", "com"],
@@ -169,8 +184,22 @@ test("with a list, the proxy matches the name before DNS, keeps every range bloc
 	for (const target of ["http://registry.npmjs.org:8080/", "http://93.184.216.34/", "http://registry.npmjs.org:443/"]) await assert.rejects(check(target, false), /blocked/, target);
 	for (const ip of ["10.0.0.5", "169.254.169.254", "127.0.0.1"]) await assert.rejects(check("registry.npmjs.org:443", true, [ip]), /blocked/, ip);
 	assert.equal(asked.every(host => domains.includes(host) || host === "objects.githubusercontent.com"), true, asked.join());
-	// A private name the owner allows passes the list too, as with --egress-allow alone.
+	// A private name the owner allows passes the list too, as with --egress-allow alone, but only to the private
+	// network: an allowed name that answers with a public address is no way past the list.
 	assert.equal(await check("git.internal:443", true, ["10.0.0.5"], domains, ["git.internal"]), "10.0.0.5");
+	for (const ips of [["93.184.216.34"], ["10.0.0.5", "93.184.216.34"], ["2606:2800::1"]])
+		await assert.rejects(check("git.internal:443", true, ips, domains, ["git.internal"]), /blocked/, ips.join());
+	assert.equal(await check("registry.npmjs.org:443", true, ["10.0.0.5"], domains, ["registry.npmjs.org"]), "10.0.0.5", "a listed name the owner also allows");
+	assert.equal(await check("git.internal:443", true, ["93.184.216.34"], null, ["git.internal"]), "93.184.216.34", "without a list, as before");
+	// Names under a wildcard are checked label by label, as the list's own entries are, before DNS.
+	asked.length = 0;
+	for (const name of ["a..objects.githubusercontent.com", ".githubusercontent.com", "-a.githubusercontent.com", "a-.githubusercontent.com", "a_b.githubusercontent.com",
+		"a".repeat(64) + ".githubusercontent.com", ("a".repeat(63) + ".").repeat(4) + "githubusercontent.com"]) {
+		assert.equal(listedHost(name, domains), false, name);
+		await assert.rejects(check("http://" + name + "/", false), /blocked/, name);
+	}
+	assert.deepEqual(asked, [], "a malformed name reached the resolver");
+	assert.equal(listedHost("a-b.c0.githubusercontent.com", domains), true);
 	// Without a list: today's behaviour, any public name and any port.
 	assert.equal(await check("evil.example:8443", true, ["93.184.216.34"], null), "93.184.216.34");
 	assert.equal(await check("http://evil.example:8080/", false, ["93.184.216.34"], null), "93.184.216.34");
@@ -207,7 +236,11 @@ test("the ClientHello parser takes exactly one server name and refuses the rest"
 	assert.equal(clientHelloName(hello([[10, Buffer.from([0, 2, 0, 29])]])), null, "no name");
 	assert.equal(clientHelloName(hello([[0, sni("a.example", "b.example")]])), null, "two names");
 	assert.equal(clientHelloName(hello([[0, sni("a.example")], [0, sni("a.example")]])), null, "two server_name extensions");
-	assert.equal(clientHelloName(hello([[0, sni("a.example")], [0xfe0d, Buffer.alloc(8)]])), null, "Encrypted Client Hello");
+	for (let type = 0xfe00; type <= 0xfe0d; type++)
+		assert.equal(clientHelloName(hello([[0, sni("a.example")], [type, Buffer.alloc(8)]])), null, "Encrypted Client Hello " + type.toString(16));
+	assert.equal(clientHelloName(hello([[0, sni("a.example")], [0xffce, Buffer.alloc(8)]])), null, "Encrypted Client Hello ffce");
+	for (const type of [0xfdff, 0xfe0e, 0xffcd])
+		assert.equal(clientHelloName(hello([[0, sni("a.example")], [type, Buffer.alloc(8)]])), "a.example", type.toString(16));
 	assert.equal(clientHelloName(hello([[0, sni("a.example\u0000.evil")]])), null, "a name with a NUL");
 	assert.equal(clientHelloName(Buffer.from("GET / HTTP/1.1\r\n\r\n")), null, "not TLS");
 	const past = Buffer.from(real); past[8] = 0xff; // the handshake length, past its record
@@ -237,4 +270,49 @@ test("the report names the list's size only to a server that reads it", async ()
 	assert.equal(reportFor(listed, ["egress-domains"]).egressDomains, 3);
 	const [, hardened] = machineProfiles("fixture", { ...listed, sandboxes: [] });
 	assert.equal(hardened.commandNetworkText, "commands can reach only the 3 public hosts the owner allows, through the web proxy");
+});
+
+test("a wildcard on a public suffix is refused, with the reason", async () => {
+	const policy = await import("../runner/src/egress-policy.js");
+	const { PUBLIC_SUFFIX_VERSION } = await import("../runner/src/public-suffixes.js");
+	assert.match(PUBLIC_SUFFIX_VERSION, /^\d{4}-\d{2}-\d{2}_/);
+	for (const entry of ["*.co.uk", "*.github.io", "*.s3.amazonaws.com", "*.amazonaws.com", "*.workers.dev", "*.vercel.app", "*.appspot.com",
+		"*.blob.core.windows.net", "*.ngrok-free.app", "*.githubusercontent.com", "*.herokuapp.com", "*.ward.kobe.jp", "*.x.compute.amazonaws.com"]) {
+		assert.throws(() => policy.egressFlags("restricted", undefined, entry), (error: Error) => /public suffix/.test(error.message) && error.message.includes(entry), entry);
+	}
+	assert.throws(() => policy.egressFlags("restricted", undefined, "*.amazonaws.com"), /under it, is a public suffix/);
+	// Names under a suffix are one owner's, and an exact host is one host.
+	for (const entry of ["*.example.org", "*.example.co.uk", "*.npmjs.org", "*.mycompany.github.io", "*.city.kobe.jp", "github.io", "s3.amazonaws.com", "objects.githubusercontent.com"])
+		assert.ok(policy.egressFlags("restricted", undefined, entry), entry);
+	assert.equal(policy.sharedSuffix("example.org"), undefined);
+});
+
+test("the welcome names the platform's git host to a runner that reads it, and the list takes it", async () => {
+	const { GIT_HOST_RUNNER_VERSION, MIN_RUNNER_VERSION, parseServerFrame, welcomeCapabilities } = await import("../server/src/runner/control.js");
+	assert.equal(welcomeCapabilities(GIT_HOST_RUNNER_VERSION, "https://git.example.com").gitHost, "git.example.com");
+	assert.equal(welcomeCapabilities("1.0.0", "https://GitHub.com/").gitHost, "github.com");
+	assert.equal("gitHost" in welcomeCapabilities(MIN_RUNNER_VERSION, "https://git.example.com"), false, "an older runner refuses unknown keys");
+	for (const url of ["http://git.example.com", "https://git.example.com:8443", "https://10.0.0.5", "not a url", undefined])
+		assert.equal("gitHost" in welcomeCapabilities("1.0.0", url), false, String(url));
+	const welcome = { kind: "welcome", idleSuspendMs: 1000, capabilities: ["git-mirrors"] };
+	assert.ok(parseServerFrame(JSON.stringify({ ...welcome, gitHost: "git.example.com" })));
+	assert.ok(parseServerFrame(JSON.stringify(welcome)));
+	for (const bad of ["GIT.example.com", "localhost", "10.0.0.5", "a..example.com", "", 5])
+		assert.equal(parseServerFrame(JSON.stringify({ ...welcome, gitHost: bad })), null, String(bad));
+	Object.assign(globalThis, { SANDBOX_IMAGE: "fixture", SHOTS_IMAGE_PIN: "", HARNESS_IMAGES: { claude: "fixture" } });
+	const { Executor } = await import("../runner/src/docker-executor.js");
+	const owner = new Executor({ uid: "u_fixture", machineId: "m_fixture" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [], domains: ["registry.npmjs.org"] });
+	assert.deepEqual(owner.network.domains(), ["api.openai.com", "github.com", "registry.npmjs.org"]);
+	const log = console.log;
+	const printed: string[] = [];
+	console.log = (line: string) => { printed.push(line); };
+	// The note also goes to the audit log, in the state directory an earlier test removed.
+	const dir = process.env.WLP_RUNNER_STATE_DIR!;
+	mkdirSync(dir, { recursive: true });
+	try { owner.network.platformGitHost("git.example.com"); } finally { console.log = log; rmSync(dir, { recursive: true, force: true }); }
+	assert.deepEqual(owner.network.domains(), ["api.openai.com", "git.example.com", "registry.npmjs.org"]);
+	assert.match(printed.join(), /git host is git\.example\.com/);
+	assert.equal(owner.report().egressDomains, 3);
+	owner.network.platformGitHost(undefined);
+	assert.deepEqual(owner.network.domains(), ["api.openai.com", "github.com", "registry.npmjs.org"], "an older platform");
 });
