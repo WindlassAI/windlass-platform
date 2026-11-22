@@ -836,6 +836,13 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	};
 	const openCode = afterTurn(agentItem("opencode", { tokens: 30_000 }), turnSpend(usage, openCodeTurn));
 	expect("an OpenCode item's reported tokens trip its token budget, with its cost kept", openCode.spent.tokens === 33_500 && openCode.agent?.tokens === "counted" && openCode.agent.cost?.amount === 0.42 && budgetStop(openCode.budget, openCode.spent, openCode.place)?.cause === "tokens", JSON.stringify(openCode.agent));
+	// An OpenCode turn that reports no tokens stops the item: its budget could not be enforced, and the turn is never taken as 0.
+	const silentOpenCode = afterTurn(agentItem("opencode"), turnSpend(null, agentTurn("opencode", null, { cost: null })));
+	expect("an OpenCode turn that reports no tokens stops the item with the reason, offering no way to go on unbounded",
+		silentOpenCode.state === "waiting" && silentOpenCode.question?.kind === "budget" && silentOpenCode.question.text === "OpenCode did not report token use, so the item's budget can't be enforced."
+		&& isDeepStrictEqual(silentOpenCode.question.choices.map(choice => choice.id), ["give_up"]) && silentOpenCode.agent?.tokens === "not_reported", JSON.stringify(silentOpenCode.question));
+	const silentClaude = afterTurn(agentItem("claude"), turnSpend(null, agentTurn("claude", null, null)));
+	expect("a Claude Code turn that reports no tokens goes on: its tokens are not counted", silentClaude.question === null && silentClaude.agent?.tokens === "not_reported", JSON.stringify(silentClaude.question));
 	const later = { ...structuredClone(openCode) };
 	const { noteAgentTurn } = await import("../server/src/factory/budget.js");
 	noteAgentTurn(later, { ...openCodeTurn!, cost: { amount: 0.9, currency: "USD" } });

@@ -85,6 +85,16 @@ export function turnSpend(usage: TurnUsage | null, agent?: AgentTurn): TurnSpend
 	return { tokens: agent && !agent.counted ? 0 : turnTokens(usage), hostedSeconds: 0, ...(agent && { agent }) };
 }
 
+/**
+ * The sentence that stops an item whose agent's tokens count against its budget (`itemTokens: "budget"`)
+ * when a turn reported none: the budget cannot be enforced, and the turn is never taken as 0 tokens.
+ * Null where the turn reported its tokens, or its agent's are not counted.
+ */
+export function unmeasuredTurn(spend: TurnSpend, agent: Pick<ItemAgent, "harness">): string | null {
+	if (!spend.agent?.counted || spend.agent.reported !== null) return null;
+	return `${machineHarness(agent.harness)?.name ?? "The agent"} did not report token use, so the item's budget can't be enforced.`;
+}
+
 /** Adds a turn's report to the item's agent. The cost is the conversation's so far, so the latest replaces it. */
 export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
 	const agent = item.agent ?? itemAgent(item);

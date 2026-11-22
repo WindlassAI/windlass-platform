@@ -43,7 +43,7 @@ import type { FeedbackDecision, FeedbackInput } from "./types.js";
 import { subtaskMinimum, emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { refusalMessage } from "../provider-refusal.js";
-import { budgetStop, newAgent, noteAgentTurn, retryAt } from "./budget.js";
+import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
@@ -772,6 +772,10 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
 	spendTurn(c, fact.spend, fact.providerRefusal);
+	// A turn whose tokens should count but were not reported stops the item: another turn would run unbounded by its token budget.
+	// One the session refused before the agent ran used none.
+	const unmeasured = fact.refused ? null : unmeasuredTurn(fact.spend, itemAgent(item));
+	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	const result = gateResult(fact.outcome, fact.verified);

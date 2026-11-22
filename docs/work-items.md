@@ -148,7 +148,9 @@ snapshot), and no platform tools: the PR body is the item's, and CI decides the 
 `ItemSummary.agent` holds the harness, the model and what the agent reported: tokens counted against
 the budget (`itemTokens: "budget"`), shown but not counted for a subscription, or "not reported";
 the conversation's cost; Claude Code's 5h window at the first and latest turn
-(`server/src/factory/budget.ts`, `agentTurn`, `noteAgentTurn`).
+(`server/src/factory/budget.ts`, `agentTurn`, `noteAgentTurn`). A turn of an agent whose tokens count
+that reports none stops the item with a `budget` question and no way on but hand over or give up
+(`unmeasuredTurn`); it is never taken as 0 tokens. The reported cost is shown, not capped.
 
 An item's Windlass turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
 tools"). A single item starts by implementing; an
