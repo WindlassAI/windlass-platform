@@ -130,6 +130,43 @@ directory, token pipe and scanned objects are protected by Unix permissions. Thi
 on the sandbox keeping the agent unprivileged and its Git executable and system trust store under
 platform control. Machine runners must support the transport-user execution option.
 
+### The App's permissions and events
+
+The App asks for repository permissions only, and no more than the code uses (registration:
+[operating.md](operating.md#the-github-app)). Each token asks for a subset, per step (the table above).
+
+| Permission | Used for | Without it |
+|---|---|---|
+| Metadata: read | repository lists, a user's rights in a repository | GitHub adds it to every App |
+| Contents: read and write | clone, branch list, the reviewer's checkout; the session's push and a feature's `windlass/…` branch | no push, so no pull request and no work items. GitHub has no narrower permission: an App cannot be limited to some branches |
+| Pull requests: read and write | open and update the pull request; a work item's review request, ready-for-review and handoff comment | no pull requests |
+| Issues: read and write | read: take in an issue filed as a work item; write: the item's link comment and a refusal comment on the issue | read alone: issues are still taken in, and nothing is said on them at GitHub. None: no issue intake |
+| Checks: read and write | read: a work item reads its commit's CI; write: posting `windlass/verified` | read-only: items read CI and hand over without the check ([Enable the Factory check on GitHub](#enable-the-factory-check-on-github)) |
+| Commit statuses: read, Actions: read | a work item reads CI, a failed job's log, and whether CI runs on pushes (an orchestrated feature's preflight) | the verdict says CI was not read, and orchestration is refused |
+| Workflows | not asked for | GitHub refuses a push that changes `.github/workflows` |
+
+Issues, Checks, Commit statuses and Actions are for work items only. No organization or account permission
+is asked for.
+
+**Events.** With `WLP_GITHUB_WEBHOOK_SECRET` set, the webhook is active at `/github/webhook`
+(`server/src/actors/github-inbox.ts`, `HANDLERS`). Without it, items poll and no issue is taken in.
+
+| Event | What the platform does |
+|---|---|
+| Issues, Issue comment | intake: a `windlass` label, or a mention in a comment by an owner, member or collaborator; other issue actions (closing, say) go to the item filed from it |
+| Pull request | the item notices a merge or close at once |
+| Check run, Check suite, Status | the item notices CI ending at once |
+| `installation`, `installation_repositories` | logged. GitHub sends them to every App; they are not subscribed |
+
+`pull_request_review` and `pull_request_review_comment` are parsed (`server/src/github/events.ts`) and have no
+handler: do not subscribe to them.
+
+**Reach is set by the installation, not the permissions.** Contents write holds for every repository an
+installation covers. So install the App with **Only select repositories**, and give each such repository's
+default branch a ruleset (block force pushes and deletions, require a pull request) with the App off its
+bypass list. The platform pushes only `windlass/…` branches, so it keeps working and cannot write the
+default branch.
+
 ### Enable the Factory check on GitHub
 
 1. Open **Settings → Developer settings → GitHub Apps → *your App* → Edit → Permissions & events**.
