@@ -1033,7 +1033,7 @@ if (withDocker) {
 			for (const mode of ["open", "restricted", "none"] as const) {
 				const fake = new FakeE2b({ machine: async (id) => { const machine = await ContainerMachine.make(id, image); machines.push(machine); return machine; } });
 				const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: readE2bNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) }) }, { log: () => {}, pinAddress: address });
-				// A repository's list adds a host in restricted; open and none take no list.
+				// A repository's list adds a host in restricted; open and none take no list. The fixture certificate does not name these hosts: -k, since what is checked is whether the filter lets them through.
 				const repoHosts = ["repo-allowed.example"];
 				const id = await sandboxes.create({ uid: "u1", sessionId: `net-${mode}`, profile: "e2b", network: repoHosts });
 				const handle = (await sandboxes.connect(id, { network: repoHosts })) as E2bSandboxHandle;
@@ -1074,12 +1074,12 @@ if (withDocker) {
 					expect(`${mode}: an unlisted name does not resolve, and the only resolver is the sandbox's own lookup stub`, /exit=[1-9]/.test(lookup) && (await sh("grep nameserver /etc/resolv.conf || true")) === "nameserver 127.0.0.1", said);
 					const blocked = await handle.blockedHosts();
 					expect(`${mode}: the lookup stub names the host a command could not reach, and none it may`, blocked.includes("evil.example") && !blocked.includes("api.openai.com") && !blocked.includes("repo-allowed.example"), blocked.join(","));
-					const byRepo = await sh("curl -sS --max-time 10 https://repo-allowed.example/; echo exit=$?");
+					const byRepo = await sh("curl -ksS --max-time 10 https://repo-allowed.example/; echo exit=$?");
 					if (mode === "restricted") {
 						expect("restricted: a host of the repository's list is reachable", byRepo.includes("fixture repo-allowed.example"), byRepo);
-						const before = await sh("curl -sS --max-time 10 https://later.example/; echo exit=$?");
+						const before = await sh("curl -ksS --max-time 10 https://later.example/; echo exit=$?");
 						const changed = await sandboxes.setNetwork(id, [...repoHosts, "later.example"]);
-						const after = await sh("curl -sS --max-time 10 https://later.example/; echo exit=$?");
+						const after = await sh("curl -ksS --max-time 10 https://later.example/; echo exit=$?");
 						expect("restricted: a host allowed while the sandbox runs is reachable at once, and was not before", !before.includes("fixture") && changed && after.includes("fixture later.example"), `${before} | ${after}`);
 					} else expect("none: a repository's list is not applied", !byRepo.includes("fixture"), byRepo);
 					if (mode === "restricted") expect("restricted: the platform's own clone, fetch and push still work, as the transport user", cloned.ok && pushed !== "" && pushed === received, said);
