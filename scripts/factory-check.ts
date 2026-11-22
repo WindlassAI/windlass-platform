@@ -843,6 +843,16 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 		&& isDeepStrictEqual(silentOpenCode.question.choices.map(choice => choice.id), ["give_up"]) && silentOpenCode.agent?.tokens === "not_reported", JSON.stringify(silentOpenCode.question));
 	const silentClaude = afterTurn(agentItem("claude"), turnSpend(null, agentTurn("claude", null, null)));
 	expect("a Claude Code turn that reports no tokens goes on: its tokens are not counted", silentClaude.question === null && silentClaude.agent?.tokens === "not_reported", JSON.stringify(silentClaude.question));
+	{
+		// The machine is removed while a turn runs: the turn's closing report is still the item's.
+		let o = advance(agentItem("opencode"), { kind: "start", at: T0, by: "person:u1" });
+		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });
+		const key = currentKey(o.item)!;
+		o = advance(o.item, { kind: "machine_removed", at: T0 + 1 });
+		const closed = advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key, outcome: "succeeded", verified: null, flags: [], changes: true, report: null, spend: turnSpend(usage, openCodeTurn) }).item;
+		expect("a turn that ends after its machine was removed keeps what the agent reported", closed.spent.tokens === 33_500 && closed.spent.turns === 1
+			&& closed.agent?.tokens === "counted" && closed.agent.reportedTokens === 33_500 && closed.agent.cost?.amount === 0.42 && closed.run?.step.turn === null, JSON.stringify({ spent: closed.spent, agent: closed.agent }));
+	}
 	const later = { ...structuredClone(openCode) };
 	const { noteAgentTurn } = await import("../server/src/factory/budget.js");
 	noteAgentTurn(later, { ...openCodeTurn!, cost: { amount: 0.9, currency: "USD" } });

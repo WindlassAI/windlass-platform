@@ -351,9 +351,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 	if (c.item.question?.kind === "machine_removed" || (c.item.machineRemoved && c.item.state === "failed")) {
 		if (fact.key !== key) return false;
 		if (fact.kind === "turn_ended" && step.turn === "started") {
-			step.turn = null;
-			c.item.spent.tokens += fact.spend.tokens;
-			c.item.spent.turns += 1;
+			// Its spend and what its agent reported are kept, as for any turn.
+			spendTurn(c, fact.spend, fact.providerRefusal);
 			return true;
 		}
 		if (fact.kind === "published" && step.kind === "publish" && c.item.question?.kind === "machine_removed") {
