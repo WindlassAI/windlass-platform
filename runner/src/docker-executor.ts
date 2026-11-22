@@ -12,7 +12,7 @@ import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
 import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
-import { containerName, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
+import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { audit, safeSentence } from "./audit.js";
 import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
@@ -533,6 +533,11 @@ export class Executor extends MachineDocker {
 				audit(b.sessionId, id, "idle-suspend", "done");
 			}
 		}
+	}
+	override async logout() {
+		const { uid, machineId } = this.identity;
+		await removeRunningTokenFiles(uid, machineId, raw => externalId(machineId, raw));
+		await super.logout(); // Files left on the volume by previous runner versions.
 	}
 	async suspendAll() {
 		await this.discover();

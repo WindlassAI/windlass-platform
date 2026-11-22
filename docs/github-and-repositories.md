@@ -330,10 +330,11 @@ agent's first turn there.
   of output; the timeline keeps the prompt as written.
 - **Credentials.** It gets the repository's secrets ([A repository's secrets](#a-repositorys-secrets)) and no
   platform credential: the clone's token was revoked before it starts, and a turn's ChatGPT token file is written
-  only when a turn starts Windlass, after setup, and removed when it ends. On E2B Windlass's data directory is the
-  sandbox's own. On Docker it is the user's volume, shared by their sessions (a work item's reviewer has a
-  private one), so another session's running turn leaves its token file readable there, as by any command in the
-  hardened profile.
+  only when a turn starts Windlass, after setup, and removed when it ends. On Docker the token file lives on the
+  container's private tmpfs (`/dev/shm`), never on the user's shared data volume, so one session's setup cannot
+  read another session's token; on E2B it is on the sandbox's own disk. After setup and before each token
+  handoff, every leftover process in the sandbox is killed, so nothing setup started can read a later token.
+  Commands in the hardened profile can still read the current turn's token file while it exists.
 - **Not a place for a secret**: the command is shown in the timeline and given to the agent on failure. Read a
   saved secret (`$NPM_TOKEN`) instead; output is redacted.
 - Files it makes that are not ignored appear under "Changes" and go into a push.

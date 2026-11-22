@@ -463,7 +463,7 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 		[STRICT, OPEN, UNKNOWN].every((kind, index) => said[index]?.command === asked(kind, ["x"]).replace("this session's", "a session's") && said[index]?.address === asked(kind, null).replace("this session's", "a session's")),
 		plain(said),
 	);
-	expect("it says what the brief of such a server is: outside Windlass's sandbox around commands, with the network and the session's access token", (said[0]?.command ?? "").includes("outside Windlass's sandbox around commands") && (said[0]?.command ?? "").includes("has the network") && (said[0]?.command ?? "").includes("the session's access token, which lasts about an hour"));
+	expect("it says what the brief of such a server is: outside Windlass's sandbox around commands, with the network and the session's access token", (said[0]?.command ?? "").includes("outside Windlass's sandbox around commands") && (said[0]?.command ?? "").includes("has the network") && (said[0]?.command ?? "").includes("the session's access token and any replacement during the turn"));
 }
 
 // ---- Windlass's configuration file in a sandbox ----------------------------------------------------

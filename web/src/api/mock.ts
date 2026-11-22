@@ -248,12 +248,12 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 	const machine = `your machine "${name}"`;
 	const layers = [`Your machine "${name}" (yours; the platform does not control it)`, "Docker container made by the runner (non-root, no capabilities, limits)"];
 	const sandbox = failed.docker ?? failed.commandSandbox;
-	const trust = "The platform does not control this machine. It receives the repository, the saved secrets you allow and a ChatGPT token that lasts about an hour. The checks and changes shown are what your machine reports.";
+	const trust = "The platform does not control this machine. It receives the repository, the saved secrets you allow and a ChatGPT token for the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. The checks and changes shown are what your machine reports.";
 	return [
 		{
 			id: "docker-windlass-sandbox",
 			name: `Docker + Windlass sandbox on ${machine}`,
-			summary: `The agent runs in a container on ${machine}. As far as its runner reports, Windlass sandboxes each command, with no network and the session's access token out of reach. ${trust}`,
+			summary: `The agent runs in a container on ${machine}. As far as its runner reports, Windlass sandboxes each command, so commands have no network and cannot read the session's access token. ${trust}`,
 			layers: [...layers, "Windlass's bubblewrap sandbox around each command (as the runner reports)"],
 			approval: "auto",
 			commandNetwork: false,
@@ -264,7 +264,7 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 		{
 			id: "docker-hardened",
 			name: `Hardened Docker on ${machine}`,
-			summary: `Commands run directly in a container on ${machine} and can read the session's access token. ${workspaceNetwork(egress)} ${trust}`,
+			summary: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn. ${workspaceNetwork(egress)} ${trust}`,
 			layers,
 			approval: "full",
 			commandNetwork: egress !== "none",
@@ -371,7 +371,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
 		name: "Docker + Windlass sandbox",
-		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
+		summary: "Windlass sandboxes each agent command inside this session's Docker container. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
 		layers: ["Docker container (Docker’s seccomp profile with namespace and mount calls allowed, non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 		approval: "auto",
 		commandNetwork: false,
@@ -381,7 +381,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-hardened",
 		name: "Docker, hardened",
-		summary: "A container under Docker's default seccomp and AppArmor profiles; commands run directly in it, with network, and can read the session's access token, which lasts about an hour and cannot be renewed. Your ChatGPT sign-in is never in the container.",
+		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
 		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits)"],
 		approval: "full",
 		commandNetwork: true,
@@ -402,7 +402,7 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 	{
 		id: "e2b-open",
 		name: "E2B, microVM only",
-		summary: "A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace; what is in the home directory by then is read-only for them, and what they add there is kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
+		summary: "Windlass initially runs agent commands directly in this session's E2B microVM without asking first. They can reach any host on the network, write outside the workspace and read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Existing home files are then read-only, and new home files are kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
 		approval: "full",
 		commandNetwork: true,
@@ -455,7 +455,7 @@ export const MOCK_E2B_PROFILES: SandboxProfile[] = MOCK_PROFILES.map((profile): 
 			id: "e2b",
 			name: "E2B + Windlass sandbox",
 			summary:
-				"A microVM of its own, hosted by E2B, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the microVM.",
+				"Windlass sandboxes each agent command inside this session's E2B microVM. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the microVM.",
 			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 			approval: "auto",
 			commandNetwork: false,
@@ -874,7 +874,7 @@ export function mockProject(summary: Pick<SessionSummary, "id" | "repoUrl" | "re
 
 /** Where the server runs and what it can reach, for the two Docker profiles and a demo session or not. */
 function mockReach(profile: SandboxProfile, demo: boolean): string {
-	const data = demo ? "Windlass's own data. A demo session has no access token there." : "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed.";
+	const data = demo ? "Windlass's own data. A demo session has no access token there." : "Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue.";
 	return profile.approval === "full"
 		? `It runs in this session's container, as the agent's commands do here: like them, it has the network and can read ${data}`
 		: `It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}`;
@@ -975,7 +975,7 @@ function mockAccountSecretsNote(profile: Pick<SandboxProfile, "approval" | "comm
 /** What a server of the user's own can reach where it runs, as server/src/server-question.ts says it (`personalServerReach`). */
 export function mockPersonalReach(profile: SandboxProfile): PersonalServerReach {
 	const machine = profile.id.startsWith("e2b") ? "microVM" : profile.id.startsWith("docker") ? "container" : "sandbox";
-	const data = "Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed";
+	const data = "Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue";
 	const command =
 		profile.approval === "full"
 			? `It runs in a session's ${machine}, as the agent's commands do here: like them, it has the network and can read ${data}.`

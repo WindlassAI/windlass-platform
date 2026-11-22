@@ -1,8 +1,8 @@
 ## The rule that holds everywhere
 
-Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For each turn of a Windlass agent, it hands the sandbox a short-lived access token in a file instead. That token lasts about an hour and cannot be renewed. It is replaced during the turn and removed when the turn ends.
+Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, it hands the sandbox a short-lived access token in a file. A demo turn receives no token. Each token expires about an hour after issue. The platform replaces it during a long turn and removes the file when the turn ends. A copy remains usable until its own expiry. A process that can read the file during the turn can read each replacement.
 
-Whether the agent's commands can read that token depends on the sandbox. Each sandbox says so when you choose it.
+Whether the agent's commands can read that token depends on the sandbox. Setup runs before handoff. The platform clears leftover processes after setup and before handing the next turn a token. Docker keeps the file on the container's private tmpfs. E2B keeps it on the session microVM's own disk. Other sessions cannot open that file. An approved MCP server started locally by Windlass runs outside the command sandbox and can read it. If the server runs code from the workspace, changes to that code can take effect under the existing approval.
 
 ## Signing out on all devices
 
@@ -34,7 +34,9 @@ On a machine, the runner uses only the images pinned in its own build. The platf
 
 - commands have no network;
 - they can write only in the workspace and in a home of the session's own;
-- credentials are hidden from them, so the session's access token is out of their reach.
+- Windlass hides the session's access token from the agent's commands.
+
+An approved local MCP server runs outside this command sandbox and can read the current token. Repository setup also runs outside it, but setup finishes and its processes are cleared before the turn receives a token.
 
 So that Windlass's bubblewrap sandbox can work inside it, the container runs under a seccomp filter that is Docker's default plus the namespace and mount calls bubblewrap needs, without Docker's AppArmor profile, and with the system paths unmasked. The isolation of each command then comes from Windlass's sandbox. Its Windlass modes are **Ask** and **Auto**.
 
@@ -47,6 +49,8 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 | Commands sandboxed again | Yes, by Windlass | No |
 | Network for commands | No | Follows the container’s network policy |
 | Commands can read the access token | No | Yes |
+| Setup can read the token | No, setup ends before handoff | No, setup ends before handoff |
+| Approved local MCP servers can read the token during the turn | Yes | Yes |
 | Your ChatGPT sign-in in the container | Never | Never |
 | Windlass modes | Ask, Auto | Ask, Full |
 | Claude Code and OpenCode | No | Yes |
@@ -57,7 +61,7 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 
 On a platform that runs on E2B, each sandbox is a microVM of its own, hosted by E2B, where commands run as a non-root user. Which E2B sandboxes are offered depends on the platform, and each one's description says what it promises:
 
-- **E2B + Windlass sandbox**: every command is sandboxed again by Windlass, with no network and the access token out of reach.
+- **E2B + Windlass sandbox**: every command is sandboxed again by Windlass, so the agent's commands have no network and cannot read the access token.
 - **E2B**: nothing is promised inside the microVM. A command may have network and may read the access token. Windlass asks before any command it cannot sandbox.
 - **E2B, microVM only**: no sandbox inside the microVM. Commands run without asking, can reach any host and can read the access token.
 

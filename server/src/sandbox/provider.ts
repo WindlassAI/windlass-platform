@@ -176,8 +176,84 @@ export function shellQuote(argument: string): string {
 /** What `sweep` runs once the wait is over: SIGKILL to what is left of the run, the files removed, and what still runs after that counted. `$1` is the tag, the rest the files. */
 export const SWEEP_SCRIPT = 'tag=$1; shift; if [ -n "$(wlp-run list "$tag")" ]; then wlp-run signal "$tag" KILL all; sleep 0.2; fi; [ $# -gt 0 ] && rm -f -- "$@"; wlp-run list "$tag" | wc -l';
 
+// Runs directly via ask(), outside wlp-run, only at a turn boundary. A process can shed its
+// run tag, session and parent, but remains visible in the container/guest's PID namespace.
+const SWEEP_PROCESSES = `import os, signal, sys, time
+from pathlib import Path
+
+guest = sys.argv[1] == "e2b"
+uid = os.getuid()
+if uid != 1000:
+    sys.exit("expected the sandbox agent")
+keep = {1, os.getpid()}
+if guest:
+    # The E2B command launcher may wait for us in a login shell. Its ancestors belong
+    # to this provider invocation, never to a previous turn.
+    parent = os.getppid()
+    while parent > 1:
+        keep.add(parent)
+        parent = int(Path(f"/proc/{parent}/stat").read_text().rsplit(")", 1)[1].split()[1])
+else:
+    mounts = Path("/proc/self/mountinfo").read_text().splitlines()
+    if not any(line.split()[4] == "/dev/shm" and " - tmpfs " in line for line in mounts):
+        sys.exit("missing private token tmpfs")
+    init = Path("/proc/1/cmdline").read_bytes().split(b"\\0")
+    if init[1:] != [b"--", b"sleep", b"infinity", b""]:
+        sys.exit("unexpected container keepalive")
+    # The init's original child precedes any orphans it adopted. A lookalike sleep is not exempt.
+    keep.add(int(Path("/proc/1/task/1/children").read_text().split()[0]))
+
+deadline = time.monotonic() + 10
+while True:
+    found = False
+    processes = {entry for entry in Path("/proc").iterdir() if entry.name.isdecimal()}
+    for proc in processes:
+        if int(proc.name) in keep:
+            continue
+        try:
+            status = dict(line.split(":", 1) for line in (proc / "status").read_text(errors="replace").splitlines() if ":" in line)
+            if status["State"].split()[0] in ("Z", "X"):
+                continue
+            owner = int(status["Uid"].split()[0])
+            if guest and owner != uid:
+                continue
+            if not guest and owner == 65534:
+                sys.exit(75)
+            os.kill(int(proc.name), signal.SIGKILL)
+            found = True
+        except (FileNotFoundError, ProcessLookupError):
+            # It could have forked before exiting. Obtain a fresh process list.
+            found = True
+    # A process in the first snapshot may have forked and become a zombie before
+    # we read its status. Inspect any new PID before reporting an empty sandbox.
+    if not found and all(entry in processes for entry in Path("/proc").iterdir() if entry.name.isdecimal()):
+        break
+    if time.monotonic() >= deadline:
+        sys.exit("processes still running")
+    time.sleep(0.02)
+
+if len(sys.argv) == 3:
+    # A setup could have left a symlink here. Older paired runners reused the staging
+    # filename without unlinking it before opening it for the first write.
+    Path(sys.argv[2] + ".tmp").unlink(missing_ok=True)
+`;
+
+/** Fail closed if the provider cannot confirm that the session is clear for a new handoff. */
+export async function sweepSessionProcesses(sandbox: TurnSandbox, tokenPath?: string): Promise<void> {
+	const kind = sandbox.profile.startsWith("e2b") ? "e2b" : "docker";
+	const scan = () => sandbox.ask(["/usr/bin/python3", "-I", "-S", "-c", SWEEP_PROCESSES, kind, ...(tokenPath ? [tokenPath] : [])], { timeoutMs: 15_000 });
+	let result = await scan();
+	if (kind === "docker" && result?.code === 75) {
+		// No CAP_KILL: only the Git transport UID can signal its own orphan. Spare the
+		// provider shells awaiting pkill, then confirm the whole namespace is clear.
+		await sandbox.run("exec /usr/bin/pkill -KILL --ignore-ancestors -u 65534", { gitUser: true, timeoutMs: 10_000 });
+		result = await scan();
+	}
+	if (result?.code !== 0) throw new Error("Could not clear leftover sandbox processes.");
+}
+
 /** What `writeSecretFile` runs, the content on standard input: a file beside the path (`<path>.tmp`), mode 0600, renamed into place. `$1` is the path. */
-export const SECRET_FILE_SCRIPT = 'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; cat > "$tmp"; mv -f -- "$tmp" "$1"';
+export const SECRET_FILE_SCRIPT = 'set -eu; umask 077; tmp="$1.tmp"; trap \'rm -f -- "$tmp"\' EXIT; rm -f -- "$tmp"; set -C; cat > "$tmp"; mv -fT -- "$tmp" "$1"';
 
 export const RUN_TAG = /^[A-Za-z0-9_-]+$/;
 

@@ -336,10 +336,9 @@ key (`MACHINE_EXPIRY_MS`); its agents keep their timelines, and its sandboxes ar
 ### Forgetting the ChatGPT sign-in
 
 Each machine whose runner is connected at that moment is told, and
-its runner removes the token files of running turns from its data volume. A machine that is offline then
+its runner removes each running turn’s token from the container’s private tmpfs and clears old copies on its data volume. A machine that is offline then
 is not told, and is not told later: the platform keeps no logout for it. A token in a file there, which a
-turn cut off by the machine going away can leave, lasts about an hour from when it was handed out, and
-whoever reads it cannot renew it. To remove such files sooner, the machine's owner removes the runner's
+turn cut off by the machine going away can leave, expires about an hour after issue. To remove such files sooner, the machine's owner removes the runner's
 sandboxes and its data volume there with `prune`. It refuses to run while the runner does ("The runner
 service or another command is using this state volume. Stop the runner container or finish the command,
 then run prune in a one-off runner container with the same state volume and Docker socket."), so the

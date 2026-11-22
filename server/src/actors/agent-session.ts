@@ -1782,7 +1782,7 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
 /**
  * Runs the setup command the user saved for the session's repository, in the sandbox that was just
  * cloned into. It is read from the user's `user` actor here, each time: that is the only place a
- * setup command comes from. Whatever becomes of the run, the turn goes on: a run that did not succeed
+ * setup command comes from. Once its processes are gone, the turn goes on: a run that did not succeed
  * is in the timeline, and is told to the agent with its next prompt (`meta.setupUnfinished`). It is
  * marked as done for this sandbox before it starts, so a server that stops under it does not make
  * the next turn run it a second time. True when a command ran. A command that could not be read refuses
@@ -1851,9 +1851,10 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	meta.setupRunning = null;
 	append(c, { turn, kind: "setup", id, command, state: result.state, exitCode: result.exitCode, durationMs: result.durationMs, limitMs, output, truncated: tail.truncated });
 	if (result.problem !== null) note(c, turn, "warn", `The setup command for ${project.label} could not be run. ${result.problem}`);
-	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
+	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.cleanupPending ? "interrupted" : result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
+	if (result.cleanupPending) throw new TurnProblem("The platform could not stop leftover setup processes. Send the prompt again to retry cleanup.");
 	if (plan && original && (!plan.commit || original === plan.commit) && !signal.aborted &&
 		layer.sandboxes.saveSnapshot && canSaveSnapshot(meta.origin, handed.length, result.state === "succeeded", result.durationMs, config.snapshotMinSetupMs)) {
 		// The setup can outlive an edit or a disconnect. Do not replace the newer image with its result.
