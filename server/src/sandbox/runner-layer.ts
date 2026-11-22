@@ -26,6 +26,7 @@
  * a session's second `create` with the sandbox it already made for it; `run` and `start` never (the
  * caller decides, and the turn's own `stopLeftovers` ends what a lost `start` left).
  */
+import { config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
@@ -147,6 +148,7 @@ export class RunnerLink {
 		private readonly onReach?: (reach: MachineReach) => void,
 	) {
 		this.channel = new ServerChannel({
+			platform: config.machines?.identity && { ...who, identity: config.machines.identity },
 			accept: (hello) => this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null }),
 			onReset,
 			onConnect: () => this.connected(),

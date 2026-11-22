@@ -1,10 +1,11 @@
+import { fingerprint, type Pin, type Trust } from "../../server/src/runner/frame-auth.js";
 import { spawnSync } from "node:child_process";
 import { createPrivateKey, randomUUID, type KeyObject } from "node:crypto";
 import { chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MACHINE_PROFILES, type MachineProfile } from "../../server/src/runner/protocol.js";
 import { MACHINE_ID, validAllowedProfiles } from "../../server/src/runner/control.js";
-import { list, object, is, text, json, nullable } from "../../server/src/runner/check.js";
+import { list, object, is, text, json, nullable, optional, count } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
 import { egressFlags, open, restricted, type Egress } from "./egress-policy.js";
 import { egressMode } from "../../server/src/runner/control.js";
@@ -26,7 +27,7 @@ export function origin(address: string): string {
 
 const identity = object({ uid: is<string>(v => typeof v === "string" && NAME.test(v)), machineId: is<string>(v => typeof v === "string" && MACHINE_ID.test(v)) });
 export type Identity = { uid: string; machineId: string };
-const record = object({ current: identity, previous: list(identity), platform: text(2048), key: nullable(text(512)) });
+const record = object({ current: identity, previous: list(identity), platform: text(2048), key: nullable(text(512)), endpoint: optional(text(2048)), platformRoot: optional(text(80)), maxSerial: optional(count) });
 
 export function read(file: string): unknown {
 	const path = join(directory, file);
@@ -62,11 +63,17 @@ export function loadPair() {
 		try { key = createPrivateKey(stored.key); } catch { throw invalid(); }
 		if (key.asymmetricKeyType !== "ed25519") throw invalid();
 	}
-	return { current: stored.current, previous: stored.previous, platform: stored.platform, key };
+	let pin: Pin | undefined;
+	if (stored.platformRoot !== undefined || stored.endpoint !== undefined || stored.maxSerial !== undefined) {
+		if (!stored.platformRoot || !stored.endpoint || stored.maxSerial === undefined) throw invalid();
+		try { fingerprint(stored.platformRoot); if (origin(stored.endpoint) !== stored.endpoint) throw invalid(); } catch { throw invalid(); }
+		pin = { endpoint: stored.endpoint, platformRoot: stored.platformRoot, maxSerial: stored.maxSerial };
+	}
+	return { current: stored.current, previous: stored.previous, platform: stored.platform, key, pin };
 }
 export function forgetKey() {
 	const paired = loadPair();
-	if (paired) save("pair.json", { ...paired, key: null });
+	if (paired) save("pair.json", { current: paired.current, previous: paired.previous, platform: paired.platform, ...paired.pin, key: null });
 }
 // A separate file keeps pair.json readable by the previous runner on rollback. Its
 // name scopes consent to this pairing, including when an owner pairs again in place.
@@ -98,14 +105,30 @@ export function egressNote(id: string) {
 	const { mode, allow } = pairingEgress(id);
 	return `Network egress is ${mode}.${allow.length ? " Allowed hosts: " + allow.join(", ") : ""}`;
 }
-export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"]) {
+export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"], pin?: Pin) {
 	const prior = loadPair();
 	const previous = prior ? [...prior.previous, prior.current].filter(m => m.machineId !== current.machineId) : [];
 	// Commit the policy before publishing the new key, including for standalone pairing.
 	save(policyFile(current.machineId), profiles);
 	save(egressFile(current.machineId), restricted);
-	save("pair.json", { current, previous, platform, key: key.export({ type: "pkcs8", format: "pem" }).toString() });
-	return { current, previous, key, platform };
+	save("pair.json", { current, previous, platform, ...pin, key: key.export({ type: "pkcs8", format: "pem" }).toString() });
+	return { current, previous, key, platform, pin };
+}
+
+/** Shared by control and all its sessions. Persist before exposing a newly verified socket. */
+export function pairingTrust(pair: NonNullable<ReturnType<typeof loadPair>>): Trust {
+	const pin = pair.pin;
+	if (!pin || !pair.key) throw new RunnerError("Pair again to pin the platform identity.");
+	return { pin, commit(maxSerial, endpoint) {
+		if (maxSerial < pin.maxSerial) throw new RunnerError("Platform certificate serial decreased.");
+		if (maxSerial === pin.maxSerial && endpoint === pin.endpoint) return;
+		const current = read("pair.json");
+		if (!record(current) || !current.key || current.current.machineId !== pair.current.machineId || current.platformRoot !== pin.platformRoot)
+			throw new RunnerError("The pairing changed during the handshake.");
+		if (current.maxSerial !== undefined && current.maxSerial > maxSerial) throw new RunnerError("Platform certificate serial decreased.");
+		save("pair.json", { ...current, maxSerial, endpoint });
+		Object.assign(pin, { maxSerial, endpoint });
+	} };
 }
 
 // flock also works across Docker PID namespaces (two services can both be PID 1).

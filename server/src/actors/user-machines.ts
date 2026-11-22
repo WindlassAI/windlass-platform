@@ -10,7 +10,7 @@ import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
 import { compactReport, type CatalogId } from "../runner/catalog.js";
-import { MACHINE_ID, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
+import { MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
 import { MACHINE_PROFILES } from "../runner/protocol.js";
 import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
@@ -104,10 +104,12 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 	const [row] = await db.execute<{ name: string; os: string; arch: string; facts: string }>("SELECT name, os, arch, facts FROM machines WHERE id = ? AND expires IS NULL", id);
 	if (!row) throw missing();
 	const name = machineLabel(row);
-	const { report, runnerVersion }: MachineUpdate = JSON.parse(row.facts);
+	const { report, runnerVersion, warnings = [] }: MachineUpdate = JSON.parse(row.facts);
 	// First: an outdated runner is refused before it can report, so it has no report either.
-	if (!versionAtLeast(runnerVersion, MIN_RUNNER_VERSION)) {
-		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${MIN_RUNNER_VERSION} or later, then start the agent again.`, { code: "runner_outdated" });
+	const minimum = config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
+	if (!config.machines?.identity && warnings.some(w => w.kind === "signing-disabled")) throw new UserError("This runner requires signed connections to be enabled on the platform.", { code: "runner_signing_disabled" });
+	if (!versionAtLeast(runnerVersion, minimum) || (config.machines?.identity && warnings.some(w => w.kind === "outdated"))) {
+		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${minimum} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
 	if (!report) throw new UserError(`"${name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
 	return { name, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
