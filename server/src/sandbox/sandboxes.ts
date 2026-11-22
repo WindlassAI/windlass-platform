@@ -28,6 +28,7 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
+import { INIT_WORKSPACE } from "../github/git-flags.js";
 import { gitMirrorMount, type MirrorStore, restoreGitMirror, saveSessionMirror } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
 import type { SnapshotSource } from "./snapshot-key.js";
@@ -610,7 +611,7 @@ export class DockerSandboxes implements Sandboxes {
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
 		if (selected?.hit) return id;
-		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });
+		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", INIT_WORKSPACE], { timeoutMs: 60_000 });
 		if (init.code !== 0) {
 			await docker(["rm", "-f", name]);
 			if (own) await this.dropOwnVolume(input.uid, id);

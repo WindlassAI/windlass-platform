@@ -35,13 +35,35 @@ const matcher = (globs) => { const res = globs.map(globRegex); return (path) => 
 const isCore = matcher(map.core), isDocs = matcher(map.docs);
 const groupMatchers = Object.entries(map.groups).map(([name, g]) => [name, matcher(g.paths)]);
 
+/** What each job is called in the Actions UI. The job id stays the group/shard the select and run commands use. */
+const TITLES = {
+	rules: "Unit checks",
+	actors: "Server: sign-in and sessions",
+	machines: "Server: machines and runner protocol",
+	webhook: "GitHub webhooks",
+	"factory/1": "Factory 1 of 3",
+	"factory/2": "Factory 2 of 3",
+	"factory/3": "Factory 3 of 3",
+	"sandbox-docker/1": "Docker sandbox 1 of 2",
+	"sandbox-docker/2": "Docker sandbox 2 of 2",
+	"sandbox-docker/mcp": "Docker sandbox: MCP servers",
+	"shots-docker": "Docker screenshots",
+	"e2e-docker/actors": "Docker end to end: sessions",
+	"e2e-docker/snapshots": "Docker end to end: snapshots",
+	"runner-docker/runner": "Runner: full check",
+	"runner-docker/suites": "Runner: focused suites",
+	"runner-docker/harness": "Runner: agent images and relays",
+};
+const titleOf = (job) => TITLES[job] ?? job;
+
 /** The jobs of a group: one, or one per shard. */
 function jobsOf(name) {
 	const g = map.groups[name];
 	const shards = g.shards ? Object.entries(g.shards) : [[null, {}]];
 	return shards.map(([shard, s]) => {
 		const checks = s.only ?? Object.keys(g.checks);
-		return { job: shard ? `${name}/${shard}` : name, checks: checks.join(" "), images: (s.images ?? g.images ?? []).join(" "), timeout: s.timeout ?? g.timeout, depth: (s.history ?? g.history) ? 0 : 1 };
+		const job = shard ? `${name}/${shard}` : name;
+		return { job, title: titleOf(job), checks: checks.join(" "), images: (s.images ?? g.images ?? []).join(" "), timeout: s.timeout ?? g.timeout, depth: (s.history ?? g.history) ? 0 : 1 };
 	});
 }
 

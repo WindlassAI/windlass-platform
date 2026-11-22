@@ -350,7 +350,11 @@ panel's own code and per-step tokens (`server/src/github/publish.ts`). The tools
   missing base requires `fetch_base` first. After a refusal, the platform's own commit's changes stay in the
   workspace.
 - **The workspace's `.git` cannot run a program.** Status, diff, probe, commit, scan, fetch and push use a
-  private git directory loading only platform configuration, with hooks and filesystem monitors off. The
+  private git directory loading only platform configuration (no system or home configuration, which a setup
+  can write), with hooks, filesystem monitors, SSH programs, the home's attributes file, credential helpers and
+  every transport but HTTP(S) off on the command line (`github/git-flags.ts`). The workspace's first commit, made
+  as the sandbox's user before setup, reads no system or home configuration either. `scripts/git-config-check.ts`
+  plants a program in every place a hostile `~/.gitconfig` and `.git/config` can name one and runs each script. The
   agent's objects, refs and index are copied in as data, keeping its commits, merges and rebases; files are read
   with directory-relative reads that refuse symlinks (a symlink contributes its target text). A `.gitattributes`
   filter has no driver there. Windlass gives sandboxed commands their own `/tmp`; direct commands share the
@@ -466,6 +470,8 @@ agent's first turn there.
   container's private tmpfs (`/dev/shm`), never on the user's shared data volume, so one session's setup cannot
   read another session's token; on E2B it is on the sandbox's own disk. After setup and before each token
   handoff, every leftover process in the sandbox is killed, so nothing setup started can read a later token.
+  A setup cut off with the server keeps running in the sandbox until the session's actor wakes again, which
+  then kills what it left at once (`stopCutOffSetup`), not at the next prompt; a turn waits for that first.
   Commands in the hardened profile can still read the current turn's token file while it exists.
 - **Not a place for a secret**: the command is shown in the timeline and given to the agent on failure. Read a
   saved secret (`$NPM_TOKEN`) instead; output is redacted.
