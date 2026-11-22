@@ -30,6 +30,7 @@
  */
 
 import { MIRROR_ROOT, MIRROR_BYTES } from "../sandbox/git-mirrors.js";
+import { snapshotLimits } from "../sandbox/snapshots.js";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -39,7 +40,9 @@ import { GithubProblem } from "./repos.js";
 import { redact } from "./redact.js";
 
 const CLONE_TIMEOUT_MS = 3 * 60 * 1000;
-const MIRROR_CLONE_TIMEOUT_MS = 8_000;
+// A reference clone that receives nothing for this long is abandoned for a plain clone.
+// Local work (the dissociating repack, checkout, checks) is not on this clock.
+const MIRROR_STALL_SECONDS = 8;
 // A push is one action of the session's actor, which may take two minutes in all: the commit and the push fit in it together.
 const COMMIT_TIMEOUT_MS = 30 * 1000;
 const PUSH_TIMEOUT_MS = 70 * 1000;
@@ -202,29 +205,47 @@ async function removeTransport(sandbox: SandboxHandle, id: string): Promise<void
 // the transport uid. No second network fetch, workspace file, remote config or credential.
 const MIRROR_CONFIG = "[core]\n\tbare = true\n\trepositoryformatversion = 0";
 
-function saveMirror(hit: boolean): string {
-	const script = [
+/**
+ * Stage the clone's refs and hard links to its objects in a directory of the transport uid's,
+ * then copy them into the slot from a separate session so the clone does not wait for it.
+ * That copy inherits the slot lock (descriptor 9) and removes its stage when it ends.
+ * `partial` (a single-branch clone) only seeds an empty slot: it never replaces a full mirror.
+ */
+function saveMirror(hit: boolean, partial: boolean): string {
+	const stage = [
 		"set -euo pipefail",
 		PLAIN_GIT,
-		'cd -- "$1"',
+		'mkdir -m 700 -- "$3"',
+		'cd -- "$3"',
+		...(partial ? ['[ ! -e "$2/repo.git" ] || exit 1'] : []),
 		'plain_git init -q --bare --template= seed',
-		'if ref=$(plain_git -C repo symbolic-ref -q refs/remotes/origin/HEAD); then head="refs/heads/${ref#refs/remotes/origin/}"; else head=$(plain_git -C repo symbolic-ref HEAD); fi',
+		'if ref=$(plain_git -C "$1/repo" symbolic-ref -q refs/remotes/origin/HEAD); then head="refs/heads/${ref#refs/remotes/origin/}"; else head=$(plain_git -C "$1/repo" symbolic-ref HEAD); fi',
 		'plain_git --git-dir=seed symbolic-ref HEAD "$head"',
 		`printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} > seed/config`,
-		`plain_git -C repo for-each-ref --format='%(objectname) %(refname) %(symref)' refs/remotes/origin refs/tags |`,
+		`plain_git -C "$1/repo" for-each-ref --format='%(objectname) %(refname) %(symref)' refs/remotes/origin refs/tags |`,
 		`  awk 'NF == 2 { sub(/^refs\\/remotes\\/origin\\//, "refs/heads/", $2); print $1, $2 }' | LC_ALL=C sort -k2 > seed/packed-refs`,
-		...(hit ? ['cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD" && exit 0'] : []),
+		...(hit ? ['if cmp -s seed/packed-refs "$2/repo.git/packed-refs" && cmp -s seed/HEAD "$2/repo.git/HEAD"; then exit 1; fi'] : []),
 		'rm -r seed/objects',
-		'cp -al repo/.git/objects seed/objects',
+		'cp -al "$1/repo/.git/objects" seed/objects',
 		`[ "$(du -s -B1 seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
 		`[ "$(du -sb seed | cut -f1)" -le ${MIRROR_BYTES - 65536} ]`,
-		// Retire the old copy before charging its replacement. Interrupted copies are
-		// invisible to readers and cleaned on the next admission of this slot.
-		'rm -rf -- "$2/incoming" "$2/repo.git"',
-		'cp -R -- seed "$2/incoming"',
-		'mv -- "$2/incoming" "$2/repo.git"',
+		// The floor disk-pressure eviction of snapshots keeps. Below it, nothing is written.
+		`[ "$(df -B1 --output=avail -- "$2" | tail -n 1)" -ge ${snapshotLimits.free} ]`,
 	].join("\n");
-	return `timeout -k 1s 5s /bin/bash -c ${shellQuote(script)} mirror "$private" "$mirror" </dev/null >/dev/null 2>&1 || true`;
+	const copy = [
+		"set -euo pipefail",
+		'trap \'rm -rf -- "$2"\' EXIT',
+		// Retire the old copy before charging its replacement. Interrupted copies are
+		// invisible to readers and cleaned on the next save to this slot.
+		'rm -rf -- "$1/incoming" "$1/repo.git"',
+		'cp -R -- "$2/seed" "$1/incoming"',
+		'mv -- "$1/incoming" "$1/repo.git"',
+	].join("\n");
+	return [
+		`if timeout -k 1s 10s /bin/bash -c ${shellQuote(stage)} mirror "$private" "$mirror" "$save" </dev/null >/dev/null 2>&1; then`,
+		`	setsid -f timeout -k 1s 120s /bin/bash -c ${shellQuote(copy)} mirror "$mirror" "$save" </dev/null >/dev/null 2>&1 || rm -rf -- "$save"`,
+		'else rm -rf -- "$save"; fi',
+	].join("\n");
 }
 
 type MirrorAttempt = { owner: string; reference: boolean };
@@ -268,24 +289,30 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
 		"target=repo",
 		...(mirror ? [
 			`mirror=${mirrorPath(mirror.owner)}`,
+			`save=${shellQuote(transportDirectory(id) + ".mirror")}`,
 			// The mount and its ancestors are platform-created. Older runners have no mount.
-			'lock_mirror() { mountpoint -q -- "$mirror" && [ "$(stat -c %u:%a -- "$mirror")" = 65534:700 ] && exec 9<"$mirror" && flock -n 9 && touch -m -- "$mirror"; }',
+			// A reference clone waits briefly for a save in progress; a plain clone never waits.
+			'lock_mirror() { mountpoint -q -- "$mirror" && [ "$(stat -c %u:%a -- "$mirror")" = 65534:700 ] && exec 9<"$mirror" && flock "$@" 9 && touch -m -- "$mirror"; }',
 		] : []),
 		...(mirror?.reference ? [
-			'lock_mirror && [ -d "$mirror/repo.git/objects" ] || exit 4',
+			'lock_mirror -w 3 && [ -d "$mirror/repo.git/objects" ] || exit 4',
 			`printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} | cmp -s - "$mirror/repo.git/config" || exit 4`,
 			'for f in alternates http-alternates; do p="$mirror/repo.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || exit 4; done',
 		] : []),
-		`wlp_git clone --quiet ${mirror?.reference ? '--reference-if-able "$mirror/repo.git" --dissociate ' : ""}${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+		`wlp_git ${mirror?.reference ? `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=${MIRROR_STALL_SECONDS} ` : ""}clone --quiet ${mirror?.reference ? '--reference-if-able "$mirror/repo.git" --dissociate ' : ""}${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
 		"WLP_T=",
 		PLAIN_GIT,
 		...(mirror ? [
 			'for f in alternates http-alternates; do p="$target/.git/objects/info/$f"; [ ! -e "$p" ] && [ ! -L "$p" ] || exit 4; done',
 			...(mirror.reference ? [
-				'plain_git -C "$target" fsck --full --no-reflogs --no-dangling --no-progress >/dev/null',
+				// Connectivity, not a rehash of every blob. Only the transport uid writes a slot
+				// (0700, uid 65534), and only with objects index-pack verified from GitHub.
+				// --dissociate copied what was used, through pack reuse's CRC check, and no
+				// alternates remain. The base is confirmed with GitHub independently.
+				'plain_git -C "$target" fsck --connectivity-only --no-reflogs --no-dangling --no-progress >/dev/null',
 				'echo "wlp:mirror reference"',
-				saveMirror(true),
-			] : [`if lock_mirror; then ${saveMirror(false)}; fi`]),
+				saveMirror(true, cloneFlags.includes("--single-branch")),
+			] : [`if lock_mirror -n; then\n${saveMirror(false, cloneFlags.includes("--single-branch"))}\nfi`]),
 		] : []),
 		...(pinnedBase ? [`plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
 		`base_sha=$(plain_git -C "$target" rev-parse --verify ${work && pinnedBase ? featureRef : "HEAD"})`,
@@ -684,7 +711,7 @@ export async function cloneWithToken(sandbox: SandboxHandle, token: string, inpu
 	const stage = randomBytes(16).toString("hex");
 	try {
 		const cloned = await run(sandbox, cloneScript(input.url, input.branch, stage, input.work, input.pinnedBase, input.mirror),
-			{ gitUser: true, stdin: token + "\n", timeoutMs: input.mirror?.reference ? MIRROR_CLONE_TIMEOUT_MS : CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+			{ gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
 		if (!cloned.ok) {
 			if (input.mirror?.reference && cloned.failure !== "aborted") return { ...cloned, failure: "mirror" };
 			return cloned;

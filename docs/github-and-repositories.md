@@ -193,24 +193,43 @@ request: every 30 minutes with a webhook, 10 without.
 For connected GitHub repositories, the first successful clone can seed a bare Git mirror.
 On later clones Git negotiates with GitHub using the mirror as a local object reference
 (`--reference-if-able --dissociate`). GitHub supplies the current refs, including branch
-deletions. The transport checks the resulting clone with full fsck and checks for alternates
-before copying it to the workspace. The session records the base through the same independent
-GitHub confirmation used by a plain clone.
+deletions. The transport checks the resulting clone with `git fsck --connectivity-only` and
+checks for alternates before copying it to the workspace. The session records the base through
+the same independent GitHub confirmation used by a plain clone.
+
+The check is for connectivity, not a rehash of every object, because a full fsck grows with the
+repository (22.5 s for 176 MiB on a 2-CPU host). It does not reduce what is trusted. Only the
+transport UID can write a slot. That UID runs only platform Git, and the mirror holds only
+objects from clones of GitHub, which Git verified on receipt. `--dissociate` copies what the
+clone uses into its own pack, and pack reuse checks the CRC of each copied object. The clone
+must have no alternates afterwards. A slot that is missing objects fails the connectivity check,
+and the clone falls back to the plain path.
 
 A Docker daemon keeps up to 16 slots of 512 MiB each in `wlp-git-mirrors-v1`. Each slot is
 keyed by deployment, machine, platform user and immutable GitHub repository ID. Hosted Docker
 uses the snapshot deployment identity even when snapshots are disabled. A runner uses its
-paired machine identity and user. A short-lived allocator with networking disabled mounts the
-store, reserves space and evicts the least recently used unlocked slot. A session gets just its
-slot as a volume subpath. UID 65534 owns that directory with mode 0700. The volume stays out of
-prepared images. E2B sessions have no shared Docker volume and clone directly.
+paired machine identity and user. A session gets just its slot as a volume subpath. UID 65534
+owns that directory with mode 0700. The volume stays out of prepared images. E2B sessions have
+no shared Docker volume and clone directly.
 
-Refresh happens on demand. The transport copies objects and refs from a successful private
-clone before handing it to the workspace. This costs at most five seconds of local cache work.
-A busy or missing mirror takes the plain clone path. A failed or stalled reference attempt has
-an eight-second deadline, after which its token is revoked and a plain clone gets a fresh
-repository-scoped read token. A runner advertises mirror support under either session protocol.
-A runner or Docker daemon without support takes the plain clone path.
+A short-lived allocator with networking disabled mounts the store and admits a slot. It waits
+up to 3 s for another admission. It evicts the least recently used slot that is unlocked and
+that no container names. Stopped containers count, because Docker resolves the subpath again on
+every start. Neither is a slot admitted in the last two minutes evicted, since its container may
+not exist yet. When every slot is in use, the session clones without a mirror. A slot that a
+container already names is mounted without running the allocator. Should a stopped container's
+slot be gone anyway, its start puts back an empty slot and tries again. Below the free-space
+floor that snapshots keep (15 GB), the allocator admits nothing and evicts unused slots.
+
+Refresh happens on demand. After a successful private clone, the transport stages its refs and
+hard links to its objects. It then copies them into the slot in a separate process that holds
+the slot lock, so the session does not wait. Nothing is saved below the free-space floor. A
+single-branch review clone only seeds an empty slot and never replaces a full mirror. A busy or
+missing mirror takes the plain clone path. A reference attempt that receives nothing from
+GitHub for 8 seconds is abandoned. Its token is revoked and a plain clone gets a fresh
+repository-scoped read token. The deadline does not cover local work, so a large repository
+does not fall back for being large. A runner advertises mirror support under either session
+protocol. A runner or Docker daemon without support takes the plain clone path.
 
 ### Enable the Factory check on GitHub
 
@@ -334,7 +353,7 @@ what is known of GitHub's, not copied from a run.
 ```sh
 cd server && npx tsx ../scripts/github-check.ts           # the GitHub code and real git against the stand-in; also the agent's requests, tool declarations, publishWork and the agent's push
 cd server && npx tsx ../scripts/github-check.ts --docker  # the git commands again in a container of the sandbox image
-cd server && WLP_CHECK_SECTIONS=mirror pnpm exec tsx ../scripts/github-check.ts --docker --mirror-benchmark
+cd server && WLP_CHECK_SECTIONS=mirror pnpm exec tsx ../scripts/github-check.ts --docker --mirror-benchmark  # the mirror sections, and a 176 MiB repository
 cd server && pnpm e2e                                     # its last section: the route and the actors, on the fake layer
 ```
 

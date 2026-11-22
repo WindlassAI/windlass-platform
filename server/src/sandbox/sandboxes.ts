@@ -28,7 +28,7 @@
  * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
  */
 
-import { gitMirrorMount } from "./git-mirrors.js";
+import { gitMirrorMount, type MirrorStore, restoreGitMirror } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
 import type { SnapshotSource } from "./snapshot-key.js";
 
@@ -80,6 +80,18 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	return Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Starts a stopped sandbox container. Docker resolves a mirror's volume-subpath again here.
+ * Should its slot be gone, an empty one is put back (the clone treats that as no mirror) and
+ * the start is tried once more. The common start pays for nothing extra.
+ */
+export async function startContainer(name: string, store?: MirrorStore): Promise<void> {
+	let started = await docker(["start", name], { timeoutMs: 60_000 });
+	if (started.code !== 0 && await restoreGitMirror(name, store).catch(() => false))
+		started = await docker(["start", name], { timeoutMs: 60_000 });
+	if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
 }
 
 export class DockerSandboxHandle implements TurnSandbox {
@@ -627,8 +639,7 @@ export class DockerSandboxes implements Sandboxes {
 		const resizePending = await this.reconcile(containerName(id), found);
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
 		else if (found.status !== "running" && found.status !== "restarting") {
-			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
-			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
+			await startContainer(containerName(id));
 		}
 		// An interrupted pre-upgrade turn may have left a file on the shared volume. Clear
 		// those before returning a handle that could run setup or commands against it.
