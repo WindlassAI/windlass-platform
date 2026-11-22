@@ -151,6 +151,7 @@ import { HARNESS_NAMES } from "../lib/acp";
 import { acpFixture } from "./acp-fixtures";
 import { fixture } from "./fixtures";
 import { unifiedDiff } from "../lib/acp";
+import { dayOf, reportedModelUsage, usesPlatformModel } from "../../../server/src/usage";
 import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
 
 export interface MockOptions {
@@ -1269,6 +1270,7 @@ interface World {
 	};
 	/** The seconds of sandbox time counted today, by session: the seeded ones, and what the turns played here ran. */
 	spent: Map<string, number>;
+	modelTokens: Map<number, number>;
 	/** The agents that were created with a key, by that key: what was asked for, and the agent's id. */
 	created: Map<string, Taken<string>>;
 }
@@ -1363,7 +1365,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -1503,6 +1505,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const firstDay = Math.floor(numbers.at / 86_400_000) - MOCK_HISTORY.length;
 		return {
 			...numbers,
+			factoryLimits: MOCK_FACTORY_LIMITS,
+			usedModelTokens: world.modelTokens.get(dayOf(numbers.at)) ?? 0,
 			today,
 			days: [...MOCK_HISTORY.map((seconds, index) => ({ day: new Date((firstDay + index) * 86_400_000).toISOString().slice(0, 10), seconds })), { day: numbers.day, seconds: numbers.usedSeconds }],
 			kept: keptSandboxes(world)
@@ -1908,6 +1912,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						state.replaceText = null;
 					}
 					emit(session, turn, stamped);
+					const usage = reportedModelUsage(stamped);
+					if (usage && usesPlatformModel(session.summary.place, session.summary.harness)) {
+						const day = dayOf(now());
+						world.modelTokens.set(day, (world.modelTokens.get(day) ?? 0) + usage.inputTokens + usage.outputTokens);
+					}
 				},
 			};
 		});

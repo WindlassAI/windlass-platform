@@ -80,7 +80,8 @@ import { plannerMachines } from "../machines/details.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { changeUserLimit, effectiveUserLimits, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
+import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -155,7 +156,7 @@ import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
-import { USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
@@ -761,19 +762,23 @@ type UsageEntryRow = { day: number; session: string; hold: string; kind: string;
 type UsageHoldRow = { id: string; session: string; day: number; seconds: number; started_at: number; expires_at: number };
 
 /** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
-async function readUsage(db: RawAccess): Promise<UsageBook> {
+async function readUsage(db: RawAccess, limits: UsageLimits): Promise<UsageBook> {
 	const today = dayOf(Date.now());
 	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
 	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
 	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
+	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
 	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, at, note FROM usage_entry WHERE day > ? ORDER BY id", today - USAGE_HISTORY_DAYS);
 	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, started_at, expires_at FROM usage_hold");
 	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
-	return new UsageBook(config.usage, {
+	const book = new UsageBook(limits, {
 		entries: entries.map((row) => ({ day: row.day, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, at: row.at, note: row.note })),
 		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, startedAt: row.started_at, expiresAt: row.expires_at })),
 		kept,
 	});
+	const at = Date.now();
+	book.noteModelTokens(at, await tokensOn(db, at));
+	return book;
 }
 
 /**
@@ -824,7 +829,10 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 		for (const session of change.released) await c.db.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
 		for (const claim of change.kept) await c.db.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
 	} catch (error) {
-		c.vars.usage = await readUsage(c.db).catch(() => c.vars.usage);
+		const restored = await readUsage(c.db, c.vars.usage.limits).catch(() => c.vars.usage);
+		const now = Date.now();
+		restored.noteModelTokens(now, c.vars.usage.modelTokens(now));
+		c.vars.usage = restored;
 		throw error;
 	}
 	// One line per entry: what was counted, for whoever reads the log beside the provider's bill.
@@ -894,6 +902,8 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 		.sort((a, b) => (b.usedAt ?? 0) - (a.usedAt ?? 0) || (a.sessionId < b.sessionId ? -1 : 1));
 	return {
 		...book.numbers(now),
+		usedModelTokens: book.modelTokens(now),
+		factoryLimits: effectiveUserLimits(c.vars.items.limits.overrides).factory,
 		today: book.today(now).map((row) => ({ ...row, title: c.vars.sessions.get(row.sessionId)?.title ?? null })),
 		days: book.days(now),
 		kept,
@@ -1350,7 +1360,8 @@ export const user = actor({
 		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items: await loadItems(c.db) };
+		const items = await loadItems(c.db);
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, effectiveUserLimits(items.limits.overrides).usage), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
 	events: {
@@ -1417,6 +1428,32 @@ export const user = actor({
 		signOutEverywhere: async (c, options?: { revokeApiTokens: boolean }): Promise<void> => {
 			requireUser(c);
 			await revokeTokens(c, options?.revokeApiTokens === true);
+		},
+		internalLimitHistory: async (c, operator: string, before?: number) => {
+			requireServiceFor(c, limitsSubject(c.key[0]!, operator));
+			return c.db.execute<LimitAuditRow>("SELECT id, at, operator, setting, old_value, new_value, overrides FROM limit_changes WHERE id < ? ORDER BY id DESC LIMIT 100", before ?? Number.MAX_SAFE_INTEGER);
+		},
+		internalSetLimit: async (c, change: LimitChange) => {
+			const result = await changeUserLimit(c, change);
+			if (result.id >= c.vars.items.limits.id) {
+				c.vars.items.limits = result;
+				Object.assign(c.vars.usage.limits, effectiveUserLimits(result.overrides).usage);
+				c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+				queueChanged(c);
+			}
+			return effectiveUserLimits(c.vars.items.limits.overrides);
+		},
+		internalDailyTokenWait: (c) => { requireServiceFor(c, "call"); return accountTokenWait(c); },
+		internalRecordTurnTokens: async (c, input: { sessionId: string; receipt: TokenReceipt }) => {
+			requireServiceFor(c, "call");
+			// The session can already be out of the index while its deletion settles its last receipt.
+			const inserted = await recordTurnTokens(c.db, input.sessionId, input.receipt);
+			const { at } = input.receipt;
+			c.vars.usage.noteModelTokens(at, await tokensOn(c.db, at));
+			if (inserted) {
+				c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+				if (accountTokenWait(c)) queueChanged(c);
+			}
 		},
 		internalRevokeTokens: async (c): Promise<void> => {
 			requireServiceFor(c, "revoke:" + c.key[0]);
@@ -2316,13 +2353,13 @@ export const user = actor({
 			queueChanged(c);
 		},
 
-		internalAcquireRun: async (c, sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
+		internalAcquireRun: async (c, sessionId: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
 			// A session on one of the user's machines is neither counted nor refused (`hostedLimitsApply`).
 			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle" && hostedLimitsApply(session.place));
-			const atLimit = () => others().length + factorySlots(c) >= config.factory.runningTurns;
+			const atLimit = () => others().length + factorySlots(c) >= effectiveUserLimits(c.vars.items.limits.overrides).factory.runningTurns;
 			const asking = c.vars.sessions.get(sessionId);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would
@@ -2346,10 +2383,12 @@ export const user = actor({
 			// The user's index can still be a turn behind. The session asking for the slot
 			// cannot start its next turn until we answer, so this is its actual starting count.
 			const own = asking && hostedLimitsApply(asking.place) ? await sessionActor(c, uid, sessionId).internalSummary() : null;
+			const tokenWait = asking && usesPlatformModel(asking.place, asking.harness) ? accountTokenWait(c) : null;
 			// From here to the `set` nothing is awaited: the count and the claim are one step.
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false, until: null, claim: null };
 			const running = others().length;
+			if (tokenWait) return { dailyTokenWait: tokenWait, ok: false, running, known: true, until: null, claim: null };
 			if (hostedLimitsApply(entry.place) && atLimit()) return { ok: false, running: running + factorySlots(c), known: true, until: null, claim: null };
 			const claimed: SessionSummary = { ...entry, turns: own?.turns ?? entry.turns, status: entry.status === "idle" ? "starting" : entry.status };
 			// The lease lapses at `until` (`internalCheckLaunch`); the claim is named by its generation (`internalReleaseRun`), one more

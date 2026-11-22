@@ -106,7 +106,8 @@
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import { FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
 import { config } from "../config.js";
-import type { WindlassEvent } from "../contract.js";
+import { reportedModelUsage } from "../usage.js";
+import type { TurnUsage, WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
@@ -307,13 +308,6 @@ function mcpCall(name: unknown, input: unknown): { server: string; tool: string 
 	return { server, tool: tool.startsWith(`${server}/`) ? tool.slice(server.length + 1) : tool };
 }
 
-interface Usage {
-	inputTokens: number;
-	cachedInputTokens: number;
-	outputTokens: number;
-	reasoningTokens: number;
-}
-
 /**
  * What the command line's `cli.summary` line says about a turn, added up from its events the same way
  * (Windlass's packages/cli/src/renderer.ts, `JsonSink`): steps, the summary requests of compactions,
@@ -323,7 +317,7 @@ class Tally {
 	private startedAt: number | null = null;
 	private steps = 0;
 	private summaryCalls = 0;
-	private usage: Usage | null = null;
+	private usage: TurnUsage | null = null;
 	/** The execution at work, by its id. */
 	running: string | null = null;
 	/** The execution that ended last, and how its event says it ended. */
@@ -332,6 +326,14 @@ class Tally {
 	note(event: WindlassEvent): void {
 		const data = (event.data ?? {}) as Record<string, unknown>;
 		const time = typeof event.time === "number" ? event.time : Date.now();
+		const usage = reportedModelUsage(event);
+		if (usage) {
+			const total = this.usage ??= { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+			total.inputTokens += usage.inputTokens;
+			total.outputTokens += usage.outputTokens;
+			total.cachedInputTokens += usage.cachedInputTokens;
+			total.reasoningTokens += usage.reasoningTokens;
+		}
 		switch (event.type) {
 			case "execution.started":
 			case "execution.resumed":
@@ -342,15 +344,9 @@ class Tally {
 				this.steps += 1;
 				return;
 			case "compaction.failed":
-				this.summaryCalls += typeof data.calls === "number" ? data.calls : 0;
-				return;
 			case "compaction.ended":
 				this.summaryCalls += typeof data.calls === "number" ? data.calls : 0;
-				return this.add(data.usage);
-			case "step.ended":
-			case "step.failed":
-			case "step.refused":
-				return this.add(data.usage);
+				return;
 			case "execution.succeeded":
 			case "execution.failed":
 			case "execution.interrupted": {
@@ -389,18 +385,6 @@ class Tally {
 		};
 	}
 
-	private add(raw: unknown): void {
-		if (typeof raw !== "object" || raw === null) return;
-		const usage = raw as Partial<Usage>;
-		const number = (value: unknown) => (typeof value === "number" ? value : 0);
-		const sum = this.usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
-		this.usage = {
-			inputTokens: sum.inputTokens + number(usage.inputTokens),
-			cachedInputTokens: sum.cachedInputTokens + number(usage.cachedInputTokens),
-			outputTokens: sum.outputTokens + number(usage.outputTokens),
-			reasoningTokens: sum.reasoningTokens + number(usage.reasoningTokens),
-		};
-	}
 }
 
 /** One turn: the process, the connection, and everything that has to be told apart while it runs. */

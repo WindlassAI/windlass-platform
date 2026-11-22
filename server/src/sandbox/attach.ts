@@ -5,7 +5,7 @@ import { fakeBucket } from "../bucket/stand-in.js";
 import type { ObjectStore } from "../bucket/store.js";
 import { backupConfig, config } from "../config.js";
 import type { ItemAttachment } from "../contract.js";
-import { pngHeader, type ShotRequest } from "../factory/attachments.js";
+import { ATTACHMENT_LIMITS, pngHeader, type ShotRequest } from "../factory/attachments.js";
 import { WORKSPACE_HEAD_COMMAND } from "../github/git.js";
 import type { SandboxHandle } from "./api.js";
 
@@ -53,15 +53,9 @@ const refused: Record<string, string> = {
 	missing: "The file is missing. Save it with wlp-shot before filing.",
 	outside: "The file must be inside the clone’s .wlp-shots directory.",
 	not_regular: "Save a regular PNG file there instead of a directory or link.",
-	get too_large() {
-		return `The file exceeds the ${config.factory.attachments.bytes.toLocaleString("en-US")}-byte screenshot limit. Capture a smaller area.`;
-	},
-	get item() {
-		return `The item has reached its limit of ${config.factory.attachments.perItem} screenshots. File the report without this image.`;
-	},
-	get account() {
-		return `This image would exceed the account’s ${config.factory.attachments.accountBytes.toLocaleString("en-US")}-byte screenshot limit. File the report without it.`;
-	},
+	too_large: "The file exceeds your screenshot size limit. Capture a smaller area.",
+	item: "The item has reached its screenshot limit. File the report without this image.",
+	account: "This image would exceed your account’s screenshot storage limit. File the report without it.",
 	item_ended: "The item has ended and cannot take more screenshots.",
 };
 
@@ -79,7 +73,7 @@ export function attachmentStore(): ObjectStore | null {
 
 type Owner = { by: ItemAttachment["by"]; uid: string; sessionId: string; itemId: string; key: string };
 export type Reservation = { sessionId: string; itemId: string; key: string; sha256: string; bytes: number };
-export type ReserveResult = { id: string; width: number; height: number; key: string; at: number } | { refused: "item" | "account" | "item_ended" };
+export type ReserveResult = { id: string; width: number; height: number; key: string; at: number } | { refused: "item" | "account" | "item_ended" | "too_large" };
 export interface AttachmentLedger {
 	internalReserveAttachment(input: Reservation): Promise<ReserveResult>;
 	internalRecordAttachment(input: { id: string; width: number; height: number }): Promise<void>;
@@ -116,7 +110,7 @@ export async function uploadShots(
 	const screenshots: ItemAttachment[] = [];
 	const problems: string[] = [];
 	const files: string[] = [];
-	const max = config.factory.attachments.bytes;
+	const max = ATTACHMENT_LIMITS.bytes;
 	const copy = "/tmp/.wlp-attach-" + randomBytes(12).toString("hex");
 	const clean = () => step(sandbox, "clean", ATTACH_CLEAN, {});
 	try {
