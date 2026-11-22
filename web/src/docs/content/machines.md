@@ -311,6 +311,8 @@ So commands in a session cannot read your login. They can still use that session
 
 In `restricted` mode, commands in an OpenCode session also cannot reach any model provider's host, or any bare IP address, through the proxy. `--egress-allow` does not reopen them. Model requests go only through the relay.
 
+In `restricted` mode, commands in a Codex session cannot reach `api.openai.com`, `auth.openai.com` or `chatgpt.com` through the proxy. This blocks OpenAI only by hostname. It is a policy, not a security boundary: a command can still reach OpenAI by another route. Your login is safe regardless, because a Codex session holds only a lease for its relay, never the login itself.
+
 Adding a provider or changing a key keeps existing OpenCode sessions working. After `logout opencode`, or after the machine is paired again, the placeholders of existing OpenCode sessions stop working. Start new sessions afterwards.
 
 Older runners mounted the Claude login volume in Claude sessions. On upgrade, archive any work you need from those stopped sessions, remove them, revoke the old token with Anthropic, and sign in with a fresh token before recreating the sessions.
