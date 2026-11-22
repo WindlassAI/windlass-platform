@@ -101,7 +101,7 @@
  *   machine_unreachable `internalDestroy()` (the user's `deleteSession`): the machine's actor could not record the removal of the sandbox
  */
 
-import { canReuseSnapshot, canSaveSnapshot, digest, snapshotGeneration, snapshotWriter, snapshotPrompt, type SnapshotRequest } from "../sandbox/snapshot-key.js";
+import { canReuseSnapshot, canSaveSnapshot, DEFERRED_INPUTS, digest, snapshotGeneration, snapshotWriter, snapshotPrompt, type SnapshotRequest } from "../sandbox/snapshot-key.js";
 
 import { setTimeout as delay } from "node:timers/promises";
 import { randomBytes } from "node:crypto";
@@ -199,7 +199,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { itemActor, grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN } from "../agent-publish.js";
@@ -512,6 +512,7 @@ interface ActiveTurn {
  * values out of text.
  */
 interface HeldSecrets {
+	snapshotSetup?: SealedSecrets["snapshotSetup"];
 	screenshots: boolean;
 	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
 	opened: OpenedSecret[];
@@ -1109,20 +1110,26 @@ async function setupRevision(app: NonNullable<ReturnType<typeof githubApp>>, con
 }
 
 async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, layer: SandboxLayer): Promise<SnapshotPlan | null> {
-	if (!layer.sandboxes.saveSnapshot || !secrets || !canReuseSnapshot(config.snapshots, meta.harness, secrets.opened.length)) return null;
+	if (!secrets?.snapshotSetup || !layer.sandboxes.hasSnapshot || !canReuseSnapshot(config.snapshots, meta.harness, secrets.opened.length)) return null;
 	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
 	if (!project || !app || !repo) return null;
 	try {
-		const saved = await userActor(c, meta.uid).internalSetupCommand(project.key);
-		if (!saved.command) return null;
-		const connection = await githubConnection(c, meta);
-		if (!connection) return null;
+		const saved = secrets.snapshotSetup, command = saved.command;
 		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : repo.branch;
 		if (!revision) return null;
+		const key = { repo: String(repo.id), attempt: randomBytes(16).toString("hex"), generation: snapshotGeneration(String(repo.id), saved.updatedAt, saved.connectedAt) };
+		const mayWrite = snapshotWriter(meta.origin) && !meta.pushedHead && !meta.windlassSessionId && !(await childSetupSeed(c, meta));
+		// A never-saved setup needs no Docker index lookup, runner request or GitHub tree.
+		if (!saved.previouslySaved || !(await layer.sandboxes.hasSnapshot(meta.uid, key.repo))) {
+			if (!mayWrite) return null;
+			return { key: { ...key, inputs: DEFERRED_INPUTS }, commit: "", defaultBranch: repo.branch, writer: true, command, updatedAt: saved.updatedAt };
+		}
+		const connection = await githubConnection(c, meta);
+		if (!connection || connection.connectedAt !== saved.connectedAt) return null;
 		const { commit, dependencies, defaultBranch } = await setupRevision(app, connection, repo, revision);
-		const writer = snapshotWriter(meta.origin) && repo.branch === defaultBranch && !(await childSetupSeed(c, meta));
-		return { writer, key: { attempt: randomBytes(16).toString("hex"), repo: String(repo.id), generation: snapshotGeneration(String(repo.id), saved.updatedAt, connection.connectedAt), inputs: digest([dependencies, saved.command]) },
-			commit, defaultBranch, command: saved.command, updatedAt: saved.updatedAt };
+		if (!dependencies) return null;
+		return { writer: mayWrite && repo.branch === defaultBranch, key: { ...key, inputs: digest([dependencies, saved.command]) },
+			commit, defaultBranch, command, updatedAt: saved.updatedAt };
 	} catch { return null; } // A missing permission, truncated tree or unavailable API still allows a normal clone.
 }
 
@@ -1138,6 +1145,8 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 		const pinned = await checkoutPreparedReviewBase(sandbox, repo.branch, plan.commit);
 		if (!pinned.ok) return false;
 		head = pinned.marks.get("work") ?? "";
+		if (head !== plan.commit) return false;
+		repo.baseSha = plan.commit;
 	} else head = await putOnWork(sandbox, ".", repo.branch);
 	if (head !== plan.commit) {
 		// The branch moved during startup. Decide using the immutable tree we actually checked out.
@@ -1613,7 +1622,7 @@ const PULL_FRESH_MS = 20_000;
  */
 async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
-	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId), RECALL_WAIT_MS);
+	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId, config.snapshots && (meta.place.kind === "hosted" || !!config.machines?.identity)), RECALL_WAIT_MS);
 	if (sealed === null) {
 		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
 	}
@@ -1650,6 +1659,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	if (capabilitiesOf(meta.harness).events === "acp" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the harness session.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
+		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
 		screenshots: sealed.screenshots === true,
 		opened: sealed.redactOnly ? [] : opened,
 		account: sealed.redactOnly ? [] : account,
@@ -1817,7 +1827,8 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	// Sample the pristine checkout before setup can change HEAD or the dependency files.
 	const eligible = plan?.writer && directory === "." && meta.repo?.branch === plan.defaultBranch && !meta.workDue && !meta.windlassSessionId
 		&& snapshotWriter(meta.origin) && handed.length === 0 && saved.updatedAt === plan.updatedAt && command === plan.command;
-	const original = eligible ? await sandbox.run("git rev-parse HEAD && git symbolic-ref --short HEAD", { signal, timeoutMs: 5000 }).catch(() => null) : null;
+	// cloneRepository confirmed this immutable checkout against GitHub before setup started.
+	const original = eligible ? meta.repo?.baseSha : null;
 	const result = await runSetupCommand(sandbox, {
 		command,
 		cwd: directory === "." ? sandbox.cwd : `${sandbox.cwd}/${directory}`,
@@ -1842,7 +1853,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
-	if (plan && original?.exitCode === 0 && original.stdout.trim() === plan.commit + "\n" + plan.defaultBranch && !signal.aborted &&
+	if (plan && original && (!plan.commit || original === plan.commit) && !signal.aborted &&
 		layer.sandboxes.saveSnapshot && canSaveSnapshot(meta.origin, handed.length, result.state === "succeeded", result.durationMs, config.snapshotMinSetupMs)) {
 		// The setup can outlive an edit or a disconnect. Do not replace the newer image with its result.
 		const [current, connection] = await Promise.all([
@@ -1851,9 +1862,18 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 		]);
 		if (!current || !connection || current.command !== plan.command ||
 			snapshotGeneration(plan.key.repo, current.updatedAt, connection.connectedAt) !== plan.key.generation) return;
+		let inputs = plan.key.inputs;
+		if (inputs === DEFERRED_INPUTS) {
+			const app = githubApp(), repo = meta.repo;
+			if (!app || !repo) return;
+			const revision = await setupRevision(app, connection, repo, original).catch(() => null);
+			if (!revision?.dependencies || revision.commit !== original || revision.defaultBranch !== repo.branch) return;
+			inputs = digest([revision.dependencies, command]);
+		}
 		const began = Date.now();
 		note(c, turn, "info", "Saving a prepared sandbox for later sessions");
-		const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, commit: plan.commit, created: began }).catch(() => false);
+		const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: original, created: began }).catch(() => false);
+		if (saved) await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt).catch(() => undefined);
 		note(c, turn, "info", saved ? `Saved the prepared sandbox in ${Math.round((Date.now()-began)/1000)} seconds.` : "The prepared sandbox could not be saved.");
 	}
 }

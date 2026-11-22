@@ -15,6 +15,7 @@
  * Every method is synchronous: an actor's actions and socket handlers interleave around the channel,
  * never inside it.
  */
+import { plain } from "./check.js";
 import type { KeyObject } from "node:crypto";
 import { authFailure, FrameAuthError, platformWelcome, runnerHandshake, type FrameAuth, type PlatformIdentity, type Trust } from "./frame-auth.js";
 import { SandboxUserError } from "../sandbox/api.js";
@@ -91,7 +92,7 @@ abstract class Channel {
 	/** What is held for the peer until it acknowledges it. */
 	get buffered(): { bytes: number; frames: number } { return { bytes: this.bytes, frames: this.backlog.size }; }
 
-	protected get authenticated(): boolean { return !!this.socket && this.codecs.has(this.socket); }
+	get authenticated(): boolean { return !!this.socket && this.codecs.has(this.socket); }
 	protected badBody(): void {
 		console.warn("frame_auth_failed schema");
 		this.fail("The authenticated peer sent an invalid session message.");
@@ -569,7 +570,9 @@ export class RunnerChannel extends Channel {
 				const known = isName(name);
 				const valid = known && validArgs(name, body.args);
 				if (this.authenticated && known && !valid) return this.badBody();
-				const refusal = !valid ? "This runner does not serve that operation."
+				const snapshot = name === "saveSnapshot" || name === "hasSnapshot" || (name === "create" && plain(body.args) && body.args.prepared !== undefined);
+				const refusal = snapshot && !this.authenticated ? "Machine snapshots require an authenticated session."
+					: !valid ? "This runner does not serve that operation."
 					: this.serving.size >= MAX_OPS_IN_FLIGHT ? "Too many operations are waiting on this machine." : null;
 				if (refusal) return this.send({ kind: "res", id: body.id, ok: false, error: { kind: "refused", message: refusal } });
 				this.serving.set(body.id, name as Name);

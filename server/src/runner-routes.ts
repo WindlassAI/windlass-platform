@@ -1,5 +1,4 @@
-import { RETENTION_PATH, retentionRequest, signSnapshot } from "./runner/snapshot-proof.js";
-import { signRemoval } from "./runner/frame-auth.js";
+import { RETENTION_PATH, retentionRequest, signRetention, signRemoval } from "./runner/frame-auth.js";
 import { randomBytes } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { createGrant, isActorGone } from "./actors/internal.js";
@@ -86,7 +85,8 @@ export async function runnerResponse(request: Request): Promise<Response> {
 		if (Math.abs(now - input.time) > CLOCK_TOLERANCE_MS) return json(403, { reason: "clock", serverTime: now });
 		const { uid, machineId, signature, time } = input;
 		const retention = pathname === RETENTION_PATH;
-		const statement = retention ? retentionRequest(uid, machineId, time) : connectionProof(uid, machineId, time, input.nonce);
+		if (retention && (!input.nonce || !config.machines.identity)) return json(403, { code: "signed_runner_required" });
+		const statement = retention ? retentionRequest(uid, machineId, time, input.nonce!) : connectionProof(uid, machineId, time, input.nonce);
 		const result = await client.machine.get([uid, machineId], { params }).internalConnection(statement, signature, address === null)
 			.catch(error => { if (isActorGone(error)) return "unknown" as const; throw error; });
 		if (result === "unknown") return refusedConnection(json(403, { reason: "unknown" }));
@@ -100,8 +100,7 @@ export async function runnerResponse(request: Request): Promise<Response> {
 			const generations = config.snapshots ? await client.user.get([uid], { params }).internalSnapshotGenerations().catch(error => {
 				if (isActorGone(error)) return []; throw error;
 			}) : [];
-			const proof = signSnapshot({ uid, machineId, sessionId: "maintenance" }, statement, { kind: "retain", generations });
-			return proof ? json(200, { generations, proof }) : json(503, { code: "no_snapshot_key" });
+			return json(200, signRetention(statement, generations, config.machines.identity!));
 		}
 		const connection = await platformConnection();
 		const endpoint = config.machines.identity ? signedRunnerEndpoint(config.machines.publicUrl)

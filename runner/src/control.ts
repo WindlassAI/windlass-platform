@@ -126,7 +126,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 	const { createClient } = await import("rivetkit/client");
 	const { uid, machineId } = owner.identity;
 	const sessions = new Map<string, Session>();
-	const maintainSnapshots = snapshotMaintenance(owner.identity, key, platform);
+	const maintainSnapshots = snapshotMaintenance(owner.identity, key, platform, trust);
 	let idle = initialIdle;
 	let state = "";
 	let offset = 0;

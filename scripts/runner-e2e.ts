@@ -369,7 +369,7 @@ async function linkChecks(): Promise<void> {
 	};
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.UTC(2026, 10, 19) });
 	try {
-		await check("link: create sends Claude only to a runner offering it and omits harness for Windlass", async () => {
+		await check("link: create sends Claude only to a runner offering it and keeps a protocol 1 snapshot request cold", async () => {
 			const input = { uid: LINK_WHO.uid, sessionId: LINK_WHO.sessionId, profile: "docker-hardened" as const };
 			const received: unknown[] = [];
 			const serve = (op: Operation, ch: RunnerChannel) => {
@@ -381,7 +381,7 @@ async function linkChecks(): Promise<void> {
 			assert(refused.at instanceof Error && refused.at.message.includes("--harness claude") && !old.log.attaches.length, "missing preflight refusal");
 			const offered = fresh({ serve, report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: true },
 				freeDiskBytes: null, sandboxes: [], harnesses: [{ id: "claude", image: "fixture", adapter: "fixture", signIn: "none" }] } });
-			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create(input)]) {
+			for (const create of [offered.sandboxes.create({ ...input, harness: "claude" }), old.sandboxes.create({ ...input, fromSnapshot: { writer: true, attempt: "a".repeat(32), repo: "1", generation: "b".repeat(64), inputs: "c".repeat(64) } })]) {
 				await advance(50);
 				await create;
 			}

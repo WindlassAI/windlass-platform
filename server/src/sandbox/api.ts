@@ -165,9 +165,10 @@ export interface Sandboxes {
 	 * trying again later may work.
 	 */
 	create(input: CreateSandboxInput): Promise<string>;
+	hasSnapshot?(uid: string, repo: string): Promise<boolean>;
 	saveSnapshot?(id: string, source: SnapshotSource): Promise<boolean>;
 	dropSnapshots?(uid: string, repo?: string): Promise<void>;
-	sweepSnapshots?(retained: (uid: string) => Promise<ReadonlySet<string>>): Promise<void>;
+	sweepSnapshots?(retained: (uid: string) => Promise<ReadonlySet<string> | null>): Promise<void>;
 	/**
 	 * Starts the sandbox if it is paused. Undefined when it no longer exists. On E2B, starting a paused
 	 * sandbox counts against the same limit as `create`, and throws the same SandboxUserError when the

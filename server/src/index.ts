@@ -14,7 +14,7 @@
 import { createClient, type Registry } from "./client.js";
 import { serviceParams } from "./auth.js";
 import { isActorGone } from "./actors/internal.js";
-import { RETENTION_PATH } from "./runner/snapshot-proof.js";
+import { RETENTION_PATH } from "./runner/frame-auth.js";
 
 import { runnerResponse } from "./runner-routes.js";
 import { apiRoute } from "./api-routes.js";
@@ -66,10 +66,12 @@ if (config.browsers.tokens) {
 if (layer.sandboxes.sweepSnapshots) {
 	let client: ReturnType<typeof createClient<Registry>> | undefined;
 	const sweep = () => layer.sandboxes.sweepSnapshots!(async uid => {
-		if (!config.snapshots) return new Set<string>();
 		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
-		try { return new Set(await client.user.get([uid], { params: serviceParams() }).internalSnapshotGenerations()); }
-		catch (error) { if (isActorGone(error)) return new Set<string>(); throw error; }
+		try {
+			const generations = await client.user.get([uid], { params: serviceParams() }).internalSnapshotGenerations();
+			return new Set(config.snapshots ? generations : []);
+		}
+		catch (error) { if (isActorGone(error)) return null; throw error; }
 	}).catch(() => console.warn("[wlp] snapshot expiry deferred"));
 	void sweep();
 	setInterval(sweep, 60 * 60_000).unref();

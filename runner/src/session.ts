@@ -1,4 +1,3 @@
-import { SnapshotVerifier } from "../../server/src/runner/snapshot-proof.js";
 import { basename } from "node:path";
 import { RunnerChannel, type ChannelSocket, type SessionTrust } from "../../server/src/runner/channel.js";
 import type { Hello, Operation, Value } from "../../server/src/runner/protocol.js";
@@ -36,7 +35,7 @@ class Conversation {
 	private pipes = new Set<DockerProcess>();
 	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string }>();
 	private runs = new Map<string, AbortController>();
-	constructor(private owner: Executor, private session: string, private channel: RunnerChannel, private verifier: SnapshotVerifier) {}
+	constructor(private owner: Executor, private session: string, private channel: RunnerChannel) {}
 	input(id: string, data: string) { this.processes.get(id)?.p.write(data); }
 	eof(id: string) { this.processes.get(id)?.p.closeStdin(); }
 	cancel(id: string) { this.runs.get(id)?.abort(); }
@@ -68,9 +67,7 @@ class Conversation {
 			case "create": {
 				const { harness, profile, prepared } = op.args;
 				if ((op.args.size ?? 1) > 1) throw new Refusal("This runner does not support sizing beyond one slot.");
-				if (prepared && (harness || !this.verifier.accept({ ...o.identity, sessionId: this.session },
-					{ kind: "create", profile, size: op.args.size, screenshots: !!op.args.screenshots, privateData: prepared.privateData, key: prepared }, prepared.proof)))
-					throw new Refusal("The snapshot request has no valid deployment signature.");
+				if (prepared && harness) throw new Refusal("This harness cannot use snapshots.");
 				if (harness) o.requireHarness(profile, harness);
 				const existing = await o.serial(() => { this.requireActive(); return o.existing(this.session, profile, harness); });
 				if (existing) return existing;
@@ -80,10 +77,9 @@ class Conversation {
 				if (screenshots) await o.ensureImage(shotsImage);
 				return o.serial(() => { this.requireActive(); return o.create(this.session, profile, screenshots, harness, prepared); });
 			}
+			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
 			case "saveSnapshot": {
-				const { id, source, proof } = op.args;
-				if (!this.verifier.accept({ ...o.identity, sessionId: this.session }, { kind: "save", id, source }, proof))
-					throw new Refusal("The snapshot request has no valid deployment signature.");
+				const { id, source } = op.args;
 				return o.serial(() => { this.requireActive(); return o.saveSnapshot(this.session, id, source); });
 			}
 			case "connect": case "suspend": case "destroy": case "state":
@@ -170,7 +166,6 @@ class Conversation {
 export class Session {
 	readonly channel: RunnerChannel;
 	private conversation: Conversation;
-	private verifier = new SnapshotVerifier();
 	private socket?: WebSocket;
 	refused = false;
 	orphaned: Promise<void> = Promise.resolve();
@@ -183,7 +178,7 @@ export class Session {
 			onDrain: () => this.conversation.pause(false),
 			onReset: () => {
 				this.orphaned = this.conversation.orphan();
-				this.conversation = new Conversation(this.owner, this.id, this.channel, this.verifier);
+				this.conversation = new Conversation(this.owner, this.id, this.channel);
 				// During a fresh handshake the new socket is already here. After the
 				// detached channel's grace, only the orphaned processes need to outlive it.
 				void this.orphaned.then(() => { if (!this.socket && !this.refused) this.forget(); });
@@ -194,10 +189,9 @@ export class Session {
 				this.channel.close();
 			},
 		});
-		this.conversation = new Conversation(owner, id, this.channel, this.verifier);
+		this.conversation = new Conversation(owner, id, this.channel);
 	}
 	attach(ws: WebSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">, secure?: SessionTrust) {
-		this.verifier.attach(identity.ticket);
 		this.socket = ws;
 		ws.addEventListener("close", () => { if (this.socket === ws) this.socket = undefined; });
 		const socket: ChannelSocket = { send: text => ws.send(text), close: () => ws.close(),

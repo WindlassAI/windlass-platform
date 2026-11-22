@@ -1,4 +1,3 @@
-import { signSnapshot, type SnapshotAction } from "../server/src/runner/snapshot-proof.js";
 import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
@@ -215,9 +214,7 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	try {
 		await mkdir(state, { mode: 0o700 });
 		if (process.argv.includes("--snapshots-only")) {
-			const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-			process.env.WLP_SNAPSHOT_SIGNING_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-			const service = run(state, undefined, bundle, { WLP_SNAPSHOT_VERIFY_KEY: publicKey.export({ type: "spki", format: "pem" }).toString() });
+			const service = run();
 			try {
 				await until(() => !!srv.state.report, "Runner did not report");
 				const key = { writer: true, attempt: randomBytes(16).toString("hex"), repo: "123", inputs: "a".repeat(64), generation: "c".repeat(64) };
@@ -225,49 +222,40 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				const source = { ...requestKey, commit: "b".repeat(40), created: Date.now() };
 				const profile = "docker-hardened" as const;
 				async function session(sessionId: string, privateData: boolean, request = key) {
-					const ticket = await srv.attach(sessionId), channel = srv.channel(sessionId);
-					const proof = (action: SnapshotAction) => signSnapshot({ uid, machineId, sessionId }, ticket, action)!;
-					const action = { kind: "create", key: request, profile, screenshots: false, privateData } as const;
-					return { channel, proof, async create() {
-						const signed = proof(action);
-						await assert.rejects(channel.request("create", { profile, prepared: { ...request, inputs: "0".repeat(64), privateData, proof: signed } }), /signature/);
-						return channel.request("create", { profile, prepared: { ...request, privateData, proof: signed } });
-					} };
+					await srv.attach(sessionId);
+					const channel = srv.channel(sessionId);
+					return { channel, create: () => channel.request("create", { profile, prepared: { ...request, privateData } }) };
 				}
 				const a = await session(sessionId, false), id = await a.create();
 				assert.equal((await a.channel.request("run", { id, command: "touch /workspace/build-output"})).exitCode, 0);
-				const proof = a.proof({ kind: "save", id, source });
-				assert.equal(await a.channel.request("saveSnapshot", {id, source, proof}), true);
-				await assert.rejects(a.channel.request("saveSnapshot", {id, source, proof}), /signature/);
+				assert.equal(await a.channel.request("saveSnapshot", {id, source}), true);
+				assert.equal(await a.channel.request("saveSnapshot", {id, source}), false);
 				await a.channel.request("run", { id, command: "touch /workspace/agent-wrote-this" });
 				await a.channel.request("destroy", { id });
 				const next = { ...key, writer: false, attempt: randomBytes(16).toString("hex") };
 				const b = await session(srv.other, true, next), restored = await b.create();
 				assert.deepEqual((await b.channel.request("connect", {id: restored}))?.snapshot, { ...source, attempt: next.attempt });
 				assert.equal((await b.channel.request("run", {id: restored, command: "test -e build-output && test ! -e agent-wrote-this"})).exitCode, 0);
-				assert.equal(await b.channel.request("saveSnapshot", {id: restored, source, proof: b.proof({kind: "save", id: restored, source})}), false);
+				assert.equal(await b.channel.request("saveSnapshot", {id: restored, source}), false);
 				await b.channel.request("destroy", {id: restored});
 				const child = { ...key, writer: false, inputs: "f".repeat(64), attempt: randomBytes(16).toString("hex") };
-				const childAction = { kind: "create", key: child, profile, screenshots: false, privateData: false } as const;
-				const childId = await a.channel.request("create", { profile, prepared: { ...child, privateData: false, proof: a.proof(childAction) } });
+				const childId = await a.channel.request("create", { profile, prepared: { ...child, privateData: false } });
 				const childSource = { ...source, inputs: child.inputs, attempt: child.attempt };
-				assert.equal(await a.channel.request("saveSnapshot", { id: childId, source: childSource, proof: a.proof({kind: "save", id: childId, source: childSource}) }), false);
+				assert.equal(await a.channel.request("saveSnapshot", { id: childId, source: childSource }), false);
 				await a.channel.request("destroy", { id: childId });
-				ok("A cold subtask with a read-only grant cannot save a snapshot.");
+				ok("A cold subtask with a read-only request cannot save a snapshot.");
 				const fresh = { ...key, inputs: "0".repeat(64), attempt: randomBytes(16).toString("hex") };
 				// Reuse the accepted socket after destroy, with a different dependency key.
-				const action = { kind: "create", key: fresh, profile, screenshots: false, privateData: false } as const;
-				const cold = await a.channel.request("create", {profile, prepared: {...fresh, privateData: false, proof: a.proof(action)}});
+				const cold = await a.channel.request("create", {profile, prepared: {...fresh, privateData: false}});
 				const ran = await a.channel.request("run", {id: cold, command: 'test -n "$CHECK_TOKEN"', options: {secretEnv: {CHECK_TOKEN: "fixture"}}});
 				assert.equal(ran.exitCode, 0);
 				const dirty = { ...source, inputs: fresh.inputs, attempt: fresh.attempt };
-				assert.equal(await a.channel.request("saveSnapshot", {id: cold, source: dirty, proof: a.proof({kind: "save", id: cold, source: dirty})}), false);
+				assert.equal(await a.channel.request("saveSnapshot", {id: cold, source: dirty}), false);
 				await a.channel.request("destroy", {id: cold});
 				ok("A runner refuses to save a sandbox after a command received secret environment variables.");
-				ok("A signed machine save and private reviewer restore preserve only pre-turn files; altered and replayed grants are refused.");
+				ok("An authenticated machine save and private reviewer restore preserve only pre-turn files.");
 			} finally {
 				await stop(service.child);
-				delete process.env.WLP_SNAPSHOT_SIGNING_KEY;
 				await new DockerSnapshots(machineId, image).drop(uid);
 				await docker(["network", "rm", "wlp-open-"+machineId]);
 			}

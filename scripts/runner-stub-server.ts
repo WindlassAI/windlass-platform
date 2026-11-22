@@ -49,7 +49,6 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	let observeControl: ((text: string) => void) | undefined;
 	const catalogs = new Map<string, import("../server/src/contract.js").HarnessOptions>();
 	const tickets = new Map<string, string>();
-	const acceptedTickets = new Map<string, string>();
 	const joined = new Map<string, number>();
 	const opened = new Map<string, number>();
 	let incompatible: string | undefined;
@@ -71,7 +70,7 @@ export async function stub(storage: string, tls?: ServerOptions) {
 		if (!ch) {
 			ch = new FixtureChannel({ platform: { identity: platformIdentity, uid, machineId, sessionId: session }, accept(h) {
 				if (h.machineId !== machineId || tickets.get(session) !== h.ticket || h.protocol !== 2 || !signed(machineStatement({ uid, machineId, sessionId: session, challenge: h.ticket, ticket: h.ticket }, h), h.signature)) return false;
-				acceptedTickets.set(session, h.ticket); tickets.delete(session); joined.set(session, (joined.get(session) ?? 0) + 1); return true;
+				tickets.delete(session); joined.set(session, (joined.get(session) ?? 0) + 1); return true;
 			} });
 			channels.set(session, ch);
 		}
@@ -223,7 +222,6 @@ export async function stub(storage: string, tls?: ServerOptions) {
 			const prior = joined.get(s) ?? 0;
 			wanted.add(s); ticket(s);
 			await until(() => (joined.get(s) ?? 0) > prior && channel(s).connected, "The session did not attach.");
-			return acceptedTickets.get(s)!;
 		},
 		detach(s = sessionId) { wanted.delete(s); channel(s).detach(); },
 		reset(s = sessionId) { wanted.delete(s); channel(s).close(); channels.delete(s); },

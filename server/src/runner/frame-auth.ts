@@ -1,6 +1,6 @@
 /** Protocol 2. One handshake and two independent counter spaces per physical socket. */
 import { createHash, createHmac, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign, timingSafeEqual, verify, type KeyObject } from "node:crypto";
-import { count, is, json, object, oneOf, optional, plain, text, type Of } from "./check.js";
+import { count, is, json, list, object, oneOf, optional, plain, text, type Of } from "./check.js";
 
 const binary = (bytes: number) => is<string>(v => typeof v === "string" && v.length === Math.ceil(bytes * 4 / 3)
 	&& Buffer.from(v, "base64url").toString("base64url") === v);
@@ -153,6 +153,24 @@ export function verifyRemoval(uid: string, machineId: string, nonce: string, ans
 	const key = onlineKey(trust.pin.platformRoot, answer.cert, trust.pin.maxSerial);
 	checkSig(key, removalStatement(uid, machineId, nonce, answer.removeSandboxes, answer.cert), answer.sig, "signature");
 	trust.commit(answer.cert.serial, trust.pin.endpoint);
+}
+export const RETENTION_PATH = "/runner/snapshot-retention";
+export const retentionRequest = (uid: string, machineId: string, time: number, nonce: string) =>
+	JSON.stringify(["wlp-snapshot-retention-request/2", uid, machineId, time, nonce]);
+const retentionStatement = (request: string, generations: string[], cert: Cert) =>
+	JSON.stringify(["wlp-snapshot-retention-answer/2", request, generations, digest(cert)]);
+
+export function signRetention(request: string, generations: string[], identity: PlatformIdentity) {
+	if (identity.cert.notAfter <= Date.now()) bad("expired");
+	return { generations, cert: identity.cert, sig: signature(identity.key, retentionStatement(request, generations, identity.cert)) };
+}
+const retentionAnswer = object({ ...removalFields, generations: list(is<string>(value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)), 500) });
+export function verifyRetention(request: string, answer: unknown, trust: Trust) {
+	if (!retentionAnswer(answer)) bad("retention");
+	const key = onlineKey(trust.pin.platformRoot, answer.cert, trust.pin.maxSerial);
+	checkSig(key, retentionStatement(request, answer.generations, answer.cert), answer.sig, "signature");
+	trust.commit(answer.cert.serial, trust.pin.endpoint);
+	return new Set(answer.generations);
 }
 function socketKeys(own: KeyObject, peer: string, statement: string, server: boolean) {
 	const shared = diffieHellman({ privateKey: own, publicKey: readPublic(peer, "x25519") });

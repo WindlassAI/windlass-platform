@@ -4381,58 +4381,36 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 
 // ---------------------------------------------------------------------------------------------
 
-/** Repeatable public inputs. Only GitHub App authorization and the model are stand-ins. */
-function benchmarkRepositories(github: GithubStandin, installation: ReturnType<GithubStandin["addInstallation"]>) {
-	const specs = [
-		["prefixlens-eval", "6310a402eb0948da85ef66dff51a4f185f1636ea", "bun install && bun run build"],
-		["windlass-eval", "3c452fef4a86655d355ff85c59819aa4d29001eb", "bun install"],
-		["parthgdev-eval", "0d976d92637a27dcfced751de09380ef658fb715", "npm ci && npm run build"],
-	] as const;
-	const repos = [];
-	for (const [name, sha, command] of specs) {
-		const repo = github.addRepository({ owner: "ada", name, installation });
-		execFileSync("git", ["-C", repo.path, "fetch", "--quiet", "https://github.com/parthg1901/"+name+".git", sha]);
-		execFileSync("git", ["-C", repo.path, "update-ref", "refs/heads/main", sha]);
-		repos.push({ repo, command });
-	}
-	return repos;
-}
-
-async function snapshotTimings(server: Server, client: Client, github: GithubStandin, repos: ReturnType<typeof benchmarkRepositories>, uid: string, token: string) {
-	const params = { token };
-	const user = client.user.get([uid], {params});
+/** Interleave short, cold setups on the same local repository and Docker image. */
+async function snapshotTimings(server: Server, client: Client, github: GithubStandin, repo: ReturnType<GithubStandin["addRepository"]>, uid: string, token: string) {
+	const params = { token }, user = client.user.get([uid], { params });
 	try {
-		for (const { repo, command } of repos) await user.saveRepositorySetup({ repositoryId: repo.id, command });
-		for (const mode of ["off", "on"] as const) {
-			if (mode === "on") {
+		await user.saveRepositorySetup({ repositoryId: repo.id, command: "node -e 'require(\"node:fs\").copyFileSync(\"base.txt\", \"built.txt\")'" });
+		for (let run = 1; run <= 3; run++) {
+			for (const mode of ["off", "on"] as const) {
 				await server.stop();
 				await waitFor("the previous server to release its ports", portsFree, 30_000, 250);
-				await server.start({ ...github.env(), WLP_SNAPSHOTS: "on" });
-			}
-			for (const { repo } of repos) {
-				for (let run = 1; run <= (mode === "off" ? 1 : 2); run++) {
-					const session = await user.createSession({ profile: "docker-hardened", repository: { id: repo.id, branch: "main" } });
-					try {
-						const actor = client.agentSession.get([uid, session.id], {params});
-						await actor.prompt({text: "Explore the workspace"});
-						await waitFor("the benchmark turn to finish", async () => (await actor.snapshot()).timeline.some(t => t.kind === "turn.ended"), 900_000, 1500);
-						const {timeline} = await actor.snapshot();
-						const start = timeline.find(t => t.kind === "platform" && t.text === "Creating sandbox");
-						const first = timeline.find(t => t.kind === "windlass");
-						const setup = timeline.find(t => t.kind === "setup" && t.state !== "started");
-						const last = timeline.at(-1);
-						assert(start && first && last?.kind === "turn.ended" && last.outcome === "succeeded", "Benchmark turn failed");
-						assert(!setup || (setup.kind === "setup" && setup.state === "succeeded"), "Benchmark setup failed");
-						const notes = timeline.filter(t => t.kind === "platform").map(t => t.text);
-						console.log(JSON.stringify({ repository: repo.name, mode, run, startMs: first.at - start.at,
-							setupMs: setup?.kind === "setup" ? setup.durationMs : null, notes }));
-					} finally { await user.deleteSession(session.id); }
-				}
+				await server.start({ ...github.env(), WLP_SNAPSHOTS: mode });
+				const before = github.requests.length;
+				const session = await user.createSession({ profile: "docker-hardened", repository: { id: repo.id, branch: "main" } });
+				try {
+					const actor = client.agentSession.get([uid, session.id], { params });
+					await actor.prompt({ text: "Explore the workspace" });
+					await waitFor("the benchmark turn", async () => (await actor.snapshot()).timeline.some(t => t.kind === "turn.ended"), TURN_MS, 500);
+					const { timeline } = await actor.snapshot();
+					const start = timeline.find(t => t.kind === "platform" && t.text === "Creating sandbox");
+					const first = timeline.find(t => t.kind === "windlass");
+					const setup = timeline.find(t => t.kind === "setup" && t.state === "succeeded");
+					const last = timeline.at(-1);
+					assert(start && first && last?.kind === "turn.ended" && last.outcome === "succeeded", "Benchmark turn failed");
+					assert(setup?.kind === "setup" && setup.durationMs !== null, "Benchmark setup failed");
+					const startMs = first.at - start.at, setupMs = setup.durationMs;
+					console.log(JSON.stringify({ repository: repo.name, mode, run, startMs, setupMs, overheadMs: startMs - setupMs }));
+					assert(!github.requests.slice(before).some(r => r.path.includes("/git/trees/") || r.path.includes("/contents/")), "A short cold setup fetched dependency inputs");
+				} finally { await user.deleteSession(session.id); }
 			}
 		}
-	} finally {
-		for (const { repo } of repos) await user.forgetRepository(repo.id);
-	}
+	} finally { await user.forgetRepository(repo.id); }
 }
 
 /** Run the real actors, clone, setup, private fetch and scripted Windlass turn on Docker. */
@@ -4462,7 +4440,6 @@ async function preparedSessions(server: Server) {
 		const installation = github.addInstallation("ada", "User");
 		const repo = github.addRepository({owner:"ada", name:"snapshot-check", installation, files:{"package-lock.json":"{}", "base.txt":"first"}});
 		const base = github.branchHead(repo, "main")!;
-		const evalRepos = snapshotBenchmark ? benchmarkRepositories(github, installation) : null;
 		await server.start({...github.env(), WLP_SNAPSHOTS: snapshotBenchmark ? "off" : "on"});
 		const auth = await client.login.getOrCreate(["snapshot-" + randomBytes(8).toString("hex")]).demo();
 		const uid = auth.profile.uid, params = {token:auth.token};
@@ -4473,7 +4450,7 @@ async function preparedSessions(server: Server) {
 		const ticket = new URLSearchParams(new URL(callback.headers.get("location")!).hash.slice(1)).get("github");
 		assert(ticket, "GitHub connection failed");
 		await user.githubComplete(ticket);
-		if (evalRepos) return await snapshotTimings(server, client, github, evalRepos, uid, auth.token);
+		if (snapshotBenchmark) return await snapshotTimings(server, client, github, repo, uid, auth.token);
 		const command = 'test -f quick || sleep 31; mkdir -p node_modules; cp base.txt node_modules/built-at; if [ -n "${CHECK_TOKEN:-}" ]; then echo "$CHECK_TOKEN" > node_modules/secret; fi';
 		await user.saveRepositorySetup({repositoryId:repo.id, command});
 		async function turn(hit: boolean, secret = false, branch = "main") {

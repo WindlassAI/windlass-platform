@@ -11,6 +11,7 @@
  * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
+import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
 import type { SandboxProfileId } from "../contract.js";
 import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
@@ -63,10 +64,10 @@ const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), en
 const fingerprint = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const snapshotKey = { attempt: is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v)), generation: fingerprint, repo: is<string>(v => typeof v === "string" && /^[1-9]\d{0,19}$/.test(v)), inputs: fingerprint };
 const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v === "string" && /^[a-f0-9]{40}$/.test(v)), created: count });
-const proof = object({ nonce: text(32), signature: text(86) });
 const operations = {
-	create: [object({ profile: machineProfile, size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, writer: boolean, privateData: boolean, proof })) }), id],
-	saveSnapshot: [object({ ...sandbox, source: snapshotSource, proof, options: optional(object({ timeoutMs: duration })) }), boolean],
+	create: [object({ profile: machineProfile, size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
+	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],

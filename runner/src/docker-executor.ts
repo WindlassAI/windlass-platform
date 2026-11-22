@@ -1,3 +1,4 @@
+import { dropPreviousSnapshots } from "./snapshot-retention.js";
 import type { SnapshotSelection, SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import type { HarnessOptions } from "../../server/src/contract.js";
@@ -548,6 +549,7 @@ export class Executor extends MachineDocker {
 			for (const id of helpers.stdout.trim().split(/\s+/).filter(Boolean)) await docker(["rm", "-fv", id], { check: true });
 			await this.network.prune();
 			await this.provider.dropSnapshots(this.identity.uid);
+			await dropPreviousSnapshots(this.identity);
 			const volumes = await docker(["volume", "ls", "-q", ...this.filters()], { check: true });
 			for (const name of volumes.stdout.trim().split(/\s+/).filter(Boolean)) await this.dropVolume(name);
 		});

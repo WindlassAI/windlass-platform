@@ -503,8 +503,13 @@ function approvalText(value: unknown, max: number): string {
 // ---------------------------------------------------------------------------------------------
 
 /** The setup command saved for a project (setup-command.ts, `SetupProject.key`); none when there is no row. */
+async function setupRow(db: RawAccess, project: string) {
+	const [row] = await db.execute<{ command: string; updated_at: number; snapshot_connection: number | null }>(
+		"SELECT command, updated_at, snapshot_connection FROM setup_command WHERE project = ?", project);
+	return row;
+}
 async function readSetup(db: RawAccess, project: string): Promise<RepositorySetup> {
-	const [row] = await db.execute<{ command: string; updated_at: number }>("SELECT command, updated_at FROM setup_command WHERE project = ?", project);
+	const row = await setupRow(db, project);
 	return { command: row?.command ?? "", updatedAt: row?.updated_at ?? null, timeoutMs: config.setupTimeoutMs };
 }
 
@@ -522,7 +527,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
 		await c.db.execute(
-			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, updated_at = MAX(updated_at + 1, excluded.updated_at)",
+			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, snapshot_connection = NULL, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
 			label,
 			command,
@@ -1254,6 +1259,7 @@ export const user = actor({
 				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
+				["setup_command", "snapshot_connection", "INTEGER"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (columns.some((found) => found.name === column)) continue;
@@ -1789,6 +1795,11 @@ export const user = actor({
 			requireService(c);
 			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
 		},
+		internalSnapshotSaved: async (c, project: string, updatedAt: number | null, connectedAt: number) => {
+			requireService(c);
+			if (c.vars.github?.connectedAt === connectedAt)
+				await c.db.execute("UPDATE setup_command SET snapshot_connection = ? WHERE project = ? AND updated_at = ?", connectedAt, project, updatedAt);
+		},
 		internalSnapshotGenerations: async (c): Promise<string[]> => {
 			requireService(c);
 			const connection = c.vars.github;
@@ -1851,7 +1862,7 @@ export const user = actor({
 		 * sessions, not from the call: a session is handed the secrets of the repository it was launched
 		 * on and of no other, and a session this user does not have is handed none.
 		 */
-		internalSessionSecrets: async (c, sessionId: string): Promise<SealedSecrets> => {
+		internalSessionSecrets: async (c, sessionId: string, includeSnapshotSetup = false): Promise<SealedSecrets> => {
 			const id = approvalText(sessionId, 200);
 			requireServiceFor(c, secretsCaller(c.key[0]!, id));
 			// A session this user does not have is handed nothing, of the account's either.
@@ -1870,7 +1881,11 @@ export const user = actor({
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
-			return { project, ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			const connectedAt = c.vars.github?.connectedAt;
+			const setup = includeSnapshotSetup && config.snapshots && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
+			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
+				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
+			return { project, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------

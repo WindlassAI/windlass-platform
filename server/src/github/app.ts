@@ -567,7 +567,7 @@ export class GithubApp {
 			if (!text(e.path) || !SHA.test(text(e.sha))) throw new Error("Incomplete tree entry");
 			return { path: text(e.path), sha: text(e.sha), mode: text(e.mode), type: text(e.type) };
 		});
-		return { commit, dependencies: await dependencyHash(files, path => this.fileAt(token, owner, name, path, commit)) };
+		return { commit, dependencies: dependencyHash(files) };
 	}
 
 	async fileAt(token: string, owner: string, name: string, path: string, sha: string): Promise<string> {

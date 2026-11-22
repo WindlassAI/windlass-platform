@@ -27,7 +27,6 @@
  * caller decides, and the turn's own `stopLeftovers` ends what a lost `start` left).
  */
 
-import { signSnapshot, type SnapshotAction } from "../runner/snapshot-proof.js";
 import type { SnapshotSource } from "./snapshot-key.js";
 import { config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
@@ -128,8 +127,6 @@ export class RunnerLink {
 	/** The first profile read is shared by snapshots and operations waiting to attach. */
 	readonly initialFacts: Promise<MachineFacts | null>;
 	private readonly tickets = new AttachTickets();
-	private snapshotTicket = "";
-	snapshotProof(action: SnapshotAction) { return signSnapshot(this.who, this.snapshotTicket, action); }
 	/** What the machine's actor last said of it. Had before the first ticket goes out: its key checks the hello. */
 	private heard: MachineFacts | null = null;
 	private reading?: Promise<MachineFacts>;
@@ -154,11 +151,7 @@ export class RunnerLink {
 	) {
 		this.channel = new ServerChannel({
 			platform: config.machines?.identity && { ...who, identity: config.machines.identity },
-			accept: (hello) => {
-				const accepted = this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null });
-				if (accepted) this.snapshotTicket = hello.ticket;
-				return accepted;
-			},
+			accept: hello => this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null }),
 			onReset,
 			onConnect: () => this.connected(),
 			onDisconnect: () => this.lost(),
@@ -573,27 +566,28 @@ class RunnerSandboxes implements Sandboxes {
 			throw new SandboxUserError(`This machine's runner does not offer ${input.harness === "claude" ? "Claude Code" : "OpenCode"}. Update it and start it with --harness ${input.harness}.`);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
 		const args = { profile: input.profile, ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
-		if (input.fromSnapshot && !input.harness && process.env.WLP_SNAPSHOT_SIGNING_KEY) {
+		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();
-			const privateData = input.privateData === true;
-			const proof = link.snapshotProof({ kind: "create", profile: input.profile, size: input.size, screenshots, privateData, key: input.fromSnapshot });
-			if (proof) {
-				try { return await link.request("create", { ...args, prepared: { ...input.fromSnapshot, privateData, proof } }); }
+			if (link.channel.authenticated) {
+				try { return await link.request("create", { ...args, prepared: { ...input.fromSnapshot, privateData: !!input.privateData } }); }
 				catch (error) {
-					// Older runners reject the optional arguments. A missing verification key also permits a cold start.
-					if (!(error instanceof ConversationLost) && !(error instanceof Error && [
-						"This runner does not serve that operation.", "The snapshot request has no valid deployment signature.",
-					].includes(error.message))) throw error;
+					if (!(error instanceof ConversationLost) && !(error instanceof Error && error.message === "This runner does not serve that operation.")) throw error;
 				}
 			}
 		}
 		return await link.again("create", args);
 	}
 
-	async saveSnapshot(id: string, source: SnapshotSource) {
+	async hasSnapshot(uid: string, repo: string) {
+		if (!config.machines?.identity || uid !== this.link.who.uid) return false;
 		await this.link.ready();
-		const proof = this.link.snapshotProof({ kind: "save", id, source });
-		return proof ? this.link.request("saveSnapshot", { id, source, proof, options: { timeoutMs: 15 * 60_000 } }) : false;
+		return this.link.channel.authenticated && this.link.request("hasSnapshot", { repo });
+	}
+
+	async saveSnapshot(id: string, source: SnapshotSource) {
+		if (!config.machines?.identity) return false;
+		await this.link.ready();
+		return this.link.channel.authenticated && this.link.request("saveSnapshot", { id, source, options: { timeoutMs: 15 * 60_000 } });
 	}
 
 	async connect(id: string): Promise<TurnSandbox | undefined> {

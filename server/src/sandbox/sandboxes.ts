@@ -376,6 +376,7 @@ async function forgetTokenFile(id: string): Promise<void> {
 
 /** What the hosted provider and a runner's differ in. */
 export type DockerSandboxOptions = {
+	deployment?: string;
 	cpus?: number;
 	network?: { name: string; env: Record<string, string>; mode: string };
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
@@ -471,7 +472,7 @@ export class DockerSandboxes implements Sandboxes {
 		if (harness && (input.profile !== "docker-hardened" || input.screenshots))
 			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
 		const base = input.screenshots ? this.shotsImage : this.image;
-		const selected = input.fromSnapshot && !harness ? await new DockerSnapshots(this.machine, base, this.options.network, undefined, !!input.screenshots)
+		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)
 			.select(input.fromSnapshot, input.uid, input.profile).catch(() => null) : null;
 		const image = selected?.image ?? base;
 		const profile = findProfile(input.profile);
@@ -527,22 +528,28 @@ export class DockerSandboxes implements Sandboxes {
 		return id;
 	}
 
+	private snapshots(base = this.image, screenshots = false) {
+		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment);
+	}
+
+	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
+
 	async saveSnapshot(id: string, source: SnapshotSource) {
 		const found = await this.inspect(id);
 		if (!found || found.snapshot || this.options.sessionRelay) return false;
 		const name = containerName(id);
 		// Re-resolve the selected pin: a mutable tag may have moved during setup.
 		const base = found.screenshots ? this.shotsImage : this.image;
-		return new DockerSnapshots(this.machine, base, this.options.network, undefined, found.screenshots)
+		return this.snapshots(base, found.screenshots)
 			.save(name, found.uid, found.profile, source);
 	}
 
-	async sweepSnapshots(retained: (uid: string) => Promise<ReadonlySet<string>>) {
-		await new DockerSnapshots(this.machine, this.image, this.options.network).sweepOwners(retained);
+	async sweepSnapshots(retained: (uid: string) => Promise<ReadonlySet<string> | null>) {
+		if (this.machine || this.options.deployment) await this.snapshots().sweepOwners(retained);
 	}
 
 	async dropSnapshots(uid: string, repo?: string) {
-		await new DockerSnapshots(this.machine, this.image, this.options.network).drop(uid, repo);
+		if (this.machine || this.options.deployment) await this.snapshots().drop(uid, repo);
 	}
 
 	async connect(id: string): Promise<SandboxHandle | undefined> {
