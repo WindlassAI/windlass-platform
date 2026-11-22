@@ -3677,7 +3677,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 
 			// Nothing is kept until something is saved: the page is there all the same, named after the agent on it.
 			const empty = await user.repository(harbor.id);
-			assert(plain(empty.defaults) === plain(NONE) && empty.name === "ada/harbor" && empty.approvals.length === 0 && plain(empty.saved) === plain({ setup: false, secrets: 0, checks: 0 }), `before anything was saved: ${plain(empty)}`);
+			assert(plain(empty.defaults) === plain(NONE) && empty.name === "ada/harbor" && empty.approvals.length === 0 && plain(empty.saved) === plain({ setup: false, secrets: 0, checks: 0, network: 0 }), `before anything was saved: ${plain(empty)}`);
 			assert((await user.savedRepositories()).length === 0, "a repository is listed as having something saved");
 			for (const id of [0, -1, 1.5, "7", null]) await refused(() => user.repository(id as never), "bad_input");
 
@@ -3718,11 +3718,11 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			await refused(() => userOf(carol).githubRepository(vault.id), "github_denied");
 			// Its page opens for somebody who cannot reach it, with nothing of anybody else's on it.
 			const carols = await userOf(carol).repository(harbor.id);
-			assert(plain(carols.defaults) === plain(NONE) && carols.name === null && plain(carols.saved) === plain({ setup: false, secrets: 0, checks: 0 }), `another user's page of the same repository: ${plain(carols)}`);
+			assert(plain(carols.defaults) === plain(NONE) && carols.name === null && plain(carols.saved) === plain({ setup: false, secrets: 0, checks: 0, network: 0 }), `another user's page of the same repository: ${plain(carols)}`);
 
 			// All of it goes in one step, and the agent stays.
 			const cleared = await user.forgetRepository(harbor.id);
-			assert(plain(cleared.defaults) === plain(NONE) && plain(cleared.saved) === plain({ setup: false, secrets: 0, checks: 0 }) && cleared.approvals.length === 0, `after deleting what was saved: ${plain(cleared)}`);
+			assert(plain(cleared.defaults) === plain(NONE) && plain(cleared.saved) === plain({ setup: false, secrets: 0, checks: 0, network: 0 }) && cleared.approvals.length === 0, `after deleting what was saved: ${plain(cleared)}`);
 			assert((await user.repositorySetup(harbor.id)).command === "" && (await user.repositorySecrets({ repositoryId: harbor.id, profile: profile as never })).secrets.length === 0, "a setup command or a secret is still there");
 			assert((await user.savedRepositories()).length === 0 && (await user.listSessions()).some((session) => session.id === sessionId), "the list still names it, or the agent went with it");
 			assert(server.output.includes(`[wlp] defaults.saved uid=${alice.profile.uid} project=github:${harbor.id}`) && server.output.includes(`[wlp] repository.forgotten uid=${alice.profile.uid} project=github:${harbor.id}`), "the server did not log the saves and the deletion");

@@ -170,6 +170,9 @@ export const DNS_LOG = "/var/log/wlp-dns.log";
  * gave. Each name is written once, at most 2,000 names and 256 KiB; a name with anything but letters,
  * digits, "-" and "_" in a label is not written.
  *
+ * The guest script writes it to /run/wlp-dns.py, which root owns everywhere (a directory a tarball made,
+ * such as /usr/local/lib, may not be root's, and root without capabilities cannot write there).
+ *
  *   python3 -I wlp-dns.py <port> <log file>
  */
 export const DNS_STUB = `import os, re, select, socket, sys, time
@@ -291,10 +294,9 @@ else
   [ -f /etc/resolv.conf.wlp ] || cp /etc/resolv.conf /etc/resolv.conf.wlp
   printf 'nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n' > /etc/resolv.conf
   if ! running && command -v python3 >/dev/null 2>&1; then
-    mkdir -p /usr/local/lib /run
-    cat > /usr/local/lib/wlp-dns.py <<'WLP_DNS_STUB'
+    cat > /run/wlp-dns.py <<'WLP_DNS_STUB'
 ${DNS_STUB}WLP_DNS_STUB
-    setsid python3 -I /usr/local/lib/wlp-dns.py 53 ${DNS_LOG} </dev/null >/dev/null 2>&1 &
+    setsid python3 -I /run/wlp-dns.py 53 ${DNS_LOG} </dev/null >/dev/null 2>&1 &
     echo $! > /run/wlp-dns.pid
   fi
 fi

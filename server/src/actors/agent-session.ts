@@ -1212,7 +1212,7 @@ function connectOptions(meta: SessionMeta): { network?: string[] } {
 const MAX_HOSTS_NOTED = 40;
 
 /** The line that names a blocked host, and what can be done about it. */
-export function blockedHostNote(host: string, repository: string | null): string {
+function blockedHostNote(host: string, repository: string | null): string {
 	const what = `A command in this sandbox could not reach ${host}: this deployment's hosted sandboxes reach only the model API, GitHub and the hosts they are allowed.`;
 	return repository
 		? `${what} Allow it for ${repository} to let its hosted agents reach it, from this sandbox on. The agent and the repository's own scripts choose what a command looks up, so allow only a host you expect.`
