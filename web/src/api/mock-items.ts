@@ -1,4 +1,4 @@
-import { approvalText, featureCap, singleAfterPlanning, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { approvalText, featureCap, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
@@ -1365,7 +1365,34 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		null,
 	);
 
-	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding];
+	// 9. Mixed agents: the planner proposes Claude Code on Opus for the templates, which works without asking, and leaves the sender on the feature's Windlass model.
+	const mailPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Email a station's subscribers when a tide alert fires.",
+			requirements: ["One template per alert kind.", "A sender that retries a bounced address once."],
+			outOfScope: ["SMS."],
+			acceptance: ["`pnpm test src/mail` passes."],
+		},
+		[
+			{ key: "templates", title: "Write the alert email templates", brief: "One template per alert kind, with a plain-text part.", acceptance: ["Run `pnpm test src/mail/templates.test.ts`."], dependsOn: [], owns: ["src/mail/templates/**"], budget: { tokens: 900_000, turns: 4, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "nas", reason: "Claude Code is signed in there." }, agent: { harness: "claude", model: "opus", effort: "high" } },
+			{ key: "sender", title: "Send alerts to subscribers", brief: "Send each alert to the station's subscribers, retrying a bounce once.", acceptance: ["Run `pnpm test src/mail/send.test.ts`."], dependsOn: ["templates"], owns: ["src/mail/send/**"], budget: { tokens: 1_100_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "nas", reason: "Same machine as the templates." } },
+		],
+	);
+	const mail = feature(
+		{ n: 77, title: "Email tide alerts to subscribers", on: HARBOR, state: "waiting", filed: 9, body: "Subscribers want alerts by email.", acceptance: mailPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "plan_approval", text: approvalText(mailPlan), choices: choices("approve", "revise", "give_up"), asked: 3 },
+			run: { n: 1, started: 8, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 7 } },
+			events: [[8, "Started.", undefined, true], [7, "The planner's turn started.", [1, 1, "refine"]], [3, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 180_000, turns: 1, activeSeconds: 6 * 60, hostedSeconds: 0 } },
+		mailPlan,
+		null,
+	);
+
+	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
@@ -1578,6 +1605,9 @@ export function createMockItems(deps: MockItemsDeps) {
 			}
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
+				// An agent that works without asking runs only where the person confirmed it (blueprint.ts, `approveFeature`).
+				const unconfirmed = plan.subtasks.filter(s => unattendedKeys(plan).includes(s.key) && !action.agents?.includes(s.key));
+				if (unconfirmed.length) throw new PlatformError("user", unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(s.agent!.harness)}, which works without asking.`).join(" "), { reason: "bad_input" });
 				if (deps.checks && deps.checks(auth, item.repository.id) === 0) throw new PlatformError("user", "Use a single item or add saved repository checks before approving orchestration.", { reason: "bad_input" });
 				// Every remaining subtask's place is bound now, and refused as the server refuses it (factory/placement.ts, `approveRoutes`).
 				const inventory: PlacementInventory = placementInventory(auth);
@@ -1592,11 +1622,13 @@ export function createMockItems(deps: MockItemsDeps) {
 				// Refused for now (low disk, no available profile): approval stands, and the feature asks (blueprint.ts, `askPlacement`).
 				if (fit.refused !== undefined) return change(auth, item, { ...approved, wait: { reason: "person", sentence: fit.refused, since: at, retryAt: null },
 					question: { id: `${item.id}:placement${at}`, kind: "placement_refused", askedAt: at, text: `${sub.title}: ${fit.refused}`, choices: [{ id: "revise", label: "Revise the placement" }, { id: "again", label: "Retry allowed places" }, { id: "give_up", label: "Give up the subtask" }] } }, ["Approved the plan."], "person");
-				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
+				// The subtask's own agent and model: a machine agent never takes the feature's Windlass model (user-items.ts, `childAgent`).
+				const agentHarness = fit.decision.harness ?? "windlass";
+				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: "docker-hardened" as const }), ...(sub.agent?.model && { model: sub.agent.model }) });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
 					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
-					place: fit.decision.place, placement: fit.decision };
+					place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, sub.agent?.effort ?? (agentHarness === "windlass" && !sub.agent?.model ? item.agent?.effort : undefined)) };
 				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
 				return change(auth, item, { ...approved, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf),
@@ -1638,7 +1670,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					if (action.choice === "run_single") return act(auth, item, {kind:"run_single"});
 					if (action.choice === "orchestrate_anyway") return beginRun(auth,item,"Requested a split.");
 				}
-				if (current && action.choice === "approve") return act(auth,item,{kind:"approve_plan",version:plan.version});
+				if (current && action.choice === "approve") return act(auth,item,{kind:"approve_plan",version:plan.version,agents:action.agents});
 				if (current && action.choice === "revise") return beginRun(auth,item,"Revised the plan.");
 				const picked = question.choices.find((option) => option.id === action.choice);
 				if (!picked) throw conflict("That is not one of the question's answers.");

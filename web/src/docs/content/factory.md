@@ -70,7 +70,7 @@ Codex is not offered for work items yet: the **Agent** choice does not list it, 
 What changes with Claude Code or OpenCode:
 
 - **Where.** Only on your machine, in **Hardened Docker on your machine "…"**. Hosted items run Windlass.
-- **How it runs.** Only **Quick**. **Plan first** runs with Windlass, because its planner files the plan with a Windlass tool. Its subtasks also run with Windlass: a plan whose subtask needs Claude Code or OpenCode is refused.
+- **How it runs.** A Quick item runs Claude Code or OpenCode directly. A **Plan first** feature's planner runs with Windlass, because it files the plan with a Windlass tool, but each of its subtasks can run Claude Code or OpenCode: see [Each subtask's agent](#each-subtasks-agent).
 - **Asking.** An item has nobody watching it, so the agent works without asking. Claude Code runs in **Bypass permissions**. OpenCode runs in **Build**, and the platform allows once each edit or command it asks about, as Windlass runs commands in that container. The turn does not start if the agent does not offer that mode.
 - **Checks.** These agents do not run your repository's checks. CI decides the verdict, and the check on GitHub says "The turn left no record of its checks; CI decides."
 - **Review.** Items on a machine have no second reviewer, whatever the agent.
@@ -214,8 +214,9 @@ The planner reads what you wrote about your machines under [Say when to use it](
 When the plan is ready, the item waits under **Needs you**: "Its plan waits for your approval." Its page shows **It asks you**, "Review the plan: N subtasks, X tokens of the Y the feature may spend", and the plan below it.
 
 - Answer the plan's questions, if it has any.
-- Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. You can also change where it runs: see [Placement](#placement). **Allotted to subtasks** shows the proposed total against what the subtasks may share. Once children exist, it also shows their actual spend.
+- Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. You can also change where it runs, see [Placement](#placement), and which agent, model and effort it runs, see [Each subtask's agent](#each-subtasks-agent). **Allotted to subtasks** shows the proposed total against what the subtasks may share. Once children exist, it also shows their actual spend.
 - Choose **Save as version N** to keep your changes, or **Discard changes**.
+- Tick each subtask listed under **Agents that work without asking**, if there are any.
 - Choose **Approve version N** to start the subtasks.
 - Choose **Ask for a new plan** to have the planner try again, or **Give up**.
 
@@ -223,13 +224,32 @@ If approval is refused because the repository lacks checks or push CI, **Run as 
 
 ### Placement
 
-Each subtask says where it **runs on**: the place the planner prefers and why, and, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask runs only with Windlass: one that needs Claude Code or OpenCode is refused. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
+Each subtask says where it **runs on**: the place the planner prefers and why, and, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
 
 The approval card lists, under **Where each subtask runs**, each subtask's place, the planner's reason, its alternatives, whether overflow is allowed and, for every place, whether the repository's secrets are sent there: **secrets sent** or **no secrets**. This platform always gets them; a machine gets them only while its **Send saved secrets** switch is on. The planner may have read an issue anyone could file, so check this before you approve.
 
 While the plan is open you can change a subtask's place from your machines or this platform, its alternatives, and overflow, then save them with the budgets as the next version. A place the platform would refuse, for example a machine whose owner chose **Never** under [Let features use it](/docs/machines#let-features-use-it), or one without screenshots for a subtask that needs them, shows **can't place** and the reason. A refused approval shows the same reason under the subtask. A busy or offline machine is not refused: the subtask waits for it.
 
 Once a subtask has its item, its row says where it **ran on** and why, for example "nas · 2 slots" and "Approved overflow from ‘studio’". When the feature waits for a machine, the next subtask's row says which machine and for what, for example "Waiting for 2 free slots on ‘studio’. 0 free now."
+
+### Each subtask's agent
+
+Each subtask says which **agent** it runs, on which model and effort. The planner may propose one for each subtask. A subtask it proposes nothing for runs Windlass on the feature's model and effort, as the planner itself does.
+
+While the plan is open you can change each subtask's agent, model and effort. The menus offer only what the subtask's place offers:
+
+- **This platform** runs Windlass, on any model of your account.
+- **A machine of yours** also offers Claude Code and OpenCode where its runner reports them signed in. One that is not signed in is listed but can't be chosen. The models and efforts are the ones the machine reported for that agent.
+
+A subtask on Claude Code or OpenCode runs in the machine's hardened container, on its own model and effort. It never takes the feature's Windlass model: with no model chosen, it runs the agent's default. A choice the place does not offer, for example an agent the machine does not have or a model it does not list, shows **can't place** and the reason, and approval is refused the same way. If the machine changes after approval, for example the agent is signed out, the subtask can't be placed when the feature gets to it, and the feature asks you with the reason.
+
+**Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. So its choice of such an agent never runs on approval alone: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
+
+**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted, and the subtask's turns and working time bound it. Only counted tokens reach the feature's budget.
+
+**Usage limits.** A subtask waits only for its own agent's usage limits. When Claude Code is at its limit on the preferred machine and overflow is allowed, the subtask can run on an approved alternative whose Claude Code account is not.
+
+**Re-plans.** When the planner revises the plan after a subtask stops, each remaining subtask keeps the agent, model and effort you approved, whatever the planner proposes. Change it on the card if you want another.
 
 ### Budgets
 
@@ -239,13 +259,13 @@ When a feature reaches its budget, it stops and asks you. **Raise the limit and 
 
 ### Subtasks
 
-Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with the feature’s model, and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
+Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's Windlass model where it chose none), and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
 
 A subtask opens no pull request of its own. It pushes its branch, and joins the feature only when its checks pass and CI passes on its commit. The platform then moves the feature's branch forward to it. If the feature's branch moved meanwhile, the subtask rebases onto it and is checked again.
 
 Subtasks are not listed on the Factory page unless they ask you something.
 
-If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are. You review and approve the revised plan again. A feature can be revised this way twice.
+If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again. A feature can be revised this way twice.
 
 ### The pull request
 

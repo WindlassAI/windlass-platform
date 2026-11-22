@@ -1,5 +1,6 @@
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
+import type { AgentModels } from "../factory/placement.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
  *
@@ -1480,6 +1481,24 @@ export const user = actor({
 			}
 		},
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
+		/**
+		 * The models a subtask's agent may choose, by the lists `makeSession` holds a session to: the account's
+		 * for Windlass, each machine harness's catalog (or only its default where its runner reported none).
+		 * A list that cannot be read is left out, and the child's creation judges it.
+		 */
+		internalAgentModels: async (c): Promise<AgentModels> => {
+			requireService(c);
+			const profile = c.vars.profile;
+			const windlass = profile ? await modelsOf(c, profile.demo).catch(() => null) : null;
+			const machines: NonNullable<AgentModels["machines"]> = {};
+			for (const m of c.vars.machines.values()) for (const h of m.harnesses ?? []) {
+				if (!machineHarnesses[h.id]?.items) continue;
+				const options = h.optionsDigest ? await machineCatalog(c, m.machineId, h.id, h.optionsDigest).catch(() => null) : undefined;
+				if (options === null) continue;
+				(machines[m.machineId] ??= {})[h.id] = initialHarnessModels(options);
+			}
+			return { windlass, machines };
+		},
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),

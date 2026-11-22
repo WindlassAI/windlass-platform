@@ -86,3 +86,11 @@ export function itemSignInMessage(profile: AcpProfile, machine: string, signIn: 
 	if (signIn === "none") return machineLoginMessage(profile, machine);
 	return `“${machine}” could not say whether ${profile.name} is signed in there, and a work item runs only where it is. Check that Docker runs there, or run windlass-runner login ${profile.id} there.`;
 }
+
+/**
+ * Whether a work item's agent works without asking: every machine harness a work item may run does, since
+ * nobody answers an item's questions (`itemMode`). Windlass asks before what its sandbox cannot contain.
+ */
+export function worksWithoutAsking(id: HarnessId | undefined): boolean {
+	return machineHarness(id)?.items === true;
+}

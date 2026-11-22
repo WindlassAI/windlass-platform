@@ -28,7 +28,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AuthResult, ItemSummary, ItemView, PlatformInfo } from "../server/src/contract.js";
+import { machineLabel, type AuthResult, type ItemSummary, type ItemView, type PlatformInfo } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner } from "./runner-standin.js";
 import { optionsDigest } from "../server/src/runner/catalog.js";
@@ -1736,6 +1736,58 @@ async function machineChecks(): Promise<void> {
 				await user.actOnItem({ id: plain.id, action: { kind: "cancel" } });
 				return `refused ${refusals.length} unknown efforts (${refusals[0]}); Claude Code set effort high before its prompt; Windlass's turn ran at xhigh`;
 			} finally {
+				runner.fake.report.harnesses = harnesses;
+				runner.report();
+			}
+		});
+
+		await check("machine: a Plan-first plan with mixed agents is approved only with the owner's confirmation, and its Claude Code child starts on its own model", async () => {
+			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }, { id: "sonnet", name: "Sonnet", efforts: ["low", "high"] }], checkedAt: Date.now(), modes: [] };
+			const harnesses = runner.fake.report.harnesses;
+			runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token", options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt }];
+			runner.report();
+			let feature: ItemSummary | undefined;
+			try {
+				await waitFor("the reported Claude Code options", async () => (await user.machines())[0]?.harnesses?.[0]?.optionsDigest === optionsDigest(options), 15_000);
+				await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
+				if (standin.fileOn(harbor, "main", ".github/workflows/build.yml") === null)
+					standin.commit(harbor, "main", { ".github/workflows/build.yml": "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n" }, "Run build on push");
+				const machine = (await user.machines()).find(m => m.machineId === place.machineId)!;
+				// The planner (Windlass, hosted) files its plan; the owner moves the first subtask to Claude Code on Sonnet on the machine.
+				const filed = await user.createItem({ repository: { id: harbor.id }, title: "Mixed agents", body: "Index and search documents.", mode: "orchestrate", start: true });
+				feature = filed;
+				const proposal = await untilItem(user, filed.id, "the planner's proposal", v => v.plan?.status === "proposed" && v.question?.kind === "plan_approval");
+				const plan = structuredClone(proposal.plan!);
+				plan.subtasks[0] = { ...plan.subtasks[0]!, place: { prefer: machineLabel(machine), reason: "Claude Code is signed in there" }, agent: { harness: "claude", model: "sonnet", effort: "high" } };
+				// What the place does not offer is refused at approval with the reason: a model its catalog does not list.
+				const offPlan = structuredClone(plan);
+				offPlan.subtasks[0]!.agent = { harness: "claude", model: "opus" };
+				const off = await user.actOnItem({ id: filed.id, action: { kind: "edit_plan", version: proposal.plan!.version, plan: offPlan } });
+				const notOffered = await refused(() => user.actOnItem({ id: filed.id, action: { kind: "approve_plan", version: off.plan!.version, agents: [plan.subtasks[0]!.key] } }), "bad_input");
+				assert(/Claude Code: That model is not offered/.test(notOffered), notOffered);
+				const edited = await user.actOnItem({ id: filed.id, action: { kind: "edit_plan", version: off.plan!.version, plan } });
+				assert(/works without asking/.test(edited.question?.text ?? ""), "the approval text does not name the agent that works without asking: " + edited.question?.text);
+				// The planner's choice of an agent that works without asking is never approved without the owner naming it.
+				const unconfirmed = await refused(() => user.actOnItem({ id: filed.id, action: { kind: "approve_plan", version: edited.plan!.version } }), "bad_input");
+				assert(/confirm that it runs Claude Code, which works without asking/.test(unconfirmed), unconfirmed);
+				const sent = runner.acpInput.length;
+				await user.actOnItem({ id: filed.id, action: { kind: "approve_plan", version: edited.plan!.version, agents: [plan.subtasks[0]!.key] } });
+				const running = await untilItem(user, filed.id, "the first child", v => v.children?.length === 1, 60_000);
+				const child = running.children![0]!;
+				assert(child.agent?.harness === "claude" && child.agent.model === "sonnet" && child.agent.effort === "high" && child.placement?.harness === "claude", JSON.stringify({ agent: child.agent, placement: child.placement }));
+				const builder = (await user.listSessions()).find(s => s.id === child.sessionId);
+				assert(builder?.harness === "claude" && builder.model === "sonnet" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions", JSON.stringify(builder && { harness: builder.harness, model: builder.model, profile: builder.profile, mode: builder.mode }));
+				// Its first turn runs on Claude Code: the effort, then the subtask's brief as the prompt.
+				const frames = await waitFor("the Claude Code child's prompt", async () => {
+					const all = runner.acpInput.slice(sent).join("").split("\n").filter(Boolean).map(line => JSON.parse(line));
+					return all.some(f => f.method === "session/prompt") ? all : null;
+				}, 60_000);
+				const prompt = frames.find(f => f.method === "session/prompt")?.params?.prompt?.[0]?.text ?? "";
+				assert(prompt.includes(plan.subtasks[0]!.brief), "the subtask's brief did not reach Claude Code");
+				assert(frames.some(f => f.method === "session/set_config_option" && f.params?.configId === "effort" && f.params?.value === "high"), "the subtask's effort was not set");
+				return `approval refused without the owner's confirmation ("${unconfirmed}"); child on Claude Code ${builder.model} in ${builder.profile}`;
+			} finally {
+				if (feature) await user.actOnItem({ id: feature.id, action: { kind: "cancel" } }).catch(() => undefined);
 				runner.fake.report.harnesses = harnesses;
 				runner.report();
 			}

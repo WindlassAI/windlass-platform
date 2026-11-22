@@ -799,6 +799,22 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	return selected;
 }
 
+/** The refusals of a child's creation that no retry cures until the person changes the plan or the machine. */
+const CHILD_REFUSALS = new Set(["bad_input", "bad_model", "bad_effort", "bad_profile", "harness_signed_out"]);
+
+/**
+ * The model and effort a subtask's item is made with. Windlass runs the feature's model and effort unless
+ * the subtask chose its own model (then only the effort chosen with it). A machine harness never takes the
+ * feature's Windlass model: its own choice, or nothing, which is the agent's default.
+ */
+export function childAgent(task: Pick<PlanSubtask, "agent">, placement: Pick<ChildPlacement, "harness">, featureModel: string, featureEffort: string | null | undefined): { model?: string; effort?: string } {
+	const chosen = task.agent;
+	if ((placement.harness ?? "windlass") !== "windlass") return { ...(chosen?.model && { model: chosen.model }), ...(chosen?.effort && { effort: chosen.effort }) };
+	if (chosen?.model) return { model: chosen.model, ...(chosen.effort && { effort: chosen.effort }) };
+	const effort = chosen?.effort ?? featureEffort;
+	return { model: featureModel, ...(effort && { effort }) };
+}
+
 const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
 	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession): Promise<ItemView | null> {
@@ -831,9 +847,19 @@ export const itemActions = {
 				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
 					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
-				existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
-					profile: placement.profile, model: session.model, ...(feature.agent?.effort && { effort: feature.agent.effort }), title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-					{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
+				const agent = childAgent(job.task, placement, session.model, feature.agent?.effort);
+				try {
+					existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
+						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
+						{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
+				} catch (error) {
+					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
+					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.
+					if (!(error instanceof UserError) || !CHILD_REFUSALS.has(error.code) || c.vars.sessions.has(itemSessionId(input.child)) || !job.dispatchKey) throw error;
+					await c.db.execute("DELETE FROM child_launch WHERE id=?", job.id);
+					await parentActor.internalFact({ kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(), sentence: `‘${placement.name}’: ${error.message}`, refused: true });
+					return null;
+				}
 			}
 			if (!existing || existing.parent?.itemId !== input.parent) return null;
 			const actor = itemActor(c, uid, existing.id);

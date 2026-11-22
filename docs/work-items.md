@@ -140,15 +140,15 @@ installation has accepted them, an item waits for no CI: it is handed over sayin
 the agent reported for the item's model (`checkItemEffort` in `server/src/account-models.ts`; a machine
 harness model whose efforts come only once selected takes one reported for any model), else `bad_effort`.
 It is kept on the session's `origin.effort` and on `ItemAgent.effort`; a Plan-first feature's children
-take the feature's. Left out, a builder runs at its agent's default and a planner at `plannerEffort`.
+take their subtask's agent choice, or the feature's (see [Subtask agents](#subtask-agents)). Left out, a builder runs at its agent's default and a planner at `plannerEffort`.
 
 `CreateItemInput.harness` picks the builder: `windlass` (the default), or a machine harness by id
 (`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in (`signIn: "token"`; `makeSession` refuses
 "none" and "unknown"). Each item turn checks the machine's report again before its sandbox opens
 (`itemSignInRefusal` in `agent-session.ts`): a signed-out agent refuses the turn, and the item asks
 with the login hint.
-A machine harness runs only Quick, only on a machine, in `docker-hardened`. A Plan-first subtask's
-`needs.harness` other than `windlass` is refused by plan validation and by placement (`machineAgentRefusal`). It starts every turn in
+A machine harness runs Quick items and Plan-first subtasks ([Subtask agents](#subtask-agents)), never a
+planner, only on a machine, in `docker-hardened`. It starts every turn in
 its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `build`), and the ACP
 harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
 agent still asks for is allowed once. The reviewer stays Windlass and runs only hosted, so these
@@ -208,6 +208,48 @@ this inventory and the available machine capacity. A subtask needs a feasible, a
 Runners that report per-slot capacity support multi-slot subtasks. At dispatch, a busy or offline destination can wait.
 A removed or disallowed destination asks the owner to revise the placement, retry allowed places or give up the subtask.
 Update the server before runners so it accepts the optional slot fields in the hello and inventory report. Older runners can keep serving single-slot work. `WLP_FACTORY_ORCHESTRATE=0` hides the filing control and blocks new orchestrated filings.
+
+### Subtask agents
+
+`PlanSubtask.agent` (`SubtaskAgent` in `server/src/contract.ts`) is `{ harness, model?, effort? }`. The
+planner may propose it (`file_plan`'s `agent`; the inventory it is given lists `windlassModels` and each
+machine's `agentModels`), and the owner may change it with `edit_plan`. `validatePlan` (`agentOf` in
+`server/src/factory/feature-plan.ts`) takes `windlass`, `claude` and `opencode`, refuses Codex
+(`itemHarnessProblem`), and drops a Windlass choice with no model or effort, which inherits the feature's.
+An older plan's `needs.harness` is read as the agent. A machine harness with `needs.profile` other than
+`docker-hardened` is refused.
+
+Placement (`agentFit` in `server/src/factory/placement.ts`) refuses permanently, at approval and at
+dispatch: a machine harness on hosted; a machine that does not report it, reports it not signed in
+(`signIn` other than `"token"`) or does not allow `docker-hardened`; and a model or effort outside the
+lists in `PlacementInventory.models` (`agentModelProblem`, the same `chosenModel` and `checkItemEffort` a
+session is held to). `work-item.ts` fills those lists from the user actor's `internalAgentModels`: the
+account's models for Windlass, each machine harness's catalog, or only its default where it reported none.
+A list it cannot read is left out and the child's creation judges it. A placed machine-harness child has
+`ChildPlacement.harness` and the hardened profile. Usage limits apply only where `limited[].harness` is
+the subtask's agent, so overflow routes among accounts of that agent.
+
+The child is made (`internalFeatureChild`, `childAgent` in `server/src/actors/user-items.ts`) with its
+own harness, model and effort. A machine harness never gets the parent's Windlass model: its choice or
+nothing (the agent's default). A Windlass subtask with no model runs the feature's model and effort; one
+with a model runs only the effort chosen with it. A refusal of the child's session before it exists
+(`bad_input`, `bad_model`, `bad_effort`, `bad_profile`, `harness_signed_out`) deletes the `child_launch`
+pin and sends `placement_wait` with `refused`, so the feature asks `placement_refused` with the reason;
+any other failure is retried. The child's budget counts by its agent (`itemTokens`, `unmeasuredTurn`), and
+only counted tokens reach the feature through `child_update`.
+
+Approval: `approve_plan` (and `answer` with `approve`) carries `agents`, the keys the owner confirmed.
+`approveFeature` refuses (`bad_input`, "<title>: confirm that it runs Claude Code, which works without
+asking.") unless it names every subtask still to run whose agent works without asking
+(`unattendedKeys`, `worksWithoutAsking`). The planner reads untrusted issue text, so its choice of such an
+agent is never approved without that confirmation; `approvalText` names each subtask's agent and says so.
+The web card lists them under **Agents that work without asking** and keeps **Approve** disabled until
+each is ticked. A re-plan's `file_plan` copies each approved subtask's agent, by key, over the
+planner's; only `edit_plan` changes it.
+
+```sh
+cd server && npx tsx ../scripts/orchestrator-check.ts   # mixed agents through approval and child creation, refusals, routing, re-plans
+```
 
 ## The second review
 

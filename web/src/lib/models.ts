@@ -50,7 +50,7 @@ export function modelsNoteShort(list: ModelList): string {
 }
 
 /** What a machine's runner may report of a harness's options beside it: read as optional, so that a runner that reports none, and a summary without the field, read as nothing. */
-interface ReportedOptions {
+export interface ReportedOptions {
 	models?: ModelChoice[];
 	defaultModel?: string;
 	modes?: SessionMode[];
