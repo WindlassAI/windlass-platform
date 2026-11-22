@@ -8,12 +8,19 @@ case "$stack" in
   *) exit 2 ;;
 esac
 root=$(git rev-parse --show-toplevel)
-mkdir -p "$root/.data/selfhost"
-file="$root/.data/selfhost/$stack.env"
+# SELFHOST_ENV_DIR keeps the stack and server env files outside every checkout (mode 700).
+dir=${SELFHOST_ENV_DIR:-$root/.data/selfhost}
+mkdir -p -- "$dir"
+dir=$(cd -- "$dir" && pwd)
+[[ -z ${SELFHOST_ENV_DIR:-} ]] || chmod 700 -- "$dir"
+if [[ $stack == live ]] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Warning: $dir is inside a Git checkout. Set SELFHOST_ENV_DIR to a private directory outside every checkout." >&2
+fi
+file="$dir/$stack.env"
 admin_token=$(openssl rand -hex 32)
 signing_secret=$(openssl rand -hex 32)
 release=$(git rev-parse --short HEAD)
-tmp=$(mktemp "$root/.data/selfhost/init.XXXXXXXX")
+tmp=$(mktemp "$dir/init.XXXXXXXX")
 trap 'rm -f -- "$tmp"' EXIT
 {
   echo "COMPOSE_PROJECT_NAME=wlp-$stack"
@@ -37,6 +44,7 @@ trap 'rm -f -- "$tmp"' EXIT
   echo "SELFHOST_RELEASE=$release"
   echo "RIVET_NODE_VERSION=1"
   echo "SELFHOST_ISSUER_GENERATION=1"
+  if [[ -n ${SELFHOST_ENV_DIR:-} ]]; then echo "SELFHOST_SERVER_ENV_FILE=$dir/wlp-$stack.server.env"; fi
 } > "$tmp"
 ln -- "$tmp" "$file"
 echo "Created $file"
