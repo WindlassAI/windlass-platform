@@ -199,7 +199,7 @@ import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf 
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { turnTokens } from "../factory/budget.js";
+import { agentTurn, turnTokens } from "../factory/budget.js";
 import { reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
@@ -217,7 +217,7 @@ import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
@@ -1318,6 +1318,38 @@ function megabytes(bytes: number): string {
 const FRESH_WORKSPACE =
 	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. A repository that was cloned has been cloned again, with whatever of your work had been pushed to its branch; anything else you created or changed earlier is not in it. Look at what is there before you rely on earlier work.]\n\n";
 
+/**
+ * Why an item's turn on a machine harness cannot start: the machine's last report does not offer the
+ * agent, or does not say it is signed in (`signIn` "token", as filing requires). Null where it can, and for
+ * Windlass. A machine that cannot be asked is left to the turn, which waits for it.
+ */
+async function itemSignInRefusal(c: Ctx, meta: SessionMeta): Promise<string | null> {
+	const machine = machineHarness(meta.harness);
+	if (!machine || meta.place.kind !== "machine") return null;
+	const facts = await runnerLink(c, meta.place.machineId).facts().catch(() => null);
+	if (!facts?.report) return null;
+	const offered = facts.report.harnesses?.find(entry => entry.id === machine.id);
+	if (!offered) return `This machine does not offer ${machine.name}.`;
+	return itemSignInMessage(machine, facts.name, offered.signIn);
+}
+
+/** The platform's notes before an item's ACP prompt, as the Windlass turn has them, and how to mark them told. */
+function acpItemNotes(meta: SessionMeta): { text: string; told(): void } {
+	const prepared = meta.snapshotCommit ?? null;
+	const fresh = meta.freshWorkspace === true;
+	const unfinished = meta.setupUnfinished ?? null;
+	const onBase = meta.setupOnBase ?? null;
+	return {
+		text: (prepared ? snapshotPrompt(prepared) : "") + (fresh ? FRESH_WORKSPACE : "") + (unfinished ? setupNote(unfinished) : "") + (onBase ? setupOnBaseNote(onBase) : ""),
+		told() {
+			if (fresh) meta.freshWorkspace = false;
+			if (unfinished && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
+			if (prepared && meta.snapshotCommit === prepared) meta.snapshotCommit = null;
+			if (onBase && meta.setupOnBase === onBase) meta.setupOnBase = null;
+		},
+	};
+}
+
 async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<boolean> {
 	const backups = layer.backups;
 	const saved = meta.backup;
@@ -1775,7 +1807,7 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	if (due.branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
 	const base = due.setupBase ?? repo.branch;
-	if (due.setUp && capabilitiesOf(meta.harness).events === "windlass") meta.setupOnBase = { branch: due.branch, base };
+	if (due.setUp && (capabilitiesOf(meta.harness).events === "windlass" || meta.origin)) meta.setupOnBase = { branch: due.branch, base };
 	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
@@ -3331,7 +3363,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const startedAt = Date.now();
 	const turn = active.number;
 	const effort = active.effort;
-	const mode = meta.origin ? undefined : meta.mode;
+	// A work item keeps its profile's approval (Windlass), or its agent's mode that never asks (harnesses.ts, `itemMode`).
+	const mode = meta.origin ? machineHarness(meta.harness)?.itemMode : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
 	const signal = active.controller.signal;
@@ -3403,7 +3436,13 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}, TURN_TIMEOUT_MS);
 
 		layer = await layerOf(c, meta);
-		if (meta.origin && meta.harness && meta.harness !== "windlass") throw new TurnProblem("Work items and their reviewers run only with Windlass.");
+		if (reviewer && meta.harness && meta.harness !== "windlass") throw new TurnProblem("A work item's reviewer runs only with Windlass.");
+		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
+		const signedOut = active.item ? await itemSignInRefusal(c, meta) : null;
+		if (signedOut) {
+			active.item!.refused = signedOut;
+			throw new TurnProblem(signedOut);
+		}
 		if (reviewer && (!checkout || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
 			const reason = REVIEW_PROFILE_REASON;
 			if (active.item) active.item.refused = reason;
@@ -3453,8 +3492,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			},
 		};
 		if (!signal.aborted && caps.events === "acp") {
+			// An item's agent is told what Windlass is told of its workspace: what setup left and whether it is a new one. Told once.
+			const notes = active.item ? acpItemNotes(meta) : null;
 			result = await harness.runTurn(sandbox, {
 				...common,
+				...(notes && { prompt: notes.text + text, unattended: true }),
 				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: active.secrets.redactor },
 				harnessModels: meta.harnessModels,
 				onAcpNote: text => {
@@ -3472,6 +3514,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 					void persist(c);
 				},
 			});
+			// The agent took the prompt once it answered it.
+			if (notes && result.acp?.stopReason) notes.told();
 		} else if (!signal.aborted) {
 			// Told once: with the first prompt Windlass takes in the new sandbox.
 			const prepared = meta.snapshotCommit;
@@ -3701,7 +3745,8 @@ fi`, { signal, timeoutMs: 5000 });
 	try {
 		const caps = capabilitiesOf(meta.harness);
 		const summary = result?.summary ?? null;
-		const usage = usageOf(summary?.usage);
+		// Windlass's summary event, or what an ACP agent answered its prompt with.
+		const usage = usageOf(summary?.usage) ?? result?.acp?.tokens ?? null;
 		// Settle all reported requests before this turn's completion can admit more work.
 		if (usesPlatformModel(meta.place, meta.harness)) {
 			await serial(c, () => writeItems(c));
@@ -3849,7 +3894,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
-		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [] });
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -4194,7 +4239,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.reviewBase = row.checkout.baseSha;
 		}
 		const planning = row.agent === "planner" || row.agent === "summary";
-		const effort = planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null;
+		// The item's own effort (`CreateItemInput.effort`) for every turn of it; otherwise a planner's is high where its model offers it, a builder's the agent's default.
+		const effort = meta.origin?.effort ?? (planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null);
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
@@ -4271,7 +4317,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
  * used), and its slot is given back, both in one transaction with the meta. A turn whose sandbox could
  * not be had because the deployment's are all in use waits for a slot again instead.
  */
-async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[] }): Promise<void> {
+async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
 	const { row } = item;
 	if ((item.full !== null || item.machineAway) && !item.started) {
 		await serial(c, () =>
@@ -4294,7 +4340,8 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
+		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart);
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent), pushedHead, ...(item.refused ? { refused: item.refused } : {}) };
 	}
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (attachmentStore()) {

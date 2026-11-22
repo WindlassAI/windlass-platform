@@ -130,7 +130,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
+import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
@@ -140,8 +140,8 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
-import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
+import { itemHarnessProblem, itemSignInMessage, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
@@ -951,9 +951,11 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
 	const size = item?.size ?? input.size ?? 1;
 	const harness = input.harness === undefined ? "windlass" : input.harness;
-	if (harness !== "windlass" && harness !== "claude" && harness !== "opencode" && harness !== "codex") throw new UserError("Choose an available harness.", { code: "bad_input" });
+	if (knownHarness(harness) === null) throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
-		if (item) throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
+		if (item?.role === "reviewer") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
+		const notForItems = item ? itemHarnessProblem(harness) : null;
+		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
 		if (input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
 		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
@@ -1006,6 +1008,9 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
+		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
+		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
+		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -1026,6 +1031,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		}
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
+		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
+		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -1051,7 +1058,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }) } } : {}),
 			...(!item && size > 1 && { size }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
@@ -1211,6 +1218,8 @@ export const user = actor({
 				)
 			`);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
+			// A retry series for the webhook directories after a failed update (user-github.ts).
+			await db.execute(GITHUB_SYNC_TABLE);
 			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
 			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
 			await db.execute(`
@@ -1391,6 +1400,8 @@ export const user = actor({
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
 			try {
+				// A series whose next try was set and not stored would block every later one: wake starts afresh.
+				await c.db.execute("DELETE FROM github_sync");
 				await syncGithubWebhooks(c, c.key[0]);
 			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
 		}
@@ -1745,7 +1756,7 @@ export const user = actor({
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
-			await replaceGithubConnection(c, profile.uid, connection);
+			await replaceGithubConnection(c, profile.uid, connection, confirmed.readAt);
 			c.vars.reached = true;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
@@ -2198,6 +2209,11 @@ export const user = actor({
 		internalUpdateGithubInstallation: async (c, change: InstallationChange) => {
 			requireServiceFor(c, "call");
 			await updateGithubInstallation(c, c.key[0], change);
+		},
+
+		[GITHUB_SYNC.action]: async (c, attempt: number) => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			await retryGithubSync(c, c.key[0]!, c.scheduledFire.id, attempt);
 		},
 
 		/** The connection, for a session that is about to clone or push. */

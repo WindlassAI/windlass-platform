@@ -6,6 +6,10 @@ import type { ChildPlacement, EgressMode, FeaturePlanEdit, MachineSummary, Place
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
+import { harnessName } from "../sandbox/harnesses.js";
+
+/** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
+const HARNESS_PROFILE = "docker-hardened" as const;
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
@@ -68,6 +72,15 @@ export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "
 		unit: { cpus: machine.host?.sandboxCpus ?? 0, memoryBytes: 1.5 * GiB } };
 }
 
+/**
+ * Plan-first children run only with Windlass, for now: a child is made with the feature's Windlass model,
+ * and the approval does not name an agent that works without asking. When they can: the agent signed in
+ * (signIn "token"), in the HARNESS_PROFILE the owner allows (the profile choice in `candidate` is ready).
+ */
+function machineAgentRefusal(needs: PlacementNeeds): string | null {
+	return needs.harness && needs.harness !== "windlass" ? `a Plan-first subtask runs only with Windlass, not ${harnessName(needs.harness)}` : null;
+}
+
 /** What the machine cannot do at all, from its last report. Kept while it is offline. */
 function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 	const tags = new Set([...machine.tags, machine.os, machine.arch, "os:" + machine.os, "arch:" + machine.arch, "harness:windlass",
@@ -76,10 +89,8 @@ function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 	if (missing) return `missing tag ‘${missing}’`;
 	if (needs.screenshots && !machine.screenshots) return "screenshots are unavailable";
 	if (machine.egress === "none" || (needs.egress && needs.egress !== machine.egress)) return "the egress policy does not support this repository task";
-	if (needs.harness && needs.harness !== "windlass") {
-		if (!machine.harnesses?.some(h => h.id === needs.harness && h.signIn === "token")) return `${needs.harness} is not signed in`;
-		return "work items currently require Windlass";
-	}
+	const agent = machineAgentRefusal(needs);
+	if (agent) return agent;
 	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${needs.profile} profile`;
 	return null;
 }
@@ -119,7 +130,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const units = sandboxSlots(needed, slots.max ?? 1);
 	// A machine that has never reported is judged when it connects. One that has keeps its last report.
 	const reported = m.online || m.egress !== undefined;
-	const incapable = reported ? capabilityFit(m, needs) : null;
+	const incapable = machineAgentRefusal(needs) ?? (reported ? capabilityFit(m, needs) : null);
 	if (incapable) return never(incapable);
 	if (limited) return waiting(limited, m.name);
 	if (tokenWait) return { wait: tokenWait, dailyCap: true };
@@ -127,12 +138,14 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (needs.cpus && slots.unit.cpus <= 0) return notNow("per-slot CPU capacity is unknown");
 	if ((m.freeDiskBytes ?? 0) < 5 * GiB) return notNow("at least 5 GiB of reported free disk is required");
 	const allowed = m.availableProfiles.filter(p => m.allowedProfiles?.some(id => id === p));
-	const profile = needs.profile ? allowed.find(p => p === needs.profile) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
+	const machineHarness = needs.harness && needs.harness !== "windlass" ? needs.harness : null;
+	const wanted: SandboxProfileId | undefined = needs.profile ?? (machineHarness ? HARNESS_PROFILE : undefined);
+	const profile = wanted ? allowed.find(p => p === wanted) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
 	if (!profile) return notNow("no available owner-allowed profile matches");
 	// An older online runner may have no concurrency cap. Award only one known slot in that case.
 	const free = slots.max === null ? 1 : Math.max(0, slots.max - slots.busy);
 	if (free < units) return { wait: slotWait(m.name, units, free) };
-	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile },
+	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile, ...(machineHarness && { harness: machineHarness }) },
 		score: bonus + Math.min(free, 3) - slots.queued - m.personalRunning };
 }
 

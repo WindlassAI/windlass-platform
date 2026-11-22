@@ -78,6 +78,13 @@ export const scenarios = {
 			yield { sessionUpdate: "plan", entries };
 		}
 	},
+	// A work item's turn: an edit and a test command, each asked about, then the turn's tokens in the prompt answer.
+	*itemwork() {
+		const edit = yield { permission: { toolCall: call("edit", "Edit src/index.ts"), options: permissionOptions } };
+		const test = yield { permission: { toolCall: call("execute", "npm test"), options: permissionOptions } };
+		yield message(`Answered: ${edit.optionId ?? edit.outcome}, ${test.optionId ?? test.outcome}.`);
+		return { stopReason: "end_turn", usage: { inputTokens: 1000, outputTokens: 400, thoughtTokens: 100, cachedReadTokens: 30000, cachedWriteTokens: 2000, totalTokens: 33500 } };
+	},
 	*usage() {
 		yield { sessionUpdate: "usage_update", used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } };
 	},

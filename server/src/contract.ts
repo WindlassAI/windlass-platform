@@ -1584,7 +1584,32 @@ export interface RoundCaps {
 }
 
 /** An item as the user's index lists it. */
+/** Which agent an item's builder runs, on which model, and what that agent said it used. */
+export interface ItemAgent {
+	harness: HarnessId;
+	/** The builder session's model: one of the account's for Windlass, the agent's own id ("sonnet") or "default" for a machine harness. */
+	model: string;
+	/** The effort its turns run at (`CreateItemInput.effort`); null or absent: the agent's default. */
+	effort?: string | null;
+	/**
+	 * How the item's tokens are known.
+	 * - "counted": reported, and counted against `budget.tokens` (Windlass; an agent on an API key).
+	 * - "subscription": reported and shown, never counted: the agent's sign-in is a subscription, not billed
+	 *   by token, so the item's turns and active time bound it.
+	 * - "not_reported": the agent has reported none (yet): `spent.tokens` is not a measurement.
+	 */
+	tokens: "counted" | "subscription" | "not_reported";
+	/** Every token the agent reported over the item's turns, counted or not. */
+	reportedTokens: number;
+	/** The cost the agent reported for its conversation so far (OpenCode's `usage_update.cost`); null where it reported none. */
+	cost: { amount: number; currency: string } | null;
+	/** Claude Code's 5-hour window, % used, at the start of the item's first turn and at the end of its latest. */
+	fiveHour: { first: number; latest: number } | null;
+}
+
 export interface ItemSummary {
+	/** Absent for items filed before agents could be chosen: Windlass. */
+	agent?: ItemAgent;
 	placement?: ChildPlacement;
 	mode?: ItemMode;
 	parent?: { itemId: string; key: string; title: string } | null;
@@ -1686,6 +1711,8 @@ export interface ChildPlacement {
 	units: number;
 	sendSecrets: boolean;
 	profile?: SandboxProfileId;
+	/** A machine harness the subtask asked for (`needs.harness`); absent: Windlass. */
+	harness?: HarnessId;
 }
 
 export interface PlanSubtask {
@@ -1730,7 +1757,20 @@ export interface CreateItemInput {
 	acceptance?: string[];
 	/** The agent's sandbox profile and model. A hosted item uses the usual defaults. */
 	profile?: SandboxProfileId;
+	/** One of the account's models for Windlass; for a machine harness one its machine reported (`HarnessOptions.models`). Left out: the agent's default. */
 	model?: string;
+	/**
+	 * The reasoning effort of every turn of the item's builder: one its agent reported for the item's model
+	 * (`ModelChoice.efforts`; for a machine harness model whose efforts it reports only once selected, one it
+	 * reported for any model). Left out: the agent's default. Refused (`bad_effort`) otherwise.
+	 */
+	effort?: string;
+	/**
+	 * The builder's agent: "windlass" (the default), or a harness the chosen machine reports and is signed
+	 * into (`MachineSummary.harnesses`), which runs in its hardened container. Not on hosted, not with Plan
+	 * first. The reviewer, hosted only, stays Windlass.
+	 */
+	harness?: HarnessId;
 	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
 	place?: SandboxPlace;
 	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */

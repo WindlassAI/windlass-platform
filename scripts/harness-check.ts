@@ -21,8 +21,8 @@ function typedField(update: AcpUpdate): string | undefined {
 	if (update.sessionUpdate === "tool_call") return update.toolCallId;
 	if (update.sessionUpdate === "current_mode_update") return update.currentModeId;
 }
-const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = false;
-assert.equal(itemHasHarness, false);
+const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = true;
+assert.equal(itemHasHarness, true);
 assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
 
 // Claude Code's task tools keep their list in the adapter's process, which lives one turn: a task finished
@@ -334,6 +334,7 @@ async function clientCheck(state: string) {
 		options: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan", description: "Plan only" }] });
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
+	const answers: unknown[] = [];
 	const updates: AcpUpdate[] = [];
 	const sandbox = {
 		profile: "docker-hardened", cwd: "/workspace",
@@ -397,6 +398,7 @@ async function clientCheck(state: string) {
 				write(line: string) {
 					const frame = JSON.parse(line);
 					methods.push(frame.method);
+					if (frame.method === undefined && frame.result?.outcome) answers.push(frame.result.outcome);
 					if (variant === "codex-signed-out") {
 						if (frame.method === "initialize") {
 							assert.equal(frame.params.clientCapabilities.auth._meta.gateway, true);
@@ -528,6 +530,44 @@ async function clientCheck(state: string) {
 	assert.match(unavailable.failure?.message ?? "", /does not offer effort/);
 	ok("the first prompt uses the adapter's default and an unsupported effort is refused");
 
+	// A work item's turn: nobody answers it, so it runs in the mode that never asks, and allows what the agent still asks.
+	{
+		const { CLAUDE, OPENCODE } = await import("../server/src/sandbox/harnesses.js");
+		const { initialSessionModes } = await import("../server/src/sandbox/profiles.js");
+		assert.equal(initialSessionModes("docker-hardened", "claude", true).mode, "bypassPermissions");
+		assert.equal(initialSessionModes("docker-hardened", "claude", true, [{ id: "default", name: "Manual", description: null }]).mode, "bypassPermissions");
+		assert.equal(initialSessionModes("docker-hardened", "opencode", true).mode, "build");
+		assert.equal(initialSessionModes("docker-hardened", "claude", false).mode, "auto");
+		assert.deepEqual([CLAUDE.itemMode, OPENCODE.itemMode], ["bypassPermissions", "build"]);
+		answers.length = 0;
+		methods.length = 0;
+		const chosen: string[] = [];
+		const item = await harness.runTurn(handle, { prompt: "itemwork", mode: CLAUDE.itemMode, unattended: true, onAcpModes: id => { chosen.push(id); } });
+		assert.equal(item.failure, null, JSON.stringify(item.failure));
+		assert.deepEqual(chosen, ["bypassPermissions"]);
+		assert.deepEqual(answers, [{ outcome: "selected", optionId: "allow-once" }, { outcome: "selected", optionId: "allow-once" }]);
+		assert(!JSON.stringify(answers).includes("reject"));
+		assert.deepEqual(item.acp?.tokens, { inputTokens: 1000 + 30000 + 2000, cachedInputTokens: 30000, outputTokens: 400 + 100, reasoningTokens: 100 });
+		ok("an item's turn starts in the mode that never asks and allows the edit and the test command it is still asked about");
+		answers.length = 0;
+		const watched = await harness.runTurn(handle, { prompt: "itemwork" });
+		assert.deepEqual(answers.map(a => (a as { optionId: string }).optionId), ["reject", "reject"]);
+		assert.equal(watched.acp?.tokens?.inputTokens, 33000);
+		ok("a person's turn without a question handler still rejects, and reports the same tokens");
+		const refused = await harness.runTurn(handle, { prompt: "itemwork", mode: "noSuchMode", unattended: true });
+		assert.match(refused.failure?.message ?? "", /does not offer the mode “noSuchMode”.*never asks/);
+		assert(!methods.slice(methods.lastIndexOf("initialize")).includes("session/prompt"));
+		ok("an item's turn does not start in another mode when its own is not offered");
+		const { promptUsage } = await import("../server/src/sandbox/acp-harness.js");
+		assert.equal(promptUsage(undefined), null);
+		assert.equal(promptUsage({ totalTokens: 5 }), null);
+		assert.deepEqual(promptUsage({ inputTokens: 7, outputTokens: 3, cachedReadTokens: -1 }), { inputTokens: 7, cachedInputTokens: 0, outputTokens: 3, reasoningTokens: 0 });
+		const limitedStart = await harness.runTurn(handle, { prompt: "warning", onControl: c => { control = c; },
+			onAcpUpdate: u => { if (u.sessionUpdate === "usage_update") queueMicrotask(() => { void control!.steer("finish"); }); } });
+		assert.equal(limitedStart.acp?.fiveHourAtStart, 93);
+		ok("prompt usage is read defensively and the 5h window is kept from the turn's first update");
+	}
+
 	variant = "without-auto";
 	for (const mode of [undefined, "unavailable"]) {
 		const opened: string[] = [];
@@ -570,6 +610,37 @@ async function clientCheck(state: string) {
 	assert.equal(codex.failure?.reason,"harness_signed_out");
 	assert.match(codex.failure.message,/Bench.*Run windlass-runner login codex/);
 	ok("Codex -32000 names the machine and its terminal sign-in command");
+
+	// Codex is not offered for work items: filing one is refused, an unattended turn never starts, and nothing is allowed in its name.
+	{
+		const { CODEX, CLAUDE, OPENCODE, itemHarnessProblem } = await import("../server/src/sandbox/harnesses.js");
+		const { permission } = await import("../server/src/sandbox/acp-harness.js");
+		assert.equal(itemHarnessProblem("codex"), "Work items run Windlass, Claude Code or OpenCode for now. Start a Codex session instead.");
+		assert.deepEqual([itemHarnessProblem("windlass"), itemHarnessProblem("claude"), itemHarnessProblem("opencode")], [null, null, null]);
+		assert.equal(CODEX.items, false);
+		assert.equal(CODEX.itemTokens, "subscription");
+		assert.notEqual(CODEX.itemMode, "agent-full-access");
+		methods.length = 0;
+		const unattended = await harnessOf(machine, "codex").runTurn(handle, { prompt: "itemwork", unattended: true });
+		assert.equal(unattended.failure?.message, itemHarnessProblem("codex"));
+		assert.deepEqual(methods, [], "no Codex process is started for an unattended turn");
+		const params = { sessionId: "s", toolCall: { toolCallId: "t", title: "Run tests" }, options: [
+			{ optionId: "allow-once", kind: "allow_once", name: "Allow" }, { optionId: "always", kind: "allow_always", name: "Always" },
+			{ optionId: "reject", kind: "reject_once", name: "Reject" },
+		] };
+		let asked = 0;
+		const onQuestion = async () => { asked++; return { choice: "allow-once" }; };
+		const answer = async (profile: typeof CODEX, input: Partial<RunTurnInput>) =>
+			(await permission(params, { prompt: "x", ...input } as RunTurnInput, new AbortController().signal, profile)).outcome;
+		assert.deepEqual(await answer(CODEX, { unattended: true }), { outcome: "selected", optionId: "reject" });
+		assert.deepEqual(await answer(CODEX, { unattended: true, onQuestion: onQuestion as RunTurnInput["onQuestion"] }), { outcome: "selected", optionId: "reject" });
+		assert.equal(asked, 0, "an unattended Codex request is not put to anyone");
+		assert.deepEqual(await answer({ ...CLAUDE, items: false }, { unattended: true }), { outcome: "selected", optionId: "reject" });
+		assert.deepEqual(await answer(OPENCODE, { unattended: true }), { outcome: "selected", optionId: "allow-once" });
+		assert.deepEqual(await answer(CODEX, { onQuestion: onQuestion as RunTurnInput["onQuestion"] }), { outcome: "selected", optionId: "allow-once" });
+		assert.equal(asked, 1);
+	}
+	ok("Codex is refused for work items, its unattended turn never starts, and item auto-approval never answers for it");
 }
 
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));

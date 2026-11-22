@@ -1340,6 +1340,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			itemStarts.add(asked);
 			return userApi(auth).createSession(asked);
 		},
+		models: async (auth, harness, machineId) => {
+			if (harness === "windlass") return modelsFor(worldOf(auth).profile);
+			const options = machineId ? machinesOf(auth).list.find((one) => one.machineId === machineId)?.harnesses?.find((entry) => entry.id === harness)?.options : undefined;
+			return initialHarnessModels(options);
+		},
 		seededSession: (auth, item) => seedItemSession(auth, item),
 		itemChanged: (auth, item) => {
 			const world = worldOf(auth);

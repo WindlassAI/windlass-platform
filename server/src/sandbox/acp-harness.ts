@@ -1,11 +1,11 @@
 import { claudeLimit } from "../provider-usage.js";
-import type { AcpContent, AcpUpdate } from "../contract.js";
+import type { AcpContent, AcpUpdate, TurnUsage } from "../contract.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle } from "./api.js";
 import type { Harness, HarnessCapabilities } from "./harness.js";
-import { type AcpProfile, machineLoginMessage } from "./harnesses.js";
+import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
 
 import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, sandboxEscapeNote } from "./codex-modes.js";
@@ -36,12 +36,17 @@ function refuse(params: Fields) {
 	return { outcome: typeof chosen === "string" ? { outcome: "selected", optionId: chosen } : { outcome: "cancelled" } };
 }
 
-async function permission(params: Fields, input: RunTurnInput, signal: AbortSignal, name: string) {
+/** The answer to an agent's permission request outside the Codex sandbox-escape refusal; exported for scripts/harness-check.ts. */
+export async function permission(params: Fields, input: RunTurnInput, signal: AbortSignal, profile: AcpProfile) {
+	const name = profile.name;
 	const tool = object(params.toolCall);
 	const options = objects(params.options);
 	const fallback = options.find(o => o.kind === "reject_once");
 	let chosen = fallback?.optionId;
-	if (input.onQuestion && !signal.aborted) {
+	// Nobody answers a work item's turn: allow it once, as Windlass's approval "full" would run it in this container.
+	// Only for an agent work items may run (`items`); for any other, an unattended request is rejected.
+	if (input.unattended && profile.items) chosen = (options.find(o => o.kind === "allow_once") ?? options.find(o => o.kind === "allow_always"))?.optionId ?? chosen;
+	else if (!input.unattended && input.onQuestion && !signal.aborted) {
 		const title = text(tool.title);
 		const content = objects(tool.content).map(block => object(block.content ?? block)).find(block => block.type === "text");
 		const answer = await input.onQuestion({
@@ -85,6 +90,24 @@ function isKnownUpdate(raw: Fields): raw is Exclude<AcpUpdate, { sessionUpdate: 
 			return true;
 		default: return false;
 	}
+}
+
+/**
+ * The turn's tokens from a `session/prompt` answer's `usage` (ACP: input, output, thought, cached read and
+ * write). As Windlass counts them, cached input is part of the input and reasoning part of the output.
+ */
+export function promptUsage(raw: unknown): TurnUsage | null {
+	const usage = object(raw);
+	const count = (key: string) => typeof usage[key] === "number" && Number.isFinite(usage[key]) && (usage[key] as number) >= 0 ? usage[key] as number : 0;
+	if (typeof usage.inputTokens !== "number" || typeof usage.outputTokens !== "number") return null;
+	const cachedInputTokens = count("cachedReadTokens");
+	const reasoningTokens = count("thoughtTokens");
+	return {
+		inputTokens: count("inputTokens") + cachedInputTokens + count("cachedWriteTokens"),
+		cachedInputTokens,
+		outputTokens: count("outputTokens") + reasoningTokens,
+		reasoningTokens,
+	};
 }
 
 /** Only a definite refusal to inject can safely be submitted again as a normal prompt. */
@@ -204,6 +227,7 @@ export class AcpHarness implements Harness {
 					const cost = object(update.cost);
 					const rateLimit = profile.id === "claude" ? claudeLimit(object(update._meta)["_claude/rateLimit"], Date.now()) : undefined;
 					const fiveHourUsedPct = rateLimit?.window.kind === "5h" ? rateLimit.window.usedPct : acp.usage?.fiveHourUsedPct;
+					if (fiveHourUsedPct != null) acp.fiveHourAtStart ??= fiveHourUsedPct;
 					acp.usage = { used: update.used, size: update.size, cost: typeof cost.amount === "number" && typeof cost.currency === "string" && /^[A-Z]{3}$/.test(cost.currency) ? { amount: cost.amount, currency: cost.currency } : null,
 						...(fiveHourUsedPct != null && { fiveHourUsedPct }) };
 					stream.push({ sessionUpdate: "usage_update", ...acp.usage, ...(rateLimit && { rateLimit }) });
@@ -232,7 +256,7 @@ export class AcpHarness implements Harness {
 					input.onAcpNote?.(sandboxEscapeNote(object(params.toolCall).kind));
 					return refuse(params);
 				}
-				return permission(params, input, AbortSignal.any([questions.signal, withdrawn]), profile.name);
+				return permission(params, input, AbortSignal.any([questions.signal, withdrawn]), profile);
 			},
 		}, "", value => redactor.deep(value));
 		const cancel = () => {
@@ -244,6 +268,7 @@ export class AcpHarness implements Harness {
 		};
 		try {
 			if (!isTurnSandbox(handle) || !profile.profiles.includes(handle.profile)) throw new Error(`${profile.name} requires a supported machine sandbox.`);
+			if (input.unattended && !profile.items) throw new Error(itemHarnessProblem(profile.id) ?? `${profile.name} does not run work items.`);
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			input.signal?.addEventListener("abort", cancel, { once: true });
 			await handle.stopLeftovers(profile.leftovers);
@@ -289,6 +314,8 @@ export class AcpHarness implements Harness {
 				modes.modes = codexModes(handle.profile).filter(m => modes.modes.some(raw => raw.id === m.id));
 				if (!modes.modes.some(m => m.id === requested)) throw new Error(innerModesReason);
 			}
+			if (input.unattended && !modes.modes.some(m => m.id === requested))
+				throw new Error(`${profile.name} does not offer the mode “${requested}” here, and a work item runs only in a mode that never asks.`);
 			const chosen = modes.modes.some(m => m.id === requested) ? requested : modes.current;
 			if (!chosen) throw new Error(`${profile.name} did not report its current mode.`);
 			if (modes.select) {
@@ -300,6 +327,7 @@ export class AcpHarness implements Harness {
 					modes.modes = codexModes(handle.profile).filter(m => modes.modes.some(raw => raw.id === m.id));
 				}
 				if (!modes.current || !modes.modes.some(m => m.id === modes.current)) throw new Error(`${profile.name} did not acknowledge its mode.`);
+				if (input.unattended && modes.current !== requested) throw new Error(`${profile.name} did not switch to the mode “${requested}”, which a work item needs.`);
 				input.onAcpModes?.(modes.current, modes.modes, modes.current === requested ? undefined : requested);
 			} else {
 				input.onAcpModes?.(chosen, modes.modes, chosen === requested ? undefined : requested);
@@ -346,7 +374,9 @@ export class AcpHarness implements Harness {
 				},
 				cancelCall: async () => ({ stopped: false, message: `${profile.name} cannot stop one call; stop the turn instead.` }),
 			});
-			acp.stopReason = text((await answer).stopReason) || null;
+			const answered = await answer;
+			acp.stopReason = text(answered.stopReason) || null;
+			acp.tokens = promptUsage(answered.usage);
 		} catch (error) {
 			if (!input.signal?.aborted) {
 				const info = profile.id === "codex" && error instanceof AcpError ? error.codexErrorInfo : undefined;
