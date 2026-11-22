@@ -132,12 +132,12 @@ platform control. Machine runners must support the transport-user execution opti
 
 ### Enable the Factory check on GitHub
 
-1. Open **Settings → Developer settings → GitHub Apps → windlass-fk4w → Edit → Permissions & events**.
+1. Open **Settings → Developer settings → GitHub Apps → *your App* → Edit → Permissions & events**.
 2. Under **Repository permissions**, change **Checks** from **Read-only** to **Read and write** and click **Save changes**. Keep the existing event subscriptions, including **Check run**.
 3. GitHub emails each installation owner. Each installation keeps its current permissions until its owner approves the update.
-4. For a personal installation, open **Settings → Applications → Installed GitHub Apps → windlass-fk4w → Configure** and accept the request at the top. For an organization installation, open **Organization settings → GitHub Apps → windlass-fk4w → Configure** and accept there as well. Repeat for every installation.
+4. For a personal installation, open **Settings → Applications → Installed GitHub Apps → *your App* → Configure** and accept the request at the top. For an organization installation, open **Organization settings → GitHub Apps → *your App* → Configure** and accept there as well. Repeat for every installation.
 5. GitHub sends `installation.new_permissions_accepted`. Windlass logs the delivery and posts on the next verification. Before approval, the item logs one permission message per run and still hands over its verdict, comment and review request.
-6. Optionally require `windlass/verified` in a repository's branch protection rule or ruleset and select **windlass-fk4w** as its source. Enable auto-merge separately if desired.
+6. Optionally require `windlass/verified` in a repository's branch protection rule or ruleset and select your App as its source. Enable auto-merge separately if desired.
 
 [GitHub's installation permission approval guide](https://docs.github.com/en/apps/using-github-apps/approving-updated-permissions-for-a-github-app)
 

@@ -112,7 +112,7 @@ After someone else pushes, the earlier verdict belongs to the old commit. Windla
 
 If Windlass reports a permission refusal, ask the installation owner to open the App's **Configure** page on GitHub and accept **Checks: Read and write**. The verdict, review request and marked pull request comment are available independently of the check.
 
-To require the check, add **windlass/verified** to the required status checks for your target branch in the repository's branch protection rule or ruleset. Select **windlass-fk4w** as the expected source. **Action required** blocks a merge under this rule. You can separately enable auto-merge for the repository.
+To require the check, add **windlass/verified** to the required status checks for your target branch in the repository's branch protection rule or ruleset. Select the platform's GitHub App as the expected source. **Action required** blocks a merge under this rule. You can separately enable auto-merge for the repository.
 
 ## When an item needs you
 
