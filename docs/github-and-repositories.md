@@ -140,8 +140,8 @@ The App asks for repository permissions only, and no more than the code uses (re
 |---|---|---|
 | Metadata: read | repository lists, a user's rights in a repository | GitHub adds it to every App |
 | Contents: read and write | clone, branch list, the reviewer's checkout; the session's push and a feature's `windlass/…` branch | no push, so no pull request and no work items. GitHub has no narrower permission: an App cannot be limited to some branches |
-| Pull requests: read and write | open and update the pull request; a work item's review request, ready-for-review and handoff comment | no pull requests |
-| Issues: read and write | read: take in an issue filed as a work item; write: the item's link comment and a refusal comment on the issue | read alone: issues are still taken in, and nothing is said on them at GitHub. None: no issue intake |
+| Pull requests: read and write | open and update the pull request; a work item's review request, ready-for-review and handoff comment; read: the reviews and line comments taken as feedback; write: the 👀 reaction on a taken line comment, and asking a writer to review again | no pull requests |
+| Issues: read and write | read: take in an issue filed as a work item; write: the item's link comment and a refusal comment on the issue, and the 👀 reaction on a taken pull request conversation comment | read alone: issues and feedback are still taken in, and nothing is said or reacted at GitHub. None: no issue intake |
 | Checks: read and write | read: a work item reads its commit's CI; write: posting `windlass/verified` | read-only: items read CI and hand over without the check ([Enable the Factory check on GitHub](#enable-the-factory-check-on-github)) |
 | Commit statuses: read, Actions: read | a work item reads CI, a failed job's log, and whether CI runs on pushes (an orchestrated feature's preflight) | the verdict says CI was not read, and orchestration is refused |
 | Workflows | not asked for | GitHub refuses a push that changes `.github/workflows` |
@@ -154,19 +154,39 @@ is asked for.
 
 | Event | What the platform does |
 |---|---|
-| Issues, Issue comment | intake: a `windlass` label, or a mention in a comment by an owner, member or collaborator; other issue actions (closing, say) go to the item filed from it |
+| Issues, Issue comment | intake: a `windlass` label, or a mention in a comment by an owner, member or collaborator; other issue actions (closing, say) go to the item filed from it. On a work item's pull request, a conversation comment that starts with the App's mention or `/windlass` is feedback |
 | Pull request | the item notices a merge or close at once |
+| Pull request review | feedback: a submitted review that requests changes (with its line comments), or a comment-only review addressed to the App; an approval adds a line to the item's log |
+| Pull request review comment | feedback: a line comment addressed to the App |
 | Check run, Check suite, Status | the item notices CI ending at once |
 | `installation`, `installation_repositories` | logged. GitHub sends them to every App; they are not subscribed |
 
-`pull_request_review` and `pull_request_review_comment` are parsed (`server/src/github/events.ts`) and have no
-handler: do not subscribe to them.
+Feedback counts only from the item's own person (the GitHub account linked to the item's Windlass account) and
+from people GitHub reports as having write access. The association in the payload is checked first: a sender
+that is not an owner, member or collaborator costs no call and is only counted. For the rest the platform asks
+GitHub for the sender's permission (kept for 10 minutes), then reads the review or comment again by its id with
+an installation token, so the payload's text is never used. A subject older than 3 days is not taken. Bots are
+dropped at the edge. An item in review also reads its pull request's reviews, their line comments and the conversation comments
+when it polls, with the same checks, and takes what no delivery brought ([Turn on feedback from pull requests](#turn-on-feedback-from-pull-requests)). What
+the agent is told is in `server/src/factory/feedback.ts`.
 
 **Reach is set by the installation, not the permissions.** Contents write holds for every repository an
 installation covers. So install the App with **Only select repositories**, and give each such repository's
 default branch a ruleset (block force pushes and deletions, require a pull request) with the App off its
 bypass list. The platform pushes only `windlass/…` branches, so it keeps working and cannot write the
 default branch.
+
+### Turn on feedback from pull requests
+
+Feedback needs no new permission: Issues and Pull requests are already read and write. It needs two more
+event subscriptions.
+
+1. Open **Settings → Developer settings → GitHub Apps → *your App* → Edit → Permissions & events**.
+2. Under **Subscribe to events**, tick **Pull request review** and **Pull request review comment**. Leave **Issue comment** ticked, with the others already there. Do not tick **Pull request review thread**: it is not read.
+3. Click **Save changes**. No permission changed, so the installations have nothing to approve.
+
+Until then, no delivery comes. An item in review still picks up reviews and comments when it polls its pull
+request: every 30 minutes with a webhook, 10 without.
 
 ### Enable the Factory check on GitHub
 

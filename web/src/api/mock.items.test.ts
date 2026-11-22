@@ -57,7 +57,7 @@ describe("the mock's work items", () => {
 		for (const item of list) expect(item.wait !== null).toBe(item.state === "waiting");
 		// A question is always a wait for the person, with the question's text.
 		for (const item of list.filter((one) => one.question)) expect(item.wait).toMatchObject({ reason: item.question?.kind === "budget" ? "budget" : "person", sentence: item.question?.text, retryAt: null });
-		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed"]));
+		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more"]));
 		expect(new Set(list.flatMap((item) => (item.verdict ? [item.verdict.result] : [])))).toEqual(new Set(["pass", "fail", "incomplete", "unverified"]));
 		mock.dispose();
 	});

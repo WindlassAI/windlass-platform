@@ -110,7 +110,7 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 	const commitId = sha(subject.commit_id);
 	if (!pr || !commitId) return null;
 	const state = str(subject.state).toLowerCase();
-	if (event === "pull_request_review" && action === "submitted" && (state === "changes_requested" || addressed))
+	if (event === "pull_request_review" && action === "submitted" && (state === "approved" || state === "changes_requested" || addressed))
 		return { ...base, event, data: { pr, reviewId: commentId, state, body: cut(body), commitId, sender } };
 	if (event === "pull_request_review_comment" && action === "created" && addressed && typeof subject.path === "string")
 		return { ...base, event, data: { pr, commentId, body: cut(body), path: subject.path, line: id(subject.line), commitId, sender } };

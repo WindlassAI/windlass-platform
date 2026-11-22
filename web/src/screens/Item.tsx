@@ -36,6 +36,7 @@ import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
+import { GithubFeedback } from "../components/GithubFeedback";
 import { reviewShots, SecondReview } from "../components/SecondReview";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -451,7 +452,7 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 /** The open question: its text, its answers, and a note to the agent with any of them. */
 function Question({ view, question, acting, now }: { view: ItemView; question: ItemQuestion; acting: Acting; now: number }) {
 	// No agent is left to read a note once its machine was removed.
-	const noted = question.kind !== "machine_removed";
+	const noted = !["machine_removed", "feedback_feature", "feedback_more"].includes(question.kind);
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
 	const ids = { title: useId(), note: useId() };
@@ -1041,7 +1042,7 @@ export function Item({ page }: { page: ItemPage }) {
 			</section>
 
 			{view.plan ? (
-				<PlanSection view={view} review={review} acting={acting} />
+				<div id={`feature-plan-${view.plan.version}`}><PlanSection view={view} review={review} acting={acting} /></div>
 			) : view.children?.length ? (
 				<section className="usage-section" aria-label="Subtasks">
 					<h2 className="usage-title">Subtasks</h2>
@@ -1055,6 +1056,7 @@ export function Item({ page }: { page: ItemPage }) {
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />
+			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
 			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
 			<Cost view={view} />
