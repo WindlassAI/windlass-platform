@@ -1060,7 +1060,8 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 			await repoHub(c, meta, repo, "write", { contents: "write", pull_requests: "write" }, async ({ app, token, owner, name, author }) => {
 				if (!live(c.vars.stored!.item, effect)) return;
 				if (opening.step === "seed") {
-					const sha = await refHead(app, token, owner, name, repo.baseRef);
+					// The commit the planner read, or reconfirmed at approval: the feature starts where it was planned.
+					const sha = repo.planningBaseSha ?? await refHead(app, token, owner, name, repo.baseRef);
 					await take(c, { kind: "feature_seed", key, sha, repo: repo.alias, at: Date.now() });
 					return;
 				}

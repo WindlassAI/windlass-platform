@@ -1659,3 +1659,43 @@ test("cross-repo: the managed PR section links the counterpart by full URL, keep
 	assert.ok(withSection(body, linkSection(item, "cli").replace("not run", "passed")).startsWith("The person's own notes."));
 	assert.equal(issueReference(item.repos![0], 7), "Part of ada/platform#7.");
 });
+
+test("cross-repo: the planner's copy of the sibling holds its files read-only with no git directory, and a commit it cannot have refuses", async t => {
+	const { GithubStandin, gitHttpBackendAvailable } = await import("./github-standin.js");
+	if (!gitHttpBackendAvailable()) return t.skip("git http-backend is not installed");
+	const { materializeInput, removeInputs } = await import("../server/src/github/git.js");
+	const { execFile } = await import("node:child_process");
+	const { mkdtempSync, mkdirSync, existsSync, statSync, readFileSync, rmSync } = await import("node:fs");
+	const { join } = await import("node:path");
+	const { tmpdir } = await import("node:os");
+	const standin = new GithubStandin({ callbackUrl: "http://127.0.0.1:1/callback" });
+	await standin.start();
+	const root = mkdtempSync(join(tmpdir(), "wlp-inputs-"));
+	try {
+		const installation = standin.addInstallation("ada", "User");
+		const cli = standin.addRepository({ owner: "ada", name: "cli", private: true, installation, files: { "CROSS.md": "only in the CLI\n", "src/a.ts": "export {};\n" } });
+		standin.tokens.set("read-cli", { kind: "installation", value: "read-cli", installation: installation.id, repositories: [cli.id], permissions: { contents: "read", metadata: "read" }, expiresAt: Date.now() + 3600_000, revoked: false });
+		const work = join(root, "workspace"), scratch = join(root, "tmp");
+		mkdirSync(work); mkdirSync(scratch);
+		const sandbox = { cwd: work, id: "inputs", run: (command: string, options: { stdin?: string } = {}) => new Promise(done => {
+			const child = execFile("bash", ["-c", command.replaceAll("/tmp/wlp-", scratch + "/wlp-")], { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: root }, timeout: 60_000 },
+				(error, stdout, stderr) => done({ exitCode: error ? (typeof error.code === "number" ? error.code : 1) : 0, timedOut: false, aborted: false, stdout, stderr }));
+			child.stdin?.end(options.stdin ?? "");
+		}) } as never;
+		const input = { url: `${standin.url}/ada/cli.git`, branch: "main", sha: standin.branchHead(cli, "main")!, directory: ".windlass-inputs", alias: "cli" };
+		await materializeInput(sandbox, "read-cli", input);
+		const file = join(work, ".windlass-inputs/cli/CROSS.md");
+		assert.equal(readFileSync(file, "utf8"), "only in the CLI\n");
+		assert.equal(statSync(file).mode & 0o222, 0, "the sibling's files are writable");
+		assert.equal(existsSync(join(work, ".windlass-inputs/cli/.git")), false, "a git directory (and its remote) was left");
+		// Fetched again for the next planning turn: replaced, not refused.
+		await materializeInput(sandbox, "read-cli", input);
+		await assert.rejects(materializeInput(sandbox, "read-cli", { ...input, sha: sha("1") }), /clone failed|not at/);
+		await assert.rejects(materializeInput(sandbox, "wrong-token", input), /refused|clone failed/);
+		await removeInputs(sandbox, ".windlass-inputs");
+		assert.equal(existsSync(join(work, ".windlass-inputs")), false);
+	} finally {
+		await standin.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

@@ -468,8 +468,13 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 
 if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 	const server = new Server();
+	let after = () => {};
 	try {
 		await check("cross-repo: a feature over two repositories plans from both trees, opens a draft PR #1 in each, builds each child in its own repository, tests both together and records ordered merges", async () => {
+			// The combined run is dispatched: the App needs Actions write (docs/factory, "Cross-repo features").
+			const granted = standin.appPermissions;
+			standin.appPermissions = { ...granted, actions: "write" };
+			after = () => { standin.appPermissions = granted; };
 			const { user } = await world(server, standin, { WLP_FACTORY_CROSS_REPO: "1", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			const ownCi = "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n";
 			const root = resolve(SERVER_DIR, "..");
@@ -550,7 +555,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			assert(done.spent.activeSeconds >= 90, "The combined run's time was not charged: " + JSON.stringify(done.spent));
 			return "plan read the CLI's tree; CI refused then admitted by name; PR #1 in each; children per repository; one run on both heads; merges in order";
 		});
-	} finally { await server.stop(); server.remove(); }
+	} finally { after(); await server.stop(); server.remove(); }
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
 }
 

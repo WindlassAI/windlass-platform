@@ -705,7 +705,7 @@ async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: 
 
 /**
  * A cross-repo feature's planning input: `url`'s tree at `sha` (on `branch`), in `directory/alias` of the
- * workspace, read-only, with no git directory left: no remote, no credential, nothing to push with. The
+ * workspace, its files read-only, with no git directory left: no remote, no credential, nothing to push with. The
  * token reaches only the clone's standard input. Throws, naming why, when the tree cannot be had.
  */
 export async function materializeInput(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; sha: string; directory: string; alias: string; signal?: AbortSignal }): Promise<void> {
@@ -716,7 +716,7 @@ export async function materializeInput(sandbox: SandboxHandle, token: string, in
 	if (prepare.exitCode !== 0) throw new Error("the workspace has no room for it");
 	const cloned = await cloneWithToken(sandbox, token, { url: input.url, branch: input.branch, directory: target, pinnedBase: input.sha, signal: input.signal });
 	if (!cloned.ok) throw new Error(cloned.failure === "denied" ? "GitHub refused to let the platform read it" : cloned.failure === "gone" ? "GitHub no longer has it" : `the clone failed${cloned.said ? ": " + cloned.said : ""}`);
-	const seal = await sandbox.run(`set -eu\ncd -- ${shellQuote(target)}\n[ "$(git rev-parse HEAD)" = ${input.sha} ] || { echo wlp:wrongbase; exit 1; }\nrm -rf -- .git\nchmod -R a-w .`, { timeoutMs: COMMIT_TIMEOUT_MS, signal: input.signal });
+	const seal = await sandbox.run(`set -eu\ncd -- ${shellQuote(target)}\n[ "$(git rev-parse HEAD)" = ${input.sha} ] || { echo wlp:wrongbase; exit 1; }\nrm -rf -- .git\nfind . -type f -exec chmod a-w -- {} +`, { timeoutMs: COMMIT_TIMEOUT_MS, signal: input.signal });
 	if (seal.exitCode !== 0) throw new Error(seal.stdout.includes("wlp:wrongbase") ? `it is not at ${input.sha.slice(0, 7)}` : "it could not be made read-only");
 }
 
