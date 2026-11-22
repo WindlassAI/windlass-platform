@@ -1808,7 +1808,8 @@ async function subtaskAgentChecks(): Promise<void> {
 			try {
 				await waitFor("the reported Claude Code options", async () => (await user.machines())[0]?.harnesses?.[0]?.optionsDigest === optionsDigest(options), 15_000);
 				await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
-				if (standin.fileOn(harbor, "main", ".github/workflows/build.yml") === null)
+				// The repository starts with a pull-request-only workflow; the orchestrator checks may have made it run on push already.
+				if (!standin.fileOn(harbor, "main", ".github/workflows/build.yml")?.includes("on: [push]"))
 					standin.commit(harbor, "main", { ".github/workflows/build.yml": "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n" }, "Run build on push");
 				const machine = (await user.machines()).find(m => m.machineId === place.machineId)!;
 				// The planner (Windlass, hosted) files its plan; the owner moves the first subtask to Claude Code on Sonnet on the machine.
