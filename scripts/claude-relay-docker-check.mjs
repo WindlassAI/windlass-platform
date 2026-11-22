@@ -20,8 +20,8 @@ const token = 'sk-ant-oat01-' + randomBytes(32).toString('hex');
 const identity = { uid: 'fixture', machineId };
 const {privateKey} = generateKeyPairSync('ed25519');
 Object.assign(process.env, { WLP_RUNNER_STATE_DIR: dir, F3_DIR: dir, F3_MACHINE: machineId, F3_PREFIX: prefix, PATH: dir + ':' + process.env.PATH });
-Object.assign(globalThis, { SANDBOX_IMAGE: image, SHOTS_IMAGE_PIN: '', HARNESS_IMAGES: { claude: image },
-	CLAUDE_RELAY_SCRIPT: await readFile(join(root, 'sandbox/relay/server.cjs'), 'utf8') });
+const relayScript = await readFile(join(root, 'sandbox/relay/server.cjs'), 'utf8');
+Object.assign(globalThis, { SANDBOX_IMAGE: image, SHOTS_IMAGE_PIN: '', HARNESS_IMAGES: { claude: image }, CLAUDE_RELAY_SCRIPT: relayScript });
 const { docker } = await import('../server/src/sandbox/docker.ts');
 const { Executor } = await import('../runner/src/docker-executor.ts');
 const { storePair } = await import('../runner/src/state.ts');
@@ -49,7 +49,7 @@ async function status(name, bearer, host = '127.0.0.1:17892') {
 }
 const isolation = name => checkIsolation(name, cmd, token, 'claude-agent-sdk-linux-', '/run/wlp-harness/claude/token');
 let adapter;
-async function turn(first, proxyEnv, scan) {
+async function turn(first, proxyEnv, scan, text = 'Say relay check passed.') {
 	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
@@ -64,7 +64,7 @@ async function turn(first, proxyEnv, scan) {
 	await call('initialize', {protocolVersion:1,clientCapabilities:{}});
 	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[]});
 	await call('session/set_mode',{sessionId:opened.sessionId,modeId:opened.modes.currentModeId});
-	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:'Say relay check passed.'}]});
+	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text}]});
 	assert.equal(result.stopReason,'end_turn'); assert.equal(reply,'relay check passed');
 	if (scan) await isolation(first);
 	child.stdin.end();
@@ -165,6 +165,35 @@ try {
 	assert.match(recorded,/POST \/v1\/messages\?beta=true bearerMatch=true beta=.*oauth-2025-04-20.*version=2023-06-01/);
 	assert.ok(!recorded.includes(token) && !recorded.includes('bearerMatch=false'));
 	ok('Pinned ACP/CLI completed a streamed turn through production relay TLS. Recorder verified bearer and OAuth beta.');
+	// One request at a time per session: a second turn's request waits at the relay for the first's slot, and the
+	// harness is never refused. A counting proxy inside the session records every status the relay answered.
+	const single = relayScript.replace('const SESSION_REQUESTS = 8,', 'const SESSION_REQUESTS = 1,');
+	assert.notEqual(single, relayScript);
+	globalThis.CLAUDE_RELAY_SCRIPT = single;
+	await owner.prepareClaudeRelay();
+	assert.ok(JSON.parse(await cmd(['container','inspect',relayName]))[0].Config.Cmd.join(' ').includes('const SESSION_REQUESTS = 1,'));
+	await cmd(['exec','-d',first,'node','-e',`const http=require('http'),base=new URL(process.env.ANTHROPIC_BASE_URL),seen=[];
+		http.createServer((q,r)=>{if(q.url==='/statuses')return r.end(seen.join(','));
+		const u=http.request({host:base.hostname,port:base.port,path:q.url,method:q.method,headers:{...q.headers,host:base.host}},v=>{seen.push(v.statusCode);r.writeHead(v.statusCode,v.headers);v.pipe(r)});
+		u.on('error',()=>{seen.push('error');r.destroy()});q.pipe(u)}).listen(19124,'127.0.0.1')`]);
+	await cmd(['exec',first,'curl','--retry','8','--retry-connrefused','--noproxy','*','-fsS','http://127.0.0.1:19124/statuses']);
+	const counted = ['-e','ANTHROPIC_BASE_URL=http://127.0.0.1:19124'];
+	const before = (await cmd(['logs',upstream])).split('\n').length;
+	const recent = async () => (await cmd(['logs',upstream])).split('\n').slice(before);
+	const slow = turn(first, counted, false, 'Slow relay check.');
+	for (const end = Date.now() + 45_000; !(await recent()).some(line => line.endsWith('tag=slow'));) {
+		assert.ok(Date.now() < end, 'The slow turn never reached the upstream');
+		await new Promise(done => setTimeout(done, 200));
+	}
+	await Promise.all([slow, turn(first, counted, false, 'Queued relay check.')]);
+	const order = await recent();
+	const freed = order.indexOf('slow done'), queued = order.findIndex(line => line.endsWith('tag=queued'));
+	assert.ok(freed >= 0 && queued > freed, 'The queued turn reached the upstream before the slow one freed its slot: ' + order.join(' | '));
+	const statuses = await cmd(['exec',first,'curl','--noproxy','*','-fsS','http://127.0.0.1:19124/statuses']);
+	assert.match(statuses, /^200(,200)*$/, 'The relay answered the harness: ' + statuses);
+	globalThis.CLAUDE_RELAY_SCRIPT = relayScript;
+	await owner.prepareClaudeRelay();
+	ok(`With one request per session, a second pinned-harness turn waited at the relay for the first's slot and completed; the harness saw only ${statuses}.`);
 	ok('Live adapter, CLI and other sandbox processes, mounted files and writable layer passed sentinel scans.');
 	await owner.lifecycle('suspend',one.id,'first');
 	await owner.lifecycle('connect',one.id,'first'); assert.equal(await status(first,one.placeholder),'200');
