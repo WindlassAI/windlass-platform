@@ -26,6 +26,7 @@ import { optionsDigest } from "../server/src/runner/catalog.js";
 import { certify } from "../server/src/runner/frame-auth.js";
 import { ConversationLost, ServerChannel } from "../server/src/runner/channel.js";
 import { safeSentence } from "../runner/src/audit.js";
+import { localSizing } from "../runner/src/sizing.js";
 import { stub, until } from "./runner-stub-server.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -1044,8 +1045,10 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.equal(inspection.Config.Labels["dev.windlass-platform.uid"], uid);
 		assert.equal(inspection.Config.Labels["dev.windlass-platform.session"], sessionId);
 		assert.equal(inspection.Config.Image, image); assert.equal(inspection.Config.User, "agent");
-		assert.equal(inspection.HostConfig.Privileged, false); assert.equal(inspection.HostConfig.Memory, 1536 * 1024 ** 2);
-		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, 512);
+		// A slot's size follows this host's cores and memory (runner/src/sizing.ts): 1.5 GiB and 512 processes on two cores or fewer.
+		const slot = localSizing().unit;
+		assert.equal(inspection.HostConfig.Privileged, false); assert.equal(inspection.HostConfig.Memory, slot.memoryBytes);
+		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, slot.pids);
 		assert.equal(inspection.Mounts.length, 1); assert.equal(inspection.Mounts[0].Type, "volume");
 		assert.notEqual(inspection.Mounts[0].Name, "wlp-user-" + uid);
 		await until(() => reported(id), "Create did not promptly report the sandbox.", 5000);
