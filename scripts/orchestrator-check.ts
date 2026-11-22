@@ -674,13 +674,12 @@ test("placement 1 binds the approved Mac by id and keeps the reason after a rena
 	assert.throws(() => placementFeature([]), /Mac/);
 	assert.throws(() => placementFeature([mac, machineReport("Mac", linuxId)]), /ambiguous|more than one/i);
 });
-test("placement 2 refuses approval for missing screenshots, tags, profile, disk, egress or sign-in", () => {
+test("placement 2 refuses approval for missing screenshots, tags, profile, egress or sign-in", () => {
 	const mac = machineReport();
 	assert.throws(() => placementFeature([{ ...mac, screenshots: false }], { screenshots: true }), /screenshot/i);
 	for (const [needs, reason] of [[{ tags: ["gpu"] }, /gpu/], [{ profile: "docker-windlass-sandbox" }, /profile/],
 		[{ egress: "open" }, /egress/], [{ harness: "claude" }, /sign.in|signed/i]] as const)
 		assert.throws(() => placementFeature([mac], needs as PlacementNeeds), reason);
-	assert.throws(() => placementFeature([{ ...mac, freeDiskBytes: 5 * GiB - 1 }]), /disk/i);
 	assert.doesNotThrow(() => placementFeature([mac], { tags: ["build", "os:darwin", "arch:arm64", "screenshots", "harness:windlass"] }));
 });
 test("placement 3 measures requested CPU and memory in sandbox units", () => {
@@ -700,12 +699,41 @@ test("placement 4 waits for slots unless both overflow and that alternative are 
 	const linux = machineReport("Linux box", linuxId);
 	const machines = [full, linux];
 	for (const [allow, overflow] of [[["Linux box"], false], [[], true]] as const) {
-		assert.throws(() => placementFeature(machines, {}, [...allow], overflow), /Waiting for 1 free slot on ‘Mac’/);
-		const item = dispatch(placementFeature([machineReport(), linux], {}, [...allow], overflow), machines);
+		// A busy machine is a wait: approval allows it and the feature waits for a slot.
+		const approved = placementFeature(machines, {}, [...allow], overflow);
+		assert.equal(approved.featurePlan?.status, "approved");
+		const item = dispatch(approved, machines);
 		assert.match(item.wait!.sentence, /Waiting for 1 free slot on ‘Mac’/);
+		assert.equal(item.question, null);
 	}
 	const alternative = dispatch(placementFeature(machines, {}, ["Linux box"], true), machines);
 	assert.deepEqual(alternative.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+});
+test("approval refuses only a permanent placement problem: busy, offline or short of disk waits or asks after approval", () => {
+	const mac = machineReport(), linux = machineReport("Linux box", linuxId);
+	const offline = { ...mac, status: "offline" as const, turns: { max: null, running: 0, queued: 0 }, profiles: [], freeDiskBytes: null };
+	const busy = { ...mac, turns: { running: 4, max: 4, queued: 0 } };
+	for (const machines of [[offline], [busy], [offline, { ...linux, orchestrator: "never" as const }]]) {
+		const approved = placementFeature(machines, {}, machines.length > 1 ? ["Linux box"] : [], true);
+		assert.equal(approved.featurePlan?.status, "approved");
+		const item = dispatch(approved, machines);
+		assert.equal(item.wait?.reason, "machine");
+		assert.equal(item.question, null);
+	}
+	// An offline machine keeps its last report: a capability it lacks still refuses, as does an owner policy.
+	assert.throws(() => placementFeature([{ ...offline, screenshots: false }], { screenshots: true }), /Mac.*screenshots/);
+	assert.throws(() => placementFeature([{ ...offline, orchestrator: "never" }]), /Mac.*never/);
+	assert.throws(() => placementFeature([offline, { ...linux, orchestrator: "never" }], { tags: ["gpu"] }, ["Linux box"], true), /Mac.*gpu.*Linux box.*never/);
+	// A machine that never reported is judged when it connects.
+	const unreported = { ...offline, status: "waiting" as const, egress: undefined, screenshots: undefined };
+	assert.equal(placementFeature([unreported], { screenshots: true }).featurePlan?.status, "approved");
+	// Low disk is not permanent: approval allows it, and dispatch asks the owner, who can retry.
+	const full = { ...mac, freeDiskBytes: 5 * GiB - 1 };
+	const asked = dispatch(placementFeature([full]), [full]);
+	assert.equal(asked.question?.kind, "placement_refused");
+	assert.match(asked.question!.text, /disk/);
+	const retried = advance(asked, { kind: "answer", choice: "again", question: asked.question!.id, at: 8, by: "owner" }).item;
+	assert.deepEqual(dispatch(retried, [mac]).jobs![0].placement?.place, { kind: "machine", machineId: macId });
 });
 test("a removed machine or changed policy asks the owner at dispatch and at launch", () => {
 	const mac = machineReport();
