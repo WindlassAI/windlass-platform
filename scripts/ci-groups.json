@@ -1,5 +1,5 @@
 {
-  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, and harness for the Claude and OpenCode images built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), and name its own images.",
+  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, and harness for the Claude and OpenCode images built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), name its own images, and ask for the full git history (history), which runner-check needs to build an older runner from its commit.",
   "core": [
     "package.json",
     "pnpm-lock.yaml",
@@ -308,7 +308,7 @@
         "scripts/opencode-provider-registry.mjs"
       ],
       "shards": {
-        "runner": { "only": ["runner"], "images": ["base", "shots"] },
+        "runner": { "only": ["runner"], "images": ["base", "shots"], "history": true },
         "harness": { "only": ["claude-relay-docker", "opencode-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "harness"] }
       },
       "checks": {

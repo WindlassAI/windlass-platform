@@ -41,7 +41,7 @@ function jobsOf(name) {
 	const shards = g.shards ? Object.entries(g.shards) : [[null, {}]];
 	return shards.map(([shard, s]) => {
 		const checks = s.only ?? Object.keys(g.checks);
-		return { job: shard ? `${name}/${shard}` : name, checks: checks.join(" "), images: (s.images ?? g.images ?? []).join(" "), timeout: s.timeout ?? g.timeout };
+		return { job: shard ? `${name}/${shard}` : name, checks: checks.join(" "), images: (s.images ?? g.images ?? []).join(" "), timeout: s.timeout ?? g.timeout, depth: (s.history ?? g.history) ? 0 : 1 };
 	});
 }
 
