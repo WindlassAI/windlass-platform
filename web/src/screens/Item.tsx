@@ -49,7 +49,7 @@ import { machineLabel } from "../lib/machines";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
-	subtasks: "Subtasks", summary: "Feature summary",
+	subtasks: "Subtasks", integration: "Testing the repositories together", summary: "Feature summary",
 	refine: "Planning",
 	implement: "Implementing",
 	gate: "Checks",

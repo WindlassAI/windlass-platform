@@ -55,6 +55,11 @@
  *                              file, read or act on an item
  *   WLP_DAILY_TOKENS           model tokens per user per UTC day (default unlimited)
  *   WLP_FACTORY_FEATURE_MULTIPLIER   starting feature budget as a multiple of one item (default 3)
+ *   WLP_FACTORY_CROSS_REPO=1   let a Plan-first feature be filed over two repositories (default off):
+ *                              its children build in either, each repository gets its own draft PR,
+ *                              and the repositories are tested together before the feature is handed
+ *                              over (docs/factory, "Cross-repo features"). Off, a filing that names a
+ *                              second repository is refused; a feature filed while it was on goes on
  *   WLP_FACTORY_RUNNING_TURNS  the software factory's limits for every user (factory/budget.ts; the
  *   WLP_FACTORY_TURNS          defaults are FACTORY_DEFAULTS there): turns of a user running at once,
  *   WLP_FACTORY_HOSTED_RUNNING the factory's and the user's own (default 6, also the ceiling of a
@@ -775,3 +780,6 @@ export const config: Config = {
 	factory: readFactory(),
 	items: process.env.WLP_ITEMS === "1",
 };
+
+/** Whether a Plan-first feature may be filed over two repositories (WLP_FACTORY_CROSS_REPO=1). Read when it is asked, as WLP_FACTORY_ORCHESTRATE is. */
+export const crossRepoFactory = (): boolean => process.env.WLP_FACTORY_CROSS_REPO === "1";

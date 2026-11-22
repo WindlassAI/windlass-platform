@@ -41,6 +41,9 @@ import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCi } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
+import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
+import { dispatchIntegration, findIntegrationRun, hasIntegrationWorkflow, readIntegrationRun } from "../github/integration.js";
+import type { FeatureRepoState } from "../factory/types.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import { recentSubject, type IssueBinding } from "../factory/intake.js";
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
@@ -145,7 +148,8 @@ type IssueCheck = IssueChanges & { kind: "check_issue"; key: "pending"; at: numb
 const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string; run: number } | { kind: "feedback_comment"; key: string; run: number; who: string };
-type Effect = BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string } | { kind: "forget"; key: string };
+/** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
+type Effect = BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -177,6 +181,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		parent: item.parent ?? null,
 		title: item.task.title,
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
+		...(crossRepo(item) && { repositories: repoViews(item), integration: integrationView(item) }),
 		place: item.place,
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
@@ -373,7 +378,9 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
-	if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
+	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
+	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
+	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
 	if (fact.kind !== "published" && fact.kind !== "feature_ready" && (before.run?.ci?.moved !== next.run?.ci?.moved || (next.mode === "orchestrate" && before.head !== next.head)) && next.pr && next.head && !ENDED.has(next.state))
 		effects.push({ kind: "register", key: String(next.revision), pr: next.pr.number, head: next.head });
 	if (ENDED.has(next.state) && !ENDED.has(before.state)) effects.push({ kind: "forget", key: String(next.revision) });
@@ -613,12 +620,17 @@ async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
 	const stored = await load(c.db);
 	if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 	const { item, meta } = stored;
-	if (ENDED.has(item.state) || input.repositoryId !== meta.repository.id || input.installationId !== await binding(c)) return false;
-	const id = `poll_${input.kind}:${input.kind === "pr" ? prPollKey(item) : currentKey(item)}`;
+	// A cross-repo feature's other repository: its PR poll, woken only by a nudge from the installation bound to that repository at filing.
+	const sibling = crossRepo(item) && input.repositoryId !== meta.repository.id ? item.repos!.find(r => r.repositoryId === input.repositoryId) : undefined;
+	if (sibling) {
+		if (ENDED.has(item.state) || input.kind !== "pr" || input.installationId !== sibling.installationId || sibling.pr?.number !== input.pr) return false;
+	} else if (ENDED.has(item.state) || input.repositoryId !== meta.repository.id || input.installationId !== await binding(c)) return false;
+	const repo = crossRepo(item) ? (sibling ?? item.repos![0]) : undefined;
+	const id = repo && item.run?.step.kind === "merged" && input.kind === "pr" ? `poll_repo_pr:${currentKey(item)}/${repo.alias}` : `poll_${input.kind}:${input.kind === "pr" ? prPollKey(item) : currentKey(item)}`;
 	const [row] = await c.db.execute<EffectRow>("SELECT * FROM effects WHERE id = ?", id);
 	if (!row || c.vars.performing.has(row.id)) return false;
 	const poll: Effect = JSON.parse(row.effect);
-	const matches = input.kind === "ci" ? poll.kind === "poll_ci" && poll.head === input.head : poll.kind === "poll_pr" && poll.pr === input.pr;
+	const matches = input.kind === "ci" ? poll.kind === "poll_ci" && poll.head === input.head : (poll.kind === "poll_pr" || poll.kind === "poll_repo_pr") && poll.pr === input.pr;
 	if (!matches || !live(item, poll)) return false;
 	// Pre-webhook CI rows did not retain GitHub's retry floor. Honor their scheduled read once.
 	const legacyBackoff = item.run?.ci?.webhooks === undefined && item.wait?.sentence.includes("GitHub asked the platform to wait until");
@@ -644,6 +656,21 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	const { owner, name } = resolved.repository;
 	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number));
 	return { app, installationId: resolved.installation.id, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
+}
+
+/**
+ * A cross-repo feature's repository as the user's connection reaches it now, through the installation
+ * bound to it at filing (never another one it may have moved to), with `perform` given a token scoped to
+ * that one repository and `permissions`.
+ */
+async function repoHub<T>(c: Ctx, meta: ItemMeta, repo: FeatureRepoState, access: "read" | "write", permissions: Record<string, "read" | "write">, perform: (hub: { app: GithubApp; token: string; owner: string; name: string; author: ReturnType<typeof authorOf> }) => Promise<T>): Promise<T> {
+	const app = githubApp();
+	if (!app) throw new Error("the deployment has no GitHub App");
+	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
+	if (!connection) throw new GithubProblem("github_gone", "The user’s GitHub connection is gone.");
+	const resolved = await resolveBoundRepository(app, connection, repo.repositoryId, repo.installationId, access);
+	const { owner, name } = resolved.repository;
+	return app.withToken(repo.installationId, { repositoryId: repo.repositoryId, permissions: { metadata: "read", ...permissions } }, token => perform({ app, token, owner, name, author: authorOf(connection) }));
 }
 
 async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType<typeof github>>, pr: number) {
@@ -688,7 +715,43 @@ async function placementInventory(c: Ctx, uid: string, featureModel: string | un
 	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }) };
 }
 
-async function checkFeatureCi(c: Ctx, stored: Stored) {
+/**
+ * Approval of a cross-repo plan: every repository is checked through its own installation before any
+ * branch is made, and every refusal is named at once. Each needs saved checks and push CI on the actual
+ * feature and child branch names; the combined run's repository needs the integration workflow; a base
+ * that moved since the planner read it is named, and approval needs the person to reconfirm it (`bases`).
+ */
+async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<string, string>>) {
+	const { item, meta } = stored;
+	const plan = item.featurePlan!;
+	const pending = plan.subtasks.filter(s => !item.jobs?.some(j => j.task.key === s.key && j.state === "done"));
+	const problems: string[] = [];
+	for (const repo of item.repos!) {
+		const label = `${repo.owner}/${repo.name}`;
+		try {
+			if (!await userActor(c, meta.uid).internalHasChecks(repo.repositoryId)) problems.push(`${label}: add saved repository checks.`);
+			const branches = [featureBranch(item.id), ...pending.filter(s => (s.repo ?? item.repos![0].alias) === repo.alias).map(s => branchFor(s.title, itemSessionId(childItemId(item.id, plan.version, s.key))))];
+			await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, async ({ app, token, owner, name }) => {
+				const base = repo.pr ? featureBranch(item.id) : repo.baseRef;
+				if (!await hasPushCi(app, token, owner, name, base, branches)) problems.push(`${label}: push CI does not run on windlass/** branches (${branches.join(", ")}).`);
+				if (!repo.pr && repo.planningBaseSha) {
+					const now = await refHead(app, token, owner, name, repo.baseRef);
+					if (now !== repo.planningBaseSha && bases[repo.alias] !== now)
+						problems.push(`${label}: ${repo.baseRef} moved from ${repo.planningBaseSha.slice(0, 7)} to ${now.slice(0, 7)} since the planner read it. Revise the plan on the new base, or reconfirm it (bases: {"${repo.alias}": "${now}"}).`);
+				}
+				if (plan.finalIntegration?.runFrom === repo.alias && !await hasIntegrationWorkflow(app, token, owner, name, repo.baseRef))
+					problems.push(`${label}: the combined run needs .github/workflows/windlass-integration.yml, enabled, on ${repo.baseRef}.`);
+			});
+			if (plan.finalIntegration?.runFrom !== repo.alias && repo.private) problems.push(`${label}: the combined run checks out the other repositories without a token, so ${label} must be public.`);
+		} catch (error) {
+			problems.push(`${label}: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
+		}
+	}
+	if (problems.length) throw new PlanError("Approval needs every repository ready first. " + problems.join(" "));
+}
+
+async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<string, string>> = {}) {
+	if (crossRepo(stored.item)) return checkCrossRepo(c, stored, bases);
 	const { item, meta } = stored;
 	if (!await userActor(c, meta.uid).internalHasChecks(meta.repository.id))
 		throw new PlanError("Use a single item or add saved repository checks before approving orchestration.");
@@ -706,6 +769,20 @@ function repositoryDirectory(c: Ctx, meta: ItemMeta) {
 }
 
 async function updateDirectory(c: Ctx, meta: ItemMeta, effect: Extract<Effect, { kind: "register" | "forget" }>): Promise<boolean> {
+	const item = c.vars.stored?.item;
+	if (effect.kind === "register" && effect.repo && item && crossRepo(item)) {
+		const repo = repoOf(item, effect.repo);
+		const directory = c.client().githubRepository.getOrCreate([String(repo.repositoryId)], { params: serviceParams() });
+		return queued(c, async () => {
+			const durable = await load(c.db);
+			if (!durable || !live(durable.item, effect)) return false;
+			await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: repo.installationId, pr: effect.pr, head: effect.head });
+			return true;
+		});
+	}
+	if (effect.kind === "forget" && item && crossRepo(item)) {
+		for (const repo of item.repos!.slice(1)) await c.client().githubRepository.getOrCreate([String(repo.repositoryId)], { params: serviceParams() }).internalForget(item.id);
+	}
 	const directory = repositoryDirectory(c, meta);
 	const installation = effect.kind === "register" ? (await github(c, meta)).installationId : null;
 	// Order directory writes with local decisions, outside any SQLite transaction.
@@ -892,7 +969,10 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "issue_comment") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
+	if (effect.kind === "register" && effect.repo) return !ENDED.has(item.state) && crossRepo(item) && repoOf(item, effect.repo).pr?.number === effect.pr;
 	if (effect.kind === "register") return !ENDED.has(item.state) && item.head === effect.head && item.pr?.number === effect.pr;
+	// The managed PR sections say where the feature stands, also once it ended.
+	if (effect.kind === "link_prs") return crossRepo(item) && item.state !== "draft";
 	if (effect.kind === "release_review" || effect.kind === "withdraw" || effect.kind === "ask") return true;
 	const run = item.run;
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
@@ -900,6 +980,9 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	switch (effect.kind) {
 		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
 		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
+		case "integration":
+		case "poll_integration": return effect.key === key && run.step.kind === "integration" && !item.question && item.integration?.attempt === effect.attempt;
+		case "poll_repo_pr": return effect.key === `${key}/${effect.repo}` && run.step.kind === "merged" && item.state === "review" && !item.question;
 		case "integrate": return effect.key === key && run.step.kind === "subtasks" && !item.question;
 		case "dispatch": return !item.question && effect.key === key && run.step.kind === "subtasks";
 		case "deliver":
@@ -959,6 +1042,90 @@ async function checkIssue(c: Ctx, meta: ItemMeta, changes: IssueChanges) {
 
 export function rescheduleChildPoll(db: Pick<RawAccess, "execute">, row: EffectRow, now: number) {
 	return db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", retryAt(now, row.attempts + 1), row.id, row.effect);
+}
+
+/** Writes the managed section on each of a cross-repo feature's PRs, keeping what anyone else wrote there. */
+async function linkPrs(c: Ctx, meta: ItemMeta, item: FactoryItem): Promise<void> {
+	for (const repo of item.repos ?? []) {
+		if (!repo.pr) continue;
+		const pr = repo.pr.number;
+		await repoHub(c, meta, repo, "write", { pull_requests: "write" }, async ({ app, token, owner, name }) => {
+			const latest = c.vars.stored?.item ?? item;
+			const pull = await app.pull(token, owner, name, pr);
+			const body = withSection(pull.body, linkSection(latest, repo.alias));
+			if (body !== pull.body) await app.updatePull(token, owner, name, pr, { title: pull.title, body });
+		});
+	}
+}
+
+/** Opens a cross-repo feature one repository at a time (a seed, then a draft PR), or writes both PR descriptions after its summary. */
+async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, effect: Extract<Effect, { kind: "dispatch" | "describe_feature" }>): Promise<void> {
+	const key = effect.key;
+	const opening = effect.kind === "dispatch" ? nextOpening(item) : null;
+	try {
+		if (opening) {
+			const { repo } = opening;
+			await repoHub(c, meta, repo, "write", { contents: "write", pull_requests: "write" }, async ({ app, token, owner, name, author }) => {
+				if (!live(c.vars.stored!.item, effect)) return;
+				if (opening.step === "seed") {
+					const sha = await refHead(app, token, owner, name, repo.baseRef);
+					await take(c, { kind: "feature_seed", key, sha, repo: repo.alias, at: Date.now() });
+					return;
+				}
+				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), draftOnly: true });
+				await take(c, { kind: "feature_ready", key, ...opened, repo: repo.alias, at: Date.now() });
+			});
+			return;
+		}
+		const report = await latestReport(c.db, item.run!.n);
+		const text = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && issueReference(item.repos![0], meta.github.origin.issue.number)].filter(Boolean).join("\n\n");
+		for (const repo of item.repos!) {
+			const pr = repo.pr!.number;
+			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, ({ app, token, owner, name }) =>
+				app.updatePull(token, owner, name, pr, { title: item.task.title, body: withSection(text, linkSection(item, repo.alias)) }));
+		}
+		await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
+	} catch (error) {
+		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
+		if (!denied && !(error instanceof GithubError && [403, 404, 409, 422].includes(error.status))) throw error;
+		const where = opening ? `${opening.repo.owner}/${opening.repo.name}: ` : "";
+		await take(c, { kind: "feature_problem", key, at: Date.now(), reason: where + error.message });
+	}
+}
+
+/** Starts a cross-repo feature's combined run, or reads it. A refusal by GitHub (no workflow, no permission) is a run that could not run. */
+async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect: Extract<Effect, { kind: "integration" | "poll_integration" }>): Promise<void> {
+	const plan = item.approvedPlan?.finalIntegration;
+	const run = item.integration!;
+	const base = { at: Date.now(), key: effect.key, attempt: effect.attempt };
+	if (!plan) return void await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: "the approved plan has no combined run" });
+	const from = repoOf(item, plan.runFrom);
+	try {
+		if (effect.kind === "integration") {
+			// A PR merged or closed already: the set is not what would be tested.
+			for (const repo of item.repos!) {
+				const state = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ app, token, owner, name }) => app.pull(token, owner, name, repo.pr!.number).then(p => p.state));
+				if (state === "merged" || state === "closed")
+					return void await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: `${repo.owner}/${repo.name}#${repo.pr!.number} was ${state} before the repositories were tested together` });
+			}
+			const heads = Object.fromEntries(item.repos!.filter(r => plan.inputs.includes(r.alias)).map(r => [r.alias, { repository: `${r.owner}/${r.name}`, sha: effect.heads[r.alias] }]));
+			const started = await repoHub(c, meta, from, "write", { actions: "write" }, ({ app, token, owner, name }) =>
+				dispatchIntegration(app, token, owner, name, { ref: featureBranch(item.id), item: item.id, attempt: effect.attempt, heads, runFrom: plan.runFrom, command: plan.command, timeoutSeconds: plan.timeoutSeconds }));
+			await take(c, { ...base, kind: "integration_started", runId: started?.runId ?? null, url: started?.url ?? null });
+			return;
+		}
+		const reading = await repoHub(c, meta, from, "read", { actions: "read" }, ({ app, token, owner, name }) =>
+			run.runId ? readIntegrationRun(app, token, owner, name, run.runId) : findIntegrationRun(app, token, owner, name, featureBranch(item.id), item.id, effect.attempt));
+		if (!reading) {
+			const lost = run.dispatchedAt !== null && Date.now() - run.dispatchedAt > 10 * 60_000;
+			await take(c, { ...base, kind: "integration_read", state: lost ? "unavailable" : "queued", url: null, said: lost ? "GitHub lists no run of the integration workflow for this attempt" : null });
+		} else if (!run.runId) await take(c, { ...base, kind: "integration_started", runId: reading.runId, url: reading.url });
+		else await take(c, { ...base, kind: "integration_read", state: reading.state, url: reading.url, said: reading.said, ...(reading.seconds !== undefined && { seconds: reading.seconds }) });
+	} catch (error) {
+		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
+		if (!denied && !(error instanceof GithubError && [403, 404, 422].includes(error.status))) throw error;
+		await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: error.message });
+	}
 }
 
 /**
@@ -1030,11 +1197,37 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				}
 			}
 			return true;
+		case "link_prs":
+			await linkPrs(c, meta, item);
+			return true;
+		case "integration":
+		case "poll_integration":
+			await integrationStep(c, meta, item, effect);
+			return true;
+		case "poll_repo_pr": {
+			const repo = repoOf(item, effect.repo);
+			const pull = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ app, token, owner, name }) =>
+				app.call({ path: `/repos/${owner}/${name}/pulls/${effect.pr}`, auth: { bearer: token }, what: "read the feature pull request" }));
+			const body = (pull.body ?? {}) as Record<string, unknown>;
+			const merged = body.merged === true;
+			const state = merged ? "merged" : body.state === "closed" ? "closed" : body.draft === true ? "draft" : "open";
+			const head = ((body.head ?? {}) as Record<string, unknown>).sha;
+			const changed = await take(c, { kind: "repo_pr_read", at: Date.now(), key: effect.key, repo: effect.repo, state, prHead: typeof head === "string" ? head : null, mergedCommit: merged && typeof body.merge_commit_sha === "string" ? body.merge_commit_sha : null });
+			if (!changed && live(c.vars.stored!.item, effect)) {
+				await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
+				return "deferred";
+			}
+			return true;
+		}
 		case "dispatch":
 		case "describe_feature":
 		case "integrate": {
 			const key = effect.key;
 			const job = item.jobs?.at(-1);
+			if (crossRepo(item) && effect.kind !== "integrate" && (effect.kind === "describe_feature" || nextOpening(item))) {
+				await crossOpenOrDescribe(c, meta, item, effect);
+				return true;
+			}
 			if (effect.kind === "dispatch" && item.pr && job) {
 				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
 					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid, item.agent?.model), at: Date.now() });
@@ -1194,6 +1387,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const latest = c.vars.stored?.item;
 				if (!latest?.pr || !live(latest, effect)) return false;
 				if (latest.mode === "orchestrate") {
+					// Never for a cross-repo feature, whatever path led here: its PRs leave draft only after a review of the set.
+					const refused = readyRefusal(latest);
+					if (refused) throw new PlanError(refused);
 					const hub = await github(c, meta, "write");
 					await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, token => readyFeature(hub.app, token, hub.owner, hub.name, latest.pr!.number, latest.id));
 				}
@@ -1234,7 +1430,12 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 	switch (action?.kind) {
 		case "cancel_subtask": return { kind: action.kind, key: action.key, by, at };
 		case "edit_plan": return { kind: action.kind, version: action.version, plan: action.plan, by, at };
-		case "approve_plan": return { kind: action.kind, version: action.version, by, at, ...agentsOf(action.agents) };
+		case "approve_plan": {
+			const bases = (action as { bases?: unknown }).bases;
+			if (bases !== undefined && bases !== null && (typeof bases !== "object" || Array.isArray(bases) || Object.entries(bases).length > 2 || !Object.entries(bases).every(([alias, sha]) => /^[a-z][a-z0-9-]{0,15}$/.test(alias) && typeof sha === "string" && /^[0-9a-f]{40}$/.test(sha))))
+				throw bad("Reconfirm a moved base by its repository's alias and full commit.");
+			return { kind: action.kind, version: action.version, by, at, ...agentsOf(action.agents), ...(bases ? { bases: bases as Record<string, string> } : {}) };
+		}
 		case "run_single": return { kind: action.kind, by, at };
 		case "start":
 		case "cancel":
@@ -1362,16 +1563,33 @@ export const workItem = actor({
 			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
 		},
 		// The seed belongs to the parent. Looking it up on clone also covers previously created child sessions.
-		internalSetupSeed: async (c, source: "child" | "feature"): Promise<string | null> => {
+		// A cross-repo feature's child asks for the seed of its own repository (`repositoryId`).
+		internalSetupSeed: async (c, source: "child" | "feature", repositoryId?: GithubId): Promise<string | null> => {
 			requireServiceFor(c, "call");
 			const stored = c.vars.stored;
 			if (!stored) throw new Error("The work item is unavailable for setup.");
 			if (source === "child") {
 				const parent = stored.item.parent;
-				return parent ? itemActor(c, stored.meta.uid, parent.itemId).internalSetupSeed("feature") : null;
+				return parent ? itemActor(c, stored.meta.uid, parent.itemId).internalSetupSeed("feature", stored.meta.repository.id) : null;
+			}
+			if (crossRepo(stored.item) && repositoryId !== undefined) {
+				const seed = stored.item.repos!.find(r => r.repositoryId === repositoryId)?.seed;
+				if (!seed) throw new Error("The feature has no recorded setup commit for that repository.");
+				return seed;
 			}
 			if (!stored.item.seed) throw new Error("The feature has no recorded setup commit.");
 			return stored.item.seed;
+		},
+		/**
+		 * The other repositories of a cross-repo feature a planning turn of `key` reads, each at the base
+		 * commit the filing recorded: null for any other turn. The session fetches each with a read token of
+		 * its own and leaves no credentials behind (agent-session.ts, `materializeInputs`).
+		 */
+		internalPlanningInputs: (c, key: string): { directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null => {
+			requireService(c);
+			const item = c.vars.stored?.item;
+			if (!item || !crossRepo(item) || item.run?.step.kind !== "refine" || currentKey(item) !== key) return null;
+			return { directory: INPUTS_DIRECTORY, inputs: item.repos!.slice(1).map(r => ({ alias: r.alias, repositoryId: r.repositoryId, installationId: r.installationId, owner: r.owner, name: r.name, baseRef: r.baseRef, sha: r.planningBaseSha })) };
 		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
@@ -1379,7 +1597,10 @@ export const workItem = actor({
 			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
+			// A cross-repo feature's child is made in its subtask's repository, from that repository's feature branch.
+			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
 			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
 				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report) }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place } };
 		},
@@ -1412,7 +1633,7 @@ export const workItem = actor({
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
-					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
+					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored, fact.kind === "approve_plan" ? fact.bases : undefined);
 				}
 				changed = await take(c, fact);
 			} catch (error) {

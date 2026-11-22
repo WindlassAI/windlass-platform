@@ -12,7 +12,7 @@
 
 import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
-import type { CheckConclusion, ChildPlacement, ReviewRecommendation } from "../contract.js";
+import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
 import type { AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { ReviewerTaskInput } from "./reviewer-task.js";
@@ -77,7 +77,35 @@ export interface Run extends ItemRun {
 /** The work as the item was given it (`ItemTask`). */
 export type Task = ItemTask;
 
+/**
+ * A repository of a cross-repo feature as its item keeps it (`FeatureRepoView` on its page): bound at
+ * filing, then its seed, its feature branch's draft PR, the head the platform last fast-forwarded it to,
+ * and what GitHub said of the PR when it was last read. The primary's seed, PR and head are also the
+ * item's own (`seed`, `pr`, `head`).
+ */
+export interface FeatureRepoState extends FeatureRepository {
+	seed?: string;
+	marker?: string;
+	head?: string | null;
+	pr?: { number: number; url: string } | null;
+	draft?: boolean;
+	prState?: "open" | "draft" | "merged" | "closed" | null;
+	prHead?: string | null;
+	mergedCommit?: string | null;
+}
+
+/** A cross-repo feature's combined run (`IntegrationView`). `charged`: its time is on the ledger. */
+export interface IntegrationRun extends IntegrationView {
+	dispatchedAt: number | null;
+	runId: string | null;
+	/** Same-input retries of a run that did not finish for the runner's sake. */
+	retries: number;
+	charged: boolean;
+}
+
 export interface FeatureJob {
+	/** A cross-repo feature's child: the head of its repository's feature branch it started from. */
+	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
 	dispatchKey?: string;
 	route?: PlacementRoute;
@@ -111,6 +139,9 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/** A cross-repo feature's repositories, the primary first. Absent: the one repository of `task`. */
+	repos?: FeatureRepoState[];
+	integration?: IntegrationRun;
 	feedbackReplans?: number;
 	/**
 	 * What the planner had spent, closing work and subtasks left out, when the latest feedback re-plan began.
@@ -254,8 +285,15 @@ export interface AgentTurn {
 export type Fact =
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
-	| { kind: "feature_seed"; at: number; key: string; sha: string }
-	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
+	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
+	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
+	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
+	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
+	| { kind: "integration_started"; at: number; key: string; attempt: number; runId: string | null; url: string | null }
+	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
+	| { kind: "integration_read"; at: number; key: string; attempt: number; state: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "unavailable"; url: string | null; said: string | null; seconds?: number }
+	/** A cross-repo feature's pull request in `repo`, as GitHub said it: whether it merged, into which commit. */
+	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
@@ -266,7 +304,7 @@ export type Fact =
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
-	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[] }
+	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single"; at: number; by: string }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
@@ -340,6 +378,13 @@ export type Effect =
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
 	| { kind: "describe_feature"; key: string }
+	/** A cross-repo feature: write the managed section that links its pull requests on each of them. */
+	| { kind: "link_prs"; key: string }
+	/** A cross-repo feature: start its combined run on `heads`, by alias. */
+	| { kind: "integration"; key: string; attempt: number; heads: Record<string, string> }
+	| { kind: "poll_integration"; key: string; attempt: number; at: number }
+	/** A cross-repo feature: read its pull request in `repo`. */
+	| { kind: "poll_repo_pr"; key: string; repo: string; pr: number; at: number }
 	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
 	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }

@@ -23,8 +23,11 @@ export async function advanceFeatureRef(app: GithubApp, token: string, owner: st
 	if (sha(obj(obj(body).object).sha) !== head) throw new Error("GitHub did not confirm the fast-forward.");
 }
 
-/** One empty marker commit gives the draft PR a distinct head. Fixed identity, date and parent make retries identical. */
-export async function openFeature(app: GithubApp, token: string, owner: string, repo: string, input: { id: string; title: string; base: string; seed: string; created: number; body: string; author: { name: string; email: string } }) {
+/**
+ * One empty marker commit gives the draft PR a distinct head. Fixed identity, date and parent make retries identical.
+ * `draftOnly` (a cross-repo feature): a repository without draft PRs refuses the feature instead of getting an ordinary PR.
+ */
+export async function openFeature(app: GithubApp, token: string, owner: string, repo: string, input: { id: string; title: string; base: string; seed: string; created: number; body: string; author: { name: string; email: string }; draftOnly?: boolean }) {
 	const branch = featureBranch(input.id), root = "/repos/" + owner + "/" + repo, auth = { bearer: token };
 	if (branch === input.base) throw new Error("The feature branch must differ from the destination.");
 	const commit = await app.call({ path: root + "/git/commits/" + sha(input.seed), auth, what: "read the feature base tree" });
@@ -44,6 +47,7 @@ export async function openFeature(app: GithubApp, token: string, owner: string, 
 			pull = await app.createPull(token, owner, repo, { ...fields, draft: true });
 		} catch (error) {
 			if (!(error instanceof GithubError && error.status === 422 && /(?:^|: )draft pull requests are not supported in this repository\.?$/i.test(error.said))) throw error;
+			if (input.draftOnly) throw new GithubError(422, `draft pull requests are not supported in ${owner}/${repo}, and a cross-repo feature's pull requests must be drafts`, "open the feature PR");
 			pull = await app.createPull(token, owner, repo, { ...fields, draft: false, body: fields.body + "\n\nFeature in progress." });
 		}
 	}

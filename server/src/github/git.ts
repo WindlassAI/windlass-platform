@@ -703,6 +703,29 @@ async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: 
 	return { ok: false, failure: classify(`${result.stderr}\n${result.stdout}`), said: text, marks };
 }
 
+/**
+ * A cross-repo feature's planning input: `url`'s tree at `sha` (on `branch`), in `directory/alias` of the
+ * workspace, read-only, with no git directory left: no remote, no credential, nothing to push with. The
+ * token reaches only the clone's standard input. Throws, naming why, when the tree cannot be had.
+ */
+export async function materializeInput(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; sha: string; directory: string; alias: string; signal?: AbortSignal }): Promise<void> {
+	if (!/^[0-9a-f]{40}$/.test(input.sha)) throw new Error("the planning base is not a recorded commit");
+	if (!/^[a-z][a-z0-9-]{0,15}$/.test(input.alias) || !/^\.[a-z-]+$/.test(input.directory)) throw new Error("invalid input path");
+	const target = `${input.directory}/${input.alias}`;
+	const prepare = await sandbox.run(`set -eu\nmkdir -p -- ${shellQuote(input.directory)}\nif [ -e ${shellQuote(target)} ]; then chmod -R u+w -- ${shellQuote(target)}; rm -rf -- ${shellQuote(target)}; fi`, { timeoutMs: PROBE_TIMEOUT_MS, signal: input.signal });
+	if (prepare.exitCode !== 0) throw new Error("the workspace has no room for it");
+	const cloned = await cloneWithToken(sandbox, token, { url: input.url, branch: input.branch, directory: target, pinnedBase: input.sha, signal: input.signal });
+	if (!cloned.ok) throw new Error(cloned.failure === "denied" ? "GitHub refused to let the platform read it" : cloned.failure === "gone" ? "GitHub no longer has it" : `the clone failed${cloned.said ? ": " + cloned.said : ""}`);
+	const seal = await sandbox.run(`set -eu\ncd -- ${shellQuote(target)}\n[ "$(git rev-parse HEAD)" = ${input.sha} ] || { echo wlp:wrongbase; exit 1; }\nrm -rf -- .git\nchmod -R a-w .`, { timeoutMs: COMMIT_TIMEOUT_MS, signal: input.signal });
+	if (seal.exitCode !== 0) throw new Error(seal.stdout.includes("wlp:wrongbase") ? `it is not at ${input.sha.slice(0, 7)}` : "it could not be made read-only");
+}
+
+/** Takes every planning input out of the workspace: a builder's turn never sees another repository's tree. */
+export async function removeInputs(sandbox: SandboxHandle, directory: string): Promise<void> {
+	if (!/^\.[a-z-]+$/.test(directory)) throw new Error("invalid input path");
+	await sandbox.run(`if [ -e ${shellQuote(directory)} ]; then chmod -R u+w -- ${shellQuote(directory)} 2>/dev/null; rm -rf -- ${shellQuote(directory)}; fi`, { timeoutMs: COMMIT_TIMEOUT_MS });
+}
+
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
 export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt }): Promise<GitOutcome> {
 	const stage = randomBytes(16).toString("hex");

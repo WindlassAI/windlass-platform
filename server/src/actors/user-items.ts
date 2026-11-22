@@ -31,7 +31,12 @@ import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
-import type { StoredConnection } from "../github/repos.js";
+import { resolveRepository, type StoredConnection } from "../github/repos.js";
+import { githubApp } from "../github/app.js";
+import { refHead } from "../github/feature.js";
+import { ALIAS } from "../factory/feature-plan.js";
+import { crossRepoFactory } from "../config.js";
+import type { FeatureRepoInput, FeatureRepository } from "../contract.js";
 import { isGithubId } from "../github/ids.js";
 import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
@@ -252,7 +257,7 @@ const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["g
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; effort: string | null; start: boolean; mode: "single" | "orchestrate"; harness: HarnessId } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; repositories: FeatureRepoInput[] | null; profile: SandboxProfileId | null; model: string | null; effort: string | null; start: boolean; mode: "single" | "orchestrate"; harness: HarnessId } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness" | "mode", unknown>>;
 	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
@@ -279,6 +284,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
 	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id)) throw bad("Choose a repository of your GitHub connection for the item.");
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
+	const repositories = cleanRepositories(input.repositories, repository.id as GithubId, input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"), bad);
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
 	return {
@@ -288,12 +294,54 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 		body,
 		acceptance: (acceptance as string[]).map((line) => line.trim()),
 		repository: { id: repository.id, ...(typeof repository.branch === "string" ? { branch: repository.branch } : {}) },
+		repositories,
 		profile: text(input.profile) as SandboxProfileId | null,
 		model: text(input.model),
 		effort: text(input.effort),
 		start: input.start === true,
 		harness,
 	};
+}
+
+/**
+ * A filing's repositories (`CreateItemInput.repositories`), checked: null for one repository. Two only for
+ * Plan first, where the deployment allows cross-repo features, the first being the item's `repository`.
+ */
+function cleanRepositories(raw: unknown, primary: GithubId, mode: string, bad: (message: string) => UserError): FeatureRepoInput[] | null {
+	if (raw === undefined || raw === null) return null;
+	if (!Array.isArray(raw) || raw.length < 1) throw bad("List the feature's repositories: one or two.");
+	if (raw.length > 2) throw bad("A feature spans at most two repositories.");
+	const list = raw.map((entry): FeatureRepoInput => {
+		const e = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+		if (typeof e.alias !== "string" || !ALIAS.test(e.alias)) throw bad("Give each repository a short alias: a lowercase letter, then up to 15 lowercase letters, digits or dashes.");
+		if (!isGithubId(e.id)) throw bad("Name each repository by GitHub's id for it.");
+		if (e.branch !== undefined && typeof e.branch !== "string") throw bad("A repository's base branch is a branch name.");
+		return { alias: e.alias, id: e.id as GithubId, ...(typeof e.branch === "string" && { branch: e.branch }) };
+	});
+	if (String(list[0]!.id) !== String(primary)) throw bad("The first of the repositories is the item's repository.");
+	if (new Set(list.map(r => r.alias)).size !== list.length || new Set(list.map(r => String(r.id))).size !== list.length) throw bad("Name each repository once, each with its own alias.");
+	if (list.length === 1) return null;
+	if (mode !== "orchestrate") throw bad("Only a Plan-first feature spans two repositories.");
+	if (!crossRepoFactory()) throw bad("Features over two repositories are not offered on this deployment.");
+	return list;
+}
+
+/**
+ * Binds a cross-repo filing's repositories to the user's GitHub connection now: GitHub's ids for each and
+ * its installation, which are the authority from here on, and the commit of each base the planner reads.
+ * The primary is the item's session's own repository.
+ */
+async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBranch: string | undefined): Promise<FeatureRepository[]> {
+	const app = githubApp(), connection = c.vars.github;
+	if (!app || !connection) throw new UserError("Connect GitHub to file a feature over two repositories.", { code: "github_not_connected" });
+	const bound: FeatureRepository[] = [];
+	for (const [i, entry] of list.entries()) {
+		const { installation, repository } = await resolveRepository(app, connection, entry.id, "read");
+		const baseRef = (i === 0 ? primaryBranch : entry.branch) ?? repository.defaultBranch;
+		const planningBaseSha = await app.withToken(installation.id, { repositoryId: entry.id, permissions: { metadata: "read", contents: "read" } }, token => refHead(app, token, repository.owner, repository.name, baseRef));
+		bound.push({ alias: entry.alias, repositoryId: entry.id, installationId: installation.id, owner: repository.owner, name: repository.name, url: app.repositoryUrl(repository.owner, repository.name), private: repository.private, baseRef, planningBaseSha });
+	}
+	return bound;
 }
 
 /** The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen. */
@@ -323,6 +371,8 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  */
 async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
+	// A GitHub issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
+	if (github && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
 	const uid = profile.uid;
 	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
@@ -342,6 +392,8 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// A machine harness runs only in the hardened container; makeSession refuses it elsewhere.
 		const harness = child?.placement.harness ?? input.harness;
 		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : "docker-hardened", input.place);
+		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
+		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
 		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
 		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }), ...(input.effort && { effort: input.effort }) }));
@@ -356,7 +408,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
-		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort } });
+		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort } });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
@@ -839,6 +891,8 @@ export const itemActions = {
 				const session = c.vars.sessions.get(request.sessionId);
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context } = request;
+				// A cross-repo feature's child is on its subtask's repository; any other on the feature's.
+				const target = request.repository ?? { id: feature.repository.id, base: feature.repository.branch };
 				const route = job.route ?? { preferred: feature.place, alternatives: [] };
 				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile, session.model, agentModels);
 				if (!fit.decision) {
@@ -855,9 +909,9 @@ export const itemActions = {
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
 				const agent = childAgent(job.task, placement, session.model, feature.agent?.effort);
 				try {
-					existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
+					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
+						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.

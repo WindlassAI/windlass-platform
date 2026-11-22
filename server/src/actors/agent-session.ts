@@ -169,11 +169,12 @@ import {
 } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
-import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview } from "../github/git.js";
+import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
+import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
-import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
+import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
@@ -405,6 +406,8 @@ interface SessionMeta {
 	hostsNoted?: string[];
 	snapshotCommit?: string | null;
 	cloneDirectory?: string;
+	/** A cross-repo feature's planning turn put its other repositories' trees in the workspace (`planningInputs`). */
+	planningInputs?: true;
 	/** The setup run in progress, as its starting item has it. Still set when the actor wakes: the run was cut off with its server. */
 	setupRunning?: { id: string; command: string; limitMs: number } | null;
 	/** A setup run in the current sandbox that did not succeed, of which the agent has not been told yet. */
@@ -4389,6 +4392,49 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 	}
 }
 
+/**
+ * A cross-repo feature's planning turn reads its other repositories' base trees, each fetched with a read
+ * token of that repository alone, through the installation bound to it at filing, one after the other,
+ * and left read-only with no git directory (`materializeInput`). One that cannot be had refuses the turn:
+ * the planner never plans against the primary alone. Any other turn of an item's builder session starts
+ * without them.
+ */
+async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number): Promise<void> {
+	if (meta.origin?.role !== "builder") return;
+	const asked = item.row.agent === "planner" ? await itemActor(c, meta.uid, item.row.itemId).internalPlanningInputs(item.row.key) : null;
+	if (!asked) {
+		// Left by an earlier planning turn (a feature converted to one implementer runs its builder here next).
+		if (meta.planningInputs && item.row.agent !== "summary") {
+			await removeInputs(sandbox, INPUTS_DIRECTORY);
+			meta.planningInputs = undefined;
+		}
+		return;
+	}
+	meta.planningInputs = true;
+	const app = githubApp();
+	const refuse = (why: string) => {
+		item.refused = `The planner reads every repository of the feature, and ${why}. Nothing was planned.`;
+		throw new TurnProblem(item.refused);
+	};
+	if (!app) return refuse("this deployment has no GitHub App");
+	const connection = await githubConnection(c, meta);
+	if (!connection) return refuse("the GitHub connection is gone");
+	for (const input of asked.inputs) {
+		const label = `${input.owner}/${input.name}`;
+		if (!input.sha) return refuse(`no base commit was recorded for ${label}`);
+		try {
+			const resolved = await resolveBoundRepository(app, connection, input.repositoryId, input.installationId, "read");
+			const url = app.cloneUrl(resolved.repository.owner, resolved.repository.name);
+			await app.withToken(input.installationId, { repositoryId: input.repositoryId, permissions: { contents: "read", metadata: "read" } },
+				token => materializeInput(sandbox, token, { url, branch: input.baseRef, sha: input.sha!, directory: asked.directory, alias: input.alias }), { revokeAfter: true });
+			note(c, turn, "info", `Read ${label} at ${input.sha.slice(0, 7)} into ${asked.directory}/${input.alias}, read-only, for the planner.`);
+		} catch (error) {
+			if (error instanceof TurnProblem) throw error;
+			return refuse(`${label} could not be read: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
+		}
+	}
+}
+
 /** The item's turn has its sandbox: the base is fetched for a turn that merges it, and the item is told the turn started. */
 async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number): Promise<void> {
 	if (item.started) return;
@@ -4403,6 +4449,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
 			note(c, turn, "warn", `${base} could not be fetched from GitHub for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
 		}
 	}
+	await planningInputs(c, meta, item, sandbox, turn);
 	const fact: Fact = { kind: "turn_started", at: Date.now(), key: item.row.key };
 	await serial(c, () => queueMessage(c.db, { to: "item", itemId: item.row.itemId, fact }));
 	await flushOutbox(c, meta.uid);

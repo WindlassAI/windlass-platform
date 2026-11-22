@@ -186,9 +186,12 @@ export interface SessionInternal {
 export interface ItemInternal {
 	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */
-	internalSetupSeed(source: "child" | "feature"): Promise<string | null>;
+	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }): Promise<void>;
-	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace } } | null>;
+	/** `repository`: a cross-repo feature's child's own repository and base; null for a one-repository feature. */
+	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace } } | null>;
+	/** A cross-repo feature's planning turn of `key`: the other repositories it reads, and where in the workspace. */
+	internalPlanningInputs(key: string): Promise<{ directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;

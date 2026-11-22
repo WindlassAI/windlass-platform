@@ -156,7 +156,7 @@ import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
-import { NETWORK_TABLE, NetworkProblem, REQUESTS_TABLE, addEntry, cleanEntries, cleanEntry, dismissRequest, fileRequests, mayChangeNetwork, networkLimit, networkPresets, readNetwork, readRequests, saveNetwork, scanForHosts, scanPaths } from "../repository-network.js";
+import { NETWORK_TABLE, NetworkProblem, REQUESTS_TABLE, addEntry, cleanEntries, cleanEntry, dismissRequest, fileRequests, mayChangeNetwork, networkLimit, networkPresets, readNetwork, readRequests, saveNetwork, scanForHosts, scanPaths, unionHosts } from "../repository-network.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
@@ -2118,8 +2118,12 @@ export const user = actor({
 			};
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
-			// The hosts its repository's list allows, for a hosted sandbox. A session has one repository.
-			const network = session.place.kind === "hosted" ? (await readNetwork(c.db, project)).hosts : [];
+			// The hosts its repository's list allows, for a hosted sandbox. A cross-repo feature's own session reads every
+			// repository of the feature, and is given the hosts of each one's list (`unionHosts`).
+			const feature = session.item?.role === "builder" ? c.vars.items.items.get(session.item.id) : undefined;
+			const others = (feature?.repositories ?? []).filter(r => String(r.repositoryId) !== String(session.repository?.id));
+			const lists = session.place.kind === "hosted" ? [await readNetwork(c.db, project), ...await Promise.all(others.map(r => readNetwork(c.db, setupProjectKey(r.repositoryId)!)))] : [];
+			const network = unionHosts(lists.map(list => list.hosts));
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
