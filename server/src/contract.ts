@@ -1558,7 +1558,10 @@ export interface ItemSummary {
 }
 
 /** An item's page. */
+export type CheckConclusion = "success" | "action_required" | "failure" | "cancelled";
+
 export interface ItemView extends ItemSummary {
+	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
 	children?: ItemSummary[];

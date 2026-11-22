@@ -631,6 +631,8 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 	const earlier = useId();
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const before = view.verdicts.slice(0, -1).reverse();
+	const check = view.verifiedCheck;
+	const checkLabel = check?.conclusion ? { success: "Success", action_required: "Action required", failure: "Failure", cancelled: "Cancelled" }[check.conclusion] : "In progress";
 	return (
 		<section className="usage-section" aria-labelledby="item-verdict">
 			<h2 className="usage-title" id="item-verdict">
@@ -660,6 +662,8 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 					) : null}
 				</>
 			)}
+			{check && <p className="usage-note">{check.state === "not_posted" ? check.said :
+				`On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}</p>}
 			{view.report === null && view.state === "review" ? <p className="usage-note">The agent that made the change filed no report.</p> : null}
 		</section>
 	);
