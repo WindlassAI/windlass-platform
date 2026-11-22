@@ -2,7 +2,7 @@
 
 A work item is a task on one of your GitHub repositories that an agent carries through on its own. You write what you want done. An agent works on it in a sandbox, runs your checks, pushes a branch, waits for CI and hands it to you as a pull request. When it needs a decision from you, it waits under **Needs you**. Merging always stays yours.
 
-Work items need a repository from your GitHub connection, and they always run with Windlass. The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
+Work items need a repository from your GitHub connection. They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
 A work item runs in one of two ways:
 
@@ -17,15 +17,16 @@ A work item runs in one of two ways:
 2. In the composer, switch from **Agent** to **Work item**.
 3. Type the task in **What should be done?** The first line becomes the title. The rest is the body.
 4. Choose the repository under **repo**, and the machine under **on** if you like.
-5. Optionally, add **Acceptance criteria** under **criteria**, one per line. The agent is given them, and the verdict lists them for you to check. No machine checks them.
-6. Where the platform offers orchestration, leave **Plan first** selected or choose **Quick** under **How it runs**.
-7. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
+5. Optionally, choose the agent and its model under the agent pill. See [Choose the agent](#choose-the-agent).
+6. Optionally, add **Acceptance criteria** under **criteria**, one per line. The agent is given them, and the verdict lists them for you to check. No machine checks them.
+7. Where the platform offers orchestration, leave **Plan first** selected or choose **Quick** under **How it runs**.
+8. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
 
 To file it without starting it, choose **File as a draft**, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page.
 
 ### From a repository's page
 
-Choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
+Choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. On a machine signed into Claude Code or OpenCode, choose the **Agent** under the machine. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
 
 ### From a GitHub issue
 
@@ -57,6 +58,22 @@ Make a token under **Settings** › **API tokens** › **New token…**. Give it
 **API default change.** Clients that previously omitted `mode` to launch one implementer must now send `"mode": "single"`. Omitting `mode` selects Plan first and waits for owner approval when orchestration is enabled.
 
 The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place, whether to start it and `"mode"`: `"orchestrate"` for Plan first (the default when enabled), or `"single"` for Quick. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute. The same `Idempotency-Key` with the same body answers with the item the first attempt made; with another body it is refused with `409` and `idempotency_key_reused`. A missing, invalid or out-of-scope token gets `401` and `invalid_token`. A rate limit gets `429` with `Retry-After`. Every error has a JSON `code` and `message`. Where the platform does not offer work items, both routes answer `404`.
+
+## Choose the agent
+
+An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code** or **OpenCode** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
+
+What changes with Claude Code or OpenCode:
+
+- **Where.** Only on your machine, in **Hardened Docker on your machine "…"**. Hosted items run Windlass.
+- **How it runs.** Only **Quick**. **Plan first** runs with Windlass, because its planner files the plan with a Windlass tool.
+- **Asking.** An item has nobody watching it, so the agent works without asking. Claude Code runs in **Bypass permissions**. OpenCode runs in **Build**, and the platform allows once each edit or command it asks about, as Windlass runs commands in that container. The turn does not start if the agent does not offer that mode.
+- **Checks.** These agents do not run your repository's checks. CI decides the verdict, and the check on GitHub says "The turn left no record of its checks; CI decides."
+- **Review.** Items on a machine have no second reviewer, whatever the agent.
+- **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
+- **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. The item's turns and working time bound it. Where an agent reports no tokens, the page says **Not reported**, never 0.
+
+From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`. The machine's model list is on the **Machines** page. Issues filed from GitHub run Windlass.
 
 ## The pipeline
 

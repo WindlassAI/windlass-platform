@@ -309,7 +309,8 @@ describe("filing a work item from the Factory page", () => {
 		expect(pill("criteria")).toBeNull();
 		act(() => (host.querySelector('.start-kind input[value="item"]') as HTMLInputElement).click());
 		expect(pill("criteria")).not.toBeNull();
-		expect(pill("agent")).toBeNull();
+		// A work item chooses its agent and model too; it starts on Windlass.
+		expect(pill("agent")?.getAttribute("data-value")).toMatch(/^Windlass · /);
 	});
 });
 

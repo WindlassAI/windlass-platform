@@ -133,6 +133,8 @@ export const HARNESS_PROFILE = "docker-hardened";
 
 /** The harnesses a machine offers besides Windlass, as its runner last reported them. */
 export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarness[] => machine?.harnesses ?? [];
+/** The harnesses a work item can run on this machine: those it reports signed in. An item is not watched, so one that needs a sign-in is not offered. */
+export const itemHarnesses = (machine: MachineSummary | null): ReportedHarness[] => offeredHarnesses(machine).filter((harness) => harness.signIn === "token");
 
 /**
  * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented

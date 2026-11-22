@@ -12,11 +12,12 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemMode, type ItemState, type ItemSummary } from "@contract";
+import { type GithubId, type HarnessId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemMode, type ItemState, type ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
-import { PlaceChoice, machineUnusable } from "../components/PlaceChoice";
+import { HARNESS_PROFILE, PlaceChoice, itemHarnesses, machineUnusable } from "../components/PlaceChoice";
+import { HARNESS_NAMES } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
@@ -365,6 +366,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
+					{item.agent && item.agent.harness !== "windlass" ? <span>{HARNESS_NAMES[item.agent.harness]}</span> : null}
 					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
 					{item.state === "draft" ? null : (
 						<span>
@@ -496,7 +498,13 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	const [mode, setMode] = useState<ItemMode>("orchestrate");
+	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
+	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its hardened container.
+	const [agentChoice, setAgent] = useState<HarnessId>("windlass");
+	const agents = chosenMachine && chosenMachine.profiles.some((profile) => profile.id === HARNESS_PROFILE && profile.available) ? itemHarnesses(chosenMachine) : [];
+	const agent: HarnessId = agents.some((offered) => offered.id === agentChoice) ? agentChoice : "windlass";
+	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
+	const mode: ItemMode = agent === "windlass" ? modeChoice : "single";
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -516,7 +524,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(agent !== "windlass" ? { harness: agent } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -561,7 +569,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="label">
 							How it runs
 						</span>
-						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy} />
+						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || agent !== "windlass"} />
 						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
@@ -600,6 +608,24 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
 								{hardenedItemNote(chosenMachine)}
 							</p>
+						) : null}
+						{agents.length > 0 ? (
+							<div className="harness-pick">
+								<span className="label">Agent</span>
+								<div className="segmented" role="radiogroup" aria-label="Agent">
+									{(["windlass", ...agents.map((offered) => offered.id)] as HarnessId[]).map((id) => (
+										<label key={id} className={`segment${id === agent ? " segment-chosen" : ""}`}>
+											<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy} onChange={() => setAgent(id)} />
+											{HARNESS_NAMES[id]}
+										</label>
+									))}
+								</div>
+								<p className="field-note">
+									{agent === "windlass"
+										? "Windlass runs your repository's checks before it hands the work over."
+										: `${HARNESS_NAMES[agent]} works on its default model in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.`}
+								</p>
+							</div>
 						) : null}
 					</PlaceChoice>
 				) : null}

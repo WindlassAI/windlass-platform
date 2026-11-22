@@ -192,7 +192,7 @@ An agent runs only on a machine whose runner was started with its flag, `--harne
 
 The runner does not save `--harness`. Give it each time you start the runner, or the agent is no longer offered.
 
-Both agents run only in the hardened profile, **Hardened Docker on your machine "…"**. Neither runs work items: "Work items and their reviewers run only with Windlass." Neither has a tool to publish: open the pull request from the session panel. Neither gets your saved secrets.
+Both agents run only in the hardened profile, **Hardened Docker on your machine "…"**. Either can build a work item filed on this machine, without asking and in Quick only (see [Choose the agent](/docs/factory#choose-the-agent)). Neither has a tool to publish: open the pull request from the session panel. Neither gets your saved secrets.
 
 ## Sign agents in
 

@@ -31,6 +31,7 @@ import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { ItemSpend } from "../components/ItemSpend";
+import { agentFacts, agentLine } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
@@ -718,7 +719,18 @@ function Cost({ view }: { view: ItemView }) {
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
-			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} />
+			<p className="usage-note">Built by {agentLine(view.agent)}.</p>
+			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
+			{agentFacts(view.agent).length > 0 ? (
+				<dl className="usage-facts item-facts">
+					{agentFacts(view.agent).map((fact) => (
+						<div key={fact.label}>
+							<dt>{fact.label}</dt>
+							<dd className="usage-number">{fact.value}</dd>
+						</div>
+					))}
+				</dl>
+			) : null}
 			<p className="usage-note">
 				{hosted
 					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."

@@ -105,7 +105,9 @@ across turns and sleeps. Removing the sandbox removes that conversation.
 
 Publish from the session panel. The adapter receives no platform tools, saved secrets or user MCP
 servers. Individual tool-call cancellation, required checks, token accounting and conversation
-backups are unavailable for Claude Code. Work items, reviewers and hosted sessions use Windlass.
+backups are unavailable for Claude Code. Reviewers and hosted sessions use Windlass. A Quick work item
+filed on the machine can run Claude Code or OpenCode where it is signed in there; see
+[Work items](work-items.md#the-items-agent).
 
 ### What the platform keeps
 
