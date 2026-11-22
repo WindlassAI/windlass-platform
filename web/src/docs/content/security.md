@@ -65,6 +65,16 @@ On a platform that runs on E2B, each sandbox is a microVM of its own, hosted by 
 - **E2B**: nothing is promised inside the microVM. A command may have network and may read the access token. Windlass asks before any command it cannot sandbox.
 - **E2B, microVM only**: no sandbox inside the microVM. Commands run without asking, can reach any host and can read the access token.
 
+E2B never lets a sandbox reach private or link-local addresses on its side, in any of them. The platform's operator can limit the microVMs' network further, for the whole platform. E2B enforces the limit outside the microVM, so nothing inside it can lift it, and it applies to everything there: the agent's commands, a setup command, MCP servers, and the platform's own clone, push and model calls.
+
+| Network | What the microVM can reach |
+| --- | --- |
+| Open | Any public host. This is the default. |
+| Restricted | Only the model API, GitHub, the bucket that keeps the agent's memory, and the hosts the operator lists, such as the npm and PyPI registries. Other names do not resolve. |
+| None | Only the model API and that bucket. A session here cannot have a repository: "This deployment's hosted sandboxes have no network for repositories (WLP_E2B_NETWORK=none). Start the session without a repository, or on a machine of yours." |
+
+The **sandbox** chip and each E2B sandbox's description say which applies. Every host that is allowed is still a way out: in **Restricted**, a command could push to a repository on GitHub with a credential of its own. Address `169.254.169.254` answers in every mode: it is the microVM's own Firecracker metadata service, not a cloud provider's, and holds nothing of other sandboxes.
+
 ## On your machine
 
 A machine offers the same two Docker profiles: **Hardened Docker on your machine** always, and **Docker + Windlass sandbox on your machine** only if you allow it with `--allow-profile docker-windlass-sandbox`.

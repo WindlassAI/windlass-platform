@@ -3,7 +3,9 @@
  *
  *   cd server && npx tsx ../scripts/e2b-provider-test.ts                  the provider on the in-memory client
  *   cd server && npx tsx ../scripts/e2b-provider-test.ts --docker
- *                                                                        the same, and "a real turn" besides
+ *                                                                        the same, and "a real turn" besides, and the
+ *                                                                        network modes through a stand-in of E2B's filter
+ *                                                                        (--network-only: only those)
  *
  * The first part runs the provider's logic (server/src/sandbox/e2b/sandboxes.ts) on `FakeE2b`, which
  * does to sandboxes what E2B's documentation says E2B does: the cap, the timeout that is pushed out
@@ -39,11 +41,18 @@ import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
+import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, hostedNetworkText, networkConfig, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
+import { personalServerReach } from "../server/src/server-question.js";
+import { choosePlacement } from "../server/src/factory/placement.js";
+import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
+import { execFileSync } from "node:child_process";
 import { BWRAP_PROBE, DATA_DIR, isTurnSandbox, randomId, shellQuote } from "../server/src/sandbox/provider.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const withDocker = process.argv.includes("--docker");
+/** With --docker: only the network checks through the stand-in of E2B's filter, not the real turns. */
+const networkOnly = process.argv.includes("--network-only");
 const run = randomId(3);
 let passes = 0;
 let failures = 0;
@@ -96,7 +105,7 @@ const SETTINGS: E2bSettings = {
 
 /** A machine that answers as the sandbox image would to what the provider itself runs. */
 function imageLike(extra: (command: string, stdin: () => string) => { exitCode?: number; stdout?: string; stderr?: string } | undefined = () => undefined): ScriptedMachine {
-	return new ScriptedMachine((command, stdin) => extra(command, stdin) ?? (command.includes("windlass --version") ? { stdout: "Windlass 0.4.0+test (linux-x64)\n" } : command.includes("wlp-run list") && command.includes("wc -l") ? { stdout: "0\n" } : undefined));
+	return new ScriptedMachine((command, stdin) => extra(command, stdin) ?? (/ wlp-network [a-z]+ /.test(command) ? { stdout: `network ${/ wlp-network ([a-z]+) /.exec(command)?.[1]}\n` } : command.includes("windlass --version") ? { stdout: "Windlass 0.4.0+test (linux-x64)\n" } : command.includes("wlp-run list") && command.includes("wc -l") ? { stdout: "0\n" } : undefined));
 }
 
 /** A provider on a fake E2B, with a clock of its own and its log lines kept. */
@@ -611,6 +620,98 @@ await section("settings and prices", async () => {
 	expect("an hour of the default sandbox is estimated at about 6.7 cents", Math.abs(hour - 0.0666) < 1e-9 && describeUsage(3600, 1, 1024) === "3600 s at 1 vCPU and 1024 MiB, $0.0666 (estimated)", describeUsage(3600, 1, 1024));
 });
 
+await section("network modes", async () => {
+	const restrictedEnv = { WLP_E2B_NETWORK: "restricted" };
+	const open = readE2bNetwork({});
+	expect("without WLP_E2B_NETWORK the deployment is open and nothing is listed", open.mode === "open" && open.hosts.length === 0 && networkConfig(open) === null);
+	const restricted = readE2bNetwork(restrictedEnv);
+	expect(
+		"restricted lists the model API, the git host and the default presets, sorted, each once",
+		restricted.mode === "restricted" && ["api.openai.com", "github.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "objects.githubusercontent.com"].every((host) => restricted.hosts.includes(host)) && JSON.stringify(restricted.hosts) === JSON.stringify([...new Set(restricted.hosts)].sort()),
+		restricted.hosts.join(","),
+	);
+	const bucketEnv = { WLP_BUCKET_ENDPOINT: "https://acct.r2.cloudflarestorage.com", WLP_BUCKET_NAME: "memory", WLP_BUCKET_ACCESS_KEY_ID: "id", WLP_BUCKET_SECRET_ACCESS_KEY: "secret" };
+	const withBucket = readE2bNetwork({ ...restrictedEnv, ...bucketEnv, WLP_E2B_NETWORK_ALLOW: "@crates,git.example.org", WLP_GITHUB_URL: "https://ghe.example.com" });
+	expect("the bucket's host, the GitHub of WLP_GITHUB_URL and the operator's hosts are added; the default presets are replaced", ["acct.r2.cloudflarestorage.com", "ghe.example.com", "crates.io", "git.example.org", "api.openai.com"].every((host) => withBucket.hosts.includes(host)) && !withBucket.hosts.includes("registry.npmjs.org") && !withBucket.hosts.includes("github.com"), withBucket.hosts.join(","));
+	const virtual = readE2bNetwork({ ...restrictedEnv, ...bucketEnv, WLP_BUCKET_STYLE: "virtual" });
+	expect("in virtual style the bucket's name comes before the endpoint's host, as in a signed link", virtual.hosts.includes("memory.acct.r2.cloudflarestorage.com"), virtual.hosts.join(","));
+	const none = readE2bNetwork({ WLP_E2B_NETWORK: "none", ...bucketEnv });
+	expect("none lists only the model API and the bucket: no git host, no presets", JSON.stringify(none.hosts) === JSON.stringify(["acct.r2.cloudflarestorage.com", "api.openai.com"]), none.hosts.join(","));
+	const config = networkConfig(restricted);
+	expect("E2B is asked to deny every destination, allow the names, and allow no DNS server", config !== null && JSON.stringify(config.denyOut) === '["0.0.0.0/0"]' && JSON.stringify(config.allowOut) === JSON.stringify(restricted.hosts) && config.dnsServers.length === 0);
+	const refusal = (env: NodeJS.ProcessEnv) => { try { readE2bNetwork(env); return ""; } catch (error) { return error instanceof Error ? error.message : String(error); } };
+	expect("a wildcard, an address, a port or an unknown preset is refused", [ "*.example.com", "93.184.216.34", "example.com:8443", "@cargo", "localhost" ].every((entry) => refusal({ ...restrictedEnv, WLP_E2B_NETWORK_ALLOW: entry }) !== ""), refusal({ ...restrictedEnv, WLP_E2B_NETWORK_ALLOW: "*.example.com" }));
+	expect("WLP_E2B_NETWORK_ALLOW without restricted is refused", /only with WLP_E2B_NETWORK=restricted/.test(refusal({ WLP_E2B_NETWORK: "none", WLP_E2B_NETWORK_ALLOW: "pypi.org" })) && /only with/.test(refusal({ WLP_E2B_NETWORK_ALLOW: "pypi.org" })));
+	expect("a git host or bucket E2B could not match by name (a port, plain http) stops the server", /WLP_GITHUB_URL/.test(refusal({ ...restrictedEnv, WLP_GITHUB_URL: "https://git.example.com:8443" })) && /WLP_BUCKET_ENDPOINT/.test(refusal({ WLP_E2B_NETWORK: "none", ...bucketEnv, WLP_BUCKET_ENDPOINT: "http://minio.local:9000" })));
+	expect("an unknown mode is refused", /open, restricted or none/.test(refusal({ WLP_E2B_NETWORK: "closed" })));
+	expect("readE2bSettings carries it", readE2bSettings({ WLP_E2B_NETWORK: "none" }).network?.mode === "none" && readE2bSettings({}).network?.mode === "open");
+
+	// The provider, per mode, on the in-memory client.
+	const opened = world();
+	const openId = await opened.make();
+	const openBox = opened.fake.sandboxes.get(openId);
+	expect("open: the sandbox is made without a network option and without a network mark, as before", openBox?.network === null && !(META.network in (openBox?.metadata ?? {})) && !(opened.machines.get(openId)?.commands ?? []).some((entry) => entry.options.root));
+	await opened.sandboxes.connect(openId);
+	expect("open: a connect asks nothing more of E2B", callsOf(opened.fake, "updateNetwork").length === 0);
+
+	const w = world({ network: restricted });
+	const id = await w.make();
+	const box = w.fake.sandboxes.get(id);
+	expect("restricted: the sandbox is made with the deny-all configuration and its mark", JSON.stringify(box?.network) === JSON.stringify(config) && box?.metadata[META.network] === "restricted", JSON.stringify(box?.network));
+	const commands = w.machines.get(id)?.commands ?? [];
+	const first = commands[0];
+	expect(
+		"restricted: before anything else runs in it, the names are pinned as root, every allowed host and nothing else",
+		first !== undefined && first.options.root === true && first.command.includes("wlp-network") && first.command.includes(" wlp-network restricted 1.1.1.1 ") && restricted.hosts.every((host) => first.command.includes(` ${host}`)) && commands.findIndex((entry) => entry.command.includes("git init")) > 0,
+		first?.command.slice(0, 200),
+	);
+	expect("restricted: no command of a session's runs as root", commands.filter((entry) => entry.options.root).length === 1);
+	w.fake.calls.length = 0;
+	await w.sandboxes.connect(id);
+	const updates = callsOf(w.fake, "updateNetwork");
+	expect("restricted: each connect sets E2B's configuration again and pins the names again", updates.length === 1 && updates[0] === `updateNetwork ${id} ${JSON.stringify(config)}` && (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root).length === 2, updates.join(" | "));
+	await w.sandboxes.suspend(id);
+	await w.sandboxes.connect(id);
+	expect("restricted: a resumed sandbox is set again too", callsOf(w.fake, "updateNetwork").length === 2 && w.fake.sandboxes.get(id)?.state === "running");
+
+	// The operator turns the deployment back to open: a kept sandbox is opened at its next connect.
+	const reopened = new E2bSandboxes(w.fake, { ...SETTINGS, network: open }, { log: () => {}, now: () => w.clock.now, sleep: async () => {} });
+	w.fake.calls.length = 0;
+	await reopened.connect(id);
+	const roots = (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root);
+	expect("a mode change reaches a kept sandbox: open clears E2B's configuration and gives the resolver back", callsOf(w.fake, "updateNetwork").join() === `updateNetwork ${id} null` && w.fake.sandboxes.get(id)?.network === null && roots.at(-1)?.command.endsWith(" wlp-network open 1.1.1.1") === true, callsOf(w.fake, "updateNetwork").join());
+
+	const n = world({ network: none });
+	const noneId = await n.make();
+	expect("none: only the model API and the bucket are allowed", JSON.stringify(n.fake.sandboxes.get(noneId)?.network?.allowOut) === JSON.stringify(none.hosts));
+	expect("the provider says its mode, for the launch's refusal and the factory", n.sandboxes.egress() === "none" && w.sandboxes.egress() === "restricted" && opened.sandboxes.egress() === "open");
+	expect("a repository launch on hosted none is refused in a sentence fit to show", /WLP_E2B_NETWORK=none/.test(HOSTED_OFFLINE_REPOSITORY) && /without a repository/.test(HOSTED_OFFLINE_REPOSITORY));
+
+	const failing = world({ network: restricted }, { machine: () => new ScriptedMachine((command) => (command.includes("wlp-network") ? { exitCode: 1, stderr: "read-only file system" } : command.includes("windlass --version") ? { stdout: "Windlass 0.4.0 (linux-x64)\n" } : undefined)) });
+	let failed = "";
+	await failing.make().catch((error: unknown) => (failed = error instanceof Error ? error.message : String(error)));
+	expect("a sandbox whose names cannot be pinned is removed, not handed out", /could not set the sandbox's names/.test(failed) && /read-only file system/.test(failed) && [...failing.fake.sandboxes.values()].length === 0, failed);
+
+	// What the user reads.
+	const facts = (mode: "open" | "restricted" | "none") => profilesFor("e2b", { windlassSandbox: false, openProfile: true, network: mode });
+	const [plain, microvm] = ["e2b", "e2b-open"].map((profileId) => facts("restricted").find((profile) => profile.id === profileId)!);
+	expect("restricted: the E2B profiles' facts and summaries say what commands reach", plain.commandNetwork && plain.commandNetworkText === hostedNetworkText("restricted") && /hosts its operator allows/.test(plain.summary) && /model API, GitHub and the hosts this deployment allows, and no other host/.test(microvm.summary) && microvm.commandNetworkText === hostedNetworkText("restricted"), microvm.summary);
+	const noneOpen = facts("none").find((profile) => profile.id === "e2b-open")!;
+	expect("none: commands are said to have no network but the model API", !noneOpen.commandNetwork && noneOpen.commandNetworkText === "commands can reach only the model API" && /cannot have a repository/.test(facts("none").find((profile) => profile.id === "e2b")!.summary));
+	expect("open: the facts are what they were", JSON.stringify(facts("open")) === JSON.stringify(profilesFor("e2b", { windlassSandbox: false, openProfile: true })) && facts("open").every((profile) => profile.commandNetworkText === undefined));
+	const sandboxed = e2bProfile({ windlassSandbox: true, network: "restricted" });
+	expect("with Windlass's sandbox, sandboxed commands keep no network, and the summary says what else the microVM reaches", !sandboxed.commandNetwork && sandboxed.commandNetworkText === undefined && /hosts its operator allows/.test(sandboxed.summary));
+	expect("the provider lists its profiles with its mode", w.sandboxes.profile("e2b").commandNetworkText === hostedNetworkText("restricted"));
+	const reachOf = personalServerReach(facts("restricted"), "restricted").find((entry) => entry.profile === "e2b")!;
+	expect("Settings says a server by address must be on an allowed host, and what a started one can reach", /must be one of them/.test(reachOf.address) && /only the network this deployment allows/.test(reachOf.command), reachOf.address);
+	expect("and on open says what it said before", JSON.stringify(personalServerReach(facts("open"))) === JSON.stringify(personalServerReach(facts("open"), "open")));
+
+	const hostedTask = { key: "a", title: "Do a", brief: "b", acceptance: ["x"], dependsOn: [], owns: ["src/**"], budget: { tokens: 1000, turns: 1, activeSeconds: 60, hostedSeconds: 60 }, place: { prefer: "hosted", reason: "r" } };
+	const placed = (hostedEgress?: "open" | "restricted" | "none") => choosePlacement(hostedTask, { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["e2b"], hostedEgress });
+	const [offline, limited] = [placed("none"), placed("restricted")];
+	expect("the factory places no repository work on hosted none, and places it on restricted", "refused" in offline && /no network for repositories/.test(offline.refused ?? "") && "decision" in limited, JSON.stringify(offline));
+});
+
 await section("the template", async () => {
 	// What E2B would be asked to build, from a context like the one sandbox/e2b/build.sh makes. Nothing is sent.
 	const context = mkdtempSync(join(tmpdir(), "wlp-e2b-template-"));
@@ -639,6 +740,9 @@ await section("the template", async () => {
 // A real turn: the fake client's sandboxes are containers of the sandbox image
 // ---------------------------------------------------------------------------------------------
 
+/** The stand-in of E2B's egress filter (scripts/e2b-network-standin.mjs) while the network checks run: sandboxes are made on its network. */
+let standIn: { network: string; container: string; address: string; ca: string; dir: string } | null = null;
+
 /** A fake sandbox whose commands run in a container, each started the way E2B starts one: a login shell that is given the command as one string. */
 class ContainerMachine implements FakeMachine {
 	private constructor(readonly container: string) {}
@@ -646,16 +750,28 @@ class ContainerMachine implements FakeMachine {
 	static async make(id: string, image: string): Promise<ContainerMachine> {
 		const name = `wlp-e2bfake-${run}-${id.slice(0, 12)}`;
 		// As a session container of the first Docker profile, where bubblewrap works, but on a disk of its own (no
-		// volume) and with no network at all: nothing these turns do needs one.
+		// volume) and with no network at all: nothing these turns do needs one. The network checks put it on the
+		// stand-in's internal network instead, where the filter is the only way anywhere, as E2B's is for a microVM.
 		// Stand in for the VM supervisor, which runs outside the agent UID. start() selects agent explicitly.
-		const flags = ["--init", "--user", "root", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--network", "none", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "1", "--pids-limit", "512", "--hostname", "sandbox", ...(PROFILE_RUN_FLAGS["docker-windlass-sandbox"] ?? [])];
+		const flags = ["--init", "--user", "root", "--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--network", standIn?.network ?? "none", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "1", "--pids-limit", "512", "--hostname", "sandbox", ...(PROFILE_RUN_FLAGS["docker-windlass-sandbox"] ?? [])];
 		await docker(["run", "-d", "--pull", "never", "--name", name, "--label", LABEL_ARG, ...flags, image], { timeoutMs: 120_000, check: true });
+		if (standIn !== null) {
+			// What a microVM has from E2B: a resolver (8.8.8.8 there, the stand-in's here) and trust in the hosts it reaches.
+			await docker(["exec", "-i", "-u", "root", name, "sh", "-ec", 'echo "nameserver $1" > /etc/resolv.conf; cat > /usr/local/share/ca-certificates/wlp-fixture.crt; update-ca-certificates >/dev/null 2>&1', "sh", standIn.address], { stdin: standIn.ca, check: true });
+		}
 		return new ContainerMachine(name);
+	}
+
+	/** E2B's configuration for this sandbox, handed to the stand-in's filter by the sandbox's address. */
+	async network(config: E2bNetworkConfig | null): Promise<void> {
+		if (standIn === null) return;
+		const address = (await docker(["inspect", "-f", `{{(index .NetworkSettings.Networks "${standIn.network}").IPAddress}}`, this.container], { check: true })).stdout.trim();
+		await docker(["exec", "-i", standIn.container, "sh", "-ec", 'mkdir -p /tmp/policies; cat > "/tmp/policies/$1.json"', "sh", address], { stdin: JSON.stringify(config), check: true });
 	}
 
 	async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
 		const envs = Object.entries(options.envs ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		const child: ChildProcess = spawn("docker", ["exec", ...(options.stdin ? ["-i"] : []), "-u", options.gitUser ? "nobody" : "agent", "-w", options.cwd, ...envs, this.container, "bash", "-l", "-c", command], { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+		const child: ChildProcess = spawn("docker", ["exec", ...(options.stdin ? ["-i"] : []), "-u", options.root ? "root" : options.gitUser ? "nobody" : "agent", "-w", options.cwd, ...envs, this.container, "bash", "-l", "-c", command], { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
 		child.stdout?.setEncoding("utf8").on("data", (text: string) => options.onStdout?.(text));
 		child.stderr?.setEncoding("utf8").on("data", (text: string) => options.onStderr?.(text));
 		child.stdin?.on("error", () => undefined);
@@ -710,7 +826,7 @@ const shell = (callId: string, command: string): Response => [{ type: "tool_call
 const TOKEN = "FAKE-ACCESS-TOKEN-E2B-TEST-not-a-real-token";
 
 if (withDocker) {
-	await section("a real turn", async () => {
+	if (!networkOnly) await section("a real turn", async () => {
 		const image = await docker(["image", "inspect", "--format", "{{.Id}}", IMAGE]);
 		if (image.code !== 0) {
 			expect(`the sandbox image ${IMAGE} is here`, false, "build it with sandbox/build.sh");
@@ -848,6 +964,98 @@ if (withDocker) {
 			for (const machine of machines.values()) await docker(["rm", "-f", "-v", machine.container]).catch(() => undefined);
 			const left = await docker(["ps", "-a", "--filter", `name=^wlp-e2bfake-${run}-`, "--format", "{{.Names}}"]);
 			expect("every container this test started is removed", left.stdout.trim() === "", left.stdout.trim());
+		}
+	});
+	await section("network modes through a stand-in of E2B's filter", async () => {
+		const image = (await docker(["image", "inspect", "--format", "{{.Id}}", IMAGE])).stdout.trim();
+		if (image === "") {
+			expect(`the sandbox image ${IMAGE} is here`, false, "build it with sandbox/build.sh");
+			return;
+		}
+		const dir = mkdtempSync(join(tmpdir(), "wlp-e2b-net-"));
+		const names = ["github.com", "api.openai.com", "acct.r2.example", "evil.example", "registry.npmjs.org"];
+		const ssl = (...args: string[]) => execFileSync("openssl", args, { cwd: dir, stdio: "pipe" });
+		ssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.crt", "-subj", "/CN=wlp-fixture-ca", "-days", "1");
+		ssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "leaf.key", "-out", "leaf.csr", "-subj", "/CN=fixture");
+		writeFileSync(join(dir, "ext"), `subjectAltName=${names.map((name) => `DNS:${name}`).join(",")}\n`);
+		ssl("x509", "-req", "-in", "leaf.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-out", "leaf.crt", "-days", "1", "-extfile", "ext");
+		execFileSync("chmod", ["-R", "a+rX", dir]);
+		const network = `wlp-e2bfake-${run}-net`;
+		const container = `wlp-e2bfake-${run}-filter`;
+		const machines: ContainerMachine[] = [];
+		try {
+			await docker(["network", "create", "--internal", "--label", LABEL_ARG, network], { check: true });
+			const source = readFileSync(join(root, "scripts/e2b-network-standin.mjs"), "utf8");
+			const setup = [
+				"cd /tmp && mkdir -p cgi-bin git/acme",
+				"git init -q --bare git/acme/demo.git && git -C git/acme/demo.git config http.receivepack true",
+				"git init -q seed && git -C seed -c user.name=f -c user.email=f@example.invalid commit -q --allow-empty -m seed && git -C seed push -q /tmp/git/acme/demo.git HEAD:refs/heads/main",
+				"printf '%s\\n' '#!/bin/sh' 'export GIT_PROJECT_ROOT=/tmp/git GIT_HTTP_EXPORT_ALL=1' 'exec git http-backend' > cgi-bin/git && chmod +x cgi-bin/git",
+				"python3 -m http.server --cgi --bind 127.0.0.1 8081 >/dev/null 2>&1 &",
+				'exec node --input-type=module -e "$WLP_STANDIN" -- wlp-e2b-standin "$(hostname -i | cut -d" " -f1)" /fixture/leaf.key /fixture/leaf.crt',
+			].join("\n");
+			await docker(["run", "-d", "--pull", "never", "--name", container, "--label", LABEL_ARG, "--network", network, "--user", "agent", "--sysctl", "net.ipv4.ip_unprivileged_port_start=0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-e", `WLP_STANDIN=${source}`, "-v", `${dir}:/fixture:ro`, image, "bash", "-ec", setup], { timeoutMs: 120_000, check: true });
+			for (let tries = 0; !(await docker(["logs", container])).stdout.includes("standin ready"); tries += 1) {
+				if (tries > 100) throw new Error(`the stand-in did not start: ${(await docker(["logs", container])).stderr.slice(-500)}`);
+				await sleep(100);
+			}
+			const address = (await docker(["inspect", "-f", `{{(index .NetworkSettings.Networks "${network}").IPAddress}}`, container], { check: true })).stdout.trim();
+			standIn = { network, container, address, ca: readFileSync(join(dir, "ca.crt"), "utf8"), dir };
+			const bucket = { WLP_BUCKET_ENDPOINT: "https://acct.r2.example", WLP_BUCKET_NAME: "memory", WLP_BUCKET_ACCESS_KEY_ID: "id", WLP_BUCKET_SECRET_ACCESS_KEY: "secret" };
+			const url = "https://github.com/acme/demo.git";
+			for (const mode of ["open", "restricted", "none"] as const) {
+				const fake = new FakeE2b({ machine: async (id) => { const machine = await ContainerMachine.make(id, image); machines.push(machine); return machine; } });
+				const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: readE2bNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) }) }, { log: () => {}, pinAddress: address });
+				const id = await sandboxes.create({ uid: "u1", sessionId: `net-${mode}`, profile: "e2b" });
+				const handle = (await sandboxes.connect(id)) as E2bSandboxHandle;
+				const sh = async (script: string) => {
+					const result = await handle.exec(["sh", "-c", script], { timeoutMs: 60_000 });
+					return `${result.stdout}${result.stderr}`.trim();
+				};
+				// The platform's own steps, with its own code: clone, fetch and push as the transport user.
+				const cloned = await cloneWithToken(handle, "fixture-token", { url, branch: "main", directory: "demo" });
+				let pushed = "";
+				let received = "";
+				if (cloned.ok) {
+					const fetched = await fetchWithToken(handle, "fixture-token", { url, base: "main" });
+					await sh("echo network > proof.txt");
+					const branch = `windlass/net-${mode}`;
+					const committed = await commitWork(handle, { branch, baseSha: fetched.marks.get("base") ?? null, sessionId: `net-${mode}`, pushed: null, author: { name: "Fixture", email: "test@example.invalid" } }, "Fixture commit");
+					try {
+						if (committed.ok && (await outgoingPatch(handle, committed.attempt)) !== null) pushed = (await pushWithToken(handle, "fixture-token", { attempt: committed.attempt, url, branch })).marks.get("pushed") ?? "";
+					} finally {
+						await discardHandover(handle, committed.attempt);
+					}
+					received = (await docker(["exec", container, "git", "-C", "/tmp/git/acme/demo.git", "rev-parse", "--verify", "-q", `refs/heads/${branch}`])).stdout.trim();
+				}
+				// The engine's model requests and the bucket's signed links, as the agent's user sends them; then what a command could try.
+				const model = await sh("curl -sS --max-time 10 -o /dev/null -w '%{http_code}' https://api.openai.com/v1/models");
+				const upload = await sh("curl -sS --max-time 10 -X PUT --data-binary memory -o /dev/null -w '%{http_code}' 'https://acct.r2.example/memory/u1/net?X-Amz-Signature=fixture'");
+				const other = await sh("curl -sS --max-time 10 https://evil.example/; echo exit=$?");
+				const direct = await sh(`curl -sS --max-time 10 --resolve evil.example:443:${address} https://evil.example/; echo exit=$?`);
+				const plain = await sh(`curl -sS --max-time 10 --resolve evil.example:80:${address} http://evil.example/; echo exit=$?`);
+				const lookup = await sh("getent hosts evil.example; echo exit=$?");
+				const said = `clone ${cloned.ok ? "ok" : cloned.failure} | model ${model} | upload ${upload} | other ${other} | direct ${direct} | lookup ${lookup}`;
+				if (mode === "open") {
+					expect("open: the platform clones and pushes, as before", cloned.ok && pushed !== "" && pushed === received, said);
+					expect("open: every host is reachable, as before", model === "401" && upload === "200" && other.includes("fixture evil.example") && /exit=0/.test(lookup), said);
+				} else {
+					expect(`${mode}: the model API and the bucket are reachable from the agent's user`, model === "401" && upload === "200", said);
+					expect(`${mode}: a command reaches no other host, by name, by address or over plain HTTP`, !other.includes("fixture") && /exit=[1-9]/.test(other) && !direct.includes("fixture") && /exit=[1-9]/.test(direct) && !plain.includes("fixture") && /exit=[1-9]/.test(plain), said);
+					expect(`${mode}: an unlisted name does not resolve, and nothing is asked of a resolver`, /exit=[1-9]/.test(lookup) && (await sh("cat /etc/resolv.conf | grep -c nameserver || true")) === "0", said);
+					if (mode === "restricted") expect("restricted: the platform's own clone, fetch and push still work, as the transport user", cloned.ok && pushed !== "" && pushed === received, said);
+					else expect("none: the git host is not reachable, which is why repository sessions are refused there", !cloned.ok, said);
+				}
+				await sandboxes.destroy(id);
+			}
+		} finally {
+			standIn = null;
+			for (const machine of machines) await docker(["rm", "-f", "-v", machine.container]).catch(() => undefined);
+			await docker(["rm", "-f", container]).catch(() => undefined);
+			await docker(["network", "rm", network]).catch(() => undefined);
+			rmSync(dir, { recursive: true, force: true });
+			const left = await docker(["ps", "-a", "--filter", `name=^wlp-e2bfake-${run}-`, "--format", "{{.Names}}"]);
+			expect("the stand-in and every sandbox of the network checks are removed", left.stdout.trim() === "", left.stdout.trim());
 		}
 	});
 } else {

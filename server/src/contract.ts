@@ -70,6 +70,12 @@ export interface PlatformInfo {
 	windlassVersion: string | null;
 	profiles: SandboxProfile[];
 	/**
+	 * What this deployment's hosted sandboxes may reach (E2B, WLP_E2B_NETWORK), when it is not `open`:
+	 * `restricted`, only the model API, GitHub and the hosts the operator allows; `none`, only the model
+	 * API, and no repositories. Absent: as before network modes.
+	 */
+	hostedEgress?: "restricted" | "none";
+	/**
 	 * Set when this deployment has a GitHub App: users can connect GitHub, launch agents on their own
 	 * repositories and open pull requests. Absent or null when it has none: the web app then shows
 	 * nothing of it.
