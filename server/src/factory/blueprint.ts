@@ -38,7 +38,7 @@ import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.j
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, type PlacementInventory } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
-import { feedbackWords, replanText } from "./feedback.js";
+import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
 import { subtaskMinimum, emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { refusalMessage } from "../provider-refusal.js";
@@ -207,7 +207,7 @@ function apply(c: Change, fact: Fact): boolean {
 				f.heldFingerprint = batch.fingerprint;
 				f.heldWriters = batch.writers ?? [batch.by.replace(/^github:/, "")];
 				f.heldOthers = batch.others;
-				c.feedback.push({ ids: batch.ids, state: "held", reason: feedbackWords.held(item.head ? shortSha(item.head) : undefined) });
+				c.feedback.push({ ids: batch.ids, state: "held", reason: feedbackWords.held });
 				c.say(feedbackWords.heldLog);
 			}
 			return true;
@@ -594,14 +594,14 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false) {
 	const refusal = feedbackRefusal(item, batch);
 	if (refusal) return decline(c, batch, refusal);
 	const feature = item.mode === "orchestrate";
-	let text = batch.text;
+	let text = fixText(batch.text);
 	if (feature) {
 		const reserve = closingReserve(item.singleBudget!), floor = subtaskMinimum(item.singleBudget!);
 		const left = emptyBudget();
 		for (const d of dimensions) left[d] = Math.max(0, item.budget[d] - item.spent[d] - reserve[d]);
 		const short = dimensions.some(d => left[d] < floor[d]);
 		if (short || (batch.others && !approved)) {
-			const reason = short ? feedbackWords.budget : feedbackWords.feature(authors(batch));
+			const reason = short ? feedbackWords.budget(authors(batch)) : feedbackWords.feature(authors(batch));
 			f.awaiting = batch;
 			c.feedback.push({ ids: batch.ids, state: "question", reason });
 			return ask(c, "feedback_feature", reason, [...(short ? [] : [{ id: "send" as const, label: feedbackWords.plan }]), choice("leave")], null, null);
@@ -620,7 +620,7 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false) {
 		item.featurePlan!.status = "superseded";
 		const allocation = item.approvedAllocation ??= emptyBudget();
 		for (const d of dimensions) allocation[d] += left[d];
-		text = replanText(text, { plan: item.approvedPlan, completed: item.jobs?.filter(j => j.state === "done").map(j => j.task.key) ?? [] });
+		text = replanText(batch.text, { plan: item.approvedPlan, completed: item.jobs?.filter(j => j.state === "done").map(j => j.task.key) ?? [] });
 	} else if (batch.others && !approved && f.othersRuns >= RULES.feedbackRuns) {
 		const reason = feedbackWords.more(authors(batch));
 		f.awaiting = batch;
@@ -631,8 +631,8 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false) {
 	if (batch.others) f.othersRuns++;
 	f.taken.push(...batch.ids);
 	f.runs[batch.fingerprint] = run;
-	c.feedback.push({ ids: batch.ids, state: "taken", reason: feedbackWords.taken(run), run });
-	c.say(feedbackWords.takenLog(authors(batch), run));
+	c.feedback.push({ ids: batch.ids, state: "taken", reason: feedbackWords.taken(run, feature), run });
+	c.say(feedbackWords.takenLog(authors(batch), run, feature));
 	const previousHead = c.run.ci?.moved ?? item.head;
 	const feedbackQuote = { head: previousHead, start: text.indexOf(batch.text), length: batch.text.length };
 	beginRun(c, { ...IMPLEMENT, text, feedbackQuote, ...(feature && { kind: "refine", charge: "plan" }) });

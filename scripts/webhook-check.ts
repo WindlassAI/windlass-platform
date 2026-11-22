@@ -673,7 +673,7 @@ async function run() {
 				const v=await until("missed review taken",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
 				assert.equal(v.feedback.batches[0].entries[0].id,"review:"+r.review.id);
 				assert.equal(v.feedback.batches[0].entries[0].access,"write");
-				await until("feedback status in marked comment",async()=>item.pull.comments.some(c=>c.body.includes("being worked on")));
+				await until("feedback status in marked comment",async()=>item.pull.comments.some(c=>c.body.includes("Changes asked for by \\@"+peer.login+" are being worked on in run 2\\.")));
 				await until("reworked PR awaiting CI",async()=>(await item.view()).run?.step.kind==="ci");
 				await item.clock().checkAdvance("poll",0);
 				await until("writer requested again", async()=>item.pull.requestedReviewers.includes(peer.login));
