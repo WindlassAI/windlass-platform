@@ -65,6 +65,7 @@ function codexProvider(provider, generation, options = {}) {
 		bearer: (headers) => headers.authorization,
 		closeEachReply: true,
 		responseFilter: auth.responseFilter,
+		secrets: auth.secrets,
 		drain: auth.drain,
 		async target(url, headers) {
 			if (!models.test(url) && url !== responses) return;

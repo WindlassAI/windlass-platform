@@ -191,7 +191,7 @@ async function withControl(answers: Response[], exercise: (runner: {
 		slots, maxTurns: slots.max,
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
-		checkAuthenticatedNetwork: async () => {}, welcome: async () => {},
+		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {},
 		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
