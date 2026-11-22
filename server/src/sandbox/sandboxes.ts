@@ -37,6 +37,7 @@ import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type Sandb
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
+import { codexDefaultMode } from "./codex-modes.js";
 import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
@@ -542,6 +543,8 @@ export class DockerSandboxes implements Sandboxes {
 				// Windlass reads its handed-in token in this container's /dev/shm.
 				...(!harness ? ["--ipc", "private"] : []),
 				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, "--log-driver", "none", ...relay.env] : []),
+				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
+				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],
