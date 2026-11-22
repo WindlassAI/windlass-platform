@@ -503,6 +503,13 @@ drive("giving up completes the pending check", newItem(), [...toCi,
 print("\n== R4: the second review sends the builder back");
 
 {
+	const { reviewSendsBack } = await import("../server/src/factory/blueprint.js");
+	expect("only an item whose reviewer can send its builder back has a review round cap", reviewSendsBack(reviewerOn()) && !reviewSendsBack(newItem()) &&
+		!reviewSendsBack({ ...reviewerOn(), place: { kind: "machine", machineId: "local" } }) && !reviewSendsBack({ ...reviewerOn(), mode: "orchestrate" }) &&
+		!reviewSendsBack({ ...reviewerOn(), parent: { itemId: "i_feature", key: "first", title: "Feature" } }));
+}
+
+{
 	type Block = ItemReview["blocks"][number];
 	const blockingAt = (round: number, roots: string[]): Block[] => roots.map((root, i) => ({ kind: "finding", id: `r${round}.f${i + 1}`, root, severity: "blocking", title: `Finding ${root}`, text: `Fix ${root}.`, at: [{ path: "src/add.ts", side: "head", lines: { start: 3, end: 4 } }], refs: [] }));
 	/** A filing of the review at the current key: its round, its head and its blocking roots. */
@@ -560,9 +567,11 @@ print("\n== R4: the second review sends the builder back");
 	];
 	const capped: Row = { fact: filedAt("changes_requested", 3, H4, ["r3.f1"]), state: "waiting", wait: "person", effects: ["ask"], also: o =>
 		holds(o.item.question?.cause === "review" && o.item.question.text === "The second agent still asks for changes after 2 rounds of fixes." && o.item.question.choices.some(c => c.id === "hand_over"), `asked ${JSON.stringify(o.item.question)}`) };
-	drive("R4 4: a third round of changes stops on the cap, and raise runs the fix", reviewerOn(), [...round3, capped,
+	drive("R4 4: a third round of changes stops on the cap; raise runs one more round, and the next changes stop again", reviewerOn(), [...round3, capped,
 		{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn", "verified_check"], also: o =>
-			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 1 && deliverIs(o, t => t.includes("r3.f1")) && effect(o, "verified_check")?.key === H4, "raise did not run the fix") },
+			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 2 && deliverIs(o, t => t.includes("r3.f1")) && effect(o, "verified_check")?.key === H4, "raise did not run exactly one more fix") },
+		...fixed(H5), nextReview(H5, 4, H4, ["r3.f1"]),
+		{ ...capped, fact: filedAt("changes_requested", 4, H5, ["r4.f1"]) },
 	]);
 	drive("R4 7: Hand it over from the review stop keeps the last review", reviewerOn(), [...round3, capped, refresh(answer("hand_over")),
 		{ fact: ci(H4, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "verified_check", "poll_pr"], also: o => {
@@ -622,6 +631,81 @@ print("\n== R4: the second review sends the builder back");
 			return holds(o.feedback?.[0].state === "taken" && o.item.run.rounds.review === 0 && o.item.pendingChecks?.find(p => p.sha === reviewHead)?.feedback === true, "the feedback was not taken, or the reviewed head not reopened");
 		} },
 	]);
+	// R4 review fixes, 1: someone pushes to the pull request while the review that asks for changes runs.
+	const movedAway: Row = { fact: duringReview("open", H(2)), state: "working", effects: ["poll_pr"], also: o => holds(o.item.run?.ci?.moved === H(2), "the move was not seen") };
+	const handedMoved: Row = { fact: movedReading, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o =>
+		holds(effect(o, "handoff")?.review === null && effect(o, "handoff")?.reviewNone === "the pull request moved after the agent pushed" && effect(o, "handoff")?.verdict.moved === H(2) &&
+			effect(o, "verified_check")?.key === H(2) && effect(o, "verified_check")?.conclusion === "action_required", "the moved pull request was not handed over as moved") };
+	drive("R4 11: a pull request moved during a review that asks for changes is handed over, not fixed on the old head", reviewerOn(), [...reviewing, movedAway,
+		{ ...refresh(filedAt("changes_requested", 1, reviewHead, ["r1.f1"])), also: o => holds(o.item.run?.step.kind === "handoff" && !o.effects.some(e => e.kind === "deliver"), "a fix turn started on the old head") },
+		handedMoved,
+	]);
+	drive("R4 11: a pull request moved during a review that needs a person is handed over, not asked about", reviewerOn(), [...reviewing, movedAway,
+		{ ...refresh(filedAt("needs_person", 1, reviewHead, [], [question])), also: o => holds(o.item.question === null && o.item.run?.step.kind === "handoff", `asked ${o.item.question?.kind}`) },
+		handedMoved,
+	]);
+	drive("R4 11: a pull request moved while the person was asked: Have the agent change it hands over", reviewerOn(), [...reviewing, asked,
+		{ ...movedAway, state: "waiting", wait: "person" },
+		{ ...refresh(answer("fix")), also: o => holds(o.item.run?.step.kind === "handoff" && !o.effects.some(e => e.kind === "deliver"), "a fix turn started on the old head") },
+		handedMoved,
+	]);
+
+	// 2: the review asked for changes, and the head handed over has no review of its own.
+	const unfinished: Row = { fact: ci(H3, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "poll_pr"], also: o => {
+		const handed = effect(o, "handoff"), [head, older] = checks(o);
+		if (handed?.review !== null || handed.unfinished !== true || handed.verdict.head !== H3) return `handed ${JSON.stringify(handed && { review: handed.review, unfinished: handed.unfinished })}`;
+		if (head?.key !== H3 || head.conclusion !== "action_required" || head.title !== "Second review did not finish after it asked for changes") return `H(3)'s check: ${head?.conclusion} ${head?.title}`;
+		return holds(older?.key === reviewHead && older.conclusion === "cancelled", "the reviewed head's check was not completed");
+	} };
+	drive("R4 12: a refused round 2 does not leave a green check on the unreviewed fix", reviewerOn(), [...round2,
+		refresh(endReview({ outcome: "error", refused: "This sandbox cannot run the reviewer." })), unfinished,
+	]);
+	drive("R4 12: a round 2 that never files does not leave a green check", reviewerOn(), [...round2,
+		{ fact: endReview({ said: "nothing" }), state: "working", effects: ["deliver", "check_turn"] }, refresh(endReview()), unfinished,
+	]);
+	drive("R4 12: Hand it over before round 2 runs does not leave a green check", newItem({ reviewer: { on: true }, budget: { turns: 3 } }), [...reviewing, sentBack, ...fixed(H3),
+		{ fact: ci(H3, ciPassed), state: "waiting", wait: "budget", effects: ["verdict", "verified_check", "ask", "poll_pr"] },
+		refresh(answer("hand_over")), unfinished,
+	]);
+	drive("R4 12: a round 2 that approves the fix is a success", reviewerOn(), [...round2,
+		refresh(filedAt("approve", 2, H3, [], [{ kind: "earlier", finding: "r1.f1", status: "fixed", text: null }])),
+		{ fact: ci(H3, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "poll_pr"], also: o => holds(effect(o, "handoff")?.unfinished === undefined && checks(o)[0]?.conclusion === "success", "an approved fix is not a success") },
+	]);
+
+	// 3: an earlier finding the review says is not fixed stays open.
+	const stillOff: Block = { kind: "earlier", finding: "r1.f1", status: "not_fixed", text: "Still drops the last line." };
+	drive("R4 13: a not_fixed earlier finding is in the fix text and the next round's earlier list", reviewerOn(), [...round2,
+		{ ...sentBack, fact: filedAt("changes_requested", 2, H3, ["r2.f1"], [stillOff]), also: o =>
+			holds(o.item.run?.review?.open?.map(f => f.id).join() === "r2.f1,r1.f1" && deliverIs(o, t => t.includes("r1.f1: Finding r1.f1\nFix r1.f1.\nNot fixed, the reviewer says now: Still drops the last line.") && t.includes("r2.f1: Finding r2.f1")), `delivered ${effect(o, "deliver")?.text}`) },
+		...fixed(H4), nextReview(H4, 3, H3, ["r2.f1", "r1.f1"]),
+	]);
+	drive("R4 13: a not_fixed earlier finding alone is the same changes again", reviewerOn(), [...round2,
+		{ fact: filedAt("changes_requested", 2, H3, [], [stillOff]), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", `asked ${o.item.question?.cause}`) },
+	]);
+
+	// 5: a builder that disagrees with every finding changes nothing: the same head is reviewed again, with its report.
+	drive("R4 14: a review fix with no change is reviewed again on the same head", reviewerOn(), [...reviewing, sentBack,
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: ended("succeeded", PASSED, { changes: false, report: "I disagree with r1.f1: the range is meant to end there." }), state: "working", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"], also: o => {
+			const d = effect(o, "deliver"), input = d?.reviewerInput;
+			if (o.item.question !== null) return `asked ${o.item.question.kind}`;
+			if (d?.to !== "review" || input?.round !== 2 || input.head !== reviewHead || input.previousHead !== reviewHead || input.earlier.map(e => e.id).join() !== "r1.f1") return `delivered ${JSON.stringify(input && { round: input.round, head: input.head })}`;
+			return holds(effect(o, "verified_check")?.key === reviewHead && effect(o, "verified_check")?.title === "Second review of 1111111, round 2", "the head's check does not name round 2");
+		} },
+		refresh(filedAt("approve", 2, reviewHead, [], [{ kind: "earlier", finding: "r1.f1", status: "withdrawn", text: "The report is right." }])),
+		{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o => holds(checks(o)[0]?.conclusion === "success" && !o.item.pendingChecks?.length, "the re-reviewed head was not approved") },
+	]);
+	drive("R4 14: Hand it over before the same head's round 2 files keeps round 1's review of that head", reviewerOn(), [...reviewing, sentBack,
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: ended("succeeded", PASSED, { changes: false }), state: "working", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"] },
+		{ fact: endReview({ outcome: "interrupted" }), state: "working", effects: ["deliver", "check_turn"] },
+		{ fact: endReview({ outcome: "interrupted" }), state: "working", effects: ["deliver", "check_turn"] },
+		{ fact: endReview({ outcome: "interrupted" }), state: "waiting", wait: "person", effects: ["ask"] },
+		refresh(answer("hand_over")),
+		{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o =>
+			holds(effect(o, "handoff")?.review === publishedVerdict && effect(o, "handoff")?.unfinished === undefined && checks(o)[0]?.title === "Second review requests changes", `handed ${effect(o, "handoff")?.review}, ${checks(o)[0]?.title}`) },
+	]);
+
 	drive("R4 10: feedback held during an approving review waits for the handoff", reviewerOn(), [...reviewing, held, refresh(endReview({ review: filing("approve") })),
 		{ fact: freshCi, state: "queued", effects: ["handoff", "verified_check", "poll_pr", "verified_check", "deliver", "check_turn"], also: o => holds(o.item.run?.n === 2 && effect(o, "handoff")?.review === publishedVerdict, "the approval was not handed over before the feedback") },
 	]);
@@ -1477,6 +1561,10 @@ const { checkConclusion, checkSummary } = await import("../server/src/factory/ve
 		expect(`second review ${recommendation} blocks an otherwise ready commit`, checkConclusion(v, assessment) === "action_required");
 		expect(`second review ${recommendation} preserves failure`, checkConclusion({ ...v, result: "fail" }, assessment) === "failure");
 	}
+	expect("a second review that asked for changes and did not finish blocks an otherwise ready commit", checkConclusion(v, null, true) === "action_required" && checkConclusion(v, null) === "success" &&
+		checkConclusion(v, { recommendation: "approve", blocking: 0 }, true) === "success" && checkConclusion({ ...v, result: "fail" }, null, true) === "failure");
+	expect("its summary says why", checkSummary(v, null, newItem().budget, newItem().budget, "https://windlass.invalid/items/i", undefined, true).includes("Second review did not finish after it asked for changes.") &&
+		checkSummary(v, null, newItem().budget, newItem().budget, "https://windlass.invalid/items/i", undefined, true).includes("the last one filed did not approve"));
 	const budget = newItem().budget;
 	const url = "https://windlass.invalid/items/i";
 	const summary = checkSummary({ ...flagged, ci: { state: "not_run", said: privateText,

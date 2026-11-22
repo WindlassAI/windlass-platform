@@ -352,7 +352,8 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 }
 
 /** The run it is in, or ended last: its step, and the rounds of fixing used of what a run allows. */
-function RunFacts({ run, events, asks, now, reviewer }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number; reviewer: boolean }) {
+/** The run's facts. The second review's fixes are counted only where the server gives their cap: where the item's reviewer can send its builder back. */
+export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
 	const { step, rounds, caps } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
@@ -392,7 +393,7 @@ function RunFacts({ run, events, asks, now, reviewer }: { run: NonNullable<ItemV
 						<span>
 							merging the base {rounds.conflict} of {caps.conflict}
 						</span>
-						{reviewer && caps.review !== undefined ? (
+						{caps.review !== undefined ? (
 							<span>
 								after the second review {rounds.review ?? 0} of {caps.review}
 							</span>
@@ -1057,7 +1058,7 @@ export function Item({ page }: { page: ItemPage }) {
 				) : (
 					<Now view={view} now={now} />
 				)}
-				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} reviewer={view.mode !== "orchestrate" && view.review?.state !== "off"} /> : null}
+				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
 			</section>
 
 			{view.plan ? (

@@ -1411,6 +1411,13 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
 const DEPLOYMENT_OFF = "turned off for this deployment";
 
+/** The rounds a run allows, as the server sends them: the second review's only where it can send the builder back (blueprint.ts, `reviewSendsBack`). */
+function capsFor(view: ItemView, reviewer: boolean): RoundCaps {
+	const { review: _, ...caps } = ROUND_CAPS;
+	return reviewer && view.mode !== "orchestrate" && !view.parent && view.place.kind === "hosted" && view.review?.state !== "off" ? ROUND_CAPS : caps;
+}
+const withCaps = (view: ItemView, reviewer: boolean): ItemView => (view.run ? { ...view, run: { ...view.run, caps: capsFor(view, reviewer) } } : view);
+
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
 function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
@@ -1450,6 +1457,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.map((view) => (deps.reviewer === false ? withoutReviewer(view) : view))
 				.concat(state === "features" ? seededFeatures(at, auth.profile.uid) : [])
+				.map((view) => withCaps(view, deps.reviewer !== false))
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
@@ -1554,7 +1562,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
 		const at = deps.now();
 		const before = item.run;
-		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
+		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: capsFor(item, deps.reviewer !== false) };
 		if (item.state === "review" && item.verifiedCheck?.state === "completed")
 			item.verifiedCheck = { ...item.verifiedCheck, state: "in_progress", conclusion: null, said: `Sent back: being reworked in run ${run.n}` };
 		if (item.mode === "orchestrate") {

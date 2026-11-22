@@ -55,7 +55,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey, reviewSendsBack } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -66,6 +66,12 @@ import type { ItemFacts } from "./user-items.js";
 
 /** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
 const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds, review: RULES.reviewRounds };
+/** The rounds the item's runs allow: the second review's only where it can send the builder back. */
+const capsOf = (item: FactoryItem): RoundCaps => {
+	if (reviewSendsBack(item)) return ROUND_CAPS;
+	const { review: _, ...caps } = ROUND_CAPS;
+	return caps;
+};
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
@@ -272,7 +278,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
-		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: { ...run.rounds, review: run.rounds.review ?? 0 }, caps: ROUND_CAPS },
+		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: { ...run.rounds, review: run.rounds.review ?? 0 }, caps: capsOf(stored.item) },
 		head: stored.item.head,
 		report: run ? await latestReport(c.db, run.n) : null,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
@@ -746,9 +752,10 @@ async function prepareCompletedCheck(tx: Pick<RawAccess, "execute">, item: Facto
 		const filed: ItemReview | null = row ? JSON.parse(row.data) : null;
 		if (filed?.recommendation) assessment = { recommendation: filed.recommendation, blocking: filed.blocks.filter(b => b.kind === "finding" && b.severity === "blocking").length };
 	}
-	effect.title = checkTitle(handoff.verdict, assessment);
-	effect.conclusion = checkConclusion(handoff.verdict, assessment);
-	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id), itemAgent(item));
+	const unfinished = handoff.unfinished === true;
+	effect.title = checkTitle(handoff.verdict, assessment, unfinished);
+	effect.conclusion = checkConclusion(handoff.verdict, assessment, unfinished);
+	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id), itemAgent(item), unfinished);
 }
 
 /** Only the token request and the write treat a permission refusal as a finished effect. */

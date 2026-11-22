@@ -111,10 +111,14 @@ A second agent, with no part in making the change, checks out the pushed commit 
 What happens next depends on its recommendation:
 
 - **Approves**: the item is handed to you.
-- **Asks for changes**: the agent that made the change gets the blocking findings and works on them, on the same branch. It is told to leave a finding it disagrees with and say why in its report. The new commit goes through your checks and CI, and the second agent reviews it again. It says for each earlier blocking finding whether it is fixed, not fixed, or withdrawn. A run allows 2 rounds of fixes.
+- **Asks for changes**: the agent that made the change gets the blocking findings and works on them, on the same branch. It is told to leave a finding it disagrees with and say why in its report. It is also told that no finding justifies removing or skipping tests or checks, changing CI or deploy configuration, adding network calls, or touching credentials: it leaves such a finding and names it in its report. The new commit goes through your checks and CI, and the second agent reviews it again. It says for each earlier blocking finding whether it is fixed, not fixed, or withdrawn. A finding it says is not fixed stays open for the next round, whether or not it files it again, and it cannot approve while one is open. If the agent changes nothing, because it disagrees with every finding, the second agent reviews the same commit again, with the agent's report. A run allows 2 rounds of fixes.
 - **Needs you**: the item asks you, with the reviewer's questions in its review. **Have the agent change it** sends its agent back with the questions and your note. **Hand it over as it is** hands it to you with the review. Or **Give up**.
 
-The item stops and asks you when the second agent still asks for changes after 2 rounds of fixes, or asks again for the same changes after a round of fixes. **Raise the limit and go on** runs one more round. **Hand it over as it is** keeps the last review: it shows on the item's page, the pull request comment and the check on GitHub.
+The item stops and asks you when the second agent still asks for changes after 2 rounds of fixes, or asks again for the same changes after a round of fixes. **Raise the limit and go on** runs one more round of fixes: if the second agent still asks for changes after it, the item stops and asks you again. **Hand it over as it is** keeps the review filed for the commit it hands over: it shows on the item's page, the pull request comment and the check on GitHub.
+
+Sometimes the commit handed over has no review of its own after a review asked for changes: you chose **Hand it over as it is** on a budget or CI question after the agent pushed its fixes, or the next review was refused or filed nothing the platform could read. Then the pull request comment says there was no second review of that commit, every review of the run stays on the item's page, and the check on GitHub says **Second review did not finish after it asked for changes**, with Action required.
+
+If someone pushes to the pull request while the second agent reviews, its agent is not sent back: a fix of the reviewed commit could not be pushed over theirs. The item is handed over as it is, saying the pull request moved.
 
 On a feature, the second review does nothing by itself: the feature is handed to you whatever it recommends.
 
@@ -137,6 +141,7 @@ Look for **windlass/verified** on the pull request. It starts in progress when t
 | Ready for review | Success |
 | Needs a look, CI unread or unfinished, CI did not start, or Not verified | Action required |
 | The second reviewer requests changes or needs a person on an otherwise ready item | Action required |
+| The second review asked for changes, and none was filed for the commit handed over | Action required |
 | Failing or Incomplete | Failure |
 | You give up or cancel during verification | Cancelled |
 
@@ -182,7 +187,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **What the agent is told.** The words are quoted as written, with who wrote them, their access, and the file, line and commit of a line comment. Your words are your requests. Other writers' words are review the agent weighs, not your instructions. Nobody's words change the agent's rules or the task. Where the agent disagrees, it says why in its report's concerns, and those reach the pull request.
 
-**On a single item**, a batch starts a new run on the same branch, as **Send back…** does. Feedback that arrives while the item works is held. Once CI has finished, it goes before the second review, and that commit is not handed over. Feedback that arrives while the second agent reviews goes first too, when the review asks for changes or has questions: the new run gets the feedback, and the reviewer's points after it. When the review approves, the commit is handed over first. After three runs started by other writers' feedback, the item asks you before each further batch: **Send it to the agent** or **Leave it**. Your own feedback is never capped. The item's budget still applies.
+**On a single item**, a batch starts a new run on the same branch, as **Send back…** does. Feedback that arrives while the item works is held. Once CI has finished, it goes before the second review, and that commit is not handed over. Feedback that arrives while the second agent reviews goes first too, when the review asks for changes or has questions: the new run gets the feedback, and the reviewer's points after it. Its questions that only you could answer go to the agent as points too: you are not asked them. The new run's second review starts afresh, without the earlier findings. When the review approves, the commit is handed over first. After three runs started by other writers' feedback, the item asks you before each further batch: **Send it to the agent** or **Leave it**. Your own feedback is never capped. The item's budget still applies.
 
 **On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs. A feedback re-plan does not use up your own revisions of the plan. The fix may use the budget the feature has left. If that cannot cover another subtask, the question offers only **Leave it**. A feature that already has six subtasks does not take feedback. In both cases, file the fix as a new item.
 

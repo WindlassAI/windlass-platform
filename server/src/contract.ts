@@ -1583,7 +1583,8 @@ export interface RoundCaps {
 	gate: number;
 	ci: number;
 	conflict: number;
-	review: number;
+	/** Absent when the item has no second reviewer that can send its builder back: off, on a machine, a feature or a subtask. */
+	review?: number;
 }
 
 /** An item as the user's index lists it. */

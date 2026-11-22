@@ -81,6 +81,8 @@ export interface EarlierFinding {
 	root: string;
 	title: string;
 	text: string;
+	/** Carried by a review that said it is not fixed, without filing it again: that review's "earlier" text. */
+	notFixed?: string | null;
 }
 
 /**
@@ -104,6 +106,8 @@ export interface RunReview {
 	lastOpen?: string | null;
 	/** This round's filing, once filed: what "Hand it over as it is" keeps. */
 	filed?: { id: string } & CheckReview;
+	/** The run's last filing before this round, which this round's head has none of until it files. */
+	before?: { id: string } & CheckReview;
 }
 
 /** The work as the item was given it (`ItemTask`). */
@@ -386,7 +390,9 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true } & HandoffReview);
+	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true;
+		/** The run's last review asked for changes (or for the person), and no review was filed for the head handed over. */
+		unfinished?: true } & HandoffReview);
 
 /** A transaction-only effect, consumed before the actor performs any deliveries. */
 export interface VerdictEffect {

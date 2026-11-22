@@ -17,8 +17,10 @@
  *   6 conflict   when GitHub says the pull request conflicts: a turn that merges the base; back to 2; 1 round
  *     review     when enabled, a second session reviews the pushed head. approve → handoff. changes requested
  *                on a single item → review_fix, a turn on its blocking findings, back to 2, then a review of the
- *                new head; at most 2 per run, and the same blocking findings again stop it. needs a person →
- *                a question. A feature's review hands over whatever it recommends.
+ *                new head; at most 2 per run, and the same blocking findings again stop it. A fix that changes
+ *                nothing has the same head reviewed again, with the builder's report. needs a person → a question.
+ *                A pull request someone else pushed to during the review is handed over as moved. A feature's
+ *                review hands over whatever it recommends.
  *   7 handoff    code: the verdict at the pushed head; the item goes to review
  *   8 merged     wait, polling the pull request: merged → done, closed → cancelled
  *
@@ -48,9 +50,9 @@ import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provid
 import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
-import type { ChoiceId, CiProgress, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, EarlierFinding, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
-import { blockingFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
+import { openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
 /** §2.1 and §2.4. Design constants, not settings. */
@@ -80,6 +82,11 @@ export const RULES = {
 const ROUND_CAPS = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds, review: RULES.reviewRounds } as const;
 const FINAL: ReadonlySet<ItemState> = new Set(["done", "cancelled"]);
 const CUT_SHORT: ReadonlySet<TurnOutcome> = new Set(["stopped", "failed", "interrupted", "error"]);
+
+/** Whether a second review of this item's runs can send its builder back (R4): its reviewer is on, it runs hosted, and it is a single item. */
+export function reviewSendsBack(item: FactoryItem): boolean {
+	return !item.parent && item.mode !== "orchestrate" && item.reviewer !== undefined && "on" in item.reviewer && item.place.kind === "hosted";
+}
 
 /** `<itemId>:<run>:<step>:<attempt>` (§2.1): names one attempt of one step, and every effect made for it. */
 export function stepKey(itemId: string, run: number, step: number, attempt: number): string {
@@ -812,6 +819,12 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		const text = plan ? `The planner proposes this plan:\n\n${plan}` : "The planner ended its turn without filing a plan.";
 		return ask(c, "plan_approval", text, [choice("approve"), ...(more ? [choice("revise")] : []), choice("give_up")], null, null, "Waiting for you to approve the plan.");
 	}
+	// A builder that changed nothing for a review answers it in its report: the same head is reviewed again, with that report.
+	if (!fact.changes && kind === "review_fix" && run.ci && run.review && run.ci.head === item.head) {
+		if (run.ci.moved) return readForHandoff(c, run.ci, keptReview(run, run.ci));
+		c.say(`The agent changed nothing for the review; ${shortSha(run.ci.head)} is reviewed again, with the agent's report.`);
+		return startReview(c, run.ci);
+	}
 	if (!fact.changes) {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, text: "Your last turn changed nothing. Look again at what was asked, and make the change." };
 		return ask(c, "no_change", "The agent ended its turn without changing anything.", [choice("again"), ...handOver(item), choice("give_up")], null, resume);
@@ -1059,10 +1072,23 @@ const skippedReview = (why: string): HandoffReview => ({ review: null, reviewNon
 const MOVED = "the pull request moved after the agent pushed";
 const PERSON_HANDOVER = "handed over as it is, as you asked";
 
+/** The run's last review filing: this round's, or the one before's while this round has filed none. */
+const lastFiling = (review: Run["review"]) => review?.filed ?? review?.before ?? null;
+
+/**
+ * A head handed over with no review of its own after the run's last filing did not approve (the next round was refused, filed
+ * nothing readable, or was handed over before it ran): its check must not read as a success.
+ */
+function unfinishedReview(run: Run, review: HandoffReview): boolean {
+	const last = lastFiling(run.review);
+	return review.review === null && last !== null && last.recommendation !== "approve";
+}
+
 /** "Hand it over as it is" keeps the second review filed for the commit it hands over. */
 function keptReview(run: Run, ci: CiProgress): HandoffReview {
 	if (ci.secondReview?.review) return ci.secondReview;
-	const filed = run.review?.filed;
+	// A round on the same head as the one before (a fix that changed nothing) keeps that one's filing until it files its own.
+	const filed = run.review?.filed ?? (run.review?.previousHead === ci.head ? run.review.before : undefined);
 	if (filed && run.review?.head === ci.head) return { review: filed.id, reviewNone: null, assessment: { recommendation: filed.recommendation, blocking: filed.blocking } };
 	return skippedReview(PERSON_HANDOVER);
 }
@@ -1108,12 +1134,19 @@ function afterCi(c: Change, ci: CiProgress): void {
 	}
 	// Older publishers could report a branch instead of a SHA. It cannot pin an independent review.
 	if (!isSha(ci.head)) return handoff(c, skippedReview("the push did not identify the commit to review"));
+	startReview(c, ci);
+}
+
+/** A round of the second review of `ci.head`: after CI, or again on the same head when a fix changed nothing. */
+function startReview(c: Change, ci: CiProgress): void {
+	const { item, run } = c;
 	c.enter("review");
 	ci.handed = c.key;
 	// A later round reviews the builder's answer to the one before: its head, and the blocking findings it must answer.
 	const before = run.review;
 	const round = before ? (before.round ?? 1) + 1 : 1;
-	run.review = { verdictId: c.key, head: ci.head, refiles: 0, prReads: 0, round, previousHead: before?.head ?? null, earlier: before?.open ?? [], lastOpen: before?.lastOpen ?? null };
+	const last = before ? lastFiling(before) : null;
+	run.review = { verdictId: c.key, head: ci.head, refiles: 0, prReads: 0, round, previousHead: before?.head ?? null, earlier: before?.open ?? [], lastOpen: before?.lastOpen ?? null, ...(last && { before: last }) };
 	const { verdict, words } = verdictAt(c, ci);
 	c.storeVerdict = { kind: "verdict", verdict, words };
 	if (!item.parent) pendingCheck(c, ci.head, `Second review of ${shortSha(ci.head)}, round ${round}`);
@@ -1165,7 +1198,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 		return nextTurn(c, { ...reviewPlan(c), newStep: false, text });
 	}
 
-	const open = blockingFindings(filed);
+	const open = openFindings(filed, pending.earlier);
 	const blocking = open.length;
 	const words = { approve: "approves", changes_requested: `asks for changes (${blocking} blocking)`, needs_person: "needs you" };
 	c.say(`The second review of ${shortSha(pending.head)}: ${words[filed.recommendation]}.`);
@@ -1175,28 +1208,35 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	pending.open = open;
 	// A feature's review stays advisory: its findings go to the person with the handover.
 	if (filed.recommendation === "approve" || c.item.mode === "orchestrate") return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });
+	// Someone pushed to the pull request during the review: a fix on the reviewed head could not be pushed over theirs. The handover says it moved.
+	if (ci.moved) return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });
 	if (personFirst(c, ci, filed)) return;
 	if (filed.recommendation === "needs_person") {
 		pendingCheck(c, pending.head, "Second review needs you");
 		const text = `The second agent reviewed ${shortSha(pending.head)} and has questions only you can answer. Read them in its review below; then have the agent change the work, with your note, or hand it over as it is.`;
-		return ask(c, "review_question", text, [choice("fix"), ...handOver(c.item), choice("give_up")], null, reviewFixPlan(filed, true));
+		return ask(c, "review_question", text, [choice("fix"), ...handOver(c.item), choice("give_up")], null, reviewFixPlan(filed, true, pending.earlier));
 	}
 	// Kept on the review, not on `lastFailure`: a CI round between two reviews must not hide it (§6.1). Out of rounds, the cap is what stops it.
 	const fingerprint = openFingerprint(open);
-	if (fingerprint === pending.lastOpen && (c.run.rounds.review ?? 0) < RULES.reviewRounds) return stop(c, "repeated", REVIEW_REPEATED, reviewFixPlan(filed, false));
+	if (fingerprint === pending.lastOpen && (c.run.rounds.review ?? 0) < RULES.reviewRounds) return stop(c, "repeated", REVIEW_REPEATED, reviewFixPlan(filed, false, pending.earlier));
 	pending.lastOpen = fingerprint;
-	fixAfterReview(c, reviewFixPlan(filed, false));
+	fixAfterReview(c, reviewFixPlan(filed, false, pending.earlier));
 }
 
 const REVIEW_REPEATED = "The second agent asks again for the same changes after a round of fixes, so the factory stopped instead of trying them again.";
 
 /** The builder's turn on a review's findings (and, after the person's choice, its questions). */
-function reviewFixPlan(filed: ItemReview, person: boolean): TurnPlan {
-	return { ...IMPLEMENT, kind: "review_fix", charge: "review", text: reviewFixText(filed, person) };
+function reviewFixPlan(filed: ItemReview, person: boolean, earlier: EarlierFinding[] | undefined): TurnPlan {
+	return { ...IMPLEMENT, kind: "review_fix", charge: "review", text: reviewFixText(filed, person, earlier) };
 }
 
-/** Starts the builder's turn on a review, unless a stop rule holds; the reviewed head's check then says a fix is being worked on. */
+/**
+ * Starts the builder's turn on a review, unless a stop rule holds; the reviewed head's check then says a fix is being worked on.
+ * A pull request that moved while the person was asked is handed over instead: a fix on the reviewed head could not be pushed.
+ */
 function fixAfterReview(c: Change, plan: TurnPlan): void {
+	const ci = c.run.ci;
+	if (ci?.moved) return readForHandoff(c, ci, keptReview(c.run, ci));
 	nextTurn(c, plan);
 	if (c.item.question === null) sendBackForReview(c, c.run.review?.round ?? 1);
 }
@@ -1230,7 +1270,7 @@ function personFirst(c: Change, ci: CiProgress, filed: ItemReview): boolean {
 	run.stopReason = "feedback";
 	c.say(feedbackWords.afterReview(shortSha(ci.head), authors(batch)), "feedback");
 	c.state("review");
-	takeFeedback(c, batch, false, reviewAlsoText(filed));
+	takeFeedback(c, batch, false, reviewAlsoText(filed, run.review?.earlier));
 	return true;
 }
 
@@ -1271,14 +1311,15 @@ function verdictAt(c: Change, ci: CiProgress) {
 
 function handVerdict(c: Change, ci: CiProgress, review: HandoffReview, reviewDone?: true): void {
 	const record = verdictAt(c, ci);
-	c.effects.push({ kind: "handoff", ...record, ...review, ...(reviewDone ? { reviewDone } : {}) });
+	const unfinished = unfinishedReview(c.run, review);
+	c.effects.push({ kind: "handoff", ...record, ...review, ...(reviewDone ? { reviewDone } : {}), ...(unfinished ? { unfinished: true as const } : {}) });
 	const { verdict } = record;
 	const key = verdict.moved ?? verdict.head;
 	if (!c.item.parent && isSha(key)) {
 		const assessment = review.review !== null ? review.assessment ?? null : null;
-		const title = checkTitle(verdict, assessment);
+		const title = checkTitle(verdict, assessment, unfinished);
 		c.effects.push({ kind: "verified_check", key, state: "completed", ...checkTiming(c),
-			verdictId: verdict.id, conclusion: checkConclusion(verdict, assessment), title, summary: title });
+			verdictId: verdict.id, conclusion: checkConclusion(verdict, assessment, unfinished), title, summary: title });
 		// A feedback fix, or a fix of a second review, may have a different SHA. Its evidence belongs to the new head.
 		const reviewed = c.run.review;
 		for (const check of c.item.pendingChecks ?? []) if ((check.feedback || check.reviewRound !== undefined) && check.sha !== key) {
@@ -1629,7 +1670,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	return true;
 }
 
-/** "Raise the limit": a round counter that stopped the run starts again, a repeated failure is tried once more, a budget takes the person's new figures. */
+/** "Raise the limit": a round counter that stopped the run starts again (the review's allows one more round), a repeated failure is tried once more, a budget takes the person's new figures. */
 function raise(c: Change, cause: StopCause | null, budget: Partial<ItemBudget> | undefined): void {
 	const { item, run } = c;
 	switch (cause) {
@@ -1643,8 +1684,11 @@ function raise(c: Change, cause: StopCause | null, budget: Partial<ItemBudget> |
 		case "gate":
 		case "ci":
 		case "conflict":
-		case "review":
 			run.rounds[cause] = 0;
+			break;
+		case "review":
+			// One more round of fixes, as the question says: the review that follows it stops again if it still asks for changes.
+			run.rounds.review = RULES.reviewRounds - 1;
 			break;
 		case "tokens":
 		case "turns":

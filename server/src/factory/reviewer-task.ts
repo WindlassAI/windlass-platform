@@ -94,7 +94,8 @@ export function data(value: string): string {
 	return value
 		.replace(/\r\n?/g, "\n")
 		.replace(CONTROL, "")
-		.replace(/-{5,}/g, (run) => run.split("").join(" "))
+		// A run of four or more dashes, or of their lookalikes, would read like a fence line: it is spaced out.
+		.replace(/[-\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]{4,}/g, (run) => [...run].join(" "))
 		.replace(/^([ \t]*)#/gm, "$1\\#");
 }
 
