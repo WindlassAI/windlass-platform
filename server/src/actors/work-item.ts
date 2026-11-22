@@ -38,6 +38,8 @@ import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
 import type { IssueBinding } from "../factory/intake.js";
+import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
+import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
 import type { ItemReview } from "../contract.js";
 import { ledgerSeconds, retryAt } from "../factory/budget.js";
@@ -45,12 +47,12 @@ import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
-import { githubConfig } from "../config.js";
+import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
 import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
-import type { Effect as BlueprintEffect, Fact, FactoryItem } from "../factory/types.js";
+import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -201,9 +203,10 @@ function viewOf(c: Ctx): Promise<ItemView> {
 	});
 }
 
-/** The report and its reference snapshots share one JSON value and one transaction with the turn. */
+export const CHECKS_TABLE = "CREATE TABLE IF NOT EXISTS checks (sha TEXT PRIMARY KEY, check_run_id TEXT, external_id TEXT NOT NULL, state TEXT NOT NULL, conclusion TEXT, at INTEGER NOT NULL, said TEXT NOT NULL)";
 export const REVIEWS_TABLE = "CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, run INTEGER NOT NULL, head TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
+/** The report and its reference snapshots share one JSON value and one transaction with the turn. */
 export const REPORTS_TABLE = "CREATE TABLE IF NOT EXISTS reports (key TEXT PRIMARY KEY, run INTEGER NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)";
 
 export async function storeReport(db: Pick<RawAccess, "execute">, item: FactoryItem, sessionId: string, fact: Extract<Fact, { kind: "turn_ended" }>): Promise<void> {
@@ -238,6 +241,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
 	return {
 		...summaryOf(stored),
+		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: stored.item.featurePlan ?? null,
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
@@ -298,17 +302,19 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 	}
 }
 
+type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckEffect; id: string | null; installationId: GithubId };
+
 /**
  * The item after `fact`, stored with its effects and events in one transaction over the revision it
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { baseSha, nudged, issue }: { baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
+async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number }, { baseSha, nudged, issue }: { baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
 	const stored = c.vars.stored;
 	if (!stored) return false;
 	// From here to the write being queued nothing is awaited: the decision is one step.
 	const before = stored.item;
-	const outcome: ReturnType<typeof advance> = fact.kind === "issue_note" ? { item: { ...before, revision: before.revision + 1 }, effects: [], events: [] } : advance(before, fact);
+	const outcome: ReturnType<typeof advance> = fact.kind === "issue_note" || fact.kind === "check_recorded" ? { item: { ...before, revision: before.revision + 1 }, effects: [], events: [] } : advance(before, fact);
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
@@ -341,6 +347,8 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
 	if (fact.kind === "published" && fact.pr) effects.push({ kind: "register", key: fact.key, pr: fact.pr.number, head: fact.head });
+	if (fact.kind !== "published" && before.run?.ci?.moved !== next.run?.ci?.moved && next.pr && next.head && !ENDED.has(next.state))
+		effects.push({ kind: "register", key: String(next.revision), pr: next.pr.number, head: next.head });
 	if (ENDED.has(next.state) && !ENDED.has(before.state)) effects.push({ kind: "forget", key: String(next.revision) });
 	try {
 		await queued(c, () =>
@@ -353,8 +361,15 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 				for (const old of await tx.execute<{ id: string; effect: string }>("SELECT id, effect FROM effects")) {
 					if ((issue?.subject === "gone" && old.id === "issue_comment:link") || !live(next, JSON.parse(old.effect) as Effect)) await tx.execute("DELETE FROM effects WHERE id = ? AND effect = ?", old.id, old.effect);
 				}
+				if (fact.kind === "check_recorded") await storeCheckReceipt(tx, next.id, fact, outcome.events);
 				for (const event of outcome.events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) {
+					// Rework can reopen a posted check or one whose POST reply is still outstanding.
+					if (effect.kind === "verified_check" && effect.existingOnly && !(await tx.execute(
+						"SELECT 1 FROM checks WHERE sha=? AND check_run_id IS NOT NULL UNION ALL SELECT 1 FROM effects WHERE id=? LIMIT 1", effect.key, rowId(effect),
+					)).length) continue;
+					if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
+						await prepareCompletedCheck(tx, next, effect, handoff);
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
@@ -377,7 +392,11 @@ async function take(c: Ctx, fact: Fact | { kind: "issue_note"; at: number }, { b
 		if (state && state !== "retry" && state !== previous)
 			console.log(`[wlp] factory.ci.nudge_found item=${next.id} head=${fact.head.slice(0, 7)} state=${state}`);
 	}
-	for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${next.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
+	if (fact.kind === "check_recorded") {
+		if (fact.id === null && outcome.events.length) console.log(`github.verified_check.not_permitted installation=${fact.installationId} item=${next.id}`);
+	} else {
+		for (const event of outcome.events) console.log(`[wlp] item.event uid=${stored.meta.uid} item=${before.id} revision=${next.revision}: ${event.said.replace(/\s+/g, " ").slice(0, 200)}`);
+	}
 	report(c);
 	// The item's one schedule, set before anything is performed: an item stopped by a deploy before its effects ran wakes for them.
 	await armDue(c);
@@ -540,13 +559,71 @@ async function updateDirectory(c: Ctx, meta: ItemMeta, effect: Extract<Effect, {
 		if (effect.kind === "forget" && meta.github && !ENDED.has(durable.item.state)) return true;
 		if (effect.kind === "register" && installation !== null) {
 			await c.db.execute("INSERT OR REPLACE INTO github_binding VALUES (1, ?)", String(installation));
-			await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: installation, pr: effect.pr, head: effect.head });
+			await directory.internalRegister({ uid: meta.uid, itemId: durable.item.id, installationId: installation, pr: effect.pr, head: effect.head, moved: durable.item.run?.ci?.moved });
 		} else {
 			await directory.internalForget(durable.item.id);
 			if (!meta.github) await c.db.execute("DELETE FROM github_binding");
 		}
 		return true;
 	});
+}
+
+const itemUrl = (id: string) => `${config.origins[0]}/items/${encodeURIComponent(id)}`;
+
+async function storeCheckReceipt(tx: Pick<RawAccess, "execute">, itemId: string, fact: CheckReceipt, events: ItemEvent[]) {
+	const e = fact.effect;
+	const denied = fact.id === null;
+	await tx.execute(`INSERT INTO checks VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sha) DO UPDATE SET
+		check_run_id=coalesce(excluded.check_run_id,checks.check_run_id), external_id=excluded.external_id,
+		state=excluded.state, conclusion=excluded.conclusion, at=excluded.at, said=excluded.said`,
+		e.key, fact.id, e.verdictId ?? `pending:${itemId}:${e.run}`, denied ? "not_posted" : e.state, denied ? null : e.conclusion, e.changedAt, denied ? CHECK_DENIED : e.title);
+	if (denied && !(await tx.execute("SELECT 1 FROM events WHERE json_extract(data, '$.step.run') = ? AND json_extract(data, '$.said') = ? LIMIT 1", e.run, CHECK_DENIED)).length)
+		events.push({ by: "platform", at: fact.at, step: e.step, said: CHECK_DENIED });
+}
+
+async function prepareCompletedCheck(tx: Pick<RawAccess, "execute">, item: FactoryItem, effect: Extract<VerifiedCheckEffect, { state: "completed" }>, handoff: Handoff) {
+	let assessment = handoff.review !== null ? handoff.assessment ?? null : null;
+	// Reviews filed before check runs carried only their filing id on the handoff.
+	if (handoff.review && !assessment) {
+		const [row] = await tx.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", handoff.review);
+		const filed: ItemReview | null = row ? JSON.parse(row.data) : null;
+		if (filed?.recommendation) assessment = { recommendation: filed.recommendation, blocking: filed.blocks.filter(b => b.kind === "finding" && b.severity === "blocking").length };
+	}
+	effect.title = checkTitle(handoff.verdict, assessment);
+	effect.conclusion = checkConclusion(handoff.verdict, assessment);
+	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id));
+}
+
+/** Only the token request and the write treat a permission refusal as a finished effect. */
+function checkRefused(error: unknown): null {
+	if (error instanceof GithubError && (error.status === 403 || error.status === 422)) return null;
+	throw error;
+}
+
+async function postVerifiedCheck(c: Ctx, meta: ItemMeta, itemId: string, e: VerifiedCheckEffect): Promise<void> {
+	const { app, installationId, owner, name } = await github(c, meta, "write");
+	const issued = await app.installationToken(installationId, {
+		repositoryId: meta.repository.id, permissions: { metadata: "read", checks: "write" },
+	}).catch(checkRefused);
+	let id: string | null = null;
+	if (issued) {
+		const { token } = issued;
+		const [row] = await c.db.execute<{ check_run_id: string | null }>("SELECT check_run_id FROM checks WHERE sha=?", e.key);
+		const existing = row?.check_run_id ?? await app.findCheckRun(token, owner, name, e.key, itemId);
+		if (!existing && e.existingOnly) return;
+		const url = itemUrl(itemId);
+		const update: CheckRunUpdate = {
+			external_id: e.verdictId ?? `pending:${itemId}:${e.run}`,
+			details_url: url,
+			started_at: new Date(e.startedAt).toISOString(),
+			output: { title: e.title, summary: e.verdictId ? e.summary : e.summary + "\n\n" + evidenceLine(url) },
+			...(e.state === "in_progress" ? { status: e.state } : { status: e.state, conclusion: e.conclusion, completed_at: new Date(e.changedAt).toISOString() }),
+		};
+		id = existing
+			? await app.updateCheckRun(token, owner, name, existing, update).then(() => existing).catch(checkRefused)
+			: await app.createCheckRun(token, owner, name, e.key, update).catch(checkRefused);
+	}
+	await take(c, { kind: "check_recorded", at: Date.now(), effect: e, id, installationId });
 }
 
 type Handoff = Extract<Effect, { kind: "handoff" }>;
@@ -645,7 +722,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  */
 function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "notify_integrated") return item.state === "done" && item.head === effect.head;
-	if (effect.kind === "cancel_children") return true;
+	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "issue_comment") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
@@ -731,6 +808,11 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "verified_check":
+			// A handoff or cancellation can replace a pending row after the due scan.
+			if (!(await c.db.execute("SELECT 1 FROM effects WHERE id=? AND effect=?", row.id, row.effect)).length) return true;
+			await postVerifiedCheck(c, meta, item.id, effect);
+			return true;
 		case "notify_integrated":
 			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, state:"done", integratedHead:effect.head });
 			return true;
@@ -976,6 +1058,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT, issue_checked_at INTEGER NOT NULL DEFAULT 0)");
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
+			await db.execute(CHECKS_TABLE);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS github_binding (id INTEGER PRIMARY KEY CHECK (id = 1), installation TEXT NOT NULL)");
@@ -1124,6 +1207,12 @@ export const workItem = actor({
 			if (!meta || !binding || ENDED.has(c.vars.stored!.item.state) || binding.installationId !== input.installationId || meta.repository.id !== input.repositoryId || binding.origin.issue.number !== input.issue) return;
 			if (input.action === "edited" || input.action === "closed") return queueIssueCheck(c, input);
 			await checkIssue(c, meta, input.action === "unlabeled" ? { unlabeledBy: input.senderId } : {});
+		},
+
+		internalReverify: async (c, input: { installationId: GithubId; repositoryId: GithubId; head: string }): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			if (input.repositoryId !== c.vars.stored?.meta.repository.id || input.installationId !== await binding(c)) return false;
+			return take(c, { kind: "reverify", head: input.head, at: Date.now() });
 		},
 
 		internalGithubNudge: async (c, input: GithubNudge): Promise<boolean> => {

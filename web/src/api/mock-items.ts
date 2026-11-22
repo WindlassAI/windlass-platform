@@ -847,7 +847,7 @@ export function verdictSaid(verdict: Pick<Verdict, "result" | "gate" | "ci" | "f
 		verdict.result === "pass"
 			? verdict.flags.length > 0
 				? "Needs a look."
-				: verdict.ci.state === "unread"
+				: verdict.ci.state === "unread" || verdict.ci.state === "not_permitted"
 					? "Your checks passed; CI has not been read."
 					: verdict.ci.state === "timed_out"
 						? "Your checks passed; CI had not finished."
@@ -940,6 +940,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		head,
 		events,
 		verdicts,
+		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
 		reviewNone: place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
@@ -1231,7 +1232,7 @@ function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
 }
 
-const summaryOf = ({ plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
+const summaryOf = ({ plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -1307,6 +1308,8 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** One change of an item, as the step machine makes it: the revision goes up, and the log says what happened. */
 	function change(auth: AuthResult, item: ItemView, patch: Partial<ItemView>, said: string[], by: "person" | "platform"): void {
 		const at = deps.now();
+		if (item.verifiedCheck?.state === "in_progress" && (patch.state === "cancelled" || patch.state === "failed"))
+			item.verifiedCheck = { ...item.verifiedCheck, state: "completed", conclusion: "cancelled", said: "Stopped before it was verified" };
 		Object.assign(item, patch);
 		const run = item.run;
 		const step = run === null ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt };
@@ -1367,6 +1370,8 @@ export function createMockItems(deps: MockItemsDeps) {
 		const at = deps.now();
 		const before = item.run;
 		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: ROUND_CAPS };
+		if (item.state === "review" && item.verifiedCheck?.state === "completed")
+			item.verifiedCheck = { ...item.verifiedCheck, state: "in_progress", conclusion: null, said: `Sent back: being reworked in run ${run.n}` };
 		if (item.mode === "orchestrate") {
 			run.step.kind = "refine"; run.step.turn = null; run.rounds.plan = 1;
 			const version = (item.plan?.version ?? 0) + 1;
@@ -1445,7 +1450,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
 					place: fit.decision.place, placement: fit.decision };
 				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
@@ -1627,6 +1632,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					head: null,
 					events: [],
 					verdicts: [],
+					verifiedCheck: null,
 					report: null,
 					review: place.kind === "machine" || deps.reviewer === false ? { state: "off", recommendation: null } : null,
 					reviews: [],

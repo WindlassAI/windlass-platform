@@ -41,6 +41,7 @@
  */
 
 import type { GithubId } from "../contract.js";
+import { VERIFIED_NAME, type CheckRunUpdate } from "./checks.js";
 import { decimalId, githubId, githubJsonInteger, parseGithubJson } from "./ids.js";
 import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import { githubClientSecret, githubConfig, githubPrivateKey } from "../config.js";
@@ -90,7 +91,7 @@ export type PermissionLevel = "read" | "write";
 export interface TokenScope {
 	/** GitHub's id of the one repository the token is good for; omitted only to list the installation's repositories. */
 	repositoryId?: GithubId;
-	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: "read"; statuses?: "read"; actions?: "read" };
+	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: PermissionLevel; statuses?: "read"; actions?: "read" };
 }
 
 export interface InstallationToken {
@@ -491,6 +492,41 @@ export class GithubApp {
 		// Asking for the repository tells which; if it is gone, that is the failure.
 		await this.repository(token, owner, name, deadline);
 		return "none";
+	}
+
+	async findCheckRun(token: string, owner: string, name: string, sha: string, item: string): Promise<string | null> {
+		const { items, truncated } = await this.pages({
+			path: `/repos/${owner}/${name}/commits/${sha}/check-runs`, auth: { bearer: token }, what: "find the item's check run",
+			query: { check_name: VERIFIED_NAME, app_id: this.settings.appId, filter: "all" },
+		}, body => {
+			const runs = record(body).check_runs;
+			if (!Array.isArray(runs)) throw new Error("GitHub did not list check runs");
+			return runs;
+		});
+		for (const fields of items.map(record)) {
+			if (fields.name !== VERIFIED_NAME || fields.head_sha !== sha || decimalId(record(fields.app).id) !== this.settings.appId) continue;
+			const external = text(fields.external_id);
+			if (external.startsWith(item + ":") || external.startsWith("pending:" + item + ":")) {
+				const id = decimalId(fields.id);
+				if (!id) throw new Error("GitHub returned an invalid check run id");
+				return id;
+			}
+		}
+		if (truncated) throw new Error("GitHub cut the list of matching check runs short");
+		return null;
+	}
+
+	async createCheckRun(token: string, owner: string, name: string, sha: string, update: CheckRunUpdate): Promise<string> {
+		const { body } = await this.call({ method: "POST", path: `/repos/${owner}/${name}/check-runs`, auth: { bearer: token },
+			body: { ...update, name: VERIFIED_NAME, head_sha: sha }, what: "create the item's check run" });
+		const id = decimalId(record(body).id);
+		if (!id) throw new Error("GitHub returned an invalid check run id");
+		return id;
+	}
+
+	async updateCheckRun(token: string, owner: string, name: string, id: string, update: CheckRunUpdate): Promise<void> {
+		await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/check-runs/${id}`, auth: { bearer: token },
+			body: update, what: "update the item's check run" });
 	}
 
 	/** The sole annotation of each candidate check run, in one request with the same Checks permission. */

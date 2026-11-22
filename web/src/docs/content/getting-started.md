@@ -56,7 +56,7 @@ The platform acts as the App's installation. It keeps no GitHub token of yours. 
 | --- | --- | --- |
 | Contents | Read and write | Clone the repository, and push the agent's branch. |
 | Pull requests | Read and write | Open and update the pull request. |
-| Checks | Read-only | Read CI on a work item's pull request. |
+| Checks | Read and write | Read CI and publish the Factory verdict as `windlass/verified` on the pull request's head commit. |
 | Commit statuses | Read-only | Read CI on a work item's pull request. |
 | Actions | Read-only | Read CI on a work item's pull request. |
 | Issues | Read and write | Read an issue filed as a work item, and comment on it. |

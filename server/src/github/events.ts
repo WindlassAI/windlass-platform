@@ -1,5 +1,6 @@
+import { VERIFIED_NAME } from "./checks.js";
 import type { GithubId } from "../contract.js";
-import { decimalId, githubId } from "./ids.js";
+import { decimalId, githubId, ownApp } from "./ids.js";
 
 /** The edge keeps just the inputs to a later lookup. GUID and receipt time come from the route. */
 type Sender = { id: GithubId; login: string; association: string };
@@ -9,7 +10,7 @@ type Fields = {
 	pull_request: { pr: number; head: string; merged: boolean };
 	pull_request_review: { pr: number; reviewId: string; state: string; body: string; commitId: string; sender: Sender };
 	pull_request_review_comment: { pr: number; commentId: string; body: string; path: string; line: number | null; commitId: string; sender: Sender };
-	check_run: { head: string };
+	check_run: { head: string; runId?: string };
 	check_suite: { head: string };
 	status: { head: string };
 	installation: { repositoryIds: GithubId[] };
@@ -40,9 +41,9 @@ export function isAddressed(body: string, slug: string): string | null {
 	return address === "@" + slug.toLowerCase() || address === "/windlass" ? words?.[2] ?? "" : null;
 }
 
-export function edge(event: string, payload: unknown, meta: { slug: string } & Receipt): Delivery | null;
-export function edge(event: string, payload: unknown, meta: { slug: string }): Trimmed | null;
-export function edge(event: string, payload: unknown, meta: { slug: string } & Partial<Receipt>): Trimmed | null {
+export function edge(event: string, payload: unknown, meta: { slug: string; appId?: string } & Receipt): Delivery | null;
+export function edge(event: string, payload: unknown, meta: { slug: string; appId?: string }): Trimmed | null;
+export function edge(event: string, payload: unknown, meta: { slug: string; appId?: string } & Partial<Receipt>): Trimmed | null {
 	const p = obj(payload);
 	const installationId = githubId(obj(p.installation).id);
 	if (!installationId) return null;
@@ -63,7 +64,13 @@ export function edge(event: string, payload: unknown, meta: { slug: string } & P
 	}
 	if (!repositoryId) return null;
 	if (event === "check_run" || event === "check_suite") {
-		const head = sha(obj(p[event]).head_sha);
+		const check = obj(p[event]);
+		const head = sha(check.head_sha);
+		if (ownApp(obj(check.app), meta)) {
+			const runId = decimalId(check.id);
+			return event === "check_run" && action === "rerequested" && check.name === VERIFIED_NAME && head && runId && !runId.startsWith("0")
+				? { ...base, event, data: { head, runId } } : null;
+		}
 		return action === "completed" && head ? { ...base, event, data: { head } } : null;
 	}
 	if (event === "status") {

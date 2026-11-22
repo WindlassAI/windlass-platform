@@ -96,6 +96,24 @@ Turn on **Take screenshots for work items** in the repository's settings, under 
 
 When an item is handed over, its page gives a verdict, such as **Ready for review**, **Needs a look** or **Failing**. The verdict rests on CI on the pushed commit, your checks where you set them, and what was seen in the changes. It never rests on the agent's words. A verdict merges nothing.
 
+### The check on GitHub
+
+Look for **windlass/verified** on the pull request. It starts in progress when the item publishes its commit. A feature gets one check on its assembled work after its subtasks finish. **Details** opens the evidence for the item's owner. Anyone who can read the repository can read the check summary. It contains platform observations, including check names, flagged paths, the second review's recommendation, counts and spending. The task, builder's report and reviewer's findings stay out of the check summary.
+
+| Factory outcome | GitHub conclusion |
+|---|---|
+| Ready for review | Success |
+| Needs a look, CI unread or unfinished, CI did not start, or Not verified | Action required |
+| The second reviewer requests changes or needs a person on an otherwise ready item | Action required |
+| Failing or Incomplete | Failure |
+| You give up or cancel during verification | Cancelled |
+
+After someone else pushes, the earlier verdict belongs to the old commit. Windlass marks the new head **Action required** when it sees the move. Sending the item back puts its check in progress during rework. In review, choose **Re-run** on the GitHub check to have Windlass read CI again. For example, CI that has finished since handover can now earn a pass. Windlass accepts one such request per minute per item.
+
+If Windlass reports a permission refusal, ask the installation owner to open the App's **Configure** page on GitHub and accept **Checks: Read and write**. The verdict, review request and marked pull request comment are available independently of the check.
+
+To require the check, add **windlass/verified** to the required status checks for your target branch in the repository's branch protection rule or ruleset. Select **windlass-fk4w** as the expected source. **Action required** blocks a merge under this rule. You can separately enable auto-merge for the repository.
+
 ## When an item needs you
 
 An item waits under **Needs you** when it asks you something, under **It asks you** on its page. For example, when its turn could not start, when GitHub refused the push, when CI has not finished, or when it reached a limit. Choose one of the answers it offers, such as **Try again**, **Keep waiting**, **Raise the limit and go on**, **Hand it over as it is** or **Give up**. An item's question waits until you answer.

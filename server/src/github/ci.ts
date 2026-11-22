@@ -32,7 +32,7 @@
  */
 
 import type { GithubId } from "../contract.js";
-import { decimalId } from "./ids.js";
+import { decimalId, ownApp } from "./ids.js";
 import { type GithubApp, GithubError } from "./app.js";
 import { redact } from "./redact.js";
 
@@ -260,7 +260,7 @@ export interface CiTarget {
 async function readRuns(app: GithubApp, token: string, target: CiTarget, head: string, checks: unknown[], statuses: unknown[], truncated: boolean): Promise<CiReading> {
 	const candidates: Candidate[] = [];
 	let remainingJobReads = JOB_READS_PER_READING;
-	const fromHead = checks.map(record).filter((fields) => !fields.head_sha || fields.head_sha === head);
+	const fromHead = checks.map(record).filter((fields) => (!fields.head_sha || fields.head_sha === head) && !ownApp(record(fields.app), app.settings));
 	let runs = [...fromHead.map((fields) => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
 	if (candidates.length) {
 		let messages = new Map<string, string>();

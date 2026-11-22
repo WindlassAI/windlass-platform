@@ -39,6 +39,8 @@ export interface StandinUser {
 
 export interface StandinInstallation {
 	id: number;
+	/** Grants retained while the owner reviews updated App permissions. */
+	permissions?: Permissions;
 	account: { id: number; login: string; type: "User" | "Organization" };
 	/** Ids of the repositories it covers. */
 	repositories: Set<number>;
@@ -70,7 +72,14 @@ export interface StandinIssue {
 	comments: { id: bigint; user: { id?: number; login: string; type?: string }; body: string; created_at: string }[];
 }
 
+export interface StandinCheck {
+	id: number; repository: number; name: string; head_sha: string; app: { id: string; slug: string };
+	external_id: string; details_url: string; status: "completed" | "in_progress"; conclusion?: string | null;
+	started_at: string; completed_at?: string; output: { title: string; summary: string };
+}
+
 export interface StandinPull {
+	headSha?: string;
 	number: number;
 	repository: number;
 	title: string;
@@ -170,6 +179,9 @@ export class GithubStandin {
 	readonly users = new Map<string, StandinUser>();
 	readonly installations = new Map<number, StandinInstallation>();
 	readonly repositories = new Map<number, StandinRepository>();
+	readonly checks: StandinCheck[] = [];
+	checkFault: 403 | 422 | "lose_reply" | null = null;
+	checkTokenFault: 403 | 422 | null = null;
 	readonly pulls: StandinPull[] = [];
 	readonly issues: StandinIssue[] = [];
 	readonly tokens = new Map<string, Token>();
@@ -516,7 +528,7 @@ export class GithubStandin {
 		const installation = token.installation === undefined ? undefined : this.installations.get(token.installation);
 		if (!installation || installation.suspended || !installation.repositories.has(repository.id)) return false;
 		if (token.repositories && !token.repositories.includes(repository.id)) return false;
-		const has = (token.permissions ?? this.appPermissions)[permission];
+		const has = (token.permissions ?? installation.permissions ?? this.appPermissions)[permission];
 		return has === "write" || (has === "read" && need === "read");
 	}
 
@@ -549,7 +561,7 @@ export class GithubStandin {
 			merged_at: pull.merged ? new Date().toISOString() : null,
 			title: pull.title,
 			body: pull.body,
-			head: { ref: pull.head, ...(pull.head.startsWith("windlass/feature-i_") && { sha: this.branchHead(repository, pull.head) }) },
+			head: { ref: pull.head, ...(pull.headSha && { sha: pull.headSha }), ...(pull.head.startsWith("windlass/feature-i_") && { sha: this.branchHead(repository, pull.head) }) },
 			base: { ref: pull.base, sha: this.branchHead(repository, pull.base) },
 		};
 	}
@@ -663,14 +675,15 @@ export class GithubStandin {
 			const ids = Array.isArray(fields.repository_ids) ? fields.repository_ids : null;
 			if (ids?.some((id) => !installation.repositories.has(id))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
 			const rank = { read: 1, write: 2 } as const;
+			if (fields.permissions?.checks === "write" && this.checkTokenFault) return answer(this.checkTokenFault, { message: "Checks write not granted" });
 			for (const [name, level] of Object.entries(fields.permissions ?? {})) {
-				const granted = this.appPermissions[name];
+				const granted = (installation.permissions ?? this.appPermissions)[name];
 				if (!granted || rank[level] > rank[granted]) return answer(422, { message: "The permissions requested are not granted to this installation." });
 			}
 			const value = `ghs_${this.appId}_${randomBytes(30).toString("base64url")}`;
 			this.tokens.set(value, { kind: "installation", value, installation: installation.id, repositories: ids ?? undefined, permissions: fields.permissions, expiresAt: Date.now() + 3600_000, revoked: false });
 			this.minted.push({ installation: installation.id, repositoryIds: ids, permissions: fields.permissions ?? null, token: value });
-			return answer(201, { token: value, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: fields.permissions ?? this.appPermissions, ...(ids && { repositories: ids.map(id => this.repositoryJson(this.repositories.get(id)!)) }), repository_selection: ids ? "selected" : "all" });
+			return answer(201, { token: value, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: fields.permissions ?? installation.permissions ?? this.appPermissions, ...(ids && { repositories: ids.map(id => this.repositoryJson(this.repositories.get(id)!)) }), repository_selection: ids ? "selected" : "all" });
 		}
 
 		const forget = /^\/applications\/([^/]+)\/token$/.exec(api);
@@ -741,6 +754,29 @@ export class GithubStandin {
 				return answer(404, { message: "Not Found" });
 			}
 
+			const checkPath = /^\/check-runs(?:\/(\d+))?$/.exec(rest);
+			if (checkPath && (method === "POST" || method === "PATCH")) {
+				if (!this.allows(token, repository, "checks", "write")) return denied();
+				if (typeof this.checkFault === "number") return answer(this.checkFault, { message: "Writing checks was refused" });
+				const fields = (body ?? {}) as Partial<StandinCheck>;
+				if (!fields.output?.title || !fields.output.summary || fields.output.summary.length > 4000 || !fields.details_url || !fields.external_id ||
+					(fields.status === "completed" ? !fields.conclusion || !fields.completed_at : fields.status !== "in_progress" || fields.conclusion)) return answer(422, { message: "Invalid check run" });
+				if (method === "PATCH" && checkPath[1]) {
+					const check = this.checks.find(r => r.repository === repository.id && r.id === Number(checkPath[1]));
+					if (!check) return answer(404, {});
+					Object.assign(check, { conclusion: null, completed_at: undefined }, fields);
+					return answer(200, check);
+				}
+				if (checkPath[1] || method !== "POST" || !fields.name || !/^[a-f0-9]{40}$/.test(fields.head_sha ?? "")) return answer(422, {});
+				const check = { ...fields, id: ++this.nextId, repository: repository.id, app: { id: this.appId, slug: this.slug } } as StandinCheck;
+				this.checks.push(check);
+				if (this.checkFault === "lose_reply") {
+					this.checkFault = null;
+					return answer(503, { message: "Lost reply after storing the check" });
+				}
+				return answer(201, check);
+			}
+
 			const commitCi = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(rest);
 			const job = /^\/actions\/jobs\/(\d+)(\/logs)?$/.exec(rest);
 			if (method === "GET" && (commitCi || job)) {
@@ -749,7 +785,13 @@ export class GithubStandin {
 				if (this.ciRateLimit) return answer(this.ciRateLimit.status, { message: this.ciRateLimit.message }, this.ciRateLimit.headers);
 				if (commitCi) {
 					const ci = repository.ci.get(decodeURIComponent(commitCi[1]));
-					return permission === "checks" ? pageOf("check_runs", ci?.runs ?? []) : pageOf("statuses", ci?.statuses ?? []);
+					if (permission !== "checks") return pageOf("statuses", ci?.statuses ?? []);
+					const runs = [...(ci?.runs ?? []), ...this.checks.filter(r => r.repository === repository.id && r.head_sha === commitCi[1])];
+					const name = url.searchParams.get("check_name"), app = url.searchParams.get("app_id");
+					return pageOf("check_runs", runs.filter(run => {
+						const r = run as Partial<StandinCheck>;
+						return (!name || r.name === name) && (!app || String(r.app?.id) === app);
+					}));
 				}
 				const id = job![1];
 				if (!job![2]) {

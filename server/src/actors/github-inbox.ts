@@ -69,7 +69,11 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	for (const { uid, itemId } of matches) {
 		const item = c.client().workItem.get([uid, itemId], { params: serviceParams() });
 		try {
-			if (await item.internalGithubNudge({ ...subject, repositoryId: d.repositoryId, installationId: d.installationId })) waiting = true;
+			const binding = { repositoryId: d.repositoryId, installationId: d.installationId };
+			const woke = d.event === "check_run" && d.action === "rerequested"
+				? await item.internalReverify({ ...binding, head: d.data.head })
+				: await item.internalGithubNudge({ ...subject, ...binding });
+			if (woke) waiting = true;
 		} catch (error) {
 			if (missingActor(error) || (error as { code?: string })?.code === "item_not_found") await directory.internalForget(itemId);
 			else retry = true;
