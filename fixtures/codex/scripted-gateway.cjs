@@ -1,6 +1,6 @@
 // Offline Responses API for codex-sandbox-escape-check.mjs. The first turn request answers with the
 // `exec` tool call in env WLP_SCRIPT; later requests end the turn. Each request's tool outputs are
-// appended to /tmp/tool-outputs.jsonl.
+// appended to /tmp/tool-outputs.jsonl and each turn request's body to /tmp/requests.jsonl.
 const fs = require('node:fs');
 const http = require('node:http');
 let calls = 0;
@@ -13,6 +13,7 @@ http
 				res.setHeader('content-type', 'application/json');
 				return res.end(JSON.stringify({ data: [{ id: 'gpt-6.2-sol' }], models: [{ slug: 'gpt-6.2-sol', visibility: 'list' }] }));
 			}
+			fs.appendFileSync('/tmp/requests.jsonl', body.replace(/\n/g, ' ') + '\n');
 			const input = JSON.parse(body).input ?? [];
 			for (const item of input.filter((i) => i.type === 'custom_tool_call_output'))
 				fs.appendFileSync('/tmp/tool-outputs.jsonl', JSON.stringify(item.output) + '\n');

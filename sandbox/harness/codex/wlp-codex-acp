@@ -4,8 +4,10 @@
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const { once } = require('node:events');
+// codex-acp reaches Codex through wlp-codex-app-server, which keeps a repository's .codex/ unloaded.
 const child = spawn(process.execPath, ['/opt/wlp-codex/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], {
   stdio: ['pipe', 'inherit', 'inherit'],
+  env: { ...process.env, CODEX_PATH: '/usr/local/bin/wlp-codex-app-server' },
 });
 child.on('exit', code => process.exit(code ?? 1));
 child.stdin.on('error', () => process.exit(1));

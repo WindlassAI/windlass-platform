@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+// codex-acp 2.9.0 starts `$CODEX_PATH app-server` and marks every session root as a trusted project in
+// the config of thread/start, thread/resume and thread/fork. A trusted project's .codex/ is loaded: its
+// config.toml (MCP servers, sandbox settings, permission profiles and more), hooks and exec policy rules.
+// A cloned repository's contents are untrusted, so this filter drops that override on its way to Codex.
+// The workspace then has no trust decision and Codex ignores its .codex/ (it still reads AGENTS.md).
+// codex-acp writes Codex's own config only to trust hooks; those writes are refused too.
+const { spawn } = require('node:child_process');
+const { createInterface } = require('node:readline');
+const { once } = require('node:events');
+const codex = '/usr/local/bin/codex';
+const WRITES = new Set(['config/batchWrite', 'config/value/write', 'config/write']);
+const args = process.argv.slice(2);
+const child = spawn(codex, args, { stdio: [args[0] === 'app-server' ? 'pipe' : 'inherit', 'inherit', 'inherit'] });
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+child.on('exit', (code) => process.exit(code ?? 1));
+if (args[0] === 'app-server') {
+	child.stdin.on('error', () => {});
+	const filter = (line) => {
+		let msg;
+		try {
+			msg = JSON.parse(line);
+		} catch {
+			return line;
+		}
+		if (msg === null || typeof msg !== 'object' || typeof msg.method !== 'string') return line;
+		if (WRITES.has(msg.method)) {
+			// Codex answers it as an unknown method.
+			msg.method = 'wlp/refused/' + msg.method;
+			return JSON.stringify(msg);
+		}
+		const config = msg.params?.config;
+		if (config === null || typeof config !== 'object') return line;
+		for (const key of Object.keys(config))
+			if (key === 'projects' || key.startsWith('projects.') || key === 'bypass_hook_trust') delete config[key];
+		return JSON.stringify(msg);
+	};
+	(async () => {
+		for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity }))
+			if (!child.stdin.write(filter(line) + '\n')) await once(child.stdin, 'drain');
+		child.stdin.end();
+	})().catch(() => child.kill());
+}
