@@ -182,14 +182,18 @@ export function unsafeWorkspace(what: string): string {
  * too (it fetches every branch), and says at which commit: `wlp:haswork <commit>`, or `wlp:nowork`
  * when GitHub no longer has it (deleted, say, after its pull request was merged). The workspace stays
  * on `branch` all the same: the repository's setup command runs there first, on what the session was
- * launched from, never on what the session pushed (that tree is the agent's, and the command runs with
+ * launched from. For a subtask, setup runs on the pinned feature seed and the saved publishing base
+ * is the fetched feature tip. Setup never runs on what a session pushed (the command runs with
  * the network and every secret saved for the repository). `workCheckoutScript` puts it on the branch
  * afterwards. Neither step needs a token, and neither gets one.
  *
  * `wlp:dir <directory>` says where the clone is, relative to the workspace: "." or `directory`.
  */
 export function cloneScript(url: string, branch: string, directory: string, work?: string, pinnedBase?: string): string {
-	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid review base SHA.");
+	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid setup base SHA.");
+	// Review clones need only the base ref. A pinned subtask also restores its feature or published branch.
+	const cloneFlags = pinnedBase ? (work ? "--no-checkout " : "--single-branch --no-checkout ") : "";
+	const featureRef = shellQuote("refs/remotes/origin/" + branch);
 	const lines = [
 		"set -eu",
 		READ_TOKEN,
@@ -200,19 +204,20 @@ export function cloneScript(url: string, branch: string, directory: string, work
 		"else",
 		`	target=${shellQuote(directory)}`,
 		"fi",
-		`wlp_git clone --quiet ${pinnedBase ? "--single-branch " : ""}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
+		`wlp_git clone --quiet ${cloneFlags}--branch ${shellQuote(branch)} -- ${shellQuote(url)} "$target"`,
 		`echo "wlp:dir $target"`,
 		PLAIN_GIT,
 		...(pinnedBase ? ["WLP_T=", `plain_git -C "$target" checkout -q --detach ${pinnedBase}`] : []),
-		'base_sha=$(plain_git -C "$target" rev-parse --verify HEAD)',
+		`base_sha=$(plain_git -C "$target" rev-parse --verify ${work && pinnedBase ? featureRef : "HEAD"})`,
 		'echo "wlp:base $base_sha"',
 	];
-	if (work !== undefined && work !== branch) {
+	if (work !== undefined) {
 		lines.push(
 			"WLP_T=",
 			`if at=$(plain_git -C "$target" rev-parse -q --verify ${shellQuote(`refs/remotes/origin/${work}^{commit}`)} 2>/dev/null); then`,
 			`	echo "wlp:haswork $at"`,
 			"else",
+			...(pinnedBase ? [`	at=$(plain_git -C "$target" rev-parse --verify ${featureRef})`, '\techo "wlp:haswork $at"'] : []),
 			`	echo "wlp:nowork"`,
 			"fi",
 		);

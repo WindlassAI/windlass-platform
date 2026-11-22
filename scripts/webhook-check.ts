@@ -98,6 +98,10 @@ async function testNode() {
 			config.factory.githubItemsPerDay = limit;
 			config.factory.githubDrafts = drafts;
 		},
+		checkPlanning: (c: Ctx, enabled: boolean) => {
+			requireServiceFor(c, "call");
+			process.env.WLP_FACTORY_ORCHESTRATE = enabled ? "1" : "0";
+		},
 		checkFallback: (c: Ctx, ms: number | null) => {
 			requireServiceFor(c, "call");
 			if (ms === null) delete process.env.WLP_GITHUB_POLL_FALLBACK;
@@ -225,7 +229,7 @@ async function run() {
 		await connectUser("g2-neighbour");
 		const directory = () => client.githubRepository.getOrCreate([String(projectG2.id)], service());
 		const push = async () => {
-			const item = await g2User.createItem({ repository: { id: projectG2.id }, title: "A webhook check", body: "Add a short program.", start: true });
+			const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title: "A webhook check", body: "Add a short program.", start: true });
 			const handle = () => client.workItem.get([uid, item.id], service());
 			const poll = () => (handle() as unknown as { checkPoll(): Promise<{ id: string; due_at: number; effect: string } | null> }).checkPoll();
 			const published = await until("registered push", async () => {
@@ -348,6 +352,13 @@ async function run() {
 		const payload = (issue: Issue, sender = writer) => ({ issue: { number: issue.number, title: "Decoy title", body: "Decoy body", user: sender, author_association: "OWNER" }, sender: { ...sender, type: "User" } });
 		const notify = (issue: Issue, action: string, sender = writer, installationId = installation.id) => delivered("issues", { ...payload(issue, sender), action, label: { name: "windlass" } }, installationId);
 		const change = async (issue: Issue, action: string, sender = writer) => { standin.issueEvent(issue, action, sender); await notify(issue, action, sender); };
+		const applyLabel = async (issue: Issue, name: string, sender = writer) => {
+			const labels = new Set(issue.labels);
+			standin.issueEvent(issue, "labeled", sender);
+			issue.labels = [...labels.add(name)];
+			issue.events.at(-1)!.label = { name };
+			await delivered("issues", { ...payload(issue, sender), action: "labeled", label: { name } });
+		};
 		const mention = (issue: Issue, id: bigint, sender = writer) => delivered("issue_comment", { ...payload(issue, sender), action: "created",
 			comment: { id, body: "@windlass-fk4w payload words", author_association: "OWNER", user: sender } });
 		const items = async (issue: Issue, account = g2User) => (await account.listItems()).filter(i => i.origin?.issue.number === issue.number);
@@ -364,10 +375,7 @@ async function run() {
 			assert.equal((await items(named, author.account))[0]?.mode, "orchestrate");
 
 			const labelled = make(176, reader);
-			standin.issueEvent(labelled, "labeled", author.person);
-			labelled.labels = ["windlass:orchestrate"];
-			labelled.events.at(-1)!.label = {name:"windlass:orchestrate"};
-			await delivered("issues", {...payload(labelled,author.person),action:"labeled",label:{name:"windlass:orchestrate"}});
+			await applyLabel(labelled, "windlass:orchestrate", author.person);
 			assert.equal((await items(labelled,author.account))[0]?.mode,"orchestrate");
 
 			const bug = make(177, reader);
@@ -376,7 +384,40 @@ async function run() {
 			await mention(bug, fileBug.id, author.person);
 			assert.equal((await items(bug,author.account))[0]?.mode,"single");
 			await until("bug reply",async () => bots(bug).length > 0);
-			assert.match(bots(bug)[0]!.body, /bug label.*single item/i);
+			assert.match(bots(bug)[0]!.body, /bug label.*Quick.*without a plan/i);
+
+			const defaults = make(178, reader);
+			await change(defaults, "labeled", author.person);
+			assert.equal((await items(defaults, author.account))[0]?.mode, "orchestrate");
+			await until("plan-first reply", async () => bots(defaults).some(c => /Plan first.*approve/.test(c.body)));
+
+			const quick = make(179, reader);
+			const note = standin.issueComment(quick, author.person, "/windlass quick fix the typo");
+			await mention(quick, note.id, author.person);
+			assert.equal((await items(quick, author.account))[0]?.mode, "single");
+			await until("quick reply", async () => bots(quick).some(c => /Quick.*without a plan/.test(c.body)));
+
+			const quickLabel = make(180, reader);
+			await applyLabel(quickLabel, "windlass:quick", author.person);
+			assert.equal((await items(quickLabel, author.account))[0]?.mode, "single");
+		});
+		await check("G3 feature defaults to single on a deployment without planning", async () => {
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkPlanning(enabled: boolean): Promise<void> };
+			await settings.checkPlanning(false);
+			try {
+				const author = await newWriter("g3-quick-default");
+				const issue = make(181, reader);
+				await change(issue, "labeled", author.person);
+				assert.equal((await items(issue, author.account))[0]?.mode, "single");
+				await until("deployment switch reply", async () => bots(issue).some(c => /disabled.*without a plan/.test(c.body)));
+				const draft = await author.account.createItem({ repository: { id: projectG2.id }, title: "Export", body: "Make an export." });
+				assert.equal(draft.mode, "single");
+				const explicit = make(182, reader);
+				await mention(explicit, standin.issueComment(explicit, author.person, "/windlass orchestrate").id, author.person);
+				assert.deepEqual(await items(explicit, author.account), []);
+				await until("explicit orchestration refusal", async () => bots(explicit).some(c => /Not taken.*disabled/.test(c.body)));
+				await assert.rejects(author.account.createItem({ repository: { id: projectG2.id }, title: "Export", body: "Make an export.", mode: "orchestrate" }));
+			} finally { await settings.checkPlanning(true); }
 		});
 		await check("G3 snapshot strips hidden text, bounds task, identifies author and fences third-party text", () => {
 			const issue = make(40, reader);
@@ -558,7 +599,7 @@ async function run() {
 			assert.equal((await directory().internalFind({ issue: 47 }))[0].generation, 2);
 		});
 		await check("G3 marked issue comment links to the item, edits in place; real PR ends in Closes", async () => {
-			const issue = make(48); await change(issue, "labeled"); const [item] = await items(issue); assert.ok(item);
+			const issue = make(48); await applyLabel(issue, "windlass:quick"); const [item] = await items(issue); assert.ok(item);
 			const pull = await until("issue PR", async () => {
 				const view = await g2User.item(item.id);
 				return standin.pulls.find(p => p.repository === projectG2.id && p.number === view.pullRequest?.number);
@@ -609,7 +650,7 @@ async function run() {
 		});
 		await check("G3 owner closure while working withdraws the actual turn", async () => {
 			const { person, account } = await newWriter("g3-close");
-			const issue = make(52, person); issue.body = "Build this carefully (slow)."; await change(issue, "labeled", person);
+			const issue = make(52, person); issue.body = "Build this carefully (slow)."; await applyLabel(issue, "windlass:quick", person);
 			const [item] = await items(issue, account); assert.ok(item);
 			await until("running issue turn", async () => (await account.listSessions()).some(s => s.id === item.sessionId && s.status === "running"), 30_000);
 			await change(issue, "closed", person);
@@ -621,7 +662,7 @@ async function run() {
 			await clock.checkFallback(3500);
 			try {
 				const { person, account } = await newWriter("g3-merge");
-				const issue = make(53, person); await change(issue, "labeled", person); const [item] = await items(issue, account); assert.ok(item);
+				const issue = make(53, person); issue.labels.push("windlass:quick"); await applyLabel(issue, "windlass", person); const [item] = await items(issue, account); assert.ok(item);
 				const published = await until("published issue item", async () => { const v = await account.item(item.id); return v.pullRequest && v.head ? { head: v.head, pr: v.pullRequest.number } : null; }, 45_000);
 				ci(published.head, "success");
 				await until("issue in review", async () => (await account.item(item.id)).state === "review", 20_000);
@@ -639,7 +680,7 @@ async function run() {
 			const { person, account } = await newWriter("g3-retry");
 			await account.saveRepositoryChecks({ repositoryId: projectG2.id, checks: [{ name: "build", command: "npm run fail" }] });
 			const issue = make(54, person);
-			await change(issue, "labeled", person);
+			await applyLabel(issue, "windlass:quick", person);
 			const [item] = await items(issue, account); assert.ok(item);
 			const fail = async () => {
 				const question = await until("repeated required check failure", async () => (await account.item(item.id)).question, 90_000);

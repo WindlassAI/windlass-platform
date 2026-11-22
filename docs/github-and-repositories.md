@@ -255,6 +255,9 @@ work, and the command runs with the network and every secret saved for the repos
 the branch (deleted after a merge, say), the workspace stays on the base branch and the timeline says so. The
 agent is told with its next prompt that the workspace is a fresh one.
 
+A subtask runs setup at the commit where its feature started, including when its sandbox is replaced.
+After setup, the workspace switches to the integrated feature branch or the subtask’s own published work.
+
 ### When it does not work
 
 Each failure is said where the user is, in a sentence they can act on:

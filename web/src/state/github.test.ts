@@ -20,8 +20,8 @@ describe("the start composer's draft across the visit to GitHub", () => {
 	});
 
 	it("gives back a work item being filed: the switch on Work item, and its acceptance criteria", () => {
-		sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ prompt: "Add a health check", kind: "item", criteria: "It answers 200." }));
-		expect(takeLaunchDraft()).toMatchObject({ prompt: "Add a health check", kind: "item", criteria: "It answers 200." });
+		sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ prompt: "Add a health check", kind: "item", itemMode: "single", criteria: "It answers 200." }));
+		expect(takeLaunchDraft()).toMatchObject({ prompt: "Add a health check", kind: "item", itemMode: "single", criteria: "It answers 200." });
 		sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ kind: "form" }));
 		expect(takeLaunchDraft()?.kind).toBeNull();
 	});

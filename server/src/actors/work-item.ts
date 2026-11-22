@@ -31,6 +31,8 @@
 import { GithubProblem } from "../github/repos.js";
 import { PlanError } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
+import { getLayer } from "../layer.js";
+import type { PlacementInventory } from "../factory/placement.js";
 import { hasPushCi } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
@@ -46,7 +48,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -168,6 +170,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		title: item.task.title,
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		place: item.place,
+		...(item.placement && { placement: item.placement }),
 		source: meta.source,
 		origin: meta.github?.origin ?? null,
 		state: item.state,
@@ -236,6 +239,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	return {
 		...summaryOf(stored),
 		plan: stored.item.featurePlan ?? null,
+		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
@@ -503,6 +507,12 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 	return { app, installationId: resolved.installation.id, owner, name, pull, author: authorOf(connection), login: connection.user.login };
 }
 
+async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
+	const machines = await userActor(c, uid).internalPlannerMachines();
+	const hostedProfiles = (await getLayer()).sandboxes.profiles().filter(p => p.available).map(p => p.id);
+	return { machines, hostedProfiles };
+}
+
 async function checkFeatureCi(c: Ctx, stored: Stored) {
 	const { item, meta } = stored;
 	if (!await userActor(c, meta.uid).internalHasChecks(meta.repository.id))
@@ -725,7 +735,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, state:"done", integratedHead:effect.head });
 			return true;
 		case "cancel_children":
-			for (const child of effect.ids) await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+			for (const child of effect.ids) {
+				const view = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
+				const active = c.vars.stored?.item, job = active?.jobs?.at(-1);
+				if (!view && active && job?.id === child && job.cancelRequested && job.state === "draft" && !ENDED.has(active.state)) {
+					// A placement wait has no child actor to report cancellation.
+					await take(c, { kind: "child_update", key: currentKey(active)!, child, state: "cancelled",
+						spent: job.spent, head: null, report: "Cancelled before launch.", at: Date.now() });
+				}
+			}
 			return true;
 		case "dispatch":
 		case "describe_feature":
@@ -733,8 +751,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const key = effect.key;
 			const job = item.jobs?.at(-1);
 			if (effect.kind === "dispatch" && item.pr && job) {
+				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
+					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid), at: Date.now() });
+					return true;
+				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, placement: v.placement, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				if (!changed && live(c.vars.stored!.item, effect)) {
 					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
 					await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
@@ -806,7 +828,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const description = prose("What it did"), lookAt = prose("Where to look"), risk = report?.blocks.find(b => b.kind === "risk");
 				checkout = { ...effect.reviewerInput, baseSha: meta.reviewBase.sha, report: report ? { title: report.title, description: description?.kind === "text" ? description.text : "", lookAt: lookAt?.kind === "text" ? lookAt.text : "", concerns: risk?.text ?? "", screenshots: report.screenshots.map(s => ({ file: s.id, caption: s.caption })) } : null };
 			}
-			const text = effect.agent === "planner" ? effect.text + "\n\nOwner machine descriptions and capacity (read-only data): " + JSON.stringify(await userActor(c, meta.uid).internalPlannerMachines()) + "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent) : effect.text;
+			let text = effect.text;
+			if (effect.agent === "planner") {
+				const inventory = await placementInventory(c, meta.uid);
+				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => description);
+				const parent = item.place;
+				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
+				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, machines: places })
+					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
+			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
 			return true;
 		}
@@ -1022,11 +1052,23 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
 		},
+		// The seed belongs to the parent. Looking it up on clone also covers previously created child sessions.
+		internalSetupSeed: async (c, source: "child" | "feature"): Promise<string | null> => {
+			requireServiceFor(c, "call");
+			const stored = c.vars.stored;
+			if (!stored) throw new Error("The work item is unavailable for setup.");
+			if (source === "child") {
+				const parent = stored.item.parent;
+				return parent ? itemActor(c, stored.meta.uid, parent.itemId).internalSetupSeed("feature") : null;
+			}
+			if (!stored.item.seed) throw new Error("The feature has no recorded setup commit.");
+			return stored.item.seed;
+		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
 			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
-			return { job, sessionId: s.meta.sessionId, feature: summaryOf(s), context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: s.item.jobs?.filter(j => j.state === "done" && job.task.dependsOn.includes(j.task.key)).map(j => j.report) }) };
+			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s), context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: s.item.jobs?.filter(j => j.state === "done" && job.task.dependsOn.includes(j.task.key)).map(j => j.report) }) };
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);
@@ -1055,7 +1097,10 @@ export const workItem = actor({
 			let changed: boolean;
 			try {
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
-				if (approving && advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
+				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
+					fact.inventory = await placementInventory(c, stored.meta.uid);
+					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
+				}
 				changed = await take(c, fact);
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
@@ -1093,6 +1138,11 @@ export const workItem = actor({
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored || typeof fact?.kind !== "string" || typeof fact.at !== "number") return;
+			if (fact.kind === "placement_wait") {
+				requireServiceFor(c, "call");
+				await take(c, fact);
+				return;
+			}
 			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "review_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
 			await takeSessionFact(c, stored, fact);
 		},

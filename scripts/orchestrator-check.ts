@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createItem, advance, currentKey } from "../server/src/factory/blueprint.js";
+import { createItem, advance, canRetry, currentKey } from "../server/src/factory/blueprint.js";
 import * as intake from "../server/src/factory/intake.js";
 import { edge } from "../server/src/github/events.js";
-import type { FeaturePlanEdit } from "../server/src/contract.js";
+import { MAX_ITEM_BODY_CHARS, type FeaturePlanEdit } from "../server/src/contract.js";
 
 const single = { tokens: 10000, turns: 10, activeSeconds: 1000, hostedSeconds: 500 };
 const zero = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 };
@@ -21,11 +21,15 @@ test("an orchestrated filing starts with a planner and three single budgets", ()
 	assert.equal(start.item.run!.step.kind, "refine");
 	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /file_plan/);
 });
-test("the bound label or first command word requests orchestration, bug wins with a reply", () => {
+test("issues plan first unless the bug label, quick label or leading quick command opts out", () => {
 	const label = edge("issues", { action: "labeled", installation: { id: 1 }, repository: { id: 2 }, issue: { number: 3 }, sender: { login: "sam", id: 4 }, label: { name: "windlass:orchestrate" } }, { slug: "windlass" });
 	assert.ok(label);
 	assert.equal(intake.issueMode("orchestrate please", []).mode, "orchestrate");
-	assert.equal(intake.issueMode("please orchestrate", []).mode, "single");
+	assert.equal(intake.issueMode("", []).mode, "orchestrate");
+	assert.equal(intake.issueMode("please be quick", []).mode, "orchestrate");
+	assert.equal(intake.issueMode("quickly", []).mode, "orchestrate");
+	assert.equal(intake.issueMode("QUICK please", ["windlass:orchestrate"]).mode, "single");
+	assert.equal(intake.issueMode("orchestrate", ["windlass:quick"]).mode, "single");
 	assert.equal(intake.issueMode("", ["windlass:orchestrate"]).mode, "orchestrate");
 	assert.deepEqual(intake.issueMode("orchestrate", ["BUG"]).mode, "single");
 	assert.match(intake.issueMode("orchestrate", ["bug"]).reason!, /bug/i);
@@ -52,12 +56,12 @@ test("validate the entire plan, including dependencies, paths and every budget d
 	}
 });
 
-function started() {
-	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } });
+function started(budget = single) {
+	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget, reviewer: { on: true } });
 	return advance(item, { kind: "start", at: 1, by: "person" }).item;
 }
-function proposed(p: FeaturePlanEdit) {
-	const item = started(), key = currentKey(item)!;
+function proposed(p: FeaturePlanEdit, budget = single) {
+	const item = started(budget), key = currentKey(item)!;
 	const filed = advance(item, { kind: "file_plan", key, plan: p, at: 2 });
 	assert.equal(filed.item.featurePlan?.version, 1);
 	return advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } }).item;
@@ -83,14 +87,88 @@ test("single suggestion waits for either explicit choice, and planning spend car
 	const p = { ...proposal(), subtasks: [], singleSuggested: "Only one file." };
 	const item = proposed(p);
 	assert.equal(item.question!.kind, "single_suggested");
-	assert.deepEqual(item.question!.choices.map(c => c.id), ["run_single", "orchestrate_anyway"]);
+	assert.deepEqual(item.question!.choices, [{ id: "run_single", label: "Approve for one implementer" }, { id: "orchestrate_anyway", label: "Ask for subtasks" }]);
 	for (const choice of ["run_single", "orchestrate_anyway"] as const) {
 		const next = advance(item, { kind: "answer", choice, question: item.question!.id, by: "person", at: 4 }).item;
 		assert.equal(next.run!.step.kind, choice === "run_single" ? "implement" : "refine");
 		assert.equal(next.spent.tokens, 10);
-		if (choice === "run_single") assert.deepEqual(next.budget, single);
+		if (choice === "run_single") assert.equal(next.budget.tokens - next.spent.tokens, single.tokens);
 	}
 });
+test("run_single gives the builder the current approved scope, including the owner’s edits", () => {
+	const item = proposed({ ...proposal(), subtasks: [], singleSuggested: "One implementer is enough." });
+	const spec = { goal: "Look up a record", requirements: ["Match the exact identifier"], acceptance: ["A missing identifier returns 404"], outOfScope: ["Prefix matching"] };
+	const edited = advance(item, { kind: "edit_plan", version: 1, plan: { ...item.featurePlan!, spec }, at: 4, by: "owner" }).item;
+	for (const fact of [{ kind: "run_single" }, { kind: "answer", choice: "run_single", question: edited.question!.id }] as const) {
+		const result = advance(edited, { ...fact, at: 5, by: "owner" });
+		const delivery = result.effects.find(e => e.kind === "deliver");
+		assert.equal(result.item.featurePlan?.status, "approved");
+		assert.equal(result.item.featurePlan?.approvedBy, "owner");
+		assert.ok(delivery);
+		assert.equal(delivery.agent, null);
+		for (const text of [task.body, spec.goal, ...spec.requirements, ...spec.acceptance, ...spec.outOfScope]) assert.ok(delivery.text.includes(text), text);
+		assert.ok(!delivery.text.includes("Index documents"));
+	}
+});
+
+test("one implementer requires saved answers through both approval actions", () => {
+	const p = { ...proposal(), subtasks: [], singleSuggested: "Small change.", questions: [{ id: "storage", text: "Which database?" }] };
+	const pending = proposed(p);
+	for (const action of [{ kind: "run_single" }, { kind: "answer", choice: "run_single", question: pending.question!.id }] as const) {
+		assert.throws(() => advance(pending, { ...action, at: 4, by: "owner" }), /answer.*questions/i);
+	}
+	const plan = { ...p, questions: [{ ...p.questions[0]!, answer: "SQLite" }] };
+	const edited = advance(pending, { kind: "edit_plan", plan, version: 1, at: 5, by: "owner" }).item;
+	const handoff = advance(edited, { kind: "answer", question: edited.question!.id, choice: "run_single", at: 6, by: "owner" });
+	assert.match(handoff.effects.find(e => e.kind === "deliver")!.text, /Which database\?[\s\S]*SQLite/);
+});
+
+test("the owner-approved plan is bounded quoted data in the implementing prompt", () => {
+	const p = proposal();
+	p.spec.requirements = Array.from({ length: 20 }, () => "x".repeat(2000));
+	const result = advance(proposed(p), { kind: "run_single", at: 5, by: "owner" });
+	const prompt = result.effects.find(e => e.kind === "deliver")!.text;
+	const payload = /owner-approved plan \(quoted data\):\n([\s\S]*)/i.exec(prompt)?.[1];
+	assert.equal(payload?.length, MAX_ITEM_BODY_CHARS);
+});
+
+test("planning stops before a second turn after a quarter of a Quick allowance", () => {
+	const feature = started();
+	const pending = advance(feature, { kind: "turn_ended", key: currentKey(feature)!, at: 2, outcome: "succeeded", changes: false, verified: null, flags: [], report: null, spend: { tokens: single.tokens / 4, hostedSeconds: 1 } }).item;
+	const denied = advance(pending, { kind: "answer", choice: "revise", question: pending.question!.id, by: "owner", at: 3 });
+	assert.equal(denied.item.question?.kind, "budget");
+	assert.match(denied.item.question!.text, /planning/i);
+	assert.ok(!denied.effects.some(e => e.kind === "deliver"));
+	const build = advance(denied.item, { kind: "answer", choice: "run_single", question: denied.item.question!.id, by: "owner", at: 4 });
+	assert.equal(build.item.budget.tokens - build.item.spent.tokens, single.tokens);
+	assert.ok(build.effects.some(e => e.kind === "deliver" && e.agent === null));
+});
+
+test("a large final planner receipt stays charged and leaves room for a Quick implementation", () => {
+	const p = { ...proposal(), subtasks: [], singleSuggested: "One change.", questions: [{ id: "db", text: "Which database?" }] };
+	const start = started(), key = currentKey(start)!;
+	const filed = advance(start, { kind: "file_plan", key, at: 2, plan: p }).item;
+	const spent = 15_000;
+	const pending = advance(filed, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: spent, hostedSeconds: 1 } }).item;
+	assert.ok(!pending.question!.choices.some(c => c.id === "orchestrate_anyway"));
+	const plan = { ...p, questions: [{ ...p.questions[0]!, answer: "SQLite" }] };
+	const edited = advance(pending, { kind: "edit_plan", version: 1, plan, by: "owner", at: 4 }).item;
+	const build = advance(edited, { kind: "run_single", at: 5, by: "owner" });
+	assert.equal(build.item.spent.tokens, spent);
+	assert.equal(build.item.budget.tokens, spent + single.tokens);
+	assert.match(build.effects.find(e => e.kind === "deliver")!.text, /SQLite/);
+});
+
+test("the page retry flag matches the blueprint before and after dispatch, including a placement wait", () => {
+	const failed = { ...started(), state: "failed" as const };
+	const fact = { kind: "retry" as const, at: 99, by: "owner" };
+	for (const item of [failed, { ...failed, machineRemoved: true }, { ...failed, parent: { itemId: "parent", key: "first", title: "Feature" } },
+		{ ...failed, jobs: [{ id: "i_child", task: proposal().subtasks[0]!, state: "draft" as const, spent: zero, head: null, report: "" }] }]) {
+		assert.equal(canRetry(item), item === failed);
+		assert.equal(advance(item, fact).item !== item, canRetry(item));
+	}
+});
+
 test("a planner can file a plan without any builder publication tools", async () => {
 	const { turnHostTools, hostToolsMeta } = await import("../server/src/sandbox/turn.js");
 	const call = async () => "";
@@ -120,8 +198,8 @@ test("planner inventory exposes capacity and validated owner text without sessio
 	assert.doesNotMatch(JSON.stringify(entry), /private|sendSecrets/);
 });
 
-function approved() {
-	const item = proposed(proposal());
+function approved(budget = single) {
+	const item = proposed(proposal(), budget);
 	return advance(item, { kind: "approve_plan", version: 1, at: 4, by: "person" }).item;
 }
 const head = "a".repeat(40);
@@ -233,7 +311,7 @@ test("a stopped feature cannot turn its cap into a builder retry or lose child s
 	assert.deepEqual(revised.item.spent, next.spent);
 });
 test("a second re-plan can move only unused allocation and a third stop cannot dispatch a planner", () => {
-	let item = approved();
+	let item = approved({ ...single, turns: 12 }); // Three planning turns fit in this allowance.
 	item = advance(item, {kind:"feature_ready",key:currentKey(item)!,pr,head,at:5}).item;
 	for (let i=0;i<3;i++) {
 		const last = item.jobs!.at(-1)!;
@@ -371,8 +449,12 @@ test("a withdrawn feature turn settles its late usage receipt exactly once", () 
 });
 
 test("a disabled GitHub orchestration request is refused before claiming the issue", () => {
+	const ordinary = intake.issueMode("", [], false);
+	assert.equal(ordinary.mode, "single");
+	assert.equal(ordinary.refusal, null);
 	const asked = intake.issueMode("orchestrate", [], false);
 	assert.match(asked.refusal!,/disabled/i);
+	assert.match(intake.issueMode("", ["windlass:orchestrate"], false).refusal!, /disabled/i);
 	assert.equal(intake.issueMode("orchestrate",["bug"],false).refusal,null);
 });
 
@@ -546,4 +628,280 @@ test("re-planning cannot start a turn with only the closing reserve left", () =>
 	const stopped = advance(running, {kind:"child_update", key:currentKey(running)!, child:running.jobs![0].id, state:"failed", spent:zero, report:"Stopped", head:null, at:6});
 	assert.equal(stopped.item.question?.kind, "budget");
 	assert.equal(stopped.effects.some(e => e.kind === "deliver"), false);
+});
+
+const GiB = 2 ** 30;
+const macId = "m_0000000000000001", linuxId = "m_0000000000000002";
+function machineReport(name = "Mac", machineId = macId, overrides: Partial<import("../server/src/contract.js").MachineSummary> = {}): import("../server/src/contract.js").MachineSummary {
+	return { name, machineId, os: "darwin", arch: "arm64", status: "online", since: 0, runnerVersion: "1.0.0", agents: 0,
+		warnings: [], sandboxes: [], profiles: [{ id: "docker-hardened", available: true } as never], commandSandbox: { ok: true },
+		allowedProfiles: ["docker-hardened"], screenshots: true, egress: "restricted", tags: ["build"], sendSecrets: false, freeDiskBytes: 5 * GiB,
+		turns: { running: 0, queued: 0, max: 4 }, host: { cpus: 64, sandboxCpus: 1, memoryBytes: 128 * GiB, memoryFreeBytes: 80 * GiB, load1: 0 }, ...overrides };
+}
+import { plannerMachines, machineDetails } from "../server/src/machines/details.js";
+import type { MachineSummary, PlacementNeeds } from "../server/src/contract.js";
+function placementFeature(machines: MachineSummary[], needs: PlacementNeeds = {}, allow: string[] = [], overflow = false, prefer = "Mac") {
+	const plan = proposal();
+	plan.overflow = overflow;
+	for (const sub of plan.subtasks) Object.assign(sub, { place: { prefer, reason: "Build on the owner's machine", allow }, needs });
+	const item = proposed(plan);
+	const inventory = { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened" as const] };
+	const approved = advance(item, { kind: "approve_plan", at: 4, by: "person", version: 1, inventory }).item;
+	return advance(approved, { kind: "feature_ready", key: currentKey(approved)!, at: 5, head, pr }).item;
+}
+function dispatch(item: ReturnType<typeof placementFeature>, machines: MachineSummary[]) {
+	return advance(item, { kind: "place_child", at: 6, key: currentKey(item)!, inventory: { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"] } }).item;
+}
+test("placement preserves the editable proposal and bounds its reason, needs and overflow", () => {
+	const p = proposal();
+	const proposalPlace = { prefer: "Mac", reason: "Build here", allow: ["Linux box"] };
+	Object.assign(p.subtasks[0], { place: proposalPlace, needs: { cpus: 2 } });
+	const filed = proposed(p);
+	assert.deepEqual(filed.featurePlan?.subtasks[0].place, proposalPlace);
+	assert.equal(filed.featurePlan?.overflow, false);
+	for (const invalid of [{ place: { ...proposalPlace, reason: "x".repeat(201) } }, { needs: { cpus: 0 } },
+		{ needs: { memoryGiB: Infinity } }, { needs: { screenshots: "yes" } }, { needs: { egress: "invalid" } }])
+		assert.throws(() => proposed({ ...p, subtasks: [{ ...p.subtasks[0], ...invalid }, p.subtasks[1]] } as FeaturePlanEdit));
+	assert.throws(() => proposed({ ...p, overflow: "yes" } as never));
+});
+test("placement 1 binds the approved Mac by id and keeps the reason after a rename", () => {
+	const mac = machineReport();
+	const item = placementFeature([mac]);
+	const placed = dispatch(item, [{ ...mac, name: "Renamed" }]).jobs![0].placement;
+	assert.deepEqual(placed?.place, { kind: "machine", machineId: macId });
+	assert.equal(placed?.reason, "Build on the owner's machine");
+	assert.equal(placed?.sendSecrets, false);
+	assert.throws(() => placementFeature([]), /Mac/);
+	assert.throws(() => placementFeature([mac, machineReport("Mac", linuxId)]), /ambiguous|more than one/i);
+});
+test("placement 2 refuses approval for missing screenshots, tags, profile, egress or sign-in", () => {
+	const mac = machineReport();
+	assert.throws(() => placementFeature([{ ...mac, screenshots: false }], { screenshots: true }), /screenshot/i);
+	for (const [needs, reason] of [[{ tags: ["gpu"] }, /gpu/], [{ profile: "docker-windlass-sandbox" }, /profile/],
+		[{ egress: "open" }, /egress/], [{ harness: "claude" }, /sign.in|signed/i]] as const)
+		assert.throws(() => placementFeature([mac], needs as PlacementNeeds), reason);
+	assert.doesNotThrow(() => placementFeature([mac], { tags: ["build", "os:darwin", "arch:arm64", "screenshots", "harness:windlass"] }));
+});
+test("placement 3 measures requested CPU and memory in sandbox units", () => {
+	const mac = machineReport();
+	assert.throws(() => placementFeature([mac], { cpus: 8 }), /slots|units/i);
+	const sized = { ...mac, slots: { max: 3, busy: 1, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } };
+	const item = placementFeature([sized], { cpus: 8, memoryGiB: 8 });
+	assert.equal(dispatch(item, [sized]).jobs![0].placement?.units, 2);
+	const legacy = machineReport("Mac", macId, { host: { ...mac.host!, sandboxCpus: 4 } });
+	for (const needs of [{ cpus: 8 }, { memoryGiB: 2 }]) {
+		assert.throws(() => placementFeature([legacy], needs), /Mac.*sizing beyond one slot/i);
+	}
+	assert.match(proposed(proposal()).question!.text, /sizing beyond one slot/i);
+});
+test("placement 4 waits for slots unless both overflow and that alternative are approved", () => {
+	const full = machineReport("Mac", macId, { turns: { running: 4, max: 4, queued: 1 } });
+	const linux = machineReport("Linux box", linuxId);
+	const machines = [full, linux];
+	for (const [allow, overflow] of [[["Linux box"], false], [[], true]] as const) {
+		// A busy machine is a wait: approval allows it and the feature waits for a slot.
+		const approved = placementFeature(machines, {}, [...allow], overflow);
+		assert.equal(approved.featurePlan?.status, "approved");
+		const item = dispatch(approved, machines);
+		assert.match(item.wait!.sentence, /Waiting for 1 free slot on ‘Mac’/);
+		assert.equal(item.question, null);
+	}
+	const alternative = dispatch(placementFeature(machines, {}, ["Linux box"], true), machines);
+	assert.deepEqual(alternative.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+});
+test("approval refuses only a permanent placement problem: busy, offline or short of disk waits or asks after approval", () => {
+	const mac = machineReport(), linux = machineReport("Linux box", linuxId);
+	const offline = { ...mac, status: "offline" as const, turns: { max: null, running: 0, queued: 0 }, profiles: [], freeDiskBytes: null };
+	const busy = { ...mac, turns: { running: 4, max: 4, queued: 0 } };
+	for (const machines of [[offline], [busy], [offline, { ...linux, orchestrator: "never" as const }]]) {
+		const approved = placementFeature(machines, {}, machines.length > 1 ? ["Linux box"] : [], true);
+		assert.equal(approved.featurePlan?.status, "approved");
+		const item = dispatch(approved, machines);
+		assert.equal(item.wait?.reason, "machine");
+		assert.equal(item.question, null);
+	}
+	// An offline machine keeps its last report: a capability it lacks still refuses, as does an owner policy.
+	assert.throws(() => placementFeature([{ ...offline, screenshots: false }], { screenshots: true }), /Mac.*screenshots/);
+	assert.throws(() => placementFeature([{ ...offline, orchestrator: "never" }]), /Mac.*never/);
+	assert.throws(() => placementFeature([offline, { ...linux, orchestrator: "never" }], { tags: ["gpu"] }, ["Linux box"], true), /Mac.*gpu.*Linux box.*never/);
+	// A machine that never reported is judged when it connects.
+	const unreported = { ...offline, status: "waiting" as const, egress: undefined, screenshots: undefined };
+	assert.equal(placementFeature([unreported], { screenshots: true }).featurePlan?.status, "approved");
+	// Low disk is not permanent: approval allows it, and dispatch asks the owner, who can retry.
+	const full = { ...mac, freeDiskBytes: 5 * GiB - 1 };
+	const asked = dispatch(placementFeature([full]), [full]);
+	assert.equal(asked.question?.kind, "placement_refused");
+	assert.match(asked.question!.text, /disk/);
+	const retried = advance(asked, { kind: "answer", choice: "again", question: asked.question!.id, at: 8, by: "owner" }).item;
+	assert.deepEqual(dispatch(retried, [mac]).jobs![0].placement?.place, { kind: "machine", machineId: macId });
+});
+test("a removed machine or changed policy asks the owner at dispatch and at launch", () => {
+	const mac = machineReport();
+	const ready = placementFeature([mac]);
+	const placed = dispatch(ready, [mac]);
+	for (const machines of [[], [{ ...mac, orchestrator: "never" as const }]]) {
+		const pending = dispatch(ready, machines);
+		const late = advance(placed, { kind: "placement_wait", child: placed.jobs![0].id, key: currentKey(placed)!, at: 8, sentence: pending.wait!.sentence, refused: true }).item;
+		for (const item of [pending, late]) {
+			assert.equal(item.wait?.reason, "person");
+			assert.equal(item.wait?.retryAt, null);
+			assert.match(item.question!.text, /Mac/);
+			assert.ok(!item.question!.text.includes(macId));
+			const answer = (choice: "revise" | "again" | "give_up") => advance(item, { kind: "answer", choice, question: item.question!.id, at: 9, by: "owner" });
+			assert.equal(answer("revise").item.run?.step.kind, "refine");
+			assert.ok(answer("again").effects.some(e => e.kind === "dispatch"));
+			const cancelled = answer("give_up");
+			assert.ok(cancelled.item.jobs!.at(-1)?.cancelRequested);
+			assert.ok(cancelled.effects.some(e => e.kind === "cancel_children"));
+		}
+	}
+});
+
+test("retrying a refused placement can launch on a newly available approved alternative", () => {
+	const mac = machineReport(), linux = machineReport("Linux box", linuxId);
+	const ready = placementFeature([mac, linux], {}, ["Linux box"], true);
+	const denied = dispatch(ready, [{ ...linux, orchestrator: "never" }]);
+	assert.equal(denied.question?.kind, "placement_refused");
+	const retry = advance(denied, { kind: "answer", choice: "again", question: denied.question!.id, at: 8, by: "owner" }).item;
+	const placed = dispatch(retry, [linux]);
+	assert.deepEqual(placed.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+});
+
+test("placement 5 enforces owner participation and explicit naming", () => {
+	const named = machineReport("Mac", macId, { orchestrator: "named" });
+	assert.equal(machineDetails({ whenToUse: "", tags: [] }).orchestrator, "yes");
+	assert.throws(() => machineDetails({ whenToUse: "", tags: [], orchestrator: "sometimes" } as never));
+	assert.throws(() => placementFeature([{ ...named, orchestrator: "never" }]), /never/i);
+	assert.deepEqual(dispatch(placementFeature([named]), [named]).jobs![0].placement?.place, { kind: "machine", machineId: macId });
+	const p = proposal(), pending = proposed(p);
+	pending.place = { kind: "machine", machineId: macId };
+	assert.throws(() => advance(pending, { kind: "approve_plan", at: 4, by: "owner", version: 1, inventory: { machines: plannerMachines([named]), hostedProfiles: [] } }), /named/i);
+});
+test("placement 6 keeps the running child pinned and waits for an offline machine at the next boundary", () => {
+	const mac = machineReport(), offline = { ...mac, status: "offline" as const, turns: { max: null, running: 0, queued: 0 } };
+	const first = dispatch(placementFeature([mac]), [mac]);
+	const working = advance(first, { kind: "child_update", key: currentKey(first)!, child: first.jobs![0].id, state: "working", head: null, report: "", spent: zero, at: 7 }).item;
+	assert.equal(dispatch(working, [offline]), working);
+	const second = advance(working, { kind: "child_update", key: currentKey(working)!, child: working.jobs![0].id, state: "done", head, report: "", spent: zero, at: 8 }).item;
+	const waiting = dispatch(second, [{ ...offline, profiles: [], freeDiskBytes: null }]);
+	assert.match(waiting.wait!.sentence, /Mac.*online/);
+	assert.deepEqual(waiting.jobs![0].placement?.place, { kind: "machine", machineId: macId });
+});
+test("placement 7 scores available slots, queue, personal turns and direct dependencies", () => {
+	const mac = machineReport("Mac", macId, { turns: { max: 4, running: 4, queued: 0 } });
+	const linux = machineReport("Linux box", linuxId, { host: { ...mac.host!, cpus: 2 } });
+	const machines = [mac, linux];
+	const chosen = dispatch(placementFeature(machines, {}, ["Linux box"], true), machines);
+	assert.deepEqual(chosen.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+	const next = advance(chosen, { kind: "child_update", key: currentKey(chosen)!, child: chosen.jobs![0].id, state: "done", head, report: "", spent: zero, at: 7 }).item;
+	const busy = { ...mac, turns: { max: 4, running: 3, queued: 1 } }; // 3 preferred + 1 free - 1 queued = 3
+	assert.deepEqual(dispatch(next, [busy, linux]).jobs![1].placement?.place, { kind: "machine", machineId: linuxId }); // 3 free + 1 warm
+	assert.deepEqual(dispatch(next, [busy, { ...linux, personalRunning: 2 }]).jobs![1].placement?.place, { kind: "machine", machineId: macId });
+});
+
+async function childCreation(t: import("node:test").TestContext) {
+	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
+	const { serviceParams } = await import("../server/src/auth.js");
+	const { DatabaseSync } = await import("node:sqlite");
+	const mac = machineReport("Mac", macId, {
+		allowedProfiles: ["docker-windlass-sandbox", "docker-hardened"],
+		profiles: ["docker-windlass-sandbox", "docker-hardened"].map(id => ({ id, available: true } as never)), slots: { max: 3, busy: 0, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } });
+	const feature = placementFeature([mac], { cpus: 8 });
+	const selected = dispatch(feature, [mac]), job = selected.jobs![0];
+	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
+	for (const sql of ITEM_TABLES) raw.exec(sql);
+	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
+	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}" };
+	const machines = new Map([[macId, mac]]);
+	const itemIndex = new Map();
+	let child: typeof feature | undefined;
+	const facts: import("../server/src/factory/types.js").Fact[] = [];
+	const parent = { internalChildRequest: async () => request, internalFact: async (fact: typeof facts[number]) => facts.push(fact) };
+	const childActor = { internalSummary: async () => ({ ...child, title: "Child", createdAt: 1, sessionId: "s_child" }), internalView: async () => child, internalAct: async () => child };
+	const ctx = { key: [owner], conn: { params: serviceParams() }, broadcast() {}, log: { error() {}, warn() {} },
+		vars: { items: { items: itemIndex }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
+		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
+		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
+			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
+	const delivered: { place: unknown; size?: number; profile?: string }[] = [];
+	const create = (cancel = false) => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id, cancel }, async (_c, _owner, input, _submission, origin) => {
+		delivered.push({ place: input.place, size: origin.size, profile: input.profile });
+		return { ...input, repository, id: origin.sessionId } as never;
+	});
+	return { create, delivered, facts, machines, mac, child: () => child };
+}
+
+test("session sandbox creation retains a reported multi-slot size for replacement", async () => {
+	const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
+	const origin = { kind: "item" as const, role: "builder" as const, itemId: "i_child", size: 2 };
+	assert.equal(sessionSandboxInput({ uid: "owner", sessionId: "child", profile: "docker-hardened", origin }).size, 2);
+});
+
+test("child creation sends the chosen machine and size to its session and preserves them on replay", async t => {
+	const { create, delivered, machines, mac, child } = await childCreation(t);
+	await create();
+	assert.deepEqual(delivered, [{ place: { kind: "machine", machineId: macId }, size: 2, profile: "docker-hardened" }]);
+	assert.deepEqual(child()?.place, delivered[0].place);
+	assert.equal(child()?.placement?.reason, "Build on the owner's machine");
+	machines.set(macId, { ...mac, status: "offline" });
+	await create();
+	assert.equal(delivered.length, 1);
+});
+
+test("child creation rechecks the owner's policy after dispatch", async t => {
+	const { create, delivered, facts, machines, mac } = await childCreation(t);
+	machines.set(macId, { ...mac, orchestrator: "never" });
+	await create();
+	assert.deepEqual(delivered, []);
+	assert.equal(facts[0]?.kind, "placement_wait");
+	assert.ok(facts[0]?.kind === "placement_wait" && facts[0].refused && facts[0].sentence.includes("Mac"));
+});
+
+test("cancelling a placement wait creates no child session", async t => {
+	const { create, delivered } = await childCreation(t);
+	await create(true);
+	assert.deepEqual(delivered, []);
+});
+
+test("budget-only edits from older forms retain the approved overflow choice", () => {
+	const plan = proposal();
+	plan.overflow = true;
+	const pending = proposed(plan);
+	const { overflow, ...edit } = plan;
+	const edited = advance(pending, { kind: "edit_plan", version: 1, plan: edit, at: 4, by: "owner" }).item;
+	assert.equal(edited.featurePlan?.overflow, true);
+});
+
+test("unknown hard requirements cannot disappear during plan validation", () => {
+	const p = proposal();
+	Object.assign(p.subtasks[0], { needs: { memoryGB: 16 } });
+	assert.throws(() => proposed(p), /memoryGB/);
+});
+
+test("a limited account waits or uses an approved alternative at the child boundary", () => {
+	const machines = [machineReport(), machineReport("Linux box", linuxId)];
+	for (const overflow of [false, true]) {
+		const item = placementFeature(machines, {}, ["Linux box"], overflow);
+		const selected = advance(item, { kind: "place_child", key: currentKey(item)!, at: 6, inventory: {
+			machines: plannerMachines(machines), hostedProfiles: [], limited: [{ machineId: macId, harness: "windlass" }],
+		} }).item;
+		if (overflow) assert.deepEqual(selected.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
+		else assert.match(selected.wait!.sentence, /usage limit.*Mac/);
+	}
+});
+
+test("hosted requires an approved route and a deployment profile", () => {
+	const mac = machineReport();
+	const item = placementFeature([mac]);
+	assert.match(dispatch(item, []).wait!.sentence, /no longer one of your machines/);
+	const p = proposal();
+	p.subtasks[0].place = { prefer: "hosted", reason: "Use the hosted sandbox" };
+	assert.throws(() => advance(proposed(p), { kind: "approve_plan", version: 1, by: "person", at: 5,
+		inventory: { machines: plannerMachines([mac]), hostedProfiles: [] } }), /hosted.*profile/);
+});
+
+test("a signed-in Claude installation cannot silently launch a Windlass child", () => {
+	const mac = machineReport("Mac", macId, { harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }] });
+	assert.throws(() => placementFeature([mac], { harness: "claude" }), /work items.*Windlass/i);
 });

@@ -224,7 +224,7 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	/** Removes a machine; with `removeSandboxes` its runner also removes the agents' sandboxes on it. Throws with reason `machine_not_found`. */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */
-	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
+	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	listItems(): Promise<ItemSummary[]>;

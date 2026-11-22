@@ -908,6 +908,8 @@ function VerifiedLines({ verified }: { verified: Verified }) {
 }
 
 function TurnSummary({ turn }: { turn: TurnView }) {
+	const [tokensOpen, setTokensOpen] = useState(false);
+	const foldId = useId();
 	const end = turn.end;
 	if (!end) return null;
 	const tone = OUTCOME_TONE[end.outcome];
@@ -916,6 +918,17 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 	const usage = end.usage;
 	const share = end.cachedShare ?? (usage && usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null);
 	const files = turn.changedFiles;
+	// The token counts are folded behind a toggle at the end of the outcome line: the side panel has them too.
+	const tokenLine = usage ? (
+		<p className="turn-end-line turn-end-sub" id={foldId}>
+			<span>{count(usage.inputTokens)} in</span>
+			<span>
+				{count(usage.cachedInputTokens)} cached ({percent(share)})
+			</span>
+			<span>{count(usage.outputTokens)} out</span>
+		</p>
+	) : null;
+	const tokenSummary = usage ? `${count(usage.inputTokens)} in · ${count(usage.cachedInputTokens)} cached (${percent(share)}) · ${count(usage.outputTokens)} out` : undefined;
 	return (
 		<div className={`turn-end turn-end-${tone}`}>
 			<p className="turn-end-line">
@@ -928,6 +941,14 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 				<span>{duration(end.durationMs)}</span>
 				<span>turn {turn.turn}</span>
 				{end.exitCode !== null && end.exitCode !== 0 ? <span>exit {end.exitCode}</span> : null}
+				{tokenLine ? (
+					<span>
+						<button type="button" className="turn-end-fold" aria-expanded={tokensOpen} aria-controls={tokensOpen ? foldId : undefined} title={tokenSummary} onClick={() => setTokensOpen((open) => !open)}>
+							tokens
+							<ChevronIcon size={10} className={`turn-end-fold-chevron${tokensOpen ? " turn-end-fold-open" : ""}`} />
+						</button>
+					</span>
+				) : null}
 			</p>
 			{end.message ? <p className="turn-end-message">{end.message}</p> : null}
 			{end.verified && <VerifiedLines verified={end.verified} />}
@@ -945,16 +966,7 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 					</span>
 				</p>
 			) : null}
-			{usage ? (
-				<p className="turn-end-line turn-end-sub">
-					<span>tokens</span>
-					<span>{count(usage.inputTokens)} in</span>
-					<span>
-						{count(usage.cachedInputTokens)} cached ({percent(share)})
-					</span>
-					<span>{count(usage.outputTokens)} out</span>
-				</p>
-			) : end.context ? (
+			{tokenLine ? (tokensOpen ? tokenLine : null) : end.context ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>context {contextWords(end.context)}</span>
 					{end.context.cost ? <span>{costWords(end.context.cost)}</span> : null}

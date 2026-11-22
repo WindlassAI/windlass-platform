@@ -39,6 +39,15 @@ describe("the docs' pages", () => {
 		expect(DOCS_PAGES[0]?.slug).toBe("");
 	});
 
+	it("explain how existing API clients can keep Quick filing after the default changed", () => {
+		const factory = readFileSync(contentDir + "factory.md", "utf8");
+		const api = readFileSync(new URL("../../../docs/work-items.md", import.meta.url), "utf8");
+		for (const guide of [factory, api]) {
+			expect(guide).toMatch(/previously omitted .mode.[\s\S]{0,80}"mode": "single"/);
+			expect(guide).toMatch(/Omitting .mode. selects Plan first and waits for owner approval/);
+		}
+	});
+
 	it("are found by the router at their addresses", () => {
 		for (const page of DOCS_PAGES) expect(parseRoute(docsPath(page.slug))).toEqual({ name: "docs", slug: page.slug });
 		expect(parseRoute("/docs/")).toEqual({ name: "docs", slug: "" });

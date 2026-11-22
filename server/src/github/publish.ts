@@ -118,11 +118,11 @@ async function confirmBase(app: GithubApp, token: string, repo: StoredRepository
 	return outcome;
 }
 
-/** How a clone ended, for a session that had pushed work before. The workspace is on the base branch either way. */
+/** Where setup runs and which fetched commit to restore after it. */
 export interface Cloned {
-	/** The commit GitHub has the session's branch at, for `putOnWork` once the setup command has run; null when none was asked for or GitHub has none. */
+	/** Fetched work commit for checkout after setup. For a deleted subtask branch this is the feature tip. */
 	workAt: string | null;
-	/** The session's branch was asked for and GitHub no longer has it. */
+	/** GitHub no longer has the requested work branch. A subtask can resume on the feature branch. */
 	workGone: boolean;
 	/** Where the clone is, relative to the workspace: "." unless the workspace already held something. */
 	directory: string;
@@ -147,7 +147,7 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
 			{ repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } },
 			async (token) => {
 				const clone = await cloneWithToken(sandbox, token, { url: app.cloneUrl(resolved.repository.owner, resolved.repository.name), branch: repository.branch, directory: resolved.repository.name, work, signal, pinnedBase });
-				return confirmBase(app, token, repository, resolved.repository, clone, pinnedBase);
+				return confirmBase(app, token, repository, resolved.repository, clone, work === undefined ? pinnedBase : undefined);
 			},
 			{ revokeAfter: true },
 		);

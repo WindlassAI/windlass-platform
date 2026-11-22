@@ -11,6 +11,8 @@
  */
 
 import type { ProviderRefusal } from "../provider-refusal.js";
+import type { PlacementRoute, PlacementInventory } from "./placement.js";
+import type { ChildPlacement } from "../contract.js";
 import type { AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { ReviewerTaskInput } from "./reviewer-task.js";
@@ -76,6 +78,11 @@ export interface Run extends ItemRun {
 export type Task = ItemTask;
 
 export interface FeatureJob {
+	/** Current attempt attached to a creation request by the parent actor. */
+	dispatchKey?: string;
+	route?: PlacementRoute;
+	warm?: string[];
+	placement?: ChildPlacement;
 	failure?: string | null;
 	cancelRequested?: boolean;
 	id: string;
@@ -87,6 +94,8 @@ export interface FeatureJob {
 }
 
 export interface FactoryItem {
+	routes?: Record<string, PlacementRoute>;
+	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
 	forceSplit?: boolean;
 	seed?: string;
@@ -183,12 +192,14 @@ export type Fact =
 	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]> }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
-	| { kind: "child_update"; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
+	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean }
+	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
-	| { kind: "approve_plan"; at: number; by: string; version: number }
+	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number }
 	| { kind: "run_single"; at: number; by: string }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
@@ -197,7 +208,7 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
-	| { kind: "answer"; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
+	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
 	| { kind: "turn_started"; at: number; key: string }
