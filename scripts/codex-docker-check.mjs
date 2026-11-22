@@ -343,10 +343,15 @@ try {
 		assert.throws(() => sandboxRunner.requireHarness('docker-windlass-sandbox', 'codex'), /sandbox probe/);
 	}
 	console.log('Probed modes:', sandboxReport.modes.join(', '));
+	// A logout while the relay is stopped still tells a session it is signed out (401), not to try again (503).
+	await cmd(['stop', '-t', '1', 'wlp-codex-relay-' + machineId]);
+	observe(execFileSync(process.execPath, [join(dir, 'runner.cjs'), 'logout', 'codex'], { encoding: 'utf8' }));
+	assert.equal(await runner.ownedVolume(false, runner.codexVolume), false);
+	assert.equal(await cmd(['exec', boxName(third), 'node', '-e', probe]), '401', 'a logout without a running relay left sessions retrying');
 	for (const file of (await readdir(dir)).filter((f) => /^audit-.*\.jsonl$/.test(f) || f === 'status.json'))
 		observe(await readFile(join(dir, file), 'utf8'));
 	console.log(
-		'PASS Codex ACP over the runner channel, TLS routes, concurrent refresh, logout during a turn, generation invalidation, restricted egress and credential scans.',
+		'PASS Codex ACP over the runner channel, TLS routes, concurrent refresh, logout during a turn and with the relay stopped, generation invalidation, restricted egress and credential scans.',
 	);
 } finally {
 	delete process.env.F3_PAUSE_PROBE;

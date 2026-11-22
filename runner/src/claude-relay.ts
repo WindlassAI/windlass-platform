@@ -1,6 +1,6 @@
 import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
-import { docker, LABEL, LABEL_ARG, NO_LOGS } from "../../server/src/sandbox/docker.js";
+import { docker, helperFlags, LABEL, LABEL_ARG, NO_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
 import { image, type MachineHarness, type MachineDocker } from "./policy.js";
 import { loadPair, Refusal, RunnerError } from "./state.js";
@@ -58,7 +58,23 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 /** `signedOut` for a logout: sessions are then told signed out, not to try again (sandbox/relay/server.cjs SIGNED_OUT). */
 export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude", signedOut = false) {
 	const box = await ownedRelay(m, harness);
-	if (box) await retireRelay(box.Id, harness, signedOut && box.State?.Running === true);
+	const mark = signedOut && harness !== "claude";
+	// Written by the relay's own user into its socket volume, before the relay stops answering.
+	const marked = mark && box?.State?.Running === true &&
+		(await docker(["exec", box.Id, "touch", SIGNED_OUT_MARKER], { timeoutMs: 15_000 })).code === 0;
+	if (box) await retireRelay(box.Id, harness);
+	if (mark && !marked) await markSignedOut(m, harness);
+}
+const SIGNED_OUT_MARKER = "/workspace/signed-out";
+/** The marker without a running relay: a short container of the pinned base image, as the relay's user, on the socket volume. */
+async function markSignedOut(m: MachineDocker, harness: MachineHarness) {
+	const volume = relaySocketVolume(m, harness);
+	// Without the volume no session can reach a relay; there is no one to tell.
+	if (!await m.ownedVolume(false, volume)) return;
+	const name = tmpName();
+	const result = await runHelper([...helperFlags(name, "none"), ...m.pairingLabelFlags, "--pull", "never", "--user", "1000:1000", "--read-only",
+		"--mount", `type=volume,src=${volume},dst=/workspace,volume-nocopy`], name, ["touch", SIGNED_OUT_MARKER], { image, timeoutMs: 30_000 });
+	if (result.code !== 0) throw new RunnerError(`Could not tell ${harness === "codex" ? "Codex" : "OpenCode"} sessions they are signed out: ${result.stderr.trim() || "exit " + result.code}.`);
 }
 /**
  * A relay that refreshes a login saves a refresh already sent before it exits on SIGTERM, since that
@@ -66,9 +82,7 @@ export async function removeRelay(m: MachineDocker, harness: MachineHarness = "c
  * times out after 20 s, so give it that and the write before Docker kills it.
  */
 export const RELAY_STOP_SECONDS = 30;
-async function retireRelay(id: string, harness: MachineHarness, signedOut = false) {
-	// Written by the relay's own user into its socket volume, before the relay stops answering.
-	if (signedOut && harness !== "claude") await docker(["exec", id, "touch", "/workspace/signed-out"], { timeoutMs: 15_000 });
+async function retireRelay(id: string, harness: MachineHarness) {
 	if (harness !== "claude") await docker(["stop", "-t", String(RELAY_STOP_SECONDS), id], { timeoutMs: (RELAY_STOP_SECONDS + 15) * 1000 });
 	await docker(["rm", "-f", id], { check: true });
 }
