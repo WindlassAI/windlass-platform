@@ -62,8 +62,7 @@ platform's token-signing, sealing and backup keys. [Self-hosted cutover and rota
 Commands in a `docker-hardened` sandbox run directly in the container, so whatever its Windlass data
 directory holds is theirs to read and change. A runner of this release therefore gives each new hardened
 Windlass sandbox a volume of its own, `wlp-machine-<machine id>-<raw id>`. It carries the machine and
-pairing labels plus `dev.windlass-platform.sandbox=<raw id>`, and the container carries
-`dev.windlass-platform.data=own`. The runner makes the volume right before `docker run` and removes it
+pairing labels plus `dev.windlass-platform.sandbox=<raw id>`. The runner makes the volume right before `docker run` and removes it
 with the container on destroy. `prune` removes it with every other volume of the pairing. A
 `docker-windlass-sandbox` session keeps the shared volume: bubblewrap hides the data directory from its
 commands, and the user's sessions there keep sharing Windlass's project-wide MCP approvals. The

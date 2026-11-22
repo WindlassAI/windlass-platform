@@ -423,15 +423,17 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 			// What A plants where B's state would be under a shared volume does not reach B.
 			await inData(handoff, a, `echo planted > ${DATA_DIR}/sessions/marker-planted`);
 			assert.equal(await markers(peer, b), "marker-b");
-			if (allowed.commandSandbox.ok) {
-				const shared = await peer.request("create", { profile: windlass });
-				assert.equal(await mountsOf(shared), `wlp-machine-${machineId}:${DATA_DIR}`);
-				assert.ok(!(await markers(peer, shared)).includes("marker-a"));
-				await peer.request("destroy", { id: shared });
-			}
 			await handoff.request("destroy", { id: a });
 			assert.ok(await volumeGone(own(a)));
 			assert.ok(!await volumeGone(own(b)));
+			// The session's next sandbox, with the Windlass sandbox profile: the machine volume, without A's data.
+			if (allowed.commandSandbox.ok) {
+				const shared = await handoff.request("create", { profile: windlass });
+				assert.equal(await mountsOf(shared), `wlp-machine-${machineId}:${DATA_DIR}`);
+				assert.ok(!(await markers(handoff, shared)).includes("marker-a"));
+				await handoff.request("destroy", { id: shared });
+				assert.equal((await docker(["volume", "inspect", `wlp-machine-${machineId}`])).code, 0);
+			}
 			srv.reset(srv.other);
 			ok("Hardened sessions each mount a data volume of their own and cannot see each other's Windlass data; destroy removes it; the Windlass sandbox profile keeps the machine volume.");
 

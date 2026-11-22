@@ -378,7 +378,11 @@ interface Inspected {
 	status: string;
 	profile: SandboxProfileId;
 	uid: string;
-	/** Its data volume is its own (OWN_DATA_LABEL), and goes with it. */
+	/**
+	 * A Windlass sandbox of a profile that gives each its own data volume (SESSION_VOLUME_PROFILES): that
+	 * volume goes with it. One made before this release mounts the shared volume and has none, which
+	 * removing finds. Not a label: a snapshot commit would copy it into the image (snapshots.ts allows none).
+	 */
 	ownData: boolean;
 }
 
@@ -465,9 +469,6 @@ export type DockerSandboxOptions = {
 	sessionRelay(): Promise<{ env: string[]; nonce: string }>;
 });
 
-/** On a container whose data volume is its own. */
-export const OWN_DATA_LABEL = `${LABEL}.data=own`;
-
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
 	private readonly shotsImage: string;
@@ -502,7 +503,7 @@ export class DockerSandboxes implements Sandboxes {
 		const unit = this.resources(size);
 		const matches = shares === "256" && Number(nanos) === Math.round(unit.cpus * 1e9) && Number(memory) === unit.memoryBytes
 			&& Number(swap) === unit.memoryBytes && Number(pids) === unit.pids;
-		return { status, profile: labels[LABEL + ".profile"] as SandboxProfileId, uid: labels[LABEL + ".uid"], ownData: labels[LABEL + ".data"] === "own",
+		return { status, profile: labels[LABEL + ".profile"] as SandboxProfileId, uid: labels[LABEL + ".uid"], ownData: !labels[LABEL + ".harness"] && SESSION_VOLUME_PROFILES.includes(labels[LABEL + ".profile"] as SandboxProfileId),
 			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory),
 			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
@@ -593,7 +594,6 @@ export class DockerSandboxes implements Sandboxes {
 				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
 				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
 				...(mirror ? ["--mount", mirror] : []),
-				...(own ? ["--label", OWN_DATA_LABEL] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],
