@@ -558,7 +558,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</p>
 		) : null;
 	const shots =
-		chosen && item && saved.defaults ? (
+		chosen && item && platform.info?.items?.screenshots === false ? (
+			<p className="ui-menu-note start-shots">Screenshots are turned off for this deployment.</p>
+		) : chosen && item && saved.defaults ? (
 			<p className="ui-menu-note start-shots">
 				{saved.defaults.screenshots ? "Its agents take screenshots of the app for their reports" : "Screenshots are off for this repository"}:{" "}
 				<a className="link" {...linkProps({ name: "repository", id: chosen.repository.id, view: "settings", section: "screenshots" })}>

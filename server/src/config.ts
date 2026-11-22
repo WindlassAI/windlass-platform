@@ -672,7 +672,15 @@ function readHttpLimits() {
 	};
 }
 
-function readFactory(): FactoryLimits & { reviewer: boolean } {
+/** `WLP_FACTORY_SCREENSHOTS=off`: no work item of this deployment gets the screenshots image or files a screenshot, whatever its repository says. */
+function readScreenshots(): boolean {
+	const raw = process.env.WLP_FACTORY_SCREENSHOTS;
+	if (raw === undefined || raw === "" || raw === "on") return true;
+	if (raw === "off") return false;
+	throw new Error(`WLP_FACTORY_SCREENSHOTS must be "on" or "off"; got "${raw}"`);
+}
+
+function readFactory(): FactoryLimits & { reviewer: boolean; screenshots: boolean } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
 	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
@@ -684,6 +692,7 @@ function readFactory(): FactoryLimits & { reviewer: boolean } {
 		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", d.githubItemsPerDay, 1_000_000),
 		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", d.githubDrafts, 1_000_000),
 		reviewer: process.env.WLP_FACTORY_REVIEWER === "on",
+		screenshots: readScreenshots(),
 		attachments: {
 			bytes: count("WLP_FACTORY_ATTACHMENT_BYTES", ATTACHMENT_LIMITS.bytes, ATTACHMENT_LIMITS.bytes),
 			perItem: count("WLP_FACTORY_ATTACHMENTS_PER_ITEM", ATTACHMENT_LIMITS.perItem, 1_000_000),

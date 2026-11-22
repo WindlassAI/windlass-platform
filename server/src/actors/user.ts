@@ -1544,7 +1544,7 @@ export const user = actor({
 				queueChanged(c);
 			}
 		},
-		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
+		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()], config.factory.screenshots); },
 		internalAgentModels: (c): Promise<AgentModels> => { requireService(c); return agentModels(c); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
@@ -2176,6 +2176,7 @@ export const user = actor({
 			try {
 				const { sandboxes } = await getLayer();
 				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo));
+				if (change.screenshots === true && !config.factory.screenshots) throw new DefaultsProblem("bad_input", "Screenshots are turned off for this whole deployment, so they cannot be turned on for a repository.");
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");

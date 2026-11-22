@@ -306,4 +306,22 @@ describe("the repository's screenshots setting", () => {
 		// Deleting what is saved restores the default.
 		expect((await user.forgetRepository(7102)).defaults.screenshots).toBe(false);
 	});
+
+	it("says so and cannot be turned on when the deployment turned screenshots off, but a saved opt-in can be turned off", async () => {
+		client.dispose();
+		client = createMockClient({ pace: 0, screenshots: false });
+		const user = client.user(auth);
+		for (const [id, on] of [[7102, false], [7101, true]] as const) {
+			const view = await user.repository(id);
+			expect(view.defaults.screenshots).toBe(on);
+			await act(async () => {
+				root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id, replace: vi.fn() }, view }) }));
+			});
+			// Platform info arrives after the mock's latency.
+			for (let waited = 0; waited < 3000 && !host.textContent?.includes("whole deployment"); waited += 50) await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+			const box = host.querySelector<HTMLInputElement>("input.check-input");
+			expect(host.textContent).toContain("Screenshots are turned off for this whole deployment");
+			expect(box?.disabled).toBe(!on);
+		}
+	});
 });

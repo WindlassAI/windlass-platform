@@ -151,6 +151,7 @@ Operators can set [per-user limits](#per-user-limits), including a daily token c
 | `WLP_FACTORY_GITHUB_ITEMS_PER_DAY`, `WLP_FACTORY_GITHUB_DRAFTS` | how many items a user may have filed from GitHub issues in a day, and how many such drafts may wait (defaults 20 and 20) |
 | `WLP_FACTORY_ORCHESTRATE` | `0`: hide the Orchestrate control and refuse new orchestrated filings (default on) |
 | `WLP_FACTORY_REVIEWER` | `on`: give new items on a hosted profile that isolates commands a second review (default off) |
+| `WLP_FACTORY_SCREENSHOTS` | `off`: no work item of the deployment takes screenshots, whatever its repository's setting says. Sessions get the base image or template, never the screenshots one (also a builder that reconnects to a sandbox made before), agents are not offered screenshots in their reports, plans see no machine with screenshots, and a repository's setting cannot be turned on (one saved on can still be turned off). `on` or unset: each repository's setting decides (default on) |
 | `WLP_FACTORY_ATTACHMENT_BYTES`, `WLP_FACTORY_ATTACHMENTS_PER_ITEM`, `WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES`, `WLP_FACTORY_ATTACHMENT_DAYS` | screenshots on work items: bytes per screenshot (default 2 MiB), screenshots per item (40), bytes per account (1 GiB), and days they are kept after the item ended (180) |
 
 ## Web app

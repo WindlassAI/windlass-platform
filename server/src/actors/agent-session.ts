@@ -1832,7 +1832,8 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
 		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
-		screenshots: sealed.screenshots === true,
+		// Off for the whole deployment wins over the repository's choice, also for a sandbox made before it was turned off.
+		screenshots: sealed.screenshots === true && config.factory.screenshots,
 		opened: sealed.redactOnly ? [] : opened,
 		account: sealed.redactOnly ? [] : account,
 		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),

@@ -126,7 +126,7 @@ The second review is off unless the platform turns it on. The Factory page says 
 
 ### Screenshots
 
-Turn on **Take screenshots for work items** in the repository's settings, under **Screenshots**, to let builders and reviewers attach pictures of the app to their reports. It is off by default. A screenshot is a PNG of up to 2 MiB. An item can have 40. They are kept for 180 days after the item ends.
+Turn on **Take screenshots for work items** in the repository's settings, under **Screenshots**, to let builders and reviewers attach pictures of the app to their reports. It is off by default. A deployment can turn screenshots off for every repository; the setting then says so and cannot be turned on. A screenshot is a PNG of up to 2 MiB. An item can have 40. They are kept for 180 days after the item ends.
 
 ## The verdict
 

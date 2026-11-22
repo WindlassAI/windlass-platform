@@ -82,7 +82,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	const app = githubInfo();
 	if (app) info.github = app;
 	if (config.machines) info.machines = { minRunnerVersion: config.machines.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION, platformFingerprint: config.machines.identity && fingerprint(config.machines.identity.root), runnerImage: config.machines.runnerImage, runnerHarnesses: config.machines.runnerHarnesses, platformUrl: config.machines.publicUrl };
-	if (config.items) info.items = { reviewer: config.factory.reviewer, orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0" };
+	if (config.items) info.items = { reviewer: config.factory.reviewer, orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0", screenshots: config.factory.screenshots };
 	return info;
 }
 
