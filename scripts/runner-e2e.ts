@@ -51,7 +51,7 @@ let failed = 0;
 const CHECK_MS = 5 * 60_000;
 
 async function check(name: string, body: () => Promise<string>): Promise<void> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: Parameters<typeof clearTimeout>[0];
 	const limit = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`did not finish in ${CHECK_MS / 1000} s`)), CHECK_MS); });
 	try {
 		console.log(`PASS  ${name}  (${await Promise.race([body(), limit]).finally(() => clearTimeout(timer))})`);

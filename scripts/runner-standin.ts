@@ -28,7 +28,7 @@ export async function until<T>(what: string, probe: () => T | undefined | null |
 	for (;;) {
 		const attempt = Promise.resolve().then(probe);
 		attempt.catch(() => undefined);
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: Parameters<typeof clearTimeout>[0];
 		const abandoned = new Promise<undefined>((done) => { timer = setTimeout(done, Math.max(50, Math.min(ATTEMPT_MS, end - Date.now()))); });
 		const value = await Promise.race([attempt, abandoned]).finally(() => clearTimeout(timer));
 		if (value !== undefined && value !== null && value !== false) return value;

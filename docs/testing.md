@@ -21,7 +21,11 @@ against the merge base (the pull request's base, or `main` for a branch) and pic
 - a push to `main`, the nightly run and a dispatch with `full` run every group.
 
 The Docker groups load the sandbox images from the Actions cache. The `images` job builds each image
-once per run, with `docker buildx` and the GHA cache, so an unchanged Dockerfile builds nothing.
+once per run, with `docker buildx` and the GHA cache, so an unchanged Dockerfile builds nothing. The
+runners are `ubuntu-24.04` (x86-64): every image, the Windlass release and the engine have an x86-64
+build. Those jobs set `kernel.apparmor_restrict_unprivileged_userns=0` first: Ubuntu 24.04 keeps
+unconfined processes out of user namespaces, so bubblewrap cannot start in a container of the Windlass
+profile (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`) until it is off.
 
 To see what a change would run, before you push:
 
@@ -36,7 +40,7 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 | --- | --- | --- |
 | (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, repository, review, reviewer-task, runner-control, runner-protocol, secrets, setup, usage, verified, web-files, github, shot, sizing, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections) | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook` |
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
-| (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker`, `e2e-docker/*` |
+| (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
 | (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker` | CI heavy: `shots-docker` |
 | (b) Docker, base and screenshots, runner and Claude images it builds itself | runner-check | CI heavy: `runner-docker/runner` |
 | (b) Docker, Claude and OpenCode images built on base (`sandbox/harness/build.sh`) | claude-relay-docker, opencode-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |
