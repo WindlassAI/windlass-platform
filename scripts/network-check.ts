@@ -20,7 +20,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { MAX_REPOSITORY_HOSTS } from "../server/src/contract.js";
+import { MAX_REPOSITORY_HOSTS, NETWORK_PRESETS } from "../server/src/contract.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import {
 	NETWORK_TABLE,
@@ -40,8 +40,12 @@ import {
 	scanForHosts,
 	scanKind,
 	scanPaths,
-	unionHosts,
+	SCAN_TOTAL_BYTES,
+	MAX_SOURCE_CHARS,
+	blockedHostNote,
+	hostsForTurn,
 } from "../server/src/repository-network.js";
+import { GithubApp, type GithubAppSettings } from "../server/src/github/app.js";
 import { DNS_STUB, GUEST_DNS_SCRIPT, MAX_HOSTS, PRESETS, blockedLookups, guestDnsArgv, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
 
 let failed = 0;
@@ -84,9 +88,14 @@ const RESTRICTED = readE2bNetwork({ WLP_E2B_NETWORK: "restricted" });
 	expect("a list that does not fit beside the deployment's hosts is refused, saying so", near !== null && /more than the 64/.test(near), near ?? "accepted");
 	expect("a host the deployment allows already takes no room", fits(["d1.example.net", "a.example.org"], deployment) && networkLimit(deployment) === 5 && networkLimit([]) === MAX_REPOSITORY_HOSTS);
 	expect("every preset is exact names only", Object.values(PRESETS).flat().every((host) => /^[a-z0-9.-]+$/.test(host) && !host.startsWith(".")));
-	expect("the presets the repository settings offer include nodejs.org, Playwright, Prisma, Debian and Ubuntu", ["@node", "@playwright", "@prisma", "@debian", "@ubuntu"].every((id) => (PRESETS[id] ?? []).length > 0) && PRESETS["@playwright"]!.includes("storage.googleapis.com"));
+	expect("the presets the repository settings offer include nodejs.org, Playwright, Prisma, Debian and Ubuntu", ["@node", "@playwright", "@prisma", "@debian", "@ubuntu"].every((id) => (PRESETS[id] ?? []).length > 0));
+	const gcs = NETWORK_PRESETS.find((preset) => preset.id === "@gcs");
+	expect("Google Cloud Storage is a preset of its own, which says it reaches every public bucket, and @playwright does not carry it", !PRESETS["@playwright"]!.includes("storage.googleapis.com") && plain(gcs?.hosts) === plain(["storage.googleapis.com"]) && /every public Google Cloud Storage bucket/.test(gcs?.about ?? "") && /@gcs/.test(NETWORK_PRESETS.find((preset) => preset.id === "@playwright")?.about ?? ""));
+	expect("the timeline's line about a blocked storage.googleapis.com says what allowing it reaches; another host's does not", /every public Google Cloud Storage bucket/.test(blockedHostNote("storage.googleapis.com", "acme/harbor")) && !/Google Cloud Storage/.test(blockedHostNote("cdn.example.org", "acme/harbor")));
+	const clicks = new Map([["clicked.example.org", 200], ["earlier.example.org", 50]]);
+	const turnHosts = hostsForTurn(["listed.example.org", "earlier.example.org"], 100, clicks);
+	expect("a host allowed from the session after its turn read the list is kept for the turn, not overwritten; one allowed before is in the list and forgotten", plain(turnHosts) === plain(["clicked.example.org", "earlier.example.org", "listed.example.org"]) && plain([...clicks.keys()]) === plain(["clicked.example.org"]));
 	expect("only the person whose settings they are may change the list", mayChangeNetwork("u1", "u1") && !mayChangeNetwork("u2", "u1") && !mayChangeNetwork(null, "u1"));
-	expect("a session on several repositories gets the hosts of each", plain(unionHosts([["b.example.org", "a.example.org"], ["a.example.org", "c.example.org"]])) === plain(["a.example.org", "b.example.org", "c.example.org"]));
 }
 
 // ---- what a sandbox is given -----------------------------------------------------------------------
@@ -152,8 +161,14 @@ const HARBOR = "github:7101";
 	await fileRequests(db, HARBOR, ["late.example.org"], null, 70);
 	await dismissRequest(db, HARBOR, "LATE.example.org");
 	expect("a dismissed request is gone", (await readRequests(db, HARBOR)).length === 0);
-	await fileRequests(db, HARBOR, Array.from({ length: 45 }, (_, index) => `r${index}.example.org`), "s3", 80);
-	expect("a repository keeps at most 30 requests", (await readRequests(db, HARBOR)).length === 30);
+	await fileRequests(db, HARBOR, ["wanted.example.org"], "s3", 75);
+	const junk = await fileRequests(db, HARBOR, Array.from({ length: 45 }, (_, index) => `r${index}.example.org`), "s3", 80);
+	const kept = (await readRequests(db, HARBOR)).map((request) => request.host);
+	expect("a repository keeps at most 30 requests, and the ones waiting stay over new ones: names looked up by the dozen push out none", kept.length === 30 && kept.includes("wanted.example.org") && junk.filed.length === 29 && junk.full.length === 16, `${kept.length} kept, ${junk.filed.length} filed, ${junk.full.length} not`);
+	const again2 = await fileRequests(db, HARBOR, ["wanted.example.org", "r44.example.org"], "s4", 85);
+	expect("a host waiting already is moved up even when the list is full; a new one is answered as not filed", plain(again2) === plain({ filed: ["wanted.example.org"], full: ["r44.example.org"] }) && (await readRequests(db, HARBOR))[0]?.host === "wanted.example.org");
+	const both2 = await Promise.all([fileRequests(db, "github:7102", Array.from({ length: 20 }, (_, index) => `p${index}.example.org`), null, 86), fileRequests(db, "github:7102", Array.from({ length: 20 }, (_, index) => `q${index}.example.org`), null, 86)]);
+	expect("two sessions filing at once still keep the cap", (await readRequests(db, "github:7102")).length === 30 && both2[0].filed.length + both2[1].filed.length === 30);
 	await saveNetwork(db, HARBOR, "", [], 90);
 	expect("an empty list removes the row", plain(await readNetwork(db, HARBOR)) === plain({ entries: [], hosts: [], updatedAt: null }));
 }
@@ -170,6 +185,10 @@ const HARBOR = "github:7101";
 		{ path: "src", type: "tree", size: null },
 	]);
 	expect("the files read are the shallowest, a lockfile up to 4 MiB, nothing too large", plain(picked.paths) === plain(["package.json", "package-lock.json"]) && !picked.more);
+	const locks = scanPaths(Array.from({ length: 8 }, (_, index) => ({ path: `p${index}/yarn.lock`, type: "blob", size: 3_900_000 })));
+	expect("the files read come to at most 16 MiB together, and the rest are said to be left out", locks.paths.length === 4 && locks.more && locks.maxBytes === SCAN_TOTAL_BYTES, `${locks.paths.length} read`);
+	const unsized = scanPaths(Array.from({ length: 8 }, (_, index) => ({ path: `p${index}/yarn.lock`, type: "blob", size: null })));
+	expect("a file whose size the tree does not give counts as the most it may be", unsized.paths.length === 4 && unsized.more);
 	const files = [
 		{
 			path: "package.json",
@@ -201,12 +220,45 @@ const HARBOR = "github:7101";
 	expect("presets come first, then hosts by name", entries.findIndex((entry) => !entry.startsWith("@")) > entries.lastIndexOf("@ubuntu") && plain(entries.filter((entry) => !entry.startsWith("@"))) === plain(entries.filter((entry) => !entry.startsWith("@")).sort()));
 	expect("a preset's proposal names its hosts", plain(proposals.find((proposal) => proposal.entry === "@prisma")?.hosts) === plain(["binaries.prisma.sh"]));
 	expect("an empty repository proposes nothing", scanForHosts([], "", []).length === 0);
+	expect("Playwright's tests propose @gcs too, saying why, since its Chromium download redirects to Google Cloud Storage", /Playwright's Chromium redirects there/.test(sourceOf("@gcs").join(" ")));
+	const longKey = "x".repeat(5000);
+	const long = scanForHosts([{ path: "package.json", text: JSON.stringify({ config: { [longKey]: "https://downloads.long-key.io/a.tgz" } }) }], "", []);
+	expect(`each "where found" is at most ${MAX_SOURCE_CHARS} characters, whatever a manifest's keys are`, long.length === 1 && long.every((proposal) => proposal.sources.every((source) => source.length <= MAX_SOURCE_CHARS)), plain(long.map((proposal) => proposal.sources.map((source) => source.length))));
+}
+
+// ---- reading the files from GitHub, within the budget ------------------------------------------------
+
+{
+	const sha = (n: number) => n.toString(16).padStart(40, "0");
+	const sizes = [3_900_000, 3_900_000, 3_900_000, 3_900_000, 3_900_000, 100];
+	const app = new GithubApp({} as GithubAppSettings, { clientSecret: () => null, privateKey: () => null });
+	let blobs = 0;
+	// The tree says every file is small; the blobs are as large as `sizes` says. The budget holds to what is read, not to what the tree said.
+	(app as unknown as { call: (call: { path: string }) => Promise<{ body: unknown }> }).call = async ({ path }) => {
+		if (path.includes("/commits/")) return { body: { sha: sha(1), commit: { tree: { sha: sha(2) } } } };
+		if (path.includes("/git/trees/")) return { body: { truncated: false, tree: sizes.map((_, index) => ({ path: `p${index}/yarn.lock`, type: "blob", sha: sha(100 + index), size: 10 })) } };
+		const index = Number.parseInt(path.split("/").at(-1)!, 16) - 100;
+		blobs += 1;
+		return { body: { encoding: "base64", content: Buffer.alloc(sizes[index] ?? 0, 97).toString("base64") } };
+	};
+	const read = await app.scanFiles("t", "acme", "harbor", "main", scanPaths);
+	const total = read.files.reduce((sum, file) => sum + file.text.length, 0);
+	expect("the files read from GitHub come to at most 16 MiB in all, even where the tree's sizes were wrong, and the scan says it is incomplete", total <= SCAN_TOTAL_BYTES && read.files.length === 5 && !read.files.some((file) => file.path === "p4/yarn.lock") && read.incomplete, `${read.files.length} files, ${total} bytes, ${blobs} blobs asked for`);
+	sizes[0] = 5_000_000;
+	const big = await app.scanFiles("t", "acme", "harbor", "main", scanPaths);
+	expect("a blob larger than a lockfile may be is passed over", !big.files.some((file) => file.path === "p0/yarn.lock") && big.incomplete);
 }
 
 // ---- the lookup stub ----------------------------------------------------------------------------
 
 expect("the guest script is valid shell", spawnSync("sh", ["-n", "-c", GUEST_DNS_SCRIPT]).status === 0);
 expect("blocked lookups: each once, without reverse lookups, single labels and allowed names", plain(blockedLookups("1 1 cdn.example.org\n1 28 cdn.example.org\n1 12 4.3.2.1.in-addr.arpa\n1 1 printer\n1 28 registry.npmjs.org\n1 1 Other.Example.net.\ngarbage line\n", ["registry.npmjs.org"])) === plain(["cdn.example.org", "other.example.net"]));
+{
+	const noise = Array.from({ length: 60 }, (_, index) => `n${index}.example.org`);
+	const log = [...noise, "real.example.org"].map((name) => `1 1 ${name}`).join("\n");
+	expect("blocked lookups: names seen already are left out before the limit, so 60 of them do not hide a later one", plain(blockedLookups(log, noise)) === plain(["real.example.org"]) && !blockedLookups(log, []).includes("real.example.org"));
+	expect("the guest script stages under a name of its own in /run and holds a lock for all of it", /mktemp \/run\/wlp-hosts\.XXXXXX/.test(GUEST_DNS_SCRIPT) && /flock -w \d+ 9/.test(GUEST_DNS_SCRIPT) && !GUEST_DNS_SCRIPT.includes("/tmp/wlp-hosts") && /9>&- &/.test(GUEST_DNS_SCRIPT));
+}
 
 function question(name: string, type = 1, id = 0x4242): Buffer {
 	const labels = name.split(".").map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label, "latin1")]));
@@ -264,6 +316,27 @@ else {
 		const written = readFileSync(log, "utf8");
 		expect("each name is written once, lower case, and one with other characters not at all", plain(written.trim().split("\n").map((line) => line.split(" ")[2])) === plain(["cdn.example.org", "tcp.example.net"]), written);
 		expect("the platform reads back the names the sandbox may not reach", plain(blockedLookups(written, ["tcp.example.net"])) === plain(["cdn.example.org"]));
+		// A client that sends its question a byte at a time, slower than any one wait: it has one second in all, and the lookups behind it go on.
+		const slow = net.connect(port, "127.0.0.1");
+		await new Promise<void>((resolve) => slow.on("connect", () => resolve()));
+		const drip = question("drip.example.net");
+		const framed = Buffer.concat([Buffer.from([drip.length >> 8, drip.length & 0xff]), drip]);
+		let sent = 0;
+		const dripping = setInterval(() => {
+			if (sent < framed.length && !slow.destroyed) slow.write(framed.subarray(sent, ++sent));
+		}, 400);
+		slow.on("error", () => undefined);
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		const waits: number[] = [];
+		for (let index = 0; index < 4; index += 1) {
+			const began = Date.now();
+			await udp(port, question(`after${index}.example.net`));
+			waits.push(Date.now() - began);
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		}
+		clearInterval(dripping);
+		slow.destroy();
+		expect("a TCP client that sends a byte now and then holds the stub for at most a second: the lookups behind it are answered", Math.max(...waits) < 1500 && waits.slice(1).every((wait) => wait < 300), plain(waits));
 	} catch (error) {
 		expect("the lookup stub answered", false, String(error));
 	} finally {

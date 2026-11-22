@@ -12,13 +12,15 @@
  * a host to send what its sandbox holds to.
  *
  * Who may change it. Whoever may change the repository's settings on the platform: today, the person
- * whose actor keeps them, and nobody else reaches it (`mayChangeNetwork`). What anyone else can do is
- * file a request (`fileRequests`): the sandbox does that for every host a command could not reach, and
- * the request waits on the repository's settings until the person allows or dismisses it.
+ * whose actor keeps them, and nobody else reaches it (`mayChangeNetwork`). Requests (`fileRequests`)
+ * are filed by the platform, for every host a command in one of the repository's sandboxes could not
+ * reach, and wait on the repository's settings until the person allows or dismisses them. A session's
+ * "Allow" from anyone else would file one too, but a session's actions are its own user's, so today
+ * nobody else can make that call.
  *
- * Which sessions. Every hosted session on the repository, from its next connect to its sandbox, and
- * at once in the session the host was allowed from. A session with more than one repository gets the
- * hosts of all of them (`unionHosts`).
+ * Which sessions. Every hosted session on the repository, from its next turn, and at once in the
+ * session the host was allowed from while a turn runs there. A session has one repository today, so
+ * its sandbox gets that repository's hosts.
  *
  * Saving. The list is one value: a save writes the whole of it in one statement. Adding one host
  * (`addHost`) reads the list and writes it back only if it is still what was read, so two at once
@@ -28,13 +30,13 @@
  * scripts/network-check.ts runs them against a database of its own.
  */
 
-import { MAX_REPOSITORY_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
+import { MAX_REPOSITORY_HOSTS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
 import type { DefaultsDb } from "./repository-defaults.js";
 import { MAX_HOSTS, PRESET_LIST, PRESETS, isHostName } from "./sandbox/e2b/network.js";
 
 /** How many repositories one user may have a list for; the ones saved longest ago go first. */
 export const MAX_NETWORK_REPOSITORIES = 500;
-/** How many requests one repository keeps, and one user over all: the oldest go first. */
+/** How many requests one repository keeps, and one user over all: beyond them a new host is not filed (`fileRequests`). */
 export const MAX_REQUESTS_PER_REPOSITORY = 30;
 export const MAX_REQUESTS_PER_USER = 1_000;
 /** How many entries a list may have, before presets are expanded. */
@@ -112,9 +114,18 @@ export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = 
 	return entries;
 }
 
-/** The hosts of a session's repositories together: a session on more than one repository reaches what each allows. */
-export function unionHosts(lists: ReadonlyArray<readonly string[]>): string[] {
-	return [...new Set(lists.flat())].sort();
+/**
+ * The hosts a turn's sandbox is given: the list as it was read when the turn started (at `readAt`),
+ * and every host allowed from the session since (`allowed`, host to when), which that read may have
+ * missed. A host allowed before the read is in it already and is taken off `allowed`.
+ */
+export function hostsForTurn(listed: readonly string[], readAt: number, allowed: Map<string, number>): string[] {
+	const later: string[] = [];
+	for (const [host, at] of allowed) {
+		if (at >= readAt) later.push(host);
+		else allowed.delete(host);
+	}
+	return [...new Set([...listed, ...later])].sort();
 }
 
 /**
@@ -124,6 +135,15 @@ export function unionHosts(lists: ReadonlyArray<readonly string[]>): string[] {
  */
 export function mayChangeNetwork(callerUid: string | null, ownerUid: string): boolean {
 	return callerUid !== null && callerUid === ownerUid;
+}
+
+/** The session's timeline line that names a blocked host, and what can be done about it, with what a host that serves far more reaches (`WIDE_HOSTS`). */
+export function blockedHostNote(host: string, repository: string | null): string {
+	const what = `A command in this sandbox could not reach ${host}: this deployment's hosted sandboxes reach only the model API, GitHub and the hosts they are allowed.`;
+	const wide = WIDE_HOSTS[host];
+	return repository
+		? `${what} Allow it for ${repository} to let its hosted agents reach it, from this sandbox on. The agent and the repository's own scripts choose what a command looks up, so allow only a host you expect.${wide ? ` ${wide}` : ""}`
+		: `${what} This agent has no repository of your GitHub connection, so only the deployment's operator can allow it, in WLP_E2B_NETWORK_ALLOW.${wide ? ` ${wide}` : ""}`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -234,22 +254,35 @@ export async function addEntry(db: DefaultsDb, project: string, label: string, e
 
 /**
  * Files requests for hosts a session's sandbox could not reach: each host once per repository, with
- * when it was last asked for. The oldest go beyond MAX_REQUESTS_PER_REPOSITORY and MAX_REQUESTS_PER_USER.
- * Hosts the list allows already are not filed.
+ * when it was last asked for. Hosts the list allows already are not filed. The requests waiting are
+ * kept over new ones: a repository keeps at most MAX_REQUESTS_PER_REPOSITORY and a user at most
+ * MAX_REQUESTS_PER_USER, and a new host beyond either is not filed but answered in `full`, so names a
+ * command looks up by the hundred cannot push out a request the person may want. A host waiting
+ * already is only moved up.
  */
-export async function fileRequests(db: DefaultsDb, project: string, hosts: readonly string[], sessionId: string | null, now: number): Promise<void> {
+export async function fileRequests(db: DefaultsDb, project: string, hosts: readonly string[], sessionId: string | null, now: number): Promise<{ filed: string[]; full: string[] }> {
 	const allowed = new Set((await readNetwork(db, project)).hosts);
-	const wanted = [...new Set(hosts.map((host) => host.toLowerCase()))].filter((host) => isHostName(host) && !allowed.has(host)).slice(0, MAX_REQUESTS_PER_REPOSITORY);
-	if (wanted.length === 0) return;
-	await db.execute(
-		"INSERT INTO network_request (project, host, session, at) SELECT ?, value, ?, ? FROM json_each(?) WHERE true ON CONFLICT (project, host) DO UPDATE SET session = excluded.session, at = excluded.at",
-		project,
-		sessionId,
-		now,
-		JSON.stringify(wanted),
-	);
-	await db.execute("DELETE FROM network_request WHERE project = ? AND host NOT IN (SELECT host FROM network_request WHERE project = ? ORDER BY at DESC, host LIMIT ?)", project, project, MAX_REQUESTS_PER_REPOSITORY);
-	await db.execute("DELETE FROM network_request WHERE rowid NOT IN (SELECT rowid FROM network_request ORDER BY at DESC LIMIT ?)", MAX_REQUESTS_PER_USER);
+	const wanted = [...new Set(hosts.map((host) => host.toLowerCase()))].filter((host) => isHostName(host) && !allowed.has(host));
+	if (wanted.length === 0) return { filed: [], full: [] };
+	const filed = new Set<string>();
+	for (const host of wanted) {
+		// One statement each, so the room is counted where the row is written, whatever else is filed meanwhile.
+		const [moved] = await db.execute<{ host: string }>("UPDATE network_request SET session = ?, at = ? WHERE project = ? AND host = ? RETURNING host", sessionId, now, project, host);
+		const [added] = moved
+			? [moved]
+			: await db.execute<{ host: string }>(
+					"INSERT INTO network_request (project, host, session, at) SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM network_request WHERE project = ?) < ? AND (SELECT COUNT(*) FROM network_request) < ? ON CONFLICT (project, host) DO UPDATE SET session = excluded.session, at = excluded.at RETURNING host",
+					project,
+					host,
+					sessionId,
+					now,
+					project,
+					MAX_REQUESTS_PER_REPOSITORY,
+					MAX_REQUESTS_PER_USER,
+				);
+		if (added) filed.add(host);
+	}
+	return { filed: wanted.filter((host) => filed.has(host)), full: wanted.filter((host) => !filed.has(host)) };
 }
 
 export async function dismissRequest(db: DefaultsDb, project: string, host: string): Promise<void> {
@@ -267,13 +300,16 @@ export interface ScanEntry {
 	size: number | null;
 }
 
-/** How many files a scan reads, how large one may be, and how deep in the tree it looks. */
+/** How many files a scan reads, how large one may be, how many bytes all of them may come to, and how deep in the tree it looks. */
 export const SCAN_FILES = 60;
 const SCAN_FILE_BYTES = 512 * 1024;
 const SCAN_LOCK_BYTES = 4 * 1024 * 1024;
+export const SCAN_TOTAL_BYTES = 16 * 1024 * 1024;
 const SCAN_DEPTH = 4;
 const MAX_PROPOSALS = 40;
 const MAX_SOURCES = 5;
+/** How long one "where found" may be: a path and a key of a manifest are the repository's text, of any length. */
+export const MAX_SOURCE_CHARS = 200;
 
 const SKIPPED_DIRS = new Set(["node_modules", "vendor", "third_party", "third-party", ".git", "dist", "build", "target", "out", ".venv", "venv", "__pycache__", "fixtures", "testdata", "examples", "docs"]);
 
@@ -310,19 +346,29 @@ const isLock = (kind: Kind) => kind === "npm-lock" || kind === "pnpm-lock" || ki
 
 /**
  * The files a scan reads, from the repository's tree: those `scanKind` knows, the shallowest first,
- * at most SCAN_FILES. `more` when others matched and are not read.
+ * at most SCAN_FILES and SCAN_TOTAL_BYTES together (a file whose size the tree does not say counts as
+ * the most it may be). `more` when others matched and are not read. `maxBytes` is the whole budget
+ * and `maxFileBytes` the most one file may be, for the reader to hold the blobs to (github/app.ts `scanFiles`).
  */
-export function scanPaths(tree: readonly ScanEntry[]): { paths: string[]; more: boolean } {
+export function scanPaths(tree: readonly ScanEntry[]): { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number } {
 	const matching = tree
 		.filter((entry) => entry.type === "blob")
 		.flatMap((entry) => {
 			const kind = scanKind(entry.path);
 			if (kind === null) return [];
 			if (entry.size !== null && entry.size > (isLock(kind) ? SCAN_LOCK_BYTES : SCAN_FILE_BYTES)) return [];
-			return [{ path: entry.path, depth: entry.path.split("/").length, kind }];
+			return [{ path: entry.path, depth: entry.path.split("/").length, kind, size: entry.size }];
 		})
 		.sort((a, b) => a.depth - b.depth || Number(isLock(a.kind)) - Number(isLock(b.kind)) || a.path.localeCompare(b.path));
-	return { paths: matching.slice(0, SCAN_FILES).map((item) => item.path), more: matching.length > SCAN_FILES };
+	const paths: string[] = [];
+	let bytes = 0;
+	for (const item of matching) {
+		const size = item.size ?? (isLock(item.kind) ? SCAN_LOCK_BYTES : SCAN_FILE_BYTES);
+		if (paths.length >= SCAN_FILES || bytes + size > SCAN_TOTAL_BYTES) continue;
+		paths.push(item.path);
+		bytes += size;
+	}
+	return { paths, more: paths.length < matching.length, maxBytes: SCAN_TOTAL_BYTES, maxFileBytes: SCAN_LOCK_BYTES };
 }
 
 /** Names that are never a host a command downloads from. */
@@ -363,14 +409,18 @@ const PACKAGE_PRESETS: ReadonlyArray<[RegExp, string]> = [
 /** A source in words for a line of a file: "path line N". */
 const lineOf = (path: string, index: number) => `${path} line ${index + 1}`;
 
+const clip = (text: string, most: number) => (text.length > most ? `${text.slice(0, most - 1)}…` : text);
+
 class Found {
 	readonly items = new Map<string, Set<string>>();
 	add(entry: string, source: string): void {
 		const key = entry.startsWith("@") ? entry : entry.toLowerCase();
 		if (!key.startsWith("@") && ignoredHost(key)) return;
 		const sources = this.items.get(key) ?? new Set<string>();
-		if (sources.size < MAX_SOURCES) sources.add(source);
+		if (sources.size < MAX_SOURCES) sources.add(clip(source, MAX_SOURCE_CHARS));
 		this.items.set(key, sources);
+		// Playwright's Chromium for x86_64 is a redirect to Google Cloud Storage, a preset of its own for how much else it reaches.
+		if (key === "@playwright") this.add("@gcs", `${clip(source, MAX_SOURCE_CHARS - 50)} (Playwright's Chromium redirects there)`);
 	}
 	/** A host an address names: proposed as itself, also when a preset has it, since a preset may allow more than the file needs. */
 	host(host: string, source: string): void {

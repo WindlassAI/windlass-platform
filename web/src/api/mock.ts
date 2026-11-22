@@ -3567,7 +3567,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(900);
 				const allowed = new Set([...networkOf(world(), repositoryId).hosts, ...MOCK_HOSTED.hosts]);
 				const proposals = [
-					{ entry: "@playwright", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com"], sources: ["package.json devDependencies.@playwright/test", ".github/workflows/ci.yml line 24"] },
+					{ entry: "@gcs", hosts: ["storage.googleapis.com"], sources: ["package.json devDependencies.@playwright/test (Playwright's Chromium redirects there)"] },
+					{ entry: "@playwright", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com"], sources: ["package.json devDependencies.@playwright/test", ".github/workflows/ci.yml line 24"] },
 					{ entry: "@prisma", hosts: ["binaries.prisma.sh"], sources: ["package.json dependencies.@prisma/client"] },
 					{ entry: "npm.pkg.github.com", hosts: ["npm.pkg.github.com"], sources: [".npmrc line 1"] },
 					{ entry: "sentry-cli.example-cdn.net", hosts: ["sentry-cli.example-cdn.net"], sources: ["package.json scripts.postinstall"] },
@@ -4034,9 +4035,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (!repository) throw new PlatformError("user", "This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox, in WLP_E2B_NETWORK_ALLOW.", { reason: "bad_network" });
 				const kept = world.network.get(repository.id)?.entries ?? [];
 				const network = kept.includes(host) ? networkOf(world, repository.id) : saveNetworkList(world, repository.id, [...kept, host]);
-				const applied = session.summary.sandbox === "running";
+				// As the server: at once only while a turn holds the sandbox.
+				const applied = session.summary.sandbox === "running" && session.summary.status === "running";
 				const label = `${repository.owner}/${repository.name}`;
-				store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: applied ? `${host} is allowed for ${label}. This sandbox reaches it now, and so do the repository's other hosted agents from their next turn.` : `${host} is allowed for ${label}. This agent's sandbox reaches it from its next turn, and so do the repository's other hosted agents.` });
+				store(session, { turn: session.summary.turns, kind: "platform", level: "info", text: `${host} is allowed for ${label}. ${applied ? "This sandbox reaches it now; for the repository's other hosted agents it applies from the next turn." : "It applies from the next turn, in this agent's sandbox and the repository's other hosted agents'."}` });
 				return { network, applied };
 			},
 			async forgetServer(name: string): Promise<SessionServers> {

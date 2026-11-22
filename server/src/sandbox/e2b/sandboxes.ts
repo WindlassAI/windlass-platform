@@ -81,7 +81,7 @@ import { tokenFilePath } from "../token-file.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo } from "./client.js";
 import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, type E2bSettings } from "./config.js";
 import { describeUsage, pricePerSecond } from "./pricing.js";
-import { DNS_LOG, type E2bNetwork, blockedLookups, guestDnsArgv, networkConfig, withHosts } from "./network.js";
+import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, networkConfig, withHosts } from "./network.js";
 import type { EgressMode } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
@@ -181,10 +181,11 @@ export class E2bSandboxHandle implements TurnSandbox {
 	}
 
 	/** The names its lookup stub was asked for that it may not reach (network.ts `DNS_STUB`); none in `open`, or when the log cannot be read. */
-	async blockedHosts(): Promise<string[]> {
+	async blockedHosts(skip: Iterable<string> = []): Promise<string[]> {
 		if (this.network.mode === "open") return [];
-		const read = await this.ask(["tail", "-c", "65536", DNS_LOG], { timeoutMs: 15_000 });
-		return read === null || read.code !== 0 ? [] : blockedLookups(read.stdout, this.network.hosts);
+		// The whole log: the stub stops writing at 256 KiB (DNS_LOG_BYTES), so a name asked for early is still there however many came after.
+		const read = await this.ask(["tail", "-c", String(DNS_LOG_BYTES + 4096), DNS_LOG], { timeoutMs: 15_000 });
+		return read === null || read.code !== 0 ? [] : blockedLookups(read.stdout, [...this.network.hosts, ...skip]);
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -487,6 +488,8 @@ export class E2bSandboxes implements Sandboxes {
 	/** The size E2B last said a sandbox of this deployment has; until one was seen, the size the template is built with. */
 	private size = { cpuCount: DEFAULT_CPU_COUNT, memoryMB: DEFAULT_MEMORY_MB };
 	private readonly known = new Map<string, Known>();
+	/** The tail of each sandbox's queue of network changes (`serial`). */
+	private readonly networkChanges = new Map<string, Promise<void>>();
 	/** How long a command outside a turn may run before the sandbox is vouched for as for a turn (`E2bSandboxHandle.exec`). */
 	readonly holdCommandsAfterMs: number;
 	private readonly log: (line: string) => void;
@@ -543,19 +546,43 @@ export class E2bSandboxes implements Sandboxes {
 
 	async setNetwork(id: string, hosts: readonly string[]): Promise<boolean> {
 		if (this.network.mode !== "restricted") return this.network.mode === "open";
-		const info = await this.ours(id);
-		if (info === undefined || info.state !== "running") return false;
-		const connection = await this.client.connect(id, this.settings.idleTimeoutMs);
-		if (connection === undefined) return false;
-		const network = this.networkFor(`id=${id}`, hosts);
-		try {
-			await this.client.updateNetwork(id, networkConfig(network));
-			await this.guestNetwork(connection, network);
-		} catch (error) {
-			throw new Error(`could not change the sandbox's network: ${messageOf(error)}`);
-		}
-		this.log(`[wlp] e2b.network.changed id=${id}: ${network.hosts.length} hosts`);
-		return true;
+		return this.serial(id, async () => {
+			// Only under a turn's hold: E2B's connect resumes a paused sandbox and pushes a running one's
+			// timeout out, and outside a turn nothing would count that time or stop it again.
+			const known = this.known.get(id);
+			if (known === undefined || known.holds === 0) return false;
+			const info = await this.ours(id);
+			if (info === undefined || info.state !== "running") return false;
+			const connection = await this.client.connect(id, this.settings.idleTimeoutMs);
+			if (connection === undefined) return false;
+			const network = this.networkFor(`id=${id}`, hosts);
+			try {
+				await this.client.updateNetwork(id, networkConfig(network));
+				await this.guestNetwork(connection, network);
+			} catch (error) {
+				throw new Error(`could not change the sandbox's network: ${messageOf(error)}`);
+			}
+			this.log(`[wlp] e2b.network.changed id=${id}: ${network.hosts.length} hosts`);
+			return true;
+		});
+	}
+
+	/**
+	 * Runs the changes of one sandbox's network one after the other: a connect's and a host allowed from
+	 * its session would otherwise interleave, and E2B's list and the names file could end up from
+	 * different calls (network.ts `GUEST_DNS_SCRIPT` holds a lock of its own in the sandbox too).
+	 */
+	private serial<T>(id: string, change: () => Promise<T>): Promise<T> {
+		const run = (this.networkChanges.get(id) ?? Promise.resolve()).then(change);
+		const tail: Promise<void> = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.networkChanges.set(id, tail);
+		void tail.then(() => {
+			if (this.networkChanges.get(id) === tail) this.networkChanges.delete(id);
+		});
+		return run;
 	}
 
 	egress(): EgressMode {
@@ -685,8 +712,10 @@ export class E2bSandboxes implements Sandboxes {
 		// sandbox once out of `open` is set at every connect. Open to open changes nothing, as before network modes.
 		if (sandboxNetwork(info.metadata) !== "open" || network.mode !== "open") {
 			try {
-				await this.client.updateNetwork(id, networkConfig(network));
-				await this.guestNetwork(connection, network);
+				await this.serial(id, async () => {
+					await this.client.updateNetwork(id, networkConfig(network));
+					await this.guestNetwork(connection, network);
+				});
 			} catch (error) {
 				throw new Error(`could not set the sandbox's network to WLP_E2B_NETWORK=${this.network.mode}: ${messageOf(error)}`);
 			}

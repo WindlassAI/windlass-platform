@@ -98,9 +98,10 @@ export interface SandboxHandle {
 	/**
 	 * The hosts commands in the sandbox looked up and could not reach since it was made, each once, in
 	 * the order first asked: on E2B out of `open`, what its lookup stub wrote (e2b/network.ts, `DNS_STUB`),
-	 * without the hosts it may reach. Absent where nothing records them.
+	 * without the hosts it may reach and those `skip` names (the ones the caller has seen already), so
+	 * that many it has seen do not use up the limit and hide one it has not. Absent where nothing records them.
 	 */
-	blockedHosts?(): Promise<string[]>;
+	blockedHosts?(skip?: Iterable<string>): Promise<string[]>;
 	/**
 	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
 	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
@@ -193,8 +194,10 @@ export interface Sandboxes {
 	allowedHosts?(): readonly string[];
 	/**
 	 * Lets a running sandbox reach `hosts` besides the deployment's (a session's repository's network
-	 * list, repository-network.ts), at once. False when the sandbox does not run: the hosts are handed
-	 * to its next `connect` instead. Absent where the provider has no list of hosts.
+	 * list, repository-network.ts), at once. Only for a sandbox a turn of this server holds (`holdFor`):
+	 * the change never starts a sandbox or pushes its timeout out, so it costs nothing a meter does not
+	 * count. False otherwise: the hosts are handed to its next `connect` instead. Absent where the
+	 * provider has no list of hosts.
 	 */
 	setNetwork?(id: string, hosts: readonly string[]): Promise<boolean>;
 	/** Every profile, available or not, in the order the picker shows them. */

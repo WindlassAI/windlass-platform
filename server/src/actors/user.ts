@@ -155,7 +155,7 @@ import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
-import { NETWORK_TABLE, NetworkProblem, REQUESTS_TABLE, addEntry, cleanEntries, cleanEntry, dismissRequest, fileRequests, mayChangeNetwork, networkLimit, networkPresets, readNetwork, readRequests, saveNetwork, scanForHosts, scanPaths, unionHosts } from "../repository-network.js";
+import { NETWORK_TABLE, NetworkProblem, REQUESTS_TABLE, addEntry, cleanEntries, cleanEntry, dismissRequest, fileRequests, mayChangeNetwork, networkLimit, networkPresets, readNetwork, readRequests, saveNetwork, scanForHosts, scanPaths } from "../repository-network.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
@@ -1971,7 +1971,8 @@ export const user = actor({
 		/**
 		 * "Allow for this repository" from a session's timeline (`allowHost` of the session): `by` is who
 		 * asked, as the session checked it. Someone who may change the repository's settings adds the host
-		 * to its list; anyone else files a request. Answers with the session's hosts then, as a turn gets them.
+		 * to its list; anyone else would file a request, but only the session's own user reaches `allowHost`
+		 * today, and that is this actor's. Answers with the session's hosts then, as a turn gets them.
 		 */
 		internalAllowHost: async (c, input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: RepositoryNetwork }> => {
 			requireService(c);
@@ -1986,10 +1987,10 @@ export const user = actor({
 					const label = session.repository ? `${session.repository.owner}/${session.repository.name}` : "";
 					const saved = await addEntry(c.db, project, label, host, await deploymentHostsForLimit(), Date.now());
 					console.log(`[wlp] network.allowed uid=${c.key[0]} project=${project} host=${host} session=${input.sessionId}`);
-					return { allowed, hosts: unionHosts([saved.hosts]), network: await networkView(c, project) };
+					return { allowed, hosts: saved.hosts, network: await networkView(c, project) };
 				}
 				await fileRequests(c.db, project, [host], input.sessionId, Date.now());
-				return { allowed, hosts: unionHosts([(await readNetwork(c.db, project)).hosts]), network: await networkView(c, project) };
+				return { allowed, hosts: (await readNetwork(c.db, project)).hosts, network: await networkView(c, project) };
 			} catch (error) {
 				if (error instanceof UserError) throw error;
 				if (error instanceof NetworkProblem) throw new UserError(error.message, { code: "bad_network" });
@@ -1998,12 +1999,12 @@ export const user = actor({
 		},
 
 		/** Hosts a session's sandbox looked up and could not reach: filed as requests on its repository. */
-		internalNetworkRequests: async (c, input: { sessionId: string; hosts: string[] }): Promise<void> => {
+		internalNetworkRequests: async (c, input: { sessionId: string; hosts: string[] }): Promise<{ filed: string[]; full: string[] }> => {
 			requireService(c);
 			const session = c.vars.sessions.get(approvalText(input?.sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
-			if (!session || project === null || !Array.isArray(input?.hosts)) return;
-			await fileRequests(c.db, project, input.hosts.filter((host): host is string => typeof host === "string").slice(0, 50), input.sessionId, Date.now());
+			if (!session || project === null || !Array.isArray(input?.hosts)) return { filed: [], full: [] };
+			return await fileRequests(c.db, project, input.hosts.filter((host): host is string => typeof host === "string").slice(0, 50), input.sessionId, Date.now());
 		},
 
 		/** The setup command of a session's repository, for that session when its sandbox is new. */
@@ -2094,8 +2095,8 @@ export const user = actor({
 			};
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
-			// The hosts its repository's list allows, for a hosted sandbox: a session on several repositories would get those of each.
-			const network = session.place.kind === "hosted" ? unionHosts([(await readNetwork(c.db, project)).hosts]) : [];
+			// The hosts its repository's list allows, for a hosted sandbox. A session has one repository.
+			const network = session.place.kind === "hosted" ? (await readNetwork(c.db, project)).hosts : [];
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);

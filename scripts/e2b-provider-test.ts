@@ -41,7 +41,7 @@ import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
-import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, hostedNetworkText, networkConfig, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
+import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, guestDnsArgv, hostedNetworkText, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
 import { personalServerReach } from "../server/src/server-question.js";
 import { choosePlacement } from "../server/src/factory/placement.js";
 import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
@@ -696,7 +696,15 @@ await section("network modes", async () => {
 	// A repository's network list (server/src/repository-network.ts): its hosts on top of the deployment's.
 	const stubLog = "1795358136 1 cdn.example.org\n1795358136 28 registry.npmjs.org\n1795358136 1 registry.example.com\n";
 	let listed: ScriptedMachine | undefined;
-	const r = world({ network: restricted }, { machine: () => (listed = imageLike((command) => (command.startsWith("tail ") || command.includes("'tail'") ? { stdout: stubLog } : undefined))) });
+	const order: string[] = [];
+	const r = world({ network: restricted }, {
+		machine: () =>
+			(listed = imageLike((command) => {
+				if (command.startsWith("tail ") || command.includes("'tail'")) return { stdout: stubLog };
+				if (command.includes(" wlp-network ")) order.push(`names ${/ (first|second)\.example\.org/.exec(command)?.[1] ?? "-"}`);
+				return undefined;
+			})),
+	});
 	const rid = await r.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b", network: ["registry.example.com"] });
 	const allowOut = r.fake.sandboxes.get(rid)?.network?.allowOut ?? [];
 	expect("a repository's hosts are allowed from the sandbox's first command, beside the deployment's", allowOut.includes("registry.example.com") && restricted.hosts.every((host) => allowOut.includes(host)) && (listed?.commands.find((entry) => entry.options.root)?.command.includes(" registry.example.com") ?? false), allowOut.join(","));
@@ -706,11 +714,28 @@ await section("network modes", async () => {
 	await r.sandboxes.connect(rid);
 	expect("a connect that names none leaves the deployment's alone", !(callsOf(r.fake, "updateNetwork").at(-1) ?? "").includes("registry.example.com"));
 	expect("blocked hosts: the names the lookup stub wrote that the sandbox may not reach", JSON.stringify(await rHandle?.blockedHosts?.()) === JSON.stringify(["cdn.example.org"]));
+	expect("blocked hosts: names the caller has seen already are left out", JSON.stringify(await rHandle?.blockedHosts?.(["cdn.example.org"])) === "[]");
+	r.fake.calls.length = 0;
+	const unheld = await r.sandboxes.setNetwork(rid, ["registry.example.com", "cdn.example.org"]);
+	expect("outside a turn's hold a host allowed from a session changes nothing now: no connect, which would resume or extend the sandbox with no meter", !unheld && r.fake.calls.length === 0, r.fake.calls.join(" | "));
+	const release = await (rHandle as E2bSandboxHandle).holdForTurn();
 	r.fake.calls.length = 0;
 	const rootsBefore = (listed?.commands ?? []).filter((entry) => entry.options.root).length;
 	const applied = await r.sandboxes.setNetwork(rid, ["registry.example.com", "cdn.example.org"]);
 	const roots2 = (listed?.commands ?? []).filter((entry) => entry.options.root);
-	expect("a host allowed from a session reaches its running sandbox at once: E2B's configuration and the pinned names", applied && (callsOf(r.fake, "updateNetwork")[0] ?? "").includes("cdn.example.org") && roots2.length === rootsBefore + 1 && (roots2.at(-1)?.command.includes(" cdn.example.org") ?? false));
+	expect("a host allowed from a session while a turn holds its sandbox reaches it at once: E2B's configuration and the pinned names", applied && (callsOf(r.fake, "updateNetwork")[0] ?? "").includes("cdn.example.org") && roots2.length === rootsBefore + 1 && (roots2.at(-1)?.command.includes(" cdn.example.org") ?? false));
+	// Two changes at once: each sets E2B's list and then the names file before the next starts, so both end on the same list.
+	const realUpdate = r.fake.updateNetwork.bind(r.fake);
+	r.fake.updateNetwork = async (sandboxId, network) => {
+		order.push(`e2b ${network?.allowOut.includes("first.example.org") ? "first" : network?.allowOut.includes("second.example.org") ? "second" : "-"}`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		return realUpdate(sandboxId, network);
+	};
+	order.length = 0;
+	const both = await Promise.all([r.sandboxes.setNetwork(rid, ["first.example.org"]), r.sandboxes.connect(rid, { network: ["second.example.org"] })]);
+	r.fake.updateNetwork = realUpdate;
+	expect("a host allowed and a connect at once change the sandbox one after the other, so E2B's list and the names file end the same", both[0] === true && both[1] !== undefined && JSON.stringify(order) === JSON.stringify(["e2b first", "names first", "e2b second", "names second"]) && (r.fake.sandboxes.get(rid)?.network?.allowOut.includes("second.example.org") ?? false), order.join(", "));
+	await release();
 	await r.sandboxes.suspend(rid);
 	r.fake.calls.length = 0;
 	expect("a paused sandbox is not started for it: it gets the hosts at its next connect", !(await r.sandboxes.setNetwork(rid, ["later.example.org"])) && r.fake.sandboxes.get(rid)?.state === "paused" && callsOf(r.fake, "updateNetwork").length === 0);
@@ -1033,7 +1058,8 @@ if (withDocker) {
 			const url = "https://github.com/acme/demo.git";
 			for (const mode of ["open", "restricted", "none"] as const) {
 				const fake = new FakeE2b({ machine: async (id) => { const machine = await ContainerMachine.make(id, image); machines.push(machine); return machine; } });
-				const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: readE2bNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) }) }, { log: () => {}, pinAddress: address });
+				const deploymentNetwork = readE2bNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) });
+				const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: deploymentNetwork }, { log: () => {}, pinAddress: address });
 				// A repository's list adds a host in restricted; open and none take no list. The fixture certificate does not name these hosts: -k, since what is checked is whether the filter lets them through.
 				const repoHosts = ["repo-allowed.example"];
 				const id = await sandboxes.create({ uid: "u1", sessionId: `net-${mode}`, profile: "e2b", network: repoHosts });
@@ -1079,9 +1105,32 @@ if (withDocker) {
 					if (mode === "restricted") {
 						expect("restricted: a host of the repository's list is reachable", byRepo.includes("fixture repo-allowed.example"), byRepo);
 						const before = await sh("curl -ksS --max-time 10 https://later.example/; echo exit=$?");
-						const changed = await sandboxes.setNetwork(id, [...repoHosts, "later.example"]);
-						const after = await sh("curl -ksS --max-time 10 https://later.example/; echo exit=$?");
-						expect("restricted: a host allowed while the sandbox runs is reachable at once, and was not before", !before.includes("fixture") && changed && after.includes("fixture later.example"), `${before} | ${after}`);
+						const release = await handle.holdForTurn();
+						try {
+							const changed = await sandboxes.setNetwork(id, [...repoHosts, "later.example"]);
+							const after = await sh("curl -ksS --max-time 10 https://later.example/; echo exit=$?");
+							expect("restricted: a host allowed while a turn holds the sandbox is reachable at once, and was not before", !before.includes("fixture") && changed && after.includes("fixture later.example"), `${before} | ${after}`);
+							// Two changes at once, through the provider: they run one after the other, and the last one's list is what E2B and the names file have.
+							const pinned = async () => (await sh("grep ' # wlp-network$' /etc/hosts | cut -d' ' -f2 | sort | tr '\\n' ' '")).trim();
+							const lists = [[...repoHosts, "race-a.example"], [...repoHosts, "race-b.example"]];
+							const changes = await Promise.all(lists.map((list) => sandboxes.setNetwork(id, list)));
+							const last = fake.sandboxes.get(id)?.network?.allowOut;
+							const expected = [...withHosts(deploymentNetwork, lists[1]).network.hosts].sort().join(" ");
+							const hosts = await sh("cat /etc/hosts");
+							expect("restricted: two changes at once end with the last one's list, in E2B's configuration and in the names file, and localhost stays", changes.every(Boolean) && (await pinned()) === expected && JSON.stringify(last) === JSON.stringify(withHosts(deploymentNetwork, lists[1]).network.hosts) && /^127\.0\.0\.1\s+localhost/m.test(hosts), `${await pinned()} | ${JSON.stringify(last)} | ${hosts}`);
+						} finally {
+							await release();
+						}
+						// The guest script itself, run four at a time as root again and again, as two servers could: its lock keeps the names file whole.
+						const machine = machines.at(-1)!;
+						let broken = "";
+						for (let round = 0; round < 12 && broken === ""; round += 1) {
+							await Promise.all(["a", "b", "c", "d"].map((tag) => docker(["exec", "-u", "root", machine.container, ...guestDnsArgv(withHosts(deploymentNetwork, [...repoHosts, `round${round}-${tag}.example`]).network, address)])));
+							const text = (await docker(["exec", machine.container, "cat", "/etc/hosts"])).stdout;
+							const pinnedNow = text.split("\n").filter((line) => line.endsWith(" # wlp-network"));
+							if (!/^127\.0\.0\.1\s+localhost/m.test(text) || pinnedNow.length !== deploymentNetwork.hosts.length + 2) broken = `round ${round}: ${text}`;
+						}
+						expect("restricted: the guest script run four at a time never empties the names file or mixes two lists", broken === "", broken.slice(0, 600));
 					} else expect("none: a repository's list is not applied", !byRepo.includes("fixture"), byRepo);
 					if (mode === "restricted") expect("restricted: the platform's own clone, fetch and push still work, as the transport user", cloned.ok && pushed !== "" && pushed === received, said);
 					else expect("none: the git host is not reachable, which is why repository sessions are refused there", !cloned.ok, said);

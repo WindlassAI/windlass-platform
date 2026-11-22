@@ -846,7 +846,8 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 
 /**
  * Under a line about a host a command could not reach: "Allow for this repository", which adds it to
- * the network list of the session's repository and lets the running sandbox reach it at once, and the
+ * the network list of the session's repository and lets the sandbox reach it at once while a turn runs
+ * in it (from the next turn otherwise), and the
  * way to the list itself. Nothing is allowed without the click.
  */
 function BlockedHost({ host, repository }: { host: string; repository: boolean }) {
@@ -860,7 +861,7 @@ function BlockedHost({ host, repository }: { host: string; repository: boolean }
 		setState({ kind: "busy" });
 		try {
 			const answer = await allow(host);
-			setState({ kind: "done", text: answer.applied ? `${host} is allowed. This sandbox reaches it now.` : `${host} is allowed from this agent's next turn.` });
+			setState({ kind: "done", text: answer.applied ? `${host} is allowed. This sandbox reaches it now.` : `${host} is allowed. It applies from the next turn.` });
 		} catch (failure) {
 			setState({ kind: "failed", text: failure instanceof Error ? failure.message : String(failure) });
 		}

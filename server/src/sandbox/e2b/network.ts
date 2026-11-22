@@ -154,6 +154,8 @@ export function networkConfig(network: E2bNetwork): E2bNetworkConfig | null {
 
 /** Where the sandbox's lookup stub writes the names it was asked for (`DNS_STUB`), one line each, the first time each is asked. */
 export const DNS_LOG = "/var/log/wlp-dns.log";
+/** The most the stub writes to DNS_LOG, give or take its last line. */
+export const DNS_LOG_BYTES = 262_144;
 
 /**
  * The lookup stub of a sandbox out of `open`: a resolver on 127.0.0.1:53 that answers every question
@@ -168,7 +170,9 @@ export const DNS_LOG = "/var/log/wlp-dns.log";
  * neither write the log nor stop the stub. It is a reporter, not a fence: what a sandbox
  * reaches is E2B's filter's to decide, and the stub's answer is the same failure an empty resolver
  * gave. Each name is written once, at most 2,000 names and 256 KiB; a name with anything but letters,
- * digits, "-" and "_" in a label is not written.
+ * digits, "-" and "_" in a label is not written. It answers one question at a time, so a TCP connection
+ * has one second in all to send its question and take the answer: a client that sends a byte now and
+ * then cannot hold the stub, and every lookup behind it, for longer than that.
  *
  * The guest script writes it to /run/wlp-dns.py, which root owns everywhere (a directory a tarball made,
  * such as /usr/local/lib, may not be root's, and root without capabilities cannot write there).
@@ -218,7 +222,7 @@ def question(m):
     return name.decode("ascii"), (m[i] << 8) | m[i + 1], i + 4
 def note(name, qtype):
     global written
-    if not name or name in seen or len(seen) >= 2000 or written > 262144:
+    if not name or name in seen or len(seen) >= 2000 or written > ${DNS_LOG_BYTES}:
         return
     seen.add(name)
     line = ("%d %d %s\\n" % (int(time.time()), qtype, name)).encode("ascii")
@@ -235,9 +239,13 @@ def reply(m):
         return m[:2] + bytes([0x80 | (m[2] & 0x79), 0x81]) + bytes(8)
     note(q[0], q[1])
     return m[:2] + bytes([0x80 | (m[2] & 0x79), 0x83, 0, 1]) + bytes(6) + m[12:q[2]]
-def exactly(c, n):
+def exactly(c, n, deadline):
     data = b""
     while len(data) < n:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise OSError("slow")
+        c.settimeout(left)
         part = c.recv(n - len(data))
         if not part:
             raise OSError("closed")
@@ -260,10 +268,12 @@ while True:
             except OSError:
                 continue
             try:
-                c.settimeout(2)
-                n = int.from_bytes(exactly(c, 2), "big")
-                out = reply(exactly(c, n))
-                if out:
+                deadline = time.monotonic() + 1
+                n = int.from_bytes(exactly(c, 2, deadline), "big")
+                out = reply(exactly(c, n, deadline))
+                left = deadline - time.monotonic()
+                if out and left > 0:
+                    c.settimeout(left)
                     c.sendall(len(out).to_bytes(2, "big") + out)
             except (OSError, ValueError):
                 pass
@@ -279,12 +289,24 @@ while True:
  * it. Without python3 the resolver file names the stub all the same and nothing answers there, so every
  * lookup still fails at once, as an empty one did. Writes in place, since a container's name files are
  * bind mounts. Prints `network <mode>` when done.
+ *
+ * Two runs at once (a turn's connect and a host allowed from the session) would otherwise read the
+ * names file while the other is rewriting it, and could write it back empty, without localhost. So the
+ * whole script holds a lock, /run/wlp-network.lock (root's alone: the agent cannot open it to hold it),
+ * and stages the new file under a name of its own in /run, never a fixed one in /tmp where the agent
+ * could put a file first. E2bSandboxes also runs one change per sandbox at a time (`E2bSandboxes.serial`),
+ * so E2B's list and this file are changed in the same order.
  */
 export const GUEST_DNS_SCRIPT = `set -eu
 mode=$1; addr=$2; shift 2
+umask 077
+exec 9>>/run/wlp-network.lock
+flock -w 25 9 || { echo "another change of the sandbox's network held its lock for 25 s" >&2; exit 1; }
 umask 022
-{ grep -v ' # wlp-network$' /etc/hosts || true; for host in "$@"; do printf '%s %s # wlp-network\\n' "$addr" "$host"; done; } > /tmp/wlp-hosts
-cat /tmp/wlp-hosts > /etc/hosts; rm -f /tmp/wlp-hosts
+tmp=$(mktemp /run/wlp-hosts.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
+{ grep -v ' # wlp-network$' /etc/hosts || true; for host in "$@"; do printf '%s %s # wlp-network\\n' "$addr" "$host"; done; } > "$tmp"
+cat "$tmp" > /etc/hosts
 running() { [ -f /run/wlp-dns.pid ] && kill -0 "$(cat /run/wlp-dns.pid)" 2>/dev/null; }
 if [ "$mode" = open ]; then
   if running; then kill "$(cat /run/wlp-dns.pid)" 2>/dev/null || true; fi
@@ -296,7 +318,7 @@ else
   if ! running && command -v python3 >/dev/null 2>&1; then
     cat > /run/wlp-dns.py <<'WLP_DNS_STUB'
 ${DNS_STUB}WLP_DNS_STUB
-    setsid python3 -I /run/wlp-dns.py 53 ${DNS_LOG} </dev/null >/dev/null 2>&1 &
+    setsid python3 -I /run/wlp-dns.py 53 ${DNS_LOG} </dev/null >/dev/null 2>&1 9>&- &
     echo $! > /run/wlp-dns.pid
   fi
 fi
@@ -304,11 +326,13 @@ echo "network $mode"`;
 
 /**
  * The names a sandbox's lookup stub wrote to DNS_LOG, from the log's text: each once, in the order
- * first asked, lower case, without reverse lookups, single labels and the names `allowed` has (a
- * command may ask for an allowed name's IPv6 address, which /etc/hosts does not pin). At most `limit`.
+ * first asked, lower case, without reverse lookups, single labels and the names `skip` has (the allowed
+ * ones, since a command may ask for an allowed name's IPv6 address, which /etc/hosts does not pin, and
+ * the ones the caller named already). At most `limit`, counted after those are left out, so names
+ * named already never hide one that was not.
  */
-export function blockedLookups(log: string, allowed: Iterable<string>, limit = 50): string[] {
-	const skip = new Set(allowed);
+export function blockedLookups(log: string, skipped: Iterable<string>, limit = 50): string[] {
+	const skip = new Set(skipped);
 	const out: string[] = [];
 	for (const line of log.split("\n")) {
 		const name = /^\d+ \d+ (\S+)$/.exec(line.trim())?.[1]?.toLowerCase().replace(/\.$/, "");

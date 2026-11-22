@@ -7,9 +7,9 @@
  * Nothing here is applied without its person's click: a proposal names what a file in the repository
  * says, and a request what a command looked up, and either could be a host chosen to send data to.
  * Each change saves the whole list; a running sandbox gets it at its next turn (from a session's
- * timeline, "Allow for this repository" changes that session's sandbox at once).
+ * timeline, "Allow for this repository" changes that session's sandbox at once while a turn runs in it).
  */
-import type { GithubId, NetworkProposal, NetworkScan, RepositoryNetwork } from "@contract";
+import { type GithubId, type NetworkPreset, type NetworkProposal, type NetworkScan, type RepositoryNetwork, WIDE_HOSTS } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { absoluteTime, plural } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -22,6 +22,37 @@ function appliesHere(network: RepositoryNetwork, name: string): string {
 	if (hosted.mode === "open") return `This deployment's hosted sandboxes reach any host today, so the list changes nothing until its operator limits them (WLP_E2B_NETWORK=restricted).`;
 	if (hosted.mode === "none") return `This deployment gives hosted sandboxes no network but the model API, so the list does not apply here.`;
 	return `Hosted agents on ${name} reach the model API, GitHub, the hosts this deployment allows, and what is allowed here. A change applies from each agent's next turn.`;
+}
+
+/** What allowing any of these hosts reaches besides what was asked for, said where the click is: none for most. */
+export function WideHostNote({ hosts }: { hosts: readonly string[] }) {
+	const said = hosts.flatMap((host) => (WIDE_HOSTS[host] ? [WIDE_HOSTS[host]] : []));
+	if (said.length === 0) return null;
+	return (
+		<p className="server-subject tone-warn">
+			<WarnIcon size={13} /> {said.join(" ")}
+		</p>
+	);
+}
+
+/** One host or preset the scan found: what it is, what it reaches when it is a preset, and where the files name it. */
+export function ProposalItem({ proposal, preset, busy, onAllow }: { proposal: NetworkProposal; preset: NetworkPreset | undefined; busy: string | null; onAllow(proposal: NetworkProposal): void }) {
+	return (
+		<li className="server">
+			<p className="server-head">
+				<span className="server-name">{proposal.entry}</span>
+				{proposal.entry.startsWith("@") ? <span className="server-state">{proposal.hosts.join(", ")}</span> : null}
+			</p>
+			{preset ? <p className="server-subject">{preset.about}.</p> : null}
+			<WideHostNote hosts={proposal.hosts} />
+			<p className="server-subject">{proposal.sources.join(" · ")}</p>
+			<p className="server-foot">
+				<button type="button" className="link" onClick={() => onAllow(proposal)} disabled={busy !== null} aria-label={`Allow ${proposal.entry}`}>
+					{busy === `proposal:${proposal.entry}` ? "Allowing…" : "Allow"}
+				</button>
+			</p>
+		</li>
+	);
 }
 
 const ago = (at: number, now: number) => {
@@ -168,7 +199,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 						<ul className="repo-network-hosts" aria-label={`Hosts allowed for ${name}`}>
 							{singles.map((single) => (
 								<li key={single} className="repo-network-host">
-									<code>{single}</code>
+									<code title={WIDE_HOSTS[single]}>{single}</code>
 									<button type="button" className="link" onClick={() => void save(entries.filter((entry) => entry !== single), `remove:${single}`)} disabled={busy !== null} aria-label={`Remove ${single}`}>
 										{busy === `remove:${single}` ? "Removing…" : "Remove"}
 									</button>
@@ -224,6 +255,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 										</time>
 									</span>
 								</p>
+								<WideHostNote hosts={[request.host]} />
 								<p className="server-foot">
 									<button type="button" className="link" onClick={() => void save([...entries, request.host], `request:${request.host}`)} disabled={busy !== null} aria-label={`Allow ${request.host}`}>
 										{busy === `request:${request.host}` ? "Allowing…" : "Allow"}
@@ -261,18 +293,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 					<>
 						<ul className="servers repo-network-proposals" aria-label={`Hosts found in ${name}'s files`}>
 							{scan.proposals.map((proposal) => (
-								<li key={proposal.entry} className="server">
-									<p className="server-head">
-										<span className="server-name">{proposal.entry}</span>
-										{proposal.entry.startsWith("@") ? <span className="server-state">{proposal.hosts.join(", ")}</span> : null}
-									</p>
-									<p className="server-subject">{proposal.sources.join(" · ")}</p>
-									<p className="server-foot">
-										<button type="button" className="link" onClick={() => void allowProposal(proposal)} disabled={busy !== null} aria-label={`Allow ${proposal.entry}`}>
-											{busy === `proposal:${proposal.entry}` ? "Allowing…" : "Allow"}
-										</button>
-									</p>
-								</li>
+								<ProposalItem key={proposal.entry} proposal={proposal} preset={network.presets.find((preset) => preset.id === proposal.entry)} busy={busy} onAllow={(chosen) => void allowProposal(chosen)} />
 							))}
 						</ul>
 						<p className="usage-note">

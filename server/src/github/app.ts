@@ -624,9 +624,10 @@ export class GithubApp {
 	 * The files of a revision that `pick` chooses from its tree, as text, for the fixed reading of a
 	 * repository's network needs (repository-network.ts). Read by blob, so a lockfile over the contents
 	 * API's 1 MB is read too; a file that is not UTF-8 is passed over. `incomplete` when GitHub cut the
-	 * tree short or `pick` left files out.
+	 * tree short or `pick` left files out. What `pick` says of size holds whatever the tree said: a blob
+	 * larger than `maxFileBytes` is passed over, and reading stops once the files read come to `maxBytes`.
 	 */
-	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; size: number | null }>) => { paths: string[]; more: boolean }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
+	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; size: number | null }>) => { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
 		const prefix = `/repos/${owner}/${name}`;
 		const auth = { bearer: token };
 		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the branch to read" });
@@ -640,20 +641,32 @@ export class GithubApp {
 		const picked = pick(entries);
 		const shaOf = new Map(entries.map((entry) => [entry.path, entry.sha]));
 		const files: Array<{ path: string; text: string }> = [];
-		for (let at = 0; at < picked.paths.length; at += 6) {
+		let bytes = 0;
+		let cut = false;
+		for (let at = 0; at < picked.paths.length && !cut; at += 6) {
 			const batch = picked.paths.slice(at, at + 6);
 			const read = await Promise.all(batch.map(async (path) => {
 				const blob = record((await this.call({ path: `${prefix}/git/blobs/${shaOf.get(path)}`, auth, what: "read a file of the repository" })).body);
 				if (blob.encoding !== "base64" || typeof blob.content !== "string") return null;
+				const data = Buffer.from(blob.content, "base64");
+				if (data.length > picked.maxFileBytes) return { path, size: data.length, text: null };
 				try {
-					return { path, text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(blob.content, "base64")) };
+					return { path, size: data.length, text: new TextDecoder("utf-8", { fatal: true }).decode(data) };
 				} catch {
 					return null;
 				}
 			}));
-			for (const file of read) if (file) files.push(file);
+			for (const file of read) {
+				if (!file) continue;
+				if (file.text === null || bytes + file.size > picked.maxBytes) {
+					cut = true;
+					continue;
+				}
+				bytes += file.size;
+				files.push({ path: file.path, text: file.text });
+			}
 		}
-		return { commit, files, incomplete: tree.truncated === true || picked.more };
+		return { commit, files, incomplete: tree.truncated === true || picked.more || cut };
 	}
 
 	async fileAt(token: string, owner: string, name: string, path: string, sha: string): Promise<string> {

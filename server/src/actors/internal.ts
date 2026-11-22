@@ -104,10 +104,10 @@ export interface UserInternal {
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
 	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
-	/** "Allow for this repository" from a session: `by` is who asked. Someone who may change the repository's settings allows the host; anyone else files a request (repository-network.ts). */
+	/** "Allow for this repository" from a session: `by` is who asked. Someone who may change the repository's settings allows the host; anyone else would file a request, but today only the session's own user calls it (repository-network.ts). */
 	internalAllowHost(input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: import("../contract.js").RepositoryNetwork }>;
-	/** Hosts a session's sandbox could not reach, filed as requests on its repository's network list. */
-	internalNetworkRequests(input: { sessionId: string; hosts: string[] }): Promise<void>;
+	/** Hosts a session's sandbox could not reach, filed as requests on its repository's network list; `full` are those not filed because its requests are full. */
+	internalNetworkRequests(input: { sessionId: string; hosts: string[] }): Promise<{ filed: string[]; full: string[] }>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;
 	/** The session's sandbox stopped: counts the seconds it ran of its hold. `known` is false when that hold is not open any more. */

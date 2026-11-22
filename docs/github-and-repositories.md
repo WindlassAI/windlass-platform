@@ -535,12 +535,12 @@ never match; a turn where all checks have patterns ends "no check covers what ch
 ## A repository's network
 
 Where the deployment's hosted sandboxes run on E2B with `WLP_E2B_NETWORK=restricted`, a repository can allow
-hosts of its own: presets (`@node`, `@playwright`, `@prisma`, `@debian`, `@ubuntu`, and those the deployment may
+hosts of its own: presets (`@node`, `@playwright`, `@gcs`, `@prisma`, `@debian`, `@ubuntu`, and those the deployment may
 allow already) and exact names, on top of the model API, GitHub, the bucket and `WLP_E2B_NETWORK_ALLOW`
 (`server/src/repository-network.ts`; how it is built is in [operating.md](operating.md), "E2B", "Network").
 It is the user's, like the setup command: one row per repository in their `user` actor, by GitHub's id, never
 read from the repository. Only that user can change it (`saveRepositoryNetwork`, or `allowHost` from a session,
-which also changes the running sandbox at once); what a session's sandbox could not reach is filed as a request
+which also changes the sandbox at once while a turn holds it, and otherwise from the next turn); what a session's sandbox could not reach is filed as a request
 (`NetworkRequest`) that waits until it is allowed or dismissed. Every hosted session on the repository gets the
 list from its next turn. `scanRepositoryNetwork` reads the repository's manifests, lockfiles, install scripts
 and CI files at the default branch and proposes what they name, with where; nothing it finds is saved until the

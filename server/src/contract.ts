@@ -609,11 +609,20 @@ export const NETWORK_PRESETS: readonly NetworkPreset[] = [
 	{ id: "@crates", name: "crates.io", about: "Cargo packages", hosts: ["crates.io", "index.crates.io", "static.crates.io"] },
 	{ id: "@go", name: "Go module proxy", about: "Go modules and their checksums", hosts: ["proxy.golang.org", "sum.golang.org"] },
 	{ id: "@node", name: "nodejs.org", about: "Node.js downloads, and the headers node-gyp builds native addons with", hosts: ["nodejs.org"] },
-	{ id: "@playwright", name: "Playwright browsers", about: "What playwright install downloads. Chromium comes from Google Cloud Storage, which serves every public bucket", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com"] },
+	{ id: "@playwright", name: "Playwright browsers", about: "What playwright install downloads. On x86_64 its Chromium download redirects to Google Cloud Storage, which is not in this preset: add @gcs for it", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com"] },
+	{ id: "@gcs", name: "Google Cloud Storage", about: "Reaches every public Google Cloud Storage bucket, anyone's, not only the one a download needs. Playwright's Chromium for x86_64 comes from it", hosts: ["storage.googleapis.com"] },
 	{ id: "@prisma", name: "Prisma engines", about: "The engines Prisma downloads when it is installed", hosts: ["binaries.prisma.sh"] },
 	{ id: "@debian", name: "Debian packages", about: "Debian's apt sources", hosts: ["deb.debian.org", "security.debian.org"] },
 	{ id: "@ubuntu", name: "Ubuntu packages", about: "Ubuntu's apt sources; the sandbox runs Ubuntu", hosts: ["archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"] },
 ];
+
+/**
+ * Hosts that serve far more than what a download needs, with the sentence said wherever someone can
+ * allow one: on the timeline's line about it, beside a request, and beside a proposal.
+ */
+export const WIDE_HOSTS: Readonly<Record<string, string>> = {
+	"storage.googleapis.com": "storage.googleapis.com serves every public Google Cloud Storage bucket, anyone's: allowed, it lets a command send to or fetch from any of them, not only the one a download needs.",
+};
 
 /**
  * A host a command in one of the repository's hosted sandboxes looked up and could not reach, kept for
@@ -633,7 +642,7 @@ export interface NetworkRequest {
  * (docs/github-and-repositories.md, "A repository's network"): exact host names and presets, saved for
  * the repository by GitHub's id, like its setup command. They apply where the deployment runs hosted
  * sandboxes on E2B with WLP_E2B_NETWORK=restricted, from the next command of every hosted session on
- * the repository: a running sandbox is changed at once when a host is allowed from its session.
+ * the repository: a sandbox is changed at once when a host is allowed from its session while a turn runs in it.
  */
 export interface RepositoryNetwork {
 	/** What is saved: preset ids ("@playwright") and exact host names, in the order they were added. */
@@ -682,7 +691,7 @@ export interface NetworkScan {
 /** What `allowHost` did. */
 export interface HostAllowed {
 	network: RepositoryNetwork;
-	/** True when the session's running sandbox was changed at once; false when it applies from its next connect. */
+	/** True when the session's sandbox was changed at once, which happens only while a turn holds it; false when it applies from the next turn. */
 	applied: boolean;
 }
 
@@ -2644,10 +2653,13 @@ export interface AgentSessionActions {
 	forgetServer(input: { name: string }): Promise<SessionServers>;
 	/**
 	 * "Allow for this repository": adds the host to the network list of the session's repository and,
-	 * where the session's sandbox runs, lets that sandbox reach it at once. Only the person who can
-	 * change the repository's settings may: anyone else's call files a request (`NetworkRequest`)
-	 * instead, and answers `applied: false`. Throws a UserError with code `bad_network` for a host that
-	 * is not an exact DNS name, a session with no repository of the GitHub connection, or a list that is full.
+	 * while a turn holds the session's sandbox, lets that sandbox reach it at once (`applied`); otherwise
+	 * it applies from the next turn. Only the person who can change the repository's settings may. Today
+	 * that is the only person who can call it at all (a session's actions are its user's), so the other
+	 * branch, which files a request (`NetworkRequest`) and answers `applied: false`, cannot run yet.
+	 * Throws a UserError with code `bad_network` for a host that is not an exact DNS name, a session with
+	 * no repository of the GitHub connection, a list that is full, or a deployment in
+	 * WLP_E2B_NETWORK=none, where no host but the model API is reached whatever the list says.
 	 */
 	allowHost(input: { host: string }): Promise<HostAllowed>;
 }

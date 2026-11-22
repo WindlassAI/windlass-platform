@@ -165,7 +165,9 @@ import {
 	type Verified,
 	type WindlassEvent,
 	type WorkspaceFile,
+	WIDE_HOSTS,
 } from "../contract.js";
+import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview } from "../github/git.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
@@ -539,6 +541,8 @@ interface HeldSecrets {
 	checks: RepositoryCheck[];
 	/** The hosts its repository's network list allows (repository-network.ts); absent when the user's actor did not say. */
 	network?: string[];
+	/** When they were asked for: a host allowed from the session after this is not in them (`SessionVars.hostsAllowed`). */
+	networkAt?: number;
 	redactor: Redactor;
 }
 
@@ -641,6 +645,12 @@ interface SessionVars {
 	runner: RunnerLink | null;
 	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
 	setupReap: Promise<void> | null;
+	/**
+	 * The hosts allowed from this session (`allowHost`), with when: a turn whose list of hosts was read
+	 * before one of them keeps it all the same (`openSandbox`). This instance's only: a turn that starts
+	 * on another reads the list after the click.
+	 */
+	hostsAllowed: Map<string, number>;
 }
 
 /** What the helpers below need of an actor context; every hook's and action's `c` fits. */
@@ -1213,14 +1223,6 @@ function connectOptions(meta: SessionMeta): { network?: string[] } {
 /** How many blocked hosts the timeline names for one sandbox. */
 const MAX_HOSTS_NOTED = 40;
 
-/** The line that names a blocked host, and what can be done about it. */
-function blockedHostNote(host: string, repository: string | null): string {
-	const what = `A command in this sandbox could not reach ${host}: this deployment's hosted sandboxes reach only the model API, GitHub and the hosts they are allowed.`;
-	return repository
-		? `${what} Allow it for ${repository} to let its hosted agents reach it, from this sandbox on. The agent and the repository's own scripts choose what a command looks up, so allow only a host you expect.`
-		: `${what} This agent has no repository of your GitHub connection, so only the deployment's operator can allow it, in WLP_E2B_NETWORK_ALLOW.`;
-}
-
 /**
  * Names in the timeline each host a command in the session's hosted sandbox looked up and could not
  * reach (the sandbox's `blockedHosts`, from its lookup stub), once per sandbox, and files them as
@@ -1229,22 +1231,35 @@ function blockedHostNote(host: string, repository: string | null): string {
  */
 async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
 	if (meta.place.kind !== "hosted" || !sandbox.blockedHosts || layer.sandboxes.egress?.() !== "restricted") return;
+	const allowed = new Set(meta.networkHosts ?? []);
+	const noted = new Set(meta.hostsNoted ?? []);
+	if (noted.size >= MAX_HOSTS_NOTED) return;
 	let found: string[];
 	try {
-		found = await sandbox.blockedHosts();
+		// What was named already is left out before the stub's log is cut to its first names, so it cannot hide a later one.
+		found = await sandbox.blockedHosts([...allowed, ...noted]);
 	} catch (error) {
 		c.log.warn({ msg: "could not read which hosts the sandbox could not reach", error: describeError(error) });
 		return;
 	}
-	const allowed = new Set(meta.networkHosts ?? []);
-	const noted = new Set(meta.hostsNoted ?? []);
-	const named = found.filter((host) => !allowed.has(host) && !noted.has(host)).slice(0, Math.max(0, MAX_HOSTS_NOTED - noted.size));
+	const named = found.filter((host) => !allowed.has(host) && !noted.has(host)).slice(0, MAX_HOSTS_NOTED - noted.size);
 	if (named.length === 0) return;
 	meta.hostsNoted = [...noted, ...named];
 	const project = setupProjectOf(meta);
 	for (const host of named) append(c, { turn, kind: "platform", level: "warn", text: blockedHostNote(host, project?.label ?? null), code: "host_blocked", host, ...(project ? { repository: true } : {}) });
+	if (meta.hostsNoted.length >= MAX_HOSTS_NOTED) note(c, turn, "info", `This sandbox's timeline names at most ${MAX_HOSTS_NOTED} hosts its commands could not reach, and has named them; it names no more until the agent has a new sandbox.`);
 	console.log(`[wlp] network.blocked session=${meta.sessionId} hosts=${named.length}`);
-	if (project) await userActor(c, meta.uid).internalNetworkRequests({ sessionId: meta.sessionId, hosts: named }).catch((error: unknown) => c.log.warn({ msg: "could not file the blocked hosts as requests", error: describeError(error) }));
+	if (project) {
+		const filed = await userActor(c, meta.uid)
+			.internalNetworkRequests({ sessionId: meta.sessionId, hosts: named })
+			.catch((error: unknown) => {
+				c.log.warn({ msg: "could not file the blocked hosts as requests", error: describeError(error) });
+				return null;
+			});
+		// The requests already waiting are kept over new ones: what a command looks up cannot push out a host a person may want.
+		const left: string[] = filed?.full ?? [];
+		if (left.length > 0) note(c, turn, "info", `${left.length === 1 ? "1 host was" : `${left.length} hosts were`} not filed as a request for ${project.label}: it has as many waiting as it keeps. Allow or dismiss some in its network list to make room.`);
+	}
 	void persist(c);
 }
 
@@ -1253,8 +1268,12 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	let plan: SnapshotPlan | null = null;
 	// A setup cut off with the server is being stopped: let it finish first, or it could stop this turn's processes.
 	await c.vars.setupReap;
-	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it.
-	if (secrets?.network !== undefined) meta.networkHosts = meta.place.kind === "hosted" && secrets.network.length > 0 ? secrets.network : undefined;
+	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it. A host
+	// allowed from the session after the list was read is kept: `allowHost` put it in `networkHosts` already.
+	if (secrets?.network !== undefined) {
+		const hosts = hostsForTurn(secrets.network, secrets.networkAt ?? 0, c.vars.hostsAllowed);
+		meta.networkHosts = meta.place.kind === "hosted" && hosts.length > 0 ? hosts : undefined;
+	}
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, connectOptions(meta)) : undefined;
 	sandboxChanged(c);
 	if (handle) {
@@ -1741,6 +1760,7 @@ const PULL_FRESH_MS = 20_000;
  */
 async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
+	const networkAt = Date.now();
 	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId, config.snapshots && (meta.place.kind === "hosted" || !!config.machines?.identity)), RECALL_WAIT_MS);
 	if (sealed === null) {
 		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
@@ -1784,7 +1804,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		account: sealed.redactOnly ? [] : account,
 		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 		checks: project && sealed.project === project.key ? (sealed.checks ?? []) : [],
-		...(sealed.network !== undefined && { network: project && sealed.project === project.key ? sealed.network : [] }),
+		...(sealed.network !== undefined && { network: project && sealed.project === project.key ? sealed.network : [], networkAt }),
 		redactor: new SecretRedactor([...opened, ...account]),
 	};
 }
@@ -4572,6 +4592,7 @@ export const agentSession = actor({
 			carried: null,
 			runner: null,
 			setupReap: null,
+			hostsAllowed: new Map(),
 		};
 	},
 
@@ -5118,22 +5139,29 @@ export const agentSession = actor({
 			if (meta.place.kind !== "hosted") throw new UserError("A repository's network list is for hosted sandboxes, and this agent runs on a machine of yours: its runner's --egress settings say what it reaches.", { code: "bad_network" });
 			const project = setupProjectOf(meta);
 			if (!project) throw new UserError("This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox, in WLP_E2B_NETWORK_ALLOW.", { code: "bad_network" });
+			const { sandboxes } = await layerOf(c, meta);
+			// In `none` the list applies nowhere: saying it was allowed would promise a host nothing reaches.
+			if (sandboxes.egress?.() === "none") throw new UserError(`This deployment gives hosted sandboxes no network but the model API (WLP_E2B_NETWORK=none), so a host allowed for ${project.label} would be reached by nothing here.`, { code: "bad_network" });
 			const answer = await userActor(c, meta.uid).internalAllowHost({ sessionId: meta.sessionId, host, by });
 			if (!answer.allowed) {
 				note(c, meta.turns, "info", `${host} was asked for: whoever changes the settings of ${project.label} can allow it there.`);
 				return { network: answer.network, applied: false };
 			}
 			meta.networkHosts = answer.hosts.length > 0 ? answer.hosts : undefined;
+			c.vars.hostsAllowed.set(host, Date.now());
 			let applied = false;
-			if (meta.sandboxId) {
+			// At once only while a turn holds the sandbox, and so its time is on the meter: between turns a change
+			// would start a paused sandbox, or push a running one's timeout out, with nothing counting it.
+			const turn = c.vars.turn;
+			if (meta.sandboxId && turn && !turn.closed) {
 				try {
-					const { sandboxes } = await layerOf(c, meta);
-					applied = (await sandboxes.setNetwork?.(meta.sandboxId, answer.hosts)) ?? false;
+					applied = (await sandboxes.setNetwork?.(meta.sandboxId, meta.networkHosts ?? [])) ?? false;
 				} catch (error) {
 					c.log.warn({ msg: "could not change the running sandbox's network", error: describeError(error) });
 				}
 			}
-			note(c, meta.turns, "info", applied ? `${host} is allowed for ${project.label}. This sandbox reaches it now, and so do the repository's other hosted agents from their next turn.` : `${host} is allowed for ${project.label}. This agent's sandbox reaches it from its next turn, and so do the repository's other hosted agents.`);
+			const wide = WIDE_HOSTS[host];
+			note(c, meta.turns, "info", `${host} is allowed for ${project.label}. ${applied ? "This sandbox reaches it now; for the repository's other hosted agents it applies from the next turn." : "It applies from the next turn, in this agent's sandbox and the repository's other hosted agents'."}${wide ? ` ${wide}` : ""}`);
 			await persist(c);
 			return { network: answer.network, applied };
 		},
