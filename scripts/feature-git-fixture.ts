@@ -10,7 +10,7 @@ if (!root || new URL(process.env.WLP_GITHUB_API_URL!).hostname !== "127.0.0.1") 
 Object.assign(CI_POLLING, {everyMs: 200});
 const fakeRun = FakeHandle.prototype.run;
 FakeHandle.prototype.run = async function(command, options = {}) {
-	const platformGit = command.includes("wlp_git clone --quiet") || command.includes("/tmp/wlp-git") || command.includes("/tmp/wlp-scan");
+	const platformGit = command.includes("wlp_git clone --quiet") || command.includes("/tmp/wlp-git") || command.includes("/tmp/wlp-transport");
 	const setup = options.env?.WLP_SETUP === "1" && command === "exec 2>&1; sh index/setup.sh";
 	if (!platformGit && !setup) return fakeRun.call(this, command, options);
 	const dir = join(root, this.id), work = join(dir, "workspace"), scratch = join(dir, "tmp");

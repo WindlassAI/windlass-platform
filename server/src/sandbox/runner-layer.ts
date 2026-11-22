@@ -29,6 +29,7 @@
 
 import { signSnapshot, type SnapshotAction } from "../runner/snapshot-proof.js";
 import type { SnapshotSource } from "./snapshot-key.js";
+import { config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
@@ -152,6 +153,7 @@ export class RunnerLink {
 		private readonly onReach?: (reach: MachineReach) => void,
 	) {
 		this.channel = new ServerChannel({
+			platform: config.machines?.identity && { ...who, identity: config.machines.identity },
 			accept: (hello) => {
 				const accepted = this.tickets.admits(hello, { ...this.who, publicKey: this.heard?.publicKey ?? null });
 				if (accepted) this.snapshotTicket = hello.ticket;

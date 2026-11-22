@@ -1,13 +1,15 @@
 import { RETENTION_PATH, retentionRequest, signSnapshot } from "./runner/snapshot-proof.js";
+import { signRemoval } from "./runner/frame-auth.js";
 import { randomBytes } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { createGrant, isActorGone } from "./actors/internal.js";
 import { assertOrigin, serviceParams } from "./auth.js";
-import { config, ownEngineEndpoint } from "./config.js";
+import { config, ownEngineEndpoint, signedRunnerEndpoint } from "./config.js";
 import { platformConnection } from "./platform-info.js";
 import type { Registry } from "./registry.js";
 import { codeDigest, digest, machineError, newPairCode, publicSpki } from "./runner-keys.js";
 import { AddressBudget, clientAddress, rateLimited } from "./http-limits.js";
+import { OLD_RUNNER } from "./runner/protocol.js";
 import { CLOCK_TOLERANCE_MS, PAIRING_TTL_MS, RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, parseConnectionRequest, parsePairPoll, parsePairRequest } from "./runner/control.js";
 
 const polls = new AddressBudget(config.httpLimits.runnerPoll);
@@ -59,6 +61,8 @@ export async function runnerResponse(request: Request): Promise<Response> {
 			const input = parsePairRequest(body.value);
 			const publicKey = input && publicSpki(input.publicKey);
 			if (!input || !publicKey) return json(400, { code: "bad_input" });
+			if (config.machines.identity && input.protocol !== 2) return json(426, { code: "runner_outdated", message: OLD_RUNNER });
+			if (input.protocol === 2 && !config.machines.identity) return json(409, { code: "signing_disabled" });
 			const code = newPairCode();
 			const pairing = randomBytes(32).toString("base64url");
 			const pollSecret = randomBytes(32).toString("base64url");
@@ -82,12 +86,16 @@ export async function runnerResponse(request: Request): Promise<Response> {
 		if (Math.abs(now - input.time) > CLOCK_TOLERANCE_MS) return json(403, { reason: "clock", serverTime: now });
 		const { uid, machineId, signature, time } = input;
 		const retention = pathname === RETENTION_PATH;
-		const statement = retention ? retentionRequest(uid, machineId, time) : connectionProof(uid, machineId, time);
+		const statement = retention ? retentionRequest(uid, machineId, time) : connectionProof(uid, machineId, time, input.nonce);
 		const result = await client.machine.get([uid, machineId], { params }).internalConnection(statement, signature, address === null)
 			.catch(error => { if (isActorGone(error)) return "unknown" as const; throw error; });
 		if (result === "unknown") return refusedConnection(json(403, { reason: "unknown" }));
 		if (typeof result === "object" && "retryAfter" in result) return rateLimited(result.retryAfter, "This machine has reached its connection limit. Try again later.");
-		if (result !== "active") return json(410, { reason: "removed", removeSandboxes: result.removeSandboxes });
+		if (result !== "active") {
+			const identity = config.machines.identity;
+			return json(410, identity && input.nonce ? signRemoval(uid, machineId, input.nonce, result.removeSandboxes, identity)
+				: { reason: "removed", removeSandboxes: result.removeSandboxes });
+		}
 		if (retention) {
 			const generations = config.snapshots ? await client.user.get([uid], { params }).internalSnapshotGenerations().catch(error => {
 				if (isActorGone(error)) return []; throw error;
@@ -96,7 +104,9 @@ export async function runnerResponse(request: Request): Promise<Response> {
 			return proof ? json(200, { generations, proof }) : json(503, { code: "no_snapshot_key" });
 		}
 		const connection = await platformConnection();
-		return json(200, { ...connection, endpoint: connection.endpoint ?? (config.engine.remote ? null : ownEngineEndpoint()) });
+		const endpoint = config.machines.identity ? signedRunnerEndpoint(config.machines.publicUrl)
+			: connection.endpoint ?? (config.engine.remote ? null : ownEngineEndpoint());
+		return json(200, { ...connection, endpoint, endpointChange: config.machines.identity?.endpointChange });
 	} catch (error) {
 		machineError("runner HTTP request", error);
 		return json(503, { code: "connection_unavailable" });

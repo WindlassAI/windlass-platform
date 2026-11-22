@@ -35,6 +35,8 @@ export interface E2bCreateInput {
 }
 
 export interface E2bCommandOptions {
+	/** Run as the unprivileged transport user, outside the workspace. */
+	gitUser?: true;
 	cwd: string;
 	envs?: Record<string, string>;
 	/** Keep the command's standard input open for `sendStdin`. Without it the command reads nothing. */
@@ -67,7 +69,7 @@ export interface E2bConnection {
 	readonly sandboxId: string;
 	/**
 	 * `commands.run(command, { background: true, timeoutMs: 0, ... })`: the string is run by a shell in the
-	 * sandbox as the user `agent`, with no time limit of E2B's own (its default would kill the command
+	 * sandbox as `agent` (or `nobody` for Git transport), with no time limit of E2B's own (its default would kill the command
 	 * after 60 seconds). https://docs.e2b.dev/commands/background.md, /commands/streaming.md
 	 */
 	start(command: string, options: E2bCommandOptions): Promise<E2bCommand>;

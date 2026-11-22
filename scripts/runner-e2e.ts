@@ -27,7 +27,9 @@ import { createClient, type Registry } from "../server/src/client.js";
 import type { AcpUpdate, LiveDelta, SessionSnapshot, SessionSummary, TimelineItem } from "../server/src/contract.js";
 import { type ChannelSocket, RunnerChannel } from "../server/src/runner/channel.js";
 import { MIN_RUNNER_VERSION, sessionProof } from "../server/src/runner/control.js";
-import { DEAD_MS, PROTOCOL_VERSION, type Operation } from "../server/src/runner/protocol.js";
+import { optionsDigest } from "../server/src/runner/catalog.js";
+import { certify } from "../server/src/runner/frame-auth.js";
+import { DEAD_MS, type Operation } from "../server/src/runner/protocol.js";
 import { StandInRunner, assert, until, opened } from "./runner-standin.js";
 import { GithubStandin } from "./github-standin.js";
 import { FakeRunner } from "./runner-fake.js";
@@ -204,7 +206,7 @@ async function welcomed(client: Client, uid: string, sessionId: string, hello: R
 			clearTimeout(timer);
 			done(false);
 		});
-		ws.send(JSON.stringify({ kind: "hello", protocol: PROTOCOL_VERSION, runnerVersion: MIN_RUNNER_VERSION, resume: null, ...hello }));
+		ws.send(JSON.stringify({ kind: "hello", protocol: 1, runnerVersion: MIN_RUNNER_VERSION, resume: null, ...hello }));
 	});
 }
 
@@ -627,7 +629,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				], checkedAt: Date.now(), modes: [] };
 				runner.fake.report.harnesses![0]!.options = options;
 				runner.report();
-				await until("reported model options", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.[0]?.options);
+				await until("reported model options", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.[0]?.optionsDigest === optionsDigest(options));
 				const code = await refusal(user.createSession({ ...launch, model: "unknown" }));
 				assert(code === "bad_input", "unknown-model refusal was " + code);
 				const implicit = await user.createSession(launch);
@@ -830,7 +832,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				writeFileSync(marker, "");
 				try {
 					const error = await watch.conn.prompt({ text: "plain" }).then(() => null, e => e);
-					assert(error?.code === "secrets_unavailable" && error.message.includes("could not read all saved values to redact the Claude Code session"), String(error));
+					assert(error?.code === "secrets_unavailable" && error.message.includes("could not read all saved values to redact the harness session"), String(error));
 					assert(runner.acpInput.length === before, "started an ACP process");
 					return error.code;
 				} finally { rmSync(marker); }
@@ -1511,7 +1513,8 @@ else if (process.argv[2] === "egress") {
 	const server = new Server();
 	try {
 		const { sessionEgress } = await import("./runner-session-egress.js");
-		await sessionEgress(server.storage, ORIGIN, ENDPOINT, env => server.start(env));
+		await sessionEgress(server.storage, ORIGIN, ENDPOINT, env => server.start({ ...env, WLP_REQUIRE_SIGNED_RUNNER: "1",
+			WLP_PLATFORM_KEY: certify(generateKeyPairSync("ed25519").privateKey, 1, Date.now() + 86_400_000) }));
 	} finally { await server.stop(); rmSync(server.storage, { recursive: true, force: true }); }
 	process.exit(0);
 } else {

@@ -5,7 +5,7 @@
  * nothing of the server's: no RivetKit, no configuration, only types.
  *
  * The control socket (`machine.get([uid, machineId]).webSocket("control")`). Every WebSocket message is
- * one bounded JSON frame. Authenticated reports have extra space for harness inventories. Nothing is numbered or resent: a new socket starts
+ * one bounded JSON frame. Authenticated reports have extra space for harness inventories. Control frames are never resent: a new socket starts
  * over with a new challenge, and what the actor still wants done (a removal) it asks again.
  *
  *   challenge  actor → runner   first frame on every socket: a nonce for the runner to sign
@@ -33,16 +33,18 @@
  * field of that protocol is used here. A frame that does not pass is null: the actor refuses the socket
  * ("bad-frame"), the runner drops the socket and connects again.
  */
+import { endpointShape, helloFields, removalFields, welcomeFields } from "./frame-auth.js";
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
 import { MACHINE_PROFILES, machineProfile, type MachineProfile, positiveLimit } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
-export const MIN_RUNNER_VERSION = "0.1.0";
+export const MIN_RUNNER_VERSION = "0.2.0";
+export const LEGACY_MIN_RUNNER_VERSION = "0.1.0";
 export const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
 // Only a paired runner's inventory report needs room for full provider catalogs.
 const MAX_HARNESS_OPTIONS_BYTES = 768 * 1024;
-const MAX_REPORT_BYTES = MAX_CONTROL_FRAME_BYTES + 2 * MAX_HARNESS_OPTIONS_BYTES;
+export const MAX_REPORT_BYTES = MAX_CONTROL_FRAME_BYTES + 2 * MAX_HARNESS_OPTIONS_BYTES;
 /** A slow heartbeat: it costs no write on either side. */
 export const CONTROL_HEARTBEAT_MS = 30_000;
 export const CONTROL_DEAD_MS = 90_000;
@@ -87,7 +89,7 @@ export const controlProof = (uid: string, machineId: string, nonce: string) => `
 /** With the session socket's hello (protocol.ts), over the ticket the `attach` frame carried, which the runner does not read. */
 export const sessionProof = (uid: string, sessionId: string, machineId: string, ticket: string) => `wlp-runner-session/1|${uid}|${sessionId}|${machineId}|${ticket}`;
 /** With POST RUNNER_CONNECTION_PATH, over the runner's time corrected by the offset it was last told. */
-export const connectionProof = (uid: string, machineId: string, time: number) => `wlp-runner-connection/1|${uid}|${machineId}|${time}`;
+export const connectionProof = (uid: string, machineId: string, time: number, nonce?: string) => nonce ? `wlp-runner-connection/2|${uid}|${machineId}|${time}|${nonce}` : `wlp-runner-connection/1|${uid}|${machineId}|${time}`;
 
 // ---- Checks ----
 
@@ -118,11 +120,11 @@ const refusal = either(
 	 * is not this machine's key's. "bad-frame": the runner sent what this server does not read.
 	 * "other": a reason of a newer server's, made by `parseServerFrame`; only its sentence is read.
 	 */
-	object({ kind: oneOf("refused"), reason: oneOf("key-in-use", "unknown", "bad-frame", "other"), message: line(500) }),
+	object({ kind: oneOf("refused"), reason: oneOf("key-in-use", "unknown", "bad-frame", "signing-disabled", "other"), message: line(500) }),
 );
 const serverFrame = either(
 	either(
-		either(object({ kind: oneOf("challenge"), nonce }), object({ kind: oneOf("welcome"), idleSuspendMs: count })),
+		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count }), object({ kind: oneOf("welcome"), idleSuspendMs: count, refusal: optional(refusal), ...welcomeFields }))),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
 	),
 	either(
@@ -144,7 +146,8 @@ export type ServerFrame = Of<typeof serverFrame>;
  * `controlProof` (else "unknown"; a removed machine's key is kept to check it before "removed" is
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
-const hello = object({ kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, maxTurns: optional(positiveLimit) });
+const helloBase = { kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, maxTurns: optional(positiveLimit) };
+const hello = either(object({ ...helloBase, protocol: optional(oneOf(1)) }), object({ ...helloBase, protocol: oneOf(2), ...helloFields }));
 const modelChoice = object({ id: line(512), name: nullable(line(512)), efforts: list(line(64), 16) });
 const optionsShape = object({
 	models: list(modelChoice, 16_384), defaultModel: line(512), checkedAt: time,
@@ -223,18 +226,18 @@ export function parseRunnerFrame(data: unknown, allowLargeReport = true): Runner
 }
 
 /** For the runner: null for anything that is not a frame; a refusal it does not know is "other", so its sentence still shows. */
-export function parseServerFrame(data: unknown): ServerFrame | null {
+export function parseServerFrame(data: unknown, strict = false): ServerFrame | null {
 	const v = frameText(data);
 	if (serverFrame(v)) return v;
-	if (plain(v) && v.kind === "refused" && line(500)(v.message)) return { kind: "refused", reason: "other", message: v.message };
+	if (!strict && plain(v) && v.kind === "refused" && line(500)(v.message)) return { kind: "refused", reason: "other", message: v.message };
 	return null;
 }
 
 /** The refusal, with the sentence the runner prints: made here so the actor and its stand-in say the same. */
-export function refuse(reason: "outdated" | "removed" | "key-in-use" | "unknown" | "bad-frame", detail: { runnerVersion?: string; removeSandboxes?: boolean } = {}): Refusal {
+export function refuse(reason: "outdated" | "removed" | "key-in-use" | "unknown" | "bad-frame", detail: { minimum?: string; runnerVersion?: string; removeSandboxes?: boolean } = {}): Refusal {
 	switch (reason) {
 		case "outdated":
-			return { kind: "refused", reason, minimum: MIN_RUNNER_VERSION, message: `This runner is ${detail.runnerVersion ?? "too old"}; the platform needs ${MIN_RUNNER_VERSION} or later. Update it with the command on the Machines page.` };
+			return { kind: "refused", reason, minimum: detail.minimum ?? MIN_RUNNER_VERSION, message: `This runner is ${detail.runnerVersion ?? "too old"}; the platform needs ${detail.minimum ?? MIN_RUNNER_VERSION} or later. Update it with the command on the Machines page.` };
 		case "removed":
 			return { kind: "refused", reason, removeSandboxes: detail.removeSandboxes === true, message: detail.removeSandboxes ? "This machine was removed from its account. Its sandboxes and data volume are being removed; run `windlass-runner pair` to add it again." : "This machine was removed from its account; its sandboxes stay. Run `windlass-runner pair` to add it again." };
 		case "key-in-use":
@@ -276,6 +279,7 @@ export const RUNNER_PAIR_POLL_PATH = "/runner/pair/poll";
 export const RUNNER_CONNECTION_PATH = "/runner/connection";
 
 const pairRequest = object({
+	protocol: optional(oneOf(2)),
 	/** The machine's Ed25519 public key, SPKI PEM. */
 	publicKey: text(512),
 	name: line(64),
@@ -288,10 +292,10 @@ const pairPoll = object({ pairing: base64url(43), pollSecret: base64url(43) });
 const pairStatus = either(
 	object({ state: oneOf("waiting", "gone") }),
 	/** `githubLogin`: the account's GitHub login, for the runner to print; null when it has no GitHub connection. */
-	object({ state: oneOf("approved"), uid: name, machineId, githubLogin: nullable(line(64)) }),
+	object({ state: oneOf("approved"), uid: name, machineId, githubLogin: nullable(line(64)), platformRoot: optional(text(80)), endpoint: optional(text(2048)) }),
 );
-const connectionRequest = object({ uid: name, machineId, time, signature });
-const connectionRefusal = either(either(object({ reason: oneOf("clock"), serverTime: time }), object({ reason: oneOf("removed"), removeSandboxes: boolean })), object({ reason: oneOf("unknown") }));
+const connectionRequest = object({ uid: name, machineId, time, signature, nonce: optional(nonce) });
+const connectionRefusal = either(either(object({ reason: oneOf("clock"), serverTime: time }), either(object({ reason: oneOf("removed"), removeSandboxes: boolean }), object({ reason: oneOf("removed"), removeSandboxes: boolean, ...removalFields }))), object({ reason: oneOf("unknown") }));
 
 export type PairRequest = Of<typeof pairRequest>;
 export type PairStarted = Of<typeof pairStarted>;
@@ -309,11 +313,12 @@ export const parseConnectionRequest = (body: unknown): ConnectionRequest | null 
 export const parseConnectionRefusal = (body: unknown): ConnectionRefusal | null => (connectionRefusal(body) ? body : null);
 
 const connection = object({
+	endpointChange: optional(endpointShape),
 	endpoint: nullable(text(2048)),
 	namespace: text(255),
 	token: nullable(object({ token: text(8192), expiresAt: integer, validForMs: count })),
 });
 /** For the runner: the 200 answer of RUNNER_CONNECTION_PATH. */
-export const parseConnection = (body: unknown): PlatformConnection | null => (connection(body) ? body : null);
+export const parseConnection = (body: unknown): Of<typeof connection> | null => (connection(body) ? body : null);
 
-type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Of<typeof connection>, PlatformConnection>>];
+type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>];

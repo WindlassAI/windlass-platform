@@ -101,26 +101,28 @@ Three credentials exist, and none is stored, logged, or put in a timeline item, 
   reading that pipe: the pipe is empty once git has read it, and git sends the token only where GitHub asked
   for it, as [GitHub documents it](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation):
   the HTTP password of the user `x-access-token`.
-- That git runs with an empty environment, the system's own programs, without the system's and the user's git
-  configuration and without hooks, so nothing writes the token down: a clone's `.git/config` holds the plain
-  address, and there is no credential store, no temporary file, no remote with a token in it.
-- The platform stages and scans the work in a private repository in the container's outer `/tmp`.
-  The authenticated push uses that same object database and the remote address chosen by the platform.
-  After Git exits, a separate command installs the objects, branch and index in the workspace.
+- Hosted Docker and machine runners use `docker exec --user 65534:65534` for authenticated Git.
+  E2B selects the template's `nobody` user. Each operation creates a fresh directory under sticky
+  `/tmp` with mode 0700. Git starts there with a platform-created repository and system binaries. The workspace receives a copy of a successful clone or fetch after Git exits.
+- The transport clears the environment and disables system and global Git configuration. It pins
+  the runner's configured loopback proxy (or an empty proxy), TLS verification and the system CA
+  bundle. It disables redirects, SSH, prompts, hooks and recursive submodule pushes. The only
+  credential helper answers for the configured HTTP(S) host. Workspace config, config includes,
+  URL rewrites, remote push URLs, push options, HTTP headers, alternate object databases, external
+  helpers and inherited Git, SSH, proxy and TLS variables have no input into the transport.
+- The workspace user stages a candidate commit and exports a pack. The transport user builds a
+  fresh index from that pack, verifies the objects and scans the history of the SHA held by the
+  session. Immediately before each push it recomputes a SHA-256 digest of the outgoing object IDs
+  from the same head and confirmed boundaries. Git receives that head and one explicit refspec.
+  After Git exits, the workspace user installs the new objects, branch and index. Packing and
+  verifying the candidate history costs time and temporary disk space proportional to the repository.
 
-**What an agent's command can still observe.** That the platform cloned and pushed, the addresses and the
-branch names. A command the agent runs afterwards finds the token nowhere. A process the agent left running,
-as the same Unix user, while the platform's git command runs, sees that command's arguments and environment,
-which hold no token; it could take the token off the pipe in the instant before git reads it (the push then
-fails), or read git's memory where the kernel lets one process of a user trace another (Linux's
-`ptrace_scope` 0; Ubuntu's default forbids it). A push from the panel is only made between turns, so such a
-process is one the agent started earlier and left running in the background; a push the agent asked for is
-made while its turn waits for the answer, and what the agent left running then is the same kind of process. An agent that could replace the sandbox's own
-git or shell could take the next token; in the sandbox image it cannot (it is not root, and has no
-capabilities). In each case what is taken is good for the contents of that one repository,
-for the seconds until the platform revokes it, and never for pull requests, another repository or the user's
-account. A sandbox layer that could run the platform's command as another user than the agent's, or outside the
-sandbox altogether, would close these; `SandboxHandle.run` has no such option.
+**What an agent's command can still observe.** A direct command can list process arguments and
+temporary directory names. It can change the workspace and the staging files it owns, interrupting
+a publish or changing the candidate content before the scan. The transport user's private Git
+directory, token pipe and scanned objects are protected by Unix permissions. This boundary depends
+on the sandbox keeping the agent unprivileged and its Git executable and system trust store under
+platform control. Machine runners must support the transport-user execution option.
 
 ### The agent's own tools
 
@@ -163,9 +165,13 @@ platform does the git and GitHub work with the code and the tokens of the panel'
     sentence that says to fetch and merge it. A work item's publish step pushes the same way; the panel's
     push never forces.
   - Before sending work, the platform reads the message and patch of every outgoing commit as text,
-    including merge commits and binary files. It excludes history already seen on the base or work
-    branch. It refuses the push if the session's redaction finds a saved secret value, or if the history
-    read reaches 8 MB. Encoded values can escape redaction.
+    including merge commits and binary files. The session keeps its base commit in platform state.
+    GitHub confirms that commit independently of the sandbox. Only that base and the observed work
+    branch head can exclude history from the scan. The platform refuses a push when it finds a saved
+    secret value, a recognized credential shape, or 8 MB of history to check. For credential shapes,
+    the scan examines added lines, commit messages and paths. The refusal names the credential
+    kind and includes a safe file path when available. The saved-value check still covers the full
+    patch. A missing base requires `fetch_base` before publication. Encoded values can escape detection.
     When it refuses the push, changes from the platform's own commit stay in the workspace.
   - Concurrent changes to the workspace's `.git` during `push` or `fetch_base` can no longer make
     platform Git run a workspace-defined program. Status, diff, probe, commit, history scan, fetch
@@ -174,8 +180,8 @@ platform does the git and GitHub work with the code and the tokens of the panel'
     files using directory-relative reads that refuse to traverse symlinks. A symlink contributes its
     target text. Git loads only platform configuration, with hooks and filesystem monitors disabled.
     A work-tree `.gitattributes` can name a filter, but the private repository defines no such driver.
-    Windlass gives sandboxed commands a different `/tmp`. In profiles that run commands directly as
-    the platform's Unix user, that user can also access the outer temporary directory.
+    Windlass gives sandboxed commands a different `/tmp`. Direct commands share the staging user's
+    temporary directory. Authenticated Git and the outgoing scan use the separate transport uid.
   - The guard still refuses a redirected Git directory, program or transport settings in the
     workspace configuration, gitlinks, nested repositories and incomplete scans. Git-ignored
     `node_modules` directories are skipped. Repositories using Git LFS cannot be pushed yet.

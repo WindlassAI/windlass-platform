@@ -38,7 +38,7 @@ import { type CreateSandboxInput, type ExecOptions, type ExecResult, type Listed
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
 import { commonRunFlags, cpuFlags, findProfile, profilesFor } from "./profiles.js";
-import { type Answer, type InternalExecResult, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, markTurnSandbox } from "./provider.js";
+import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 
 const SANDBOX_ID = /^(?:(?:claude|opencode)-)?[a-f0-9]{12}$/;
@@ -113,13 +113,15 @@ export class DockerSandboxHandle implements TurnSandbox {
 		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
 		assertEnvNames(options.env);
 		assertEnvNames(options.secretEnv);
-		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		const secret = Object.entries(options.secretEnv ?? {}).filter(([key]) => options.env?.[key] === undefined);
+		const env = Object.entries(options.gitUser ? GIT_USER_ENV : options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
+		const secret = Object.entries(options.gitUser ? {} : options.secretEnv ?? {}).filter(([key]) => options.env?.[key] === undefined);
 		for (const [key] of secret) if (key.startsWith(SECRET_ALIAS)) throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: its name is the platform's`);
 		// Named only, by alias: the client takes each value from its own environment, which is this process's with the aliases added.
 		const aliases = secret.map(([, value], n) => [`${SECRET_ALIAS}${n}`, value] as const);
 		const names = secret.length === 0 ? [] : ["sh", "-c", secretNamesScript(secret.map(([key]) => key)), "sh"];
-		const args = ["exec", "-i", "-w", options.cwd ?? this.cwd, ...env, ...aliases.flatMap(([alias]) => ["-e", alias]), this.container, ...names, "wlp-run", "exec", tag, ...argv];
+		const user = options.gitUser ? ["--user", "65534:65534"] : [];
+		const program = options.gitUser ? gitProcess(tag, argv) : ["wlp-run", "exec", tag, ...argv];
+		const args = ["exec", ...user, "-i", "-w", options.gitUser ? "/" : options.cwd ?? this.cwd, ...env, ...aliases.flatMap(([alias]) => ["-e", alias]), this.container, ...names, ...program];
 		const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"], ...(secret.length === 0 ? {} : { env: { ...process.env, ...Object.fromEntries(aliases) } }) });
 		const out = new StringDecoder("utf8");
 		const err = new StringDecoder("utf8");
@@ -177,7 +179,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 				return hasEnded;
 			},
 			signal: async (sig, who) => {
-				await docker(["exec", this.container, "wlp-run", "signal", tag, sig, who], { timeoutMs: 10_000 }).catch(() => undefined);
+				const command = options.gitUser ? signalGitProcess(tag, sig) : ["wlp-run", "signal", tag, sig, who];
+				await docker(["exec", ...user, this.container, ...command], { timeoutMs: 10_000 }).catch(() => undefined);
 			},
 			killClient: () => {
 				child.kill("SIGKILL");
@@ -203,6 +206,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		let stdout = "";
 		let stderr = "";
 		const run = this.start(argv, {
+			gitUser: options.gitUser,
 			cwd: options.cwd,
 			env: options.env,
 			secretEnv: options.secretEnv,

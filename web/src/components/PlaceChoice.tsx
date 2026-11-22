@@ -21,6 +21,7 @@ export type PlacePurpose = "agent" | "item";
 
 /** Why a machine cannot be chosen; null when it can. An offline machine can: what is made there waits for it. */
 export function machineUnusable(machine: MachineSummary, minRunnerVersion: string, purpose: PlacePurpose): string | null {
+	if (machine.warnings.some(w => w.kind === "signing-disabled")) return "This runner requires signed connections to be enabled on the platform.";
 	if (machine.warnings.some((warning) => warning.kind === "outdated")) return `Its runner is ${machine.runnerVersion}; the platform needs ${minRunnerVersion} or later. Update it on the machine.`;
 	if (machine.profiles.length === 0) return machine.status === "waiting" ? "Its runner has not connected since the machine was added." : "Its runner has not said yet which sandboxes it can make.";
 	if (purpose === "item" && !machine.profiles.some((profile) => profile.available)) return "None of the sandboxes its runner reported can be used now.";

@@ -1,6 +1,6 @@
 import { SnapshotVerifier } from "../../server/src/runner/snapshot-proof.js";
 import { basename } from "node:path";
-import { RunnerChannel, type ChannelSocket } from "../../server/src/runner/channel.js";
+import { RunnerChannel, type ChannelSocket, type SessionTrust } from "../../server/src/runner/channel.js";
 import type { Hello, Operation, Value } from "../../server/src/runner/protocol.js";
 import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../../server/src/sandbox/sandboxes.js";
@@ -196,12 +196,12 @@ export class Session {
 		});
 		this.conversation = new Conversation(owner, id, this.channel, this.verifier);
 	}
-	attach(ws: WebSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">) {
+	attach(ws: WebSocket, identity: Pick<Hello, "runnerVersion" | "machineId" | "ticket" | "signature">, secure?: SessionTrust) {
 		this.verifier.attach(identity.ticket);
 		this.socket = ws;
 		ws.addEventListener("close", () => { if (this.socket === ws) this.socket = undefined; });
 		const socket: ChannelSocket = { send: text => ws.send(text), close: () => ws.close(),
 			onMessage: fn => ws.addEventListener("message", e => fn(e.data)), onClose: fn => ws.addEventListener("close", fn) };
-		this.channel.attach(socket, identity);
+		this.channel.attach(socket, identity, secure);
 	}
 }
