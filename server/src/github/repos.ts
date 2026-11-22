@@ -289,6 +289,7 @@ export async function resolveBoundRepository(app: GithubApp, connection: StoredC
 	return app.withToken(installationId, { repositoryId, permissions: { metadata: "read" } }, async token => {
 		const repository = await app.repositoryById(token, repositoryId);
 		const level = ownAccount(connection, installation) ? "admin" : await app.permission(token, repository.owner, repository.name, connection.user.login, undefined, connection.user.id);
+		if (need === "write" && repository.archived && allows(level, need)) throw new GithubProblem("github_denied", `${repository.owner}/${repository.name} is archived on GitHub, so nothing can be pushed to it.`);
 		if (!allows(level, need) || (need === "write" && repository.archived)) throw new GithubProblem("github_denied", "GitHub no longer permits this action on the item's repository.");
 		return { installation, repository, described: described(repository, level) };
 	});

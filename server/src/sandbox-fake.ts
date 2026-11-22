@@ -1107,10 +1107,32 @@ class FakeWindlass implements Windlass {
 				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {
 					platformCalled = true;
 					const offered = turnHostTools(input);
-					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots) });
+					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan) });
 					if (input.onPlan) {
 						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
 						const single = text.includes("(suggest-single)");
+						// A cross-repo feature's planner (factory/cross-repo.ts, plannerText): it reads the sibling's tree and quotes it.
+						const sibling = /is read-only at \.windlass-inputs\/([a-z][a-z0-9-]*)/.exec(text)?.[1];
+						const repos = /give repos (\[[^\]]*\])/.exec(text)?.[1];
+						if (sibling && repos) {
+							const [primary] = JSON.parse(repos) as string[];
+							const read = await sandbox.run(`cat .windlass-inputs/${sibling}/CROSS.md`, { timeoutMs: 5000 });
+							const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
+								spec: { goal: "Index and search documents across both repositories", requirements: ["Index documents", "From " + sibling + ": " + read.stdout.trim()], outOfScope: [], acceptance: ["Documents can be found."] },
+								questions: [], singleSuggested: null, repos: JSON.parse(repos),
+								subtasks: [[sibling, "index", []], [primary, "search", ["index"]]].map(([repo, key, dependsOn]) => ({
+									key, repo, title: key, brief: "Implement " + key + ". (report)", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn,
+									budget: { tokens: 600000, turns: 3, activeSeconds: 1440, hostedSeconds: 1200 },
+								})),
+								mergeOrder: [
+									{ repo: sibling, prerequisite: [], intermediate: "The released consumer ignores it", evidence: "The old reader passes", fallback: "Leave it unused" },
+									{ repo: primary, prerequisite: [sibling], intermediate: "It falls back when absent", evidence: "Both cases", fallback: "Revert the reader" },
+								],
+								releaseGate: "request",
+								finalIntegration: { runFrom: primary, command: "bash scripts/cross-repo-integration.sh", inputs: JSON.parse(repos), profile: "actions", timeoutSeconds: 3600, requiredCases: ["models"], artifactOutputs: [] },
+							} }, signal ?? new AbortController().signal);
+							emit({type:"fake.plan_reply",data:{reply},seq:0});
+						} else {
 						const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
 							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
 							questions: [], singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
@@ -1119,6 +1141,7 @@ class FakeWindlass implements Windlass {
 							})),
 						} }, signal ?? new AbortController().signal);
 						emit({type:"fake.plan_reply",data:{reply},seq:0});
+						}
 					}
 					if (input.onPlan || input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
 					if (input.onReview) {

@@ -1384,3 +1384,540 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 	assert.equal(await recordProviderUsage(db, location, generation, { kind: "refusal", at: at + 3, resetsAt: null }), false);
 	assert.equal((await providerAccounts(db, at + 3)).size, 0);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Cross-repo features (factory/cross-repo.ts): two repositories, one plan, one active child, a draft
+// PR per repository, a combined run before hand-over, merges in the approved order.
+// ---------------------------------------------------------------------------------------------
+
+const crossSingle = { tokens: 10000, turns: 10, activeSeconds: 4000, hostedSeconds: 4000 };
+const sha = (c: string) => c.repeat(40);
+const crossRepos = (): import("../server/src/contract.js").FeatureRepository[] => [
+	{ alias: "platform", repositoryId: 11, installationId: 5, owner: "ada", name: "platform", url: "https://github.com/ada/platform", private: false, baseRef: "main", planningBaseSha: sha("1") },
+	{ alias: "cli", repositoryId: 12, installationId: 6, owner: "ada", name: "cli", url: "https://github.com/ada/cli", private: false, baseRef: "main", planningBaseSha: sha("2") },
+];
+const crossProposal = (): FeaturePlanEdit => ({
+	spec: { goal: "Show a new model capability", requirements: ["The CLI reports it", "The platform shows it"], outOfScope: [], acceptance: ["Both work together"] },
+	questions: [], singleSuggested: null,
+	subtasks: [
+		// The same owned paths in two repositories are two sets of paths.
+		{ key: "cli", repo: "cli", title: "CLI field", brief: "Add the optional field", acceptance: ["Run bun test"], owns: ["src/**"], dependsOn: [], budget: { tokens: 3000, turns: 3, activeSeconds: 3000, hostedSeconds: 3000 } },
+		{ key: "platform", repo: "platform", title: "Platform reader", brief: "Read the field when present", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn: ["cli"], budget: { tokens: 3000, turns: 3, activeSeconds: 3000, hostedSeconds: 3000 } },
+	],
+	repos: ["platform", "cli"],
+	mergeOrder: [
+		{ repo: "cli", prerequisite: [], intermediate: "The released platform ignores the new field", evidence: "The old parser reads the new output", fallback: "Leave the field unused" },
+		{ repo: "platform", prerequisite: ["cli"], intermediate: "The platform falls back when the field is absent", evidence: "Absent and present cases", fallback: "Revert the reader" },
+	],
+	releaseGate: "request",
+	finalIntegration: { runFrom: "platform", command: "bash scripts/cross-repo-integration.sh", inputs: ["platform", "cli"], profile: "actions", timeoutSeconds: 3600, requiredCases: ["models-check with the candidate CLI"], artifactOutputs: [] },
+});
+const crossItem = () => createItem({ id: "i_cross", task, mode: "orchestrate", repos: crossRepos(), place: { kind: "hosted" }, budget: crossSingle, reviewer: { on: true } });
+function crossProposed(p = crossProposal()) {
+	const item = advance(crossItem(), { kind: "start", at: 1, by: "person" }).item, key = currentKey(item)!;
+	const filed = advance(item, { kind: "file_plan", key, plan: p, at: 2 });
+	assert.equal(filed.item.featurePlan?.version, 1, "the cross-repo plan was not filed");
+	return advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } }).item;
+}
+const step = (item: ReturnType<typeof crossItem>, fact: Record<string, unknown>) => advance(item, { key: currentKey(item)!, at: 10, ...fact } as never);
+/** Approved, both repositories seeded and opened: the first child is dispatched. */
+function crossOpened() {
+	let item = advance(crossProposed(), { kind: "approve_plan", version: 1, at: 4, by: "person:owner" }).item;
+	for (const [repo, c] of [["platform", "3"], ["cli", "4"]] as const) item = step(item, { kind: "feature_seed", repo, sha: sha(c) }).item;
+	item = step(item, { kind: "feature_ready", repo: "platform", head: sha("5"), pr: { number: 1, url: "https://github.com/ada/platform/pull/1" } }).item;
+	return step(item, { kind: "feature_ready", repo: "cli", head: sha("6"), pr: { number: 1, url: "https://github.com/ada/cli/pull/1" } });
+}
+/** Every child integrated: the combined run is asked for. */
+function crossIntegrating() {
+	let item = crossOpened().item;
+	for (const [n, c] of [[0, "7"], [1, "8"]] as const) item = step(item, { kind: "child_update", child: item.jobs![n].id, state: "done", spent: zero, report: "done", head: sha(c) }).item;
+	return item;
+}
+
+test("a one-repository planning turn's file_plan schema and plan checks are exactly as before cross-repo features", async () => {
+	const { readFileSync } = await import("node:fs");
+	const { platformTools } = await import("../server/src/agent-publish.js");
+	const { validatePlan, featureCap } = await plans();
+	// Written by main's own platformTools and validatePlan before cross-repo features (fixtures/one-repo-plan/main.json).
+	const before = JSON.parse(readFileSync(new URL("../fixtures/one-repo-plan/main.json", import.meta.url), "utf8"));
+	assert.deepEqual(platformTools({ plan: true, publish: false, report: false, push: false }, 600_000), before.declaration);
+	const cross = platformTools({ plan: true, publish: false, report: false, push: false, crossRepo: true }, 600_000)[0];
+	const props = (cross.inputSchema as { properties: Record<string, { items?: { properties?: Record<string, unknown> } }> }).properties;
+	for (const key of ["repos", "mergeOrder", "releaseGate", "earlyChecks", "finalIntegration"]) assert.ok(key in props, `a cross-repo planning turn is not offered ${key}`);
+	assert.ok("repo" in props.subtasks.items!.properties!);
+	// Empty or default cross-repo values, and any others, are not read for one repository: the plan comes out as it always did.
+	assert.deepEqual(validatePlan(before.withExtras, single, featureCap(single)), before.validated);
+	assert.deepEqual(validatePlan(before.plan, single, featureCap(single)), before.validated);
+	const named = { ...before.plan, repos: ["platform", "cli"], releaseGate: "wait", finalIntegration: { runFrom: "cli" }, subtasks: before.plan.subtasks.map((s: object) => ({ ...s, repo: "cli" })) };
+	assert.deepEqual(validatePlan(named, single, featureCap(single)), before.validated);
+	// The same through a one-repository item's planning turn: filed.
+	const item = advance(createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } }), { kind: "start", at: 1, by: "person" }).item;
+	const filed = advance(item, { kind: "file_plan", key: currentKey(item)!, plan: before.withExtras, at: 2 }).item;
+	assert.equal(filed.featurePlan?.version, 1, "a one-repository plan with empty cross-repo values was refused");
+	assert.equal(filed.featurePlan!.repos, undefined);
+});
+
+test("cross-repo: a plan over the filing's two repositories validates, with identical paths in different repositories", async () => {
+	const { validatePlan, featureCap, planScope } = await plans();
+	const plan = validatePlan(crossProposal(), crossSingle, featureCap(crossSingle), ["platform", "cli"]);
+	assert.deepEqual(plan.subtasks.map(s => s.repo), ["cli", "platform"]);
+	assert.equal(plan.finalIntegration?.runFrom, "platform");
+	// The same paths in one repository, independent of each other, overlap.
+	const same = crossProposal();
+	same.subtasks[1].repo = "cli"; same.subtasks[1].dependsOn = [];
+	same.subtasks.push({ ...same.subtasks[0], key: "web", repo: "platform", owns: ["web/**"], dependsOn: [] });
+	assert.throws(() => validatePlan(same, crossSingle, featureCap(crossSingle), ["platform", "cli"]), /overlap/);
+	// Editing a cross-repo field changes the approved scope; a one-repository plan keeps its old fingerprint.
+	const moved = structuredClone(plan); moved.finalIntegration!.command = "pnpm test";
+	assert.notEqual(planScope(moved), planScope(plan));
+	const one = proposal();
+	assert.equal(planScope(one), JSON.stringify([false, one.spec, one.subtasks.map(({ budget, ...rest }) => rest)]));
+});
+
+test("cross-repo: refusals name the problem (third repo, unknown repo, empty command, cycles, merge chains, missing tasks and order)", async () => {
+	const { validatePlan, featureCap } = await plans();
+	const filing = ["platform", "cli"];
+	const cases: [string, (p: FeaturePlanEdit) => void, RegExp][] = [
+		["a third repository", p => p.repos!.push("docs"), /at most 2 repositories/],
+		["a repository not in the filing", p => p.subtasks[0].repo = "docs", /docs is not a repository of this feature/],
+		["an empty final command", p => p.finalIntegration!.command = " ", /command/],
+		["a dependency cycle across repositories", p => p.subtasks[0].dependsOn = ["platform"], /acyclic/],
+		["an A→B→A merge chain", p => p.mergeOrder!.push({ ...p.mergeOrder![0] }), /appears twice in the merge order/],
+		["a cycle of merge prerequisites", p => { p.mergeOrder![0].prerequisite = ["platform"]; }, /comes earlier in the merge order/],
+		["a write repository with no task", p => p.subtasks[1].repo = "cli", /Give platform at least one subtask/],
+		["a repository missing from the merge order", p => p.mergeOrder!.pop(), /Put platform in the merge order/],
+		["inputs that leave out a repository", p => p.finalIntegration!.inputs = ["platform"], /must take cli as an input/],
+		["waiting for a release in the pilot", p => p.releaseGate = "wait", /not offered yet/],
+	];
+	for (const [what, mutate, expected] of cases) {
+		const p = crossProposal(); mutate(p);
+		assert.throws(() => validatePlan(p, crossSingle, featureCap(crossSingle), filing), expected, what);
+	}
+	// A one-repository feature does not read cross-repo fields (as before them), and a cross-repo one refuses a plan without them.
+	const one = validatePlan(crossProposal(), crossSingle, featureCap(crossSingle));
+	assert.equal(one.repos, undefined); assert.equal(one.finalIntegration, undefined); assert.ok(one.subtasks.every(s => s.repo === undefined));
+	const bare = proposal();
+	assert.throws(() => validatePlan(bare, crossSingle, featureCap(crossSingle), filing), /repository/);
+	// Planner-supplied answers are dropped when the planner files.
+	const answered = crossProposal(); answered.questions.push({ id: "who", text: "Who releases?", answer: "the planner" });
+	assert.equal(crossProposed(answered).featurePlan!.questions[0].answer, undefined);
+});
+
+test("cross-repo: the planner is told where the sibling is, and the reserve holds the combined run's hour", async () => {
+	const { featureReserve, closingReserve, integrationReserve } = await plans();
+	const start = advance(crossItem(), { kind: "start", at: 1, by: "person" });
+	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /cli \(ada\/cli, base main\) is read-only at \.windlass-inputs\/cli/);
+	// The sibling's tree is a repository the person bound with write access, trusted as the primary's files are: nothing is marked.
+	assert.equal((start.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, undefined);
+	assert.equal(integrationReserve(crossProposal()).activeSeconds, 3600);
+	assert.equal(featureReserve(crossSingle, crossProposal()).hostedSeconds, closingReserve(crossSingle).hostedSeconds + 3600);
+	assert.equal(featureReserve(crossSingle, proposal()).hostedSeconds, closingReserve(crossSingle).hostedSeconds);
+	const card = crossProposed().question!.text;
+	assert.match(card, /\[cli\] CLI field/); assert.match(card, /Merge order — cli, then platform after cli/); assert.match(card, /Reserved for the combined run — 0 tokens, 0 turns, 3600 active seconds/);
+});
+
+test("cross-repo: approval opens each repository in turn, both can have PR #1, and a replayed fact makes no second PR", () => {
+	const approved = advance(crossProposed(), { kind: "approve_plan", version: 1, at: 4, by: "person:owner" });
+	assert.ok(approved.effects.some(e => e.kind === "dispatch"), "approval did not start opening");
+	assert.equal(approved.item.jobs, undefined);
+	let item = approved.item;
+	const seeded = step(item, { kind: "feature_seed", repo: "platform", sha: sha("3") });
+	assert.equal(seeded.item.repos![0].seed, sha("3")); assert.equal(seeded.item.seed, sha("3"));
+	// The same seed again (a crash after GitHub answered): nothing changes.
+	assert.equal(advance(seeded.item, { kind: "feature_seed", key: currentKey(item)!, repo: "platform", sha: sha("9"), at: 11 }).item, seeded.item);
+	item = step(seeded.item, { kind: "feature_seed", repo: "cli", sha: sha("4") }).item;
+	const a = step(item, { kind: "feature_ready", repo: "platform", head: sha("5"), pr: { number: 1, url: "https://github.com/ada/platform/pull/1" } });
+	assert.equal(a.item.jobs, undefined, "a child ran before every repository had its draft");
+	const replay = advance(a.item, { kind: "feature_ready", key: currentKey(item)!, repo: "platform", head: sha("5"), pr: { number: 2, url: "x" }, at: 12 });
+	assert.equal(replay.item, a.item, "a second PR was recorded for the platform");
+	const { item: opened, effects } = crossOpened();
+	assert.deepEqual(opened.repos!.map(r => r.pr!.number), [1, 1]);
+	assert.equal(opened.pr!.url, "https://github.com/ada/platform/pull/1");
+	assert.ok(effects.some(e => e.kind === "link_prs"), "the PRs were not linked");
+	// One active child across the pair: the CLI's subtask, started at the CLI's draft marker.
+	assert.equal(opened.jobs!.length, 1);
+	assert.equal(opened.jobs![0].task.repo, "cli");
+	assert.equal(opened.jobs![0].start, sha("6"));
+});
+
+test("cross-repo: an opening refused in one repository keeps the other, and retries only the refused one", async () => {
+	const { nextOpening } = await import("../server/src/factory/cross-repo.js");
+	let item = advance(crossProposed(), { kind: "approve_plan", version: 1, at: 4, by: "person:owner" }).item;
+	for (const [repo, c] of [["platform", "3"], ["cli", "4"]] as const) item = step(item, { kind: "feature_seed", repo, sha: sha(c) }).item;
+	item = step(item, { kind: "feature_ready", repo: "platform", head: sha("5"), pr: { number: 1, url: "u" } }).item;
+	const refused = step(item, { kind: "feature_problem", reason: "ada/cli: draft pull requests are not supported in ada/cli" }).item;
+	assert.equal(refused.question!.kind, "integration");
+	assert.equal(refused.repos![0].pr!.number, 1, "the opened PR was dropped");
+	const again = advance(refused, { kind: "answer", question: refused.question!.id, choice: "again", by: "person", at: 20 });
+	assert.ok(again.effects.some(e => e.kind === "dispatch"));
+	assert.equal(nextOpening(again.item)!.repo.alias, "cli");
+});
+
+test("cross-repo: children integrate into their own repository's head, and the combined run starts on both", async () => {
+	const { readyRefusal } = await import("../server/src/factory/cross-repo.js");
+	let item = crossOpened().item;
+	const first = step(item, { kind: "child_update", child: item.jobs![0].id, state: "done", spent: zero, report: "done", head: sha("7") });
+	assert.equal(first.item.repos![1].head, sha("7"));
+	assert.equal(first.item.head, sha("5"), "a CLI commit became the platform PR's head");
+	assert.equal(first.item.jobs![1].task.repo, "platform");
+	assert.equal(first.item.jobs![1].start, sha("5"));
+	item = step(first.item, { kind: "child_update", child: first.item.jobs![1].id, state: "done", spent: zero, report: "done", head: sha("8") }).item;
+	assert.equal(item.run!.step.kind, "integration");
+	assert.equal(item.wait!.reason, "integration");
+	assert.deepEqual(item.integration!.heads, { platform: sha("8"), cli: sha("7") });
+	assert.equal(item.head, sha("8"));
+	// Never Ready from here: the platform refuses to mark a cross-repo PR ready, on any path.
+	assert.match(readyRefusal(item)!, /stay drafts/);
+	assert.equal(readyRefusal(createItem({ id: "i_one", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } })), null);
+});
+
+test("cross-repo: a failed run asks, a cancelled one is retried once at the same heads, and its time is charged once", () => {
+	let item = crossIntegrating();
+	const integration = currentKey(item)!;
+	const started = step(item, { kind: "integration_started", attempt: 1, runId: "77", url: "https://github.com/ada/platform/actions/runs/77" });
+	assert.ok(started.effects.some(e => e.kind === "poll_integration"));
+	item = started.item;
+	item = step(item, { kind: "integration_read", attempt: 1, state: "running", url: null, said: null }).item;
+	assert.equal(item.integration!.state, "running");
+	const cancelled = step(item, { kind: "integration_read", attempt: 1, state: "cancelled", url: null, said: "the runner was lost", seconds: 300 }).item;
+	assert.equal(cancelled.question!.kind, "integration");
+	assert.ok(cancelled.question!.choices.some(c => c.id === "again"));
+	const spent = cancelled.spent.activeSeconds;
+	// The same reading again (redelivered) charges nothing more.
+	assert.equal(advance(cancelled, { kind: "integration_read", key: integration, attempt: 1, state: "cancelled", url: null, said: null, seconds: 300, at: 30 } as never).item, cancelled);
+	const retried = advance(cancelled, { kind: "answer", question: cancelled.question!.id, choice: "again", by: "person", at: 40 });
+	assert.equal(retried.item.integration!.attempt, 2);
+	assert.equal(retried.item.integration!.retries, 1);
+	assert.deepEqual(retried.item.integration!.heads, { platform: sha("8"), cli: sha("7") });
+	const second = step(step(retried.item, { kind: "integration_started", attempt: 2, runId: "78", url: null }).item, { kind: "integration_read", attempt: 2, state: "timed_out", url: null, said: null, seconds: 10 }).item;
+	assert.ok(!second.question!.choices.some(c => c.id === "again"), "a second same-input retry was offered");
+	assert.equal(second.spent.activeSeconds, spent + 10);
+	const failed = step(step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "79", url: null }).item, { kind: "integration_read", attempt: 1, state: "failed", url: null, said: "models-check failed" }).item;
+	assert.ok(failed.question!.choices.some(c => c.id === "revise"));
+	const replanned = advance(failed, { kind: "answer", question: failed.question!.id, choice: "revise", by: "person", at: 50 });
+	const replan = replanned.item;
+	assert.equal(replan.run!.step.kind, "refine");
+	// The repair re-plan quotes the combined run's result: marked as such for Windlass.
+	assert.deepEqual((replanned.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, ["the combined run's result"]);
+	assert.equal(replan.replans, 1);
+});
+
+test("cross-repo: a pass leads to the summary, both descriptions, and a hand-over whose merges are recorded in order", () => {
+	let item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "77", url: null }).item;
+	const passed = step(item, { kind: "integration_read", attempt: 1, state: "passed", url: "https://github.com/ada/platform/actions/runs/77", said: null, seconds: 600 });
+	item = passed.item;
+	assert.equal(item.run!.step.kind, "summary");
+	// The summary quotes the subtasks' reports and the combined run's result: both marked.
+	assert.deepEqual((passed.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, ["reports of the feature's subtasks", "the combined run's result"]);
+	const report = { title: "Feature", description: "Done", look_at: "", concerns: "", screenshots: [] };
+	const described = step(step(item, { kind: "turn_started" }).item, { kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: false, report, spend: { tokens: 1, hostedSeconds: 1 } });
+	assert.ok(described.effects.some(e => e.kind === "describe_feature"));
+	const handed = step(described.item, { kind: "published", head: sha("8"), pr: described.item.pr, openItems: 1, webhooks: true });
+	item = handed.item;
+	assert.equal(item.state, "review");
+	assert.equal(item.run!.step.kind, "merged");
+	assert.ok(!handed.effects.some(e => e.kind === "handoff" || e.kind === "poll_ci"), "the one-PR hand-over ran on a cross-repo feature");
+	assert.deepEqual(handed.effects.filter(e => e.kind === "poll_repo_pr").map(e => (e as { repo: string }).repo), ["platform", "cli"]);
+	const read = (it: typeof item, repo: string, state: string, prHead: string | null, mergedCommit: string | null = null, mergedAt: number | null = null, at = 60) =>
+		advance(it, { kind: "repo_pr_read", key: `${currentKey(it)}/${repo}`, repo, state, prHead, mergedCommit, mergedAt, at } as never);
+	// Nothing new: no revision.
+	assert.equal(read(item, "cli", "draft", sha("7")).item.repos![1].prState, "draft");
+	const same = read(item, "cli", "draft", sha("7")).item;
+	assert.equal(read(same, "cli", "draft", sha("7")).item, same);
+	// The platform is read merged before the CLI the order puts first has been read again: the CLI is read now, nothing asked yet.
+	const platformFirst = read(item, "platform", "merged", sha("8"), sha("e"), 2_000);
+	assert.equal(platformFirst.item.question, null, "the merge order was judged by poll order");
+	assert.equal(platformFirst.item.repos![0].mergedCommit, sha("e"));
+	assert.equal(platformFirst.item.repos![0].mergedAt, 2_000);
+	assert.deepEqual(platformFirst.effects.filter(e => e.kind === "poll_repo_pr").map(e => [(e as { repo: string }).repo, (e as { at: number }).at]), [["cli", 60]]);
+	// GitHub merged the CLI first (both merged between two polls): in order, done.
+	const both = read(platformFirst.item, "cli", "merged", sha("7"), sha("c"), 1_000, 61).item;
+	assert.equal(both.question, null);
+	assert.equal(both.state, "done");
+	// The CLI merged after the platform: by GitHub's times, out of order, though the platform was read first.
+	const late = read(platformFirst.item, "cli", "merged", sha("7"), sha("c"), 3_000, 61).item;
+	assert.equal(late.question!.kind, "integration");
+	assert.match(late.question!.text, /before cli/);
+	assert.notEqual(late.state, "done");
+	// The CLI is still open on its fresh reading: the platform merged early.
+	const early = read(platformFirst.item, "cli", "draft", sha("7"), null, null, 61).item;
+	assert.equal(early.question!.kind, "integration");
+	assert.match(early.question!.text, /before cli/);
+	// Read in the other order, with the CLI merged later than the platform: still early.
+	const cliRead = read(item, "cli", "merged", sha("7"), sha("c"), 3_000).item;
+	assert.equal(cliRead.state, "review");
+	assert.match(read(cliRead, "platform", "merged", sha("8"), sha("d"), 2_000).item.question!.text, /before cli/);
+	// In order: the CLI (squash-merged as its own commit), then the platform: done.
+	const cli = read(item, "cli", "merged", sha("7"), sha("c"), 1_000).item;
+	assert.equal(cli.state, "review");
+	assert.equal(cli.repos![1].mergedCommit, sha("c"));
+	const done = read(cli, "platform", "merged", sha("8"), sha("d"), 2_000).item;
+	assert.equal(done.state, "done");
+	// Merged at a commit other than the one tested together: stale, and a question, never done.
+	const movedMerge = read(cli, "platform", "merged", sha("a"), sha("d"), 2_000).item;
+	assert.equal(movedMerge.integration!.state, "stale");
+	assert.equal(movedMerge.question!.kind, "integration");
+	assert.match(movedMerge.question!.text, /merged at aaaaaaa, not at 8888888/);
+	assert.notEqual(movedMerge.state, "done");
+	// Accepting it once nothing is left to watch ends the feature.
+	const accepted = advance(movedMerge, { kind: "answer", question: movedMerge.question!.id, choice: "wait", by: "person", at: 70 }).item;
+	assert.equal(accepted.state, "done");
+	// Closed without merging: a question.
+	assert.match(read(item, "cli", "closed", sha("7")).item.question!.text, /closed without merging/);
+	// Someone pushed to a PR after the run: that result is stale.
+	assert.equal(read(item, "cli", "draft", sha("f")).item.integration!.state, "stale");
+});
+
+test("cross-repo: a PR the platform lost access to asks the person, sections stop once the feature ends, and a sibling's webhook wakes only its own poll", async () => {
+	const { live, lostAccess, siblingWakes } = await import("../server/src/actors/work-item.js");
+	const { GithubError } = await import("../server/src/github/app.js");
+	const { GithubProblem } = await import("../server/src/github/repos.js");
+	let item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "77", url: null }).item;
+	const integrating = item;
+	item = step(item, { kind: "integration_read", attempt: 1, state: "passed", url: null, said: null, seconds: 1 }).item;
+	const report = { title: "Feature", description: "Done", look_at: "", concerns: "", screenshots: [] };
+	const described = step(step(item, { kind: "turn_started" }).item, { kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: false, report, spend: { tokens: 1, hostedSeconds: 1 } });
+	const handed = step(described.item, { kind: "published", head: sha("8"), pr: described.item.pr, openItems: 1, webhooks: true }).item;
+	const lost = advance(handed, { kind: "repo_pr_lost", key: `${currentKey(handed)}/cli`, repo: "cli", said: "ada/cli is archived on GitHub, so nothing can be pushed to it.", at: 60 }).item;
+	assert.equal(lost.question!.kind, "integration");
+	assert.match(lost.question!.text, /ada\/cli#1 cannot be read any more: ada\/cli is archived/);
+	const resumed = advance(lost, { kind: "answer", question: lost.question!.id, choice: "wait", by: "person", at: 70 });
+	assert.equal(resumed.item.state, "review");
+	assert.deepEqual(resumed.effects.filter(e => e.kind === "poll_repo_pr").map(e => (e as { repo: string }).repo), ["platform", "cli"]);
+	// Denied, gone and archived are not tried again; a rate limit or an outage is.
+	assert.ok(lostAccess(new GithubProblem("github_denied", "archived")) && lostAccess(new GithubProblem("github_gone", "gone")));
+	assert.ok(lostAccess(new GithubError(404, "Not Found", "read")) && lostAccess(new GithubError(403, "Repository was archived so is read-only.", "write")));
+	assert.ok(!lostAccess(new GithubError(500, "", "read")) && !lostAccess(new GithubError(429, "", "read")) && !lostAccess(new GithubProblem("github_unreachable", "later")));
+	// The managed sections are written while the feature runs, never after it ended.
+	assert.ok(live(handed, { kind: "link_prs", key: currentKey(handed)! }));
+	const ended = advance(lost, { kind: "answer", question: lost.question!.id, choice: "give_up", by: "person", at: 80 }).item;
+	assert.equal(ended.state, "failed");
+	assert.ok(!live(ended, { kind: "link_prs", key: currentKey(handed)! }), "an ended feature still writes its PR sections");
+	// The CLI's webhook: its own PR's poll once handed over, never the primary's poll (both are PR #1) before.
+	const cli = handed.repos![1];
+	const nudge = { kind: "pr" as const, pr: 1, installationId: cli.installationId, repositoryId: cli.repositoryId };
+	assert.ok(siblingWakes(handed, cli, nudge));
+	assert.ok(!siblingWakes(integrating, cli, nudge), "a sibling's webhook woke a poll before the hand-over");
+	assert.ok(!siblingWakes(handed, cli, { ...nudge, installationId: 999 }));
+	assert.ok(!siblingWakes(handed, cli, { kind: "ci", head: sha("7"), installationId: cli.installationId, repositoryId: cli.repositoryId }));
+});
+
+test("cross-repo: the feature's own session reaches both repositories' hosts within what the deployment's hosts leave, the primary's first", async () => {
+	const { unionHosts, networkLimit } = await import("../server/src/repository-network.js");
+	const names = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}.example.org`);
+	const deployment = names("d", 50); // 64 hosts in all: 14 left for the repositories' lists
+	const limit = networkLimit(deployment);
+	assert.equal(limit, 14);
+	const primary = names("p", 10), sibling = names("s", 10);
+	const union = unionHosts([primary, sibling], limit);
+	assert.equal(union.length, limit, "the union went past what the deployment's hosts leave");
+	for (const host of primary) assert.ok(union.includes(host), `the primary's ${host} was left out`);
+	assert.equal(union.filter(h => h.startsWith("s")).length, 4);
+	// A host both lists name takes one place; with room for all, every host is there.
+	assert.deepEqual(unionHosts([["a.example.org"], ["a.example.org", "b.example.org"]], 40), ["a.example.org", "b.example.org"]);
+});
+
+test("cross-repo: feedback on its PRs is declined, and one implementer leaves the sibling out", () => {
+	const item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "1", url: null }).item;
+	const declined = advance(item, { kind: "github_feedback", at: 70, ids: ["c1"], text: "fix", fingerprint: "f", others: false, by: "github:ada", writers: ["ada"] });
+	assert.equal(declined.feedback![0].state, "declined");
+	const single = proposal(); // a suggestion of one item has no subtasks
+	const suggested = crossProposed({ ...crossProposal(), subtasks: [], singleSuggested: "One change is enough." });
+	assert.match(suggested.question!.text, /cli would be left out/);
+	const converted = advance(suggested, { kind: "answer", question: suggested.question!.id, choice: "run_single", by: "person", at: 80 }).item;
+	assert.equal(converted.repos!.length, 1);
+	assert.equal(converted.mode, "single");
+	void single;
+});
+
+test("cross-repo: the Windlass CLI's CI on main and PRs only is refused by name, and CI on every branch is admitted", async () => {
+	const { readFileSync } = await import("node:fs");
+	const { repositoryAdmission, workflowReportsPush } = await import("../server/src/github/feature-ci.js");
+	const main = readFileSync(new URL("../fixtures/windlass-ci/main.yml", import.meta.url), "utf8");
+	const any = readFileSync(new URL("../fixtures/windlass-ci/any-branch.yml", import.meta.url), "utf8");
+	const branches = ["windlass/feature-i_cross", "windlass/cli-field-0123456789abcdef"];
+	assert.equal(workflowReportsPush(main, branches[0]), false);
+	for (const branch of branches) assert.equal(workflowReportsPush(any, branch), true);
+	const app = (ci: string, base = sha("2")) => ({
+		settings: { slug: "windlass", appId: "1" },
+		call: async ({ path }: { path: string }) => {
+			if (path.endsWith("/git/ref/heads/main")) return { body: { object: { sha: base } } };
+			if (path.endsWith("/actions/workflows")) return { body: { workflows: [{ path: ".github/workflows/ci.yml", state: "active" }] }, next: false };
+			if (path.includes("matching-refs")) return { body: [] };
+			throw new Error("unexpected " + path);
+		},
+		fileAt: async () => ci,
+	}) as never;
+	const input = { alias: "cli", baseRef: "main", ciBase: "main", branches, planningBaseSha: sha("2"), runsIntegration: false, opened: false };
+	const refused = await repositoryAdmission(app(main), "t", "WindlassAI", "windlass", input);
+	assert.equal(refused.length, 1);
+	assert.match(refused[0], /^WindlassAI\/windlass: push CI does not run on windlass\/\*\* branches/);
+	assert.deepEqual(await repositoryAdmission(app(any), "t", "WindlassAI", "windlass", input), []);
+	// A base that moved since the planner read it is named, and passes once the person reconfirms the new commit.
+	const moved = await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", input);
+	assert.match(moved[0], /moved from 2222222 to 9999999/);
+	assert.deepEqual(await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("9") }), []);
+	// A reconfirmed base is taken only when it is the head read now, and never for a branch already opened.
+	assert.match((await repositoryAdmission(app(any, sha("9")), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("5") }))[0], /bases names 5555555 for cli, but main is at 9999999/);
+	assert.match((await repositoryAdmission(app(any), "t", "WindlassAI", "windlass", { ...input, reconfirmed: sha("5") }))[0], /bases names 5555555 for cli, but main is at 2222222/);
+	assert.match((await repositoryAdmission(app(any), "t", "WindlassAI", "windlass", { ...input, opened: true, reconfirmed: sha("2") }))[0], /feature branch is open already/);
+	// The repository the combined run starts from needs the integration workflow, enabled, in its base's tree.
+	const workflow = (state: string | null) => ({
+		settings: { slug: "windlass", appId: "1" },
+		call: async ({ path, query }: { path: string; query?: Record<string, string> }) => {
+			if (path.endsWith("/git/ref/heads/main")) return { body: { object: { sha: sha("2") } } };
+			if (path.endsWith("/actions/workflows/windlass-integration.yml")) {
+				if (state === null) { const { GithubError } = await import("../server/src/github/app.js"); throw new GithubError(404, "Not Found", "look"); }
+				return { body: { state } };
+			}
+			if (path.endsWith("/actions/workflows")) return { body: { workflows: [{ path: ".github/workflows/ci.yml", state: "active" }] }, next: false };
+			if (path.includes("/contents/")) { assert.equal(query?.ref, sha("2"), "the workflow was not read at the base's commit"); return { body: {} }; }
+			throw new Error("unexpected " + path);
+		},
+		fileAt: async (_t: string, _o: string, _r: string, path: string, at: string) => { assert.match(at, /^[0-9a-f]{40}$/); return path.endsWith("ci.yml") ? any : integrationText; },
+	}) as never;
+	const reference = readFileSync(new URL("../.github/workflows/windlass-integration.yml", import.meta.url), "utf8");
+	let integrationText = reference;
+	const runs = { ...input, runsIntegration: true };
+	assert.deepEqual(await repositoryAdmission(workflow("active"), "t", "ada", "platform", runs), []);
+	// The workflow at that commit may hold at most a read of the repository, no secret, and run on workflow_dispatch alone: each refusal says why.
+	const { integrationWorkflowRefusal } = await import("../server/src/github/integration.js");
+	assert.equal(integrationWorkflowRefusal(reference), null, "the reference workflow is refused");
+	const job = "jobs:\n  t:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n";
+	for (const [what, text, reason] of [
+		["pull_request_target", "on:\n  workflow_dispatch: {}\n  pull_request_target: {}\npermissions:\n  contents: read\n" + job, /pull_request_target/],
+		["a push trigger", "on: [workflow_dispatch, push]\npermissions:\n  contents: read\n" + job, /runs on push/],
+		["a schedule", "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 0 * * *'\npermissions: {}\n" + job, /runs on schedule/],
+		["write permissions", "on: workflow_dispatch\npermissions:\n  contents: write\n" + job, /top-level permissions grant contents: write/],
+		["write-all", "on: workflow_dispatch\npermissions: write-all\n" + job, /are write-all/],
+		["read-all", "on: workflow_dispatch\npermissions: read-all\n" + job, /are read-all/],
+		["another scope", "on: workflow_dispatch\npermissions:\n  contents: read\n  actions: read\n" + job, /grant actions: read/],
+		["no top-level permissions", "on: workflow_dispatch\n" + job, /sets no top-level permissions/],
+		["a job's write permission", "on: workflow_dispatch\npermissions:\n  contents: read\njobs:\n  t:\n    permissions:\n      pull-requests: write\n    runs-on: x\n    steps: []\n", /job t's permissions grant pull-requests: write/],
+		["a secret", "on: workflow_dispatch\npermissions:\n  contents: read\n" + job + "        env:\n          T: ${{ secrets.TOKEN }}\n", /references secrets/],
+		["inherited secrets", "on: workflow_dispatch\npermissions:\n  contents: read\njobs:\n  t:\n    uses: a/b/.github/workflows/c.yml@main\n    secrets: inherit\n", /references secrets/],
+	] as const) {
+		assert.match(integrationWorkflowRefusal(text) ?? "", reason, what);
+		integrationText = text;
+		const [problem] = await repositoryAdmission(workflow("active"), "t", "ada", "platform", runs);
+		assert.match(problem ?? "", /^ada\/platform: \.github\/workflows\/windlass-integration\.yml at 2222222 is refused: /, what);
+		assert.match(problem, reason, what);
+	}
+	integrationText = reference;
+	assert.match((await repositoryAdmission(workflow(null), "t", "ada", "platform", runs))[0], /needs \.github\/workflows\/windlass-integration\.yml/);
+	assert.match((await repositoryAdmission(workflow("disabled_manually"), "t", "ada", "platform", runs))[0], /windlass-integration/);
+});
+
+test("cross-repo: a combined run is the platform's only by its name, head, workflow file and the App's bot", async () => {
+	const { findIntegrationRun, readIntegrationRun, runName, ForeignRun } = await import("../server/src/github/integration.js");
+	const head = sha("8");
+	const own = { id: 5, display_title: runName("i_cross", 1), name: "windlass-integration", path: ".github/workflows/windlass-integration.yml", head_sha: head, triggering_actor: { login: "windlass[bot]", type: "Bot" }, status: "queued", conclusion: null, html_url: "u" };
+	const app = (runs: object[]) => ({
+		settings: { slug: "windlass", appId: "1" },
+		call: async ({ path }: { path: string }) => {
+			if (path.endsWith("/actions/workflows/windlass-integration.yml/runs")) return { body: { workflow_runs: runs } };
+			if (path.endsWith("/actions/runs/5")) return { body: runs[0] };
+			throw new Error("unexpected " + path);
+		},
+	}) as never;
+	const find = (runs: object[]) => findIntegrationRun(app(runs), "t", "ada", "platform", "windlass/feature-i_cross", "i_cross", 1, head);
+	assert.equal((await find([own]))?.runId, "5");
+	for (const [what, run] of [
+		["another commit", { ...own, head_sha: sha("9") }],
+		["started by a person", { ...own, triggering_actor: { login: "mallory", type: "User" } }],
+		["another App's bot", { ...own, triggering_actor: { login: "other[bot]", type: "Bot" } }],
+		["another workflow with the same run name", { ...own, path: ".github/workflows/ci.yml" }],
+		["another attempt", { ...own, display_title: runName("i_cross", 2) }],
+	] as const) {
+		assert.equal(await find([run]), null, `a run on ${what} was taken for the platform's`);
+		// A run already named by its id is followed only while it is still the platform's run on that head.
+		if (what !== "another attempt") await assert.rejects(readIntegrationRun(app([run]), "t", "ada", "platform", "5", head), ForeignRun);
+	}
+	assert.equal((await readIntegrationRun(app([own]), "t", "ada", "platform", "5", head)).state, "queued");
+});
+
+test("cross-repo: the managed PR section links the counterpart by full URL, keeps the person's text and never closes the issue", async () => {
+	const { linkSection, withSection, issueReference } = await import("../server/src/factory/cross-repo.js");
+	const { item } = crossOpened();
+	const section = linkSection(item, "cli");
+	assert.match(section, /this pull request: sibling, cli, ada\/cli/);
+	assert.match(section, /primary platform: https:\/\/github.com\/ada\/platform\/pull\/1/);
+	assert.match(section, /Merge order: 1\. cli 2\. platform after cli/);
+	assert.match(section, /combined integration: not run/);
+	assert.doesNotMatch(section, /\b(Closes|Fixes|Resolves) #/i);
+	const body = withSection("The person's own notes.", section);
+	assert.equal(withSection(body, section), body, "writing the section twice changed the body");
+	assert.ok(withSection(body, linkSection(item, "cli").replace("not run", "passed")).startsWith("The person's own notes."));
+	assert.equal(issueReference(item.repos![0], 7), "Part of ada/platform#7.");
+});
+
+test("cross-repo: the planner's copy of the sibling holds its files read-only with no git directory, and a commit it cannot have refuses", async t => {
+	const { GithubStandin, gitHttpBackendAvailable } = await import("./github-standin.js");
+	if (!gitHttpBackendAvailable()) return t.skip("git http-backend is not installed");
+	const { materializeInput, removeInputs } = await import("../server/src/github/git.js");
+	const { execFile } = await import("node:child_process");
+	const { mkdtempSync, mkdirSync, existsSync, statSync, readFileSync, rmSync } = await import("node:fs");
+	const { join } = await import("node:path");
+	const { tmpdir } = await import("node:os");
+	const standin = new GithubStandin({ callbackUrl: "http://127.0.0.1:1/callback" });
+	await standin.start();
+	const root = mkdtempSync(join(tmpdir(), "wlp-inputs-"));
+	try {
+		const installation = standin.addInstallation("ada", "User");
+		const cli = standin.addRepository({ owner: "ada", name: "cli", private: true, installation, files: { "CROSS.md": "only in the CLI\n", "src/a.ts": "export {};\n" } });
+		standin.tokens.set("read-cli", { kind: "installation", value: "read-cli", installation: installation.id, repositories: [cli.id], permissions: { contents: "read", metadata: "read" }, expiresAt: Date.now() + 3600_000, revoked: false });
+		const work = join(root, "workspace"), scratch = join(root, "tmp");
+		mkdirSync(work); mkdirSync(scratch);
+		const sandbox = { cwd: work, id: "inputs", run: (command: string, options: { stdin?: string } = {}) => new Promise(done => {
+			const child = execFile("bash", ["-c", command.replaceAll("/tmp/wlp-", scratch + "/wlp-")], { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: root }, timeout: 60_000 },
+				(error, stdout, stderr) => { if (process.env.WLP_DEBUG_INPUTS) console.error(JSON.stringify({ command: command.slice(0, 80), stdout, stderr, code: error?.code })); done({ exitCode: error ? (typeof error.code === "number" ? error.code : 1) : 0, timedOut: false, aborted: false, stdout, stderr }); });
+			child.stdin?.on("error", () => {}); child.stdin?.end(options.stdin ?? "");
+		}) } as never;
+		const input = { url: `${standin.url}/ada/cli.git`, branch: "main", sha: standin.branchHead(cli, "main")!, directory: ".windlass-inputs", alias: "cli" };
+		await materializeInput(sandbox, "read-cli", input);
+		const file = join(work, ".windlass-inputs/cli/CROSS.md");
+		assert.equal(readFileSync(file, "utf8"), "only in the CLI\n");
+		assert.equal(statSync(file).mode & 0o222, 0, "the sibling's files are writable");
+		assert.equal(existsSync(join(work, ".windlass-inputs/cli/.git")), false, "a git directory (and its remote) was left");
+		// Fetched again for the next planning turn: replaced, not refused.
+		await materializeInput(sandbox, "read-cli", input);
+		await assert.rejects(materializeInput(sandbox, "read-cli", { ...input, sha: sha("1") }), /fetch failed.*not our ref|not at/);
+		await assert.rejects(materializeInput(sandbox, "wrong-token", input), /refused|fetch failed/);
+		// A tree larger than a planning input may be is refused by name.
+		await assert.rejects(materializeInput(sandbox, "read-cli", { ...input, limits: { fileMiB: 512, treeMiB: 0 } }), /larger than a planning input may be/);
+		await removeInputs(sandbox, ".windlass-inputs");
+		assert.equal(existsSync(join(work, ".windlass-inputs")), false);
+		// In the workspace's repository: the directory is excluded, and refused when the repository has it, it is a link, or it is not the platform's.
+		const git = (...args: string[]) => new Promise<string>((done, fail) => execFile("git", args, { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@b", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@b" } }, (e, out) => e ? fail(e) : done(out)));
+		await git("init", "-q", "-b", "main");
+		await materializeInput(sandbox, "read-cli", input);
+		assert.match(readFileSync(join(work, ".git/info/exclude"), "utf8"), /^\/\.windlass-inputs\/$/m);
+		assert.equal((await git("status", "--porcelain", "--untracked-files=all")).trim(), "", "the planner's inputs show in the repository");
+		await materializeInput(sandbox, "read-cli", input);
+		assert.equal(readFileSync(join(work, ".git/info/exclude"), "utf8").match(/windlass-inputs/g)!.length, 1, "the exclusion was written twice");
+		await removeInputs(sandbox, ".windlass-inputs");
+		const { writeFileSync, symlinkSync } = await import("node:fs");
+		// Not the platform's: left alone by removal, and refused for planning.
+		mkdirSync(join(work, ".windlass-inputs")); writeFileSync(join(work, ".windlass-inputs/notes.md"), "mine\n");
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /already in the workspace, and the platform did not put it there/);
+		await assert.rejects(removeInputs(sandbox, ".windlass-inputs"), /could not be removed: .*did not put it there/);
+		assert.equal(readFileSync(join(work, ".windlass-inputs/notes.md"), "utf8"), "mine\n");
+		// Tracked, or in the commit only.
+		await git("add", "-f", ".windlass-inputs/notes.md");
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /is tracked in the repository/);
+		await git("commit", "-q", "-m", "inputs");
+		await git("rm", "-q", "--cached", "-r", ".windlass-inputs");
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /is in the repository's commit/);
+		await git("reset", "-q", "--hard");
+		await git("rm", "-q", "-r", ".windlass-inputs"); await git("commit", "-q", "-m", "gone");
+		// A link, where removal would follow it elsewhere.
+		const elsewhere = join(root, "elsewhere"); mkdirSync(elsewhere); writeFileSync(join(elsewhere, "keep"), "x");
+		symlinkSync(elsewhere, join(work, ".windlass-inputs"));
+		await assert.rejects(materializeInput(sandbox, "read-cli", input), /is a symbolic link/);
+		await assert.rejects(removeInputs(sandbox, ".windlass-inputs"), /symbolic link/);
+		assert.ok(existsSync(join(elsewhere, "keep")), "removal followed the link");
+	} finally {
+		await standin.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

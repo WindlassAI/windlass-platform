@@ -68,7 +68,7 @@ Agents on the repository have new checks from their next turn.
 
 ### Network
 
-Where the platform limits its hosted sandboxes' network (**Restricted**, see Security), the repository's agents reach the model API, GitHub, the bucket that keeps their memory and the hosts the platform allows. Here you can let them reach more, for every hosted agent on the repository. It changes nothing for agents on your own machines.
+Where the platform limits its hosted sandboxes' network (**Restricted**, see Security), the repository's agents reach the model API, GitHub, the bucket that keeps their memory and the hosts the platform allows. Here you can let them reach more, for every hosted agent on the repository. It changes nothing for agents on your own machines. A [cross-repo feature](/docs/factory#cross-repo-features)'s own agent, which plans over both repositories, reaches what each one's list allows; each of its subtasks gets its own repository's.
 
 **Presets** are named sets of hosts, chosen with a checkbox each. A preset the platform allows for every sandbox already is shown checked and cannot be changed here.
 

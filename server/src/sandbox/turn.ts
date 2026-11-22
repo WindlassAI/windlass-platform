@@ -152,8 +152,8 @@ export function turnAgentMeta(restrictedAgent: string | null, clearPlanner?: boo
 	return clearPlanner ? { agent: "none" } : {};
 }
 
-export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean) {
-	return { hostTools: platformTools({ plan: tools.has("file_plan"), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots }, config.questionTimeoutMs) };
+export function hostToolsMeta(tools: ReturnType<typeof turnHostTools>, screenshots?: boolean, crossRepo?: boolean) {
+	return { hostTools: platformTools({ plan: tools.has("file_plan"), ...(crossRepo && tools.has("file_plan") && { crossRepo: true }), publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL), review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots }, config.questionTimeoutMs) };
 }
 
 /** The key of Windlass's extensions in `_meta` and in an error's `data`, and the prefix of its methods. */
@@ -789,7 +789,7 @@ class Turn {
 			withholdEnv: [...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
 			passEnv: input.secrets?.passEnv ?? [],
 			requiredChecks: windlassChecks(input.checks ?? []),
-			...hostToolsMeta(this.hostTools, input.reportScreenshots),
+			...hostToolsMeta(this.hostTools, input.reportScreenshots, input.crossRepoPlan),
 		};
 		if (input.windlassSessionId === undefined) {
 			const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });

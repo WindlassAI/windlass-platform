@@ -481,6 +481,114 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
 }
 
+if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
+	const server = new Server();
+	let after = () => {};
+	try {
+		await check("cross-repo: a feature over two repositories plans from both trees, opens a draft PR #1 in each, builds each child in its own repository, tests both together and records ordered merges", async () => {
+			// The combined run is dispatched: the App needs Actions write (docs/factory, "Cross-repo features").
+			const granted = standin.appPermissions;
+			standin.appPermissions = { ...granted, actions: "write" };
+			after = () => { standin.appPermissions = granted; };
+			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_CROSS_REPO: "1", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const ownCi = "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n";
+			const root = resolve(SERVER_DIR, "..");
+			const platform = standin.addRepository({ owner: "ada", name: "xplatform", installation, files: { ".github/workflows/build.yml": ownCi,
+				".github/workflows/windlass-integration.yml": readFileSync(join(root, ".github/workflows/windlass-integration.yml"), "utf8"), "README.md": "# platform\n" } });
+			// The Windlass CLI's actual CI: pushes to main and pull requests only.
+			const cli = standin.addRepository({ owner: "ada", name: "xcli", installation, files: { ".github/workflows/ci.yml": readFileSync(join(root, "fixtures/windlass-ci/main.yml"), "utf8"), "CROSS.md": "only the CLI has this line\n" } });
+			for (const repo of [platform, cli]) await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }, { alias: "docs", id: harbor.id }], title: "Three", body: "x", mode: "orchestrate" }), "bad_input");
+			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Quick", body: "x", mode: "single" }), "bad_input");
+			// Bound for writing at filing: the feature pushes to every repository, so an archived one (readable, not writable) is refused at once.
+			cli.archived = true;
+			const archived = await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Archived", body: "x", mode: "orchestrate" }), "github_denied");
+			cli.archived = false;
+			assert(/^cli: .*archived/.test(archived), "An archived sibling was bound: " + archived);
+			const token = (await user.createApiToken({ name: "cross", scopes: ["items:create", "items:read"] })).secret;
+			const filing = await api("/api/items", { method: "POST", token, key: "cross-feature", body: JSON.stringify({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Search across repositories", body: "Index in the CLI and search in the platform.", start: true }) });
+			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused a cross-repo filing: " + JSON.stringify(filing.body));
+			const id = filing.body.id as string;
+			const page = await untilItem(user, id, "the cross-repo plan", v => v.question?.kind === "plan_approval" || v.question?.kind === "turn_refused", 120_000);
+			if (page.plan?.status !== "proposed") {
+				const snapshot = await client.agentSession.get([auth.profile.uid, page.sessionId], { params: { token: auth.token } }).snapshot();
+				throw new Error("No plan: " + stateOf(page) + " " + JSON.stringify(snapshot.timeline.filter(e => JSON.stringify(e).includes("plan_reply") || e.kind === "platform")).slice(0, 1500));
+			}
+			assert(page.plan.spec.requirements.includes("From cli: only the CLI has this line"), "The planner did not read the CLI's tree: " + JSON.stringify(page.plan.spec.requirements));
+			assert(page.repositories?.length === 2 && page.repositories[1].planningBaseSha === standin.branchHead(cli, "main") && page.integration?.state === "not_run", "Repositories not bound: " + JSON.stringify(page.repositories));
+			assert(page.plan.subtasks.map(s => s.repo).join() === "cli,platform", "Subtasks not on their repositories");
+			const approve = (bases?: Record<string, string>) => user.actOnItem({ id, action: { kind: "approve_plan", version: page.plan!.version, ...(bases && { bases }) } });
+			// Made private since the filing: the run could not check it out, and approval says so from what GitHub says now.
+			cli.private = true;
+			const noCi = await refused(() => approve(), "bad_input");
+			cli.private = false;
+			assert(/ada\/xcli: push CI does not run on windlass\/\*\* branches/.test(noCi) && !/ada\/xplatform/.test(noCi), "Admission did not name the CLI's CI: " + noCi);
+			assert(/ada\/xcli must be public/.test(noCi), "A sibling made private since filing was admitted: " + noCi);
+			assert(!standin.pulls.some(p => p.repository === platform.id || p.repository === cli.id), "A PR was opened before admission passed");
+			// The owner's reviewed change: CI on pushes to any branch. The CLI's base moved, so approval names that too.
+			const moved = standin.commit(cli, "main", { ".github/workflows/ci.yml": readFileSync(join(root, "fixtures/windlass-ci/any-branch.yml"), "utf8") }, "ci: run on pushes to any branch");
+			const stale = await refused(() => approve(), "bad_input");
+			assert(stale.includes("moved from") && stale.includes(moved), "A moved base was not named: " + stale);
+			// A reconfirmed base must be the head approval read: never a commit nobody read.
+			const unread = await refused(() => approve({ cli: "f".repeat(40) }), "bad_input");
+			assert(/bases names fffffff for cli, but main is at/.test(unread), "An unread base was accepted: " + unread);
+			await approve({ cli: moved });
+			const children = new Set<string>();
+			const integrating = await untilItem(user, id, "the combined run", v => {
+				for (const child of v.children ?? []) {
+					const repo = child.repository.id === cli.id ? cli : platform;
+					children.add(child.id + ":" + child.repository.id);
+					const pushed = standin.branchHead(repo, branchFor(child.title, child.sessionId));
+					if (pushed && !repo.ci.has(pushed)) setCi(repo, pushed, "success");
+				}
+				return v.run?.step.kind === "integration" || !!v.question || !!v.children?.some(c => c.question);
+			}, 320_000);
+			assert(integrating.run?.step.kind === "integration", integrating.question?.text ?? integrating.children?.find(c => c.question)?.question?.text ?? stateOf(integrating));
+			const pulls = [platform, cli].map(repo => standin.pulls.filter(p => p.repository === repo.id));
+			assert(pulls.every(list => list.length === 1 && list[0].number === 1 && list[0].draft), "Expected exactly one draft PR #1 per repository: " + JSON.stringify(pulls.map(l => l.map(p => [p.number, p.draft]))));
+			assert([...children].join() === integrating.children!.map(c => c.id + ":" + (c.title === "index" ? cli.id : platform.id)).join(), "A child ran on the wrong repository: " + [...children].join());
+			// No token ever written for both repositories at once: a child of one never had a write token or remote for the other.
+			const both = standin.minted.filter(m => (m.repositoryIds ?? []).includes(platform.id) && (m.repositoryIds ?? []).includes(cli.id));
+			const unscopedWrite = standin.minted.filter(m => m.repositoryIds === null && Object.values(m.permissions ?? {}).includes("write"));
+			assert(both.length === 0 && unscopedWrite.length === 0, "A token reached both repositories: " + JSON.stringify([...both, ...unscopedWrite].map(m => m.permissions)));
+			const branch = "windlass/feature-" + id;
+			assert(standin.fileOn(cli, branch, "notes/turn-1.md") !== null && standin.fileOn(platform, branch, "notes/turn-1.md") !== null, "Each repository's feature branch did not get its child's commit");
+			const run = await waitFor("the dispatched integration workflow", () => standin.integrationRuns.find(r => r.repository === platform.id), 30_000);
+			const heads = JSON.parse(run.inputs.heads) as Record<string, { repository: string; sha: string }>;
+			assert(run.ref === branch && heads.platform.sha === standin.branchHead(platform, branch) && heads.cli.sha === standin.branchHead(cli, branch) && heads.cli.repository === "ada/xcli", "The run was not given both feature heads: " + JSON.stringify(run));
+			assert(run.inputs.command === "bash scripts/cross-repo-integration.sh" && run.inputs.run_from === "platform", "Wrong command or repository for the run");
+			const linked = (repo: StandinRepository) => standin.pulls.find(p => p.repository === repo.id)!.body;
+			assert(linked(cli).includes(`${standin.url}/ada/xplatform/pull/1`) || linked(cli).includes("xplatform/pull/1"), "The CLI PR does not link the platform PR: " + linked(cli));
+			Object.assign(run, { status: "completed", conclusion: "success", updated_at: new Date(Date.parse(run.run_started_at) + 90_000).toISOString() });
+			const handed = await untilItem(user, id, "the hand-over", v => v.state === "review" || !!v.question, 120_000);
+			assert(handed.state === "review" && handed.run?.step.kind === "merged" && handed.integration?.state === "passed", stateOf(handed));
+			for (const repo of [platform, cli]) {
+				const body = linked(repo);
+				assert(body.includes("combined integration: passed") && !/\b(Closes|Fixes|Resolves) #\d/i.test(body), `${repo.name}'s PR body: ` + body);
+			}
+			assert(standin.pulls.filter(p => p.repository === platform.id || p.repository === cli.id).every(p => p.draft), "A cross-repo PR left draft");
+			// A webhook from the wrong installation is ignored: nothing is woken.
+			const cliPull = standin.pulls.find(p => p.repository === cli.id)!, platformPull = standin.pulls.find(p => p.repository === platform.id)!;
+			Object.assign(cliPull, { state: "closed", merged: true, mergeCommit: "c".repeat(40) });
+			const closed = (pull: StandinPull) => ({ action: "closed", pull_request: { number: pull.number, merged: true, head: { sha: standin.branchHead(pull.repository === cli.id ? cli : platform, branch) } } });
+			const wrong = await standin.deliver(API + "/github/webhook", "pull_request", { installation: { id: installation.id + 1000 }, repository: { id: cli.id }, sender: { login: "ada", id: 1 }, ...closed(cliPull) }, { secret: server.secret });
+			assert(wrong.status < 500, "The wrong installation's delivery failed: " + wrong.status);
+			await sleep(20_000);
+			assert((await user.item(id)).repositories![1].prState !== "merged", "A webhook from the wrong installation woke the CLI's poll");
+			await standin.deliver(API + "/github/webhook", "pull_request", { installation: { id: installation.id }, repository: { id: cli.id }, sender: { login: "ada", id: 1 }, ...closed(cliPull) }, { secret: server.secret });
+			const half = await untilItem(user, id, "the CLI merge", v => v.repositories?.[1].prState === "merged", 60_000);
+			assert(half.state === "review" && half.repositories![1].mergedCommit === "c".repeat(40), "The CLI merge was not recorded: " + stateOf(half));
+			Object.assign(platformPull, { state: "closed", merged: true, mergeCommit: "d".repeat(40) });
+			await standin.deliver(API + "/github/webhook", "pull_request", { installation: { id: installation.id }, repository: { id: platform.id }, sender: { login: "ada", id: 1 }, ...closed(platformPull) }, { secret: server.secret });
+			const done = await untilItem(user, id, "every merge", v => v.state === "done" || !!v.question, 60_000);
+			assert(done.state === "done" && done.repositories!.every(r => r.prState === "merged"), stateOf(done));
+			assert(done.spent.activeSeconds >= 90, "The combined run's time was not charged: " + JSON.stringify(done.spent));
+			return "plan read the CLI's tree; CI refused then admitted by name; PR #1 in each; children per repository; one run on both heads; merges in order";
+		});
+	} finally { after(); await server.stop(); server.remove(); }
+	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
+}
+
 if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 	const server = new Server();
 	try {

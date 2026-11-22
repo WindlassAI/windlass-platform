@@ -221,6 +221,7 @@ The rest comes from the item's own run:
 - CI's logs, when CI fails;
 - the second reviewer's findings, and, for the reviewer, the builder's report;
 - in a feature, the reports of other subtasks.
+- in a cross-repo feature, the combined run's result.
 
 The agent is told in its prompt that all of this is quoted data, not instructions. The item's page and the session's timeline name each source, for example "CI logs of 1a2b3c4" or "issue #42 by @someone".
 
@@ -349,6 +350,46 @@ These stop the feature and ask you:
 - no CI passed on the whole feature within 10 minutes: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
 
 Cancelling a feature cancels its subtasks too.
+
+## Cross-repo features
+
+Where the deployment allows it (`WLP_FACTORY_CROSS_REPO=1`), a Plan-first feature can span two repositories of your GitHub connection, for example the Windlass CLI and this platform. File it from the API with `repositories`: two entries, each with a short alias (`^[a-z][a-z0-9-]{0,15}$`), GitHub's id for the repository and, optionally, its base branch. The first is the item's `repository`, the primary: lists and the origin show it.
+
+```json
+{ "repository": { "id": 1001 }, "repositories": [{ "alias": "platform", "id": 1001 }, { "alias": "cli", "id": 2002 }],
+  "title": "Show a new model capability", "body": "…", "mode": "orchestrate" }
+```
+
+A GitHub issue files a feature in its own repository only. A second repository needs your own filing.
+
+**Planning.** At filing the platform records each repository's installation and the commit of its base. You need write access to each repository, and none may be archived. The planner reads the primary as its workspace and the other repository's base tree, read-only, at `.windlass-inputs/<alias>`. That tree is that one commit alone, fetched with a read token for that repository only, at most 512 MiB a file and 1 GiB in all, and left with no git directory. `.windlass-inputs` is added to the workspace repository's `.git/info/exclude`, so it is never committed. Like the primary's files, that tree counts as your own text, not someone else's: you bound the repository with write access. The combined run's result, which the summary and a repair plan quote, is marked as the run's own text, as CI logs are (see [Text from someone else](#text-from-someone-else)). If the repository already has that path (tracked, committed, a link, or a folder the platform didn't make), or the tree can't be fetched, the planning turn does not start and the feature asks you: it never plans against the primary alone. The copy is removed before any later turn of the feature's own session. If it can't be removed, that turn does not start. The planner's session gets the network list of each repository together (see [Network](/docs/settings#network)).
+
+**The plan** adds, besides the usual fields:
+
+- `repos`, the filing's aliases, and each subtask's `repo`. Each repository needs at least one subtask. Subtasks may wait for subtasks in the other repository. Owned paths are compared within a repository only, so the same path in two repositories is no overlap.
+- `mergeOrder`: each repository once, with the repositories that must merge first, what keeps working between the merges, the evidence for it and the fallback. A pull request merges once, so a rollout that would merge one repository again after the other needs a second feature.
+- `releaseGate`: `request` for now. The feature ends at a tested pair of pull requests and a release request. Waiting for your release is not offered yet.
+- `finalIntegration`: the combined run, `{runFrom, command, inputs, profile: "actions", timeoutSeconds, requiredCases, artifactOutputs}`. `inputs` covers every repository. `earlyChecks` are kept with the plan but not run yet.
+
+Changing any of these after approval counts as a change of scope. The feature keeps 3,600 working and hosted seconds for the combined run, on top of the summary and review reserve.
+
+**Approval** checks each repository through its own installation before any branch is made, and names every problem at once. Each needs saved checks and CI on pushes to its `windlass/**` branches; the Windlass CLI's CI on `main` and pull requests only is refused. The repository the combined run starts from needs `.github/workflows/windlass-integration.yml`, enabled, on its base (this repository has one). That workflow must run on `workflow_dispatch` only (no `pull_request_target`, push or other trigger), set top-level permissions of at most `contents: read`, give no job more, and reference no secret. Approval names the rule it breaks. The other repository must be public, as GitHub says it at approval, since the run checks it out without a token. If a base moved since the planner read it, approval names the move. Revise the plan, or approve with `bases: {"<alias>": "<new commit>"}` to reconfirm it. Approval takes that commit only if it is where the base is when approval reads it.
+
+**Pull requests.** Each repository gets its own branch, `windlass/feature-<id>`, and a draft pull request. Both can be #1. A repository without draft pull requests stops the feature before any subtask runs; the pull request already opened in the other one is kept, and **Try the remaining repository again** retries only the one that failed. Each pull request carries a section, kept up to date, that links the other by its full address, says which is primary, the merge order and the combined result. Anything you write around it is kept. Neither says `Closes #n`, so the issue is not closed by the first of the two merges.
+
+**Subtasks** run one at a time across both repositories. Each is made in its subtask's repository, starts from that repository's feature branch, and can push only there. It joins its repository's feature branch under the same rules as any subtask.
+
+**Testing them together.** When every subtask is in, the platform checks the integration workflow again, as it is at the commit it is about to run, by the same rules as at approval, and dispatches it in `runFrom`, on its feature branch, with the head of both feature branches. It follows only its own run: the one with the feature's run name, of that workflow file, on that commit, started by the App. The workflow checks every input out at its commit beside that checkout, checks the commits, and runs the approved command for at most an hour. For the Windlass CLI and this platform the command is `bash scripts/cross-repo-integration.sh`. It builds the CLI from its checkout, stages that executable where the server takes it from, and runs the platform's real-binary checks with it. A case that skips fails the run. The run's time is charged to the feature once.
+
+- A run that fails asks you: **Plan a repair** (a re-plan with the result, as quoted data) or **Give up**.
+- A run that was cancelled or timed out can be run once more on the same heads.
+- A run that could not start (no workflow, a workflow the rules refuse, or no Actions permission on the App) can be run again once that is fixed.
+
+Both pull requests keep their evidence and stay drafts.
+
+**Hand-over.** After a pass, the summary is written to both pull requests and the feature waits in **review**. Both pull requests stay drafts. Marking them ready needs a review of the set, which is not built yet, so the platform never marks a cross-repo pull request ready. Merge them in the approved order. Each merge is recorded with the commit it made, squash and rebase included, and the time GitHub says it merged. The order is judged by those times, not by when the platform read them. A merge out of order, a pull request merged at a commit other than the one tested together, a pull request closed without merging, or one the platform can't read any more (access removed, repository archived or gone) stops the feature and asks you. Nothing is rolled back. Once both are merged the feature is done. A push to either pull request after the run marks the result stale. The sections on the pull requests are no longer updated once the feature has ended. Feedback on a cross-repo pull request is not taken yet.
+
+The GitHub App needs Actions write on the installation of the repository the run starts from, besides the permissions above.
 
 ## The Factory page
 

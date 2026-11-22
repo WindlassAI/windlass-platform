@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { GithubError, type GithubApp } from "./app.js";
 import { ownApp } from "./ids.js";
 import { refHead } from "./feature.js";
+import { integrationWorkflowProblem } from "./integration.js";
 
 const record = (v: unknown) => (v ?? {}) as Record<string, unknown>;
 
@@ -60,4 +61,35 @@ export async function hasPushCi(app: GithubApp, token: string, owner: string, re
 		if ((record(status.body).statuses as {state: string}[]).some(s => s.state === "success")) return true;
 	}
 	return false;
+}
+
+/**
+ * What keeps one repository of a cross-repo feature from being approved, in sentences naming it: push CI
+ * that does not run on the feature's actual branch names, a base that moved since the planner read it
+ * (unless the person reconfirmed the new commit), and, for the repository the combined run starts from,
+ * a missing integration workflow or one that may hold more than a read of the repository
+ * (`integrationWorkflowProblem`). Empty: this repository is ready.
+ */
+export async function repositoryAdmission(app: GithubApp, token: string, owner: string, repo: string, input: {
+	alias: string; baseRef: string; ciBase: string; branches: string[]; planningBaseSha: string | null; reconfirmed?: string; runsIntegration: boolean; opened: boolean;
+}): Promise<string[]> {
+	const label = owner + "/" + repo, problems: string[] = [];
+	if (!await hasPushCi(app, token, owner, repo, input.ciBase, input.branches))
+		problems.push(`${label}: push CI does not run on windlass/** branches (${input.branches.join(", ")}). Add a push trigger for them, or for every branch.`);
+	// A reconfirmed base is taken only when it is the head read here: the feature never starts from a commit nobody read.
+	if (input.reconfirmed !== undefined && (input.opened || !input.planningBaseSha))
+		problems.push(`${label}: bases names ${input.alias}, whose ${input.opened ? "feature branch is open already" : "base was not recorded"}; leave it out.`);
+	else if (!input.opened && input.planningBaseSha) {
+		const now = await refHead(app, token, owner, repo, input.baseRef);
+		if (input.reconfirmed !== undefined && input.reconfirmed !== now)
+			problems.push(`${label}: bases names ${input.reconfirmed.slice(0, 7)} for ${input.alias}, but ${input.baseRef} is at ${now.slice(0, 7)}. Reconfirm the commit it is at (bases: {"${input.alias}": "${now}"}), or revise the plan.`);
+		else if (now !== input.planningBaseSha && input.reconfirmed !== now)
+			problems.push(`${label}: ${input.baseRef} moved from ${input.planningBaseSha.slice(0, 7)} to ${now.slice(0, 7)} since the planner read it. Revise the plan on the new base, or reconfirm it (bases: {"${input.alias}": "${now}"}).`);
+	}
+	if (input.runsIntegration) {
+		// Read at the commit the feature starts from: the base the planner read, or the one reconfirmed.
+		const problem = await integrationWorkflowProblem(app, token, owner, repo, input.opened ? input.ciBase : input.reconfirmed ?? input.planningBaseSha ?? input.baseRef);
+		if (problem) problems.push(`${label}: ${problem}.`);
+	}
+	return problems;
 }

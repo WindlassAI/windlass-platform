@@ -19,8 +19,10 @@
  * nobody else can make that call.
  *
  * Which sessions. Every hosted session on the repository, from its next turn, and at once in the
- * session the host was allowed from while a turn runs there. A session has one repository today, so
- * its sandbox gets that repository's hosts.
+ * session the host was allowed from while a turn runs there. A session on one repository gets that
+ * repository's hosts. The own session of a cross-repo feature (factory/cross-repo.ts), whose planner
+ * reads both repositories, gets the hosts of all of them (`unionHosts`); each of its children is on one
+ * repository and gets that one's.
  *
  * Saving. The list is one value: a save writes the whole of it in one statement. Adding one host
  * (`addHost`) reads the list and writes it back only if it is still what was read, so two at once
@@ -112,6 +114,20 @@ export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = 
 		);
 	}
 	return entries;
+}
+
+/**
+ * The hosts of a session's repositories together, the primary's first: a session on more than one
+ * repository reaches what each allows. `max` is what a repository's list may hold beside the
+ * deployment's own hosts (`networkLimit`), so that the sandbox's whole list stays within what it can be
+ * given. The primary's list is taken whole, as it was saved and as a one-repository session has it;
+ * the later lists' hosts fill what room is left, and past `max` are left out.
+ */
+export function unionHosts(lists: ReadonlyArray<readonly string[]>, max: number): string[] {
+	const [primary = [], ...others] = lists;
+	const hosts = new Set<string>(primary);
+	for (const list of others) for (const host of list) if (hosts.size < max) hosts.add(host);
+	return [...hosts].sort();
 }
 
 /**

@@ -1,0 +1,300 @@
+{
+	"declaration": [
+		{
+			"name": "file_plan",
+			"description": "Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: windlass, claude or opencode, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). Claude Code and OpenCode run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.",
+			"inputSchema": {
+				"type": "object",
+				"required": [
+					"spec",
+					"questions",
+					"subtasks"
+				],
+				"properties": {
+					"overflow": {
+						"type": "boolean"
+					},
+					"spec": {
+						"type": "object"
+					},
+					"questions": {
+						"type": "array",
+						"items": {
+							"type": "object"
+						}
+					},
+					"subtasks": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": [
+								"place"
+							],
+							"properties": {
+								"place": {
+									"type": "object",
+									"required": [
+										"prefer",
+										"reason"
+									],
+									"properties": {
+										"prefer": {
+											"type": "string"
+										},
+										"reason": {
+											"type": "string",
+											"maxLength": 200
+										},
+										"allow": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										}
+									}
+								},
+								"needs": {
+									"type": "object",
+									"additionalProperties": false,
+									"properties": {
+										"tags": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										},
+										"screenshots": {
+											"type": "boolean"
+										},
+										"egress": {
+											"enum": [
+												"open",
+												"restricted"
+											]
+										},
+										"profile": {
+											"enum": [
+												"docker-hardened",
+												"docker-windlass-sandbox"
+											]
+										},
+										"cpus": {
+											"type": "number",
+											"exclusiveMinimum": 0
+										},
+										"memoryGiB": {
+											"type": "number",
+											"exclusiveMinimum": 0
+										}
+									}
+								},
+								"agent": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": [
+										"harness"
+									],
+									"properties": {
+										"harness": {
+											"enum": [
+												"windlass",
+												"claude",
+												"opencode"
+											]
+										},
+										"model": {
+											"type": "string",
+											"maxLength": 200
+										},
+										"effort": {
+											"type": "string",
+											"maxLength": 64
+										}
+									}
+								}
+							}
+						}
+					},
+					"singleSuggested": {
+						"type": [
+							"string",
+							"null"
+						]
+					}
+				}
+			},
+			"effect": "read",
+			"untrustedResult": false
+		}
+	],
+	"plan": {
+		"spec": {
+			"goal": "Index and display results",
+			"requirements": [
+				"Index documents"
+			],
+			"outOfScope": [],
+			"acceptance": [
+				"Search works"
+			]
+		},
+		"questions": [],
+		"singleSuggested": null,
+		"subtasks": [
+			{
+				"key": "index",
+				"title": "index",
+				"brief": "Implement index",
+				"acceptance": [
+					"Run pnpm test"
+				],
+				"owns": [
+					"index/**"
+				],
+				"dependsOn": [],
+				"budget": {
+					"tokens": 10000,
+					"turns": 10,
+					"activeSeconds": 1000,
+					"hostedSeconds": 500
+				}
+			},
+			{
+				"key": "page",
+				"title": "page",
+				"brief": "Implement page",
+				"acceptance": [
+					"Run pnpm test"
+				],
+				"owns": [
+					"page/**"
+				],
+				"dependsOn": [
+					"index"
+				],
+				"budget": {
+					"tokens": 10000,
+					"turns": 10,
+					"activeSeconds": 1000,
+					"hostedSeconds": 500
+				}
+			}
+		]
+	},
+	"withExtras": {
+		"spec": {
+			"goal": "Index and display results",
+			"requirements": [
+				"Index documents"
+			],
+			"outOfScope": [],
+			"acceptance": [
+				"Search works"
+			]
+		},
+		"questions": [],
+		"singleSuggested": null,
+		"subtasks": [
+			{
+				"key": "index",
+				"title": "index",
+				"brief": "Implement index",
+				"acceptance": [
+					"Run pnpm test"
+				],
+				"owns": [
+					"index/**"
+				],
+				"dependsOn": [],
+				"budget": {
+					"tokens": 10000,
+					"turns": 10,
+					"activeSeconds": 1000,
+					"hostedSeconds": 500
+				},
+				"repo": ""
+			},
+			{
+				"key": "page",
+				"title": "page",
+				"brief": "Implement page",
+				"acceptance": [
+					"Run pnpm test"
+				],
+				"owns": [
+					"page/**"
+				],
+				"dependsOn": [
+					"index"
+				],
+				"budget": {
+					"tokens": 10000,
+					"turns": 10,
+					"activeSeconds": 1000,
+					"hostedSeconds": 500
+				},
+				"repo": ""
+			}
+		],
+		"repos": [],
+		"mergeOrder": [],
+		"releaseGate": "request",
+		"earlyChecks": [],
+		"finalIntegration": {}
+	},
+	"validated": {
+		"overflow": false,
+		"questions": [],
+		"singleSuggested": null,
+		"subtasks": [
+			{
+				"key": "index",
+				"title": "index",
+				"brief": "Implement index",
+				"acceptance": [
+					"Run pnpm test"
+				],
+				"owns": [
+					"index/**"
+				],
+				"dependsOn": [],
+				"budget": {
+					"tokens": 10000,
+					"turns": 10,
+					"activeSeconds": 1000,
+					"hostedSeconds": 500
+				}
+			},
+			{
+				"key": "page",
+				"title": "page",
+				"brief": "Implement page",
+				"acceptance": [
+					"Run pnpm test"
+				],
+				"owns": [
+					"page/**"
+				],
+				"dependsOn": [
+					"index"
+				],
+				"budget": {
+					"tokens": 10000,
+					"turns": 10,
+					"activeSeconds": 1000,
+					"hostedSeconds": 500
+				}
+			}
+		],
+		"spec": {
+			"goal": "Index and display results",
+			"acceptance": [
+				"Search works"
+			],
+			"requirements": [
+				"Index documents"
+			],
+			"outOfScope": []
+		}
+	}
+}

@@ -1345,7 +1345,7 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1368,7 +1368,7 @@ export interface Waiting extends Wait {
  * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "subtasks" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
+export type StepKind = "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1438,7 +1438,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask";
+export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1737,8 +1737,12 @@ export interface ItemSummary {
 	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;
 	title: string;
-	/** The repository of the user's GitHub connection it is on; `branch` is the base its pull request goes into. */
+	/** The repository of the user's GitHub connection it is on; `branch` is the base its pull request goes into. For a cross-repo feature, its primary. */
 	repository: SessionRepository;
+	/** A cross-repo feature's repositories, the primary first. Absent: the one repository. */
+	repositories?: FeatureRepoView[];
+	/** A cross-repo feature's combined run. */
+	integration?: IntegrationView;
 	place: SandboxPlace;
 	/** How the item was filed. Older stored summaries have a null origin. */
 	source: "web" | "api" | "github";
@@ -1864,6 +1868,8 @@ export interface PlanSubtask {
 	needs?: PlacementNeeds;
 	/** Absent: Windlass on the feature's model. */
 	agent?: SubtaskAgent;
+	/** A cross-repo feature's subtask: the alias of the filing's repository it builds in (`FeatureRepository.alias`). Absent: the primary. */
+	repo?: string;
 	key: string;
 	title: string;
 	brief: string;
@@ -1873,7 +1879,51 @@ export interface PlanSubtask {
 	budget: ItemBudget;
 }
 
+/**
+ * One repository of a cross-repo feature in its merge order: which repositories must merge before it
+ * (merge prerequisites, separate from the subtasks' build dependencies), what keeps working between the
+ * merges, what shows it, and what to do if a later merge does not happen.
+ */
+export interface MergeStep {
+	repo: string;
+	prerequisite: string[];
+	intermediate: string;
+	evidence: string;
+	fallback: string;
+}
+
+/** A small named check of one repository against a sibling's integrated head. Stored with the plan, not run yet. */
+export interface EarlyCheck {
+	repo: string;
+	sibling: string;
+	name: string;
+	command: string;
+}
+
+/**
+ * The combined run a cross-repo feature needs before it is handed over: every repository at its
+ * integrated head, tested together (docs/factory, "Cross-repo features"). `runFrom` is the alias of the
+ * repository whose workflow runs it; `command` runs there, with every input checked out beside it.
+ */
+export interface FinalIntegration {
+	runFrom: string;
+	command: string;
+	inputs: string[];
+	/** Where it runs. "actions": the `runFrom` repository's integration workflow, on GitHub's runners. */
+	profile: "actions";
+	timeoutSeconds: number;
+	requiredCases: string[];
+	artifactOutputs: string[];
+}
+
 export interface FeaturePlanEdit {
+	/** A cross-repo feature: the aliases of its filing's repositories, the primary first. Absent on a one-repository plan. */
+	repos?: string[];
+	mergeOrder?: MergeStep[];
+	/** "request": the feature ends at a tested set and a release request. "wait": it waits for the owner's release and adopts it (not offered yet). */
+	releaseGate?: "request" | "wait";
+	earlyChecks?: EarlyCheck[];
+	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
 	questions: { id: string; text: string; options?: string[]; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
@@ -1890,8 +1940,59 @@ export interface FeaturePlan extends FeaturePlanEdit {
 	approvedAt?: number;
 }
 
+/** A repository a cross-repo feature is filed over: a short alias for its mounts and results, GitHub's id for it and its base branch. */
+export interface FeatureRepoInput {
+	/** `^[a-z][a-z0-9-]{0,15}$`, unique in the filing. */
+	alias: string;
+	id: GithubId;
+	branch?: string;
+}
+
+/** A repository of a cross-repo feature as the server bound it at filing. GitHub's ids are the authority; the alias only labels. */
+export interface FeatureRepository {
+	alias: string;
+	repositoryId: GithubId;
+	installationId: GithubId;
+	owner: string;
+	name: string;
+	url: string;
+	private: boolean;
+	baseRef: string;
+	/** The base's commit when the feature was filed: what the planner read. */
+	planningBaseSha: string | null;
+}
+
+/** A repository of a cross-repo feature on its page: where its feature branch, pull request and merge stand. */
+export interface FeatureRepoView extends FeatureRepository {
+	primary: boolean;
+	featureRef: string | null;
+	seedSha: string | null;
+	markerSha: string | null;
+	/** The commit the feature branch was last fast-forwarded to by the platform. */
+	integratedHead: string | null;
+	pr: { number: number; url: string; draft: boolean } | null;
+	/** What GitHub said of the pull request when it was last read. */
+	prState: "open" | "draft" | "merged" | "closed" | null;
+	mergedCommit: string | null;
+}
+
+/** The combined run of a cross-repo feature (`FinalIntegration`), as its page shows it. */
+export interface IntegrationView {
+	state: "not_run" | "queued" | "running" | "passed" | "failed" | "timed_out" | "cancelled" | "stale" | "unavailable";
+	attempt: number;
+	/** The heads it ran on, by alias; null before a run. */
+	heads: Record<string, string> | null;
+	url: string | null;
+	said: string | null;
+}
+
 export interface CreateItemInput {
 	mode?: ItemMode;
+	/**
+	 * Plan first only, and only where the deployment allows cross-repo features (WLP_FACTORY_CROSS_REPO=1):
+	 * the feature's repositories, one or two, the first being `repository`. Left out: the one repository.
+	 */
+	repositories?: FeatureRepoInput[];
 	/** A repository of the user's GitHub connection, by GitHub's id for it, and the base branch (default: the repository's default branch). */
 	repository: { id: GithubId; branch?: string };
 	/** At most MAX_TITLE_CHARS. */
@@ -1931,8 +2032,10 @@ export type ItemAction =
 	/**
 	 * `agents`: the keys of the subtasks still to run whose agent works without asking (`SubtaskAgent`), each
 	 * one confirmed by the person. Approval is refused (`bad_input`) unless it lists every one of them.
+	 * `bases`: a cross-repo feature's repositories whose base moved since the planner read it, by alias, each
+	 * with the new commit the person reconfirms the plan on; approval names the move and is refused without it.
 	 */
-	| { kind: "approve_plan"; version: number; agents?: string[] }
+	| { kind: "approve_plan"; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single" }
 	/** A draft: start it. */
 	| { kind: "start" }

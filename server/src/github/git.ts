@@ -703,6 +703,129 @@ async function run(sandbox: SandboxHandle, script: string, options: { gitUser?: 
 	return { ok: false, failure: classify(`${result.stderr}\n${result.stdout}`), said: text, marks };
 }
 
+/** The most a planning input may take: each file its fetch and checkout write (the pack included), and its whole tree. */
+export const INPUT_LIMITS = { fileMiB: 512, treeMiB: 1024 };
+
+/** The file the platform leaves in its planning inputs' directory: what it removes is only ever its own. */
+const INPUTS_MARK = ".windlass-platform-inputs";
+
+const INPUT_REFUSALS: Record<string, (directory: string) => string> = {
+	symlink: d => `${d} in the workspace is a symbolic link`,
+	tracked: d => `${d} is tracked in the repository`,
+	committed: d => `${d} is in the repository's commit`,
+	present: d => `${d} is already in the workspace, and the platform did not put it there`,
+	exclude: d => `${d} could not be kept out of the repository (.git/info/exclude)`,
+};
+
+function inputPaths(directory: string, alias?: string): void {
+	if (!/^\.[a-z-]+$/.test(directory) || (alias !== undefined && !/^[a-z][a-z0-9-]{0,15}$/.test(alias))) throw new Error("invalid input path");
+}
+
+/**
+ * Makes the workspace's `directory` the platform's planning inputs' own, or refuses, naming why: never a
+ * symbolic link, never a path the repository tracks or commits, never one already there that the platform
+ * did not make. Inside the workspace's repository it is listed in `.git/info/exclude`, so nothing the
+ * platform commits from the workspace can take it.
+ */
+function inputsGuard(directory: string): string {
+	const d = shellQuote(directory), mark = shellQuote(`${directory}/${INPUTS_MARK}`), line = shellQuote(`/${directory}/`);
+	return [
+		"set -eu", `export PATH=${SYSTEM_PATH}`, PLAIN_GIT,
+		`refuse() { echo "wlp:refuse $1"; exit 3; }`,
+		`if [ -L ${d} ]; then refuse symlink; fi`,
+		"if [ -e .git ]; then",
+		`	if [ -n "$(plain_git ls-files -- ${d} | head -1)" ]; then refuse tracked; fi`,
+		`	if plain_git rev-parse -q --verify ${shellQuote(`HEAD:${directory}`)} >/dev/null 2>&1; then refuse committed; fi`,
+		'	exclude=$(plain_git rev-parse --git-path info/exclude) || refuse exclude',
+		'	mkdir -p -- "$(dirname -- "$exclude")" || refuse exclude',
+		`	grep -qxF -- ${line} "$exclude" 2>/dev/null || printf '%s\\n' ${line} >> "$exclude" || refuse exclude`,
+		"fi",
+		`if [ -e ${d} ] && { [ ! -f ${mark} ] || [ -L ${mark} ]; }; then refuse present; fi`,
+		`mkdir -p -- ${d}`,
+		`[ -f ${mark} ] || : > ${mark}`,
+	].join("\n");
+}
+
+async function guardInputs(sandbox: SandboxHandle, directory: string, signal?: AbortSignal): Promise<void> {
+	const guarded = await sandbox.run(inputsGuard(directory), { timeoutMs: PROBE_TIMEOUT_MS, signal });
+	if (guarded.exitCode === 0) return;
+	const reason = /wlp:refuse (\w+)/.exec(guarded.stdout)?.[1];
+	throw new Error(reason && INPUT_REFUSALS[reason] ? INPUT_REFUSALS[reason](directory) : "the workspace has no room for it");
+}
+
+/** The transport's fetch of one commit, alone (`--depth 1`), as the transport user, under `INPUT_LIMITS`; its git directory is gone before anything reaches the workspace. */
+function inputFetchScript(url: string, sha: string, id: string, limits = INPUT_LIMITS): string {
+	if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid input SHA.");
+	return [
+		startTransport(id),
+		READ_TOKEN,
+		tokenGit(hostOf(url)),
+		// bash counts the limit in KiB, a POSIX shell in 512-byte blocks.
+		`blocks=${limits.fileMiB * 1024}; [ -n "\${BASH_VERSION:-}" ] || blocks=$((blocks * 2)); ulimit -f "$blocks"`,
+		"wlp_git init --quiet --template= repo",
+		`if ! wlp_git -C repo fetch --quiet --depth=1 --no-tags -- ${shellQuote(url)} ${sha} 2>"$private/fetch.err"; then`,
+		'	cat -- "$private/fetch.err" >&2',
+		`	if [ "$(du -sk repo | cut -f1)" -ge ${limits.fileMiB * 1024} ] || grep -qi "file size limit" -- "$private/fetch.err"; then echo "wlp:toolarge"; fi`,
+		"	exit 1",
+		"fi",
+		"WLP_T=",
+		PLAIN_GIT,
+		`plain_git -C repo checkout -q --detach FETCH_HEAD || { echo "wlp:toolarge"; exit 1; }`,
+		`[ "$(plain_git -C repo rev-parse HEAD)" = ${sha} ] || { echo "wlp:wrongbase"; exit 1; }`,
+		"rm -rf -- repo/.git",
+		`[ "$(du -sk repo | cut -f1)" -le ${limits.treeMiB * 1024} ] || { echo "wlp:toolarge"; exit 1; }`,
+	].join("\n");
+}
+
+/**
+ * A cross-repo feature's planning input: `url`'s tree at `sha`, alone (a fetch of that one commit, `--depth 1`,
+ * under `INPUT_LIMITS`), in `directory/alias` of the workspace, its files read-only, with no git directory: no
+ * remote, no credential, nothing to push with. The token reaches only the fetch's standard input. The directory
+ * is the platform's own (`inputsGuard`). Throws, naming why, when the tree cannot be had.
+ */
+export async function materializeInput(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; sha: string; directory: string; alias: string; signal?: AbortSignal; limits?: typeof INPUT_LIMITS }): Promise<void> {
+	if (!/^[0-9a-f]{40}$/.test(input.sha)) throw new Error("the planning base is not a recorded commit");
+	inputPaths(input.directory, input.alias);
+	await guardInputs(sandbox, input.directory, input.signal);
+	const target = shellQuote(`${input.directory}/${input.alias}`);
+	const clear = await sandbox.run(`set -eu\nif [ -L ${target} ]; then exit 3; fi\nif [ -e ${target} ]; then chmod -R u+w -- ${target}; rm -rf -- ${target}; fi\n[ ! -e ${target} ]`, { timeoutMs: COMMIT_TIMEOUT_MS, signal: input.signal });
+	if (clear.exitCode !== 0) throw new Error(`the earlier copy at ${input.directory}/${input.alias} could not be removed`);
+	const stage = randomBytes(16).toString("hex");
+	try {
+		const fetched = await run(sandbox, inputFetchScript(input.url, input.sha, stage, input.limits), { gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
+		if (!fetched.ok) {
+			const limits = input.limits ?? INPUT_LIMITS;
+			if (fetched.marks.has("toolarge")) throw new Error(`it is larger than a planning input may be (${limits.fileMiB} MiB a file, ${limits.treeMiB} MiB in all)`);
+			if (fetched.marks.has("wrongbase")) throw new Error(`it is not at ${input.sha.slice(0, 7)}`);
+			throw new Error(fetched.failure === "denied" ? "GitHub refused to let the platform read it" : fetched.failure === "gone" ? "GitHub no longer has it" : `the fetch failed${fetched.said ? ": " + fetched.said : ""}`);
+		}
+		const copy = await sandbox.run(`set -eu\nexport PATH=${SYSTEM_PATH}\nmkdir -- ${target}\ncp -R -- ${shellQuote(transportDirectory(stage))}/repo/. ${target}/\nfind ${target} -type f -exec chmod a-w -- {} +`, { timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal });
+		if (copy.exitCode !== 0) throw new Error("it could not be copied into the workspace read-only");
+	} finally {
+		await removeTransport(sandbox, stage);
+	}
+}
+
+/**
+ * Takes every planning input out of the workspace: a builder's turn never sees another repository's tree.
+ * Only the platform's own directory goes (`inputsGuard`'s mark), never through a symbolic link. Throws
+ * when it is still there.
+ */
+export async function removeInputs(sandbox: SandboxHandle, directory: string): Promise<void> {
+	inputPaths(directory);
+	const d = shellQuote(directory), mark = shellQuote(`${directory}/${INPUTS_MARK}`);
+	const removed = await sandbox.run([
+		"set -eu", `export PATH=${SYSTEM_PATH}`,
+		`if [ -L ${d} ]; then echo "wlp:refuse symlink"; exit 3; fi`,
+		`[ -e ${d} ] || exit 0`,
+		`if [ ! -f ${mark} ] || [ -L ${mark} ]; then echo "wlp:refuse present"; exit 3; fi`,
+		`chmod -R u+w -- ${d}`, `rm -rf -- ${d}`, `[ ! -e ${d} ]`,
+	].join("\n"), { timeoutMs: COMMIT_TIMEOUT_MS });
+	if (removed.exitCode === 0) return;
+	const reason = /wlp:refuse (\w+)/.exec(removed.stdout)?.[1];
+	throw new Error(`the planner's copy of the other repositories at ${directory} could not be removed${reason && INPUT_REFUSALS[reason] ? `: ${INPUT_REFUSALS[reason](directory)}` : removed.stderr.trim() ? `: ${removed.stderr.trim().slice(0, 200)}` : ""}`);
+}
+
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
 export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt }): Promise<GitOutcome> {
 	const stage = randomBytes(16).toString("hex");

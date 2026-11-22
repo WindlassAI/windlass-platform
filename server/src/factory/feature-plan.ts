@@ -1,5 +1,5 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
-import type { FeaturePlan, FeaturePlanEdit, ItemBudget, PlanSubtask, SubtaskAgent } from "../contract.js";
+import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent } from "../contract.js";
 import { harnessName, itemHarnessProblem, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
@@ -23,6 +23,30 @@ export function closingReserve(single: ItemBudget): ItemBudget {
 	return { tokens: Math.ceil(single.tokens / 6), turns: 4, activeSeconds: Math.ceil(single.activeSeconds / 6), hostedSeconds: Math.ceil(single.hostedSeconds / 6) };
 }
 
+/** The longest a combined run may take, and what the closing reserve holds for each one the plan needs. */
+export const INTEGRATION_SECONDS = 3600;
+
+/** A cross-repo plan: one that names its repositories. */
+export const crossRepoPlan = (plan: Pick<FeaturePlanEdit, "repos"> | null | undefined): boolean => (plan?.repos?.length ?? 0) > 1;
+
+/**
+ * What a cross-repo plan keeps back for its combined run, beside the closing reserve: the first attempt's
+ * active and hosted time, and a second window when the plan waits for a release (it runs again on the release).
+ */
+export function integrationReserve(plan: Pick<FeaturePlanEdit, "repos" | "releaseGate" | "finalIntegration"> | null | undefined): ItemBudget {
+	if (!crossRepoPlan(plan)) return emptyBudget();
+	const windows = plan!.releaseGate === "wait" ? 2 : 1;
+	const seconds = windows * Math.max(plan!.finalIntegration?.timeoutSeconds ?? INTEGRATION_SECONDS, INTEGRATION_SECONDS);
+	return { tokens: 0, turns: 0, activeSeconds: seconds, hostedSeconds: seconds };
+}
+
+/** The closing reserve and, for a cross-repo plan, its combined run's. */
+export function featureReserve(single: ItemBudget, plan?: Pick<FeaturePlanEdit, "repos" | "releaseGate" | "finalIntegration"> | null): ItemBudget {
+	const reserve = closingReserve(single), more = integrationReserve(plan);
+	for (const d of dimensions) reserve[d] += more[d];
+	return reserve;
+}
+
 /** A subtask's agent in words: "Claude Code (sonnet, high effort), works without asking"; "Windlass on the feature's model". */
 export function agentWords(agent: SubtaskAgent | undefined): string {
 	if (!agent) return "Windlass on the feature's model";
@@ -41,8 +65,16 @@ export function approvalText(plan: FeaturePlan): string {
 		b.activeSeconds + " active seconds", b.hostedSeconds + " hosted seconds",
 	].join(", ");
 	const unattended = unattendedKeys(plan);
-	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.agent)),
+	const cross = crossRepoPlan(plan);
+	const final = plan.finalIntegration;
+	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.agent)),
 		...(unattended.length ? [`${unattended.join(", ")} would run an agent that works without asking: it runs every command and edit in its sandbox without asking you. The planner proposed it from the item's text; approve only after confirming each one.`] : []),
+		...(cross && final ? [
+			"Merge order — " + (plan.mergeOrder ?? []).map(m => m.repo + (m.prerequisite.length ? ` after ${m.prerequisite.join(", ")}` : "")).join(", then ") + ".",
+			`Tested together in ${final.runFrom}: ${final.command} (inputs ${final.inputs.join(", ")}; at most ${final.timeoutSeconds} seconds; required cases: ${final.requiredCases.join("; ")}).`,
+			plan.releaseGate === "wait" ? "Ends when the owner's release is adopted." : "Ends at a tested set of pull requests and a release request; adopting a release is a separate feature.",
+			"Reserved for the combined run — " + words(integrationReserve(plan)),
+		] : []),
 		"Sizing beyond one slot is not supported by current runners.",
 		"Reserved for summary and review — " + words(closingReserve(plan.compare.singleBudget)), "Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
@@ -52,7 +84,10 @@ export class PlanError extends Error {}
 
 /** A budget-only reallocation keeps the approved scope. */
 export function planScope(plan: FeaturePlanEdit): string {
-	return JSON.stringify([plan.overflow ?? false, plan.spec, plan.subtasks.map(({budget, ...scope}) => scope)]);
+	const scope: unknown[] = [plan.overflow ?? false, plan.spec, plan.subtasks.map(({budget, ...scope}) => scope)];
+	// A one-repository plan keeps the fingerprint it always had; a cross-repo one adds what was approved of its repositories.
+	if (crossRepoPlan(plan)) scope.push({ repos: plan.repos, releaseGate: plan.releaseGate ?? "request", finalIntegration: plan.finalIntegration ?? null, mergeOrder: plan.mergeOrder ?? [], earlyChecks: plan.earlyChecks ?? [] });
+	return JSON.stringify(scope);
 }
 
 function requirePlan(ok: unknown, message: string): asserts ok {
@@ -193,8 +228,81 @@ export function subtaskMinimum(single: ItemBudget): ItemBudget {
 	};
 }
 
-export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget): FeaturePlanEdit {
+/** A repository alias as a filing gives it. */
+export const ALIAS = /^[a-z][a-z0-9-]{0,15}$/;
+
+function aliasIn(value: unknown, filing: readonly string[], what: string): string {
+	requirePlan(typeof value === "string" && ALIAS.test(value), `Name ${what} by its short alias.`);
+	requirePlan(filing.includes(value), `${value} is not a repository of this feature: use ${filing.join(" or ")}.`);
+	return value;
+}
+
+/**
+ * What a cross-repo plan adds, checked against the filing's repositories (`filing`, the primary first):
+ * the repositories, the merge order, the release gate, early checks and the combined run.
+ */
+function crossRepoFields(p: Record<string, unknown>, filing: readonly string[], subtasks: PlanSubtask[]): Pick<FeaturePlanEdit, "repos" | "mergeOrder" | "releaseGate" | "earlyChecks" | "finalIntegration"> {
+	requirePlan(Array.isArray(p.repos) && p.repos.every(r => typeof r === "string"), "List the feature's repositories in repos.");
+	const named = p.repos as string[];
+	requirePlan(named.length <= filing.length, `A feature may span at most ${filing.length} repositories: those it was filed over.`);
+	for (const r of named) aliasIn(r, filing, "each repository");
+	unique(named);
+	requirePlan(named.length === filing.length, "Plan for every repository the feature was filed over: " + filing.join(", ") + ".");
+	for (const alias of filing) requirePlan(subtasks.some(s => s.repo === alias), `Give ${alias} at least one subtask, or file the feature over one repository.`);
+	requirePlan(Array.isArray(p.mergeOrder), "Give the merge order: one entry per repository.");
+	const seen = new Set<string>();
+	const mergeOrder: MergeStep[] = (p.mergeOrder as unknown[]).map(raw => {
+		const m = record(raw), repo = aliasIn(m.repo, filing, "each merge step's repository");
+		requirePlan(!seen.has(repo), `${repo} appears twice in the merge order: one pull request merges once, so a rollout that merges it again after another needs a later feature.`);
+		requirePlan(Array.isArray(m.prerequisite ?? []), "A merge step's prerequisite is a list of repositories.");
+		const prerequisite = ((m.prerequisite ?? []) as unknown[]).map(r => aliasIn(r, filing, "a merge prerequisite"));
+		unique(prerequisite);
+		for (const before of prerequisite) {
+			requirePlan(before !== repo, `${repo} cannot merge after itself.`);
+			requirePlan(seen.has(before), `${repo} needs ${before} to merge first, so ${before} comes earlier in the merge order. Merge prerequisites must not form a cycle.`);
+		}
+		seen.add(repo);
+		return { repo, prerequisite, intermediate: text(m.intermediate), evidence: text(m.evidence), fallback: text(m.fallback) };
+	});
+	for (const alias of filing) requirePlan(seen.has(alias), `Put ${alias} in the merge order.`);
+	const releaseGate = p.releaseGate === undefined || p.releaseGate === null ? "request" : p.releaseGate;
+	requirePlan(releaseGate === "request" || releaseGate === "wait", "Choose request or wait for the release gate.");
+	requirePlan(releaseGate === "request", "Waiting for a release is not offered yet: end the feature at a release request.");
+	const early = p.earlyChecks ?? [];
+	requirePlan(Array.isArray(early) && early.length <= 4, "Use at most 4 early checks.");
+	const earlyChecks: EarlyCheck[] = early.map(raw => {
+		const e = record(raw), repo = aliasIn(e.repo, filing, "an early check's repository"), sibling = aliasIn(e.sibling, filing, "an early check's sibling");
+		requirePlan(repo !== sibling, "An early check runs one repository against the other.");
+		return { repo, sibling, name: text(e.name, 200), command: text(e.command, 2000) };
+	});
+	const f = record(p.finalIntegration);
+	const runFrom = aliasIn(f.runFrom, filing, "the repository the combined run starts from");
+	requirePlan(typeof f.command === "string" && f.command.trim() !== "", "Give the combined run a command.");
+	requirePlan(Array.isArray(f.inputs), "List the combined run's inputs.");
+	const inputs = (f.inputs as unknown[]).map(r => aliasIn(r, filing, "each input of the combined run"));
+	unique(inputs);
+	for (const alias of filing) requirePlan(inputs.includes(alias), `The combined run must take ${alias} as an input.`);
+	const profile = f.profile === undefined ? "actions" : f.profile;
+	requirePlan(profile === "actions", "The combined run runs on GitHub Actions (profile actions).");
+	const timeoutSeconds = f.timeoutSeconds === undefined ? INTEGRATION_SECONDS : f.timeoutSeconds;
+	requirePlan(typeof timeoutSeconds === "number" && Number.isSafeInteger(timeoutSeconds) && timeoutSeconds >= 60 && timeoutSeconds <= INTEGRATION_SECONDS, `The combined run's timeout is a whole number of seconds from 60 to ${INTEGRATION_SECONDS}.`);
+	const finalIntegration: FinalIntegration = {
+		runFrom, command: text(f.command, 2000), inputs: filing.filter(a => inputs.includes(a)), profile, timeoutSeconds,
+		requiredCases: lines(f.requiredCases, 1, 32).map(c => text(c, 200)),
+		artifactOutputs: lines(f.artifactOutputs ?? [], 0, 16).map(c => text(c, 200)),
+	};
+	return { repos: [...filing], mergeOrder, releaseGate, earlyChecks, finalIntegration };
+}
+
+/**
+ * The plan, checked. `repos`: the aliases of a cross-repo filing's repositories, the primary first; a
+ * plan for one is then cross-repo and must say how its repositories merge and are tested together.
+ */
+export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget, repos: readonly string[] = []): FeaturePlanEdit {
 	const p = record(value), spec = record(p.spec);
+	const cross = repos.length > 1;
+	// A one-repository plan is checked as it always was: what only a cross-repo plan has (repos, mergeOrder, releaseGate,
+	// earlyChecks, finalIntegration, a subtask's repo) is not read, as before there were cross-repo features.
 	requirePlan(p.overflow === undefined || typeof p.overflow === "boolean", "Choose yes or no for placement overflow.");
 	const singleSuggested = p.singleSuggested == null ? null : text(p.singleSuggested);
 	requirePlan(Array.isArray(p.questions) && p.questions.length <= 16, "Use at most 16 plan questions.");
@@ -221,7 +329,8 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 		unique(dependsOn);
 		const acceptance = lines(s.acceptance, 1);
 		requirePlan(acceptance.some(line => /screenshot|`[^`]+`|(?:^|\s)(?:run|use|execute|npm|pnpm|yarn|bun|make|go test|cargo|pytest|python|docker|curl|gradle|mvn|dotnet|bash|sh)\s+\S/i.test(line)), "Name a check command or screenshot in each subtask’s acceptance.");
-		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget, ...placementFields(s) };
+		const repo = cross ? aliasIn(s.repo, repos, "each subtask's repository") : undefined;
+		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget, ...placementFields(s), ...(repo && { repo }) };
 	});
 	unique(subtasks.map(s => s.key));
 	const ancestors = new Map<string, Set<string>>();
@@ -230,10 +339,14 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 		const next = subtasks.find(s => !done.has(s.key) && s.dependsOn.every(k => done.has(k)));
 		requirePlan(next, "Dependencies must name existing subtasks and form an acyclic graph.");
 		const deps = new Set(next.dependsOn.flatMap(k => [k, ...ancestors.get(k)!]));
-		for (const other of subtasks) if (done.has(other.key) && !deps.has(other.key))
+		// Paths are a repository's: the same path in two repositories is two paths.
+		for (const other of subtasks) if (done.has(other.key) && !deps.has(other.key) && other.repo === next.repo)
 			requirePlan(!next.owns.some(p => other.owns.some(q => overlaps(p, q))), "Independent subtasks must not overlap owned paths.");
 		ancestors.set(next.key, deps);
 		done.add(next.key);
 	}
-	return { overflow: p.overflow === true, questions, singleSuggested, subtasks, spec: { goal: text(spec.goal, 2000), acceptance: lines(spec.acceptance, 1), requirements: lines(spec.requirements), outOfScope: lines(spec.outOfScope) } };
+	const plan: FeaturePlanEdit = { overflow: p.overflow === true, questions, singleSuggested, subtasks, spec: { goal: text(spec.goal, 2000), acceptance: lines(spec.acceptance, 1), requirements: lines(spec.requirements), outOfScope: lines(spec.outOfScope) } };
+	// A suggestion of one item names no subtasks: the person sees which repository it would be on before converting.
+	if (cross && !(singleSuggested && subtasks.length === 0)) Object.assign(plan, crossRepoFields(p, repos, subtasks));
+	return plan;
 }

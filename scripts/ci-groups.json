@@ -158,7 +158,7 @@
       "shards": {
         "1": { "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
         "2": { "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,sleep,deploy,creation" } },
-        "3": { "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off" } }
+        "3": { "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo" } }
       },
       "checks": {
         "factory-e2e": "tsx ../scripts/factory-e2e.ts"
