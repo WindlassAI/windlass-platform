@@ -1012,7 +1012,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		{ kind: "usage_limit", status: 429 }, { kind: "rate_limit", code: "insufficient_quota" },
 		{ kind: "rate_limit", retryable: true, retryAfterMs: 60_000 }, { kind: "model_not_found", status: 404 },
 	]) {
-		expect(`the terminal provider error ${JSON.stringify(fields)} keeps its kind and sentence`, isDeepStrictEqual(failedStep(fields), { kind: fields.kind, message }));
+		expect(`the terminal provider error ${JSON.stringify(fields)} keeps its kind and sentence`, isDeepStrictEqual(failedStep(fields), { kind: fields.kind, message, ...(fields.retryAfterMs !== undefined && { retryAfterMs: fields.retryAfterMs }) }));
 	}
 	for (const fields of [
 		{ kind: "rate_limit", retryable: true, retryAfterMs: 1_000 }, { kind: "transport", retryable: false }, { kind: "server", status: 503, retryable: true },
@@ -1027,6 +1027,23 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	expect("a later attempt, a successful turn and a cut connection supersede an earlier refusal",
 		stepRefusal(step, { type: "step.started" }) === null && turnRefusal("succeeded", result, step) === null
 		&& turnRefusal("interrupted", result, step) === null && turnRefusal("error", { ...result, failure: { reason: "engine", message: "closed" } }, step) === null);
+}
+
+{
+	const running = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }]);
+	const at = T0 + 3 * MINUTE, reset = at + 120 * MINUTE;
+	const retry = { text: "Continue the original task.", fetchBase: null };
+	const end = (resetsAt?: number) => walk(running.item, [{ ...turnEnded("succeeded", null), at, outcome: "failed",
+		providerRefusal: { kind: "usage_limit", message: "Quota exhausted.", resetsAt, placeName: "Mac", retry } }]);
+	const waited = end(reset);
+	const scheduled = waited.last.effects.find(e => e.kind === "provider_retry");
+	const resume = (when: number) => scheduled && advance(waited.item, { ...scheduled, at: when });
+	expect("5c.1 known reset waits without a slot, resumes the same delivery only when due", waited.item.question === null
+		&& waited.item.wait?.reason === "provider" && waited.item.wait.sentence.includes("Mac") && waited.item.wait.sentence.includes("UTC")
+		&& waited.item.run?.step.turn === null && scheduled?.at === reset + MINUTE
+		&& resume(reset)?.effects.length === 0 && resume(reset + MINUTE)?.effects.some(e => e.kind === "deliver" && e.text === retry.text) === true);
+	expect("an unknown reset or one beyond six hours asks the owner, with the known reset in UTC",
+		end().item.question?.kind === "turn_refused" && end(at + 361 * MINUTE).item.question?.text.includes("UTC") === true);
 }
 
 {

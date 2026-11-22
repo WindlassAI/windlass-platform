@@ -19,7 +19,7 @@ import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker,
 import { localSizing } from "./sizing.js";
 const legacyLoginLabel = LABEL + ".claude-login=1";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { claudeSignIn, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
+import { claudeLoginGeneration, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
 import { open, type Egress } from "./egress-policy.js";
 import { EgressNetwork } from "./egress-network.js";
 import { loadPair, Refusal, RunnerError, type Identity } from "./state.js";
@@ -79,6 +79,7 @@ export class Executor extends MachineDocker {
 	private nextClaudeProbe = 0;
 	private nextOpenCodeProbe = 0;
 	private claudeOptions?: HarnessOptions;
+	private claudeGeneration?: string;
 	private signIn: "none" | "token" | "unknown" = "unknown";
 	private enforceEgress = false;
 	private inventoryStarted = false;
@@ -138,7 +139,10 @@ export class Executor extends MachineDocker {
 			if ((this.opencodeLogin?.generation ?? "signed-out") !== this.probedLogin) this.opencodeOptions = undefined;
 		}
 		if (!this.claudePin) return;
-		this.signIn = await claudeSignIn(this);
+		await withLoginVolume(this, async () => {
+			this.signIn = await loginFileState(this);
+			this.claudeGeneration = this.signIn === "token" ? claudeLoginGeneration(this) : undefined;
+		}).catch(() => { this.signIn = "unknown"; });
 	}
 	async loginChanged(signedIn: boolean) {
 		await this.refreshLogin();
@@ -323,12 +327,13 @@ export class Executor extends MachineDocker {
 		const harnesses: NonNullable<Report["harnesses"]> = [];
 		if (this.claudePin) harnesses.push({
 			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn,
+			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn, loginGeneration: this.claudeGeneration,
 			...(this.claudeOptions && { options: this.claudeOptions }),
 		});
 		if (this.opencodePin) harnesses.push({
 			id: "opencode", adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,
 			signIn: !this.dockerHealth.ok ? "unknown" : this.opencodeLogin ? "token" : "none",
+			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
 		return { kind: "report", egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,

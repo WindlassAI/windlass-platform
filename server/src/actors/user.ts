@@ -79,7 +79,9 @@ import { plannerMachines } from "../machines/details.js";
 
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
-import { machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
+import type { UsageObservation } from "../provider-usage.js";
+import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -1427,6 +1429,15 @@ export const user = actor({
 		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
 		confirmMachine: (c, input: { code: string }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
 		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
+		internalProviderGeneration: (c, location: AccountLocation) => { requireServiceFor(c, "call"); return loginGeneration(c.db, location); },
+		internalLimitedAccounts: async c => { requireServiceFor(c, "call"); return limitedAccounts(await providerAccounts(c.db, Date.now())); },
+		internalObserveUsage: async (c, location: AccountLocation, generation: string, observation: UsageObservation) => {
+			requireServiceFor(c, "call");
+			if (await recordProviderUsage(c.db, location, generation, observation)) {
+				if (location.place !== "hosted") await machinesChanged(c);
+				queueChanged(c);
+			}
+		},
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
@@ -2204,6 +2215,8 @@ export const user = actor({
 			requireService(c);
 			return answered(c, async () => {
 				await (await signIn(c)).adopt(sealed);
+				if (c.vars.machines.size) await machinesChanged(c);
+				queueChanged(c);
 				// From here on the actor is a user's, and stays.
 				c.vars.reached = true;
 				console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);

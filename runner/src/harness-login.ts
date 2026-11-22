@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { LABEL_ARG, docker, helperFlags, runHelper, tmpName } from "../../server
 import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
 import { removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { image, harnessImage, type MachineDocker } from "./policy.js";
-import { directory, loadPair, RunnerError } from "./state.js";
+import { directory, loadPair, read, save, RunnerError } from "./state.js";
 
 const loginDir = "/run/wlp-harness/claude";
 
@@ -115,6 +116,13 @@ export async function changeClaudeLogin(machine: MachineDocker, login: boolean, 
 	await storeClaudeLogin(machine, token);
 }
 
+const generationFile = (m: MachineDocker) => "claude-generation-" + m.identity.machineId + ".json";
+
+export function claudeLoginGeneration(m: MachineDocker) {
+	const value = read(generationFile(m));
+	return typeof value === "string" && /^[a-f0-9]{32}$/.test(value) ? value : undefined;
+}
+
 export async function storeClaudeLogin(machine: MachineDocker, token: string | undefined, signal?: AbortSignal) {
 	const login = token !== undefined;
 	await machine.ensureImage();
@@ -147,6 +155,7 @@ mv -fT -- "$t" token` : 'rm -f -- "$1/token" "$1"/.token.*';
 		const result = await runHelper([...helperFlags(name, "none"), "--user", "0", "--cap-add", "CHOWN",
 			...volumeFlags(machine, false)], name, ["sh", "-c", script, "sh", loginDir], { image, stdin: token });
 		if (result.code !== 0) throw new RunnerError("Docker could not update the Claude login volume.");
+		save(generationFile(machine), login ? randomBytes(16).toString("hex") : null);
 		if (!login) {
 			await removeRelay(machine);
 			await dropDetachedLoginVolume(machine);

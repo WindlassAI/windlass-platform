@@ -206,7 +206,8 @@ import { REPORT_TAKEN } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
-import { type ProviderRefusal, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
+import { resetTime, type LimitEvent, type UsageObservation } from "../provider-usage.js";
+import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
@@ -3317,6 +3318,27 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
 	let lastStepRefusal: ProviderRefusal | null = null;
+	const account = { place: meta.place.kind === "machine" ? meta.place.machineId : "hosted", harness: meta.harness ?? "windlass" as const };
+	let generation: string | null = null;
+	const observe = async (observation: UsageObservation) => {
+		if (generation !== null) await userActor(c, meta.uid).internalObserveUsage(account, generation, observation)
+			.catch(() => c.log.warn({ msg: "Could not record provider usage" }));
+	};
+	// Coalesce successive readings by window while an actor write is in flight.
+	const pendingLimits = new Map<string, LimitEvent>();
+	let writingLimits: Promise<void> | null = null;
+	const recordLimit = (event: LimitEvent) => {
+		if (event.status === "rejected" || pendingLimits.get(event.window.kind)?.status !== "rejected")
+			pendingLimits.set(event.window.kind, event);
+		writingLimits ??= (async () => {
+			while (pendingLimits.size) {
+				const next = pendingLimits.values().next().value!;
+				pendingLimits.delete(next.window.kind);
+				await observe({ kind: "event", event: next });
+			}
+			writingLimits = null;
+		})();
+	};
 	const acpTimeline = acpRecorder(c, turn);
 	let events = 0;
 	let open = true;
@@ -3370,6 +3392,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		used = sandbox;
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
+		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
+			c.log.warn({ msg: "Provider login generation unavailable for this turn" });
+			return null;
+		});
 		const harness = harnessOf(layer, meta.harness ?? "windlass");
 		const caps = await harness.capabilities(sandbox);
 		const platformTool = (tool: (typeof caps.platformTools)[number]) => caps.platformTools.includes(tool);
@@ -3394,6 +3420,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			onControl: control => { if (open) active.control = control; },
 			onAcpUpdate: update => {
 				if (!open) return;
+				if (update.sessionUpdate === "usage_update" && update.rateLimit) recordLimit(update.rateLimit);
 				if (caps.events === "acp") acpTimeline.update(update);
 				const title = generatedSessionTitle(update, { typed: meta.titleIsTyped, item: meta.origin }, active.secrets?.redactor);
 				if (title && title !== meta.title) meta.title = title;
@@ -3578,7 +3605,10 @@ fi`, { signal, timeoutMs: 5000 });
 							event = { ...event, data: { ...event.data, content: [{ type: "text", text: storedBrief }] } };
 							storedBrief = null;
 						}
+						event = publicUsageEvent(event, lastStepRefusal);
 						lastStepRefusal = stepRefusal(lastStepRefusal, event);
+						if (event.type === "step.failed" && lastStepRefusal?.retryAfterMs !== undefined)
+							lastStepRefusal.resetsAt = resetTime(Date.now() + lastStepRefusal.retryAfterMs);
 						if (reviewer) commands.note(event);
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
@@ -3704,7 +3734,11 @@ fi`, { signal, timeoutMs: 5000 });
 			outcome = reviewer && !active.item?.refused ? "interrupted" : "error";
 			message = problem ?? "The turn could not be run.";
 		}
+		await writingLimits;
 		const refusal = turnRefusal(outcome, result, lastStepRefusal);
+		const limitReading = limitObservation(refusal, Date.now());
+		if (limitReading) await observe(limitReading);
+		else if (outcome === "succeeded") await observe({ kind: "success", at: Date.now(), startedAt });
 		if (refusal) {
 			// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
 			if (result?.failure?.reason === "auth_required" && message) {
@@ -3716,7 +3750,7 @@ fi`, { signal, timeoutMs: 5000 });
 			message = refusalMessage(safe);
 			if (active.item) {
 				const { text, fetchBase } = active.item.row;
-				active.item.providerRefusal = { ...safe, retry: { text: redactor?.text(text) ?? text, fetchBase } };
+				active.item.providerRefusal = { ...safe, placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase } };
 			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
 				message += " You can change the model or reasoning effort with your next prompt.";
 			}

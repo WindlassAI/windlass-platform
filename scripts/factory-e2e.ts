@@ -263,6 +263,38 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			return view.question.text;
 		});
 	} finally { await refusalServer.stop(); refusalServer.remove(); }
+	const usageServer = new Server();
+	try {
+		await check("orchestrator usage: Windlass two-hour reset reaches the item and gates later work", async () => {
+			const { user, client, auth } = await world(usageServer, standin);
+			const startedAt = Date.now();
+			const item = await user.createItem({ repository: { id: harbor.id }, title: "Run the checks", body: "Run (usage-limit)", start: true });
+			const view = await untilItem(user, item.id, "the provider outcome", v => !!v.question || v.wait?.reason === "provider");
+			assert(view.wait?.reason === "provider" && !view.question && view.wait.retryAt! >= startedAt + 121 * 60_000, stateOf(view));
+			const snapshot = await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot();
+			assert(!JSON.stringify([snapshot.timeline, view]).includes("canary"), "private Windlass limit fields reached the page");
+			const next = await user.createItem({ repository: { id: harbor.id }, title: "Continue checks", body: "Verify the build", start: true });
+			const queued = await untilItem(user, next.id, "the account cooldown", v => v.wait?.reason === "provider");
+			assert(queued.spent.turns === 0 && queued.wait?.retryAt === view.wait.retryAt, stateOf(queued));
+			return view.wait.sentence;
+		});
+	} finally { await usageServer.stop(); usageServer.remove(); }
+	const unknownServer = new Server();
+	try {
+		await check("orchestrator usage: unknown Windlass reset asks the owner and blocks a second item for fifteen minutes", async () => {
+			const { user } = await world(unknownServer, standin);
+			const start = Date.now();
+			const first = await user.createItem({ repository: { id: harbor.id }, title: "Run checks", body: "Run (usage-limit-unknown)", start: true });
+			const view = await untilItem(user, first.id, "the unknown reset question", v => !!v.question);
+			assert(view.question?.kind === "turn_refused", stateOf(view));
+			const next = await user.createItem({ repository: { id: harbor.id }, title: "Review changes", body: "Review the changes", start: true });
+			const queued = await untilItem(user, next.id, "the next admission", v => v.wait?.reason === "provider" || v.spent.turns > 0);
+			const until = queued.wait?.retryAt;
+			assert(queued.wait?.reason === "provider" && until && until >= start + 900_000 && until <= Date.now() + 900_000 && queued.spent.turns === 0, stateOf(queued));
+			return queued.wait.sentence;
+		});
+	} finally { await unknownServer.stop(); unknownServer.remove(); }
+	if (only.length === 1 && only[0] === "orchestrator usage") { await standin.stop(); process.exit(failed ? 1 : 0); }
 	if (only.length === 1 && only[0] === "orchestrator refusal") { await standin.stop(); process.exit(failed ? 1 : 0); }
 }
 

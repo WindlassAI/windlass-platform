@@ -167,7 +167,7 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 const harnessId = oneOf("claude", "opencode");
 const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const catalog = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
-const harnesses = list(object({ id: harnessId, optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
+const harnesses = list(object({ id: harnessId, loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
 const nonnegative = is<number>(v => typeof v === "number" && Number.isFinite(v) && v >= 0);

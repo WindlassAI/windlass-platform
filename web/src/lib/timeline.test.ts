@@ -831,6 +831,10 @@ describe("an ACP turn", () => {
 		const plan = blocksOf(acpView("acp-claude-plan"));
 		expect(plan).toHaveLength(1);
 		expect(plan[0]).toMatchObject({ kind: "plan", entries: [{ content: "Read the file", status: "completed" }, { content: "Make the edit", status: "completed" }, { content: "Check the result", status: "completed" }] });
+		const fixture = acpFixture("acp-claude-usage");
+		const estimated = acpReduce(acpRunToFeed({ ...fixture, updates: fixture.updates.map(u => ({ ...u, fiveHourUsedPct: 93 })) }));
+		expect(estimated.context?.fiveHourUsedPct).toBe(93);
+		expect(turn(estimated).end?.context?.fiveHourUsedPct).toBe(93);
 		const usage = acpView("acp-claude-usage");
 		expect(usage.context).toEqual({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } });
 		expect(turn(usage).end?.context).toEqual({ used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } });

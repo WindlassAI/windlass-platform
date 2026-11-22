@@ -38,6 +38,7 @@ import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, type PlacementInventory } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
+import { MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, retryAt } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
@@ -338,6 +339,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 		case "placement_wait": {
 			const job = c.item.jobs?.at(-1);
 			if (fact.key !== key || step.kind !== "subtasks" || c.item.question || !job || job.cancelRequested || job.state !== "draft") return false;
+			let providerUntil: number | undefined;
 			let sentence: string;
 			if (fact.kind === "place_child") {
 				if (!job.route || job.placement) return false;
@@ -349,13 +351,15 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 				}
 				if (fit.refused !== undefined) return askPlacement(c, fit.refused);
 				sentence = fit.wait;
+				providerUntil = fit.retryAt;
 			} else {
 				if (job.id !== fact.child) return false;
 				if (fact.refused) return askPlacement(c, fact.sentence);
 				sentence = fact.sentence;
+				providerUntil = fact.providerUntil;
 			}
-			const retry = retryAt(c.at, 0);
-			c.state("waiting", { reason: "machine", sentence, retryAt: retry });
+			const retry = providerUntil ?? retryAt(c.at, 0);
+			c.state("waiting", { reason: providerUntil ? "provider" : "machine", sentence, retryAt: retry });
 			dispatchAgain(c, retry);
 			return true;
 		}
@@ -405,6 +409,10 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 			if (fact.rebase && c.item.parent) {
 				nextTurn(c, { ...IMPLEMENT, kind: "conflict", charge: "conflict", fetchBase: c.item.task.base, text: "The feature branch moved. Rebase your own branch onto origin/" + c.item.task.base + " and resolve conflicts. Checks and CI must pass again." });
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
+			return true;
+		case "provider_retry":
+			if (fact.key !== key || c.item.wait?.reason !== "provider" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
+			nextTurn(c, fact.plan);
 			return true;
 		case "turn_waiting": {
 			if (fact.key !== key || step.turn !== "delivered") return false;
@@ -585,6 +593,16 @@ function spendTurn(c: Change, spend: TurnSpend): void {
 }
 
 function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnPlan): void {
+	const reset = refusal.resetsAt;
+	if (usageRefusal(refusal.kind) && reset !== undefined && reset - c.at <= 360 * MINUTE) {
+		const at = Math.max(c.at, reset + MINUTE);
+		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : c.item.place.machineId);
+		const wait = providerWait("windlass", place, at, reset);
+		c.state("waiting", wait);
+		c.say(wait.sentence);
+		c.effects.push({ kind: "provider_retry", key: c.key, at, plan: { ...plan, ...refusal.retry, newStep: false } });
+		return;
+	}
 	ask(c, "turn_refused", refusalMessage(refusal), [choice("again"), ...handOver(c.item), choice("give_up")], null,
 		{ ...plan, ...refusal.retry, newStep: false });
 }

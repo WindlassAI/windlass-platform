@@ -20,7 +20,8 @@
  * config.ts reads. The day's allowance and the kept sandboxes are usage.ts's own settings.
  */
 
-import type { SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
+import { MINUTE, providerWait } from "../provider-usage.js";
+import type { ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
 import { spellSeconds, type UsageEntry } from "../usage.js";
 import type { FactoryLimits, ItemBudget, StopCause, Wait } from "./types.js";
 
@@ -113,6 +114,7 @@ export function slotWait(name: string, units: number, free: number): string {
 }
 
 export interface AdmissionInput {
+	provider?: ProviderAccount;
 	at: number;
 	limits: FactoryLimits;
 	/** The user's turns running now, the factory's among them by their items' titles. */
@@ -133,8 +135,14 @@ const listed = (titles: string[]) => (titles.length === 0 ? "" : ` (${titles.sli
 const utcTime = (ms: number) => new Date(ms).toISOString().slice(11, 16);
 
 /** In the order a person can act on them: the first that holds is the one reason named. */
+
 export function admit(input: AdmissionInput): Admission {
 	const { at, limits, turns, place } = input;
+	const account = input.provider;
+	if (account?.state === "limited" && account.limitedUntil !== null && account.limitedUntil > at) {
+		const reset = account.windows.find(w => w.source === "refusal" && w.resetsAt !== null && w.resetsAt + MINUTE === account.limitedUntil)?.resetsAt;
+		return { ok: false, wait: providerWait(account.harness, place.kind === "hosted" ? "hosted" : place.name, account.limitedUntil, reset) };
+	}
 	const later = retryAt(at, input.attempt);
 	const wait = (reason: Wait["reason"], sentence: string, when = later): Admission => ({ ok: false, wait: { reason, sentence, retryAt: when } });
 

@@ -1090,6 +1090,7 @@ export function sandboxSlots(requested: number, max: number) {
 
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
+	providerAccounts?: ProviderAccount[];
 	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
 	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & { reserve?: MachineSlotCapacity["reserve"]; busy: number; queued: number };
 	personalRunning?: number;
@@ -1100,7 +1101,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; loginGeneration?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1183,7 +1184,7 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1938,7 +1939,22 @@ export interface TurnUsage {
 	reasoningTokens: number;
 }
 
+export interface UsageWindow {
+	kind: "5h" | "7d" | "model" | "rpm" | "other";
+	usedPct: number | null;
+	resetsAt: number | null;
+	observedAt: number;
+	source: "refusal" | "event" | "header";
+}
+export interface ProviderAccount {
+	key: string;
+	harness: HarnessId;
+	state: "ok" | "warning" | "limited";
+	limitedUntil: number | null;
+	windows: UsageWindow[];
+}
 export interface AcpContext {
+	fiveHourUsedPct?: number;
 	used: number;
 	size: number;
 	cost: { amount: number; currency: string } | null;
@@ -1959,7 +1975,7 @@ export type AcpUpdate = (
 	| { sessionUpdate: "current_mode_update"; currentModeId: string }
 	| { sessionUpdate: "config_option_update"; configOptions: unknown[] }
 	| { sessionUpdate: "session_info_update"; title?: string; updatedAt?: string }
-	| { sessionUpdate: "usage_update"; used: number; size: number; cost?: AcpContext["cost"] }
+	| { sessionUpdate: "usage_update"; rateLimit?: { status: "allowed" | "allowed_warning" | "rejected"; window: UsageWindow }; fiveHourUsedPct?: number; used: number; size: number; cost?: AcpContext["cost"] }
 	| { sessionUpdate: "notice" }
 	| { sessionUpdate: "compaction_update" }
 	| { sessionUpdate: "unknown"; originalSessionUpdate: string }

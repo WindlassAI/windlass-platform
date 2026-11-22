@@ -140,7 +140,8 @@ function fieldsOf(update: AcpUpdate): AcpFields {
 export function contextOf(value: unknown): AcpContext | null {
 	if (!isRecord(value) || !finite(value.used) || !finite(value.size) || value.size <= 0) return null;
 	const cost = isRecord(value.cost) && finite(value.cost.amount) && typeof value.cost.currency === "string" ? { amount: value.cost.amount, currency: value.cost.currency } : null;
-	return { used: value.used, size: value.size, cost };
+	const pct = value.fiveHourUsedPct;
+	return { used: value.used, size: value.size, cost, ...(finite(pct) && pct >= 0 && pct <= 100 && { fiveHourUsedPct: pct }) };
 }
 
 /** "41% used", of a context's fill. */

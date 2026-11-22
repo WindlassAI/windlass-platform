@@ -527,9 +527,10 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read")
 }
 
 async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
-	const machines = await userActor(c, uid).internalPlannerMachines();
+	const user = userActor(c, uid);
+	const [machines, limited] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts()]);
 	const hostedProfiles = (await getLayer()).sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles };
+	return { machines, hostedProfiles, limited };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {
@@ -732,6 +733,7 @@ function live(item: FactoryItem, effect: Effect): boolean {
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
 	switch (effect.kind) {
+		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
 		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
 		case "integrate": return effect.key === key && run.step.kind === "subtasks" && !item.question;
 		case "dispatch": return !item.question && effect.key === key && run.step.kind === "subtasks";
@@ -808,6 +810,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
+		case "provider_retry":
+			await take(c, { ...effect, at: Date.now() });
+			return true;
 		case "verified_check":
 			// A handoff or cancellation can replace a pending row after the due scan.
 			if (!(await c.db.execute("SELECT 1 FROM effects WHERE id=? AND effect=?", row.id, row.effect)).length) return true;
@@ -913,7 +918,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			let text = effect.text;
 			if (effect.agent === "planner") {
 				const inventory = await placementInventory(c, meta.uid);
-				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => description);
+				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({ ...description,
+					limited: inventory.limited?.filter(a => a.machineId === machineId).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, machines: places })
@@ -1151,7 +1157,11 @@ export const workItem = actor({
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
 			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
-			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s), context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: s.item.jobs?.filter(j => j.state === "done" && job.task.dependsOn.includes(j.task.key)).map(j => j.report) }) };
+			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
+			const previous = completed.at(-1);
+			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports: completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report) }),
+				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place } };
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);

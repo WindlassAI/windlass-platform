@@ -147,7 +147,7 @@ import {
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
-import { HARNESS_NAMES } from "../lib/acp";
+import { contextOf, HARNESS_NAMES } from "../lib/acp";
 import { acpFixture } from "./acp-fixtures";
 import { fixture } from "./fixtures";
 import { unifiedDiff } from "../lib/acp";
@@ -2432,7 +2432,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						if (!state) return;
 						const title = generatedSessionTitle(update, { typed: session.titled, item: session.summary.item });
 						if (title && title !== session.summary.title) setSummary(world, session, { title });
-						if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && typeof update.size === "number") state.context = { used: update.used, size: update.size, cost: (update.cost as AcpContext["cost"] | undefined) ?? null };
+						if (update.sessionUpdate === "usage_update") state.context = contextOf(update);
 						// Claude Code changed its own mode (leaving Plan, say): the session's follows, unless its user chose one during the turn.
 						if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string" && !state.modeQueued && session.summary.mode !== update.currentModeId) setSummary(world, session, { mode: update.currentModeId });
 						state.recorder.update(update);

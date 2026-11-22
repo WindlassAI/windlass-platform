@@ -179,6 +179,7 @@ export interface TurnPlan {
 
 /** The owner's explicit retry replays this delivery, including a conflict step's base fetch. */
 export interface ItemProviderRefusal extends ProviderRefusal {
+	placeName?: string;
 	retry: Pick<TurnPlan, "text" | "fetchBase">;
 }
 
@@ -198,7 +199,7 @@ export type Fact =
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
-	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; providerUntil?: number }
 	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
@@ -215,6 +216,7 @@ export type Fact =
 	| { kind: "send_back"; at: number; by: Cause; note: string }
 	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
+	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
 	| { kind: "turn_started"; at: number; key: string }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
@@ -272,6 +274,7 @@ export type VerifiedCheckEffect = {
 
 export type Effect =
 	| VerifiedCheckEffect
+	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
