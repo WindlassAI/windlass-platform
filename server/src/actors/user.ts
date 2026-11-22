@@ -1098,6 +1098,26 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	return summary;
 }
 
+/**
+ * The models a subtask's agent may choose, by the lists `makeSession` holds a session to: the account's
+ * for Windlass, each machine harness's catalog (or only its default where its runner reported none).
+ * A list that cannot be read is left out, and the child's creation judges it. Each is read at once.
+ */
+export async function agentModels(c: CreateCtx & { key: string[] }): Promise<AgentModels> {
+	const profile = c.vars.profile;
+	const harnesses = [...c.vars.machines.values()].flatMap(m => (m.harnesses ?? []).filter(h => machineHarnesses[h.id]?.items).map(h => ({ m, h })));
+	const [windlass, catalogs] = await Promise.all([
+		profile ? modelsOf(c, profile.demo).catch(() => null) : null,
+		Promise.all(harnesses.map(({ m, h }) => h.optionsDigest ? machineCatalog(c, m.machineId, h.id, h.optionsDigest).catch(() => null) : undefined)),
+	]);
+	const machines: NonNullable<AgentModels["machines"]> = {};
+	harnesses.forEach(({ m, h }, i) => {
+		const options = catalogs[i];
+		if (options !== null) (machines[m.machineId] ??= {})[h.id] = initialHarnessModels(options);
+	});
+	return { windlass, machines };
+}
+
 /** `makeSession` for an item's session, as user-items.ts asks for it, with the action's own context. */
 function itemSession(c: CreateCtx): MakeSession {
 	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
@@ -1481,24 +1501,7 @@ export const user = actor({
 			}
 		},
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
-		/**
-		 * The models a subtask's agent may choose, by the lists `makeSession` holds a session to: the account's
-		 * for Windlass, each machine harness's catalog (or only its default where its runner reported none).
-		 * A list that cannot be read is left out, and the child's creation judges it.
-		 */
-		internalAgentModels: async (c): Promise<AgentModels> => {
-			requireService(c);
-			const profile = c.vars.profile;
-			const windlass = profile ? await modelsOf(c, profile.demo).catch(() => null) : null;
-			const machines: NonNullable<AgentModels["machines"]> = {};
-			for (const m of c.vars.machines.values()) for (const h of m.harnesses ?? []) {
-				if (!machineHarnesses[h.id]?.items) continue;
-				const options = h.optionsDigest ? await machineCatalog(c, m.machineId, h.id, h.optionsDigest).catch(() => null) : undefined;
-				if (options === null) continue;
-				(machines[m.machineId] ??= {})[h.id] = initialHarnessModels(options);
-			}
-			return { windlass, machines };
-		},
+		internalAgentModels: (c): Promise<AgentModels> => { requireService(c); return agentModels(c); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
@@ -1534,7 +1537,7 @@ export const user = actor({
 		revokeApiToken: (c, id: string): Promise<ApiToken[]> => itemActions.revokeApiToken(c, id),
 		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
 		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
-		internalFeatureChild: (c, input: { parent: string; child: string; cancel?: boolean }) => itemActions.internalFeatureChild(c, input, itemSession(c)),
+		internalFeatureChild: (c, input: { parent: string; child: string; cancel?: boolean }) => itemActions.internalFeatureChild(c, input, itemSession(c), () => agentModels(c)),
 		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
 		internalItemFacts: (c, ids: string[] | string): ItemFacts => itemActions.internalItemFacts(c, typeof ids === "string" ? [ids] : ids),
 		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),

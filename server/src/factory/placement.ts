@@ -36,6 +36,8 @@ export interface PlacementInventory {
 	/** Account state from provider routing, when available. */
 	limited?: { machineId: string; harness: string; limitedUntil?: number; accountKey?: string }[];
 	models?: AgentModels;
+	/** The feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
+	featureModel?: string;
 }
 export interface PlacementRoute {
 	preferred: SandboxPlace;
@@ -87,15 +89,18 @@ export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "
 		unit: { cpus: machine.host?.sandboxCpus ?? 0, memoryBytes: 1.5 * GiB } };
 }
 
-/** Why the model or effort a subtask chose is not one its agent offers, by `list`; null where it is, or nothing was chosen. */
-export function agentModelProblem(task: Pick<PlanSubtask, "agent">, list: ModelList | null | undefined): string | null {
+/**
+ * Why the model or effort a subtask chose is not one its agent offers, by `list`; null where it is, or nothing
+ * was chosen. Windlass without a model of its own runs the feature's (`featureModel`): an effort alone is held
+ * to that model, and is not judged where the feature's model is not known.
+ */
+export function agentModelProblem(task: Pick<PlanSubtask, "agent">, list: ModelList | null | undefined, featureModel?: string): string | null {
 	const agent = task.agent;
 	if (!agent || !list || (agent.model === undefined && agent.effort === undefined)) return null;
 	const machine = machineHarness(agent.harness) !== null;
-	// Windlass without a model of its own runs the feature's, which was taken when the feature was filed.
-	if (agent.model === undefined && !machine) return null;
+	if (agent.model === undefined && !machine && featureModel === undefined) return null;
 	try {
-		const model = chosenModel(list, agent.model);
+		const model = chosenModel(list, agent.model ?? (machine ? undefined : featureModel));
 		if (agent.effort !== undefined) checkItemEffort(list, model, agent.effort, machine);
 		return null;
 	} catch (error) {
@@ -121,7 +126,7 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${HARNESS_PROFILE} profile, which ${profile.name} needs`;
 	}
 	const list = harness === "windlass" ? inventory.models?.windlass : inventory.models?.machines?.[machine.machineId]?.[harness];
-	return agentModelProblem(task, list);
+	return agentModelProblem(task, list, inventory.featureModel);
 }
 
 /** What the machine cannot do at all, from its last report. Kept while it is offline. */
@@ -157,7 +162,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (notForItems) return { refused: notForItems, permanent: true };
 	if (place.kind === "hosted") {
 		if (harness !== "windlass") return { refused: `this platform runs only Windlass; ${harnessName(harness)} runs on a machine of yours.`, permanent: true };
-		const modelProblem = agentModelProblem(task, inventory.models?.windlass);
+		const modelProblem = agentModelProblem(task, inventory.models?.windlass, inventory.featureModel);
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };
 		if (!inventory.hostedProfiles.length || (needs.profile && !inventory.hostedProfiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };
@@ -173,6 +178,9 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const never = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: true });
 	const notNow = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: false });
 	if (m.orchestrator === "never" || m.orchestrator === "named" && !task.place) return never("owner placement policy is " + m.orchestrator);
+	const onMachine = harness !== "windlass" ? harness : null;
+	// A machine harness runs only in the hardened container, whatever profile the subtask asks for.
+	if (onMachine && needs.profile && needs.profile !== HARNESS_PROFILE) return never(`${harnessName(onMachine)} runs only in the ${HARNESS_PROFILE} profile, and the subtask asks for ${needs.profile}`);
 	const slots = machineSlots(m);
 	const needed = Math.max(1, needs.cpus && slots.unit.cpus > 0 ? Math.ceil(needs.cpus / slots.unit.cpus) : 1,
 		needs.memoryGiB ? Math.ceil(needs.memoryGiB * GiB / slots.unit.memoryBytes) : 1);
@@ -189,7 +197,6 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (needs.cpus && slots.unit.cpus <= 0) return notNow("per-slot CPU capacity is unknown");
 	if ((m.freeDiskBytes ?? 0) < 5 * GiB) return notNow("at least 5 GiB of reported free disk is required");
 	const allowed = m.availableProfiles.filter(p => m.allowedProfiles?.some(id => id === p));
-	const onMachine = harness !== "windlass" ? harness : null;
 	const wanted: SandboxProfileId | undefined = needs.profile ?? (onMachine ? HARNESS_PROFILE : undefined);
 	const profile = wanted ? allowed.find(p => p === wanted) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
 	if (!profile) return notNow("no available owner-allowed profile matches");

@@ -23,7 +23,7 @@
 
 import { windlassAccountKey } from "../provider-usage.js";
 import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
-import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
+import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HarnessId, ItemFeed, PlanSubtask } from "../contract.js";
 import { harnessName, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
@@ -778,7 +778,12 @@ export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 	return dailyTokenWait(used, effectiveUserLimits(c.vars.items.limits.overrides).factory.dailyTokens);
 }
 
-async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId): Promise<ReturnType<typeof choosePlacement>> {
+/**
+ * A child's place, chosen as approval checked it: with the models each agent offers (`agentModels`, read only
+ * for a subtask that chose a model or effort) and the feature's model, so overflow never picks a place that
+ * cannot run the subtask's model.
+ */
+async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	// A partial creation stays pinned, and must still pass current owner policy.
@@ -787,7 +792,8 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.() };
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(),
+		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {
@@ -817,7 +823,7 @@ export function childAgent(task: Pick<PlanSubtask, "agent">, placement: Pick<Chi
 
 const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
-	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession): Promise<ItemView | null> {
+	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession, agentModels: () => Promise<AgentModels>): Promise<ItemView | null> {
 		requireServiceFor(c, "call");
 		const uid = c.key[0]!;
 		// Share an ordering boundary with cancellation so an interrupted creation can never outlive its parent.
@@ -834,7 +840,7 @@ export const itemActions = {
 				if (!session) throw new Error("The feature session is unavailable.");
 				const { job, feature, context } = request;
 				const route = job.route ?? { preferred: feature.place, alternatives: [] };
-				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile);
+				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile, session.model, agentModels);
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),

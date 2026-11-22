@@ -831,6 +831,8 @@ interface ChildOptions {
 	refuse?: { code: string; message: string };
 	/** Pick the job of this subtask (default: the first). */
 	subtask?: string;
+	/** What the user actor answers for each agent's models (`internalAgentModels`); left out: nothing listed. */
+	models?: import("../server/src/factory/placement.js").AgentModels;
 }
 async function childCreation(t: import("node:test").TestContext, overflow = false, options: ChildOptions = {}) {
 	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
@@ -872,7 +874,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 		delivered.push({ place: input.place, size: origin.size, profile: input.profile });
 		sessions.push({ harness: input.harness, model: input.model, effort: origin.effort });
 		return { ...input, model: input.model ?? "default", repository, id: origin.sessionId } as never;
-	});
+	}, async () => options.models ?? {});
 	return { create, delivered, sessions, started, facts, machines, mac, raw, child: () => child };
 }
 
@@ -1114,6 +1116,74 @@ test("a re-plan keeps each remaining subtask's agent unless the person changes i
 	const edited = advance(filed, { kind: "edit_plan", version: filed.featurePlan!.version, plan: edit, at: 10, by: "person" }).item;
 	assert.deepEqual(edited.featurePlan?.subtasks.map(s => s.agent?.harness), ["claude", "opencode"]);
 	assert.throws(() => advance(edited, { kind: "approve_plan", version: edited.featurePlan!.version, at: 11, by: "person", agents: ["index"], inventory }), /page: confirm that it runs OpenCode/);
+});
+
+test("a re-plan can't keep a machine agent on a subtask it moves out of the hardened profile", () => {
+	const machines = [agentMac()];
+	const inventory = { machines: plannerMachines(machines), hostedProfiles: [] };
+	let item = advance(proposed(mixedPlan()), { kind: "approve_plan", version: 1, at: 4, by: "person", agents: ["index"], inventory }).item;
+	item = advance(item, { kind: "feature_ready", key: currentKey(item)!, at: 5, head, pr }).item;
+	item = advance(item, { kind: "place_child", key: currentKey(item)!, at: 6, inventory }).item;
+	item = advance(item, { kind: "child_update", key: currentKey(item)!, at: 7, child: item.jobs![0].id, state: "failed", spent: { ...zero, turns: 1 }, report: "", head: null }).item;
+	// The planner leaves the agent out (the approved one is kept) and asks for the Windlass sandbox profile.
+	const replan = mixedPlan();
+	delete replan.subtasks[0].agent;
+	replan.subtasks[0].needs = { profile: "docker-windlass-sandbox" };
+	replan.subtasks[0].budget.turns -= 1;
+	assert.throws(() => advance(item, { kind: "file_plan", key: currentKey(item)!, plan: replan, at: 8 }), /index: Claude Code runs only in the docker-hardened profile/);
+	// Placement refuses such a subtask for good, wherever it came from.
+	const task = { ...mixedPlan().subtasks[0], needs: { profile: "docker-windlass-sandbox" as const } };
+	const fit = choosePlacement(task, { preferred: { kind: "machine", machineId: macId }, alternatives: [] }, inventory);
+	assert.equal(fit.decision, undefined);
+	assert.equal(fit.permanent, true);
+	assert.match(String(fit.refused), /‘Mac’: Claude Code runs only in the docker-hardened profile, and the subtask asks for docker-windlass-sandbox/);
+});
+
+test("a Windlass subtask choosing only an effort is held to the feature's model at approval", () => {
+	const route = { preferred: { kind: "machine" as const, machineId: macId }, alternatives: [] };
+	const task = (effort: string) => ({ ...proposal().subtasks[0], place: { prefer: "Mac", reason: "here" }, agent: { harness: "windlass" as const, effort } });
+	const fit = (effort: string, featureModel?: string) => choosePlacement(task(effort), route, { machines: plannerMachines([agentMac()]), hostedProfiles: [], models: { windlass: windlassModels }, featureModel });
+	assert.match(String(fit("max", "gpt-5.5").refused), /Windlass: .*effort for gpt-5\.5 must be one of: medium, high/);
+	assert.match(String(fit("high", "gpt-5.5-mini").refused), /Windlass: gpt-5\.5-mini takes no reasoning effort/);
+	assert.equal(fit("high", "gpt-5.5").decision?.place.kind, "machine");
+	// The feature's model not known: the child's creation judges it.
+	assert.equal(fit("max").decision?.place.kind, "machine");
+	// Approval refuses it with the reason, before any subtask runs.
+	const p = proposal();
+	for (const sub of p.subtasks) sub.place = { prefer: "Mac", reason: "here" };
+	p.subtasks[0].agent = { harness: "windlass", effort: "max" };
+	assert.throws(() => advance(proposed(p), { kind: "approve_plan", version: 1, at: 4, by: "person", inventory: { machines: plannerMachines([agentMac()]), hostedProfiles: [], models: { windlass: windlassModels }, featureModel: "gpt-5.5" } }), /index: ‘Mac’: Windlass: .*effort for gpt-5\.5/);
+});
+
+test("dispatch places a subtask by its agent's models: overflow skips a machine that doesn't offer the model", async t => {
+	const without = { ...claudeModels, models: claudeModels.models.filter(m => m.id !== "sonnet") };
+	const models = { machines: { [macId]: { claude: without }, [linuxId]: { claude: claudeModels } } };
+	const run = await childCreation(t, true, { agent: { harness: "claude", model: "sonnet" }, models });
+	await run.create();
+	assert.deepEqual(run.delivered.map(d => d.place), [{ kind: "machine", machineId: linuxId }]);
+	assert.equal(run.child()?.placement?.harness, "claude");
+	// No place offers it: the feature hears the reason, and nothing is made.
+	const nowhere = await childCreation(t, true, { agent: { harness: "claude", model: "sonnet" }, models: { machines: { [macId]: { claude: without }, [linuxId]: { claude: without } } } });
+	await nowhere.create();
+	assert.deepEqual(nowhere.delivered, []);
+	assert.ok(nowhere.facts[0]?.kind === "placement_wait" && nowhere.facts[0].refused && /Claude Code: That model is not offered/.test(nowhere.facts[0].sentence), JSON.stringify(nowhere.facts));
+});
+
+test("the models each agent offers are read from every machine at once", async () => {
+	const { agentModels } = await import("../server/src/actors/user.js");
+	let asked = 0, release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const options = { models: [{ id: "sonnet", name: "Sonnet", efforts: [] }], defaultModel: "sonnet" };
+	const catalog = { internalCatalog: async () => { asked += 1; await gate; return options; } };
+	const machines = new Map([macId, linuxId].map(id => [id, { ...agentMac(), machineId: id, harnesses: signedIn.map(h => ({ ...h, optionsDigest: "d-" + h.id })) }] as const));
+	const ctx = { key: ["u_fixture"], vars: { profile: null, machines }, client: () => ({ machine: { get: () => catalog } }) };
+	const read = agentModels(ctx as never);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(asked, 4, "every catalog is asked before any answers");
+	release();
+	const models = await read;
+	assert.deepEqual(Object.keys(models.machines ?? {}).sort(), [macId, linuxId].sort());
+	assert.deepEqual(Object.keys(models.machines![macId]!).sort(), ["claude", "opencode"]);
 });
 
 test("child items count tokens only for metered agents; a budgeted agent's silent turn stops the child", async () => {

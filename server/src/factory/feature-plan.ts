@@ -135,6 +135,12 @@ function agentOf(value: unknown): SubtaskAgent | undefined {
 	return { harness, ...(model !== undefined && { model }), ...(effort !== undefined && { effort }) };
 }
 
+/** Why a subtask's profile need refuses its agent: a machine harness runs only in the docker-hardened profile. */
+export function agentProfileProblem(task: Pick<PlanSubtask, "agent" | "needs">): string | null {
+	const agent = task.agent, profile = task.needs?.profile;
+	return agent && worksWithoutAsking(agent.harness) && profile !== undefined && profile !== "docker-hardened" ? `${harnessName(agent.harness)} runs only in the docker-hardened profile.` : null;
+}
+
 function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" | "needs" | "agent"> {
 	const result: Pick<PlanSubtask, "place" | "needs" | "agent"> = {};
 	if (s.place !== undefined) {
@@ -174,8 +180,8 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 		requirePlan(!result.agent || result.agent.harness === (agent?.harness ?? "windlass"), "Name the subtask's agent once, in agent.");
 		if (agent) result.agent = agent; else delete result.agent;
 	}
-	if (result.agent && worksWithoutAsking(result.agent.harness))
-		requirePlan(result.needs?.profile === undefined || result.needs.profile === "docker-hardened", `${harnessName(result.agent.harness)} runs only in the docker-hardened profile.`);
+	const profile = agentProfileProblem(result);
+	requirePlan(profile === null, profile!);
 	return result;
 }
 

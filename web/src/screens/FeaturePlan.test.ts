@@ -698,6 +698,25 @@ describe("agents in a feature's plan", () => {
 		expect(confirmBoxes()).toHaveLength(1);
 	});
 
+	it("asks to confirm the subtasks the server counts as still to run, not the ones its children look done", async () => {
+		// A child that finished but whose work the feature has not integrated: the server still asks for it.
+		const finished = (item: ItemView): ItemView => (item.plan ? { ...item, children: [...(item.children ?? []), { ...item, id: "it_finished", mode: "single", state: "done", parent: { itemId: item.id, key: "templates", title: "Write the alert email templates" }, plan: null, children: [] } as ItemView] } : item);
+		make({ items: "features" }, finished);
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		expect(feature.unattended).toEqual(["templates"]);
+		await show(`/items/${feature.id}`);
+		expect(confirmBoxes()).toHaveLength(1);
+		expect(button("Approve version 1")?.disabled).toBe(true);
+	});
+
+	it("approves without a confirmation when the server counts nothing left to confirm", async () => {
+		make({ items: "features" }, (item) => (item.plan ? { ...item, unattended: [] } : item));
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await show(`/items/${feature.id}`);
+		expect(confirmBoxes()).toHaveLength(0);
+		expect(button("Approve version 1")?.disabled).toBe(false);
+	});
+
 	it("can't place an agent the place does not offer, and says why before approval", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Email tide alerts to subscribers");

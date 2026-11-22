@@ -11,14 +11,13 @@
  * each such subtask on the card (`approve_plan`'s `agents`).
  */
 import type { HarnessId, MachineSummary, ModelList, PlanSubtask, SubtaskAgent } from "@contract";
-import { unattendedKeys } from "../../../server/src/factory/feature-plan.js";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES } from "./acp";
 import { machineLabel } from "./machines";
 import { harnessOptions, modelName, type ReportedOptions } from "./models";
 
-export { unattendedKeys, worksWithoutAsking };
+export { worksWithoutAsking };
 
 /** The words the card puts beside an agent that never asks before a command or an edit. */
 export const UNATTENDED_WORDS = "works without asking";

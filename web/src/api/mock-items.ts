@@ -1717,7 +1717,11 @@ export function createMockItems(deps: MockItemsDeps) {
 	}
 
 	const canRetry = (item: ItemView) => item.state === "failed" && !item.parent && !item.children?.length;
-	const pageOf = (item: ItemView) => structuredClone({ ...item, canRetry: canRetry(item) });
+	/** As the server's page: with a plan, what approval counts as integrated and still to confirm (work-item.ts, `pageOf`). */
+	const pageOf = (item: ItemView) => {
+		const completed = new Set((item.children ?? []).filter((child) => child.state === "done" && child.parent).map((child) => child.parent!.key));
+		return structuredClone({ ...item, canRetry: canRetry(item), ...(item.plan && { unattended: unattendedKeys(item.plan, completed), completedSubtasks: [...completed] }) });
+	};
 
 	/**
 	 * A feature's page while its plan is proposed carries the owner's current secrets policy for each place

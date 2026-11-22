@@ -40,7 +40,7 @@ import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type Placem
 import { childItemId } from "./feature-ids.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
-import { subtaskMinimum, emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText, unattendedKeys } from "./feature-plan.js";
+import { subtaskMinimum, emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem } from "./feature-plan.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn } from "./budget.js";
@@ -266,6 +266,9 @@ function apply(c: Change, fact: Fact): boolean {
 					if (!approved) continue;
 					if (approved.agent) task.agent = structuredClone(approved.agent);
 					else delete task.agent;
+					// The kept agent is held to the re-plan's needs, as the planner's own choice is (`agentOf`).
+					const problem = agentProfileProblem(task);
+					if (problem) throw new PlanError(task.title + ": " + problem);
 				}
 				if (item.replans && item.approvedPlan && planScope(plan) !== planScope(item.approvedPlan)) {
 					plan.questions = plan.questions.filter(q => q.id !== "scope-change");
@@ -1350,6 +1353,9 @@ function nextChild(c: Change) {
 	dispatchAgain(c);
 }
 
+/** The keys of the subtasks whose work is integrated: approval neither places nor confirms them again. */
+export const completedKeys = (item: Pick<FactoryItem, "jobs">): Set<string> => new Set(item.jobs?.filter(j => j.state === "done").map(j => j.task.key));
+
 /**
  * The plan is approved: each subtask still to run is bound to its places. A subtask whose agent works
  * without asking (Claude Code, OpenCode) is approved only where the person confirmed it by its key: the
@@ -1359,7 +1365,7 @@ function nextChild(c: Change) {
 function approveFeature(c: Change, inventory?: PlacementInventory, agents: readonly string[] = []): boolean {
 	const p = c.item.featurePlan;
 	if (!p || p.status !== "proposed" || p.questions.some(q => !q.answer) || p.singleSuggested || c.item.filedTurn !== c.key) return false;
-	const completed = new Set(c.item.jobs?.filter(j => j.state === "done").map(j => j.task.key));
+	const completed = completedKeys(c.item);
 	const unconfirmed = p.subtasks.filter(s => unattendedKeys(p, completed).includes(s.key) && !agents.includes(s.key));
 	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(s.agent!.harness)}, which works without asking.`).join(" "));
 	if (inventory) c.item.routes = approveRoutes(p, c.item.place, inventory, completed);

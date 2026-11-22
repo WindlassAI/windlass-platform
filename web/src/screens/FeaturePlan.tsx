@@ -40,7 +40,7 @@ import { useApp, useAuth } from "../state/app";
 import { useModels } from "../state/hooks";
 import { effortChoices, effortsOf, modelLabel, type ReportedOptions } from "../lib/models";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
-import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, unattendedKeys, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
+import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { useMachines } from "./Machines";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
@@ -157,9 +157,8 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		const placed = place && placeChanged(task, place) ? withPlace(budgeted, place) : budgeted;
 		return task.key in agents && agentChanged(task, agents[task.key]) ? withAgent(placed, agents[task.key]) : placed;
 	};
-	const done = new Set((view?.children ?? []).filter((child) => child.state === "done" && child.parent).map((child) => child.parent!.key));
-	/** The saved version's subtasks still to run whose agent works without asking: each needs the owner's confirmation. */
-	const unattended = plan && !plan.singleSuggested ? unattendedKeys(plan, done) : [];
+	/** The saved version's subtasks still to run whose agent works without asking, as the server counts them: each needs the owner's confirmation. */
+	const unattended = plan && !plan.singleSuggested ? (view?.unattended ?? []) : [];
 	const unanswered = plan ? plan.questions.filter((question) => !question.answer).length : 0;
 
 	const save = () => {
@@ -226,7 +225,7 @@ export type PlanReview = ReturnType<typeof usePlanReview>;
  */
 function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null, models?: AgentModels): { task: PlanSubtask; reason: string }[] {
 	if (!machines) return [];
-	const done = new Set((view.children ?? []).filter((child) => child.state === "done" && child.parent).map((child) => child.parent!.key));
+	const done = new Set(view.completedSubtasks ?? []);
 	return plan.subtasks.flatMap((task) => {
 		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines, models);
 		return reason ? [{ task, reason }] : [];

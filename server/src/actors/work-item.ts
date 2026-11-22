@@ -34,7 +34,7 @@ import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
-import { PlanError } from "../factory/feature-plan.js";
+import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
@@ -55,7 +55,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { RULES, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -261,11 +261,14 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const run = stored.item.run;
 	const events = await c.db.execute<{ data: string }>("SELECT data FROM (SELECT seq, data FROM events ORDER BY seq DESC LIMIT ?) ORDER BY seq", VIEW_EVENTS);
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
+	const plan = stored.item.featurePlan;
+	const completed = completedKeys(stored.item);
 	return {
 		...summaryOf(stored),
 		feedback: await feedbackView(c.db),
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
-		plan: stored.item.featurePlan ?? null,
+		plan: plan ?? null,
+		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
@@ -676,12 +679,13 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 	await c.db.execute("INSERT OR REPLACE INTO feedback_cursor VALUES(1,?)", now);
 }
 
-async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
+/** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
+async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
 	const [machines, limited, dailyTokenWait, models] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels()]);
 	const { sandboxes } = await getLayer();
 	const hostedProfiles = sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models };
+	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }) };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {
@@ -1033,7 +1037,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const job = item.jobs?.at(-1);
 			if (effect.kind === "dispatch" && item.pr && job) {
 				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
-					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid), at: Date.now() });
+					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid, item.agent?.model), at: Date.now() });
 					return true;
 				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
@@ -1119,7 +1123,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			}
 			// A provider retry replays the delivered planner prompt, including its inventory.
 			if (effect.agent === "planner" && item.run!.step.attempt === 1) {
-				const inventory = await placementInventory(c, meta.uid);
+				const inventory = await placementInventory(c, meta.uid, item.agent?.model);
 				// Each agent's models in short: "sonnet (low/high)". The planner may propose one; the person approves it.
 				const listed = (list?: ModelList | null) => list?.models.map(m => m.efforts.length ? `${m.id} (${m.efforts.join("/")})` : m.id);
 				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({ ...description,
@@ -1407,7 +1411,7 @@ export const workItem = actor({
 			try {
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
-					fact.inventory = await placementInventory(c, stored.meta.uid);
+					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
 				}
 				changed = await take(c, fact);

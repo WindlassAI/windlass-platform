@@ -1674,6 +1674,13 @@ export interface ItemView extends ItemSummary {
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
+	/**
+	 * With a plan: the keys of its subtasks still to run whose agent works without asking, as approval counts
+	 * them (`unattendedKeys`, past the integrated subtasks); approving needs the person's confirmation of each.
+	 */
+	unattended?: string[];
+	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
+	completedSubtasks?: string[];
 	children?: ItemSummary[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
