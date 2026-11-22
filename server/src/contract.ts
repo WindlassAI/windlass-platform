@@ -812,6 +812,23 @@ export interface SavedRepository {
 export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
 
 /**
+ * Where the user's newest agent was started, with which agent and in which mode, as the server
+ * remembered it when that agent was made (account-defaults.ts). Not a saved default: every agent the
+ * user starts replaces it, a work item's sessions never do, and it outlives the agent it came from.
+ * The start composer starts from it where nothing is chosen (or from the newest agent in the list,
+ * when that one is newer); a machine that cannot be used now, or an agent it does not offer, leaves
+ * the composer on this platform with Windlass, and it says so.
+ */
+export interface LastStart {
+	place: SandboxPlace;
+	harness: HarnessId;
+	/** The mode the agent started in: one of that agent's own. */
+	mode: string;
+	/** When, ms since the epoch. */
+	startedAt: number;
+}
+
+/**
  * An MCP server of the user's own: Windlass starts it, or reaches it, in every session of theirs,
  * whatever the repository. It is never read from a repository. `definition` is what Windlass's own
  * configuration takes for one server (its docs/mcp.md, "The keys"): `command` with `args`, `cwd` and
@@ -863,6 +880,8 @@ export interface PersonalServerReach {
 /** The account's settings, as their page shows them. No value of a secret is among them: `accountSecrets` lists those. */
 export interface AccountSettings {
 	defaults: AccountDefaults;
+	/** Where the user's newest agent was started, its agent and its mode (`LastStart`); null before the first, or once forgotten. */
+	lastStart: LastStart | null;
 	/** By name. */
 	servers: PersonalServer[];
 	/** One entry for each sandbox this deployment can run. */
@@ -1729,6 +1748,8 @@ export interface UserActions {
 	 * that is left out stays as it is; null saves none for it. Throws as `saveRepositoryDefaults` does.
 	 */
 	saveAccountDefaults(input: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	/** Forgets where the newest agent was started (`AccountSettings.lastStart`): the next agent starts on the platform's defaults. The next agent started is remembered again. */
+	forgetLastStart(): Promise<AccountSettings>;
 	/**
 	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is
 	 * replaced, and its setting with it; without, a new one is added. `unasked` is `PersonalServer.unasked`,

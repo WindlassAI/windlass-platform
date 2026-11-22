@@ -382,6 +382,39 @@ describe("what the start composer starts on", () => {
 		expect(created[0]).toMatchObject({ repository: { id: 7101 }, profile: "docker-hardened", model: "gpt-6-luna" });
 	});
 
+	/** Claude Code on "nas" in Plan, started and then deleted: only the server's memory of it is left. */
+	const claudeOnNasDeleted = async (mock: MockClient) => {
+		const user = mock.user(ada);
+		const made = await user.createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
+		await user.deleteSession(made.id);
+	};
+
+	it("starts where the last agent started, with its agent and mode, after that agent is deleted", async () => {
+		await show({ before: claudeOnNasDeleted });
+		created = [];
+		expect(value("on")).toContain("nas");
+		expect(value("agent")).toContain("Claude Code");
+		expect(value("mode")).toBe("Plan");
+		write("Look around");
+		await enter();
+		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
+	});
+
+	it("falls back to a hosted Windlass agent when the last machine is gone, and says why", async () => {
+		await show({ before: claudeOnNasDeleted, machines: (list) => list.filter((machine) => machine.machineId !== "m_nas") });
+		created = [];
+		expect(value("on")).toBe("Hosted");
+		expect(value("agent")).toContain("Windlass");
+		expect(pill("on")?.classList.contains("ui-pill-warn")).toBe(true);
+		open("agent");
+		expect(pop().textContent).toContain("Your last agent was Claude Code, which runs only on a machine of yours, so this one is Windlass.");
+		act(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+		write("Look around");
+		await enter();
+		expect(created[0]?.place).toBeUndefined();
+		expect(created[0]?.harness).toBeUndefined();
+	});
+
 	it("puts a choice made here before every default", async () => {
 		await show({ repositoryId: 7101 });
 		open("agent");

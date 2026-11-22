@@ -8,7 +8,7 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import { MAX_TITLE_CHARS, type AccountDefaults, type GithubId, type HarnessId, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
+import { MAX_TITLE_CHARS, type AccountDefaults, type LastStart, type GithubId, type HarnessId, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -284,6 +284,27 @@ export function lastUsed(sessions: readonly SessionSummary[] | null, repositoryI
 		of,
 		repository: newest?.repository ? { kind: "github", repository: newest.repository } : newest?.repoUrl ? { kind: "address", url: newest.repoUrl } : null,
 	};
+}
+
+/** Where a new agent starts, with which agent, and in which mode, where none is chosen. */
+export interface StartedOn {
+	place: SandboxPlace | null;
+	harness: HarnessId | null;
+	/** That agent's mode: it is used only while the same agent is chosen. */
+	mode: string | null;
+}
+
+/**
+ * Where the user's next agent starts, per user: the newer of the start the server remembered
+ * (`AccountSettings.lastStart`, which outlives a deleted agent and follows the user to any browser)
+ * and the newest agent of theirs in the list (which is live, and covers a start the account was read
+ * before). A work item's agent is neither. Nothing before the first agent.
+ */
+export function startedOn(remembered: LastStart | null, sessions: readonly SessionSummary[] | null): StartedOn {
+	const newest = ownAgents(sessions ?? []).sort(byLaunch)[0] ?? null;
+	if (remembered && (newest === null || remembered.startedAt >= newest.createdAt)) return { place: remembered.place, harness: remembered.harness, mode: remembered.mode };
+	if (newest) return { place: newest.place, harness: newest.harness ?? "windlass", mode: newest.mode };
+	return { place: null, harness: null, mode: null };
 }
 
 /**

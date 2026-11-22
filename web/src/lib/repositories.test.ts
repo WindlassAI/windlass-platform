@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
 import { MAX_TITLE_CHARS } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, startedOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -310,5 +310,28 @@ describe("what is at work", () => {
 		expect(workingWords({ ceilinged: 1, items: 1 }, 6)).toBe("1 of 6 working, a work item");
 		expect(workingWords({ ceilinged: 3, items: 3 }, 6)).toBe("3 of 6 working, all work items");
 		expect(workingWords({ ceilinged: 3, items: 1 }, 6)).toBe("3 of 6 working, 1 of them a work item");
+	});
+});
+
+describe("where a new agent starts, which agent, and its mode", () => {
+	const nas = { kind: "machine" as const, machineId: "m_nas" };
+	const agents = [session({ id: "a", createdAt: 100, harness: "windlass", mode: "ask" }), session({ id: "b", createdAt: 200, place: nas, harness: "claude", mode: "plan", repository: harbor }), session({ id: "item", createdAt: 300, item: { id: "i_1" } })];
+
+	it("is the remembered start when it is the newest, whatever the repository", () => {
+		const remembered = { place: { kind: "machine" as const, machineId: "m_box" }, harness: "opencode" as const, mode: "build", startedAt: 250 };
+		// Newer than every agent in the list (its agent was deleted since): it stands. A work item's agent is never a start.
+		expect(startedOn(remembered, agents)).toEqual({ place: remembered.place, harness: "opencode", mode: "build" });
+		expect(startedOn(remembered, null)).toEqual({ place: remembered.place, harness: "opencode", mode: "build" });
+	});
+
+	it("is the newest agent in the list when that one is newer, or when nothing is remembered", () => {
+		const older = { place: { kind: "hosted" as const }, harness: "windlass" as const, mode: "auto", startedAt: 150 };
+		expect(startedOn(older, agents)).toEqual({ place: nas, harness: "claude", mode: "plan" });
+		expect(startedOn(null, agents)).toEqual({ place: nas, harness: "claude", mode: "plan" });
+	});
+
+	it("is nothing before the first agent", () => {
+		expect(startedOn(null, [])).toEqual({ place: null, harness: null, mode: null });
+		expect(startedOn(null, [session({ item: { id: "i_2" } })])).toEqual({ place: null, harness: null, mode: null });
 	});
 });
