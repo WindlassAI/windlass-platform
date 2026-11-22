@@ -1741,6 +1741,61 @@ async function machineChecks(): Promise<void> {
 			}
 		});
 
+		await check("machine: offline at launch waits without spend and resumes to review", async () => {
+			await runner.setOffline(true);
+			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);
+			const item = await user.createItem({ ...task, profile: "e2b", start: true });
+			const waiting = await untilItem(user, item.id, "machine wait", view => view.wait?.reason === "machine");
+			assert(waiting.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(waiting.spent).every(n => n === 0), JSON.stringify(waiting));
+			await runner.setOffline(false);
+			const pushed = await untilItem(user, item.id, "push after reconnection", view => !!view.pullRequest);
+			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
+			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
+			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
+			assert(review.reviewerSessionId === null && review.review?.state === "off" && review.reviews.length === 0, "a machine item admitted a second reviewer");
+			assert(review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
+			return waiting.wait.sentence;
+		});
+
+		await check("machine: an unanswered session attach waits, and removal asks what to hand over", async () => {
+			const pushed = await user.createItem({ ...task, start: true });
+			await untilItem(user, pushed.id, "a pushed commit", view => !!view.pullRequest);
+			runner.attachMode = "ignore";
+			const waiting = await user.createItem({ ...task, start: true });
+			const view = await untilItem(user, waiting.id, "the unanswered attach", v => v.wait?.reason === "machine");
+			assert(view.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(view.spent).every(n => n === 0), JSON.stringify(view.spent));
+			await user.removeMachine({ machineId: place.machineId, removeSandboxes: false });
+			for (const [id, expected] of [[waiting.id, ["give_up"]], [pushed.id, ["hand_over", "give_up"]]] as const) {
+				const asked = await untilItem(user, id, "a removal question", v => v.question?.kind === "machine_removed");
+				assert(asked.wait?.reason === "person" && asked.wait.retryAt === null && asked.question?.choices.map(c => c.id).join() === expected.join(), JSON.stringify(asked.question));
+				const action = expected[0];
+				const result = await user.actOnItem({ id, action: { kind: "answer", question: asked.question.id, choice: action } });
+				if (action === "give_up") assert(result.state === "failed", result.state);
+				else await untilItem(user, id, "handover of the pushed commit", v => v.state === "review");
+			}
+			return "unanswered attach spent nothing; gave up before push, handed over after push";
+		});
+	} finally {
+		await runner.setOffline(true);
+		await server.stop();
+		server.remove();
+	}
+}
+
+/**
+ * A Plan-first feature whose subtask runs Claude Code on a machine: its own world, with the default
+ * item limits (the machine checks' one hosted second per item leaves no plan valid) and the feature
+ * git fixture, so the hosted planner files a plan and approval opens the feature branch.
+ */
+async function subtaskAgentChecks(): Promise<void> {
+	const server = new Server();
+	const runner = new StandInRunner(API, ENDPOINT, { claude: true });
+	try {
+		const { user } = await world(server, standin, { WLP_MACHINES: "1", WLP_PUBLIC_URL: API, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+		// A feature places a subtask only where at least 5 GiB of disk is free (placement.ts).
+		runner.fake.report.freeDiskBytes = 20 * 2 ** 30;
+		await runner.pair(user);
+		const place = { kind: "machine" as const, machineId: runner.id.machineId };
 		await check("machine: a Plan-first plan with mixed agents is approved only with the owner's confirmation, and its Claude Code child starts on its own model", async () => {
 			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }, { id: "sonnet", name: "Sonnet", efforts: ["low", "high"] }], checkedAt: Date.now(), modes: [] };
 			const harnesses = runner.fake.report.harnesses;
@@ -1793,40 +1848,6 @@ async function machineChecks(): Promise<void> {
 			}
 		});
 
-		await check("machine: offline at launch waits without spend and resumes to review", async () => {
-			await runner.setOffline(true);
-			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);
-			const item = await user.createItem({ ...task, profile: "e2b", start: true });
-			const waiting = await untilItem(user, item.id, "machine wait", view => view.wait?.reason === "machine");
-			assert(waiting.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(waiting.spent).every(n => n === 0), JSON.stringify(waiting));
-			await runner.setOffline(false);
-			const pushed = await untilItem(user, item.id, "push after reconnection", view => !!view.pullRequest);
-			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
-			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
-			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
-			assert(review.reviewerSessionId === null && review.review?.state === "off" && review.reviews.length === 0, "a machine item admitted a second reviewer");
-			assert(review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
-			return waiting.wait.sentence;
-		});
-
-		await check("machine: an unanswered session attach waits, and removal asks what to hand over", async () => {
-			const pushed = await user.createItem({ ...task, start: true });
-			await untilItem(user, pushed.id, "a pushed commit", view => !!view.pullRequest);
-			runner.attachMode = "ignore";
-			const waiting = await user.createItem({ ...task, start: true });
-			const view = await untilItem(user, waiting.id, "the unanswered attach", v => v.wait?.reason === "machine");
-			assert(view.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(view.spent).every(n => n === 0), JSON.stringify(view.spent));
-			await user.removeMachine({ machineId: place.machineId, removeSandboxes: false });
-			for (const [id, expected] of [[waiting.id, ["give_up"]], [pushed.id, ["hand_over", "give_up"]]] as const) {
-				const asked = await untilItem(user, id, "a removal question", v => v.question?.kind === "machine_removed");
-				assert(asked.wait?.reason === "person" && asked.wait.retryAt === null && asked.question?.choices.map(c => c.id).join() === expected.join(), JSON.stringify(asked.question));
-				const action = expected[0];
-				const result = await user.actOnItem({ id, action: { kind: "answer", question: asked.question.id, choice: action } });
-				if (action === "give_up") assert(result.state === "failed", result.state);
-				else await untilItem(user, id, "handover of the pushed commit", v => v.state === "review");
-			}
-			return "unanswered attach spent nothing; gave up before push, handed over after push";
-		});
 	} finally {
 		await runner.setOffline(true);
 		await server.stop();
@@ -1835,6 +1856,7 @@ async function machineChecks(): Promise<void> {
 }
 
 if (!only.length || only.some(prefix => prefix.startsWith("machine"))) await machineChecks();
+if (!only.length || only.some(prefix => prefix.startsWith("machine"))) await subtaskAgentChecks();
 if (only.length && only.every(prefix => prefix.startsWith("machine"))) {
 	await standin.stop();
 	process.exit(failed ? 1 : 0);
