@@ -90,7 +90,7 @@ export interface NewItem {
 	place: FactoryItem["place"];
 	budget: ItemBudget;
 	featureMultiplier?: number;
-	agent?: { harness: HarnessId; model: string };
+	agent?: { harness: HarnessId; model: string; effort?: string | null };
 }
 
 /** A new item, in "draft": a `start` fact queues it. */
@@ -109,7 +109,7 @@ export function createItem(input: NewItem): FactoryItem {
 		singleBudget: input.budget,
 		budget: input.mode === "orchestrate" ? featureCap(input.budget, input.featureMultiplier) : input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
-		...(input.agent && { agent: newAgent(input.agent.harness, input.agent.model) }),
+		...(input.agent && { agent: newAgent(input.agent.harness, input.agent.model, input.agent.effort) }),
 		workingSince: null,
 		run: null,
 		pr: null,

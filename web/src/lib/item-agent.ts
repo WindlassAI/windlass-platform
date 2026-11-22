@@ -6,10 +6,10 @@
 import type { ItemAgent } from "@contract";
 import { HARNESS_NAMES } from "./acp";
 
-/** "Claude Code · sonnet", "Windlass · gpt-6.2-sol"; the agent's default model is said as such. */
+/** "Claude Code · sonnet · effort high", "Windlass · gpt-6.2-sol"; the agent's default model is said as such. */
 export function agentLine(agent: ItemAgent | undefined): string {
 	if (!agent) return "Windlass";
-	return `${HARNESS_NAMES[agent.harness] ?? agent.harness} · ${agent.model === "default" ? "its default model" : agent.model}`;
+	return `${HARNESS_NAMES[agent.harness] ?? agent.harness} · ${agent.model === "default" ? "its default model" : agent.model}${agent.effort ? ` · effort ${agent.effort}` : ""}`;
 }
 
 /** The tokens row where it is no meter of the budget: null where the tokens count against it. */

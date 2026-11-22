@@ -1589,6 +1589,8 @@ export interface ItemAgent {
 	harness: HarnessId;
 	/** The builder session's model: one of the account's for Windlass, the agent's own id ("sonnet") or "default" for a machine harness. */
 	model: string;
+	/** The effort its turns run at (`CreateItemInput.effort`); null or absent: the agent's default. */
+	effort?: string | null;
 	/**
 	 * How the item's tokens are known.
 	 * - "counted": reported, and counted against `budget.tokens` (Windlass; an agent on an API key).
@@ -1757,6 +1759,12 @@ export interface CreateItemInput {
 	profile?: SandboxProfileId;
 	/** One of the account's models for Windlass; for a machine harness one its machine reported (`HarnessOptions.models`). Left out: the agent's default. */
 	model?: string;
+	/**
+	 * The reasoning effort of every turn of the item's builder: one its agent reported for the item's model
+	 * (`ModelChoice.efforts`; for a machine harness model whose efforts it reports only once selected, one it
+	 * reported for any model). Left out: the agent's default. Refused (`bad_effort`) otherwise.
+	 */
+	effort?: string;
 	/**
 	 * The builder's agent: "windlass" (the default), or a harness the chosen machine reports and is signed
 	 * into (`MachineSummary.harnesses`), which runs in its hardened container. Not on hosted, not with Plan

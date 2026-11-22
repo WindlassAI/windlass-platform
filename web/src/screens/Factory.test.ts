@@ -334,6 +334,20 @@ describe("filing a work item from the Factory page", () => {
 		expect(groups().find((group) => group.name === "Needs you")?.titles).toContain("Add the tests command to the README");
 	});
 
+	it("files the effort chosen with the item's agent and model", async () => {
+		await show("/factory");
+		act(() => (pill("agent") as HTMLButtonElement).click());
+		act(() => void pop()?.querySelector('[data-value="windlass:gpt-6.1-sol"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
+		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		act(() => (document.querySelector('.ui-pop-sub [data-value="high"]') as HTMLElement).click());
+		expect(pill("agent")?.getAttribute("data-value")).toBe("Windlass · gpt-6.1-sol · high");
+		write("Rename the tide table columns");
+		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+		await settle();
+		expect(filed[0]).toMatchObject({ title: "Rename the tide table columns", model: "gpt-6.1-sol", effort: "high" });
+		expect((await listed()).find((item) => item.title === "Rename the tide table columns")?.agent).toMatchObject({ harness: "windlass", effort: "high" });
+	});
+
 	it("files a draft from the line under it, into Drafts", async () => {
 		await show("/factory");
 		write("Rename the tide table columns again");

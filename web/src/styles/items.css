@@ -227,6 +227,16 @@
 .item-criteria {
 	min-height: 72px;
 }
+/* The model and effort, side by side; one above the other on a phone. */
+.item-agent-fields {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 8px 12px;
+}
+.item-agent-fields > .field-note {
+	grid-column: 1 / -1;
+	margin: 0;
+}
 .item-scopes {
 	display: grid;
 	gap: 10px;

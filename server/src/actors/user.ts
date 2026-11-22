@@ -140,7 +140,7 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { itemSignInMessage, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
-import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
+import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
@@ -1026,6 +1026,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		}
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
+		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
+		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -1051,7 +1053,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }) } } : {}),
 			...(!item && size > 1 && { size }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,

@@ -853,6 +853,17 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 		expect("a turn that ends after its machine was removed keeps what the agent reported", closed.spent.tokens === 33_500 && closed.spent.turns === 1
 			&& closed.agent?.tokens === "counted" && closed.agent.reportedTokens === 33_500 && closed.agent.cost?.amount === 0.42 && closed.run?.step.turn === null, JSON.stringify({ spent: closed.spent, agent: closed.agent }));
 	}
+	{
+		// An item's effort is held against what its agent reported (account-models.ts, `checkItemEffort`).
+		const { checkItemEffort } = await import("../server/src/account-models.js");
+		const takes = (list: Parameters<typeof checkItemEffort>[0], model: string, effort: unknown, harness: boolean) => { try { checkItemEffort(list, model, effort, harness); return true; } catch { return false; } };
+		const windlass = { source: "account" as const, defaultModel: "sol", fetchedAt: null, models: [{ id: "sol", name: null, efforts: ["low", "high"] }, { id: "luna", name: null, efforts: [] }] };
+		const claude = { source: "harness" as const, defaultModel: "default", fetchedAt: null, models: [{ id: "default", name: null, efforts: ["default", "high"] }, { id: "sonnet", name: null, efforts: [] }] };
+		expect("an item's effort is one its model offers; an unknown one, or any for a model that takes none, is refused",
+			takes(windlass, "sol", "high", false) && !takes(windlass, "sol", "ultra", false) && !takes(windlass, "luna", "high", false) && !takes(windlass, "nonesuch", "high", false) && !takes(windlass, "sol", 7, false));
+		expect("a machine agent's model whose efforts come only on selection takes an effort the agent reported for another",
+			takes(claude, "default", "high", true) && takes(claude, "sonnet", "high", true) && !takes(claude, "sonnet", "ultra", true) && !takes({ ...claude, models: [{ id: "default", name: null, efforts: [] }] }, "default", "high", true));
+	}
 	const later = { ...structuredClone(openCode) };
 	const { noteAgentTurn } = await import("../server/src/factory/budget.js");
 	noteAgentTurn(later, { ...openCodeTurn!, cost: { amount: 0.9, currency: "USD" } });

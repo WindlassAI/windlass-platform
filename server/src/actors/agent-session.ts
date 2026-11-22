@@ -4231,7 +4231,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.reviewBase = row.checkout.baseSha;
 		}
 		const planning = row.agent === "planner" || row.agent === "summary";
-		const effort = planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null;
+		// The item's own effort (`CreateItemInput.effort`) for every turn of it; otherwise a planner's is high where its model offers it, a builder's the agent's default.
+		const effort = meta.origin?.effort ?? (planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null);
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no

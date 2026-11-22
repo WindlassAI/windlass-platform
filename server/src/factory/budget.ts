@@ -54,8 +54,8 @@ export function turnTokens(usage: TurnUsage | null): number {
 }
 
 /** An item's agent before its first turn: Windlass's tokens are counted as they come, a machine harness has reported none. */
-export function newAgent(harness: HarnessId, model: string): ItemAgent {
-	return { harness, model, tokens: harness === "windlass" ? "counted" : "not_reported", reportedTokens: 0, cost: null, fiveHour: null };
+export function newAgent(harness: HarnessId, model: string, effort?: string | null): ItemAgent {
+	return { harness, model, ...(effort && { effort }), tokens: harness === "windlass" ? "counted" : "not_reported", reportedTokens: 0, cost: null, fiveHour: null };
 }
 
 /** The agent of an item, also of one filed before agents could be chosen. */

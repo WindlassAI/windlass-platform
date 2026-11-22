@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import type { AuthResult, ItemSummary, ItemView, PlatformInfo } from "../server/src/contract.js";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner } from "./runner-standin.js";
+import { optionsDigest } from "../server/src/runner/catalog.js";
 import { GithubStandin, type StandinRepository, type StandinPull } from "./github-standin.js";
 
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../server");
@@ -1685,6 +1686,57 @@ async function machineChecks(): Promise<void> {
 				return `refused at filing (${unknown}); paused at its turn (${asked.question!.text})`;
 			} finally {
 				await reported("token");
+			}
+		});
+
+		await check("machine: an item's effort is one its agent offers, and its turns run at it, for Windlass and Claude Code", async () => {
+			const options = { defaultModel: "default", models: [{ id: "default", name: null, efforts: ["default", "low", "medium", "high", "max"] }, { id: "sonnet", name: "Sonnet", efforts: [] }], checkedAt: Date.now(), modes: [] };
+			const harnesses = runner.fake.report.harnesses;
+			runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn: "token", options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt }];
+			runner.report();
+			try {
+				await waitFor("the reported Claude Code options", async () => (await user.machines())[0]?.harnesses?.[0]?.optionsDigest === optionsDigest(options), 15_000);
+				// Unknown efforts are refused, for each agent: not one it reported, or one for a model that takes none.
+				const refusals: string[] = [];
+				for (const [what, input] of [
+					["Claude Code, not offered", { harness: "claude", effort: "ultra" }],
+					["Claude Code, a model whose efforts come on selection", { harness: "claude", model: "sonnet", effort: "ultra" }],
+					["Windlass, not offered", { model: "gpt-6.1-sol", effort: "ultra" }],
+					["not text", { effort: 7 }],
+				] as const) {
+					try {
+						refusals.push(await refused(() => user.createItem({ ...task, ...input } as never), "bad_effort"));
+					} catch (error) {
+						throw new Error(`${what}: ${(error as Error).message}`);
+					}
+				}
+				// Claude Code: the effort goes to the adapter before the item's prompt.
+				const sent = runner.acpInput.length;
+				const claude = await user.createItem({ ...task, title: "Claude at high effort", body: "Fix the program (itemwork).", harness: "claude", effort: "high", start: true });
+				assert(claude.agent?.effort === "high", JSON.stringify(claude.agent));
+				const frames = await waitFor("the Claude Code item's prompt", async () => {
+					const all = runner.acpInput.slice(sent).join("").split("\n").filter(Boolean).map(line => JSON.parse(line));
+					return all.some(f => f.method === "session/prompt") ? all : null;
+				}, 60_000);
+				const prompt = frames.findIndex(f => f.method === "session/prompt");
+				const effort = frames.findIndex(f => f.method === "session/set_config_option" && f.params?.configId === "effort" && f.params?.value === "high");
+				assert(effort >= 0 && effort < prompt, "the effort was not set before the item's prompt: " + JSON.stringify(frames.map(f => f.method + (f.params?.configId ? ":" + f.params.configId + "=" + f.params.value : ""))));
+				await user.actOnItem({ id: claude.id, action: { kind: "cancel" } });
+				// Windlass: the item's turn is given the effort.
+				const windlass = await user.createItem({ ...task, title: "Windlass at xhigh effort", model: "gpt-6.1-sol", effort: "xhigh", start: true });
+				assert(windlass.agent?.harness === "windlass" && windlass.agent.effort === "xhigh", JSON.stringify(windlass.agent));
+				const session = client.agentSession.get([auth.profile.uid, windlass.sessionId], { params: { token: auth.token } });
+				const asked = await waitFor("the Windlass item's prompt", async () => (await session.snapshot()).timeline.find(e => e.kind === "user"), 60_000);
+				assert(asked.kind === "user" && asked.effort === "xhigh" && asked.model === "gpt-6.1-sol", JSON.stringify(asked));
+				await user.actOnItem({ id: windlass.id, action: { kind: "cancel" } });
+				// Left out: the agent's default.
+				const plain = await user.createItem({ ...task, title: "Windlass at its default effort" });
+				assert(plain.agent?.effort === undefined, JSON.stringify(plain.agent));
+				await user.actOnItem({ id: plain.id, action: { kind: "cancel" } });
+				return `refused ${refusals.length} unknown efforts (${refusals[0]}); Claude Code set effort high before its prompt; Windlass's turn ran at xhigh`;
+			} finally {
+				runner.fake.report.harnesses = harnesses;
+				runner.report();
 			}
 		});
 

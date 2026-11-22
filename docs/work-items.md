@@ -136,6 +136,12 @@ installation has accepted them, an item waits for no CI: it is handed over sayin
 
 ### The item's agent
 
+`CreateItemInput.effort` is the reasoning effort of every turn of the builder, Windlass or not: one
+the agent reported for the item's model (`checkItemEffort` in `server/src/account-models.ts`; a machine
+harness model whose efforts come only once selected takes one reported for any model), else `bad_effort`.
+It is kept on the session's `origin.effort` and on `ItemAgent.effort`; a Plan-first feature's children
+take the feature's. Left out, a builder runs at its agent's default and a planner at `plannerEffort`.
+
 `CreateItemInput.harness` picks the builder: `windlass` (the default), or a machine harness by id
 (`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in (`signIn: "token"`; `makeSession` refuses
 "none" and "unknown"). Each item turn checks the machine's report again before its sandbox opens

@@ -29,7 +29,9 @@ import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
-import { useNow } from "../state/hooks";
+import { useModels, useNow } from "../state/hooks";
+import { useCatalog } from "../components/StartComposer";
+import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
@@ -662,6 +664,15 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const agent: HarnessId = agents.some((offered) => offered.id === agentChoice) ? agentChoice : "windlass";
 	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
 	const mode: ItemMode = agent === "windlass" ? modeChoice : "single";
+	// The model and effort: the account's models for Windlass, what the machine reported for another agent. "" is the agent's default.
+	const accountModels = useModels();
+	const catalog = useCatalog(agent === "windlass" ? null : chosenMachine, agent === "windlass" ? "claude" : agent);
+	const modelList = agent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, agent, catalog.options).models;
+	const [modelChoice, setModel] = useState("");
+	const [effortChoice, setEffort] = useState("");
+	const model = modelList?.models.some((one) => one.id === modelChoice) ? modelChoice : "";
+	const efforts = effortChoices(effortsOf(modelList, model || (modelList?.defaultModel ?? ""))).filter((level) => level !== "" && level !== "default");
+	const effort = efforts.includes(effortChoice) ? effortChoice : "";
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -669,7 +680,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const last = useRef<Submission | null>(null);
-	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId() };
+	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId(), model: useId(), effort: useId(), effortNote: useId() };
 	const acceptance = criteria
 		.split("\n")
 		.map((line) => line.trim())
@@ -681,7 +692,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(agent !== "windlass" ? { harness: agent } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -780,11 +791,46 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								<p className="field-note">
 									{agent === "windlass"
 										? "Windlass runs your repository's checks before it hands the work over."
-										: `${HARNESS_NAMES[agent]} works on its default model in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.`}
+										: `${HARNESS_NAMES[agent]} works in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.`}
 								</p>
 							</div>
 						) : null}
 					</PlaceChoice>
+				) : null}
+				{modelList && modelList.models.length > 0 ? (
+					<div className="item-agent-fields">
+						<div>
+							<label className="label" htmlFor={ids.model}>
+								Model
+							</label>
+							<select id={ids.model} className="select" value={model} disabled={busy} onChange={(event) => setModel(event.target.value)}>
+								<option value="">{`${HARNESS_NAMES[agent]}'s default (${modelLabel(modelList, modelList.defaultModel).replace(/ \(default\)$/, "")})`}</option>
+								{modelList.models.map((one) => (
+									<option key={one.id} value={one.id}>
+										{modelLabel(modelList, one.id)}
+									</option>
+								))}
+							</select>
+						</div>
+						{efforts.length > 0 ? (
+							<div>
+								<label className="label" htmlFor={ids.effort}>
+									Effort
+								</label>
+								<select id={ids.effort} className="select" value={effort} disabled={busy} onChange={(event) => setEffort(event.target.value)} aria-describedby={ids.effortNote}>
+									<option value="">Default</option>
+									{efforts.map((level) => (
+										<option key={level} value={level}>
+											{level}
+										</option>
+									))}
+								</select>
+							</div>
+						) : null}
+						<p className="field-note" id={ids.effortNote}>
+							{efforts.length > 0 ? "Every turn of the item runs at this effort." : "This model takes no reasoning effort."}
+						</p>
+					</div>
 				) : null}
 				<label className={`check${start ? " check-on" : ""}`}>
 					<input className="check-input" type="checkbox" checked={start} disabled={busy} onChange={(event) => setStart(event.target.checked)} />

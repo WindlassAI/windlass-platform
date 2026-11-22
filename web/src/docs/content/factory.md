@@ -57,11 +57,13 @@ Make a token under **Settings** › **API tokens** › **New token…**. Give it
 
 **API default change.** Clients that previously omitted `mode` to launch one implementer must now send `"mode": "single"`. Omitting `mode` selects Plan first and waits for owner approval when orchestration is enabled.
 
-The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, place, whether to start it and `"mode"`: `"orchestrate"` for Plan first (the default when enabled), or `"single"` for Quick. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute. The same `Idempotency-Key` with the same body answers with the item the first attempt made; with another body it is refused with `409` and `idempotency_key_reused`. A missing, invalid or out-of-scope token gets `401` and `invalid_token`. A rate limit gets `429` with `Retry-After`. Every error has a JSON `code` and `message`. Where the platform does not offer work items, both routes answer `404`.
+The body names the repository, the title, the body and, optionally, the acceptance criteria, sandbox, model, effort, place, whether to start it and `"mode"`: `"orchestrate"` for Plan first (the default when enabled), or `"single"` for Quick. A token cannot approve a plan: you approve it on the item's page. A title can be 80 characters long and a body 20,000. An item can have 20 criteria of up to 2,000 characters each. A token may make 60 requests a minute. The same `Idempotency-Key` with the same body answers with the item the first attempt made; with another body it is refused with `409` and `idempotency_key_reused`. A missing, invalid or out-of-scope token gets `401` and `invalid_token`. A rate limit gets `429` with `Retry-After`. Every error has a JSON `code` and `message`. Where the platform does not offer work items, both routes answer `404`.
 
 ## Choose the agent
 
 An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code** or **OpenCode** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those, and an item is refused where the machine does not report the agent signed in. If the agent is signed out by the time a turn would start, the turn does not run: the item asks you, with the `windlass-runner login` command to run. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
+
+An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code and OpenCode alike. The composer offers it in the agent's menu, beside each model, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
 
 What changes with Claude Code or OpenCode:
 
@@ -73,7 +75,7 @@ What changes with Claude Code or OpenCode:
 - **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
 - **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. The item's turns and working time bound it. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
 
-From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`. The machine's model list is on the **Machines** page. Issues filed from GitHub run Windlass.
+From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`, and `"effort"`, for example `"high"`. The machine's model list is on the **Machines** page. Issues filed from GitHub run Windlass.
 
 ## The pipeline
 

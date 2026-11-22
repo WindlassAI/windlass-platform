@@ -31,7 +31,7 @@
  * switch turns it to filing one ("Work item"): the text's first line is the item's title and the rest
  * what to do (`itemOf`), a repository of the GitHub connection is required, and the pills are the
  * repository, where it runs, its agent and model and its acceptance criteria. An item runs Windlass in its profile's mode unless an agent
- * its machine is signed into is chosen (`itemHarnesses`), which runs Quick, without asking, and takes no effort. Enter files and starts it,
+ * its machine is signed into is chosen (`itemHarnesses`), which runs Quick and without asking. Its effort, one its agent offers for the model, runs every turn of the item. Enter files and starts it,
  * the launch menu files a draft, and the page stays where it is: filing several in a row is the
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
@@ -144,7 +144,7 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 }
 
 /** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
-function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
+export function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const machineId = machine?.machineId;
@@ -462,6 +462,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			// The agent and its model: Windlass on the account's model unless one was chosen here.
 			...(other ? { harness } : {}),
 			...(model && (other || modelChoice !== "") ? { model } : {}),
+			// Every turn of the item runs at it; left out, at the agent's default.
+			...(effort && effort !== "default" ? { effort } : {}),
 		};
 		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
 		asked.current = submissionOf(JSON.stringify(input), asked.current);
@@ -805,12 +807,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				id: `${harnessId}:${id}`,
 				label: name,
 				icon: <AgentGlyph harness={HARNESS_NAMES[harnessId]} accent={harnessId === "windlass" && isDefault} />,
-				description: !item && rowEfforts.length > 0 ? (checked && effort ? `effort ${effort} · ${rowEfforts.length} levels` : `${rowEfforts.length} effort levels`) : undefined,
+				description: rowEfforts.length > 0 ? (checked && effort ? `effort ${effort} · ${rowEfforts.length} levels` : `${rowEfforts.length} effort levels`) : undefined,
 				trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
 				checked,
 				onSelect: () => pick(null),
 				submenu:
-					!item && rowEfforts.length > 0
+					rowEfforts.length > 0
 						? {
 								label: `Effort for ${name}`,
 								width: 200,
@@ -918,8 +920,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		),
 	};
 	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
-	// A work item takes no effort: its agent's default.
-	const shownEffort = item ? "" : effort;
+	const shownEffort = effort;
 	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`;
 	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
 	const agentPill = (props: TriggerProps) => (
