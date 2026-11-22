@@ -1434,6 +1434,29 @@ function crossIntegrating() {
 	return item;
 }
 
+test("a one-repository planning turn's file_plan schema and plan checks are exactly as before cross-repo features", async () => {
+	const { readFileSync } = await import("node:fs");
+	const { platformTools } = await import("../server/src/agent-publish.js");
+	const { validatePlan, featureCap } = await plans();
+	// Written by main's own platformTools and validatePlan before cross-repo features (fixtures/one-repo-plan/main.json).
+	const before = JSON.parse(readFileSync(new URL("../fixtures/one-repo-plan/main.json", import.meta.url), "utf8"));
+	assert.deepEqual(platformTools({ plan: true, publish: false, report: false, push: false }, 600_000), before.declaration);
+	const cross = platformTools({ plan: true, publish: false, report: false, push: false, crossRepo: true }, 600_000)[0];
+	const props = (cross.inputSchema as { properties: Record<string, { items?: { properties?: Record<string, unknown> } }> }).properties;
+	for (const key of ["repos", "mergeOrder", "releaseGate", "earlyChecks", "finalIntegration"]) assert.ok(key in props, `a cross-repo planning turn is not offered ${key}`);
+	assert.ok("repo" in props.subtasks.items!.properties!);
+	// Empty or default cross-repo values, and any others, are not read for one repository: the plan comes out as it always did.
+	assert.deepEqual(validatePlan(before.withExtras, single, featureCap(single)), before.validated);
+	assert.deepEqual(validatePlan(before.plan, single, featureCap(single)), before.validated);
+	const named = { ...before.plan, repos: ["platform", "cli"], releaseGate: "wait", finalIntegration: { runFrom: "cli" }, subtasks: before.plan.subtasks.map((s: object) => ({ ...s, repo: "cli" })) };
+	assert.deepEqual(validatePlan(named, single, featureCap(single)), before.validated);
+	// The same through a one-repository item's planning turn: filed.
+	const item = advance(createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } }), { kind: "start", at: 1, by: "person" }).item;
+	const filed = advance(item, { kind: "file_plan", key: currentKey(item)!, plan: before.withExtras, at: 2 }).item;
+	assert.equal(filed.featurePlan?.version, 1, "a one-repository plan with empty cross-repo values was refused");
+	assert.equal(filed.featurePlan!.repos, undefined);
+});
+
 test("cross-repo: a plan over the filing's two repositories validates, with identical paths in different repositories", async () => {
 	const { validatePlan, featureCap, planScope } = await plans();
 	const plan = validatePlan(crossProposal(), crossSingle, featureCap(crossSingle), ["platform", "cli"]);
@@ -1470,8 +1493,9 @@ test("cross-repo: refusals name the problem (third repo, unknown repo, empty com
 		const p = crossProposal(); mutate(p);
 		assert.throws(() => validatePlan(p, crossSingle, featureCap(crossSingle), filing), expected, what);
 	}
-	// A one-repository feature refuses cross-repo fields, and a cross-repo one refuses a plan without them.
-	assert.throws(() => validatePlan(crossProposal(), crossSingle, featureCap(crossSingle)), /one repository/);
+	// A one-repository feature does not read cross-repo fields (as before them), and a cross-repo one refuses a plan without them.
+	const one = validatePlan(crossProposal(), crossSingle, featureCap(crossSingle));
+	assert.equal(one.repos, undefined); assert.equal(one.finalIntegration, undefined); assert.ok(one.subtasks.every(s => s.repo === undefined));
 	const bare = proposal();
 	assert.throws(() => validatePlan(bare, crossSingle, featureCap(crossSingle), filing), /repository/);
 	// Planner-supplied answers are dropped when the planner files.

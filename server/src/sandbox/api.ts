@@ -551,6 +551,8 @@ export interface RunTurnInput {
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
 	onPlan?: RunTurnInput["onReport"];
+	/** With `onPlan`: a cross-repo feature's planning turn, whose `file_plan` takes the plan's repositories too. */
+	crossRepoPlan?: boolean;
 	planner?: boolean;
 	/** Resume an item's conversation as a builder after it ran with the planner agent. */
 	clearPlanner?: boolean;

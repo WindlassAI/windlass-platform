@@ -301,7 +301,8 @@ function crossRepoFields(p: Record<string, unknown>, filing: readonly string[], 
 export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget, repos: readonly string[] = []): FeaturePlanEdit {
 	const p = record(value), spec = record(p.spec);
 	const cross = repos.length > 1;
-	if (!cross) for (const key of ["repos", "mergeOrder", "releaseGate", "earlyChecks", "finalIntegration"]) requirePlan(p[key] === undefined || p[key] === null, "This feature has one repository: leave out " + key + ".");
+	// A one-repository plan is checked as it always was: what only a cross-repo plan has (repos, mergeOrder, releaseGate,
+	// earlyChecks, finalIntegration, a subtask's repo) is not read, as before there were cross-repo features.
 	requirePlan(p.overflow === undefined || typeof p.overflow === "boolean", "Choose yes or no for placement overflow.");
 	const singleSuggested = p.singleSuggested == null ? null : text(p.singleSuggested);
 	requirePlan(Array.isArray(p.questions) && p.questions.length <= 16, "Use at most 16 plan questions.");
@@ -328,7 +329,6 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 		unique(dependsOn);
 		const acceptance = lines(s.acceptance, 1);
 		requirePlan(acceptance.some(line => /screenshot|`[^`]+`|(?:^|\s)(?:run|use|execute|npm|pnpm|yarn|bun|make|go test|cargo|pytest|python|docker|curl|gradle|mvn|dotnet|bash|sh)\s+\S/i.test(line)), "Name a check command or screenshot in each subtask’s acceptance.");
-		if (!cross) requirePlan(s.repo === undefined || s.repo === null, "This feature has one repository: leave out each subtask's repo.");
 		const repo = cross ? aliasIn(s.repo, repos, "each subtask's repository") : undefined;
 		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget, ...placementFields(s), ...(repo && { repo }) };
 	});

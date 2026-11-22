@@ -1090,7 +1090,7 @@ class FakeWindlass implements Windlass {
 				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {
 					platformCalled = true;
 					const offered = turnHostTools(input);
-					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots) });
+					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan) });
 					if (input.onPlan) {
 						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
 						const single = text.includes("(suggest-single)");

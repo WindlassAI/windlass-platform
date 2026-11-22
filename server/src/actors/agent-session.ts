@@ -530,7 +530,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal };
 }
 
 /**
@@ -3746,6 +3746,7 @@ fi`, { signal, timeoutMs: 5000 });
 				// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
 				planner,
 				clearPlanner,
+				crossRepoPlan: planning && item?.crossRepoPlan === true,
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
 				onReport: item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 					const file = async () => {
@@ -4420,6 +4421,7 @@ async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<Activ
 		return;
 	}
 	meta.planningInputs = true;
+	item.crossRepoPlan = true;
 	const app = githubApp();
 	const refuse = (why: string) => {
 		item.refused = `The planner reads every repository of the feature, and ${why}. Nothing was planned.`;
