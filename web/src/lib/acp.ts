@@ -9,7 +9,7 @@
  * - A tool call (`tool_call`, then `tool_call_update`s that each say only what changed) is one tool
  *   block, keyed by its `toolCallId` under the message id `ACP_MESSAGE`, which is also what the platform
  *   puts on a question about that call. A diff it carries is shown as the diff of the call.
- * - A plan is one checklist per turn, replaced in place by each `plan` update.
+ * - A plan is one checklist per turn, replaced in place by each `plan` update; an empty one removes it.
  * - `usage_update` says how full the context is, and the cost so far when the harness knows it.
  * - Anything else (the commands and modes it offers, its config options, a title, an update kind this
  *   folder has never heard of) changes nothing that is shown.
@@ -64,6 +64,7 @@ export interface AcpDraft {
 	push(number: number, block: NewBlock): void;
 	find<B extends Block>(number: number, match: (block: Block) => block is B): B | undefined;
 	replace<B extends Block>(number: number, block: B, patch: Partial<B>): void;
+	remove(number: number, block: Block): void;
 }
 
 /** A new tool block, as the reducer makes one (`newTool` in timeline.ts). */
@@ -110,6 +111,12 @@ export function foldAcp(draft: AcpDraft, turn: number, given: AcpUpdate, at: num
 			if (!Array.isArray(update.entries)) return;
 			const entries = planEntries(update.entries);
 			const plan = draft.find(turn, (candidate): candidate is Extract<Block, { kind: "plan" }> => candidate.kind === "plan");
+			// An empty plan clears it (ACP): no checklist of nothing. Claude Code sends one after /clear, and
+			// in a turn after the one that made its task list, whose tasks a new process does not know.
+			if (entries.length === 0) {
+				if (plan) draft.remove(turn, plan);
+				return;
+			}
 			if (plan) draft.replace(turn, plan, { entries });
 			else draft.push(turn, { kind: "plan", at, entries });
 			return;
@@ -140,7 +147,8 @@ function fieldsOf(update: AcpUpdate): AcpFields {
 export function contextOf(value: unknown): AcpContext | null {
 	if (!isRecord(value) || !finite(value.used) || !finite(value.size) || value.size <= 0) return null;
 	const cost = isRecord(value.cost) && finite(value.cost.amount) && typeof value.cost.currency === "string" ? { amount: value.cost.amount, currency: value.cost.currency } : null;
-	return { used: value.used, size: value.size, cost };
+	const pct = value.fiveHourUsedPct;
+	return { used: value.used, size: value.size, cost, ...(finite(pct) && pct >= 0 && pct <= 100 && { fiveHourUsedPct: pct }) };
 }
 
 /** "41% used", of a context's fill. */

@@ -536,7 +536,7 @@ export interface RunTurnResult {
 	 *
 	 * Null otherwise, and null when `aborted` is true.
 	 */
-	failure: { reason: string; message: string } | null;
+	failure: { reason: string; message: string; resetsAt?: number; window?: import("../contract.js").UsageWindow } | null;
 	/** What Windlass had for checks in this turn. Absent when the turn ended before its configuration was dealt with. */
 	checks?: TurnChecks;
 }

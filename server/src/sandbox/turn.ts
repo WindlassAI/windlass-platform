@@ -5,7 +5,7 @@
  *
  *   WINDLASS_WAKE=off WINDLASS_ACP_LOG=warn
  *   WINDLASS_ACP_SCRIPT=/tmp/.wlp-script-<random>.json                                        a scripted (demo) turn
- *   WINDLASS_ACCESS_TOKEN_FILE=/home/agent/.local/share/windlass/access-token-<id>.json       any other turn
+ *   WINDLASS_ACCESS_TOKEN_FILE=<session-private path>/access-token-<id>.json       any other turn
  *   wlp-run exec <tag> windlass acp
  *
  * (windlass.ts shows the `docker exec` this is on Docker, e2b/sandboxes.ts the command it is on E2B.)
@@ -106,7 +106,8 @@
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import { FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
 import { config } from "../config.js";
-import type { WindlassEvent } from "../contract.js";
+import { reportedModelUsage } from "../usage.js";
+import type { TurnUsage, WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
@@ -115,7 +116,7 @@ import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, Scripted
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, handedInFailure, handedInProblem, tokenRanOut, tokenSourceFailure } from "./handoff.js";
-import { type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
+import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
 export function turnHostTools(input: RunTurnInput) {
@@ -307,13 +308,6 @@ function mcpCall(name: unknown, input: unknown): { server: string; tool: string 
 	return { server, tool: tool.startsWith(`${server}/`) ? tool.slice(server.length + 1) : tool };
 }
 
-interface Usage {
-	inputTokens: number;
-	cachedInputTokens: number;
-	outputTokens: number;
-	reasoningTokens: number;
-}
-
 /**
  * What the command line's `cli.summary` line says about a turn, added up from its events the same way
  * (Windlass's packages/cli/src/renderer.ts, `JsonSink`): steps, the summary requests of compactions,
@@ -323,7 +317,7 @@ class Tally {
 	private startedAt: number | null = null;
 	private steps = 0;
 	private summaryCalls = 0;
-	private usage: Usage | null = null;
+	private usage: TurnUsage | null = null;
 	/** The execution at work, by its id. */
 	running: string | null = null;
 	/** The execution that ended last, and how its event says it ended. */
@@ -332,6 +326,14 @@ class Tally {
 	note(event: WindlassEvent): void {
 		const data = (event.data ?? {}) as Record<string, unknown>;
 		const time = typeof event.time === "number" ? event.time : Date.now();
+		const usage = reportedModelUsage(event);
+		if (usage) {
+			const total = this.usage ??= { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+			total.inputTokens += usage.inputTokens;
+			total.outputTokens += usage.outputTokens;
+			total.cachedInputTokens += usage.cachedInputTokens;
+			total.reasoningTokens += usage.reasoningTokens;
+		}
 		switch (event.type) {
 			case "execution.started":
 			case "execution.resumed":
@@ -342,15 +344,9 @@ class Tally {
 				this.steps += 1;
 				return;
 			case "compaction.failed":
-				this.summaryCalls += typeof data.calls === "number" ? data.calls : 0;
-				return;
 			case "compaction.ended":
 				this.summaryCalls += typeof data.calls === "number" ? data.calls : 0;
-				return this.add(data.usage);
-			case "step.ended":
-			case "step.failed":
-			case "step.refused":
-				return this.add(data.usage);
+				return;
 			case "execution.succeeded":
 			case "execution.failed":
 			case "execution.interrupted": {
@@ -389,18 +385,6 @@ class Tally {
 		};
 	}
 
-	private add(raw: unknown): void {
-		if (typeof raw !== "object" || raw === null) return;
-		const usage = raw as Partial<Usage>;
-		const number = (value: unknown) => (typeof value === "number" ? value : 0);
-		const sum = this.usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
-		this.usage = {
-			inputTokens: sum.inputTokens + number(usage.inputTokens),
-			cachedInputTokens: sum.cachedInputTokens + number(usage.cachedInputTokens),
-			outputTokens: sum.outputTokens + number(usage.outputTokens),
-			reasoningTokens: sum.reasoningTokens + number(usage.reasoningTokens),
-		};
-	}
 }
 
 /** One turn: the process, the connection, and everything that has to be told apart while it runs. */
@@ -653,8 +637,23 @@ class Turn {
 	private async prepare(scriptPath: string | null, agentFile: string | null): Promise<boolean> {
 		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
 		// client went away, and it would hold the session ("in use by another windlass process").
-		const [leftovers, script, agent, token] = await Promise.allSettled([
-			this.sandbox.stopLeftovers("windlass"),
+		const stopping = this.sandbox.stopLeftovers("windlass").then(count => {
+			if (count > 0) this.notes.push(`[platform] stopped ${count} Windlass run(s) left over in this sandbox before starting the turn`);
+		});
+		if (this.tokenFile !== null) {
+			// Finish both cleanup steps before starting any file writer or requesting a token.
+			try {
+				await stopping;
+				await sweepSessionProcesses(this.sandbox, this.tokenFile.path);
+				if (this.abortRequested) return false;
+			} catch (error) {
+				this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
+				return false;
+			}
+		}
+		// A scripted turn can prepare its files while the previous Windlass is stopping.
+		const [stopped, script, agent, token] = await Promise.allSettled([
+			stopping,
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
 				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
@@ -664,13 +663,12 @@ class Turn {
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
 		]);
 		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
-		const setupError = [leftovers, script, agent].find(result => result.status === "rejected");
+		const setupError = [stopped, script, agent].find(result => result.status === "rejected");
 		const broken = setupError?.status === "rejected" ? setupError.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
 		if (broken !== null) {
 			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };
 			return false;
 		}
-		if (leftovers.status === "fulfilled" && leftovers.value > 0) this.notes.push(`[platform] stopped ${leftovers.value} Windlass run(s) left over in this sandbox before starting the turn`);
 		if (token.status === "rejected") {
 			// No sign-in, one that is no longer accepted, or a token that could not be had this time.
 			this.failure = tokenSourceFailure(token.reason);

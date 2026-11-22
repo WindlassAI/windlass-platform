@@ -41,16 +41,19 @@ The **agent** chip shows the agent, the model and the effort, for example **Wind
 
 ### The agent
 
-There are two agents:
+There are three agents:
 
 - **Windlass** runs everywhere. Work items always use it.
-- **Claude Code** runs only on one of your machines whose runner offers it. Choose that machine under **on** first. It runs with your Claude subscription, in the hardened Docker profile only. It does not run the repository's checks; CI's result is on the pull request.
+- **Claude Code** runs only on one of your machines whose runner offers it. It runs with your Claude subscription.
+- **OpenCode** runs only on one of your machines whose runner offers it. It runs with the model providers you signed it in with, or OpenCode's free public models.
 
-See [Claude Code on your machine](/docs/machines#claude-code-on-your-machine) to set it up.
+Choose the machine under **on** first. Claude Code and OpenCode run in the hardened Docker profile only. They do not run the repository's checks; CI's result is on the pull request. The **agent** chip groups the models under each agent's name, with its sign-in state. An agent offered only on another machine of yours says "choose that machine first". Under **Terminal sign-in commands** are the commands that sign each one in.
+
+See [Agents on your machine](/docs/machines#agents-on-your-machine) to set them up.
 
 ### The model
 
-**Model** lists the models you can choose. The default one is marked **default**. For Windlass, these are the models of your ChatGPT plan, as the platform read them for your account. You can change the model with any later prompt.
+**Model** lists the models you can choose. The default one is marked **default**. For Windlass, these are the models of your ChatGPT plan, as the platform read them for your account. For Claude Code and OpenCode, they are the models the machine's runner reported: for OpenCode, those of the providers it is signed in with. Until the runner has reported them, the chip offers the agent's default model. With many models, type in **Filter models…** to find one. You can change the model with any later prompt.
 
 ### The effort
 
@@ -82,6 +85,10 @@ Windlass always has two modes. **Ask** is one. The other depends on the sandbox,
 
 Once the machine reports Claude Code's own list of modes, the chip shows that list instead.
 
+### OpenCode modes
+
+OpenCode starts in **build**. Its modes are the ones OpenCode reports, for example **build**, which runs tools as OpenCode's permissions allow, and **plan**, which allows no edits. On Windlass, OpenCode asks you before it runs a command, edits a file or works outside the workspace.
+
 > **Careful** **Full** and **Bypass permissions** let the agent run commands without asking. Use them in a sandbox you trust with the repository and its secrets.
 
 ## Choose the sandbox
@@ -90,7 +97,9 @@ The **sandbox** chip sets where the agent's files live and its commands run. Eac
 
 - whether it runs what the sandbox contains and refuses the rest, or runs every call without asking;
 - whether commands can reach the network;
-- whether commands can read the session's access token. Your ChatGPT sign-in itself is never in the sandbox. Claude commands can use the machine’s login through the session’s model relay. Older runners may also expose the setup token.
+- whether commands can read the session's access token. Your ChatGPT sign-in itself is never in the sandbox. In a Claude Code or OpenCode session, commands can use the machine's login through the session's model relay, but cannot read it. Older runners may also expose the Claude setup token.
+
+For Claude Code and OpenCode, the chip shows the mode in place of the first fact. For OpenCode it then says **OpenCode relay** where commands have no other network, and **credentials on machine**: "Commands can use the OpenCode model relay. Provider credentials stay on the machine." For Claude Code it says **Claude relay only** where commands have no other network, and **Claude login via relay**, or **Claude login readable** on an older runner without a relay.
 
 The sandboxes on offer depend on the platform and on the machine. Read [Sandboxes and security](/docs/security) for what each one protects. A sandbox that cannot be used is listed under **Listed, but not usable on this deployment**, with the reason.
 

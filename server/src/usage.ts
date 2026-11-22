@@ -48,7 +48,8 @@
  * on their own.
  */
 
-import type { SandboxPlace, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import type { RawAccess } from "rivetkit/db";
+import type { HarnessId, SandboxPlace, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
 
 /**
@@ -88,6 +89,45 @@ export const USAGE_KEPT_DAYS = 90;
 
 export function dayOf(ms: number): number {
 	return Math.floor(ms / DAY_MS);
+}
+
+export function nextUtcDay(at: number) { return (dayOf(at) + 1) * DAY_MS; }
+
+/** All Windlass turns receive their model credential from the platform, including on a paired runner. */
+export function usesPlatformModel(place: SandboxPlace, harness: HarnessId = "windlass"): boolean {
+	return place.kind === "hosted" || harness === "windlass";
+}
+
+/** Windlass reports spending on these request events. The turn summary and the account ledger use the same figures. */
+export function reportedModelUsage(event: WindlassEvent): TurnUsage | null {
+	if (!["step.ended", "step.failed", "step.refused", "compaction.ended"].includes(event.type)) return null;
+	const raw = event.data?.usage;
+	if (typeof raw !== "object" || raw === null) return null;
+	const usage = raw as Partial<TurnUsage>;
+	const number = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+	return { inputTokens: number(usage.inputTokens), outputTokens: number(usage.outputTokens),
+		cachedInputTokens: number(usage.cachedInputTokens), reasoningTokens: number(usage.reasoningTokens) };
+}
+
+export const TOKEN_USAGE_TABLE = `CREATE TABLE IF NOT EXISTS token_usage (
+	day INTEGER NOT NULL, session TEXT NOT NULL, seq INTEGER NOT NULL, tokens INTEGER NOT NULL,
+	PRIMARY KEY (day, session, seq))`;
+export interface TokenReceipt { seq: number; at: number; tokens: number }
+
+export async function recordTurnTokens(db: Pick<RawAccess, "execute">, session: string, receipt: TokenReceipt) {
+	if (![receipt.seq, receipt.tokens, receipt.at].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error("Invalid token receipt.");
+	const rows = await db.execute("INSERT INTO token_usage(day, session, seq, tokens) VALUES(?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
+		dayOf(receipt.at), session, receipt.seq, receipt.tokens);
+	return rows.length > 0;
+}
+
+export async function tokensOn(db: Pick<RawAccess, "execute">, at: number): Promise<number> {
+	const [row] = await db.execute<{ used: number }>("SELECT COALESCE(SUM(tokens), 0) AS used FROM token_usage WHERE day=?", dayOf(at));
+	return row!.used;
+}
+
+export function dailyTokenWait(used: number, limit: number | null): string | null {
+	return limit === null || used < limit ? null : `Your daily model token cap of ${limit.toLocaleString("en-US")} has been reached. New turns can start at 00:00 UTC.`;
 }
 
 /** A day as the contract names it: "2026-11-17". */
@@ -183,6 +223,8 @@ export interface ReserveInput {
 /** One user's sandbox time and kept sandboxes. Every method takes the time, so nothing here reads a clock. */
 export class UsageBook {
 	private readonly entries: UsageEntry[] = [];
+	private readonly modelTotals = new Map<number, number>();
+
 	private readonly totals = new Map<number, number>();
 	/** By session: a session has one sandbox, and so one open hold. */
 	private readonly holds = new Map<string, UsageHold>();
@@ -195,6 +237,14 @@ export class UsageBook {
 		for (const entry of state.entries ?? []) this.add(entry);
 		for (const hold of state.holds ?? []) this.holds.set(hold.session, hold);
 		for (const claim of state.kept ?? []) this.claims.set(claim.session, claim);
+	}
+
+	modelTokens(at: number) { return this.modelTotals.get(dayOf(at)) ?? 0; }
+
+	/** A retried or delayed receipt cannot roll back a committed daily total. */
+	noteModelTokens(at: number, total: number) {
+		const day = dayOf(at);
+		this.modelTotals.set(day, Math.max(this.modelTokens(at), total));
 	}
 
 	/** The least that must be left for something to start: never more than one hold. */

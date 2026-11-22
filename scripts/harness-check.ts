@@ -25,6 +25,11 @@ const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = f
 assert.equal(itemHasHarness, false);
 assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
 
+// Claude Code's task tools keep their list in the adapter's process, which lives one turn: a task finished
+// in a later turn never reached the plan. Its TodoWrite list sends the whole list with every change.
+const claudeWrapper = readFileSync(new URL("../sandbox/harness/claude/wlp-claude-acp", import.meta.url), "utf8");
+assert.match(claudeWrapper, /^export CLAUDE_CODE_ENABLE_TASKS=false$/m, "wlp-claude-acp must keep Claude Code on its TodoWrite list");
+
 const fixture = fileURLToPath(new URL("../fixtures/acp-agent/agent.mjs", import.meta.url));
 const openParams = { cwd: "/workspace", mcpServers: [] };
 const block = (text: string) => [{ type: "text", text }];
@@ -423,6 +428,37 @@ async function clientCheck(state: string) {
 	};
 	markTurnSandbox(sandbox);
 	const handle = sandbox as unknown as SandboxHandle;
+	const { turnRefusal, limitObservation } = await import("../server/src/provider-refusal.js");
+	const limitUpdates: AcpUpdate[] = [];
+	const limited = await harness.runTurn(handle, { prompt: "claudelimit", onAcpUpdate: u => limitUpdates.push(u) });
+	const quota = await harness.runTurn(handle, { prompt: "codexlimit" });
+	const observed = limitUpdates.find(u => u.sessionUpdate === "usage_update")?.rateLimit;
+	let warned = false;
+	let control: Parameters<NonNullable<RunTurnInput["onControl"]>>[0] | undefined;
+	const duringWarning = await harness.runTurn(handle, { prompt: "warning", onControl: c => { control = c; },
+		onAcpUpdate: u => { if (u.sessionUpdate === "usage_update") {
+			warned = u.rateLimit?.status === "allowed_warning" && u.fiveHourUsedPct === 93;
+			queueMicrotask(() => { void control!.steer("finish the original turn"); });
+		} } });
+	const checks = {
+		"5c.3 Claude refusal and rejected event": turnRefusal("error", limited, null)?.resetsAt === 1900000000000 && limited.failure?.reason === "usage_limit" && observed?.status === "rejected",
+		"5c.4 Codex quota fixture": turnRefusal("error", quota, null)?.kind === "quota_exhausted",
+		"5c.6 warning keeps the original prompt running": warned && duringWarning.failure === null && duringWarning.acp?.stopReason === "end_turn",
+		"5c.8 no canaries in outgoing usage updates or turn results": !JSON.stringify([limitUpdates, limited, quota]).includes("canary"),
+	};
+	for (const [name, passed] of Object.entries(checks)) console.log(passed ? "PASS" : "FAIL", name);
+	assert(Object.values(checks).every(Boolean), "provider routing fixtures");
+	const { observeUsage } = await import("../server/src/provider-usage.js");
+	for (const [result, until] of [[limited, 1900000000000 + 60_000], [quota, 1 + 900_000]] as const) {
+		const reading = limitObservation(turnRefusal("error", result, null), 1);
+		assert.ok(reading);
+		const stored = observeUsage({ account: { key: "fixture", harness: harness.id, state: "ok", limitedUntil: null, windows: [] },
+			backoff: 0, lastRefusal: -1, lastSuccess: -1 }, reading);
+		assert.equal(stored.account.state, "limited");
+		assert.equal(stored.account.limitedUntil, until);
+		assert.doesNotMatch(JSON.stringify(stored), /canary/);
+	}
+	methods.length = 0;
 	let lateSteer: Promise<void> | undefined;
 	const first = await harness.runTurn(handle, { ...input, onControl: c => { duringShutdown = () => { lateSteer = assert.rejects(c.steer("late"), /turn ended/i); }; }, onAcpUpdate: u => updates.push(u) });
 	assert.equal(first.failure, null);

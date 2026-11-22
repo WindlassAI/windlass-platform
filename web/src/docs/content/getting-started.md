@@ -64,7 +64,12 @@ The platform acts as the App's installation. It keeps no GitHub token of yours. 
 | Issues | Read and write | Read an issue filed as a work item, and comment on it. |
 | Metadata | Read-only | GitHub adds it to every App. |
 
-The Issues permission and the three read-only CI permissions are used only by work items. Everything else works without them.
+Issues, Checks, Commit statuses and Actions are used only by work items. Agents you start yourself need only Contents, Pull requests and Metadata.
+
+Contents write is the widest of these. It covers every repository the installation can see, and GitHub has no way to limit an App to some branches. So keep the App's reach small:
+
+- At GitHub, set the installation's **Repository access** to **Only select repositories**, and pick the repositories you want agents on.
+- Add a ruleset for each repository's default branch: block force pushes and deletions, and require a pull request before merging. Leave the App off the ruleset's bypass list. The platform pushes only `windlass/…` branches, so it keeps working, and it cannot write the default branch.
 
 Each token the platform makes for a clone or a push covers one repository and lasts an hour at most. It is given only to that one git command, and it is revoked when the command ends. The agent's sandbox is never given your GitHub access.
 

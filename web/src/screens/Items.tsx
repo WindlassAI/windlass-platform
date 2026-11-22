@@ -185,7 +185,7 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider limit", children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget" };
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the

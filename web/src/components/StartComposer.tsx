@@ -52,7 +52,7 @@ import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
 import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
-import { claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
+import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoice";
@@ -101,8 +101,8 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 			: claude
 			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
 			: profile.commandsCanReadAccessToken
-				? { text: "token readable", long: "commands can read the session's access token", open: true }
-				: { text: "token sealed", long: "commands cannot read the session's access token", open: false },
+				? { text: "token readable", long: accessTokenFact(profile), open: true }
+				: { text: "token hidden from commands", long: accessTokenFact(profile), open: false },
 	];
 }
 
@@ -717,7 +717,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					{
 						id: "machines",
 						label: "Your machines",
-						note: item ? "costs no hosted time" : "the platform's limits do not apply",
+						note: "costs no hosted time",
 						items: mine.map((machine) => {
 							const unusable = why(machine);
 							const isChosen = chosenMachine?.machineId === machine.machineId;

@@ -39,7 +39,7 @@ import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, WORKSPAC
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
 import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
-import { tokenFilePath } from "./token-file.js";
+import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
 
 const SANDBOX_ID = /^(?:(?:claude|opencode|codex)-)?[a-f0-9]{12}$/;
 const STDOUT_CAP = 4 * 1024 * 1024;
@@ -366,14 +366,36 @@ function stateOf(status: string): "none" | "running" | "paused" {
 	return "none";
 }
 
-/**
- * Removes the sandbox's access token file from the user's data volume, which outlives the container. A
- * turn removes its own when it ends; this is for one that was cut off with its server, or by the stop
- * that follows. The container must be running; a failure is nobody's (the token expires within the hour).
- */
+/** Clear the private file and any pre-upgrade copy on the data volume. */
 async function forgetTokenFile(id: string): Promise<void> {
-	const path = tokenFilePath(id);
-	await docker(["exec", containerName(id), "rm", "-f", "--", path, `${path}.tmp`], { timeoutMs: 10_000 }).catch(() => undefined);
+	const paths = [tokenFilePath(id), tokenFilePath(id, DATA_DIR)];
+	await docker(["exec", containerName(id), "rm", "-f", "--", ...paths.flatMap(path => [path, path + ".tmp"])], { timeoutMs: 10_000 }).catch(() => undefined);
+}
+
+async function listDockerSandboxes(uid: string, machineLabel: string): Promise<ListedSandbox[]> {
+	assertUid(uid);
+	// Docker cannot filter by a label's absence: the hosted provider's are told apart below.
+	const onMachine = machineLabel === "" ? [] : ["--filter", `label=${MACHINE_LABEL}=${machineLabel}`];
+	const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--filter", `label=${LABEL}.uid=${uid}`, ...onMachine, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
+	const found: ListedSandbox[] = [];
+	for (const line of result.stdout.split("\n")) {
+		const [name = "", status = "", sessionId = "", machine = ""] = line.trim().split("|");
+		const id = name.startsWith("wlp-session-") ? name.slice("wlp-session-".length) : "";
+		const state = stateOf(status);
+		if (SANDBOX_ID.test(id) && state !== "none" && machine === machineLabel) found.push({ id, sessionId, state });
+	}
+	return found;
+}
+
+/** Remove each session's private file on logout, including containers with private transcript storage. */
+export async function removeRunningTokenFiles(uid: string, machine: string, fileId = (raw: string) => raw): Promise<void> {
+	const sessions = await listDockerSandboxes(uid, machine);
+	await Promise.all(sessions.filter(session => session.state === "running" && /^[a-f0-9]{12}$/.test(session.id)).map(async ({ id }) => {
+		const path = tokenFilePath(fileId(id));
+		const result = await docker(["exec", containerName(id), "rm", "-f", "--", path, path + ".tmp"], { timeoutMs: 10_000 });
+		// A concurrent stop or removal already discarded the tmpfs.
+		if (result.code !== 0 && !/is not running|No such container/i.test(result.stderr)) throw new Error("Could not remove the session's access token.");
+	}));
 }
 
 /** What the hosted provider and a runner's differ in. */
@@ -432,7 +454,9 @@ export class DockerSandboxes implements Sandboxes {
 		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
 		const [status, shares, nanos, memory, swap, pids, ...json] = result.stdout.trim().split("|");
-		const labels = JSON.parse(json.join("|")) as Record<string, string> | null;
+		let labels: Record<string, string> | null;
+		try { labels = JSON.parse(json.join("|")); }
+		catch { throw new Error(`docker container inspect returned missing or invalid labels JSON for ${containerName(id)}`); }
 		if (labels?.[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine) return null;
 		const label = labels[LABEL + ".requested-slots"] || labels[LABEL + ".slots"] || "1";
 		const size = sandboxSlots(/^[1-4]$/.test(label) ? Number(label) : 1, this.options.slots?.max ?? 1);
@@ -456,18 +480,7 @@ export class DockerSandboxes implements Sandboxes {
 
 	/** The user's containers, by the labels each was made with. */
 	async list(uid: string): Promise<ListedSandbox[]> {
-		assertUid(uid);
-		// Docker cannot filter by a label's absence: the hosted provider's are told apart below.
-		const onMachine = this.machine === "" ? [] : ["--filter", `label=${MACHINE_LABEL}=${this.machine}`];
-		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--filter", `label=${LABEL}.uid=${uid}`, ...onMachine, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
-		const found: ListedSandbox[] = [];
-		for (const line of result.stdout.split("\n")) {
-			const [name = "", status = "", sessionId = "", machine = ""] = line.trim().split("|");
-			const id = name.startsWith("wlp-session-") ? name.slice("wlp-session-".length) : "";
-			const state = stateOf(status);
-			if (SANDBOX_ID.test(id) && state !== "none" && machine === this.machine) found.push({ id, sessionId, state });
-		}
-		return found;
+		return listDockerSandboxes(uid, this.machine);
 	}
 
 	profiles(): SandboxProfile[] {
@@ -526,6 +539,8 @@ export class DockerSandboxes implements Sandboxes {
 				...(this.options.network ? ["--label", `${LABEL}.egress=${this.options.network.mode}`,
 					...Object.entries(this.options.network.env).flatMap(([k, v]) => ["-e", k + "=" + v])] : []),
 				...flags,
+				// Windlass reads its handed-in token in this container's /dev/shm.
+				...(!harness ? ["--ipc", "private"] : []),
 				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, "--log-driver", "none", ...relay.env] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
@@ -608,6 +623,12 @@ export class DockerSandboxes implements Sandboxes {
 		else if (found.status !== "running" && found.status !== "restarting") {
 			const started = await docker(["start", containerName(id)], { timeoutMs: 60_000 });
 			if (started.code !== 0) throw new Error(`could not start the sandbox: ${started.stderr.trim()}`);
+		}
+		// An interrupted pre-upgrade turn may have left a file on the shared volume. Clear
+		// those before returning a handle that could run setup or commands against it.
+		if (/^[a-f0-9]{12}$/.test(id)) {
+			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
+			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
 		}
 		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending);
 	}

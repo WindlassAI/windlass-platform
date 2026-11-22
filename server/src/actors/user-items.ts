@@ -21,6 +21,8 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { windlassAccountKey } from "../provider-usage.js";
+import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, PlanSubtask } from "../contract.js";
@@ -70,7 +72,8 @@ import { getLayer } from "../layer.js";
 import { reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
+import { effectiveUserLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
+import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
 import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { launchPlace, launchMachineProfiles } from "./user-machines.js";
@@ -83,6 +86,8 @@ const DAY = 86_400_000;
 // A margin past the PUT link's life, for a transfer still in flight when the link expired.
 const ATTACHMENT_DRAIN_MS = ATTACHMENT_PUT_TTL_MS + 5 * 60_000;
 export const ITEM_TABLES = [
+	PROVIDER_TABLE,
+	LIMITS_AUDIT_TABLE, TOKEN_USAGE_TABLE,
 	"CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, item TEXT NOT NULL, session TEXT NOT NULL, step_key TEXT NOT NULL, sha256 TEXT NOT NULL, key TEXT NOT NULL, bytes INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, ended_at INTEGER)",
 	"CREATE INDEX IF NOT EXISTS attachments_active_digest ON attachments(item, step_key, sha256) WHERE state IN ('reserved','kept')",
 	"CREATE INDEX IF NOT EXISTS attachments_item ON attachments(item, state)",
@@ -133,6 +138,7 @@ interface Slot {
 }
 
 export interface ItemsState {
+	limits: UserLimits;
 	items: Map<string, ItemSummary>;
 	/** The items created with a key, by that key: what was asked for, and the item. */
 	created: Map<string, Submission & { id: string }>;
@@ -175,7 +181,7 @@ export async function loadItems(db: RawAccess): Promise<ItemsState> {
 	const untold = new Set((await db.execute<{ slot: string }>("SELECT slot FROM turn_grant")).map((row) => row.slot));
 	for (const row of await db.execute<SlotRow>("SELECT id, key, session, item, title, at, expires_at FROM turn_slot")) slots.set(row.id, { ...row, expiresAt: row.expires_at, told: !untold.has(row.id) });
 	const [queue] = await db.execute<{ schedule: string; at: number }>("SELECT schedule, at FROM turn_queue WHERE id = 1");
-	return { items, created, creating: new Attempts(), requests, slots, queueAt: queue ? { id: queue.schedule, at: queue.at } : null };
+	return { limits: await readUserLimits(db), items, created, creating: new Attempts(), requests, slots, queueAt: queue ? { id: queue.schedule, at: queue.at } : null };
 }
 
 /**
@@ -330,7 +336,8 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		}
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: child?.budget ?? config.factory.item });
+		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
+		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
@@ -447,6 +454,7 @@ export function factorySlots(c: { vars: { items: ItemsState } }): number {
  * not be told is taken back and tried again later.
  */
 async function runQueue(c: ItemsCtx, answering: string | null = null, retrying = false): Promise<Slot | null> {
+	const accounts = await providerAccounts(c.db, Date.now());
 	const state = c.vars.items;
 	const now = Date.now();
 	const released: string[] = [];
@@ -459,7 +467,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, deferUntil: null, wait: null });
 		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`);
 	}
-	const limits = config.factory;
+	const limits = effectiveUserLimits(state.limits.overrides).factory;
+	const tokenWait = dailyTokenWait(c.vars.usage.modelTokens(now), limits.dailyTokens);
 	const sessions = [...c.vars.sessions.values()];
 	// The person's own agents at work, as `internalAcquireRun` counts them: one on a machine of theirs is not (`hostedLimitsApply`).
 	const own = sessions.filter((session) => !session.item && session.status !== "idle" && hostedLimitsApply(session.place)).length;
@@ -492,8 +501,10 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const placement = state.items.get(request.item)?.placement;
 		const capacity = machine && placement ? machineSlots(machine) : null;
 		const answer = admit({
+			provider: accountsAt(accounts, placeKey(session.place)).find(a => a.harness === (session.harness ?? "windlass")),
 			at: now,
 			limits,
+			dailyTokenWait: usesPlatformModel(session.place, session.harness) ? tokenWait : null,
 			turns: { running: own + slots.length, factory: slots.map((slot) => slot.title) },
 			startsRun: request.startsRun,
 			inReview,
@@ -589,6 +600,20 @@ async function armQueue(c: ItemsCtx): Promise<void> {
 	if (before !== null) await c.schedule.cancel(before.id).catch(() => false);
 }
 
+/** Recheck persisted timers on adoption. A late summary or an actor restart can also reveal a wait on an older login. */
+export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSummary>, adopted = false) {
+	const waits = [...items].filter(item => item.wait?.reason === "provider" && (adopted || item.wait.accountKey));
+	if (!waits.length) return;
+	const [signin] = await c.db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id=1 AND sealed IS NOT NULL");
+	if (!signin) return;
+	const current = windlassAccountKey(String(signin.generation));
+	for (const item of waits) {
+		if (item.wait!.accountKey === current) continue;
+		await itemActor(c, c.key[0]!, item.id).internalProviderChanged(item.revision).catch(error =>
+			c.log.warn({ msg: "Could not advance the item's provider retry", item: item.id, error: String(error) }));
+	}
+}
+
 /** Removal also reaches drafts and work waiting on GitHub. Repeat on wake in case a notification was cut off. */
 export async function notifyRemovedMachines(c: ItemsCtx, machineId?: string): Promise<void> {
 	for (const item of c.vars.items.items.values()) {
@@ -679,8 +704,9 @@ async function reserveAttachment(c: ItemsCtx, input: Reservation): Promise<Reser
 	const { sessionId, itemId, key, sha256, bytes } = input;
 	const item = c.vars.items.items.get(itemId);
 	if (!item || ended(item) || c.vars.sessions.get(sessionId)?.item?.id !== itemId || !key.startsWith(itemId + ":")) return { refused: "item_ended" };
-	const limits = config.factory.attachments;
-	if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > limits.bytes || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
+	const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory.attachments;
+	if (!Number.isSafeInteger(bytes) || bytes <= 0 || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
+	if (bytes > limits.bytes) return { refused: "too_large" };
 	await armSweep(c, Date.now());
 	return c.db.transaction(async tx => {
 		// Reuse active reservations and kept images. A discarded key belongs to its final sweep.
@@ -728,6 +754,11 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 	return Promise.all(rows.map(async row => ({ id: row.id, ...await store.linkToGet(row.key, { ttlMs, contentType: "image/png", disposition: "inline" }) })));
 }
 
+export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
+	const used = c.vars.usage.modelTokens(Date.now());
+	return dailyTokenWait(used, effectiveUserLimits(c.vars.items.limits.overrides).factory.dailyTokens);
+}
+
 async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
@@ -736,7 +767,7 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const inventory: PlacementInventory = { machines, defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {
@@ -771,12 +802,15 @@ export const itemActions = {
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
-						sentence: fit.refused ?? fit.wait, refused: fit.refused !== undefined,
+						sentence: fit.refused ?? fit.wait, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined,
 					});
 					return null;
 				}
 				const placement = fit.decision;
-				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + "\n\nFeature and dependency context (quoted data):\n" + context;
+				const previous = request.previous;
+				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
+					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
+				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
 				existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
 					profile: placement.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
 					{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
@@ -845,7 +879,7 @@ export const itemActions = {
 			await armSweep(c, fire.firedAt);
 			const rows = await c.db.execute<{ id: string; key: string }>(
 				"SELECT id,key FROM attachments WHERE state!='removed' AND at<=? AND (state='discarded' OR ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))",
-				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - config.factory.attachments.days * DAY,
+				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - effectiveUserLimits(c.vars.items.limits.overrides).factory.attachments.days * DAY,
 			);
 			await removeRows(c, rows, true);
 		});
@@ -906,7 +940,7 @@ export const itemActions = {
 	// Answered with work items off too: the ceiling on running agents among these holds for a person's own agents as well.
 	factoryLimits: (c: ItemsCtx): FactoryLimits => {
 		requireUser(c);
-		return config.factory;
+		return effectiveUserLimits(c.vars.items.limits.overrides).factory;
 	},
 
 	apiTokens: async (c: ItemsCtx): Promise<ApiToken[]> => {
@@ -957,6 +991,7 @@ export const itemActions = {
 		if (typeof summary?.id !== "string") return;
 		const before = c.vars.items.items.get(summary.id);
 		await noteItem(c, summary);
+		await notifyProviderWaits(c, [summary]);
 		if (summary.parent && before && summary.revision > before.revision && (ended(summary) || summary.question?.id !== before.question?.id)) {
 			const parent = itemActor(c, c.key[0]!, summary.parent.itemId);
 			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, state: summary.state }).catch(error =>

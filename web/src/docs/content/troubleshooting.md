@@ -111,11 +111,63 @@ The machine is in `restricted` mode, and the command tried to reach your private
 **"Docker could not apply the runner’s network policy."**\
 The runner could not set up a sandbox's network. Check Docker on the machine, then restart the runner.
 
-**"Claude credential relay refused the request."**\
-The machine's relay refused a Claude request. Either it was not one of Claude's model requests, its session placeholder did not match, the machine has no valid token, or Anthropic answered with an error, such as a rate limit. The relay does not pass Anthropic's own reason on. If it keeps happening, sign Claude in again on the machine.
+**"This runner needs signed runner connections enabled on the platform. Ask the operator to enable them, then pair again."**\
+**"This runner requires signed connections. Ask the platform operator to enable them."**\
+A new runner pairs and connects only with a platform that signs its runner connections. Ask whoever runs the platform to turn them on, then pair the machine again.
 
 **"Claude Code is not turned on on this machine: start the runner with --harness claude."**\
-See [Claude Code on your machine](/docs/machines#claude-code-on-your-machine).
+**"Start the runner with --harness opencode."**\
+**"This machine does not offer …."**\
+The runner was started without that agent's `--harness`. The runner does not save it, so give it each time. See [Agents on your machine](/docs/machines#agents-on-your-machine).
+
+**"OpenCode on “…” is not signed in. Run windlass-runner login opencode there."**\
+**"Run windlass-runner login opencode on this machine."**\
+Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-runner login opencode`. Claude Code says the same with `login claude`. See [Sign agents in](/docs/machines#sign-agents-in).
+
+**"… runs only on a machine of yours."**\
+**"… requires the docker-hardened profile."**\
+Claude Code and OpenCode run only on your machines, and only in **Hardened Docker on your machine "…"**. Choose both under **on** and **sandbox**.
+
+**"Work items and their reviewers run only with Windlass."**\
+Work items cannot use Claude Code or OpenCode. File it with Windlass, or start an agent instead.
+
+**"… has no publish tool. Publish from the session panel."**\
+Claude Code and OpenCode cannot open a pull request themselves. Open it from the session panel.
+
+**"OpenCode does not offer “…” here. Using its current mode “…”."**\
+Not an error. The mode you chose is not one OpenCode reported, so it kept its own.
+
+**"OpenCode could not continue the conversation; the files are as they were."**\
+**"Claude Code could not continue the conversation; the files are as they were."**\
+The agent could not pick up the earlier conversation, so this turn started a new one in the same files. After `logout opencode`, or after the machine was paired again, older OpenCode sessions stop working: start a new agent.
+
+## The model provider
+
+These come from the model's provider, or from the relay on your machine that forwards Claude Code's and OpenCode's model requests. See [Agent logins stay out of the container](/docs/machines#agent-logins-stay-out-of-the-container).
+
+**"The provider refused the request. …"**\
+The model's provider refused the turn, and gave the reason that follows. If it adds "You can change the model or reasoning effort with your next prompt.", choose another model or effort and send the prompt again. In a work item, the item asks you instead, with **Try again** and **Give up**.
+
+**"The provider refused the request. The provider gave no reason."**\
+The provider refused without saying why. Try again later, or with another model.
+
+**"The provider's usage or rate limit was reached."**\
+The provider says you have used up its allowance for now. Wait and send the prompt again, or choose another model or provider. With OpenCode's free public models this happens soon: their allowance is small, and OpenCode counts it by your machine's public IP address, so everyone behind that address shares it. Sign OpenCode in with a provider of your own to get past it.
+
+**"Provider sign-in is missing or the session placeholder is no longer valid."**\
+The machine has no login for this provider, the provider did not accept it, or the session's placeholder no longer matches. Sign the agent in again on the machine. If you ran `logout` or paired the machine again, start a new agent.
+
+**"This request is not allowed by the relay."**\
+The relay takes only model requests, and the provider may also refuse a request as not allowed. If it keeps happening, check what the agent's commands send to the relay.
+
+**"The provider failed or couldn't be reached."**\
+The provider had an error, or the relay could not reach it. Try again later. Check that the machine can reach the provider.
+
+**"The provider rejected the request."**\
+The provider refused it for another reason, and the relay does not pass that reason on. Try another model, or check your account with the provider.
+
+**"ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more."**\
+Sign out, sign in with ChatGPT again, then send the prompt again.
 
 ## Work items
 

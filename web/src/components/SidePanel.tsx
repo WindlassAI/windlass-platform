@@ -239,6 +239,7 @@ function Context({ view, harness, turns }: { view: SessionView; harness: string;
 							{compact(context.used)} of {compact(context.size)} tokens
 						</p>
 					</div>
+					{context.fiveHourUsedPct != null && <Stat label="5-hour window" value={`${Math.round(context.fiveHourUsedPct)}%`} sub="estimated usage" />}
 					<Stat label="Cost so far" value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} sub={context.cost ? plural(turns, "turn") : "not reported"} />
 				</div>
 			) : (

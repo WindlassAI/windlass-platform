@@ -53,6 +53,8 @@
  *                              there either way, and an item that exists goes on with its steps, so
  *                              turning it off and on again loses nothing; while it is off, nobody can
  *                              file, read or act on an item
+ *   WLP_DAILY_TOKENS           model tokens per user per UTC day (default unlimited)
+ *   WLP_FACTORY_FEATURE_MULTIPLIER   starting feature budget as a multiple of one item (default 3)
  *   WLP_FACTORY_RUNNING_TURNS  the software factory's limits for every user (factory/budget.ts; the
  *   WLP_FACTORY_TURNS          defaults are FACTORY_DEFAULTS there): turns of a user running at once,
  *   WLP_FACTORY_HOSTED_RUNNING the factory's and the user's own (default 6, also the ceiling of a
@@ -307,7 +309,7 @@ export interface Config {
 	turnTimeoutMs: number;
 	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
 	usage: UsageLimits;
-	/** The software factory's limits, the same for every user (WLP_FACTORY_*). */
+	/** The software factory's deployment defaults for user limits (WLP_FACTORY_*). */
 	factory: ReturnType<typeof readFactory>;
 	/** Whether users may file work items (WLP_ITEMS=1). */
 	items: boolean;
@@ -609,7 +611,7 @@ function readQuestionTimeout(): number {
 }
 
 /** A whole number from `min` to `max`, or `unlimited` (null) where the setting can mean no limit; `fallback` when it is not set. Anything else is unusable. */
-function readCount(name: string, fallback: number, min: number, max: number, unlimited: boolean): number | null {
+function readCount(name: string, fallback: number | null, min: number, max: number, unlimited: boolean): number | null {
 	const text = (process.env[name] ?? "").trim();
 	if (text === "") return fallback;
 	if (unlimited && text.toLowerCase() === "unlimited") return null;
@@ -634,21 +636,23 @@ function readHttpLimits() {
 	};
 }
 
-function readFactory(): FactoryLimits & { githubItemsPerDay: number; githubDrafts: number; reviewer: boolean; attachments: { bytes: number; perItem: number; accountBytes: number; days: number } } {
+function readFactory(): FactoryLimits & { reviewer: boolean } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
 	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
-	// The factory's share leaves the person at least one turn of their own.
-	const factoryTurns = Math.min(count("WLP_FACTORY_TURNS", d.factoryTurns, 100), Math.max(1, runningTurns - 1));
+	// Keep the configured share. The effective per-user limit reserves one turn for the person.
+	const factoryTurns = count("WLP_FACTORY_TURNS", d.factoryTurns, 100);
 	return {
-		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", 20, 1_000_000),
-		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", 20, 1_000_000),
+		dailyTokens: readCount("WLP_DAILY_TOKENS", d.dailyTokens, 1, Number.MAX_SAFE_INTEGER, true),
+		featureMultiplier: count("WLP_FACTORY_FEATURE_MULTIPLIER", d.featureMultiplier, 100),
+		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", d.githubItemsPerDay, 1_000_000),
+		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", d.githubDrafts, 1_000_000),
 		reviewer: process.env.WLP_FACTORY_REVIEWER === "on",
 		attachments: {
 			bytes: count("WLP_FACTORY_ATTACHMENT_BYTES", ATTACHMENT_LIMITS.bytes, ATTACHMENT_LIMITS.bytes),
 			perItem: count("WLP_FACTORY_ATTACHMENTS_PER_ITEM", ATTACHMENT_LIMITS.perItem, 1_000_000),
-			accountBytes: count("WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES", 1_073_741_824, Number.MAX_SAFE_INTEGER),
-			days: count("WLP_FACTORY_ATTACHMENT_DAYS", 180, 36500),
+			accountBytes: count("WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES", d.attachments.accountBytes, Number.MAX_SAFE_INTEGER),
+			days: count("WLP_FACTORY_ATTACHMENT_DAYS", d.attachments.days, 36500),
 		},
 		runningTurns,
 		factoryTurns,

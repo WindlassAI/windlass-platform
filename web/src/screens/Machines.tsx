@@ -532,6 +532,8 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</p>
 				<MachineUse machine={machine} onChanged={onChanged} />
 				<MachineAgents harnesses={machine.harnesses ?? []} />
+				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
+					<p className="field-note" key={a.key}>{HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 			</div>
 			<MachineState machine={machine} now={now} />
 			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>

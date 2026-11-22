@@ -1,7 +1,7 @@
 /**
  * An orchestrated work item's plan on its page (`ItemView.plan`): the spec the planner wrote, its
  * subtasks in order with what each depends on, the paths it owns, how it is checked and what it may
- * spend, and the total against what the feature may spend (three single items, less what is kept for
+ * spend, and the total against what the feature may spend (its approved budget, less what is kept for
  * the summary and review).
  *
  * While the plan waits for approval its questions are answered here and its budgets edited in place:
@@ -454,7 +454,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 							})}
 						</dl>
 						<p className="usage-note plan-total-note">
-							The feature may spend three single items ({PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens, {plan.budget.turns} turns). {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns are kept for the summary and the review; the hatched part of each bar. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
+							The feature budget is {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens and {plan.budget.turns} turns. The hatched part of each bar reserves {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns for the summary and review. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
 						</p>
 					</div>
 				</div>

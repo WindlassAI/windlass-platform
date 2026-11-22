@@ -132,8 +132,30 @@ The choices depend on the item. A subtask can only integrate after its checks an
 
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks.
-- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. A review you leave on the pull request at GitHub is not read, so say what the agent should know in the note.
+- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
 - **Cancel…** an item.
+
+### Feedback from GitHub
+
+You can ask for changes on the item's pull request at GitHub instead of on its page.
+
+**What is read.** A review that requests changes is read whole, with its line comments. A conversation comment, a line comment on its own or a comment-only review is read only when it starts with the App's mention or `/windlass`. An approval adds a line to the item's log and starts nothing.
+
+**Who counts.** You, through the GitHub account linked to Windlass, and anyone GitHub reports as having write access to the repository. Feedback from anyone else is only counted on the page: its text is not kept, sent to the agent or answered. Windlass reads each review or comment again from GitHub before taking it, and does not take one more than 3 days old.
+
+**Batches.** A review is taken at once. Comments are collected into one batch: it goes after two minutes without a new comment, or ten minutes after the first. A batch holds up to 20 entries and 8,000 characters, oldest first. The rest goes with the next batch. A single entry longer than 8,000 characters is not taken: shorten it or split it. The same feedback twice is taken once.
+
+**What the agent is told.** The words are quoted as written, with who wrote them, their access, and the file, line and commit of a line comment. Your words are your requests. Other writers' words are review the agent weighs, not your instructions. Nobody's words change the agent's rules or the task. Where the agent disagrees, it says why in its report's concerns, and those reach the pull request.
+
+**On a single item**, a batch starts a new run on the same branch, as **Send back…** does. Feedback that arrives while the item works is held. Once CI has finished, it goes before the second review, and that commit is not handed over. After three runs started by other writers' feedback, the item asks you before each further batch: **Send it to the agent** or **Leave it**. Your own feedback is never capped. The item's budget still applies.
+
+**On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs. A feedback re-plan does not use up your own revisions of the plan. The fix may use the budget the feature has left. If that cannot cover another subtask, the question offers only **Leave it**. A feature that already has six subtasks does not take feedback. In both cases, file the fix as a new item.
+
+**Not taken.** Feedback is not taken on a failed, done or cancelled item, on a subtask's own work, or after its machine was removed.
+
+**On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count.
+
+**On the item's page**, **From GitHub** lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
 
 ## Orchestrate a feature
 
@@ -190,7 +212,7 @@ Once a subtask has its item, its row says where it **ran on** and why, for examp
 
 ### Budgets
 
-A feature may spend three times what one item may: by default 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Before each planning turn, the factory checks a planning allowance of 25% of a Quick item across all planning turns. Part of the feature budget, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
+By default a feature may spend three times what one item may, giving it 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Before each planning turn, the factory checks a planning allowance of 25% of a Quick item across all planning turns. Part of the feature budget, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
 
 When a feature reaches its budget, it stops and asks you. **Raise the limit and go on** may raise each figure by at most one item's allowance at a time.
 
@@ -236,10 +258,12 @@ Filter it with **repo** and **from**: filed from the web, the API or a GitHub is
 
 ## Limits
 
-Limits make items wait. They never refuse them. (Approving a feature's plan can be refused, but that is a requirement of the repository, not a limit. See [What you need first](#what-you-need-first).) A waiting item says what it waits for. The platform sets these, and the **Work items** section of the **Usage** page shows them. By default:
+When a Factory turn reaches a capacity limit, the item waits and shows the reason. GitHub intake checks its filing limits before it creates an item. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
+| Daily model tokens across items and interactive sessions | Unlimited |
+| Feature budget | 3× the per-item budget |
 | Factory turns at once | 5, out of 6 agents working at once |
 | Hosted sandboxes at once | 3 |
 | Items in review before new ones wait | 6 |
@@ -250,4 +274,6 @@ Limits make items wait. They never refuse them. (Approving a feature's plan can 
 | Items filed from GitHub per day | 20 |
 | Drafts from GitHub waiting | 20 |
 
-When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens." A feature's budget is three times an item's. See [Budgets](#budgets).
+When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens." The operator’s item budget and feature multiplier apply to newly created items. See [Budgets](#budgets).
+
+When you reach your daily model token cap, admitted turns finish their current Factory step. The next turn waits until 00:00 UTC. This also applies to Windlass on paired machines because it uses the same model sign-in. See [Daily model tokens](/docs/settings#daily-model-tokens).

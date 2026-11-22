@@ -28,13 +28,13 @@ The runner takes one command. With none, it runs `run`.
 | Command | What it does |
 | --- | --- |
 | `run` | Runs the runner's service. This is the default. |
-| `setup` | Pairs in the foreground, offers terminal sign-in for each enabled agent, and prints the background service command. |
+| `setup` | Pairs the machine in your terminal, asks to sign in each agent given with `--harness`, then prints the command that starts the runner in the background. See [Add a machine](/docs/machines#1-start-the-runner). |
 | `pair` | Makes a new pairing code, for example after the code expired or after the machine was removed. |
-| `status` | Says whether the runner is connected, the limits in force, the sandboxes and data volume of each pairing, and each enabled agent’s sign-in status. |
+| `status` | Says whether the runner is connected, its network mode, the limits in force, and for each pairing each enabled agent’s sign-in status, its sandboxes and its data volume. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
 | `prune` | Removes all containers and data volumes of this runner's pairings. |
-| `login claude\| opencode\| codex` | Signs the selected agent in on this machine. The machine must be paired first. |
-| `logout claude\| opencode\| codex` | Signs the selected agent out, for this pairing and every earlier one. |
+| `login claude`, `login opencode`, `login codex` | Signs that agent in on this machine, in your terminal. The machine must be paired first. With `opencode`, `--provider ID` skips the list of providers. See [Sign agents in](/docs/machines#sign-agents-in) and [Codex sign-in](#codex-sign-in). |
+| `logout claude`, `logout opencode`, `logout codex` | Signs that agent out, for this pairing and every earlier one. |
 
 ### Codex sign-in
 
@@ -54,12 +54,12 @@ It prints the runner's version, then its connection, then the network mode and t
 
 ```text
 Network egress is restricted.
-Running turn limit: 2
+Turn capacity: 2 slots
 Running sandbox limit: no limit
 Kept sandbox limit: no limit
 ```
 
-After that it lists each pairing with its sandboxes, its data volume and, the sign-in status of each enabled agent.
+After that it lists each pairing with the sign-in of each agent the runner has, marked **(offered)** where the runner offers it, then its sandboxes and its data volume.
 
 ### Log
 
@@ -78,11 +78,11 @@ docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock \
 docker start windlass-runner
 ```
 
-> **Careful** `prune` removes the agents' files on this machine, and the agent sign-in volumes too. It cannot be undone.
+> **Careful** `prune` removes the agents' files on this machine, and the agents' sign-in volumes too. It cannot be undone.
 
 ## Run options
 
-These options go after the runner image, with the `run` command or with no command. `--name` also works with `pair`.
+These options go after the runner image, with the `run` command or with no command. `setup` takes the same options, and passes them on to the command it prints. `--name` also works with `pair`.
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -98,8 +98,8 @@ These options go after the runner image, with the `run` command or with no comma
 | `--egress-allow HOST[,HOST]` | Empty | In `restricted` mode, let commands reach these hosts on your private network. Exact DNS names, up to 64. Given alone, it means `--egress restricted`. The machine's own addresses, Docker's networks and metadata addresses stay blocked. |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
+| `--harness opencode` | Off | Offers OpenCode on this machine. Needs a runner built with the OpenCode image. Repeat `--harness` to offer more than one agent. |
 | `--harness codex` | Off | Offers Codex on this machine. Uses your personal login on this machine. See [Codex sign-in](#codex-sign-in). |
-| `--harness opencode` | Off | Offers OpenCode. Repeat `--harness` to offer multiple agents. |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |
 
 The runner saves `--name`, `--egress`, `--egress-allow` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.
@@ -133,7 +133,8 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 
 | Message | What to do |
 | --- | --- |
-| "The pairing code expired, so restart the container or run `windlass-runner pair` to get a new code." | Restart the container, or run `pair`, and enter the new code. |
+| "The pairing code expired, so restart the container or run `windlass-runner pair` to get a new code." | Restart the container, or run `pair`, and enter the new code. Setup says "re-run the setup command to get a new code." instead. |
+| "This runner needs signed runner connections enabled on the platform. Ask the operator to enable them, then pair again." | The platform does not sign runner connections yet. Ask whoever runs it to turn them on, then pair again. |
 | "The platform does not know this machine's key. Run `windlass-runner pair` to add the machine again." | The machine was removed, or its key was lost. Pair it again. |
 | "Another runner with this machine's key is connected. If you copied the key, stop the other runner; if you did not, remove the machine on the Machines page." | Stop the other runner, or remove the machine. |
 | "This runner is …; the platform needs … or later. Update it with the command on the Machines page." | [Update the runner](/docs/machines#update-the-runner). |
@@ -141,9 +142,28 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "Docker needs at least 5 GB free to create a sandbox." | Free disk space on the machine. |
 | "Use --egress open, restricted or none." | Give `--egress` one of the three modes. |
 | "Use --egress-allow with restricted and up to 64 comma-separated DNS hostnames." | List DNS names, not IP addresses, and leave out `--egress open` or `none`. |
-| "Use --egress and --egress-allow with run." | Give them to `run`, or with no command, not to `pair` or another command. |
-| "Use --name with run or pair and a printable name of 1 to 64 characters." | Shorten the name, or take out control characters. |
-| "Use --allow-profile with run and a profile ID: docker-hardened or docker-windlass-sandbox." | Give one of the two profile IDs. |
+| "Use --egress and --egress-allow with setup or run." | Give them to `setup` or `run`, or with no command, not to `pair` or another command. |
+| "Use --name with setup, run or pair and a printable name of 1 to 64 characters." | Shorten the name, or take out control characters. |
+| "Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox." | Give one of the two profile IDs. |
+| "Use --slots, --slot-cpus, --slot-memory and --sandbox-memory with run or setup." | Give the sizing options to `run` or `setup` only. |
+| "Choose --harness claude, --harness opencode or --harness codex." | Those are the agents a runner can offer. |
+| "Use --harness opencode with a runner built with the pinned OpenCode image." | This runner image has no OpenCode. Use the image from the Machines page. Claude Code says the same for `--harness claude`. |
+| "The runner is already using this state. Use login <agent> in the running runner." | Setup cannot run beside the runner. Use `login` in the running container, or remove it first. |
+| "Mount the Docker socket and runner state for setup." | Copy the setup command from the Machines page: it mounts both. |
+| "Pair this machine before signing in to Claude Code." | Pair the machine, then run `login` again. OpenCode says the same. |
+| "Attach a terminal to sign in interactively." | Run `login` with `docker exec -it`, so it has a terminal. |
+| "Use an interactive terminal for device sign-in." | The ChatGPT sign-in of OpenCode needs `docker exec -it`. |
+| "Setup did not finish. You can paste a token made on another computer." | Claude's sign-in did not end. Run `claude setup-token` on any computer and paste the token it prints. |
+| "Expected one Claude setup token of at most 512 characters." | Paste the token only, on one line. |
+| "Enter a … API key of up to 4096 characters." | Paste the key only, on one line. |
+| "Use --provider with login opencode." | `--provider` works only with `login opencode`. |
+| "No matching provider. Enter another search or an exact id." | Search with another word, or type the ID. |
+| "Unknown OpenCode provider. Run login opencode to search the provider list." | The `--provider` ID is not one the runner can route. Leave it out and search. |
+| "OpenCode device sign-in did not finish." | The ChatGPT sign-in was not completed. Run `login opencode` again. |
+| "A later login or logout superseded this OpenCode sign-in." | Another `login` or `logout` ran meanwhile. Run `login opencode` again if you still need it. |
+| "Invalid OpenCode login metadata. Log out of OpenCode and sign in again." | Run `logout opencode`, then `login opencode`. |
+| "Mount /import/opencode read-only with :ro." | The import folder must be mounted read-only. Copy the setup command from the Machines page again: it mounts the folder with `readonly`. |
+| "Invalid OpenCode auth.json in the setup import mount." | OpenCode's `auth.json` could not be read. Leave out the import mount and sign in with `login opencode`. |
 | "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in." | Not an error. This pairing predates network modes. See [Network access](/docs/machines#network-access). |
 | "Docker could not apply the runner’s network policy." | The runner could not set up the sandbox's network. The Machines page shows it as a Docker warning. Check Docker on the machine, then restart the runner. |
 

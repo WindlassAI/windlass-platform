@@ -315,6 +315,10 @@ expect("the control report accepts both owner policies and legacy reports",
 expect("malformed owner policies are refused", [null, hardened, [], [windlass], [hardened, hardened],
 	[hardened, "e2b"], [hardened, windlass, hardened], [hardened, {}]].every(ids => profileReport(ids) === null));
 
+const generationReport = (loginGeneration: unknown) => parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [],
+	harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token", loginGeneration }] }));
+expect("a legacy control report carries the login generation and rejects arbitrary identity text", generationReport("a".repeat(32))?.kind === "report" && generationReport("canary@example.invalid") === null);
+
 async function harnessCreate() {
 	const model = { id: "opus", name: "Opus", efforts: ["low", "high"] };
 	const options = { models: [model], defaultModel: "opus", modes: [], checkedAt: 1000 };

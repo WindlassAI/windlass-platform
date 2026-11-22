@@ -3,6 +3,7 @@
  * it: durable events and three of the ephemeral ones are stored (timeline items); the four streaming
  * ones are broadcast and never stored (live deltas). Pure functions, shared by the mock and the tests.
  */
+import { contextOf } from "../lib/acp";
 import { VerificationLog } from "../../../server/src/verified";
 import type { AcpContext, AcpUpdate, LiveDelta, TimelineItem, TurnOutcome, TurnUsage, WindlassDelta, WindlassEvent } from "@contract";
 
@@ -254,7 +255,7 @@ export function acpRunToFeed(fixture: AcpFixture, options: { turn: number; after
 	});
 	for (const entry of fixture.updates) {
 		if (isPermission(entry)) continue;
-		if (entry.sessionUpdate === "usage_update" && typeof entry.used === "number" && typeof entry.size === "number") context = { used: entry.used, size: entry.size, cost: (entry.cost as AcpContext["cost"] | undefined) ?? null };
+		if (entry.sessionUpdate === "usage_update") context = contextOf(entry);
 		recorder.update(entry);
 	}
 	recorder.flush();

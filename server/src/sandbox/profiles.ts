@@ -1,8 +1,8 @@
 /**
  * The sandbox profiles and what each promises. In every profile the user's ChatGPT sign-in stays out of
- * the sandbox: a turn is handed a short-lived access token in a file in Windlass's data directory
+ * the sandbox: a turn is handed a short-lived access token in a session-private file
  * (token-file.ts). `commandsCanReadAccessToken` says whether a command the agent runs can read that
- * file: not where Windlass sandboxes commands (its sandbox hides the data directory), yes where commands
+ * file: not where Windlass sandboxes commands (its sandbox replaces /dev and hides the data directory), yes where commands
  * run directly in the container. web/src/api/mock.ts repeats these texts for the web app's mock.
  *
  * `PROFILES` is the list of a server on local Docker; `profilesFor` gives the list of either kind of
@@ -43,7 +43,7 @@ export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
 		name: "Docker + Windlass sandbox",
-		summary: "A container of its own, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the container.",
+		summary: "Windlass sandboxes each agent command inside this session's Docker container. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
 		layers: [
 			"Docker container (Docker’s seccomp profile with namespace and mount calls allowed, non-root, no capabilities, resource limits)",
 			"Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)",
@@ -56,7 +56,7 @@ export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-hardened",
 		name: "Docker, hardened",
-		summary: "A container under Docker's default seccomp and AppArmor profiles; commands run directly in it, with network, and can read the session's access token, which lasts about an hour and cannot be renewed. Your ChatGPT sign-in is never in the container.",
+		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
 		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits)"],
 		approval: "full",
 		commandNetwork: true,
@@ -136,7 +136,7 @@ export function e2bProfile(options: { windlassSandbox: boolean }): SandboxProfil
 			id: "e2b",
 			name: "E2B + Windlass sandbox",
 			summary:
-				"A microVM of its own, hosted by E2B, and every command the agent runs is sandboxed again by Windlass: no network, and the session's access token is out of its reach. Your ChatGPT sign-in is never in the microVM.",
+				"Windlass sandboxes each agent command inside this session's E2B microVM. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the microVM.",
 			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 			approval: "auto",
 			commandNetwork: false,
@@ -148,7 +148,7 @@ export function e2bProfile(options: { windlassSandbox: boolean }): SandboxProfil
 		id: "e2b",
 		name: "E2B",
 		summary:
-			"A microVM of its own, hosted by E2B. Whether Windlass's own sandbox works inside it has not been established, so nothing is promised of it: a command the agent runs may have network and may read the session's access token, which lasts about an hour and cannot be renewed. Windlass asks before any command it cannot sandbox. Your ChatGPT sign-in is never in the microVM.",
+			"A microVM of its own, hosted by E2B. Windlass asks before running a command it cannot sandbox. If allowed, that command has network access and can read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the microVM.",
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)"],
 		approval: "auto",
 		commandNetwork: true,
@@ -176,7 +176,7 @@ export function e2bOpenProfile(options: { offered: true } | { offered: false; re
 		id: "e2b-open",
 		name: "E2B, microVM only",
 		summary:
-			"A microVM of its own, hosted by E2B, and no sandbox inside it: the agent's commands run directly in the microVM without asking first, can reach any host on the network, can write outside the workspace, the home directory included, and can read the session's access token, which lasts about an hour and cannot be renewed. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace; what is in the home directory by then is read-only for them, and what they add there is kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
+			"Windlass initially runs agent commands directly in this session's E2B microVM without asking first. They can reach any host on the network, write outside the workspace and read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Existing home files are then read-only, and new home files are kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
 		approval: "full",
 		commandNetwork: true,

@@ -1,3 +1,4 @@
+import { claudeLimit } from "../provider-usage.js";
 import type { AcpContent, AcpUpdate } from "../contract.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
@@ -179,9 +180,15 @@ export class AcpHarness implements Harness {
 				if (phase === "ended" || method !== "session/update" || !result.windlassSessionId || params.sessionId !== result.windlassSessionId) return;
 				const update = object(params.update);
 				if (typeof update.sessionUpdate !== "string") return;
-				if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && typeof update.size === "number") {
+				if (update.sessionUpdate === "usage_update") {
+					if (typeof update.used !== "number" || typeof update.size !== "number") return;
 					const cost = object(update.cost);
-					acp.usage = { used: update.used, size: update.size, cost: typeof cost.amount === "number" && typeof cost.currency === "string" ? { amount: cost.amount, currency: cost.currency } : null };
+					const rateLimit = profile.id === "claude" ? claudeLimit(object(update._meta)["_claude/rateLimit"], Date.now()) : undefined;
+					const fiveHourUsedPct = rateLimit?.window.kind === "5h" ? rateLimit.window.usedPct : acp.usage?.fiveHourUsedPct;
+					acp.usage = { used: update.used, size: update.size, cost: typeof cost.amount === "number" && typeof cost.currency === "string" && /^[A-Z]{3}$/.test(cost.currency) ? { amount: cost.amount, currency: cost.currency } : null,
+						...(fiveHourUsedPct != null && { fiveHourUsedPct }) };
+					stream.push({ sessionUpdate: "usage_update", ...acp.usage, ...(rateLimit && { rateLimit }) });
+					return;
 				}
 				if (profile.id === "codex" && update.sessionUpdate === "current_mode_update" && !codexModes(handle.profile).some(m => m.id === update.currentModeId)) return;
 				if (update.sessionUpdate === "config_option_update") {
@@ -325,9 +332,11 @@ export class AcpHarness implements Harness {
 				// OpenCode wraps provider messages as JSON-RPC internal errors and omits the HTTP status.
 				const openCodePromptError = profile.id === "opencode" && phase === "running" && error instanceof AcpError && error.code === -32603;
 				const message = openCodePromptError ? said.replace(/^Internal error: /, "") : said;
-				const usageLimit = status === 429 || info === "usageLimitExceeded" || openCodePromptError && message === "The provider's usage or rate limit was reached.";
-				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : "engine";
-				result.failure = { reason, message: redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : message) };
+				const promptError = phase === "running" && error instanceof AcpError && error.code === -32603;
+				const usageLimit = status === 429 || info === "usageLimitExceeded" || promptError && said.replace(/^Internal error: /, "") === "The provider's usage or rate limit was reached.";
+				const limit = promptError ? error.limit : undefined;
+				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : limit?.reason ?? "engine";
+				result.failure = { ...limit, reason, message: limit ? "The provider's usage or rate limit was reached." : redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : message) };
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
 		} finally {
