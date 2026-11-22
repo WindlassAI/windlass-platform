@@ -2123,7 +2123,8 @@ export const user = actor({
 			const feature = session.item?.role === "builder" ? c.vars.items.items.get(session.item.id) : undefined;
 			const others = (feature?.repositories ?? []).filter(r => String(r.repositoryId) !== String(session.repository?.id));
 			const lists = session.place.kind === "hosted" ? [await readNetwork(c.db, project), ...await Promise.all(others.map(r => readNetwork(c.db, setupProjectKey(r.repositoryId)!)))] : [];
-			const network = unionHosts(lists.map(list => list.hosts));
+			// The others fill only the room the deployment's own hosts leave: the primary's list comes first.
+			const network = lists.length > 1 ? unionHosts(lists.map(list => list.hosts), networkLimit(await deploymentHostsForLimit())) : lists[0]?.hosts ?? [];
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);

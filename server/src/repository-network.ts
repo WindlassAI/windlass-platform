@@ -118,12 +118,15 @@ export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = 
 
 /**
  * The hosts of a session's repositories together, the primary's first: a session on more than one
- * repository reaches what each allows. Past `max` (what one sandbox can be given), the later lists'
- * hosts are left out; the primary's list fits by itself, as it was saved.
+ * repository reaches what each allows. `max` is what a repository's list may hold beside the
+ * deployment's own hosts (`networkLimit`), so that the sandbox's whole list stays within what it can be
+ * given. The primary's list is taken whole, as it was saved and as a one-repository session has it;
+ * the later lists' hosts fill what room is left, and past `max` are left out.
  */
-export function unionHosts(lists: ReadonlyArray<readonly string[]>, max = MAX_HOSTS): string[] {
-	const hosts = new Set<string>();
-	for (const list of lists) for (const host of list) if (hosts.size < max || hosts.has(host)) hosts.add(host);
+export function unionHosts(lists: ReadonlyArray<readonly string[]>, max: number): string[] {
+	const [primary = [], ...others] = lists;
+	const hosts = new Set<string>(primary);
+	for (const list of others) for (const host of list) if (hosts.size < max) hosts.add(host);
 	return [...hosts].sort();
 }
 

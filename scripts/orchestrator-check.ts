@@ -1694,6 +1694,21 @@ test("cross-repo: a PR the platform lost access to asks the person, sections sto
 	assert.ok(!siblingWakes(handed, cli, { kind: "ci", head: sha("7"), installationId: cli.installationId, repositoryId: cli.repositoryId }));
 });
 
+test("cross-repo: the feature's own session reaches both repositories' hosts within what the deployment's hosts leave, the primary's first", async () => {
+	const { unionHosts, networkLimit } = await import("../server/src/repository-network.js");
+	const names = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}.example.org`);
+	const deployment = names("d", 50); // 64 hosts in all: 14 left for the repositories' lists
+	const limit = networkLimit(deployment);
+	assert.equal(limit, 14);
+	const primary = names("p", 10), sibling = names("s", 10);
+	const union = unionHosts([primary, sibling], limit);
+	assert.equal(union.length, limit, "the union went past what the deployment's hosts leave");
+	for (const host of primary) assert.ok(union.includes(host), `the primary's ${host} was left out`);
+	assert.equal(union.filter(h => h.startsWith("s")).length, 4);
+	// A host both lists name takes one place; with room for all, every host is there.
+	assert.deepEqual(unionHosts([["a.example.org"], ["a.example.org", "b.example.org"]], 40), ["a.example.org", "b.example.org"]);
+});
+
 test("cross-repo: feedback on its PRs is declined, and one implementer leaves the sibling out", () => {
 	const item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "1", url: null }).item;
 	const declined = advance(item, { kind: "github_feedback", at: 70, ids: ["c1"], text: "fix", fingerprint: "f", others: false, by: "github:ada", writers: ["ada"] });
