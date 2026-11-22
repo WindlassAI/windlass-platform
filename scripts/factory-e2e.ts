@@ -492,7 +492,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			const page = await untilItem(user, id, "the cross-repo plan", v => v.question?.kind === "plan_approval" || v.question?.kind === "turn_refused", 120_000);
 			if (page.plan?.status !== "proposed") {
 				const snapshot = await client.agentSession.get([auth.profile.uid, page.sessionId], { params: { token: auth.token } }).snapshot();
-				throw new Error("No plan: " + stateOf(page) + " " + JSON.stringify(snapshot.timeline.filter(e => JSON.stringify(e).includes("plan_reply") || e.kind === "note")).slice(0, 1500));
+				throw new Error("No plan: " + stateOf(page) + " " + JSON.stringify(snapshot.timeline.filter(e => JSON.stringify(e).includes("plan_reply") || e.kind === "platform")).slice(0, 1500));
 			}
 			assert(page.plan.spec.requirements.includes("From cli: only the CLI has this line"), "The planner did not read the CLI's tree: " + JSON.stringify(page.plan.spec.requirements));
 			assert(page.repositories?.length === 2 && page.repositories[1].planningBaseSha === standin.branchHead(cli, "main") && page.integration?.state === "not_run", "Repositories not bound: " + JSON.stringify(page.repositories));
