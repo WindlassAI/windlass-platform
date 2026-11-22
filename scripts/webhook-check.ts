@@ -1039,6 +1039,27 @@ async function run() {
 			await change(issue, "closed", reader); assert.equal((await g2User.item(item.id)).state, "draft");
 			await change(issue, "reopened"); await change(issue, "unlabeled"); assert.equal((await g2User.item(item.id)).state, "cancelled");
 		});
+		await check("G3 a stranger's issue, started by its owner, reaches Windlass marked as the issue's; the owner's own does not", async () => {
+			// The fake Windlass records each prompt's `_meta["windlass/untrusted"]` (`fake.prompt_untrusted`) and taints its session once, as 0.6.0 does.
+			const marks = async (sessionId: string) => (await client.agentSession.get([uid, sessionId], { params: { token: ownerToken } }).snapshot()).timeline
+				.flatMap(e => e.kind === "windlass" && (e.event.type === "fake.prompt_untrusted" || e.event.type === "taint.noticed") ? [{ type: e.event.type, data: e.event.data }] : []);
+			const stranger = make(90, reader); await change(stranger, "labeled");
+			const [draft] = await items(stranger); assert.ok(draft); assert.equal(draft.state, "draft");
+			await g2User.actOnItem({ id: draft.id, action: { kind: "start" } });
+			const started = await until("the stranger's issue's first turn", async () => {
+				const m = await marks(draft.sessionId);
+				return m.some(x => x.type === "fake.prompt_untrusted") ? m : null;
+			}, 60_000);
+			const source = "issue #90 by @g3-reader";
+			assert.deepEqual(started.find(x => x.type === "fake.prompt_untrusted")?.data, { source }, JSON.stringify(started));
+			assert.deepEqual(started.find(x => x.type === "taint.noticed")?.data?.source, { kind: "client-input", tool: source }, JSON.stringify(started));
+			const own = make(91); await change(own, "labeled");
+			const [mine] = await items(own); assert.ok(mine); assert.notEqual(mine.state, "draft");
+			await until("the owner's issue's first turn", async () => (await client.agentSession.get([uid, mine.sessionId], { params: { token: ownerToken } }).snapshot()).timeline.some(e => e.kind === "user"), 60_000);
+			assert.deepEqual(await marks(mine.sessionId), []);
+			await g2User.actOnItem({ id: draft.id, action: { kind: "cancel" } });
+			await g2User.actOnItem({ id: mine.id, action: { kind: "cancel" } });
+		});
 		await check("G3 read-only command stops after permission, including a payload claiming OWNER", async () => {
 			// Fresh principal, so an uncached request shows the entire GitHub cost.
 			const other = standin.addUser("g3-comment-reader"); projectG2.access.set(other.login, "read");

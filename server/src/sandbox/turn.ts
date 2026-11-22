@@ -104,6 +104,7 @@
  */
 
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
+import { untrustedSource } from "../factory/untrusted.js";
 import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools } from "../agent-publish.js";
 import { config } from "../config.js";
 import { reportedModelUsage } from "../usage.js";
@@ -416,6 +417,8 @@ class Turn {
 	private promptSettled = false;
 	/** How the prompt's answer says its execution ended. */
 	private promptEnding: { executionId: string | null; outcome: Outcome | null } | null = null;
+	/** The `_meta` keys the engine takes on `session/prompt` (`promptMeta` in its answer to `initialize`). */
+	private promptKeys: string[] = [];
 	private steersInFlight = 0;
 	/** Messages steered in that Windlass admitted and has not delivered to the model yet. */
 	private readonly undelivered = new Set<string>();
@@ -704,6 +707,7 @@ class Turn {
 				return;
 			}
 			const openKeys = openKeysIn(init);
+			this.promptKeys = promptKeysIn(init);
 			if (!openKeys.includes("hostTools")) {
 				this.failure = { reason: "host_tools_required", message: "The sandbox needs Windlass 0.4.0 or later for host tools." };
 				return;
@@ -734,7 +738,14 @@ class Turn {
 		if (asked === "aborted" || this.abortRequested || this.peer.closed) return;
 
 		this.promptSent = true;
-		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }], ...(input.maxSteps === undefined ? {} : { _meta: { "windlass/maxSteps": input.maxSteps } }) };
+		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }], ...promptMeta(input, this.promptKeys) };
+		if (untrustedSource(input.untrusted) !== null && !this.promptKeys.includes(UNTRUSTED_KEY)) {
+			try {
+				input.onUntrustedUnmarked?.();
+			} catch {
+				// A listener's failure must not stop the turn.
+			}
+		}
 		void peer.request<{ stopReason?: unknown; _meta?: Record<string, unknown> }>("session/prompt", prompt).then(
 			(result) => {
 				const turn = result?._meta?.[NS] as { executionId?: unknown; outcome?: unknown } | undefined;
@@ -1464,6 +1475,25 @@ class Turn {
 }
 
 type Initialized = { agentCapabilities?: { _meta?: Record<string, unknown> } };
+
+/** The prompt's marker of outside text (Windlass 0.6.0, its docs/acp.md). */
+const UNTRUSTED_KEY = "windlass/untrusted";
+
+/** The `_meta` keys an engine takes on `session/prompt`, from its answer to `initialize`; none when it lists none. */
+function promptKeysIn(init: Initialized): string[] {
+	const listed = (init.agentCapabilities?._meta?.[NS] as { promptMeta?: unknown } | undefined)?.promptMeta;
+	return Array.isArray(listed) ? listed.filter((key): key is string => typeof key === "string") : [];
+}
+
+/**
+ * The prompt's `_meta`: its step limit, and where its outside text came from when the engine takes the
+ * marker. One that does not list it is sent the prompt without it, as before: it would ignore the key.
+ */
+export function promptMeta(input: Pick<RunTurnInput, "maxSteps" | "untrusted">, promptKeys: readonly string[]): { _meta?: Record<string, unknown> } {
+	const source = promptKeys.includes(UNTRUSTED_KEY) ? untrustedSource(input.untrusted) : null;
+	const meta = { ...(input.maxSteps === undefined ? {} : { "windlass/maxSteps": input.maxSteps }), ...(source === null ? {} : { [UNTRUSTED_KEY]: { source } }) };
+	return Object.keys(meta).length === 0 ? {} : { _meta: meta };
+}
 
 /** The keys of `_meta.windlass` an engine reads when a session is opened, from its answer to `initialize`; none when it lists none. */
 function openKeysIn(init: Initialized): string[] {

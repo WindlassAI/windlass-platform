@@ -255,6 +255,51 @@ planner's; only `edit_plan` changes it.
 cd server && npx tsx ../scripts/orchestrator-check.ts   # mixed agents through approval and child creation, refusals, routing, re-plans
 ```
 
+## Untrusted text
+
+`server/src/factory/untrusted.ts`. Every turn that hands the agent text the platform does not vouch for
+names its sources: `TurnPlan.untrusted`, then the `deliver` effect's `untrusted`, the inbox row's
+`untrusted` column (JSON, default `'[]'`), and `RunTurnInput.untrusted`. `turn.ts` sends them joined and
+cut to 200 characters as `session/prompt` `_meta["windlass/untrusted"]: { source }` when the engine lists
+`windlass/untrusted` in `agentCapabilities._meta.windlass.promptMeta` (Windlass 0.6.0). Windlass then
+records the source on the admission and taints the session before the turn's first step; its subagents
+inherit the taint. An engine that does not list it gets the prompt as before, and `onUntrustedUnmarked`
+puts one warning on the session's timeline (`untrustedUnmarkedNoted`). The labelled wording in the
+prompt stays either way.
+
+| Source | Set by | Words |
+|---|---|---|
+| An issue whose author is not the sender | `makeItem` (`FactoryItem.untrusted`), carried by `firstPlan` and the refused-turn resume | `issue #42 by @someone` |
+| CI logs | the `ci_fix` plan | `CI logs of abc1234` |
+| G4 feedback with any writer other than the item's person (`batch.others`) | `takeFeedback` | `GitHub feedback from @a, @b` |
+| The second reviewer's findings | `reviewFixPlan`, and the points riding along with feedback (`personFirst`) | `the second reviewer's findings on abc1234` |
+| Every reviewer turn (the builder's report), with the item's own sources | `nextTurn` for `to: "review"` | `the builder's report on pull request #7` |
+| Subtask reports: the feature's summary turn, a re-plan after a stopped subtask, the reviewer of a feature | those plans | `reports of the feature's subtasks` |
+| A subtask's task: its feature's sources, and the reports of the subtasks before it | `internalChildRequest`, `internalFeatureChild` | `reports of earlier subtasks` |
+
+Not marked: the platform's own sentences, the item's body from the web app or the API, the person's
+notes and answers (an `ask_person` answer resumes with `untrusted` cleared), the person's own feedback,
+the planner's placement inventory, and the repository's files (the workspace, trusted by Windlass's
+decision; a conflict turn's fetched base too). The agent's own `ask_person` question never goes back to
+any agent; it is shown to the person as the agent's words. A provider retry replays the delivery's
+sources (`ItemProviderRefusal.retry.untrusted`).
+
+In the session (`agent-session.ts`): a Windlass item turn with sources on `docker-hardened` is refused
+before the sandbox opens (`hardenedRefusal`): Windlass runs there with approval `full`, a tainted session
+puts commands back in bubblewrap, and Docker's default seccomp does not let it start, so every command
+would ask and be refused. `e2b-open` is not refused: bubblewrap runs in its template, so its tainted
+commands run sandboxed without network. An item turn with sources, or in a session Windlass has reported
+tainted (`meta.tainted`, from `taint.noticed` and `taint.cleared`), hands the user's servers with
+`unasked` off, so the layer answers none of their questions and Windlass refuses the calls. Claude Code
+and OpenCode get no marker: the timeline says so once (`agentUnmarkedNote`).
+
+```sh
+cd server && npx tsx ../scripts/factory-check.ts      # "untrusted text": each turn's sources, by input
+cd server && npx tsx ../scripts/untrusted-check.ts    # the session/prompt frame against a stand-in 0.6.0 and an older engine; the inbox column
+cd server && FACTORY_ONLY=ci,untrusted,reviewer npx tsx ../scripts/factory-e2e.ts   # CI fix, reviewer and review fix reach the fake Windlass marked; the hardened refusal
+cd server && WEBHOOK_ONLY="G3 a stranger" npx tsx ../scripts/webhook-check.ts       # someone else's issue, started by its owner
+```
+
 ## The second review
 
 With `WLP_FACTORY_REVIEWER=on`, each new item on a hosted profile that isolates

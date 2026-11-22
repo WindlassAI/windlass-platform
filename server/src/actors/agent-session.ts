@@ -213,6 +213,7 @@ import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
+import { agentUnmarkedNote, hardenedRefusal, unmarkedNote } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
@@ -382,6 +383,10 @@ interface SessionMeta {
 	backupStopped?: { size: number; limit: number } | null;
 	/** Windlass's memory was restored into a new sandbox, and it has not yet been told that the workspace is a fresh one. */
 	freshWorkspace?: boolean;
+	/** The timeline said once that text from someone else went to this session's agent as labelled text only (factory/untrusted.ts). */
+	untrustedUnmarkedNoted?: boolean;
+	/** Windlass said this session's conversation holds untrusted content (`taint.noticed`), and has not cleared it since. */
+	tainted?: boolean;
 	/**
 	 * The MCP servers the project's configuration names, as Windlass last described them to a turn of this
 	 * session (server-approvals.ts). Absent or empty: it named none, or no turn has asked yet.
@@ -3462,6 +3467,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const mode = meta.origin ? machineHarness(meta.harness)?.itemMode : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
+	// Where the outside text of an item's turn came from: Windlass is told with the prompt (factory/untrusted.ts).
+	const untrusted = active.item?.row.untrusted ?? [];
+	const unmarked = (text: string) => {
+		if (meta.untrustedUnmarkedNoted) return;
+		meta.untrustedUnmarkedNoted = true;
+		note(c, turn, "warn", text);
+		void persist(c);
+	};
 	const signal = active.controller.signal;
 	let resumed = meta.windlassSessionId;
 	let layer: SandboxLayer | null = null;
@@ -3543,6 +3556,12 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
+		// Text from someone else taints Windlass's session, and a tainted Windlass on "Docker, hardened" can run no command: refused before anything starts.
+		if (active.item && untrusted.length && (meta.harness ?? "windlass") === "windlass" && meta.profile === "docker-hardened") {
+			const reason = hardenedRefusal(untrusted);
+			active.item.refused = reason;
+			throw new TurnProblem(reason);
+		}
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
@@ -3589,6 +3608,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (!signal.aborted && caps.events === "acp") {
 			// An item's agent is told what Windlass is told of its workspace: what setup left and whether it is a new one. Told once.
 			const notes = active.item ? acpItemNotes(meta) : null;
+			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
+			if (untrusted.length) unmarked(agentUnmarkedNote(machineHarnesses[meta.harness as keyof typeof machineHarnesses]?.name ?? "This agent", untrusted));
 			result = await harness.runTurn(sandbox, {
 				...common,
 				...(notes && { prompt: notes.text + text, unattended: true }),
@@ -3701,7 +3722,8 @@ fi`, { signal, timeoutMs: 5000 });
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
 				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
-				servers: planner || reviewer ? [] : held.servers,
+				// In an item's turn nobody watches, a tainted session's calls of the user's servers are Windlass's to refuse: none is answered unasked.
+				servers: planner || reviewer ? [] : item && (untrusted.length || meta.tainted) ? held.servers.map(server => ({ ...server, unasked: false })) : held.servers,
 				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
 				checks: planner || reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
@@ -3710,6 +3732,7 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				prompt: (prepared ? snapshotPrompt(prepared) : "") + (reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`),
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
+				...(untrusted.length && { untrusted, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(untrusted)); } }),
 				reportScreenshots: browser,
 				onReview: reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
 					const openFiles = filingFiles;
@@ -3784,6 +3807,7 @@ fi`, { signal, timeoutMs: 5000 });
 						if (event.type === "step.failed" && lastStepRefusal?.retryAfterMs !== undefined)
 							lastStepRefusal.resetsAt = resetTime(Date.now() + lastStepRefusal.retryAfterMs);
 						if (reviewer) commands.note(event);
+						if (event.type === "taint.noticed" || event.type === "taint.cleared") meta.tainted = event.type === "taint.noticed";
 						active.checks.note(event);
 						onWindlassEvent(c, meta, turn, event);
 					} catch (error) {
@@ -3931,7 +3955,7 @@ fi`, { signal, timeoutMs: 5000 });
 			message = refusalMessage(safe);
 			if (active.item) {
 				const { text, fetchBase } = active.item.row;
-				active.item.providerRefusal = { ...safe, accountKey: generation === null ? undefined : windlassAccountKey(generation), placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase } };
+				active.item.providerRefusal = { ...safe, accountKey: generation === null ? undefined : windlassAccountKey(generation), placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase, ...(active.item.row.untrusted.length && { untrusted: active.item.row.untrusted }) } };
 			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
 				message += " You can change the model or reasoning effort with your next prompt.";
 			}
@@ -4525,6 +4549,8 @@ export const agentSession = actor({
 			if (!inboxColumns.some(col => col.name === "checkout")) await db.execute("ALTER TABLE inbox ADD COLUMN checkout TEXT");
 			// Rows from before `ask_person` have none: their turns are not offered it.
 			if (!inboxColumns.some(col => col.name === "asks_left")) await db.execute("ALTER TABLE inbox ADD COLUMN asks_left INTEGER");
+			// Rows from before the marker carry no sources: their turns go as they did.
+			if (!inboxColumns.some(col => col.name === "untrusted")) await db.execute("ALTER TABLE inbox ADD COLUMN untrusted TEXT NOT NULL DEFAULT '[]'");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 		},
 	}),

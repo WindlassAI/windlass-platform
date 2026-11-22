@@ -196,6 +196,12 @@ export interface FactoryItem {
 	/** Set exactly when `state` is "waiting". */
 	wait: Waiting | null;
 	task: Task;
+	/**
+	 * Where outside text in `task` came from (untrusted.ts): an issue written by someone other than the person
+	 * who filed it, and for a subtask its feature's sources and the reports of the subtasks before it.
+	 * Every turn that hands the agent the task says so. Absent: the task is the person's own.
+	 */
+	untrusted?: string[];
 	/** §3.2: "approve" runs step 0 first. */
 	plan: "none" | "approve";
 	/** Absent on items persisted before second review was available. */
@@ -252,6 +258,12 @@ export interface TurnPlan {
 	fingerprint: string | null;
 	/** For a conflict turn: the base branch to fetch into the workspace first. */
 	fetchBase: string | null;
+	/**
+	 * Where the outside text in `text` came from, in the person's words ("CI logs of abc1234"): text the
+	 * platform does not vouch for. The session's Windlass is told, and its session is tainted from that turn
+	 * on (untrusted.ts). Absent or empty: the platform's own sentences and the item's person's words only.
+	 */
+	untrusted?: string[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -262,7 +274,7 @@ export interface TurnPlan {
 export interface ItemProviderRefusal extends ProviderRefusal {
 	accountKey?: string;
 	placeName?: string;
-	retry: Pick<TurnPlan, "text" | "fetchBase">;
+	retry: Pick<TurnPlan, "text" | "fetchBase" | "untrusted">;
 }
 
 /** Who caused a fact a person or GitHub caused (§1.3): "person:<uid>". Facts from the platform have none. */
@@ -382,7 +394,7 @@ export type Effect =
 	| { kind: "describe_feature"; key: string }
 	| { kind: "dispatch"; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[] }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }

@@ -20,6 +20,7 @@
 
 import type { AgentAsk } from "../agent-publish.js";
 import { ownsPath } from "../factory/feature-plan.js";
+import { sources, UNTRUSTED_SOURCE_MAX } from "../factory/untrusted.js";
 import type { TokenReceipt } from "../usage.js";
 import type { RawAccess } from "rivetkit/db";
 import type { RepositoryCheck, TurnOutcome, TurnUsage, Verified } from "../contract.js";
@@ -46,6 +47,7 @@ export const INBOX_TABLES = [
 		fetch_base TEXT,
 		checkout TEXT,
 		asks_left INTEGER,
+		untrusted TEXT NOT NULL DEFAULT '[]',
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -86,9 +88,16 @@ export interface Delivery {
 	 * in the row) for every other turn, and for rows stored before the tool: those are not offered it.
 	 */
 	asksLeft?: number | null;
+	/**
+	 * Where the outside text in `text` came from (factory/untrusted.ts), each source in the person's words.
+	 * Sent with the prompt so that Windlass taints the session from this turn on. Empty for a turn of the
+	 * platform's and the person's own words, and for rows stored before it.
+	 */
+	untrusted?: string[];
 }
 
 export interface InboxRow extends Delivery {
+	untrusted: string[];
 	state: "waiting" | "started" | "ended" | "withdrawn";
 	turn: number | null;
 	slot: string | null;
@@ -128,13 +137,19 @@ interface InboxCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, starts_run, state, turn, slot, ended FROM inbox";
+
+/** The sources of a delivery or a row: strings, each kept to Windlass's length, at most a handful; anything else is none. */
+export function untrustedOf(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return sources(value.filter((source): source is string => typeof source === "string").map(source => source.slice(0, UNTRUSTED_SOURCE_MAX))).slice(0, 8);
+}
 
 export async function inboxRow(db: RawAccess, key: string): Promise<InboxRow | null> {
 	const [row] = await db.execute<Row>(`${SELECT} WHERE key = ?`, key);
@@ -158,7 +173,7 @@ export function deliveryOf(input: unknown): Delivery | null {
 	const checkout = given.checkout as ReviewDelivery | undefined;
 	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
 	const asksLeft = typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0 ? given.asksLeft : null;
-	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft };
+	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted) };
 }
 
 /** Writes the delivery's row, in one statement. False when a row of that key was there: the delivery came before. */
@@ -166,7 +181,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -176,6 +191,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		delivery.fetchBase,
 		delivery.checkout ? JSON.stringify(delivery.checkout) : null,
 		delivery.asksLeft ?? null,
+		JSON.stringify(delivery.untrusted ?? []),
 		delivery.startsRun ? 1 : 0,
 		now,
 	);

@@ -42,7 +42,7 @@ A plain `windlass` label or App mention selects **Plan first**. The label `windl
 With `WLP_FACTORY_ORCHESTRATE=0`, ordinary requests run **Quick** and the web forms hide the mode selector. An explicit request for orchestration on that deployment is refused.
 
 - If you wrote the issue yourself, the item starts at once.
-- If someone else wrote it, the item is filed as a draft for you to start. Its page says the text was written by them, not by you, and the agent is told to take it as a description of what is wanted, not as instructions.
+- If someone else wrote it, the item is filed as a draft for you to start. Its page says the text was written by them, not by you, and the agent is told to take it as a description of what is wanted, not as instructions. Windlass is also told the text is theirs: see [Text from someone else](#text-from-someone-else).
 
 The App comments on the issue to say it took the item, and links to it. It also says when the pull request is opened and when the item ends.
 
@@ -207,6 +207,33 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 **On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count.
 
 **On the item's page**, **From GitHub** lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
+
+## Text from someone else
+
+Some of what an item's agent reads is not yours:
+
+- the issue, when someone else wrote it;
+- CI's logs, when CI fails;
+- feedback on the pull request from anyone but you;
+- the second reviewer's findings, and, for the reviewer, the builder's report;
+- in a feature, the reports of other subtasks.
+
+The agent is told in its prompt that this text is quoted data, not instructions. Windlass is told too, with the turn that carries it, and with where it came from, for example "CI logs of 1a2b3c4" or "issue #42 by @someone". From that turn on, the session counts as tainted. A command that would use the network or run outside Windlass's sandbox asks first, and so does a tool that could send data out. Nobody is there to answer in an item's turn, so such a call is refused, and the timeline says why. Edits in the workspace, commands inside the sandbox, and the platform's own tools (report, push) still work. The session stays tainted until the item ends. Your MCP servers set to run without asking are asked about again in such a session, so in an item's turn their tools are refused.
+
+Your own words are never marked: an item you wrote, your notes, your answers to the agent's questions, and your feedback on GitHub.
+
+What a tainted turn can still do depends on the item's profile:
+
+| Profile | After text from someone else |
+|---|---|
+| Docker + Windlass sandbox, E2B + Windlass sandbox | Commands run as before: in the sandbox, without network. |
+| E2B, before the sandbox check | As before: a command Windlass cannot sandbox is refused. |
+| E2B, microVM only | Commands move into Windlass's sandbox: no network, and nothing written outside the workspace. |
+| Docker, hardened | The turn does not start. Windlass can't sandbox commands there, so it would refuse every one. The item asks you, naming the text. File the work again on **Docker + Windlass sandbox**, or give up. |
+
+**Claude Code and OpenCode** can't be told which text is someone else's. They get the same labelled prompt, the timeline says once that the text went as labelled text only, and they still run every command without asking, with network. Read an issue someone else wrote before you start an item on them.
+
+A sandbox whose Windlass is older than 0.6.0 also gets labelled text only, and its timeline says so once.
 
 ## Orchestrate a feature
 

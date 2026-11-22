@@ -90,6 +90,10 @@ details.
 - **A work item's text is its agent's prompt.** Items from the web app and the API are their own user's
   words. An item filed from a GitHub issue that someone else wrote is a draft until its person starts it,
   and its agent is told to take the text as a description of what is wanted, not as instructions.
+- **Claude Code and OpenCode take no marker for text from someone else.** Windlass is told the source of
+  each turn's outside text and taints the session ([Untrusted text](work-items.md#untrusted-text)); these
+  agents only get the labelled prompt, and run every command without asking. An item from someone else's
+  issue can still be started on them.
 - **An item's verdict is as good as its repository's checks and CI.** The acceptance criteria are listed
   for the person and checked by nobody, and a repository with no checks of its user's and no CI is
   handed over `unverified`.
