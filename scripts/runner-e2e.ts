@@ -1080,6 +1080,18 @@ async function main(): Promise<void> {
 				const hasInner = async () => (await user.machines()).find(m => m.machineId === place.machineId)
 					?.harnesses?.find(h => h.id === "codex")?.modes?.includes("workspace-write");
 				await until("Codex sandbox probe passed", hasInner);
+				codex.modes = ["agent-full-access", "read-only", "workspace-write", "agent"];
+				runner.report();
+				await until("Codex reported every mode", async () => (await user.machines()).find(m => m.machineId === place.machineId)?.harnesses?.find(h => h.id === "codex")?.modes?.length === 4);
+				assert(await refusal(user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex", mode:"agent-full-access"})) === "bad_input", "Container access offered on the Windlass sandbox profile");
+				const plain = await user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex"});
+				const plainSeen = new Watch(client, uid, plain.id, token);
+				try {
+					const summary = (await plainSeen.conn.snapshot()).summary;
+					assert(summary.mode === "workspace-write", `default Codex mode on the Windlass sandbox profile is ${summary.mode}`);
+					assert(summary.availableModes.map(m => m.id).join() === "read-only,workspace-write,agent", "Windlass sandbox profile offered more than the inner modes");
+					assert(await refusal(plainSeen.conn.setMode({mode:"agent-full-access"})) === "bad_input", "setMode reached Container access on the Windlass sandbox profile");
+				} finally { await plainSeen.conn.dispose(); await user.deleteSession(plain.id); }
 				const created = await user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex", mode:"workspace-write"});
 				const seen = new Watch(client, uid, created.id, token);
 				try {

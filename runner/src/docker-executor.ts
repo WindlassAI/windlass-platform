@@ -2,7 +2,7 @@ import { dropPreviousSnapshots } from "./snapshot-retention.js";
 import type { SnapshotSelection, SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import type { HarnessOptions } from "../../server/src/contract.js";
-import { codexModes, innerModesReason } from "../../server/src/sandbox/codex-modes.js";
+import { innerModesReason, reportedCodexModes } from "../../server/src/sandbox/codex-modes.js";
 import { codexLogin } from "./codex-login.js";
 import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
@@ -405,7 +405,7 @@ export class Executor extends MachineDocker {
 			id:"codex", adapter:"codex-acp 2.9.0", image:this.codexPin.split("@").at(-1)!,
 			signIn:!this.dockerHealth.ok ? "unknown" : this.codexCredential ? "token" : "none",
 			...(this.codexCredential && {method:this.codexCredential.provider === "chatgpt" ? "chatgpt" : "api-key"}),
-			modes:codexModes(this.codexInner ? bubblewrap : "docker-hardened").map(m => m.id),
+			modes:reportedCodexModes(!!this.codexInner),
 			...(!this.codexInner && {modeReason:innerModesReason}),
 			...(this.codexOptions && {options:this.codexOptions}),
 		});

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseRunnerFrame } from "../server/src/runner/control.js";
-import { codexModes } from "../server/src/sandbox/codex-modes.js";
+import { codexModes, reportedCodexModes } from "../server/src/sandbox/codex-modes.js";
+import { initialSessionModes } from "../server/src/sandbox/profiles.js";
+import { launchModes } from "../web/src/lib/modes.js";
 Object.assign(globalThis, { SANDBOX_IMAGE: "fixture", SHOTS_IMAGE_PIN: "", HARNESS_IMAGES: {} });
 const { devicePrompt } = await import("../runner/src/codex-login.js");
 
@@ -58,4 +60,16 @@ test("Codex catalogs have independent model and byte limits on both frame shapes
 			assert.equal(parseRunnerFrame(JSON.stringify(frame({ ...options, models }))), null);
 		}
 	}
+});
+test("the Windlass sandbox profile offers Codex only its inner sandbox modes, starting in workspace-write", () => {
+	const probed = reportedCodexModes(true);
+	assert.deepEqual(probed, ["agent-full-access", "read-only", "workspace-write", "agent"]);
+	assert.deepEqual(reportedCodexModes(false), ["agent-full-access"]);
+	const inner = codexModes("docker-windlass-sandbox", probed);
+	assert.deepEqual(inner.map((m) => m.id), ["read-only", "workspace-write", "agent"]);
+	assert.deepEqual(codexModes("docker-hardened", probed).map((m) => m.id), ["agent-full-access"]);
+	assert.deepEqual(initialSessionModes("docker-windlass-sandbox", "codex", false, inner), { mode: "workspace-write", availableModes: inner });
+	assert.equal(initialSessionModes("docker-hardened", "codex", false, codexModes("docker-hardened", probed)).mode, "agent-full-access");
+	assert.equal(launchModes("codex", { id: "docker-windlass-sandbox", approval: "auto" })?.default, "workspace-write");
+	assert.equal(launchModes("codex", { id: "docker-hardened", approval: "full" })?.default, "agent-full-access");
 });

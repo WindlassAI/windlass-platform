@@ -8,7 +8,7 @@ import type { Harness, HarnessCapabilities } from "./harness.js";
 import { type AcpProfile, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
 
-import { codexModes, containerMode, innerModesReason } from "./codex-modes.js";
+import { codexDefaultMode, codexModes, innerModesReason } from "./codex-modes.js";
 
 export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
@@ -259,7 +259,7 @@ export class AcpHarness implements Harness {
 			if (!result.windlassSessionId) await request("session/new", settings, accept());
 			const sessionId = result.windlassSessionId;
 			if (!sessionId) throw new Error(`${profile.name} returned no session id.`);
-			const requested = input.mode ?? (profile.id === "codex" ? containerMode : modes.select ? modes.current : "auto");
+			const requested = input.mode ?? (profile.id === "codex" ? codexDefaultMode(handle.profile) : modes.select ? modes.current : "auto");
 			if (profile.id === "codex") {
 				modes.modes = codexModes(handle.profile).filter(m => modes.modes.some(raw => raw.id === m.id));
 				if (!modes.modes.some(m => m.id === requested)) throw new Error(innerModesReason);

@@ -40,7 +40,7 @@ The runner takes one command. With none, it runs `run`.
 
 Enable Codex during `windlass-runner setup`, or start the runner with `--harness codex`. Run `windlass-runner login codex` in the machine’s terminal and enter your own OpenAI API key at the hidden prompt. Usage is billed to the API account. ChatGPT device login is available on installations where the owner has enabled it for validation.
 
-The machine’s relay holds the credential. Commands in a session can use its relay to make model requests. **Container access** runs commands as `agent` under the machine’s egress setting. Additional sandbox modes appear when the machine passes its Codex probe on the Windlass sandbox profile. Choose **Plan first** to request a plan before changes.
+The machine’s relay holds the credential. Commands in a session can use its relay to make model requests. On the hardened Docker profile, **Container access** runs commands as `agent` under the machine’s egress setting. On the Windlass sandbox profile, Codex runs every command in its own sandbox: once the machine passes its Codex probe, it offers **Read-only**, **Workspace access** (the default) and **Auto review**. Container access is not offered there, because that profile’s container is loosened so that a sandbox can run inside it. Choose **Plan first** to request a plan before changes.
 
 Run `windlass-runner logout codex` to end access through the machine. The Machines page shows the sign-in state and the terminal command.
 

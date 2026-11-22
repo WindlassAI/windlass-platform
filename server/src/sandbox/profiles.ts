@@ -11,6 +11,7 @@
  */
 
 import type { HarnessId, SandboxProfile, SandboxProfileId, SessionMode, SessionSummary } from "../contract.js";
+import { codexDefaultMode } from "./codex-modes.js";
 
 export function cpuFlags(cpus: number) {
 	return ["--cpu-shares", "256", "--cpus", String(cpus)];
@@ -217,7 +218,7 @@ export function windlassModes(approval: SandboxProfile["approval"]): SessionMode
 
 export function initialSessionModes(profile: SandboxProfileId, harness?: HarnessId, fixed = false, reported?: SessionMode[]): Pick<SessionSummary, "mode" | "availableModes"> {
 	const approval = findProfile(profile).approval;
-	const preferred = harness === "claude" ? "auto" : harness === "opencode" ? "build" : harness === "codex" ? "agent-full-access" : approval;
+	const preferred = harness === "claude" ? "auto" : harness === "opencode" ? "build" : harness === "codex" ? codexDefaultMode(profile) : approval;
 	const availableModes = reported ?? (fixed || (harness && harness !== "windlass") ? [] : windlassModes(approval));
 	return {
 		mode: availableModes.length && !availableModes.some(mode => mode.id === preferred) ? availableModes[0]!.id : preferred,

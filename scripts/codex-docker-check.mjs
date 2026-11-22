@@ -59,6 +59,7 @@ const { docker } = await import('../server/src/sandbox/docker.ts');
 const { channelTurn } = await import('../fixtures/opencode/channel.mjs');
 const { optionsDigest, compactReport } = await import('../server/src/runner/catalog.ts');
 const { parseRunnerFrame } = await import('../server/src/runner/control.ts');
+const { codexModes } = await import('../server/src/sandbox/codex-modes.ts');
 const cmd = async (args, opts) => (await docker(args, { check: true, timeoutMs: 45_000, ...opts })).stdout.trim();
 const who = { machineId, uid: 'fixture' };
 const runner = new Executor(
@@ -316,6 +317,7 @@ try {
 	if (sandboxReport.modes.includes('workspace-write')) {
 		assert.deepEqual(sandboxReport.modes, ['agent-full-access', 'read-only', 'workspace-write', 'agent']);
 		assert.doesNotThrow(() => sandboxRunner.requireHarness('docker-windlass-sandbox', 'codex'));
+		assert.deepEqual(codexModes('docker-windlass-sandbox', sandboxReport.modes).map((m) => m.id), ['read-only', 'workspace-write', 'agent']);
 	} else {
 		assert.deepEqual(sandboxReport.modes, ['agent-full-access']);
 		assert.throws(() => sandboxRunner.requireHarness('docker-windlass-sandbox', 'codex'), /sandbox probe/);
