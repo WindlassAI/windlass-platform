@@ -1,8 +1,9 @@
 /** How the list of agents is grouped and folded, which pull requests a repository's page lists, and what a new agent on a repository starts with. */
 import { describe, expect, it } from "vitest";
-import type { ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
+import type { ItemFeed, ItemSummary, ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
+import { itemFeed } from "../../../server/src/item-pages";
 import { MAX_TITLE_CHARS } from "@contract";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, startedOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, feedCounts, feedRepositories, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, startedOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -321,5 +322,29 @@ describe("where a new agent starts, which agent, and its mode", () => {
 
 	it("is nothing before the first agent, or once forgotten: the list of agents is not asked", () => {
 		expect(startedOn(null)).toEqual({ place: null, harness: null, mode: null });
+	});
+});
+
+describe("the work items' counts, from the live feed", () => {
+	const item = (n: number, state: ItemSummary["state"], on: SessionRepository, source: ItemSummary["source"] = "web"): ItemSummary => ({ id: `i${String(n).padStart(3, "0")}`, title: `Item ${n}`, repository: on, source, state, createdAt: n, parent: null, question: null }) as unknown as ItemSummary;
+	// 40 ended items on harbor, filed first; then 30 on tide-tables, newer, which fill the feed's ended ones.
+	const list = [...Array.from({ length: 40 }, (_, n) => item(n + 1, n % 4 === 0 ? "failed" : "done", harbor, n % 2 === 0 ? "api" : "web")), ...Array.from({ length: 30 }, (_, n) => item(n + 100, "done", tides)), item(200, "working", tides)];
+	const feed: ItemFeed = itemFeed(list);
+
+	it("counts a repository whose ended items the feed does not carry", () => {
+		expect(feed.ended.some((one) => one.repository.id === harbor.id)).toBe(false);
+		expect(feedCounts(feed, { repository: harbor.id })).toEqual({ open: 0, done: 30, failed: 10, cancelled: 0, ended: 40, total: 40 });
+		expect(feedRepositories(feed)).toEqual([
+			{ id: harbor.id, name: "acme/harbor", items: 40 },
+			{ id: tides.id, name: "ada/tide-tables", items: 31 },
+		]);
+	});
+
+	it("keeps to the filters, and is nothing before the feed is read", () => {
+		expect(feedCounts(feed, { repository: harbor.id, from: "api" }).ended).toBe(20);
+		expect(feedCounts(feed, { from: "web" })).toMatchObject({ open: 1, ended: 50, total: 51 });
+		expect(feedCounts(feed).total).toBe(71);
+		expect(feedCounts(null, { repository: harbor.id }).total).toBe(0);
+		expect(feedRepositories(null)).toEqual([]);
 	});
 });

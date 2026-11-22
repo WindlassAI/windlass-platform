@@ -24,6 +24,7 @@ import type {
 	GithubRepositoryList,
 	GithubStatus,
 	ItemAction,
+	ItemFeed,
 	ItemListPage,
 	ItemSummary,
 	ItemView,
@@ -124,8 +125,8 @@ export interface UserFeed {
 	/** The user's machines, whenever one is paired or removed or its status, warnings or secrets switch changes. */
 	onMachineHost?(update: import("@contract").MachineHostUpdate): void;
 	onMachines?(machines: MachineSummary[]): void;
-	/** The user's work items, newest first, whenever one of them changes. Not sent when the feed opens: `listItems` is. */
-	onItems?(items: ItemSummary[]): void;
+	/** The user's open work items and newest ended ones, with the counts (`ItemFeed`), whenever one of them changes. Not sent when the feed opens: `itemFeed` is. */
+	onItems?(feed: ItemFeed): void;
 	onConnection?(state: ConnectionState, error?: PlatformError): void;
 }
 
@@ -232,6 +233,8 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	/** The user's work items, the newest first. */
 	/** With `page`, a page of them (`ItemListPage`); a page shorter than its limit is the last. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
+	/** What the live feed carries (`ItemFeed`): read when a screen opens, then as `onItems` sends it. */
+	itemFeed(): Promise<ItemFeed>;
 	/** One item's page. Throws with reason `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	/** Links to the item's kept screenshots, each working for ten minutes; a removed one has none. Throws with reason `item_not_found`. Never kept beyond the page's memory. */

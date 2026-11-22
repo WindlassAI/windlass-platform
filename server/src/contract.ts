@@ -1171,6 +1171,44 @@ export interface ItemListPage {
 	repository?: GithubId | null;
 	source?: "web" | "api" | "github" | null;
 }
+
+/** How many ended work items the live feed carries (`ItemFeed.ended`): the first page of them. */
+export const ITEM_FEED_ENDED = 25;
+
+/**
+ * One repository's work items, filed one way, counted by where they stand (`ItemFeed.counts`). The
+ * repository's owner and name are those of its newest filed item there.
+ */
+export interface ItemCount {
+	repository: GithubId;
+	owner: string;
+	name: string;
+	source: "web" | "api" | "github";
+	/** Not done, failed or cancelled. */
+	open: number;
+	done: number;
+	failed: number;
+	cancelled: number;
+}
+
+/**
+ * What the user's live feed carries of their work items (`UserEvents.items`, `itemFeed`): every open
+ * one, the newest filed ended ones, and how many there are of each. The ended ones beyond are read a
+ * page at a time (`listItems` with `ended`). Every part holds the items the whole list does: top-level
+ * items, and a feature's child while it asks a question.
+ */
+export interface ItemFeed {
+	/** Not done, failed or cancelled; newest filed first. */
+	open: ItemSummary[];
+	/** At most ITEM_FEED_ENDED ended items, newest filed first: the first page `listItems({ ended: true })` answers. */
+	ended: ItemSummary[];
+	counts: {
+		/** Every ended item, those beyond `ended` among them. */
+		ended: number;
+		/** One row for each repository and way of filing that has items. */
+		byRepository: ItemCount[];
+	};
+}
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
 // steps (the blueprint): an agent implements it, the user's checks gate it, the platform pushes the
@@ -1910,12 +1948,15 @@ export interface UserActions {
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/**
-	 * The user's work items, the newest first. With `page`, at most `page.limit` of them after
+	 * The user's work items, the newest first: every one of them, for API clients and scripts (the web
+	 * app reads `itemFeed`). With `page`, at most `page.limit` of them after
 	 * `page.before`, kept to ended ones, one repository or one way of filing where it says so
 	 * (`ItemListPage`); a page shorter than its limit is the last. Throws a UserError with code
 	 * `bad_input` for a page that is not one.
 	 */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
+	/** What the live feed carries (`ItemFeed`): every open item, the newest filed ended ones, and the counts. The web app reads this, not the whole list. */
+	itemFeed(): Promise<ItemFeed>;
 	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	itemAttachmentLinks(itemId: string): Promise<Array<{ id: string; url: string; expiresAt: number }>>;
@@ -1945,8 +1986,8 @@ export interface UserEvents {
 	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
 	machines: MachineSummary[];
 	machineHost: MachineHostUpdate;
-	/** The user's work items, newest first, after any of them changed. */
-	items: ItemSummary[];
+	/** The user's open work items and the newest ended ones, with the counts (`ItemFeed`), after any of them changed. */
+	items: ItemFeed;
 }
 
 // ---------------------------------------------------------------------------------------------
