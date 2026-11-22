@@ -129,6 +129,8 @@ export class DockerSnapshots {
 		return available;
 	}
 	private async pressure(rows: Row[]) {
+		// A consumer may have released an already-evicted image since the last sweep.
+		for (const row of rows.filter(row => this.held(row))) await this.release(row);
 		return relieveDiskPressure(rows.filter(row => !this.held(row) && !this.pending(row)), this.limits.free, () => this.free(), row => this.retire(row));
 	}
 	private async prune(known: (uid: string) => boolean = () => true) {

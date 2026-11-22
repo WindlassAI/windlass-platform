@@ -120,8 +120,8 @@ if (process.argv.includes("--docker")) {
 		const held = await checked("image", "inspect", "--format", "{{json .RepoTags}}", hit.image);
 		assert.match(held, /:held-/, "in-use layers lost their accounting tag");
 		await checked("rm", "-fv", consumer);
-		await cache.sweep(uid);
-		assert.notEqual((await docker(["image", "inspect", hit.image])).code, 0);
+		assert.equal(await noSpace.save(container, uid, profile, source), false);
+		assert.notEqual((await docker(["image", "inspect", hit.image])).code, 0, "pre-commit pressure retained released layers");
 		await cache.drop(uid);
 		assert.equal(await cache.save(container, uid, profile, source), true);
 
