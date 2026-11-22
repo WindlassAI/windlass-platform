@@ -23,6 +23,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import type { PlatformClient } from "./api/client";
 import { AppProvider } from "./state/app";
+import { relayGithubReturn } from "./state/github";
 
 /** The mock backend is chosen at build time (`VITE_WLP_MOCK=1`) or in the address (`?mock=1`). */
 function wantsMock(): boolean {
@@ -98,7 +99,15 @@ const clearStatic = () => {
 if (!docs) clearStatic();
 const root = createRoot(container);
 
-if (docs) {
+if (!docs && relayGithubReturn()) {
+	// The popup that connected GitHub, back from it: the page that opened it finishes, and this closes.
+	root.render(
+		<main className="state state-page" role="status">
+			<h1 className="display display-small">Back from GitHub</h1>
+			<p>The page you connected from has it now. You can close this window.</p>
+		</main>,
+	);
+} else if (docs) {
 	void import("./docs/Docs").then(({ DocsApp, takeStaticSearch }) => {
 		// What was typed into the static page's search carries over, and the swap happens in one task, so no
 		// frame shows an empty page and no keystroke falls between the two.

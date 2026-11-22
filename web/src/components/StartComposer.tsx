@@ -225,14 +225,19 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
 	const anchors = { repo: useRef<HTMLButtonElement>(null), plus: useRef<HTMLButtonElement>(null), criteria: useRef<HTMLButtonElement>(null), settings: useRef<HTMLButtonElement>(null) };
-	const search = useRepositorySearch(open === "repo" || open === "settings");
+	const search = useRepositorySearch(open === "repo" || open === "settings", github.status?.connection?.login ?? null);
 	const branches = useBranches();
 
-	// Back from GitHub: the repository's picker is open, where its user left.
+	// Back from GitHub: the repository's picker is open, where its user left. Connected from the popup, it
+	// opens again once the connection is there: its address form gives way to the list, and closes as it goes.
 	const returned = github.notice?.where === "launch" || github.busy === "finishing";
+	const nowConnected = github.status?.connection != null;
 	useEffect(() => {
-		if (returned) setOpen("repo");
-	}, [returned]);
+		if (!returned) return;
+		// After the swap has settled: the address form's focus going back to the pill closes the list as it opens.
+		const timer = setTimeout(() => setOpen((now) => (now === "settings" ? now : "repo")), 0);
+		return () => clearTimeout(timer);
+	}, [returned, nowConnected]);
 
 	useEffect(() => {
 		if (autoFocus) area.current?.focus();
@@ -551,7 +556,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				{github.busy === "finishing" ? (
 					"Finishing the GitHub connection…"
 				) : github.busy === "leaving" ? (
-					"Going to GitHub…"
+					"Opening GitHub…"
+				) : github.busy === "popup" ? (
+					<>
+						Finish connecting in the GitHub window.{" "}
+						<button type="button" className="link" onClick={() => github.connect({ where: "launch" })}>
+							Show it
+						</button>
+					</>
 				) : github.status === null && !github.error ? (
 					"Checking the GitHub connection…"
 				) : (
@@ -560,7 +572,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } })} disabled={busy !== null}>
 							Connect GitHub
 						</button>{" "}
-						to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
+						to choose one of your own repositories, private ones included, and get the work back as a pull request. It opens in a new window; what you wrote here stays.
 					</>
 				)}
 			</p>

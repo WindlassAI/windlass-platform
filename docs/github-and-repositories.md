@@ -17,7 +17,12 @@ nothing of this, and a repository is a public address pasted into the launch for
   where they pick an account and its repositories. GitHub sends the browser back to `GET /github/callback` on a
   server's own port, with a code. The server exchanges it, asks GitHub who this is and which installations of
   the app they can reach, deletes the token it was given, and sends the browser on to the web app, which
-  hands what GitHub confirmed to the user's `user` actor. That is the connection: a GitHub login and the
+  hands what GitHub confirmed to the user's `user` actor. The web app does this in a popup window, so the
+  page and the launch form's text stay: back at the web app, the popup posts the fragment to its opener with
+  `postMessage` at its own origin and closes, and the opener takes it only from that origin, from a window it
+  opened, and of that shape (`web/src/state/github.ts`). Where the browser blocks the popup, the page itself
+  goes to GitHub and back, keeping the launch form's text in the tab. Either way it is the same state, the
+  same callback and the same ticket. That is the connection: a GitHub login and the
   accounts the app is installed on. Disconnecting forgets it; the app stays installed at GitHub, which is the
   account owner's to change.
 - **No credential of the user's is kept.** Not a token, not a refresh token. What the platform does at GitHub
