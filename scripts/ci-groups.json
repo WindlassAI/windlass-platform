@@ -1,0 +1,317 @@
+{
+  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, and harness for the Claude and OpenCode images built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), and name its own images.",
+  "core": [
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "server/package.json",
+    "server/tsconfig.json",
+    "runner/package.json",
+    "server/src/contract.ts",
+    ".github/workflows/ci.yml",
+    ".github/workflows/ci-heavy.yml",
+    "scripts/ci-heavy.mjs",
+    "scripts/ci-groups.json"
+  ],
+  "docs": ["docs/**", "**/*.md", "LICENSE", "NOTICE.md"],
+  "groups": {
+    "rules": {
+      "timeout": 15,
+      "paths": [
+        "server/src/*.ts",
+        "server/src/bucket/**",
+        "server/src/factory/attachments.ts",
+        "server/src/factory/review.ts",
+        "server/src/factory/reviewer-task.ts",
+        "server/src/factory/verified-check.ts",
+        "server/src/github/**",
+        "server/src/runner/**",
+        "server/src/sandbox/**",
+        "server/src/signin/**",
+        "runner/src/**",
+        "sandbox/e2b/**",
+        "sandbox/fetch-windlass.sh",
+        "fixtures/acp-agent/**",
+        "scripts/acp-agent-fake.ts",
+        "scripts/github-standin.ts",
+        "scripts/check-image.ts",
+        "scripts/e2b-network-standin.mjs",
+        "scripts/{access,account,attachments,backup,connection,harness,models,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing}-check.ts",
+        "scripts/e2b-provider-test.ts",
+        "scripts/workflow-lint.ts"
+      ],
+      "checks": {
+        "access": "tsx ../scripts/access-check.ts",
+        "account": "tsx ../scripts/account-check.ts",
+        "attachments": "tsx ../scripts/attachments-check.ts",
+        "backup": "tsx ../scripts/backup-check.ts",
+        "connection": "tsx ../scripts/connection-check.ts",
+        "harness": "tsx ../scripts/harness-check.ts",
+        "models": "tsx ../scripts/models-check.ts",
+        "repository": "tsx ../scripts/repository-check.ts",
+        "review": "tsx ../scripts/review-check.ts",
+        "reviewer-task": "tsx ../scripts/reviewer-task-check.ts",
+        "runner-control": "tsx ../scripts/runner-control-check.ts",
+        "runner-protocol": "tsx ../scripts/runner-protocol-check.ts",
+        "secrets": "tsx ../scripts/secrets-check.ts",
+        "setup": "tsx ../scripts/setup-check.ts",
+        "usage": "tsx ../scripts/usage-check.ts",
+        "verified": "tsx ../scripts/verified-check.ts",
+        "web-files": "tsx ../scripts/web-files-check.ts",
+        "github": "tsx ../scripts/github-check.ts",
+        "e2b-provider": "tsx ../scripts/e2b-provider-test.ts",
+        "shot": "tsx ../scripts/shot-check.ts",
+        "sizing": "tsx ../scripts/sizing-check.ts",
+        "workflow-lint": "node ../scripts/workflow-lint.ts ../.github/workflows/ci-heavy.yml"
+      }
+    },
+    "actors": {
+      "timeout": 20,
+      "paths": [
+        "server/src/index.ts",
+        "server/src/registry.ts",
+        "server/src/startup.ts",
+        "server/src/config.ts",
+        "server/src/layer.ts",
+        "server/src/auth.ts",
+        "server/src/tokens.ts",
+        "server/src/api-routes.ts",
+        "server/src/api-tokens.ts",
+        "server/src/http-limits.ts",
+        "server/src/client.ts",
+        "server/src/connection-tokens.ts",
+        "server/src/keyring.ts",
+        "server/src/revoke-user-tokens.ts",
+        "server/src/submissions.ts",
+        "server/src/platform-info.ts",
+        "server/src/sandbox-fake.ts",
+        "server/src/signin/**",
+        "server/src/actors/{user,login,agent-session,session-inbox,account-email,provider-accounts,internal}.ts",
+        "web/src/api/**",
+        "scripts/check-listeners.ts",
+        "scripts/check-secret.ts",
+        "scripts/{idempotency,signin,http-limits}-check.ts",
+        "scripts/connection-e2e.ts"
+      ],
+      "checks": {
+        "idempotency": "tsx ../scripts/idempotency-check.ts",
+        "signin": "tsx ../scripts/signin-check.ts",
+        "connection-e2e": "tsx ../scripts/connection-e2e.ts",
+        "http-limits": "tsx ../scripts/http-limits-check.ts"
+      }
+    },
+    "machines": {
+      "timeout": 20,
+      "paths": [
+        "server/src/runner/**",
+        "server/src/machines/**",
+        "server/src/runner-routes.ts",
+        "server/src/runner-keys.ts",
+        "server/src/signatures.ts",
+        "server/src/sandbox/runner-layer.ts",
+        "server/src/actors/{machine,machine-pairing,user-machines,user,agent-session}.ts",
+        "runner/src/**",
+        "fixtures/acp-agent/**",
+        "fixtures/windlass-events/**",
+        "scripts/runner-{fake,standin,stub-server,session-egress}.ts",
+        "scripts/acp-agent-fake.ts",
+        "scripts/check-listeners.ts",
+        "scripts/{frame-auth,machine,machine-fairness}-check.ts",
+        "scripts/runner-e2e.ts",
+        "scripts/runner-socket-probe.ts"
+      ],
+      "checks": {
+        "frame-auth": "tsx ../scripts/frame-auth-check.ts",
+        "machine": "tsx ../scripts/machine-check.ts",
+        "runner-e2e": "tsx ../scripts/runner-e2e.ts",
+        "runner-socket-probe": "tsx ../scripts/runner-socket-probe.ts"
+      }
+    },
+    "factory": {
+      "timeout": 25,
+      "paths": [
+        "server/src/factory/**",
+        "server/src/github/**",
+        "server/src/item-pages.ts",
+        "server/src/submissions.ts",
+        "server/src/api-routes.ts",
+        "server/src/api-tokens.ts",
+        "server/src/usage.ts",
+        "server/src/user-limits.ts",
+        "server/src/set-user-limit.ts",
+        "server/src/verified.ts",
+        "server/src/repository-checks.ts",
+        "server/src/sandbox-fake.ts",
+        "server/src/bucket/**",
+        "server/src/actors/{work-item,user-items,acp-item,github-item,github-intake,github-inbox,github-repository,github-account,user-github,user,agent-session}.ts",
+        "scripts/github-standin.ts",
+        "scripts/runner-standin.ts",
+        "scripts/feature-git-fixture.ts",
+        "scripts/factory-e2e.ts"
+      ],
+      "shards": {
+        "1": { "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
+        "2": { "env": { "FACTORY_ONLY": "api,on,ci,person,gate,handoff,sleep,deploy,creation" } },
+        "3": { "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off" } }
+      },
+      "checks": {
+        "factory-e2e": "tsx ../scripts/factory-e2e.ts"
+      }
+    },
+    "webhook": {
+      "timeout": 20,
+      "paths": [
+        "server/src/github/**",
+        "server/src/factory/**",
+        "server/src/actors/{github-item,github-intake,github-inbox,github-repository,github-account,user-github,work-item,user-items}.ts",
+        "server/src/index.ts",
+        "server/src/registry.ts",
+        "scripts/github-standin.ts",
+        "scripts/webhook-check.ts"
+      ],
+      "checks": {
+        "webhook": "tsx ../scripts/webhook-check.ts"
+      }
+    },
+    "sandbox-docker": {
+      "timeout": 25,
+      "images": ["base"],
+      "paths": [
+        "sandbox/Dockerfile",
+        "sandbox/wlp-run",
+        "sandbox/seccomp-bwrap.json",
+        "sandbox/build.sh",
+        "sandbox/fetch-windlass.sh",
+        "server/src/sandbox/**",
+        "server/src/windlass-config.ts",
+        "server/src/personal-servers.ts",
+        "server/src/server-question.ts",
+        "server/src/server-approvals.ts",
+        "server/src/verified.ts",
+        "server/src/repository-checks.ts",
+        "server/src/github/git.ts",
+        "server/src/github/private-git.py",
+        "server/src/signin/**",
+        "fixtures/mcp-repo/**",
+        "fixtures/windlass-events/**",
+        "scripts/check-image.ts",
+        "scripts/e2b-network-standin.mjs",
+        "scripts/runner-proof-docker.ts",
+        "scripts/{sandbox,mcp,github,verified,sizing}-check.ts",
+        "scripts/e2b-provider-test.ts"
+      ],
+      "checks": {
+        "sandbox": "tsx ../scripts/sandbox-check.ts",
+        "mcp": "tsx ../scripts/mcp-check.ts",
+        "github-docker": "tsx ../scripts/github-check.ts --docker",
+        "verified-docker": "tsx ../scripts/verified-check.ts --docker",
+        "e2b-provider-docker": "tsx ../scripts/e2b-provider-test.ts --docker",
+        "sizing-docker": "tsx ../scripts/sizing-check.ts docker"
+      }
+    },
+    "shots-docker": {
+      "timeout": 20,
+      "images": ["shots"],
+      "paths": [
+        "sandbox/Dockerfile",
+        "sandbox/wlp-shot",
+        "sandbox/wlp-run",
+        "sandbox/build.sh",
+        "sandbox/fetch-windlass.sh",
+        "server/src/sandbox/**",
+        "server/src/factory/attachments.ts",
+        "scripts/check-image.ts",
+        "scripts/{shot,attachments}-check.ts"
+      ],
+      "checks": {
+        "shot-docker": "WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots tsx ../scripts/shot-check.ts --docker",
+        "attachments-docker": "tsx ../scripts/attachments-check.ts --docker"
+      }
+    },
+    "e2e-docker": {
+      "timeout": 30,
+      "images": ["base"],
+      "paths": [
+        "sandbox/Dockerfile",
+        "sandbox/wlp-run",
+        "sandbox/seccomp-bwrap.json",
+        "sandbox/build.sh",
+        "sandbox/fetch-windlass.sh",
+        "server/src/index.ts",
+        "server/src/registry.ts",
+        "server/src/startup.ts",
+        "server/src/config.ts",
+        "server/src/layer.ts",
+        "server/src/auth.ts",
+        "server/src/tokens.ts",
+        "server/src/keyring.ts",
+        "server/src/platform-info.ts",
+        "server/src/connection-tokens.ts",
+        "server/src/windlass-config.ts",
+        "server/src/personal-servers.ts",
+        "server/src/server-question.ts",
+        "server/src/server-approvals.ts",
+        "server/src/repo-secrets.ts",
+        "server/src/account-*.ts",
+        "server/src/repository-*.ts",
+        "server/src/setup-command.ts",
+        "server/src/usage.ts",
+        "server/src/actors/{user,login,agent-session,session-inbox,account-email,provider-accounts,internal,github-repository,github-account,user-github}.ts",
+        "server/src/sandbox/**",
+        "server/src/signin/**",
+        "server/src/github/{app,connect,git,private-git.py,repos,state,ids}*",
+        "scripts/check-image.ts",
+        "scripts/check-listeners.ts",
+        "scripts/github-standin.ts",
+        "scripts/e2e.ts"
+      ],
+      "shards": {
+        "actors": { "args": "" },
+        "snapshots": { "args": "--snapshots-only" }
+      },
+      "checks": {
+        "e2e": "WLP_SANDBOX=docker tsx ../scripts/e2e.ts"
+      }
+    },
+    "runner-docker": {
+      "timeout": 25,
+      "images": ["base", "shots"],
+      "paths": [
+        "runner/**",
+        "sandbox/Dockerfile",
+        "sandbox/wlp-run",
+        "sandbox/build.sh",
+        "sandbox/harness/**",
+        "sandbox/relay/**",
+        "server/src/runner/**",
+        "server/src/sandbox/runner-layer.ts",
+        "server/src/sandbox/docker.ts",
+        "server/src/sandbox/docker-flags.ts",
+        "server/src/sandbox/harness*.ts",
+        "server/src/runner-routes.ts",
+        "server/src/actors/{machine,machine-pairing,user-machines}.ts",
+        "fixtures/acp-agent/**",
+        "fixtures/claude-relay/**",
+        "fixtures/opencode/**",
+        "scripts/runner-*.ts",
+        "scripts/runner-build.sh",
+        "scripts/acp-agent-fake.ts",
+        "scripts/check-image.ts",
+        "scripts/check-listeners.ts",
+        "scripts/{claude-relay,opencode}-docker-check.mjs",
+        "scripts/opencode-provider-registry.mjs"
+      ],
+      "shards": {
+        "runner": { "only": ["runner"], "images": ["base", "shots"] },
+        "harness": { "only": ["claude-relay-docker", "opencode-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "harness"] }
+      },
+      "checks": {
+        "runner": "tsx ../scripts/runner-check.ts",
+        "claude-relay-docker": "tsx ../scripts/claude-relay-docker-check.mjs \"$WLP_CI_CLAUDE_IMAGE\"",
+        "opencode-docker": "tsx ../scripts/opencode-docker-check.mjs \"$WLP_CI_OPENCODE_IMAGE\"",
+        "runner-egress-live": "tsx ../scripts/runner-egress-live.ts \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\"",
+        "runner-session-egress": "tsx ../scripts/runner-e2e.ts egress \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\""
+      }
+    }
+  }
+}
