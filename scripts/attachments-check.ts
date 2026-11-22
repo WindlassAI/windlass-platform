@@ -302,7 +302,9 @@ async function cases() {
 		},
 	};
 	const state = await loadItems(db as never);
-	const summary = { id: itemId, sessionId, state: "working", revision: 1, updatedAt: Date.now() } as ItemSummary;
+	// The live feed groups items by repository and source (item-pages.ts), so the summary carries both.
+	const summary = { id: itemId, sessionId, state: "working", revision: 1, updatedAt: Date.now(), createdAt: Date.now(), source: "web",
+		repository: { provider: "github", id: 7101, owner: "ada", name: "harbor", branch: "main" } } as ItemSummary;
 	state.items.set(itemId, summary);
 	const alarms = new Set<string>();
 	const c = {

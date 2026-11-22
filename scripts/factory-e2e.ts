@@ -1296,7 +1296,7 @@ async function memoryChecks(): Promise<void> {
 							lost = false;
 							throw new Error("the reply was lost");
 						}
-						return { id: made?.id, title: made?.task.title, place: made?.place, createdAt: T, revision: 0 };
+						return { id: made?.id, title: made?.task.title, place: made?.place, repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main" }, source: "web", createdAt: T, revision: 0 };
 					},
 				}),
 			},
