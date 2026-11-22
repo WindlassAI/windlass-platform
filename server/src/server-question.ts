@@ -47,7 +47,7 @@
  * web/src/api/mock.ts repeats these texts for the web app's mock.
  */
 
-import type { PersonalServerReach, QuestionChoice, SandboxProfile, SecretScope } from "./contract.js";
+import type { EgressMode, PersonalServerReach, QuestionChoice, SandboxProfile, SecretScope } from "./contract.js";
 import { accountSecretsNote } from "./account-secrets.js";
 import { withheldFromServers } from "./repo-secrets.js";
 import type { TurnServerOutcome, TurnServerQuestion } from "./sandbox/api.js";
@@ -60,6 +60,8 @@ export interface ServerQuestionContext {
 	machine?: { name: string | null } | null;
 	/** A demo session: its turns are handed no access token. */
 	demo: boolean;
+	/** A hosted session's network mode (`Sandboxes.egress`, E2B's WLP_E2B_NETWORK). Absent or `open`: the sandbox machine's whole network. */
+	hostedEgress?: EgressMode;
 	/** `Sandboxes.sessionsLiveInSandbox`: Windlass's data directory, and with it Windlass's own record of an approval, is on this sandbox's own disk. */
 	dataInSandbox: boolean;
 	/** What the platform remembers an approval for: the session's repository, or the session itself. */
@@ -99,31 +101,34 @@ function machine(profile: SandboxProfile): string {
  * sandbox machine it is said of: this session's, in a question, and a session's, where it is said of
  * every session a server of the user's own runs in (`personalServerReach`).
  */
-function reach(question: Pick<TurnServerQuestion, "argv">, context: Pick<ServerQuestionContext, "profile" | "demo" | "machine">, whose: "this session's" | "a session's" = "this session's"): string {
+function reach(question: Pick<TurnServerQuestion, "argv">, context: Pick<ServerQuestionContext, "profile" | "demo" | "machine" | "hostedEgress">, whose: "this session's" | "a session's" = "this session's"): string {
 	const { profile, demo } = context;
+	const hosted = context.machine ? "open" : (context.hostedEgress ?? "open");
+	const net = hosted === "restricted" ? "only the network this deployment allows (the model API, GitHub and the hosts its operator lists)" : hosted === "none" ? "no network but the model API" : "the network";
 	const where = context.machine
 		? `${whose} container on your machine${context.machine.name ? ` "${context.machine.name}"` : ""}, with its network`
 		: `${whose} ${machine(profile)}`;
 	if (question.argv === null) {
-		return `Nothing is started: Windlass reaches it at that address from ${where}, outside its sandbox around commands, and what the agent sends it leaves ${context.machine ? "your machine" : `the ${machine(profile)}`}.`;
+		const limit = hosted === "restricted" ? " This deployment's hosted sandboxes reach only the hosts it allows, so the address's host must be one of them." : hosted === "none" ? " This deployment's hosted sandboxes reach no host but the model API, so the address cannot be reached." : "";
+		return `Nothing is started: Windlass reaches it at that address from ${where}, outside its sandbox around commands, and what the agent sends it leaves ${context.machine ? "your machine" : `the ${machine(profile)}`}.${limit}`;
 	}
 	// A locally started server has the same filesystem access as Windlass.
 	const data = "Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue";
 	if (profile.approval === "full") {
 		// Commands run directly in the machine: the server has what they have.
 		return demo
-			? `It runs in ${where}, as the agent's commands do here: like them, it has the network and can read Windlass's own data. A demo session has no access token there.`
-			: `It runs in ${where}, as the agent's commands do here: like them, it has the network and can read ${data}.`;
+			? `It runs in ${where}, as the agent's commands do here: like them, it has ${net} and can read Windlass's own data. A demo session has no access token there.`
+			: `It runs in ${where}, as the agent's commands do here: like them, it has ${net} and can read ${data}.`;
 	}
 	if (!profile.commandNetwork && !profile.commandsCanReadAccessToken) {
 		return demo
-			? `It runs in ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data. A demo session has no access token there.`
-			: `It runs in ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read ${data}.`;
+			? `It runs in ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has ${net} and can read Windlass's own data. A demo session has no access token there.`
+			: `It runs in ${where}, but outside Windlass's sandbox around commands: unlike the agent's commands, it has ${net} and can read ${data}.`;
 	}
 	// Nothing is promised of commands here; of the server it is certain.
 	return demo
-		? `It runs in ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data. A demo session has no access token there.`
-		: `It runs in ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read ${data}.`;
+		? `It runs in ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has ${net} and can read Windlass's own data. A demo session has no access token there.`
+		: `It runs in ${where} and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has ${net} and can read ${data}.`;
 }
 
 /**
@@ -150,10 +155,10 @@ function approving(question: Pick<TurnServerQuestion, "argv">, context: ServerQu
  * say it in: the page says it before a server is saved. Said for a session on a ChatGPT sign-in,
  * which is handed an access token; a demo session is handed none.
  */
-export function personalServerReach(profiles: readonly SandboxProfile[]): PersonalServerReach[] {
+export function personalServerReach(profiles: readonly SandboxProfile[], hostedEgress?: EgressMode): PersonalServerReach[] {
 	return profiles
 		.filter((profile) => profile.available)
-		.map((profile) => ({ profile: profile.id, name: profile.name, command: reach({ argv: [] }, { profile, demo: false }, "a session's"), address: reach({ argv: null }, { profile, demo: false }, "a session's") }));
+		.map((profile) => ({ profile: profile.id, name: profile.name, command: reach({ argv: [] }, { profile, demo: false, hostedEgress }, "a session's"), address: reach({ argv: null }, { profile, demo: false, hostedEgress }, "a session's") }));
 }
 
 /** What an approval is of, and so what it does not cover. One sentence. */

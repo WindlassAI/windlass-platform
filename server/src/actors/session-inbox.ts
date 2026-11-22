@@ -22,7 +22,8 @@ import { ownsPath } from "../factory/feature-plan.js";
 import type { TokenReceipt } from "../usage.js";
 import type { RawAccess } from "rivetkit/db";
 import type { RepositoryCheck, TurnOutcome, TurnUsage, Verified } from "../contract.js";
-import { turnTokens } from "../factory/budget.js";
+import { turnSpend } from "../factory/budget.js";
+import type { AgentTurn } from "../factory/types.js";
 import type { ItemReview } from "../contract.js";
 import type { ReviewerTaskReport } from "../factory/reviewer-task.js";
 import type { Fact, ReviewerInput } from "../factory/types.js";
@@ -326,12 +327,12 @@ export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, 
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */
-export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null): Extract<Fact, { kind: "turn_ended" }> {
-	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, spend: { tokens: turnTokens(usage), hostedSeconds: 0 } };
+export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verified: Verified | null, flags: Extract<Fact, { kind: "turn_ended" }>["flags"], changes: boolean, report: Extract<Fact, { kind: "turn_ended" }>["report"], usage: TurnUsage | null, agent?: AgentTurn): Extract<Fact, { kind: "turn_ended" }> {
+	return { kind: "turn_ended", at, key, outcome, verified, flags, changes, report, spend: turnSpend(usage, agent) };
 }
 
 export type EndedFact = Extract<Fact, { kind: "turn_ended" | "review_ended" }>;
 
 export function reviewEndedFactOf(key: string, outcome: TurnOutcome, review: ItemReview | undefined, said: string | null, refused: string | null, usage: TurnUsage | null): Extract<Fact, { kind: "review_ended" }> {
-	return { kind: "review_ended", key, at: Date.now(), outcome, review: review?.id === key ? review : null, said, refused, spend: { tokens: turnTokens(usage), hostedSeconds: 0 } };
+	return { kind: "review_ended", key, at: Date.now(), outcome, review: review?.id === key ? review : null, said, refused, spend: turnSpend(usage) };
 }

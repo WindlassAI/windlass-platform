@@ -2600,7 +2600,16 @@ async function removeImage(tag: string): Promise<boolean> {
 	const label = await docker(["image", "inspect", "--format", `{{index .Config.Labels "${LABEL}"}}`, tag]);
 	if (label.code !== 0) return true;
 	if (label.stdout.trim() !== "1") return false;
-	return (await docker(["rmi", tag])).code === 0;
+	// A helper started with --rm is removed by the daemon after it exits: until then the image is in use.
+	for (let tries = 0; ; tries++) {
+		const removed = await docker(["rmi", tag]);
+		if (removed.code === 0) return true;
+		if (tries >= 20 || !/being used|conflict/i.test(removed.stderr)) {
+			console.log(`      docker rmi ${tag}: ${removed.stderr.trim().split("\n")[0]}`);
+			return false;
+		}
+		await new Promise((done) => setTimeout(done, 500));
+	}
 }
 
 async function emergencyCleanup(): Promise<void> {

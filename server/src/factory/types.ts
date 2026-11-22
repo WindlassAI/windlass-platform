@@ -198,6 +198,8 @@ export interface FactoryItem {
 	machineRemoved: boolean;
 	budget: ItemBudget;
 	spent: ItemBudget;
+	/** Absent for items filed before agents could be chosen: Windlass. */
+	agent?: import("../contract.js").ItemAgent;
 	/** Since when the item is "working": active time (§2.4) is the sum of such stretches. */
 	workingSince: number | null;
 	run: Run | null;
@@ -262,8 +264,23 @@ export type Cause = string;
 
 /** What the agent's turn used: tokens of this turn (`turnTokens`), and the sandbox seconds the ledger holds for the item's session so far (`ledgerSeconds`). */
 export interface TurnSpend {
+	/** Counted against the item's token budget: none where the agent's tokens are not (budget.ts, `agentTurn`). */
 	tokens: number;
 	hostedSeconds: number;
+	/** What a machine harness reported of the turn. Absent for Windlass. */
+	agent?: AgentTurn;
+}
+
+/** What a machine harness (Claude Code, OpenCode) reported of one turn. */
+export interface AgentTurn {
+	/** Tokens it reported; null where it reported none. */
+	reported: number | null;
+	/** Whether they count against the item's token budget (harnesses.ts, `itemTokens`). */
+	counted: boolean;
+	/** Its conversation's cost so far. */
+	cost: { amount: number; currency: string } | null;
+	/** Claude Code's 5-hour window, % used, at the turn's start and end. */
+	fiveHour: { start: number; end: number } | null;
 }
 
 export type Fact =

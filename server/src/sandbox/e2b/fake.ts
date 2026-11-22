@@ -16,6 +16,7 @@
  * signals are tried without E2B.
  */
 
+import type { E2bNetworkConfig } from "./network.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bSandboxInfo, type E2bState } from "./client.js";
 
 /** What runs a fake sandbox's commands. */
@@ -28,6 +29,8 @@ export interface FakeMachine {
 	resumed?(): Promise<void>;
 	/** The sandbox is gone. */
 	killed?(): Promise<void>;
+	/** What E2B now lets out of the sandbox: at create, and at every `updateNetwork`. Null: E2B's default. */
+	network?(config: E2bNetworkConfig | null): Promise<void>;
 }
 
 /** A command that has ended already, with this result. */
@@ -94,6 +97,8 @@ interface FakeSandbox {
 	metadata: Record<string, string>;
 	envs: Record<string, string>;
 	onTimeout: "pause" | "kill";
+	/** As E2B keeps it: what create was given, replaced by every `updateNetwork`. */
+	network: E2bNetworkConfig | null;
 	startedAt: number;
 	endAt: number;
 	machine: FakeMachine;
@@ -169,7 +174,7 @@ export class FakeE2b implements E2bClient {
 		if ([...this.sandboxes.values()].filter((sandbox) => sandbox.state === "running").length >= limit) throw new E2bLimitError(`fake E2B: the account runs ${limit} sandboxes at once and no more`);
 		const id = `fake${String(this.next++).padStart(4, "0")}${Math.random().toString(36).slice(2, 10)}`;
 		const now = this.now();
-		const machine = (await this.options.machine?.(id)) ?? new ScriptedMachine();
+		const machine: FakeMachine = (await this.options.machine?.(id)) ?? new ScriptedMachine();
 		this.sandboxes.set(id, {
 			id,
 			template: input.template,
@@ -177,12 +182,14 @@ export class FakeE2b implements E2bClient {
 			metadata: { ...input.metadata },
 			envs: { ...input.envs },
 			onTimeout: input.onTimeout,
+			network: input.network ? structuredClone(input.network) : null,
 			startedAt: now,
 			endAt: now + input.timeoutMs,
 			machine,
 			ranMs: 0,
 			runningSince: now,
 		});
+		await machine.network?.(input.network ?? null);
 		return this.connection(id);
 	}
 
@@ -242,6 +249,16 @@ export class FakeE2b implements E2bClient {
 		}
 		await this.pauseNow(sandbox);
 		return true;
+	}
+
+	async updateNetwork(sandboxId: string, network: E2bNetworkConfig | null): Promise<void> {
+		this.calls.push(`updateNetwork ${sandboxId} ${JSON.stringify(network)}`);
+		await this.settle();
+		const sandbox = this.sandboxes.get(sandboxId);
+		// E2B's endpoint is for a running sandbox.
+		if (sandbox === undefined || sandbox.state !== "running") throw new Error(`fake E2B: sandbox ${sandboxId} is not running`);
+		sandbox.network = network ? structuredClone(network) : null;
+		await sandbox.machine.network?.(sandbox.network);
 	}
 
 	async kill(sandboxId: string): Promise<boolean> {

@@ -48,11 +48,15 @@ The menu then says **GitHub connected** and lists the accounts the connection co
 - To add another account or organization, choose **Add an account**.
 - To remove the connection from Windlass, choose **Disconnect**. The App stays installed at GitHub. Only the account's owner can uninstall it there.
 
-> **Note** If you ask an organization to install the App, one of its owners has to approve the request at GitHub first. Connect GitHub again once it is installed.
+> **Note** If you ask an organization to install the App, one of its owners has to approve the request at GitHub first. If this is your first installation, finish connecting after approval. If someone else installs the App for your organization, choose **Reconnect GitHub** in the repository picker to add it.
 
 ### What the GitHub App may do
 
-The platform acts as the App's installation. It keeps no GitHub token of yours. The App asks for these permissions:
+Windlass uses your GitHub user token to identify you and list your installations during connect, then revokes it. It keeps neither the user token nor the refresh token.
+
+With webhooks enabled, installing the App while connected adds the installation to your picker. An installation on your own GitHub account also appears there. **Reload** reads the repositories of installations already in your connection. If GitHub reports an uninstall, suspension, or repository removal, Windlass drops that installation from every affected connection. Reconnect to pick up any repositories you can still access.
+
+The platform uses the App’s installation for repository operations. The App asks for these permissions:
 
 | Permission | Access | Why |
 | --- | --- | --- |

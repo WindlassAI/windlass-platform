@@ -211,13 +211,14 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 
 /** `machine`: the machine the session runs on, as `useSessionMachine` says. */
 export function Session({ sessionId, state, machine }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null }) {
-	const { client, explain } = useApp();
+	const { client, explain, platform } = useApp();
 	const models = useModels();
 	const auth = useAuth();
 	const api = useMemo(() => client.session(auth, sessionId), [client, auth, sessionId]);
 	const handover = useMemo(() => takeHandover(sessionId), [sessionId]);
 	const [suggestion, setSuggestion] = useState<{ key: number; text: string } | null>(null);
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
+	const [planFirst, setPlanFirst] = useState(false);
 	const [refusals, setRefusals] = useState(0);
 	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
 	const online = state.connection === "connected";
@@ -334,6 +335,9 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
+				{summary.harness === "codex" && <label>Plan first <select value={planFirst ? "plan" : "default"} onChange={e => setPlanFirst(e.target.value === "plan")}>
+					<option value="default">Off</option><option value="plan">On</option>
+				</select></label>}
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
 				) : (
@@ -352,7 +356,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						closed={reach?.removed ? "Its machine was removed, so this agent cannot run again." : null}
 						onSend={async (input) => {
 							try {
-								await api.prompt(input);
+								await api.prompt(summary.harness === "codex" && planFirst && summary.status === "idle" ? {...input,planFirst:true} : input);
 							} catch (failure) {
 								setRefusals((value) => value + 1);
 								// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`, `steer_unavailable`).
@@ -367,7 +371,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					Session details, tokens and changes
 				</a>
 			</div>
-			<SidePanel egress={machine?.egress} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

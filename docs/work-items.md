@@ -30,14 +30,24 @@ nobody can file, read or act on an item.
 
 ## The list, and its pages
 
-The `user` actor keeps every item's summary and sends the whole list to `listItems` without arguments
-and on the live feed (`UserEvents.items`) after any change. `listItems` also takes a page
+The `user` actor keeps every item's summary and sends the whole list to `listItems` without arguments,
+for API clients and scripts. `listItems` also takes a page
 (`ItemListPage`, `server/src/item-pages.ts`): at most `limit` items (25 by default, 100 at most), newest
 filed first, after a cursor that is the last item of the page before (its `createdAt` and id, which never
 change, so no item is skipped or repeated when states change), kept to ended items, one repository or
-one way of filing where it says so. A page shorter than its limit is the last. The Factory page reads its
-ended items this way, a page at a time. The live feed still carries every item: a user with thousands
-would need the feed to carry only open items and the newest ended ones, with counts beside them.
+one way of filing where it says so. A page shorter than its limit is the last.
+
+The live feed (`UserEvents.items`, after any change) and `itemFeed` (the web app's first read) carry an
+`ItemFeed`, so that what is sent stays small however many items a user has filed: every open item, the
+`ITEM_FEED_ENDED` (25) newest filed ended ones, which are exactly the first page of
+`listItems({ ended: true })`, and counts: how many ended items there are, and for each repository and way
+of filing how many are open, done, failed and cancelled. The feed and the counts hold the items the
+whole list does: top-level items, and a feature's child while it asks a question. An old item that ends
+is counted at once but is not carried unless it is among the 25 newest filed. The Factory page and a
+repository's page say their ended items from the counts and read them from `listItems` a page at a time
+when they are unfolded, each row with the day it was filed; Usage lists the items the feed carries and
+says how many older ended ones there are. An item's page reloads when the feed carries it with a newer
+revision, so an old ended item's page is read again only when it is opened or the feed reconnects.
 
 ## Where an item runs
 
@@ -124,7 +134,34 @@ or hand over the commit the run already pushed.
 **CI needs the GitHub App's three read permissions** ([The GitHub App](operating.md#the-github-app)). Without them, or before an
 installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
 
-An item's turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
+### The item's agent
+
+`CreateItemInput.effort` is the reasoning effort of every turn of the builder, Windlass or not: one
+the agent reported for the item's model (`checkItemEffort` in `server/src/account-models.ts`; a machine
+harness model whose efforts come only once selected takes one reported for any model), else `bad_effort`.
+It is kept on the session's `origin.effort` and on `ItemAgent.effort`; a Plan-first feature's children
+take the feature's. Left out, a builder runs at its agent's default and a planner at `plannerEffort`.
+
+`CreateItemInput.harness` picks the builder: `windlass` (the default), or a machine harness by id
+(`machineHarnesses` in `server/src/sandbox/harnesses.ts`) that the item's machine reports signed in (`signIn: "token"`; `makeSession` refuses
+"none" and "unknown"). Each item turn checks the machine's report again before its sandbox opens
+(`itemSignInRefusal` in `agent-session.ts`): a signed-out agent refuses the turn, and the item asks
+with the login hint.
+A machine harness runs only Quick, only on a machine, in `docker-hardened`. A Plan-first subtask's
+`needs.harness` other than `windlass` is refused by plan validation and by placement (`machineAgentRefusal`). It starts every turn in
+its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `build`), and the ACP
+harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
+agent still asks for is allowed once. The reviewer stays Windlass and runs only hosted, so these
+items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
+snapshot), and no platform tools: the PR body is the item's, and CI decides the verdict.
+`ItemSummary.agent` holds the harness, the model and what the agent reported: tokens counted against
+the budget (`itemTokens: "budget"`), shown but not counted for a subscription, or "not reported";
+the conversation's cost; Claude Code's 5h window at the first and latest turn
+(`server/src/factory/budget.ts`, `agentTurn`, `noteAgentTurn`). A turn of an agent whose tokens count
+that reports none stops the item with a `budget` question and no way on but hand over or give up
+(`unmeasuredTurn`); it is never taken as 0 tokens. The reported cost is shown, not capped.
+
+An item's Windlass turn runs only in a sandbox whose Windlass takes host tools ("The agent's own
 tools"). A single item starts by implementing; an
 orchestrated one starts with a planner ([Feature orchestration](#feature-orchestration) above).
 

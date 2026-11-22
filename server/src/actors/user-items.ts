@@ -25,7 +25,8 @@ import { windlassAccountKey } from "../provider-usage.js";
 import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, PlanSubtask } from "../contract.js";
+import type { ChildPlacement, HarnessId, ItemFeed, PlanSubtask } from "../contract.js";
+import { harnessName, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -37,7 +38,7 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
-import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../item-pages.js";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage, listedItems } from "../item-pages.js";
 import { API_TOKEN_WINDOW_MS, API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { attachmentKey } from "../factory/attachments.js";
@@ -210,15 +211,18 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; owns?: string[]; issue?: { number: number; installationId: GithubId } }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; owns?: string[]; issue?: { number: number; installationId: GithubId }; effort?: string }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
 // ---------------------------------------------------------------------------------------------
 
 function itemList(state: ItemsState): ItemSummary[] {
-	return [...state.items.values()].filter(i => !i.parent || i.question).map(i => i.parent ? { ...i, title: i.parent.title + " — " + i.title } : i).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+	return listedItems(state.items.values());
 }
+
+/** What the live feed carries: open items, the newest ended ones, the counts (item-pages.ts). */
+const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state));
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
@@ -235,7 +239,7 @@ async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
 	await c.db.execute("UPDATE items SET summary = ? WHERE id = ?", JSON.stringify(summary), summary.id);
 	if (ended(summary)) await c.db.execute("UPDATE attachments SET ended_at=COALESCE(ended_at, ?) WHERE item=?", summary.updatedAt, summary.id);
 	else if (ended(held)) await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
-	c.broadcast("items", itemList(c.vars.items));
+	c.broadcast("items", feedOf(c.vars.items));
 }
 
 function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
@@ -248,12 +252,15 @@ const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["g
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; start: boolean; mode: "single" | "orchestrate" } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; profile: SandboxProfileId | null; model: string | null; effort: string | null; start: boolean; mode: "single" | "orchestrate"; harness: HarnessId } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness" | "mode", unknown>>;
 	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
 	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0") throw bad("Orchestrated work items are disabled.");
-	if (input.harness !== undefined && input.harness !== "windlass") throw bad("Work items and their reviewers run only with Windlass.");
+	const harness = input.harness === undefined || input.harness === null ? "windlass" : knownHarness(input.harness);
+	if (harness === null) throw bad("Choose an agent this platform runs: windlass, or one of your machine's.");
+	const notForItems = itemHarnessProblem(harness);
+	if (notForItems) throw bad(notForItems);
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
 	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
 	const body = typeof input.body === "string" ? input.body.trim() : "";
@@ -263,10 +270,17 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 		throw bad(`The acceptance criteria are at most ${MAX_ACCEPTANCE_CRITERIA} lines of text, each at most ${MAX_NOTE_CHARS} characters.`);
 	}
 	const place = launchPlace(input.place ?? undefined);
+	if (harness !== "windlass") {
+		const name = harnessName(harness);
+		if (place.kind !== "machine") throw bad(`${name} runs only on a machine of yours. Choose one that offers it, or Windlass.`);
+		// Plan first's planner files its plan with a Windlass tool, which an ACP agent does not have.
+		if ((input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate")) === "orchestrate") throw bad(`Plan first runs only with Windlass. Choose Quick for ${name}.`);
+	}
 	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
 	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id)) throw bad("Choose a repository of your GitHub connection for the item.");
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
 	return {
 		mode: input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"),
 		place,
@@ -276,7 +290,9 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 		repository: { id: repository.id, ...(typeof repository.branch === "string" ? { branch: repository.branch } : {}) },
 		profile: text(input.profile) as SandboxProfileId | null,
 		model: text(input.model),
+		effort: text(input.effort),
 		start: input.start === true,
+		harness,
 	};
 }
 
@@ -323,9 +339,12 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	}
 	try {
 		const existing = c.vars.sessions.get(sessionId);
-		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, input.profile, input.place);
+		// A machine harness runs only in the hardened container; makeSession refuses it elsewhere.
+		const harness = child?.placement.harness ?? input.harness;
+		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : "docker-hardened", input.place);
 		begun = true;
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }) }));
+		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
 		const reviewer = child || !config.factory.reviewer ? { off: "deployment" } as const :
@@ -337,7 +356,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
-		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item });
+		const item = createItem({ id: itemId, mode: input.mode, reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort } });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
@@ -364,7 +383,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 			throw error;
 		}
 	} else await index(c.db);
-	c.broadcast("items", itemList(c.vars.items));
+	c.broadcast("items", feedOf(c.vars.items));
 	console.log(`[wlp] item.created uid=${uid} item=${summary.id} session=${sessionId} source=${source}`);
 	if (summary.place.kind === "machine" && !c.vars.machines.has(summary.place.machineId)) {
 		await notifyRemovedMachines(c, summary.place.machineId);
@@ -763,11 +782,12 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	// A partial creation stays pinned, and must still pass current owner policy.
-	const profiles = (await getLayer()).sandboxes.profiles();
+	const { sandboxes } = await getLayer();
+	const profiles = sandboxes.profiles();
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id) };
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.() };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {
@@ -812,7 +832,7 @@ export const itemActions = {
 					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
 				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
 				existing = await makeItem(c, owner, { mode: "single", repository: { id: feature.repository.id, branch: featureBranch(input.parent) }, place: placement.place,
-					profile: placement.profile, model: session.model, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
+					profile: placement.profile, model: session.model, ...(feature.agent?.effort && { effort: feature.agent.effort }), title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
 					{ id: input.child, placement, base: feature.repository.branch, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
 			}
 			if (!existing || existing.parent?.itemId !== input.parent) return null;
@@ -899,7 +919,7 @@ export const itemActions = {
 	listItems: (c: ItemsCtx, page?: unknown): ItemSummary[] => {
 		requireUser(c);
 		enabled();
-		// Without a page, the whole list, as the live feed sends it; with one, a page of it (item-pages.ts).
+		// Without a page, the whole list, for API clients and scripts (the web app reads `itemFeed`); with one, a page of it (item-pages.ts).
 		let clean: CleanPage | null;
 		try {
 			clean = cleanItemPage(page);
@@ -909,6 +929,11 @@ export const itemActions = {
 		}
 		const list = itemList(c.vars.items);
 		return clean === null ? list : itemPage(list, clean);
+	},
+	itemFeed: (c: ItemsCtx): ItemFeed => {
+		requireUser(c);
+		enabled();
+		return feedOf(c.vars.items);
 	},
 
 	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {

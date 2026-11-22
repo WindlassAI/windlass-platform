@@ -44,7 +44,7 @@ function Page({ id, machine }: { id: string; machine?: MachineSummary }) {
 }
 
 /** Opens the agent `id`, or the one `pick` chooses of the user's agents. */
-async function open(id: string | { harness: "claude" | "opencode" } | ((sessions: SessionSummary[]) => SessionSummary | undefined), machine?: MachineSummary): Promise<void> {
+async function open(id: string | { harness: "claude" | "opencode" | "codex" } | ((sessions: SessionSummary[]) => SessionSummary | undefined), machine?: MachineSummary): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173", machine: typeof id === "object" ? "fresh" : "online" });
 	const begun = client.login.start();
 	vi.advanceTimersByTime(1000);
@@ -89,13 +89,19 @@ afterEach(() => {
 const pickers = () => [...host.querySelectorAll(".composer-selects [data-picker]")].map((pill) => (pill as HTMLElement).dataset.picker);
 const text = () => host.textContent ?? "";
 
-it.each(["claude", "opencode"] as const)("shows %s models and modes in the idle composer and panel before its first turn", async harness => {
+it.each(["claude", "opencode", "codex"] as const)("shows %s models and modes in the idle composer and panel before its first turn", async harness => {
 	await open({ harness });
-	const names = harness === "claude" ? ["Default (recommended)", "Opus", "Haiku"] : ["OpenAI/GPT-5.4 (default)", "OpenAI/GPT-5.4 mini"];
-	const modeNames = harness === "claude" ? ["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"] : ["build", "plan"];
+	if (harness === "codex") expect(host.textContent).toContain("Plan first");
+	const names = harness === "codex" ? ["6.2 Sol (default)"] : harness === "claude" ? ["Default (recommended)", "Opus", "Haiku"] : ["OpenAI/GPT-5.4 (default)", "OpenAI/GPT-5.4 mini"];
+	const modeNames = harness === "codex" ? ["Container access"] : harness === "claude" ? ["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"] : ["build", "plan"];
 	expect(host.querySelector("#panel-session")?.textContent).toContain("no turns yet");
-	act(() => (host.querySelector('[data-picker="model"]') as HTMLButtonElement).click());
-	expect(Array.from(document.querySelectorAll(".ui-pop .ui-item-label"), el => el.textContent)).toEqual(names);
+	if (harness === "codex") {
+		expect(host.querySelector(".composer-selects")?.textContent).toContain("6.2 Sol");
+		expect(pickers()).toContain("effort");
+	} else {
+		act(() => (host.querySelector('[data-picker="model"]') as HTMLButtonElement).click());
+		expect(Array.from(document.querySelectorAll(".ui-pop .ui-item-label"), el => el.textContent)).toEqual(names);
+	}
 	const details = host.querySelector("#panel-session")!.closest("section")!.querySelector("details")!;
 	act(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
 	expect(Array.from(details.querySelectorAll('[aria-label="Available models"] li'), el => el.firstChild?.textContent)).toEqual(names.map(name => name.replace(" (default)", "")));

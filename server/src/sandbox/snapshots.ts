@@ -1,11 +1,13 @@
 // Docker owns the index as well as the layers. Tags record last use across process restarts.
 // Every operation names a local image ID; a session request can never select a Docker image.
-import { docker, LABEL, DATA_DIR, randomId } from "./docker.js";
+import { mirrorOwner, mirrorSlot } from "./git-mirrors.js";
+import { MIRROR_ROOT, MIRROR_VOLUME, snapshotLimits } from "./store-limits.js";
+import { docker, LABEL, DATA_DIR, NO_LOGS, randomId } from "./docker.js";
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotKey, type SnapshotRequest, type SnapshotSource } from "./snapshot-key.js";
 
 const S = LABEL + ".snapshot";
 const TTL = 14 * 86_400_000;
-export const snapshotLimits = { machine: 10_000_000_000, user: 2_000_000_000, free: 15_000_000_000 };
+export { snapshotLimits };
 type Labels = Record<string, string>;
 type Image = { Id: string; Size: number; Os: string; Architecture: string; Variant?: string; Config: { Labels: Labels; Env: string[] }; RepoTags?: string[] };
 type Row = { tag: string; uid: string; repo: string; used: number; bytes: number; image: Image };
@@ -60,7 +62,7 @@ const validScope = (key: SnapshotKey) => /^[1-9]\d{0,19}$/.test(key.repo) && HAS
 const valid = (key: SnapshotKey) => validScope(key) && HASH.test(key.inputs);
 export class DockerSnapshots {
 	private readonly namespace: string;
-	constructor(readonly machine: string, readonly base: string, readonly network?: { mode: string; env: Record<string, string> }, private readonly limits = snapshotLimits, private readonly screenshots = false, private readonly deployment = machine) {
+	constructor(readonly machine: string, readonly base: string, readonly network?: { mode: string; env: Record<string, string> }, private readonly limits = snapshotLimits, private readonly screenshots = false, private readonly deployment = machine, private readonly mirrorScope = deployment) {
 		if (!deployment) throw new Error("Missing snapshot deployment identity");
 		// The persisted pairing id already namespaces a runner. Preserve its tags across upgrades.
 		this.namespace = "wlp-prepared-" + digest(machine === deployment ? [machine] : [deployment, machine]).slice(0, 24);
@@ -68,7 +70,7 @@ export class DockerSnapshots {
 
 	// A daemon-local mutex also orders separate server processes. The sleeper releases it after a crash.
 	private async locked<T>(image: string, work: () => Promise<T>, busy: T) {
-		const lock = await docker(["run", "-d", "--rm", "--pull", "never", "--name", this.namespace + "-lock",
+		const lock = await docker(["run", "-d", "--rm", "--pull", "never", "--name", this.namespace + "-lock", ...NO_LOGS,
 			"--network", "none", "--cap-drop", "ALL", "--entrypoint", "/bin/sleep", image, "900"], { timeoutMs: 20_000 });
 		if (lock.code !== 0) return busy;
 		try { return await work(); }
@@ -126,7 +128,7 @@ export class DockerSnapshots {
 		await this.release({ ...row, tag });
 	}
 	private async free() {
-		const space = await docker(["run", "--rm", "--network", "none", "--pull", "never", "--cap-drop", "ALL",
+		const space = await docker(["run", "--rm", ...NO_LOGS, "--network", "none", "--pull", "never", "--cap-drop", "ALL",
 			"--entrypoint", "/bin/df", this.base, "-B1", "--output=avail", "/workspace"], { check: true });
 		const available = Number(space.stdout.trim().split(/\s+/).pop());
 		if (!Number.isSafeInteger(available) || available < 0) throw new Error("Invalid free space");
@@ -218,9 +220,17 @@ export class DockerSnapshots {
 			const box = await inspect("container", container);
 			const labels: Labels = box.Config.Labels;
 			const key = this.key(source, base, uid, profile);
+			// The optional mirror is excluded from docker commit like the data volume. Match
+			// both the destination and the actual subpath supplied to the daemon.
+			const mirrorPath = MIRROR_ROOT + "/" + mirrorOwner(uid, source.repo);
+			const mirror = box.HostConfig.Mounts?.some((m: {Type: string; Source: string; Target: string; VolumeOptions?: { Subpath?: string }}) =>
+				m.Type === "volume" && m.Source === MIRROR_VOLUME && m.Target === mirrorPath &&
+				m.VolumeOptions?.Subpath === mirrorSlot(this.mirrorScope, this.machine, uid, source.repo));
+			const mounts = box.Mounts.filter((m: {Type: string; Name: string; Destination: string}) =>
+				!(mirror && m.Type === "volume" && m.Name === MIRROR_VOLUME && m.Destination === mirrorPath));
 			if (box.Image !== base.Id || (labels[S+".candidate"] !== key && labels[S+".candidate"] !== this.coldKey(source, uid, profile)) || labels[S+".attempt"] !== source.attempt || labels[LABEL+".uid"] !== uid ||
 				labels[LABEL+".profile"] !== profile || (labels[LABEL+".machine"] ?? "") !== this.machine ||
-				labels[LABEL+".harness"] || box.Mounts.length !== 1 || box.Mounts[0].Type !== "volume" || box.Mounts[0].Destination !== DATA_DIR) return false;
+				labels[LABEL+".harness"] || mounts.length !== 1 || mounts[0].Type !== "volume" || mounts[0].Destination !== DATA_DIR) return false;
 			// Commit merges container Config. Refuse extra labels or env (including Docker client proxy credentials).
 			const allowed = new Set([...Object.keys(base.Config.Labels ?? {}), LABEL, LABEL+".uid", LABEL+".session", LABEL+".profile", LABEL+".machine", LABEL+".egress", LABEL+".slots", LABEL+".requested-slots", S+".candidate", S+".attempt", variantLabel]);
 			const env = [...base.Config.Env, ...Object.entries(this.network?.env ?? {}).map(([k,v]) => k+"="+v)];

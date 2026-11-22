@@ -1,12 +1,15 @@
 import { approvalText, featureCap, singleAfterPlanning, validatePlan } from "../../../server/src/factory/feature-plan.js";
-import { slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
+import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
- * "Work items", and `UserActions.listItems` to `revokeApiToken`), and pushes the list to the user's
- * live feeds (`UserFeed.onItems`) after every change, as `UserEvents.items` is.
+ * "Work items", and `UserActions.listItems` to `revokeApiToken`), and pushes the feed (`ItemFeed`: open
+ * items, the newest ended ones, the counts) to the user's live feeds (`UserFeed.onItems`) after every
+ * change, as `UserEvents.items` is.
  *
  * Every sentence an item shows is the server's (server/src/factory/blueprint.ts, budget.ts and
  * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. A verdict's
@@ -63,9 +66,11 @@ import {
 	type Verdict,
 	type VerdictRun,
 	type Waiting,
+	type HarnessId,
+	type ModelList,
 } from "@contract";
 import { FACTORY_DEFAULTS } from "../../../server/src/factory/budget";
-import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage } from "../../../server/src/item-pages";
+import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
 
 /**
@@ -92,6 +97,8 @@ export interface MockItemsDeps {
 	feeds(auth: AuthResult): Iterable<UserFeed>;
 	/** Makes the item's agent, as `createSession` does: on this platform's first sandbox unless `profile` says which. */
 	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile"> & { profile?: SandboxProfileId }): Promise<SessionSummary>;
+	/** The models an item's new agent would offer: the account's for Windlass, what the machine reported for another harness. */
+	models(auth: AuthResult, harness: HarnessId, machineId: string | null): Promise<ModelList>;
 	/** Makes a seeded item's own agent session, with its turns so far, and answers its id. */
 	seededSession(auth: AuthResult, item: ItemView): string;
 	/**
@@ -1472,8 +1479,9 @@ export function createMockItems(deps: MockItemsDeps) {
 	}
 
 	function changed(auth: AuthResult): void {
-		const list = listedItems(auth);
-		for (const feed of deps.feeds(auth)) feed.onItems?.(list);
+		// As the server's live feed: the open items, the newest ended ones and the counts (`ItemFeed`).
+		const sent = itemFeed(listedItems(auth));
+		for (const feed of deps.feeds(auth)) feed.onItems?.(sent);
 	}
 
 	function itemOf(auth: AuthResult, id: string): ItemView {
@@ -1737,7 +1745,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		return view;
 	}
 
-	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
+	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "itemFeed" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems(page) {
 				await answer(240);
@@ -1751,6 +1759,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				}
 				const list = listedItems(auth);
 				return clean === null ? list : itemPage(list, clean);
+			},
+			async itemFeed() {
+				await answer(240);
+				return itemFeed(listedItems(auth));
 			},
 			async item(id) {
 				await answer(220);
@@ -1791,15 +1803,36 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				// On a machine, its first available sandbox unless the one asked for is available (user-items.ts, `itemProfile`).
 				const place: SandboxPlace = input.place?.kind === "machine" ? { kind: "machine", machineId: input.place.machineId } : { kind: "hosted" };
+				// The builder's agent, as user-items.ts `cleanItemInput` and user.ts `makeSession` take it.
+				const harness = input.harness === undefined ? "windlass" : knownHarness(input.harness);
+				if (harness === null) throw new PlatformError("user", "Choose an agent this platform runs: windlass, or one of your machine's.", { reason: "bad_input" });
+				if (harness !== "windlass") {
+					if (place.kind !== "machine") throw new PlatformError("user", `${harnessName(harness)} runs only on a machine of yours. Choose one that offers it, or Windlass.`, { reason: "bad_input" });
+					if ((input.mode ?? "orchestrate") === "orchestrate") throw new PlatformError("user", `Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`, { reason: "bad_input" });
+					const offered = machineFor(auth, place.machineId).harnesses?.find((one) => one.id === harness);
+					if (!offered) throw new PlatformError("user", `This machine does not offer ${harnessName(harness)}.`, { reason: "bad_input" });
+					if (offered.signIn !== "token") throw new PlatformError("user", `${harnessName(harness)} on “${machineFor(auth, place.machineId).name}” is not signed in. Run windlass-runner login ${harness} there.`, { reason: "harness_signed_out" });
+				}
 				let profile: SandboxProfileId | undefined;
 				if (place.kind === "machine") {
 					const machine = machineFor(auth, place.machineId);
 					const available = machine.profiles.filter((one) => one.available);
-					const chosen = available.find((one) => one.id === input.profile) ?? available[0];
+					const asked = harness === "windlass" ? input.profile : "docker-hardened";
+					const chosen = available.find((one) => one.id === asked) ?? available[0];
 					if (!chosen) throw new PlatformError("user", `Your machine "${machine.name}" offers no available sandbox profile for this item.`, { reason: "bad_profile" });
 					profile = chosen.id;
 				}
-				const session = await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}) });
+				// The effort every turn runs at: one the agent reported for the item's model, as the server holds it.
+				if (input.effort !== undefined && input.effort !== null) {
+					const list = await deps.models(auth, harness, place.kind === "machine" ? place.machineId : null);
+					const model = input.model || list.defaultModel;
+					try {
+						checkItemEffort(list, model, input.effort, harness !== "windlass");
+					} catch (problem) {
+						throw new PlatformError("user", (problem as Error).message, { reason: "bad_effort" });
+					}
+				}
+				const session = await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}), ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}) });
 				const repository = session.repository;
 				if (!repository) throw new PlatformError("user", "Work items need a repository of your GitHub connection.", { reason: "bad_input" });
 				const at = deps.now();
@@ -1820,6 +1853,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					verdict: null,
 					budget: input.mode !== "single" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
 					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
+					agent: newAgent(session.harness ?? "windlass", session.model, input.effort),
 					sessionId: session.id,
 					createdAt: at,
 					updatedAt: at,

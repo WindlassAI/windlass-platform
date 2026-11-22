@@ -4,6 +4,7 @@ import { decimalId, githubId, ownApp } from "./ids.js";
 
 /** The edge keeps just the inputs to a later lookup. GUID and receipt time come from the route. */
 type Sender = { id: GithubId; login: string; association: string };
+type InstallationSender = { senderId: GithubId | null };
 type Fields = {
 	issues: { issue: number; sender: Sender; label?: string };
 	issue_comment: { issue: number; sender: Sender; commentId: string; body: string; isPullRequest: boolean };
@@ -13,8 +14,8 @@ type Fields = {
 	check_run: { head: string; runId?: string };
 	check_suite: { head: string };
 	status: { head: string };
-	installation: { repositoryIds: GithubId[] };
-	installation_repositories: { repositoryIds: GithubId[] };
+	installation: InstallationSender;
+	installation_repositories: InstallationSender;
 };
 
 type Trimmed = { action: string; installationId: GithubId; repositoryId: GithubId | null } &
@@ -53,14 +54,11 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 	if (event !== "status" && !/^[a-z_]{1,64}$/.test(action)) return null;
 	const base = { ...("guid" in meta ? { guid: meta.guid, at: meta.at } : {}), installationId, repositoryId, action: event === "status" ? "" : action };
 	if (event === "installation" || event === "installation_repositories") {
-		const repositoryIds = new Set<GithubId>();
-		for (const list of [p.repositories, p.repositories_added, p.repositories_removed]) {
-			if (Array.isArray(list)) for (const repo of list) {
-				const n = githubId(obj(repo).id);
-				if (n) repositoryIds.add(n);
-			}
-		}
-		return { ...base, event, data: { repositoryIds: [...repositoryIds] } };
+		// The HMAC authenticates the body. The event-name header alone cannot make a comment
+		// or another repository event an installation change.
+		if (event === "installation" && !githubId(obj(obj(p.installation).account).id)) return null;
+		if (event === "installation_repositories" && !Array.isArray(p.repositories_added) && !Array.isArray(p.repositories_removed)) return null;
+		return { ...base, event, data: { senderId: githubId(obj(p.sender).id) } };
 	}
 	if (!repositoryId) return null;
 	if (event === "check_run" || event === "check_suite") {

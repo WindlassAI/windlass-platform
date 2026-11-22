@@ -70,6 +70,12 @@ export interface PlatformInfo {
 	windlassVersion: string | null;
 	profiles: SandboxProfile[];
 	/**
+	 * What this deployment's hosted sandboxes may reach (E2B, WLP_E2B_NETWORK), when it is not `open`:
+	 * `restricted`, only the model API, GitHub and the hosts the operator allows; `none`, only the model
+	 * API, and no repositories. Absent: as before network modes.
+	 */
+	hostedEgress?: "restricted" | "none";
+	/**
 	 * Set when this deployment has a GitHub App: users can connect GitHub, launch agents on their own
 	 * repositories and open pull requests. Absent or null when it has none: the web app then shows
 	 * nothing of it.
@@ -94,6 +100,7 @@ export interface PlatformInfo {
  * and `platformUrl` put in (the runner's state, its key among it, is in the `windlass-runner` volume):
  *
  *   docker run -d --name windlass-runner --restart unless-stopped \
+ *     --log-driver json-file --log-opt max-size=16m --log-opt max-file=3 \
  *     -v /var/run/docker.sock:/var/run/docker.sock \
  *     -v windlass-runner:/var/lib/windlass-runner \
  *     <runnerImage> --platform <platformUrl> [--name "Build host"]
@@ -259,7 +266,7 @@ export type TurnOutcome =
 	/** The platform could not run the turn at all (sandbox failure, Windlass crashed). */
 	| "error";
 
-export type HarnessId = "windlass" | "claude" | "opencode";
+export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
 export interface SessionMode {
 	id: string;
@@ -1104,7 +1111,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; loginGeneration?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1169,6 +1176,44 @@ export interface ItemListPage {
 	ended?: boolean;
 	repository?: GithubId | null;
 	source?: "web" | "api" | "github" | null;
+}
+
+/** How many ended work items the live feed carries (`ItemFeed.ended`): the first page of them. */
+export const ITEM_FEED_ENDED = 25;
+
+/**
+ * One repository's work items, filed one way, counted by where they stand (`ItemFeed.counts`). The
+ * repository's owner and name are those of its newest filed item there.
+ */
+export interface ItemCount {
+	repository: GithubId;
+	owner: string;
+	name: string;
+	source: "web" | "api" | "github";
+	/** Not done, failed or cancelled. */
+	open: number;
+	done: number;
+	failed: number;
+	cancelled: number;
+}
+
+/**
+ * What the user's live feed carries of their work items (`UserEvents.items`, `itemFeed`): every open
+ * one, the newest filed ended ones, and how many there are of each. The ended ones beyond are read a
+ * page at a time (`listItems` with `ended`). Every part holds the items the whole list does: top-level
+ * items, and a feature's child while it asks a question.
+ */
+export interface ItemFeed {
+	/** Not done, failed or cancelled; newest filed first. */
+	open: ItemSummary[];
+	/** At most ITEM_FEED_ENDED ended items, newest filed first: the first page `listItems({ ended: true })` answers. */
+	ended: ItemSummary[];
+	counts: {
+		/** Every ended item, those beyond `ended` among them. */
+		ended: number;
+		/** One row for each repository and way of filing that has items. */
+		byRepository: ItemCount[];
+	};
 }
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
@@ -1540,7 +1585,32 @@ export interface RoundCaps {
 }
 
 /** An item as the user's index lists it. */
+/** Which agent an item's builder runs, on which model, and what that agent said it used. */
+export interface ItemAgent {
+	harness: HarnessId;
+	/** The builder session's model: one of the account's for Windlass, the agent's own id ("sonnet") or "default" for a machine harness. */
+	model: string;
+	/** The effort its turns run at (`CreateItemInput.effort`); null or absent: the agent's default. */
+	effort?: string | null;
+	/**
+	 * How the item's tokens are known.
+	 * - "counted": reported, and counted against `budget.tokens` (Windlass; an agent on an API key).
+	 * - "subscription": reported and shown, never counted: the agent's sign-in is a subscription, not billed
+	 *   by token, so the item's turns and active time bound it.
+	 * - "not_reported": the agent has reported none (yet): `spent.tokens` is not a measurement.
+	 */
+	tokens: "counted" | "subscription" | "not_reported";
+	/** Every token the agent reported over the item's turns, counted or not. */
+	reportedTokens: number;
+	/** The cost the agent reported for its conversation so far (OpenCode's `usage_update.cost`); null where it reported none. */
+	cost: { amount: number; currency: string } | null;
+	/** Claude Code's 5-hour window, % used, at the start of the item's first turn and at the end of its latest. */
+	fiveHour: { first: number; latest: number } | null;
+}
+
 export interface ItemSummary {
+	/** Absent for items filed before agents could be chosen: Windlass. */
+	agent?: ItemAgent;
 	placement?: ChildPlacement;
 	mode?: ItemMode;
 	parent?: { itemId: string; key: string; title: string } | null;
@@ -1642,6 +1712,8 @@ export interface ChildPlacement {
 	units: number;
 	sendSecrets: boolean;
 	profile?: SandboxProfileId;
+	/** A machine harness the subtask asked for (`needs.harness`); absent: Windlass. */
+	harness?: HarnessId;
 }
 
 export interface PlanSubtask {
@@ -1686,7 +1758,20 @@ export interface CreateItemInput {
 	acceptance?: string[];
 	/** The agent's sandbox profile and model. A hosted item uses the usual defaults. */
 	profile?: SandboxProfileId;
+	/** One of the account's models for Windlass; for a machine harness one its machine reported (`HarnessOptions.models`). Left out: the agent's default. */
 	model?: string;
+	/**
+	 * The reasoning effort of every turn of the item's builder: one its agent reported for the item's model
+	 * (`ModelChoice.efforts`; for a machine harness model whose efforts it reports only once selected, one it
+	 * reported for any model). Left out: the agent's default. Refused (`bad_effort`) otherwise.
+	 */
+	effort?: string;
+	/**
+	 * The builder's agent: "windlass" (the default), or a harness the chosen machine reports and is signed
+	 * into (`MachineSummary.harnesses`), which runs in its hardened container. Not on hosted, not with Plan
+	 * first. The reviewer, hosted only, stays Windlass.
+	 */
+	harness?: HarnessId;
 	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
 	place?: SandboxPlace;
 	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */
@@ -1883,7 +1968,7 @@ export interface UserActions {
 	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
 	 */
 	machines(): Promise<MachineSummary[]>;
-	machineCatalog(input: { machineId: string; id: "claude" | "opencode"; digest: string }): Promise<HarnessOptions | null>;
+	machineCatalog(input: { machineId: string; id: "claude" | "opencode" | "codex"; digest: string }): Promise<HarnessOptions | null>;
 	/**
 	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
 	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
@@ -1910,12 +1995,15 @@ export interface UserActions {
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/**
-	 * The user's work items, the newest first. With `page`, at most `page.limit` of them after
+	 * The user's work items, the newest first: every one of them, for API clients and scripts (the web
+	 * app reads `itemFeed`). With `page`, at most `page.limit` of them after
 	 * `page.before`, kept to ended ones, one repository or one way of filing where it says so
 	 * (`ItemListPage`); a page shorter than its limit is the last. Throws a UserError with code
 	 * `bad_input` for a page that is not one.
 	 */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
+	/** What the live feed carries (`ItemFeed`): every open item, the newest filed ended ones, and the counts. The web app reads this, not the whole list. */
+	itemFeed(): Promise<ItemFeed>;
 	/** One item's page. Throws a UserError with code `item_not_found` for one that is not the user's. */
 	item(id: string): Promise<ItemView>;
 	itemAttachmentLinks(itemId: string): Promise<Array<{ id: string; url: string; expiresAt: number }>>;
@@ -1945,8 +2033,8 @@ export interface UserEvents {
 	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
 	machines: MachineSummary[];
 	machineHost: MachineHostUpdate;
-	/** The user's work items, newest first, after any of them changed. */
-	items: ItemSummary[];
+	/** The user's open work items and the newest ended ones, with the counts (`ItemFeed`), after any of them changed. */
+	items: ItemFeed;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2329,6 +2417,7 @@ export interface SessionSnapshot {
 }
 
 export interface PromptInput {
+	planFirst?: boolean;
 	text: string;
 	/** Switches to an offered account or harness model from this turn on. */
 	model?: string;

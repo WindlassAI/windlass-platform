@@ -32,7 +32,7 @@
 
 import type { SnapshotSelection, SnapshotSource } from "./snapshot-key.js";
 
-import type { AcpContext, AcpUpdate, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, WindlassEvent } from "../contract.js";
+import type { AcpContext, AcpUpdate, EgressMode, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, TurnUsage, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -95,12 +95,20 @@ export interface SandboxHandle {
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
+	/**
+	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
+	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
+	 * slot holds it. `partial` only seeds an empty slot.
+	 */
+	saveMirror?(stage: string, partial: boolean): Promise<boolean>;
 }
 
 export interface CreateSandboxInput {
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
 	fromSnapshot?: SnapshotSelection;
+	/** Immutable GitHub repository ID for a transport-owned Docker mirror. */
+	mirrorRepo?: string;
 	/** Machine-only. The default harness uses the ordinary Windlass image. */
 	harness?: Exclude<HarnessId, "windlass">;
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */
@@ -155,6 +163,11 @@ export interface Sandboxes {
 	 * (`SandboxLayer.backups`) or, where there is none, start a new Windlass session at once.
 	 */
 	readonly sessionsLiveInSandbox: boolean;
+	/**
+	 * What this provider's sandboxes may reach, where the deployment sets it: on E2B, WLP_E2B_NETWORK
+	 * (e2b/network.ts). Absent where the provider has no such setting (Docker).
+	 */
+	egress?(): EgressMode;
 	/** Every profile, available or not, in the order the picker shows them. */
 	profiles(): SandboxProfile[];
 	profile(id: SandboxProfileId): SandboxProfile;
@@ -352,11 +365,20 @@ export interface TurnControl {
 export interface RunTurnInput {
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
 	mode?: string;
+	planFirst?: boolean;
 	/** Efforts already observed on other models in this session. */
 	harnessModels?: ModelList | null;
 	onEffortFallback?: (fallback: string | null) => void;
 	/** The effective ACP mode and choices on open. fallbackFrom names a requested mode the agent no longer offers. */
 	onAcpModes?: (mode: string, offered: SessionMode[], fallbackFrom?: string) => void;
+	/** A note for the timeline from the platform's side of the ACP link, such as a refused permission request. */
+	onAcpNote?: (text: string) => void;
+	/**
+	 * A work item's turn, which nobody watches: the requested `mode` must be offered (no fallback to the
+	 * agent's current one), and a permission the agent still asks for is allowed once, as Windlass's
+	 * approval "full" would run it, instead of rejected. Machine harnesses run only in the hardened container.
+	 */
+	unattended?: boolean;
 	prompt: string;
 	/** Windlass's own session to continue (`session/resume`); omitted for the first turn. */
 	windlassSessionId?: string;
@@ -493,7 +515,13 @@ export interface TurnChecks {
 }
 
 export interface RunTurnResult {
-	acp?: { stopReason: string | null; usage: AcpContext | null; models: ModelList | null };
+	acp?: {
+		stopReason: string | null; usage: AcpContext | null; models: ModelList | null;
+		/** The turn's tokens from the `session/prompt` answer; null where the agent reported none. */
+		tokens?: TurnUsage | null;
+		/** The Claude 5h window at the turn's first usage update; `usage.fiveHourUsedPct` is its last. */
+		fiveHourAtStart?: number;
+	};
 	/** Whether the ACP session could be continued when a previous id was supplied. */
 	resumed?: boolean;
 	/** The exit code of the Windlass process that served the turn: 0 after any orderly end, whatever the turn's outcome; null when it was killed. */

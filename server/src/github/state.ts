@@ -28,6 +28,7 @@ import { isGithubId } from "./ids.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 
+export const MAX_GITHUB_ACCOUNTS = 30;
 export const STATE_TTL_MS = 10 * 60 * 1000;
 export const TICKET_TTL_MS = 5 * 60 * 1000;
 
@@ -54,6 +55,8 @@ export interface TicketPayload extends ConfirmedConnection {
 	uid: string;
 	nonce: string;
 	exp: number;
+	/** When GitHub was asked for the installations. A removal recorded after this wins over the list. */
+	readAt: number;
 }
 
 function encode(payload: StatePayload | TicketPayload): string {
@@ -83,8 +86,8 @@ export function verifyState(token: unknown, now = Date.now()): StatePayload | nu
 	return fields as unknown as StatePayload;
 }
 
-export function issueTicket(uid: string, confirmed: ConfirmedConnection, now = Date.now()): string {
-	return encode({ k: "ticket", uid, nonce: newNonce(), exp: now + TICKET_TTL_MS, user: confirmed.user, installations: confirmed.installations });
+export function issueTicket(uid: string, confirmed: ConfirmedConnection, now = Date.now(), readAt = now): string {
+	return encode({ k: "ticket", uid, nonce: newNonce(), exp: now + TICKET_TTL_MS, readAt, user: confirmed.user, installations: confirmed.installations });
 }
 
 /** The ticket's payload, or null when it is malformed, forged or expired. Whose it is, the caller checks. */
@@ -92,7 +95,7 @@ export function verifyTicket(token: unknown, now = Date.now()): TicketPayload | 
 	const fields = decode(token, now);
 	if (!fields || fields.k !== "ticket") return null;
 	const user = fields.user as { id?: unknown; login?: unknown } | undefined;
-	if (typeof user !== "object" || user === null || !isGithubId(user.id) || typeof user.login !== "string" || !Array.isArray(fields.installations)) return null;
+	if (typeof user !== "object" || user === null || !isGithubId(user.id) || typeof user.login !== "string" || !Array.isArray(fields.installations) || typeof fields.readAt !== "number") return null;
 	return fields as unknown as TicketPayload;
 }
 

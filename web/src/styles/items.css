@@ -227,6 +227,16 @@
 .item-criteria {
 	min-height: 72px;
 }
+/* The model and effort, side by side; one above the other on a phone. */
+.item-agent-fields {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 8px 12px;
+}
+.item-agent-fields > .field-note {
+	grid-column: 1 / -1;
+	margin: 0;
+}
 .item-scopes {
 	display: grid;
 	gap: 10px;
@@ -1120,6 +1130,10 @@
 @media (min-width: 761px) {
 	.factory-lane-needs .item-row {
 		grid-template-columns: 22px minmax(0, 1fr) auto 52px;
+	}
+	/* An ended list is in the order items were filed: its rows say the day, which needs a wider column than "5m ago". */
+	.item-row.item-row-filed {
+		grid-template-columns: 22px minmax(0, 1fr) auto 142px 100px;
 	}
 }
 

@@ -16,7 +16,12 @@
  *      process, a file only its owner can read, the timeout being pushed out and set back;
  *   6. pauses the sandbox, resumes it, and runs a second turn that continues the first one's Windlass
  *      session from the microVM's own disk;
- *   7. destroys it.
+ *   7. destroys it;
+ *   8. with WLP_E2B_CHECK_NETWORK=1, the network modes (server/src/sandbox/e2b/network.ts): one short sandbox
+ *      in `restricted` and then one in `none`, never two at once, no turn in either. In each: the platform's
+ *      own clone of a public repository (github.com), the model API, a host that is not allowed (by name,
+ *      by address, over plain HTTP), a lookup, and what 169.254.169.254 answers; `restricted` is paused and
+ *      resumed once to see the configuration and the names hold.
  *
  * Limits on itself:
  *
@@ -38,8 +43,10 @@ import type { AccessTokens, ChatgptLogins, RunTurnResult, ScriptedModel, TurnQue
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bSandboxInfo } from "../server/src/sandbox/e2b/client.js";
 import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
+import { readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
+import { cloneWithToken } from "../server/src/github/git.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
-import { type E2bSandboxHandle, META } from "../server/src/sandbox/e2b/sandboxes.js";
+import { type E2bSandboxHandle, E2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { BWRAP_PROBE } from "../server/src/sandbox/provider.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
 
@@ -292,8 +299,53 @@ async function main(): Promise<number> {
 		});
 	};
 
+	const network = async (): Promise<void> => {
+		if (process.env.WLP_E2B_CHECK_NETWORK !== "1") return;
+		for (const mode of ["restricted", "none"] as const) {
+			await step(`network: ${mode}`, async () => {
+				const boxes = new E2bSandboxes(client, { ...settings, network: readE2bNetwork({ WLP_E2B_NETWORK: mode, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
+				const id = await boxes.create({ uid: "check", sessionId: `network-${mode}`, profile: "e2b" });
+				runs();
+				try {
+					const sh = async (handle: E2bSandboxHandle, script: string) => {
+						const result = await handle.exec(["sh", "-c", script], { timeoutMs: 60_000 });
+						return `${result.stdout}${result.stderr}`.trim().replace(/\s+/g, " ").slice(0, 300);
+					};
+					const probe = async (handle: E2bSandboxHandle, when: string) => {
+						const model = await sh(handle, "curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://api.openai.com/v1/models");
+						const other = await sh(handle, "curl -sS --max-time 15 https://example.com/ | head -c 200; echo exit=$?");
+						const direct = await sh(handle, "curl -sS --max-time 15 --resolve example.com:443:93.184.215.14 https://example.com/ | head -c 200; echo exit=$?");
+						const plain = await sh(handle, "curl -sS --max-time 15 http://example.com/ | head -c 200; echo exit=$?");
+						const lookup = await sh(handle, "getent hosts example.com; echo exit=$?");
+						const github = await sh(handle, "curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://github.com/; echo");
+						const said = `model ${model} | github ${github} | other ${other} | direct ${direct} | plain ${plain} | lookup ${lookup}`;
+						expect(`${mode}${when}: the model API answers (401 without a key)`, model === "401", said);
+						expect(`${mode}${when}: example.com is not reached, by name, by address or over plain HTTP`, ![other, direct, plain].some((text) => text.includes("Example Domain")), said);
+						expect(`${mode}${when}: an unlisted name does not resolve`, /exit=[1-9]/.test(lookup), said);
+						expect(`${mode}${when}: github.com is ${mode === "restricted" ? "" : "not "}reachable`, mode === "restricted" ? /^(200|301|302)/.test(github) : !/^(200|301|302)/.test(github), said);
+						console.log(`      169.254.169.254 answers: ${await sh(handle, "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://169.254.169.254/; echo")} (the microVM's own Firecracker metadata service, by E2B's documentation)`);
+					};
+					let handle = (await boxes.connect(id)) as E2bSandboxHandle;
+					const cloned = await cloneWithToken(handle, "", { url: "https://github.com/octocat/Hello-World.git", branch: "master", directory: "hello" });
+					expect(`${mode}: the platform's own clone ${mode === "restricted" ? "works" : "fails"}`, cloned.ok === (mode === "restricted"), `${cloned.failure ?? "ok"} ${cloned.said}`.trim());
+					await probe(handle, "");
+					if (mode === "restricted") {
+						await boxes.suspend(id);
+						stops();
+						handle = (await boxes.connect(id)) as E2bSandboxHandle;
+						runs();
+						await probe(handle, ", after a pause and resume");
+					}
+				} finally {
+					await boxes.destroy(id);
+					stops();
+				}
+			});
+		}
+	};
+
 	try {
-		const outcome = await Promise.race([work(), limit]);
+		const outcome = await Promise.race([work().then(network), limit]);
 		if (outcome === "limit") fail("the check finished within its time limit", `stopped after ${Math.round(limitMs / 1000)} s; its sandbox is removed below`);
 	} finally {
 		clearTimeout(timer);

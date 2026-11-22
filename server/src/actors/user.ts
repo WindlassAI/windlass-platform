@@ -84,7 +84,7 @@ import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
-import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
+import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -130,17 +130,18 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { setGithubInstallations, updateGithubAccount } from "./github-account.js";
+import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
 import type { StoredRepository } from "../github/publish.js";
-import { GithubProblem, type StoredConnection, forgetGithubCaches, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
-import { STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
+import { GithubProblem, type StoredConnection, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
+import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { machineHarnesses, initialHarnessModels } from "../sandbox/harnesses.js";
-import { AccountModels, MODELS_TABLE, ModelProblem, chosenModel, standInModels } from "../account-models.js";
+import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
+import { itemHarnessProblem, itemSignInMessage, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
@@ -160,6 +161,7 @@ import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
+import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -397,8 +399,7 @@ async function rememberProfile(c: UserCtx, profile: UserProfile): Promise<void> 
 // GitHub
 // ---------------------------------------------------------------------------------------------
 
-/** How many accounts one connection keeps, and how many connections may be begun and left unfinished. */
-const MAX_GITHUB_ACCOUNTS = 30;
+/** How many connections may be begun and left unfinished. */
 const MAX_GITHUB_PENDING = 20;
 
 /** The deployment's GitHub App, or a UserError: without one there is nothing to connect. */
@@ -411,19 +412,6 @@ function requireGithub(): GithubApp {
 function requireConnection(c: { vars: UserVars }): StoredConnection {
 	if (!c.vars.github) throw new UserError("GitHub is not connected. Connect GitHub first.", { code: "github_not_connected" });
 	return c.vars.github;
-}
-
-function saveGithubConnection(c: UserCtx & { client(): any }, uid: string, next: StoredConnection | null) {
-	const write = c.vars.githubWriting.then(() => updateGithubAccount(c, uid, c.vars.github, next, async () => {
-		if (next) {
-			await c.db.execute("INSERT OR REPLACE INTO github (id, connection, updated_at) VALUES (1, ?, ?)", JSON.stringify(next), next.connectedAt);
-		} else {
-			await c.db.execute("DELETE FROM github");
-		}
-		c.vars.github = next;
-	}));
-	c.vars.githubWriting = write.catch(() => {});
-	return write;
 }
 
 function githubStatus(vars: UserVars): GithubStatus {
@@ -722,7 +710,7 @@ async function accountView(db: RawAccess): Promise<AccountSettings> {
 		defaults,
 		lastStart,
 		servers: servers.map((server) => listedServer(server, secrets)),
-		serverReach: personalServerReach(sandboxes.profiles()),
+		serverReach: personalServerReach(sandboxes.profiles(), sandboxes.egress?.()),
 		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
 	};
 }
@@ -963,11 +951,13 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
 	const size = item?.size ?? input.size ?? 1;
 	const harness = input.harness === undefined ? "windlass" : input.harness;
-	if (harness !== "windlass" && harness !== "claude" && harness !== "opencode") throw new UserError("Choose an available harness.", { code: "bad_input" });
+	if (knownHarness(harness) === null) throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
-		if (item) throw new UserError("Work items and their reviewers run only with Windlass.", { code: "bad_input" });
+		if (item?.role === "reviewer") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
+		const notForItems = item ? itemHarnessProblem(harness) : null;
+		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
-		if (input.profile !== "docker-hardened") throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
+		if (input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
 		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
 	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
@@ -1015,8 +1005,12 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const machine = place.kind === "machine" ? await launchMachineProfiles(c.db, place.machineId) : null;
 		if (size > 1 && !machine?.slots) throw new UserError("Choose a machine reporting slots for a large sandbox.", { code: "bad_input" });
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
+		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
+		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
+		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
+		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -1028,13 +1022,17 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
 		const options = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
 		if (offered?.optionsDigest && !options) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
-		const modes = initialSessionModes(chosen.id, harness, !!item, options?.modes);
+		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
+			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
+		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, offered?.modes ?? []) : options?.modes);
 		if (input.mode !== undefined) {
-			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
+			if (typeof input.mode !== "string" || !input.mode.trim() || ((harness === "windlass" || harness === "codex") && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
+		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
+		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
 
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
@@ -1060,7 +1058,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }) } } : {}),
 			...(!item && size > 1 && { size }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
@@ -1068,8 +1066,9 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			harness,
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
-			mode: input.mode,
-			...(options && { harnessOptions: options }),
+			mode: harness === "codex" ? modes.mode : input.mode,
+			...(harness === "codex" && {codexModes:modes.availableModes}),
+			...(options && {harnessOptions:options}),
 			model,
 			repoUrl,
 			repo,
@@ -1218,6 +1217,9 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			await db.execute("DROP TABLE IF EXISTS github_grant");
+			// A retry series for the webhook directories after a failed update (user-github.ts).
+			await db.execute(GITHUB_SYNC_TABLE);
 			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
 			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
 			await db.execute(`
@@ -1398,8 +1400,9 @@ export const user = actor({
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
 			try {
-				if (connection.webhookLinked) await setGithubInstallations(c, c.key[0], connection.installations.map(i => i.id));
-				else await saveGithubConnection(c, c.key[0], { ...connection, webhookLinked: true });
+				// A series whose next try was set and not stored would block every later one: wake starts afresh.
+				await c.db.execute("DELETE FROM github_sync");
+				await syncGithubWebhooks(c, c.key[0]);
 			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
 		}
 		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
@@ -1501,6 +1504,7 @@ export const user = actor({
 		itemAttachmentLinks: (c, input: string) => itemActions.itemAttachmentLinks(c, input),
 		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
 		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
+		itemFeed: (c): ItemFeed => itemActions.itemFeed(c),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
@@ -1752,7 +1756,7 @@ export const user = actor({
 				installations: confirmed.installations.slice(0, MAX_GITHUB_ACCOUNTS).map(({ id, account, htmlUrl }) => ({ id, account: { id: account.id, login: account.login, type: account.type }, htmlUrl })),
 				connectedAt: Date.now(),
 			};
-			await saveGithubConnection(c, profile.uid, connection);
+			await replaceGithubConnection(c, profile.uid, connection, confirmed.readAt);
 			c.vars.reached = true;
 			console.log(`[wlp] github.connected uid=${profile.uid} github=${connection.user.login} installations=${connection.installations.map((installation) => installation.id).join(",")}`);
 			return githubStatus(c.vars);
@@ -1766,7 +1770,7 @@ export const user = actor({
 			// on the list until they would have expired: one of them must not bring the connection back.
 			await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state'");
 			const wasConnected = c.vars.github !== null;
-			await saveGithubConnection(c, profile.uid, null);
+			await replaceGithubConnection(c, profile.uid, null);
 			await dropHostedSnapshots(profile.uid);
 			if (wasConnected) console.log(`[wlp] github.disconnected uid=${profile.uid}`);
 			return githubStatus(c.vars);
@@ -1779,8 +1783,7 @@ export const user = actor({
 			if (typeof query !== "string" || query.length > 200) throw new UserError("Search for part of a repository's name.", { code: "bad_input" });
 			try {
 				// Asked for anew: somebody who has just added a repository at GitHub wants to see it.
-				if (fresh === true) forgetGithubCaches();
-				return await listRepositories(app, connection, query);
+				return await listRepositories(app, fresh === true ? { ...connection, refreshedAt: Date.now() } : connection, query);
 			} catch (error) {
 				throw githubError(c.log, error, "The repositories could not be listed. Try again.");
 			}
@@ -2201,6 +2204,16 @@ export const user = actor({
 			const nonce = newNonce();
 			await rememberPending(c, nonce, null);
 			return { state: issueState(c.key[0]!, nonce, String(origin)) };
+		},
+
+		internalUpdateGithubInstallation: async (c, change: InstallationChange) => {
+			requireServiceFor(c, "call");
+			await updateGithubInstallation(c, c.key[0], change);
+		},
+
+		[GITHUB_SYNC.action]: async (c, attempt: number) => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			await retryGithubSync(c, c.key[0]!, c.scheduledFire.id, attempt);
 		},
 
 		/** The connection, for a session that is about to clone or push. */

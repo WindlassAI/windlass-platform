@@ -44,7 +44,7 @@ function connection(sandbox: Sandbox): E2bConnection {
 				// E2B's own limit on a command is 60 s by default and kills it; a turn's engine runs for as long as the turn.
 				timeoutMs: 0,
 				requestTimeoutMs: REQUEST_TIMEOUT_MS,
-				user: options.gitUser ? "nobody" : USER,
+				user: options.root ? "root" : options.gitUser ? "nobody" : USER,
 				cwd: options.cwd,
 				envs: options.envs,
 				stdin: options.stdin,
@@ -86,7 +86,7 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 		async create(input) {
 			try {
 				// `autoResume: false`: a paused sandbox is started by `connect` and by nothing else, so the limit on running sandboxes is this layer's to keep.
-				return connection(await Sandbox.create(input.template, { ...api, timeoutMs: input.timeoutMs, metadata: input.metadata, envs: input.envs, lifecycle: { onTimeout: input.onTimeout, autoResume: false } }));
+				return connection(await Sandbox.create(input.template, { ...api, timeoutMs: input.timeoutMs, metadata: input.metadata, envs: input.envs, lifecycle: { onTimeout: input.onTimeout, autoResume: false }, ...(input.network ? { network: { ...input.network } } : {}) }));
 			} catch (error) {
 				throw translated(error);
 			}
@@ -132,6 +132,14 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 				return await Sandbox.pause(sandboxId, api);
 			} catch (error) {
 				if (error instanceof NotFoundError) return false;
+				throw translated(error);
+			}
+		},
+		async updateNetwork(sandboxId, network) {
+			try {
+				// The update replaces the whole configuration; an empty one clears it (E2B's default).
+				await Sandbox.updateNetwork(sandboxId, network ? { ...network } : {}, api);
+			} catch (error) {
 				throw translated(error);
 			}
 		},

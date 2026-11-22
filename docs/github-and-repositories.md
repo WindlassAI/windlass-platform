@@ -65,6 +65,37 @@ lasts ten minutes, and works once. Since a state alone would let someone start a
 finish it, the callback route records nothing itself: it hands the browser a signed ticket in the fragment,
 which only the `user` actor of the named user takes, from a caller signed in as that user, once.
 
+Signed `installation.created`, `installation.new_permissions_accepted`, `installation.unsuspend`, and
+`installation_repositories.added` deliveries can add an installation after connect. The platform reads its
+current account and suspension state from GitHub. An installation on a personal account attaches only to
+connections whose stored GitHub user ID is that account's owner, whoever sent the event. An organization
+installation attaches to connections whose stored GitHub user ID matches the sender. Repository permission
+checks still apply. Repeated deliveries with the same GUID share one inbox entry.
+
+An uninstall or suspension drops the installation from every linked user. `installation_repositories.removed`
+keeps the installation and marks the user's connection refreshed, so every server discards its older lists
+and permission answers. The next read from GitHub no longer lists the removed repositories, and an
+installation token cannot reach them. A session that already cloned one keeps its clone and local commits,
+but can no longer fetch or push it. A connection that is not linked in the webhook directory yet relies on
+its cached lists expiring instead. **Reload** in the picker reads the repositories and permissions of the
+user's known installations with installation tokens. **Reconnect GitHub** discovers other installations the
+user can reach, including an organization installation someone else made.
+
+The webhook directory (`githubHooks`) records each uninstall or suspension with the time its delivery was
+received. It records a later activation the same way, and the newer record wins. Linking a user to
+installations happens in the same actor and refuses one that is recorded as removed. A connection made from
+a ticket keeps an installation only when GitHub listed it more than a minute after its last recorded removal.
+So when a user connects while an uninstall is being delivered, the result does not depend on the order. If
+the removal is recorded first, the link refuses the installation and the user's connection drops it. If the
+link is made first, the removal finds the user and drops it. A suspension is checked against GitHub's current
+state before it is recorded, so one delivered late, after its unsuspend, changes nothing. The order relies on
+the servers' clocks agreeing to within a minute; on one host they do.
+
+A user's connection is saved first and the directories are updated after. If a directory update fails after
+the save, for example while recording a removal, the `user` actor retries it on a schedule: after 15 seconds,
+then 1, 4, 15 and 60 minutes. After the last try it waits for the actor's next wake. The retry state is stored
+in the actor, so a retry pending when the actor stops still runs.
+
 ### Who may do what
 
 GitHub lists an installation for anyone who can open one of its repositories, so an organization member or a
@@ -159,7 +190,7 @@ is asked for.
 | Pull request review | feedback: a submitted review that requests changes (with its line comments), or a comment-only review addressed to the App; an approval adds a line to the item's log |
 | Pull request review comment | feedback: a line comment addressed to the App |
 | Check run, Check suite, Status | the item notices CI ending at once |
-| `installation`, `installation_repositories` | logged. GitHub sends them to every App; they are not subscribed |
+| `installation`, `installation_repositories` | update [installation access](#whose-installation-it-is). GitHub sends them to every App |
 
 Feedback counts only from the item's own person (the GitHub account linked to the item's Windlass account) and
 from people GitHub reports as having write access. The association in the payload is checked first: a sender
@@ -187,6 +218,86 @@ event subscriptions.
 
 Until then, no delivery comes. An item in review still picks up reviews and comments when it polls its pull
 request: every 30 minutes with a webhook, 10 without.
+
+### Docker clone mirrors
+
+For connected GitHub repositories, the first successful clone can seed a bare Git mirror.
+On later clones Git negotiates with GitHub using the mirror as a local object reference
+(`--reference-if-able --dissociate`). GitHub supplies the current refs, including branch
+deletions. The transport checks the resulting clone with `git fsck --connectivity-only` and
+checks for alternates before copying it to the workspace. The session records the base through
+the same independent GitHub confirmation used by a plain clone.
+
+**What is trusted.** A clone takes objects from the mirror by their SHA-1 names, so the mirror
+must hold no object whose content differs from its name. Two rules give that:
+
+- Every session mounts its slot read-only. No process in a session container, the agent or
+  the Git transport UID (65534), can write, rename or remove anything in a slot.
+- Only a save helper outside every session writes a slot, and it rehashes every object first.
+  The helper takes the clone's staged refs and objects as a tar stream from `docker cp`.
+  It keeps only HEAD, packed-refs, packs with their indexes, and loose objects. It writes them
+  under fresh names with its own config, so no alternates, hooks or other settings. It runs
+  `git fsck --full` on the result and installs it only if that passes.
+
+So a forged object under a genuine SHA, staged by anything that controls the session's
+transport UID, fails the full fsck. It never reaches a later clone, and setup never runs on it.
+That leaves two things a session can do to its own slot. It can put in valid but unneeded
+objects or refs, up to the 512 MiB cap; a later clone only takes the objects GitHub's
+negotiation asks for. It can also keep a mirror small or stale, which only makes later clones
+slower. What remains trusted is Git's SHA-1 object naming with collision detection, as for any
+fetch, plus the Docker daemon and the `git` and Python of the pinned base sandbox image. That
+image runs the allocator and the save helper, never a session's own image, which for a prepared
+sandbox is a commit taken after setup ran. The reference clone's
+connectivity-only check is enough under these rules: the objects were rehashed when they were
+installed, and nothing in a session can change them afterwards. A slot missing objects fails
+that check, and the clone falls back to the plain path.
+
+A Docker daemon keeps up to 16 slots of 512 MiB each in `wlp-git-mirrors-v2`. Each slot is
+keyed by deployment, machine, platform user and immutable GitHub repository ID. Hosted Docker
+keeps the mirrors' deployment identity in its own file in the state directory
+(`git-mirror-deployment`), so mirrors work with snapshots disabled and never create the snapshot
+identity that turns snapshot sweeps on. A runner uses its paired machine identity and user. A session gets just
+its slot, read-only, as a volume subpath. UID 65534 owns that directory with mode 0700. The
+volume stays out of prepared images. E2B sessions have no shared Docker volume and clone directly.
+
+A short-lived allocator with networking disabled mounts the store and admits a slot. It waits
+up to 3 s for another admission. It evicts the least recently used slot that is unlocked and
+that no session container names. Stopped containers count, because Docker resolves the subpath
+again on every start. Neither is a slot admitted in the last two minutes evicted, since its
+container may not exist yet. When every slot is in use, the session clones without a mirror. A
+slot that a container already names is mounted without running the allocator. Should a stopped
+container's slot be gone anyway, its start puts back an empty slot and tries again. Below the
+free-space floor that snapshots keep (15 GB), the allocator admits nothing and evicts unused slots.
+
+Refresh happens on demand. After a successful clone whose base GitHub confirmed, the transport
+stages its refs and hard links to its objects in its own private directory in the session's
+`/tmp`. It skips this when the refs match the slot's mirror. The server, or the runner on a
+machine, then starts the save helper without waiting for it: networking disabled, UID 65534,
+no capabilities, only its own slot mounted (as a volume subpath), 1 GiB of memory and swap, and
+its own 9-minute deadline inside the container. Saves run one per process at a time. A save still
+waiting to start gives way to a later clone's stage for the same slot, so a slow save holds up
+each slot once. The helper compares the refs again while it holds the slot's save lock, and
+leaves a mirror with the same HEAD and packed-refs alone unless the clone marked its stage for
+repair (the mirror had failed that clone). The stage is removed afterwards, and any stage
+left by an interrupted save is removed at the start of the next clone. A save needs the
+free-space floor plus 512 MiB free, because the old and new copies coexist until the swap. It
+clears any `incoming` or `incoming.*` left behind, copies to `incoming.<n>` and waits for readers, which share the slot lock. Then it renames
+`repo.git` to `old.<n>` and `incoming.<n>` to `repo.git`, and removes `old.*`. A save killed
+between the two renames is repaired by the next one. A session's per-turn process sweep cannot
+touch a save, since nothing of it runs in the session. A failed or killed save leaves the
+previous mirror in place. A single-branch review clone only seeds an empty slot and never
+replaces a full mirror.
+
+A busy or missing mirror takes the plain clone path. A reference attempt that receives nothing
+from GitHub for 8 seconds is abandoned. So is one whose mirror fails the lock, config,
+alternates or connectivity check. Its token is revoked and a plain clone gets a fresh
+repository-scoped read token. Any other failure (a timeout, a refused token, a missing
+repository or branch) is reported as it is, without a second clone. The deadline does not cover
+local work, so a large repository does not fall back for being large. A runner reports
+mirror support only to a server whose control welcome names the `git-mirrors` capability. A
+server names its capabilities only to a runner whose hello reports 0.3.0 or later, since older
+runners refuse a welcome with fields they do not know. A runner or Docker daemon without
+support takes the plain clone path.
 
 ### Enable the Factory check on GitHub
 
@@ -310,6 +421,7 @@ what is known of GitHub's, not copied from a run.
 ```sh
 cd server && npx tsx ../scripts/github-check.ts           # the GitHub code and real git against the stand-in; also the agent's requests, tool declarations, publishWork and the agent's push
 cd server && npx tsx ../scripts/github-check.ts --docker  # the git commands again in a container of the sandbox image
+cd server && WLP_CHECK_SECTIONS=mirror pnpm exec tsx ../scripts/github-check.ts --docker --mirror-benchmark  # the mirror sections, and a 177 MiB repository
 cd server && pnpm e2e                                     # its last section: the route and the actors, on the fake layer
 ```
 

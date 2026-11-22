@@ -518,6 +518,17 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		expect(await client.user(who).github()).toMatchObject({ connection: { login: expect.any(String) } });
 	});
 
+	it("offers reconnect in the picker and opens GitHub for the connected user", async () => {
+		popupOpens();
+		await show();
+		open("repo");
+		expect(pop().textContent).toContain("Installed by someone else? Reconnect GitHub to pick it up.");
+		press("Reconnect GitHub");
+		await settle();
+		expect(opened?.location.href).toContain(`#github=mock.${ada.profile.uid}`);
+		await popupAnswers(`#github=mock.${ada.profile.uid}`);
+	});
+
 	it("says so when the window is closed before GitHub answered, and connects nothing", async () => {
 		popupOpens();
 		await show({ who });

@@ -664,6 +664,7 @@ function machineReport(name = "Mac", machineId = macId, overrides: Partial<impor
 		turns: { running: 0, queued: 0, max: 4 }, host: { cpus: 64, sandboxCpus: 1, memoryBytes: 128 * GiB, memoryFreeBytes: 80 * GiB, load1: 0 }, ...overrides };
 }
 import { plannerMachines, machineDetails } from "../server/src/machines/details.js";
+import { choosePlacement } from "../server/src/factory/placement.js";
 import type { MachineSummary, PlacementNeeds } from "../server/src/contract.js";
 function placementFeature(machines: MachineSummary[], needs: PlacementNeeds = {}, allow: string[] = [], overflow = false, prefer = "Mac") {
 	const plan = proposal();
@@ -717,7 +718,7 @@ test("placement 2 refuses approval for missing screenshots, tags, profile, egres
 	const mac = machineReport();
 	assert.throws(() => placementFeature([{ ...mac, screenshots: false }], { screenshots: true }), /screenshot/i);
 	for (const [needs, reason] of [[{ tags: ["gpu"] }, /gpu/], [{ profile: "docker-windlass-sandbox" }, /profile/],
-		[{ egress: "open" }, /egress/], [{ harness: "claude" }, /sign.in|signed/i]] as const)
+		[{ egress: "open" }, /egress/], [{ harness: "claude" }, /only with Windlass/]] as const)
 		assert.throws(() => placementFeature([mac], needs as PlacementNeeds), reason);
 	assert.doesNotThrow(() => placementFeature([mac], { tags: ["build", "os:darwin", "arch:arm64", "screenshots", "harness:windlass"] }));
 });
@@ -988,9 +989,32 @@ test("hosted requires an approved route and a deployment profile", () => {
 		inventory: { machines: plannerMachines([mac]), hostedProfiles: [] } }), /hosted.*profile/);
 });
 
-test("a signed-in Claude installation cannot silently launch a Windlass child", () => {
-	const mac = machineReport("Mac", macId, { harnesses: [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }] });
-	assert.throws(() => placementFeature([mac], { harness: "claude" }), /work items.*Windlass/i);
+test("a Plan-first subtask that asks for Claude Code or OpenCode is refused, in the plan and in placement", () => {
+	const both = [{ id: "claude", adapter: "fixture", image: "fixture", signIn: "token" }, { id: "opencode", adapter: "fixture", image: "fixture", signIn: "token" }] as const;
+	const mac = machineReport("Mac", macId, { harnesses: [...both], profiles: [{ id: "docker-windlass-sandbox", available: true }, { id: "docker-hardened", available: true }] as never, allowedProfiles: ["docker-windlass-sandbox", "docker-hardened"] });
+	for (const [harness, name] of [["claude", "Claude Code"], ["opencode", "OpenCode"]] as const) {
+		// Plan validation: a planner (which item text can steer) cannot pick an agent that works without asking.
+		const p = proposal();
+		p.subtasks[0].needs = { harness };
+		assert.throws(() => proposed(p), new RegExp(`runs only with Windlass, not ${name}`));
+		assert.throws(() => placementFeature([mac], { harness }), new RegExp(`runs only with Windlass, not ${name}`));
+		// Placement, for a plan that did not come through validation: refused even on a machine signed into it, online or never reported.
+		const task = { ...proposal().subtasks[0], place: { prefer: "Mac", reason: "here" }, needs: { harness } };
+		const route = { preferred: { kind: "machine" as const, machineId: macId }, alternatives: [] };
+		for (const machine of [mac, machineReport("Mac", macId, { status: "offline", egress: undefined, harnesses: [...both] })]) {
+			const fit = choosePlacement(task, route, { machines: plannerMachines([machine]), hostedProfiles: ["docker-hardened"] });
+			assert.equal(fit.decision, undefined);
+			assert.match(String(fit.refused), new RegExp(`runs only with Windlass, not ${name}`));
+			assert.equal(fit.permanent, true);
+		}
+	}
+	// Windlass children keep the machine's first allowed profile and name no harness.
+	const windlass = dispatch(placementFeature([mac], { harness: "windlass" }), [mac]).jobs![0].placement;
+	assert.equal(windlass?.harness, undefined);
+	assert.equal(windlass?.profile, "docker-windlass-sandbox");
+	const p = proposal();
+	p.subtasks[0].needs = { harness: "nonesuch" as never };
+	assert.throws(() => proposed(p), /supported harness/);
 });
 
 test("5c.5 a Windlass limit still gates every approved machine at child creation", async t => {

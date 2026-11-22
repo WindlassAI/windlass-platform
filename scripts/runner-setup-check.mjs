@@ -17,7 +17,7 @@ for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'dec
 	const registry = 'ghcr.io/windlassai/';
 	const runner = registry+'windlass-runner@'+pin;
 	const ref = role => registry+'windlass-platform-'+role+'@'+pin;
-	const pins = [ref('sandbox'), ref('sandbox-shots'), 'claude='+ref('claude'), 'opencode='+ref('opencode')];
+	const pins = [ref('sandbox'), ref('sandbox-shots'), 'claude='+ref('claude'), 'opencode='+ref('opencode'),'codex='+ref('codex')];
 	const asked = [];
 	const platformRoot = generateKeyPairSync("ed25519").publicKey.export({format:"der",type:"spki"}).toString("base64");
 	let refuseSetup = false;
@@ -74,8 +74,8 @@ else if(a[0]==='run' && a.includes('--network') && a.includes('none')) {
 else process.exitCode=2;
 `,{mode:0o755});
 		const env={...process.env,PATH:dir+':'+process.env.PATH,WLP_RUNNER_STATE_DIR:state};
-		const child=spawn('script',['-qef','-c',`"${process.execPath}" --require "${preload}" "${dir}/runner.cjs" setup --platform ${origin} ${importing ? '--screenshots ' : ''}--harness claude --harness opencode`,'/dev/null'],{env,stdio:['pipe','pipe','pipe']});
-		const prompts=[['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',accept ? '' : 'n'],['(opencode) API key: import?',accept ? '' : 'n'],["can't be shared safely",'n']] : []),...(!accept ? [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']] : [])];
+		const child=spawn('script',['-qef','-c',`"${process.execPath}" --require "${preload}" "${dir}/runner.cjs" setup --platform ${origin} ${importing ? '--screenshots ' : ''}--harness codex --harness claude --harness opencode`,'/dev/null'],{env,stdio:['pipe','pipe','pipe']});
+		const prompts=[['Codex: sign in now?','n'],['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',accept ? '' : 'n'],['(opencode) API key: import?',accept ? '' : 'n'],["can't be shared safely",'n']] : []),...(!accept ? [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']] : [])];
 		let output='', step=0;
 		child.stdout.on('data',chunk=>{output+=chunk;if(step<prompts.length && output.includes(prompts[step][0])) child.stdin.write(prompts[step++][1]+'\n');});
 		const timer=setTimeout(()=>child.kill('SIGTERM'),45000);
@@ -104,8 +104,8 @@ else process.exitCode=2;
 		}
 		if (importing) assert.equal(await readFile(source,'utf8'),fixture);
 		assert.doesNotMatch(output,/fixture-existing-|fixture-foreign-|\/import\/opencode|\/fixture\/source/);
-		assert.ok(output.includes((importing ? pin : runner)+' run --platform '+origin+(importing ? ' --screenshots' : '')+' --harness claude --harness opencode'), 'printed service command: '+output.split('Start the runner on this machine:').at(-1));
-		for (const role of ['sandbox', 'claude', 'opencode', ...(importing ? ['sandbox-shots'] : [])]) {
+		assert.ok(output.includes((importing ? pin : runner)+' run --platform '+origin+(importing ? ' --screenshots' : '')+' --harness codex --harness claude --harness opencode'), 'printed service command: '+output.split('Start the runner on this machine:').at(-1));
+		for (const role of ['sandbox', 'claude', 'opencode', 'codex', ...(importing ? ['sandbox-shots'] : [])]) {
 			const progress = output.indexOf('Pull progress windlass-platform-'+role+'@');
 			assert.ok(progress >= 0 && progress < output.indexOf('ABCD-EFGH'), 'missing pre-pair pull progress for '+role);
 		}
@@ -131,10 +131,11 @@ else process.exitCode=2;
 			assert.doesNotMatch(error,/Claude/);
 			const published = 'registry.invalid/runner@' + pin;
 			const report = () => JSON.parse(execFileSync(process.execPath, [bundle,'capabilities'], {env:{...env,WLP_RUNNER_IMAGE:published}}));
-			assert.deepEqual(report(), { image:published, harnesses:['claude','opencode'] });
+			assert.deepEqual(report(), { image:published, harnesses:['claude','opencode','codex'] });
 			execFileSync(process.execPath,[join(root,'runner/bundle.mjs'),pin,bundle,'claude='+pin]);
 			assert.deepEqual(report(), { image:published, harnesses:['claude'] });
 			const run = (...args) => promisify(execFile)(process.execPath, ['--require',preload,bundle,...args], {env, timeout:10000});
+			await assert.rejects(run('run','--harness','codex'), /pinned Codex image/);
 			await assert.rejects(run('status','--name','example'), /with setup, run or pair/);
 			await assert.rejects(run('pair','--egress','none'), /with setup or run/);
 			refuseSetup = true;

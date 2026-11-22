@@ -3,40 +3,51 @@
  * file a new one; on the home page, the items that ask their person something ("Needs you"); on the
  * Factory page (screens/Factory.tsx), every item, grouped by what its person must do.
  *
- * The list is the user's actor's (`listItems`): read when a screen opens, replaced whenever the actor
- * says an item changed (the user's live feed, `onItems`), and read again when that feed comes back
- * after a drop, since what was said meanwhile is lost. Nothing is asked on a timer. Every sentence a
+ * The list is the user's actor's live feed (`itemFeed`): every open item and the newest filed ended
+ * ones, with counts beside them. It is read when a screen opens, replaced whenever the actor says an
+ * item changed (`onItems`), and read again when that feed comes back after a drop, since what was said
+ * meanwhile is lost. Nothing is asked on a timer. The ended items beyond come from the server a page at
+ * a time (`listItems` with a page, `useEndedPages`), on the Factory page and on a repository's. Every sentence a
  * row shows of why an item waits is the server's (`Waiting.sentence`), shown as it was written.
  *
  * Filing one, where the deployment offers machines and the user has one, says where it runs as the
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { type GithubId, type StepKind, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemMode, type ItemState, type ItemSummary } from "@contract";
+import { type GithubId, type HarnessId, type StepKind, ITEM_PAGE_DEFAULT, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemCursor, type ItemFeed, type ItemMode, type ItemState, type ItemSummary } from "@contract";
+import { byFiling, nextCursor } from "../../../server/src/item-pages";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
-import { PlaceChoice, machineUnusable } from "../components/PlaceChoice";
+import { HARNESS_PROFILE, PlaceChoice, itemHarnesses, machineUnusable } from "../components/PlaceChoice";
+import { HARNESS_NAMES } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
+import { feedCounts, type FeedFilters } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
-import { useNow } from "../state/hooks";
+import { useModels, useNow } from "../state/hooks";
+import { useCatalog } from "../components/StartComposer";
+import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 
 export interface ItemsState {
-	/** Null until it was read, and when it could not be. */
+	/** What the feed holds, open items first: every open item and the newest ended ones. Null until it was read, and when it could not be. */
 	list: ItemSummary[] | null;
+	/** The feed itself, with the counts of every item (`ItemFeed.counts`). Null as `list` is. */
+	feed: ItemFeed | null;
 	/** Why it could not be read the last time it was asked for. */
 	error: string | null;
 	reload(): void;
 }
+
+const listOf = (feed: ItemFeed): ItemSummary[] => [...feed.open, ...feed.ended];
 
 /**
  * The user's work items: read when the screen opens, then as the user's actor sends them, and again
@@ -46,18 +57,18 @@ export interface ItemsState {
 export function useItems(enabled = true): ItemsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [state, setState] = useState<{ list: ItemSummary[] | null; error: string | null }>({ list: null, error: null });
+	const [state, setState] = useState<{ list: ItemSummary[] | null; feed: ItemFeed | null; error: string | null }>({ list: null, feed: null, error: null });
 	const asked = useRef(0);
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
-		setState((now) => ({ list: now.list, error: null }));
+		setState((now) => ({ ...now, error: null }));
 		client
 			.user(auth)
-			.listItems()
+			.itemFeed()
 			.then(
-				(list) => mine === asked.current && setState({ list, error: null }),
-				(failure: unknown) => mine === asked.current && setState((now) => ({ list: now.list, error: explain(failure) })),
+				(feed) => mine === asked.current && setState({ list: listOf(feed), feed, error: null }),
+				(failure: unknown) => mine === asked.current && setState((now) => ({ ...now, error: explain(failure) })),
 			);
 	}, [client, auth, explain]);
 
@@ -67,9 +78,9 @@ export function useItems(enabled = true): ItemsState {
 		let connected = false;
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
-			onItems: (list) => {
+			onItems: (feed) => {
 				asked.current += 1;
-				setState({ list, error: null });
+				setState({ list: listOf(feed), feed, error: null });
 			},
 			onConnection: (connection) => {
 				if (connection !== "connected") return;
@@ -326,11 +337,19 @@ function RowTitle({ item }: { item: ItemSummary }) {
  * The item's agent session is part of it and is in no list of agents: the row leads to it, once the
  * item has started, as the place to see what the agent did.
  */
-export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean }) {
+/** "filed 3 Nov" this year, "filed Nov 2025" before it: an ended list is in the order items were filed, and says so. */
+export function filedDay(at: number, now: number): string {
+	const date = new Date(at);
+	const thisYear = date.getFullYear() === new Date(now).getFullYear();
+	return `filed ${date.toLocaleDateString("en-GB", thisYear ? { day: "numeric", month: "short" } : { month: "short", year: "numeric" })}`;
+}
+
+/** `filed`: the row says when the item was filed, not when it last changed (an ended list, in filing order). */
+export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
 	return (
-		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}`}>
+		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}${filed ? " item-row-filed" : ""}`}>
 			<span className="agent-glyph">
 				<ItemGlyph item={item} />
 			</span>
@@ -366,6 +385,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
+					{item.agent && item.agent.harness !== "windlass" ? <span>{HARNESS_NAMES[item.agent.harness]}</span> : null}
 					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
 					{item.state === "draft" ? null : (
 						<span>
@@ -381,36 +401,169 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 				<ItemStanding item={item} reviewer={reviewer} />
 			</div>
 			<ItemTrack item={item} reviewer={reviewer} />
-			<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
-				{relativeTime(item.updatedAt, now)}
-			</time>
+			{filed ? (
+				<time className="agent-time" dateTime={new Date(item.createdAt).toISOString()} title={`Filed ${absoluteTime(item.createdAt)}; last changed ${absoluteTime(item.updatedAt)}`}>
+					{filedDay(item.createdAt, now)}
+				</time>
+			) : (
+				<time className="agent-time" dateTime={new Date(item.updatedAt).toISOString()} title={absoluteTime(item.updatedAt)}>
+					{relativeTime(item.updatedAt, now)}
+				</time>
+			)}
 		</li>
 	);
 }
 
+// ---- the ended items, a page at a time ----------------------------------------------------------
+
+const ENDED_STATES: ReadonlySet<ItemState> = new Set(["done", "failed", "cancelled"]);
+/** Whether an item stands on or before the cursor in the list's order (filed no earlier than the cursor's item). */
+const onOrBefore = (item: ItemSummary, cursor: ItemCursor) => byFiling(item, cursor) <= 0;
+
+export interface EndedPages {
+	/** The ended items shown, newest filed first: the pages read, as the live feed has them now. */
+	items: ItemSummary[];
+	/** Whether the server has more after them. */
+	more: boolean;
+	loading: boolean;
+	error: string | null;
+	/** Reads the next page; the first again, when it could not be read. */
+	loadMore(): void;
+}
+
+/**
+ * The ended rows: the pages read, held against the live feed (`live`, under the same filters). A row
+ * the feed has shows the item as the feed has it now, and leaves once it is no longer ended; one the
+ * feed does not carry (it carries only the newest ended ones) shows as it was read. One that ended
+ * since and is filed among those shown joins them (anywhere, once `cursor` is null: the last page is in).
+ */
+export function mergeEnded(read: readonly ItemSummary[], live: readonly ItemSummary[] | null, cursor: ItemCursor | null): ItemSummary[] {
+	const current = new Map((live ?? []).map((item) => [item.id, item]));
+	const rows = new Map<string, ItemSummary>();
+	for (const item of read) {
+		const now = current.get(item.id) ?? item;
+		if (ENDED_STATES.has(now.state)) rows.set(item.id, now);
+	}
+	// Ended since, and filed among the rows shown (or anywhere, once the last page is read).
+	for (const item of live ?? []) if (ENDED_STATES.has(item.state) && !rows.has(item.id) && (cursor === null || onOrBefore(item, cursor))) rows.set(item.id, item);
+	return [...rows.values()].sort(byFiling);
+}
+
+/** The ended items, read from the server a page at a time once `open`, under the filters; other filters start again from the first page. */
+export function useEndedPages(open: boolean, filters: FeedFilters, live: readonly ItemSummary[] | null): EndedPages {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const key = `${filters.repository ?? ""}|${filters.from ?? ""}`;
+	const [state, setState] = useState<{ key: string; read: ItemSummary[]; cursor: ItemCursor | null; started: boolean; loading: boolean; error: string | null }>({ key, read: [], cursor: null, started: false, loading: false, error: null });
+	const asked = useRef(0);
+	const mine = state.key === key ? state : { key, read: [], cursor: null, started: false, loading: false, error: null };
+
+	const read = useCallback(
+		(from: ItemCursor | null, before: ItemSummary[]) => {
+			const ask = ++asked.current;
+			setState({ key, read: before, cursor: from, started: true, loading: true, error: null });
+			client
+				.user(auth)
+				.listItems({ ended: true, before: from, limit: ITEM_PAGE_DEFAULT, repository: filters.repository ?? null, source: filters.from ?? null })
+				.then(
+					(page) => ask === asked.current && setState({ key, read: [...before, ...page], cursor: nextCursor(page, ITEM_PAGE_DEFAULT), started: true, loading: false, error: null }),
+					(failure: unknown) => ask === asked.current && setState({ key, read: before, cursor: from, started: true, loading: false, error: explain(failure) }),
+				);
+		},
+		[client, auth, explain, key, filters.repository, filters.from],
+	);
+
+	// The first page, when the ended ones are unfolded, and again under other filters.
+	useEffect(() => {
+		if (open && !mine.started) read(null, []);
+	}, [open, mine.started, read]);
+	useEffect(
+		() => () => {
+			asked.current += 1;
+		},
+		[],
+	);
+
+	// Nothing is shown before the first page is in: the feed alone would draw only the newest ended items.
+	const loaded = mine.started && !(mine.read.length === 0 && (mine.loading || mine.error !== null));
+	return {
+		items: loaded ? mergeEnded(mine.read, live, mine.cursor) : [],
+		more: loaded && mine.cursor !== null,
+		loading: mine.loading,
+		error: mine.error,
+		loadMore: () => {
+			if (mine.loading) return;
+			if (mine.error !== null && mine.read.length === 0) read(null, []);
+			else if (mine.cursor !== null) read(mine.cursor, mine.read);
+		},
+	};
+}
+
+/** Under the ended rows: the way to the next page, or what is in the way of it. */
+export function EndedFoot({ pages }: { pages: EndedPages }) {
+	if (pages.loading) {
+		return (
+			<p className="agents-fold items-fold factory-more" aria-busy="true" role="status">
+				{pages.items.length === 0 ? "Reading the ended items…" : "Reading more…"}
+			</p>
+		);
+	}
+	if (pages.error !== null) {
+		return (
+			<p className="agents-fold items-fold factory-more tone-bad" role="alert">
+				{pages.error}{" "}
+				<button type="button" className="link" onClick={pages.loadMore}>
+					Try again
+				</button>
+			</p>
+		);
+	}
+	if (!pages.more) return null;
+	return (
+		<p className="agents-fold items-fold factory-more">
+			<button type="button" className="link machine-toggle" onClick={pages.loadMore}>
+				<ChevronIcon size={11} className="machine-chevron" />
+				Show {ITEM_PAGE_DEFAULT} more
+			</button>
+		</p>
+	);
+}
+
+/** "25 done, 2 failed, 3 cancelled": what a fold of ended items holds, from the feed's counts. */
+export function endedWords(counts: { done: number; failed: number; cancelled: number }): string {
+	return (["done", "failed", "cancelled"] as const)
+		.filter((state) => counts[state] > 0)
+		.map((state) => `${counts[state]} ${state}`)
+		.join(", ");
+}
+
 // ---- a repository's items -----------------------------------------------------------------------
 
-const SHOWN: ItemState[] = ["draft", "queued", "working", "waiting", "review", "failed"];
-const FOLDED: ItemState[] = ["done", "cancelled"];
+const SHOWN: ItemState[] = ["draft", "queued", "working", "waiting", "review"];
 
-function Group({ state, items, now }: { state: ItemState; items: ItemSummary[]; now: number }) {
+function Group({ name, items, now, count: said, filed = false, children }: { name: string; items: ItemSummary[]; now: number; count?: string; filed?: boolean; children?: ReactNode }) {
 	const heading = useId();
 	return (
 		<div className="items-group">
 			<h3 className="items-group-head" id={heading}>
-				{STATE_WORD[state]}
-				<span className="items-group-count">{count(items.length)}</span>
+				{name}
+				<span className="items-group-count">{said ?? count(items.length)}</span>
 			</h3>
 			<ul className="agents" aria-labelledby={heading}>
 				{items.map((item) => (
-					<ItemRow key={item.id} item={item} now={now} />
+					<ItemRow key={item.id} item={item} now={now} filed={filed} />
 				))}
 			</ul>
+			{children}
 		</div>
 	);
 }
 
-/** The "Work items" section of a repository's page, where the deployment offers them. `launchable`: new work can be filed on it now. */
+/**
+ * The "Work items" section of a repository's page, where the deployment offers them. `launchable`: new
+ * work can be filed on it now. The open items come from the live feed; the ended ones are folded, said
+ * by the feed's counts, and read from the server a page at a time once unfolded, newest filed first.
+ */
 export function RepositoryItems({ repositoryId, name, base, launchable, now }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number }) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
@@ -418,16 +571,20 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 	const [filing, setFiling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const ended = useId();
-	const mine = items.list?.filter((item) => !item.parent && item.repository.id === repositoryId) ?? null;
+	const onIt = (item: ItemSummary) => !item.parent && String(item.repository.id) === String(repositoryId);
+	const live = items.list?.filter(onIt) ?? null;
+	const mine = items.feed?.open.filter(onIt) ?? null;
+	const counts = feedCounts(items.feed, { repository: repositoryId });
+	const pages = useEndedPages(open, { repository: repositoryId }, live);
 	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
-	const folded = FOLDED.flatMap((state) => of(state));
+	const total = mine === null ? null : mine.length + counts.ended;
 	if (!offered) return null;
 
 	return (
 		<section className="usage-section" aria-labelledby="repo-items">
 			<h2 className="usage-title" id="repo-items">
 				Work items
-				{mine && mine.length > 0 ? <span className="usage-count">{mine.length}</span> : null}
+				{total !== null && total > 0 ? <span className="usage-count">{total}</span> : null}
 				<button type="button" className="link secret-add" onClick={() => setFiling(true)} disabled={!launchable} title={launchable ? undefined : "No work can be filed on this repository now"}>
 					New work item…
 				</button>
@@ -450,7 +607,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 						<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
 					</div>
 				)
-			) : mine.length === 0 ? (
+			) : total === 0 ? (
 				<p className="usage-empty">No work item on this repository yet.{launchable ? " File one with New work item." : ""}</p>
 			) : (
 				<>
@@ -460,18 +617,22 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 							<span>{items.error} What is shown may be behind.</span>
 						</p>
 					) : null}
-					{SHOWN.map((state) => (of(state).length > 0 ? <Group key={state} state={state} items={of(state)} now={now} /> : null))}
-					{folded.length > 0 ? (
+					{SHOWN.map((state) => (of(state).length > 0 ? <Group key={state} name={STATE_WORD[state]} items={of(state)} now={now} /> : null))}
+					{counts.ended > 0 ? (
 						<>
 							<p className="agents-fold items-fold">
 								<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={ended} onClick={() => setOpen((value) => !value)}>
 									<ChevronIcon size={11} className="machine-chevron" />
-									{open ? "Hide the ended ones" : `Show ${plural(folded.length, "ended item")}`}
+									{open ? "Hide the ended ones" : `Show ${plural(counts.ended, "ended item")}`}
 								</button>
-								{open ? null : <span>{FOLDED.filter((state) => of(state).length > 0).map((state) => `${of(state).length} ${STATE_WORD[state].toLowerCase()}`).join(", ")}</span>}
+								{open ? null : <span>{endedWords(counts)}</span>}
 							</p>
 							<div id={ended} hidden={!open}>
-								{FOLDED.map((state) => (of(state).length > 0 ? <Group key={state} state={state} items={of(state)} now={now} /> : null))}
+								{open ? (
+									<Group name="Ended" items={pages.items} now={now} filed count={pages.items.length < counts.ended ? `${count(pages.items.length)} of ${count(counts.ended)}` : undefined}>
+										<EndedFoot pages={pages} />
+									</Group>
+								) : null}
 							</div>
 						</>
 					) : null}
@@ -497,7 +658,22 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [placeChoice, setPlace] = useState<string | null>(null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	const [mode, setMode] = useState<ItemMode>("orchestrate");
+	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
+	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its hardened container.
+	const [agentChoice, setAgent] = useState<HarnessId>("windlass");
+	const agents = chosenMachine && chosenMachine.profiles.some((profile) => profile.id === HARNESS_PROFILE && profile.available) ? itemHarnesses(chosenMachine) : [];
+	const agent: HarnessId = agents.some((offered) => offered.id === agentChoice) ? agentChoice : "windlass";
+	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
+	const mode: ItemMode = agent === "windlass" ? modeChoice : "single";
+	// The model and effort: the account's models for Windlass, what the machine reported for another agent. "" is the agent's default.
+	const accountModels = useModels();
+	const catalog = useCatalog(agent === "windlass" ? null : chosenMachine, agent === "windlass" ? "claude" : agent);
+	const modelList = agent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, agent, catalog.options).models;
+	const [modelChoice, setModel] = useState("");
+	const [effortChoice, setEffort] = useState("");
+	const model = modelList?.models.some((one) => one.id === modelChoice) ? modelChoice : "";
+	const efforts = effortChoices(effortsOf(modelList, model || (modelList?.defaultModel ?? ""))).filter((level) => level !== "" && level !== "default");
+	const effort = efforts.includes(effortChoice) ? effortChoice : "";
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -505,7 +681,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const last = useRef<Submission | null>(null);
-	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId() };
+	const ids = { form: useId(), title: useId(), body: useId(), criteria: useId(), criteriaNote: useId(), model: useId(), effort: useId(), effortNote: useId() };
 	const acceptance = criteria
 		.split("\n")
 		.map((line) => line.trim())
@@ -517,7 +693,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -562,7 +738,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="label">
 							How it runs
 						</span>
-						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy} />
+						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || agent !== "windlass"} />
 						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
@@ -602,7 +778,60 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								{hardenedItemNote(chosenMachine)}
 							</p>
 						) : null}
+						{agents.length > 0 ? (
+							<div className="harness-pick">
+								<span className="label">Agent</span>
+								<div className="segmented" role="radiogroup" aria-label="Agent">
+									{(["windlass", ...agents.map((offered) => offered.id)] as HarnessId[]).map((id) => (
+										<label key={id} className={`segment${id === agent ? " segment-chosen" : ""}`}>
+											<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy} onChange={() => setAgent(id)} />
+											{HARNESS_NAMES[id]}
+										</label>
+									))}
+								</div>
+								<p className="field-note">
+									{agent === "windlass"
+										? "Windlass runs your repository's checks before it hands the work over."
+										: `${HARNESS_NAMES[agent]} works in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.`}
+								</p>
+							</div>
+						) : null}
 					</PlaceChoice>
+				) : null}
+				{modelList && modelList.models.length > 0 ? (
+					<div className="item-agent-fields">
+						<div>
+							<label className="label" htmlFor={ids.model}>
+								Model
+							</label>
+							<select id={ids.model} className="select" value={model} disabled={busy} onChange={(event) => setModel(event.target.value)}>
+								<option value="">{`${HARNESS_NAMES[agent]}'s default (${modelLabel(modelList, modelList.defaultModel).replace(/ \(default\)$/, "")})`}</option>
+								{modelList.models.map((one) => (
+									<option key={one.id} value={one.id}>
+										{modelLabel(modelList, one.id)}
+									</option>
+								))}
+							</select>
+						</div>
+						{efforts.length > 0 ? (
+							<div>
+								<label className="label" htmlFor={ids.effort}>
+									Effort
+								</label>
+								<select id={ids.effort} className="select" value={effort} disabled={busy} onChange={(event) => setEffort(event.target.value)} aria-describedby={ids.effortNote}>
+									<option value="">Default</option>
+									{efforts.map((level) => (
+										<option key={level} value={level}>
+											{level}
+										</option>
+									))}
+								</select>
+							</div>
+						) : null}
+						<p className="field-note" id={ids.effortNote}>
+							{efforts.length > 0 ? "Every turn of the item runs at this effort." : "This model takes no reasoning effort."}
+						</p>
+					</div>
 				) : null}
 				<label className={`check${start ? " check-on" : ""}`}>
 					<input className="check-input" type="checkbox" checked={start} disabled={busy} onChange={(event) => setStart(event.target.checked)} />

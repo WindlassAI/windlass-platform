@@ -1,7 +1,8 @@
 /**
  * The usage page's part for work items: the factory's limits for the user, which the deployment's
  * owner sets and nobody can raise from here, and what each item has cost so far against its budget.
- * The usage view supplies the effective limits alongside the user's live item list.
+ * The usage view supplies the effective limits alongside the user's live items: every open one and
+ * the newest ended ones (`ItemFeed`), and how many older ended ones there are, which the Factory page lists.
  * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
  * hosted sandbox: an item on one of the user's machines shows none.
  */
@@ -27,6 +28,8 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	const items = useItems(offered);
 	if (!offered) return null;
 	const list = items.list;
+	// The feed carries the newest ended items only; the older ones are on the Factory page.
+	const older = items.feed ? items.feed.counts.ended - items.feed.ended.length : 0;
 	const machines = Boolean(platform.info?.machines);
 	return (
 		<section className="usage-section" aria-labelledby="usage-items">
@@ -126,6 +129,15 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					</tbody>
 				</table>
 			)}
+			{list !== null && older > 0 ? (
+				<p className="usage-note factory-cost-older">
+					And {plural(older, "older ended item")}, listed under Ended on the{" "}
+					<a className="link" {...linkProps({ name: "factory" })}>
+						Factory page
+					</a>
+					.
+				</p>
+			) : null}
 		</section>
 	);
 }

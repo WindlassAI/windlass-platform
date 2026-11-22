@@ -135,6 +135,12 @@
  *                              the default (default 0: listed, not offered)
  *   WLP_E2B_WINDLASS_VERSION   the Windlass version in the template, to show it before the first sandbox
  *                              was made (default: learned from the first sandbox)
+ *   WLP_E2B_NETWORK            what the deployment's sandboxes may reach, enforced by E2B outside the
+ *                              microVM (sandbox/e2b/network.ts): open (default, as before), restricted
+ *                              (the model API, the git host, the bucket and WLP_E2B_NETWORK_ALLOW only) or
+ *                              none (the model API and the bucket only; repositories are refused)
+ *   WLP_E2B_NETWORK_ALLOW      with restricted: exact host names and presets (@npm, @pypi, @github,
+ *                              @crates, @go), comma-separated (default @npm,@pypi,@github)
  *
  * The bucket (read by `backupConfig` below; docs/architecture.md, "The agent's memory outlives its sandbox"). Where
  * Windlass's own session data lives on the sandbox's disk (E2B), a copy of it is kept in a bucket after
@@ -679,7 +685,7 @@ export function publishedHarnesses(image: string, raw?: string): MachinesInfo["r
 	try {
 		const report = JSON.parse(raw);
 		if (report?.image !== image || !Array.isArray(report.harnesses)) return undefined;
-		return (["claude", "opencode"] as const).filter(id => report.harnesses.includes(id));
+		return (["claude", "opencode", "codex"] as const).filter(id => report.harnesses.includes(id));
 	} catch { return undefined; }
 }
 

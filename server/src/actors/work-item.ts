@@ -1,6 +1,6 @@
 /**
  * `workItem`, key [uid, itemId]: one work item of the software factory (Plans "software factory" §1,
- * §2), and the run controller that carries it through the blueprint (factory/blueprint.ts).
+ * §2), and the run controller that carries it through the blueprint (server/src/factory/blueprint.ts).
  *
  * The whole loop is: a fact arrives (a person's action, the session's report of a turn, the answer of
  * a push or a poll); `advance` decides, as a pure function, what the item becomes and what is to be
@@ -47,7 +47,7 @@ import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine }
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
 import type { ItemReview } from "../contract.js";
-import { ledgerSeconds, retryAt } from "../factory/budget.js";
+import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -189,6 +189,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		review: secondReview(item, meta),
 		budget: item.budget,
 		spent: item.spent,
+		agent: itemAgent(item),
 		sessionId: meta.sessionId,
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
@@ -318,7 +319,7 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 		const hostedSeconds = stored.item.place.kind === "hosted"
 			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta))) + childSeconds(stored.item)
 			: 0;
-		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds } });
+		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds, ...(fact.spend?.agent && { agent: fact.spend.agent }) } });
 	} else {
 		await take(c, fact);
 	}
@@ -678,8 +679,9 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
 	const [machines, limited, dailyTokenWait] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait()]);
-	const hostedProfiles = (await getLayer()).sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, limited, dailyTokenWait };
+	const { sandboxes } = await getLayer();
+	const hostedProfiles = sandboxes.profiles().filter(p => p.available).map(p => p.id);
+	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {
@@ -744,7 +746,7 @@ async function prepareCompletedCheck(tx: Pick<RawAccess, "execute">, item: Facto
 	}
 	effect.title = checkTitle(handoff.verdict, assessment);
 	effect.conclusion = checkConclusion(handoff.verdict, assessment);
-	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id));
+	effect.summary = checkSummary(handoff.verdict, assessment, item.spent, item.budget, itemUrl(item.id), itemAgent(item));
 }
 
 /** Only the token request and the write treat a permission refusal as a finished effect. */

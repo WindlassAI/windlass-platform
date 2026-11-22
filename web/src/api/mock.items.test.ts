@@ -6,7 +6,7 @@ import { MAX_API_TOKENS, type CheckStatus, type ItemSummary, type ReviewBlock, t
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX, type ItemCursor } from "@contract";
+import { ITEM_FEED_ENDED, ITEM_PAGE_DEFAULT, ITEM_PAGE_MAX, type ItemCursor, type ItemFeed } from "@contract";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemPage, nextCursor } from "../../../server/src/item-pages";
 import type { GateEvidence } from "../../../server/src/factory/types";
 import { ciSentence as serverCiSentence, verdictOf, verdictWords } from "../../../server/src/factory/verdict";
@@ -90,6 +90,42 @@ describe("the mock's work items", () => {
 		await new Promise((resolve) => setTimeout(resolve, 2700));
 		expect((await user.listSessions()).find((session) => session.id === filed.sessionId)).toMatchObject({ item: { id: filed.id }, status: "running" });
 		mock.dispose();
+	});
+
+	it("files an item for Claude Code or OpenCode only on a machine signed into it, Quick, in the hardened container", async () => {
+		const online = make(undefined, "online");
+		const user = online.user(auth);
+		const task = { repository: { id: 7101 }, title: "Log the release's checksum", body: "", mode: "single" as const };
+		await expect(user.createItem({ ...task, harness: "claude" })).rejects.toMatchObject({ reason: "bad_input" });
+		await expect(user.createItem({ ...task, harness: "claude", mode: "orchestrate", place: { kind: "machine", machineId: "m_nas" } })).rejects.toMatchObject({ reason: "bad_input" });
+		const claude = await user.createItem({ ...task, harness: "claude", place: { kind: "machine", machineId: "m_nas" } });
+		expect(claude.agent).toMatchObject({ harness: "claude", tokens: "not_reported", reportedTokens: 0 });
+		expect((await user.listSessions()).find((session) => session.id === claude.sessionId)).toMatchObject({ harness: "claude", profile: "docker-hardened" });
+		const windlass = await user.createItem(task);
+		expect(windlass.agent).toMatchObject({ harness: "windlass", tokens: "counted" });
+		online.dispose();
+		const fresh = make(undefined, "fresh");
+		const there = { ...task, place: { kind: "machine" as const, machineId: "m_workshop" } };
+		await expect(fresh.user(auth).createItem({ ...there, harness: "claude" })).rejects.toMatchObject({ reason: "harness_signed_out" });
+		expect((await fresh.user(auth).createItem({ ...there, harness: "opencode" })).agent?.harness).toBe("opencode");
+		fresh.dispose();
+	});
+
+	it("files an item's effort only where its agent offers it for the item's model", async () => {
+		const online = make(undefined, "online");
+		const user = online.user(auth);
+		const task = { repository: { id: 7101 }, title: "Log the release's checksum", body: "", mode: "single" as const };
+		const nas = { kind: "machine" as const, machineId: "m_nas" };
+		const windlass = await user.createItem({ ...task, effort: "high" });
+		expect(windlass.agent).toMatchObject({ harness: "windlass", effort: "high" });
+		expect((await user.createItem(task)).agent?.effort).toBeUndefined();
+		await expect(user.createItem({ ...task, effort: "ultra" })).rejects.toMatchObject({ reason: "bad_effort" });
+		const claude = await user.createItem({ ...task, harness: "claude", place: nas, model: "opus", effort: "high" });
+		expect(claude.agent).toMatchObject({ harness: "claude", model: "opus", effort: "high" });
+		await expect(user.createItem({ ...task, harness: "claude", place: nas, model: "opus", effort: "ultra" })).rejects.toMatchObject({ reason: "bad_effort" });
+		// Claude Code's default model takes no effort here.
+		await expect(user.createItem({ ...task, harness: "claude", place: nas, effort: "high" })).rejects.toMatchObject({ reason: "bad_effort" });
+		online.dispose();
 	});
 
 	it("answers an item's page with its log and verdicts, and refuses one that is not the user's", async () => {
@@ -177,15 +213,16 @@ describe("the mock's work items", () => {
 	it("files an item once per key, starts it, and tells the live feed", async () => {
 		const mock = make("none");
 		const user = mock.user(auth);
-		const seen: ItemSummary[][] = [];
-		const close = user.watch({ onSessions: () => undefined, onItems: (list) => seen.push(list) });
+		const seen: ItemFeed[] = [];
+		const close = user.watch({ onSessions: () => undefined, onItems: (feed) => seen.push(feed) });
 		await tick();
 		const input = { mode: "single" as const, repository: { id: 7101 }, title: "Cache the station list", body: "Once per run.", acceptance: ["Read once."], start: true, idempotencyKey: "key-1" };
 		const first = await user.createItem(input);
 		const again = await user.createItem(input);
 		expect(again.id).toBe(first.id);
 		expect(first).toMatchObject({ state: "queued", source: "web", place: { kind: "hosted" } });
-		expect(seen.at(-1)?.map((item) => item.id)).toEqual([first.id]);
+		expect(seen.at(-1)?.open.map((item) => item.id)).toEqual([first.id]);
+		expect(seen.at(-1)?.counts.ended).toBe(0);
 		await expect(user.createItem({ ...input, title: "Another" })).rejects.toMatchObject({ reason: "idempotency_key_reused" });
 		close();
 		mock.dispose();
@@ -556,6 +593,35 @@ describe("a page of work items", () => {
 		expect(itemPage(list, page({ ended: true })).map((one) => one.id)).toEqual(["c", "b", "a", "e"]);
 		expect(itemPage(list, page({ ended: true, repository: 7102 })).map((one) => one.id)).toEqual(["e"]);
 		expect(itemPage(list, page({ source: "api" }))).toEqual([]);
+	});
+
+	it("sends the live feed as the server does: every open item, the newest filed ended ones, the counts", async () => {
+		const mock = make("many");
+		const user = mock.user(auth);
+		const all = await user.listItems();
+		const isEnded = (one: ItemSummary) => ["done", "failed", "cancelled"].includes(one.state);
+		const ended = all.filter(isEnded).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+		expect(ended.length).toBeGreaterThan(ITEM_FEED_ENDED);
+		const read = await user.itemFeed();
+		expect(read.open.map((one) => one.id).sort()).toEqual(all.filter((one) => !isEnded(one)).map((one) => one.id).sort());
+		expect(read.ended.map((one) => one.id)).toEqual(ended.slice(0, ITEM_FEED_ENDED).map((one) => one.id));
+		// The first page of ended items is what the feed carries.
+		expect((await user.listItems({ ended: true })).map((one) => one.id)).toEqual(read.ended.map((one) => one.id));
+		expect(read.counts.ended).toBe(ended.length);
+		expect(read.counts.byRepository.reduce((sum, row) => sum + row.open + row.done + row.failed + row.cancelled, 0)).toBe(all.length);
+		// After a change the items event carries a feed, not the whole list.
+		const seen: ItemFeed[] = [];
+		const close = user.watch({ onSessions: () => undefined, onItems: (feed) => seen.push(feed) });
+		await tick();
+		const draft = read.open.find((one) => one.state === "draft") as ItemSummary;
+		await user.actOnItem(draft.id, { kind: "cancel" });
+		const sent = seen.at(-1) as ItemFeed;
+		expect(Array.isArray(sent)).toBe(false);
+		expect(sent.ended.length).toBe(ITEM_FEED_ENDED);
+		expect(sent.counts.ended).toBe(ended.length + 1);
+		expect(sent.open.some((one) => one.id === draft.id)).toBe(false);
+		close();
+		mock.dispose();
 	});
 
 	it("pages the mock's items as the server does", async () => {

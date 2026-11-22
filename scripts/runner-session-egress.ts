@@ -31,7 +31,7 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 	const probe = await readFile(join(root, "fixtures/acp-agent/egress.sh"), "utf8");
 	const lan = prefix + "lan";
 	const remote = prefix + "git";
-	await writeProofDocker(dir, prefix, realDocker, { adapter: fake, scenarios: join(root, "fixtures/acp-agent"), lan });
+	await writeProofDocker(dir, prefix, realDocker, { adapter: fake, scenarios: join(root, "fixtures/acp-agent"), lan }, ["wlp-egress-m_", "wlp-claude-relay-", "wlp-claude-socket-", "wlp-prepared-"]);
 	await exec(process.execPath, [join(root, "runner/bundle.mjs"), base, bundle, "claude=" + claude]);
 	const model = join(dir, "model.json");
 	await writeFile(model, JSON.stringify({ responses: [
