@@ -1,6 +1,6 @@
 // A daemon owns one bounded store. Sessions mount exactly one subdirectory. The allocator
 // reserves a whole slot so concurrent writers cannot race a free-space estimate.
-import { docker, LABEL, LABEL_ARG, randomId } from "./docker.js";
+import { docker, LABEL, LABEL_ARG, NO_LOGS, randomId } from "./docker.js";
 import { digest } from "./snapshot-key.js";
 import { snapshotLimits } from "./snapshots.js";
 
@@ -127,7 +127,7 @@ export async function referencedSlots(volume = MIRROR_VOLUME): Promise<Set<strin
 
 async function runAllocator(image: string, volume: string, args: string[]) {
 	const helper = "wlp-git-allocate-" + randomId(6);
-	const result = await docker(["run", "--rm", "--pull", "never", "--name", helper, "--network", "none",
+	const result = await docker(["run", "--rm", "--pull", "never", "--name", helper, ...NO_LOGS, "--network", "none",
 		"--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges",
 		"--mount", `type=volume,src=${volume},dst=/store,volume-nocopy`, "--entrypoint", "/usr/bin/python3", image,
 		"-I", "-c", allocate, ...args], { timeoutMs: 15_000 });
