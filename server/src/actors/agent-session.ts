@@ -213,6 +213,7 @@ import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
+import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import { machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
@@ -455,6 +456,7 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
+	planFirst?: boolean;
 	openAcp?: () => NewItem | null;
 	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
 	modeQueued?: boolean;
@@ -3389,7 +3391,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			void persist(c);
 		}
 		const common: RunTurnInput = {
-			prompt: text, mode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
+			prompt: text, mode, planFirst:active.planFirst, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
 			onAcpUpdate: update => {
@@ -3415,7 +3417,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 					if (!open) return;
 					meta.availableModes = offered;
 					if (!active.modeQueued) meta.mode = chosen;
-					if (fallbackFrom !== undefined) note(c, turn, "info", `${harness.id === "opencode" ? "OpenCode" : "Claude Code"} does not offer “${fallbackFrom}” here. Using its current mode “${chosen}”.`);
+					if (fallbackFrom !== undefined) note(c, turn, "info", `${machineHarnesses[meta.harness as keyof typeof machineHarnesses].name} does not offer “${fallbackFrom}” here. Using its current mode “${chosen}”.`);
 					publish(c);
 					void persist(c);
 				},
@@ -3650,7 +3652,7 @@ fi`, { signal, timeoutMs: 5000 });
 		if (caps.events === "acp") {
 			const reason = result?.acp?.stopReason;
 			if (result?.acp && result.windlassSessionId) meta.harnessModels = result.acp.models;
-			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", `${meta.harness === "opencode" ? "OpenCode" : "Claude Code"} could not continue the conversation; the files are as they were.`);
+			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", `${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"} could not continue the conversation; the files are as they were.`);
 			if (result?.failure || problem) {
 				outcome = "error";
 				message = result?.failure?.message ?? problem;
@@ -3658,7 +3660,7 @@ fi`, { signal, timeoutMs: 5000 });
 			else if (reason === "end_turn") outcome = "succeeded";
 			else if (reason === "max_tokens" || reason === "max_turn_requests") outcome = "unresolved";
 			else if (reason === "refusal") outcome = "failed";
-			else { outcome = "error"; message = `${meta.harness === "opencode" ? "OpenCode" : "Claude Code"} ended without a recognized stop reason.`; }
+			else { outcome = "error"; message = `${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"} ended without a recognized stop reason.`; }
 		} else if (result?.aborted || (!result && signal.aborted)) {
 			outcome = "interrupted";
 		} else if (result) {
@@ -3933,7 +3935,8 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
  */
 async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
 	// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
-	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
+	if (input.planFirst !== undefined && (meta.harness !== "codex" || typeof input.planFirst !== "boolean")) throw new UserError("Plan first is available for Codex.", {code:"bad_input"});
+	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort || input.planFirst)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
 	if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text, submission);
 	if (capabilitiesOf(meta.harness).events === "acp") return queuePrompt(c, meta, input, text, submission);
 	return startPrompt(c, meta, input, text, submission);
@@ -3981,7 +3984,9 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		if (caps.signIn === "machine" && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
-			if (!offered) throw new UserError(`This machine does not offer ${meta.harness === "opencode" ? "OpenCode" : "Claude Code"}.`, { code: "bad_input" });
+			if (!offered) throw new UserError(`This machine does not offer ${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"}.`, { code: "bad_input" });
+			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
+				throw new UserError(offered.modeReason ?? innerModesReason, {code:"bad_input"});
 			if (offered.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
 		} else if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
@@ -4020,7 +4025,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		append(c, { turn, kind: "user", text: shown, model, effort });
 		publish(c);
 
-		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: held, checks: new VerificationLog(), publishes: new Set() };
+		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, planFirst:meta.harness === "codex" && input.planFirst === true, secrets: held, checks: new VerificationLog(), publishes: new Set() };
 		c.vars.turn = active;
 		// The turn's first step writes the session, and the key with it.
 		const answer = remember(meta, submission, { turn, steered: false });
@@ -4309,7 +4314,7 @@ export const agentSession = actor({
 				...(input.size && { size: input.size }),
 				harness: input.harness,
 				profile: input.profile,
-				...initialSessionModes(input.profile, input.harness, !!input.origin, input.harnessOptions?.modes),
+				...initialSessionModes(input.profile, input.harness, !!input.origin, input.codexModes ?? input.harnessOptions?.modes),
 				...(input.harnessOptions && { harnessModels: initialHarnessModels(input.harnessOptions) }),
 				...(input.mode !== undefined && { mode: input.mode }),
 				model: String(input.model),
@@ -4599,6 +4604,11 @@ export const agentSession = actor({
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
 			const mode = input?.mode;
+			if (meta.harness === "codex" && meta.place.kind === "machine") {
+				const facts = await runnerLink(c,meta.place.machineId).facts();
+				const offered = facts.report?.harnesses?.find(h => h.id === "codex");
+				if (!codexModes(meta.profile,offered?.modes ?? []).some(m => m.id === mode)) throw new UserError(offered?.modeReason ?? innerModesReason,{code:"bad_input"});
+			}
 			const beforeHarnessOpen = capabilitiesOf(meta.harness).events === "acp" && !meta.availableModes.length;
 			if (typeof mode !== "string" || !mode.trim() || (!beforeHarnessOpen && !meta.availableModes.some(m => m.id === mode))) {
 				throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });

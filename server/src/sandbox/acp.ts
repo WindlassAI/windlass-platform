@@ -24,6 +24,7 @@ export class AcpError extends Error {
 		 * It says which failure this is; the message is for reading only.
 		 */
 		readonly failureCode: string | null = null,
+		readonly codexErrorInfo?: unknown,
 	) {
 		super(message);
 		this.name = "AcpError";
@@ -195,7 +196,8 @@ export class AcpConnection {
 		const named = (typeof data === "object" && data !== null ? data : {}) as { reason?: unknown; message?: unknown; holderPid?: unknown; code?: unknown };
 		// The engine's own sentence when it gave one; the protocol's message otherwise.
 		const message = typeof named.message === "string" && named.message !== "" ? named.message : typeof error.message === "string" && error.message !== "" ? error.message : `${method} failed`;
-		return new AcpError(message, code, typeof named.reason === "string" ? named.reason : null, typeof named.holderPid === "number" ? named.holderPid : null, typeof named.code === "string" && named.code !== "" ? named.code : null);
+		return new AcpError(message, code, typeof named.reason === "string" ? named.reason : null, typeof named.holderPid === "number" ? named.holderPid : null, typeof named.code === "string" && named.code !== "" ? named.code : null,
+			typeof error.data === "object" && error.data !== null ? (error.data as Record<string, unknown>).codexErrorInfo : undefined);
 	}
 }
 

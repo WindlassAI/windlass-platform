@@ -301,6 +301,8 @@ async function clientCheck(state: string) {
 	const machine = { machine: { name: "Bench" } } as SandboxLayer;
 	const harness = harnessOf(machine, "claude");
 	assert.equal(harnessOf(machine, "opencode").id, "opencode");
+	assert.equal(harnessOf(machine, "codex").id, "codex");
+	assert.throws(() => harnessOf({} as SandboxLayer, "codex"), /Codex runs only on a machine/);
 	assert.throws(() => harnessOf({} as SandboxLayer, "opencode"), /OpenCode runs only on a machine/);
 	assert.throws(() => harnessOf({} as SandboxLayer, "claude"), /only on a machine/);
 	const secret = "value-held-only-for-redaction";
@@ -322,7 +324,7 @@ async function clientCheck(state: string) {
 	}
 	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
 
-	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" = "normal";
+	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" | "codex-signed-out" = "normal";
 	const configMode = (currentValue: string) => ({ id: "agent-mode", category: "mode", type: "select", currentValue,
 		options: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan", description: "Plan only" }] });
 	let duringShutdown: (() => void) | undefined;
@@ -330,10 +332,10 @@ async function clientCheck(state: string) {
 	const updates: AcpUpdate[] = [];
 	const sandbox = {
 		profile: "docker-hardened", cwd: "/workspace",
-		async stopLeftovers(name: string) { assert.equal(name, "claude-agent-acp"); return 0; },
+		async stopLeftovers(name: string) { assert.equal(name, variant === "codex-signed-out" ? "codex" : "claude-agent-acp"); return 0; },
 		async sweep(tag: string) { assert.equal(tag, "fixture"); return 0; },
 		start(argv: string[], opts: StartOptions) {
-			assert.deepEqual(argv, ["wlp-claude-acp"]);
+			assert.deepEqual(argv, [variant === "codex-signed-out" ? "wlp-codex-acp" : "wlp-claude-acp"]);
 			assert.deepEqual(opts.env, {});
 			assert.equal(opts.secretEnv, undefined);
 			assert.equal(opts.cwd, "/workspace");
@@ -390,6 +392,15 @@ async function clientCheck(state: string) {
 				write(line: string) {
 					const frame = JSON.parse(line);
 					methods.push(frame.method);
+					if (variant === "codex-signed-out") {
+						if (frame.method === "initialize") {
+							assert.equal(frame.params.clientCapabilities.auth._meta.gateway, true);
+							emit({jsonrpc:"2.0",id:frame.id,result:{protocolVersion:1}});
+						} else if (frame.method === "providers/set") emit({jsonrpc:"2.0",id:frame.id,result:{}});
+						else if (frame.method === "session/new") emit({jsonrpc:"2.0",id:frame.id,error:{code:-32000,message:"Authentication required"}});
+						else throw Error("Unexpected Codex method " + frame.method);
+						return true;
+					}
 					if (variant === "config-modes" && frame.method === "session/set_config_option") {
 						assert.equal(frame.params.configId, "agent-mode");
 						emit({ jsonrpc: "2.0", id: frame.id, result: { configOptions: [configMode(frame.params.value)] } });
@@ -518,6 +529,11 @@ async function clientCheck(state: string) {
 	assert.match(wrongVersion.failure?.message ?? "", /ACP v1/);
 	assert(!methods.includes("session/prompt"));
 	ok("wrong protocol version prevents prompting");
+	variant = "codex-signed-out";
+	const codex = await harnessOf(machine, "codex").runTurn(handle,{prompt:"signed out"});
+	assert.equal(codex.failure?.reason,"harness_signed_out");
+	assert.match(codex.failure.message,/Bench.*Run windlass-runner login codex/);
+	ok("Codex -32000 names the machine and its terminal sign-in command");
 }
 
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));

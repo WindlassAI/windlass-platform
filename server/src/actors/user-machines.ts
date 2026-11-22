@@ -136,7 +136,7 @@ export async function machineCatalog(c: Pick<Ctx, "client" | "key">, machineId: 
 export const machineActions = {
 	async machineCatalog(c: Ctx, input: { machineId: string; id: CatalogId; digest: string }) {
 		requireUser(c); enabled();
-		if (!input || (input.id !== "opencode" && input.id !== "claude") || typeof input.digest !== "string" || !/^[a-f0-9]{64}$/.test(input.digest) ||
+		if (!input || (input.id !== "opencode" && input.id !== "claude" && input.id !== "codex") || typeof input.digest !== "string" || !/^[a-f0-9]{64}$/.test(input.digest) ||
 			typeof input.machineId !== "string" || !MACHINE_ID.test(input.machineId) || await machineSecrets(c.db, input.machineId) === null) throw missing();
 		return machineCatalog(c, input.machineId, input.id, input.digest);
 	},

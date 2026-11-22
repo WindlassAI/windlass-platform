@@ -52,7 +52,7 @@ export const MACHINE_PROFILES = ["docker-hardened", "docker-windlass-sandbox"] a
 export type MachineProfile = typeof MACHINE_PROFILES[number];
 export const machineProfile = oneOf(...MACHINE_PROFILES);
 export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
-const harness = optional(oneOf("claude", "opencode"));
+const harness = optional(oneOf("claude", "opencode", "codex"));
 const sandbox = { id };
 const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 

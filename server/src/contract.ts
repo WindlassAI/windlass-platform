@@ -259,7 +259,7 @@ export type TurnOutcome =
 	/** The platform could not run the turn at all (sandbox failure, Windlass crashed). */
 	| "error";
 
-export type HarnessId = "windlass" | "claude" | "opencode";
+export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
 export interface SessionMode {
 	id: string;
@@ -1100,7 +1100,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1844,7 +1844,7 @@ export interface UserActions {
 	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
 	 */
 	machines(): Promise<MachineSummary[]>;
-	machineCatalog(input: { machineId: string; id: "claude" | "opencode"; digest: string }): Promise<HarnessOptions | null>;
+	machineCatalog(input: { machineId: string; id: "claude" | "opencode" | "codex"; digest: string }): Promise<HarnessOptions | null>;
 	/**
 	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
 	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
@@ -2275,6 +2275,7 @@ export interface SessionSnapshot {
 }
 
 export interface PromptInput {
+	planFirst?: boolean;
 	text: string;
 	/** Switches to an offered account or harness model from this turn on. */
 	model?: string;

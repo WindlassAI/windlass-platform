@@ -6,10 +6,11 @@ import { image, type MachineHarness, type MachineDocker } from "./policy.js";
 import { loadPair, Refusal, RunnerError } from "./state.js";
 
 declare const CLAUDE_RELAY_SCRIPT: string;
+declare const CODEX_RELAY_SCRIPT: string;
 declare const OPENCODE_RELAY_SCRIPT: string;
-export interface ProviderLogin { provider: string; providers?: string[]; generation: string; sessionGeneration?: string }
+export interface ProviderLogin { harness?: "codex"; provider: string; providers?: string[]; generation: string; sessionGeneration?: string }
 // Pre-upgrade metadata used its credential generation as the signing epoch.
-const sessionDomain = (login: ProviderLogin) => "windlass-opencode-relay-v1-" + (login.sessionGeneration ?? login.generation);
+const sessionDomain = (login: ProviderLogin) => "windlass-" + (login.harness ?? "opencode") + "-relay-v1-" + (login.sessionGeneration ?? login.generation);
 export function projection(selected: string | string[], placeholder: string) {
 	const ids = typeof selected === "string" ? [selected] : selected;
 	const auth: Record<string, unknown> = {}, config: Record<string, unknown> = {};
@@ -69,10 +70,10 @@ export async function stopLegacyClaude(m: MachineDocker) {
 
 /** Caller holds the pairing login lock through credential and relay setup. */
 export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
-	const harness = login ? "opencode" : "claude";
-	const script = login ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
-	const prefix = login ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
-	const credentials = login ? m.opencodeVolume : m.claudeVolume;
+	const harness = login ? login.harness ?? "opencode" : "claude";
+	const script = harness === "codex" ? CODEX_RELAY_SCRIPT : login ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
+	const prefix = harness === "codex" ? "WLP_CODEX_RELAY_" : login ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
+	const credentials = harness === "codex" ? m.codexVolume : login ? m.opencodeVolume : m.claudeVolume;
 	const pair = loadPair();
 	if (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid)
 		throw new Refusal("The machine pairing changed while preparing the credential relay.");
@@ -94,7 +95,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,
-			...(login ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
+			...(login?.harness === "codex" ? ["-e", "WLP_CODEX_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_CODEX_GENERATION=" + login.generation, "-e", "WLP_CODEX_PROVIDER=" + login.provider] : login ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
 			image, "node", "-e", script], { check: true });
 		box = await ownedRelay(m, harness);
 	}
@@ -112,7 +113,7 @@ export async function prepareRelay(m: MachineDocker, login?: ProviderLogin) {
 	const nonce = randomBytes(16).toString("hex");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
 	return {
-		env: login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
+		env: login?.harness === "codex" ? ["-e", "WLP_SESSION_BEARER=" + nonce + "." + signature.toString("base64url")] : login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
 		nonce,
 	};
 }

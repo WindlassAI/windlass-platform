@@ -1,0 +1,11 @@
+# Validate Codex device login on a machine
+
+API-key login is available from the machine terminal. ChatGPT device login requires an owner-run validation with the pinned adapter and CLI. Use a dedicated machine pairing that offers Codex. The Machines setup command uses `--log-driver none` for the interactive Codex container. Include that option when constructing a one-off setup command yourself. Keep the terminal and verification code private.
+
+1. In the runner's terminal environment, run `WLP_CODEX_DEVICE_LOGIN=1 WLP_CODEX_VERIFY_REFRESH=1 windlass-runner login codex`. For a containerized runner, pass both variables with `docker exec -it -e WLP_CODEX_DEVICE_LOGIN=1 -e WLP_CODEX_VERIFY_REFRESH=1 <runner> windlass-runner login codex`.
+2. Choose ChatGPT. Enter the displayed code at the official OpenAI verification URL. Workspace policy may require an administrator to enable device login.
+3. Confirm that Machines reports a signed-in Codex harness. Start a session and complete a short turn. Send a second prompt and confirm that it completes. With the validation flag, the relay treats the access token as expiring on the next request after the first Responses request. It saves the rotated token and clears the validation flag. Inventory requests can trigger the refresh between turns.
+4. Run `windlass-runner logout codex` in the same runner environment. Confirm that Machines reports signed out and another prompt asks for terminal sign-in.
+5. Record the runner and image digests and the outcomes of both turns and logout. A maintainer can then enable device login for the validated pair. Keep verification codes, credentials and account identifiers out of the record.
+
+The login volume belongs to a single machine pairing. Each session receives a signed lease for its local relay. On the hardened Docker profile, **Container access** runs commands as `agent` under the machine's egress setting. On the Windlass sandbox profile the runner probes the pinned Codex binary before offering its inner sandbox modes. The **Plan first** control selects the collaboration mode independently.

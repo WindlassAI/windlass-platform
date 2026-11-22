@@ -48,10 +48,10 @@ function matcher(secrets) {
 	};
 }
 
-function scrubStream(secrets, type) {
+function scrubStream(secrets, type, responses = false) {
 	const decoder = new StringDecoder('utf8');
 	const consume = matcher(secrets);
-	if (type === 'text/event-stream' || type === 'application/json') return structuredStream(secrets, type);
+	if (type === 'text/event-stream' || type === 'application/json') return structuredStream(secrets, type, responses);
 	return new Transform({
 		transform(chunk, encoding, done) { done(null, consume(decoder.write(chunk), false)); },
 		flush(done) { done(null, consume(decoder.end(), true)); },
@@ -59,10 +59,11 @@ function scrubStream(secrets, type) {
 }
 // Decode provider strings before comparing them to credentials. Keep only a possible secret
 // suffix between deltas in the same block, so ordinary model text is delivered immediately.
-function structuredStream(secrets, type) {
+function structuredStream(secrets, type, responses) {
 	const decoder = new StringDecoder('utf8');
 	const scalar = matcher(secrets);
 	const blocks = new Map();
+	const deltas = new Map();
 	const limit = 16 * 1024 * 1024;
 	let buffer = '', data = [], frameSize = 0, fields = [], skipLF = false;
 	const clean = value => {
@@ -82,10 +83,30 @@ function structuredStream(secrets, type) {
 			type:'content_block_delta', index, delta:{type:'text_delta', text},
 		}) + '\n\n');
 	}
+	// A Responses stream can split one string over several delta events. Keep
+	// each text/tool stream independent, including interleaved output items.
+	function endDelta(key, output) {
+		const {event, consume} = deltas.get(key);
+		deltas.delete(key);
+		const delta = consume('', true);
+		if (delta) output('event: ' + event.type + '\ndata: ' + JSON.stringify(clean({...event, delta})) + '\n\n');
+	}
+	function responseDelta(event, output) {
+		const key = JSON.stringify([event.type.replace(/\.(?:done|delta)$/, ''), event.item_id, event.output_index, event.content_index, event.summary_index]);
+		if (event.type.endsWith('.delta') && typeof event.delta === 'string') {
+			if (!deltas.has(key)) {
+				if (deltas.size >= 256) throw Error('Too many open response deltas');
+				deltas.set(key, {event:{...event, delta:''}, consume:matcher(secrets)});
+			}
+			event.delta = deltas.get(key).consume(event.delta, false);
+		} else if (event.type.endsWith('.done') && deltas.has(key)) endDelta(key, output);
+		else if (event.type === 'response.completed') for (const key of deltas.keys()) endDelta(key, output);
+	}
 	function frame(output) {
 		let body = data.join('\n');
 		if (body.trim() && body.trim() !== '[DONE]') {
 			const event = JSON.parse(body);
+			if (responses && typeof event?.type === 'string') responseDelta(event, output);
 			if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && typeof event.delta.text === 'string') {
 				if (!Number.isSafeInteger(event.index)) throw Error('Invalid content block');
 				if (!blocks.has(event.index)) {
@@ -135,6 +156,7 @@ function structuredStream(secrets, type) {
 				else line(buffer, output);
 			}
 			if (data.length || fields.length) frame(output);
+			for (const key of deltas.keys()) endDelta(key, output);
 			for (const index of blocks.keys()) endBlock(index, output);
 		}
 	}
@@ -173,7 +195,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	const sessions = new WeakMap();
 	const httpServer = http.createServer(async (req, res) => {
 		try {
-			if (req.headers.host !== '127.0.0.1:17892' || req.method !== 'POST' || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
+			if (req.headers.host !== '127.0.0.1:17892' || (provider?.methodFor ? req.method !== provider.methodFor(req.url) : req.method !== 'POST') || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
 				return reject(res, 403);
 			const bearer = provider ? provider.bearer(req.headers, req.url) : req.headers.authorization;
 			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? '');
@@ -197,7 +219,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				target = { hostname: 'api.anthropic.com', path: req.url, headers };
 			}
 			if (res.destroyed) return;
-			const up = forward({ ...target, port: 443, method: 'POST' }, reply => {
+			const up = forward({ ...target, port: 443, method: req.method }, reply => {
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					reject(res, reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502);
@@ -216,8 +238,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 					if (!decode) { reject(res, 502); reply.destroy(); return; }
 					stages.push(decode());
 				}
-				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type);
+				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url);
 				if (filter) stages.push(filter);
+				if (provider?.catalogFilter && req.method === 'GET') stages.push(provider.catalogFilter());
 				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});
 			});

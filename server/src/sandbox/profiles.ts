@@ -217,7 +217,7 @@ export function windlassModes(approval: SandboxProfile["approval"]): SessionMode
 
 export function initialSessionModes(profile: SandboxProfileId, harness?: HarnessId, fixed = false, reported?: SessionMode[]): Pick<SessionSummary, "mode" | "availableModes"> {
 	const approval = findProfile(profile).approval;
-	const preferred = harness === "claude" ? "auto" : harness === "opencode" ? "build" : approval;
+	const preferred = harness === "claude" ? "auto" : harness === "opencode" ? "build" : harness === "codex" ? "agent-full-access" : approval;
 	const availableModes = reported ?? (fixed || (harness && harness !== "windlass") ? [] : windlassModes(approval));
 	return {
 		mode: availableModes.length && !availableModes.some(mode => mode.id === preferred) ? availableModes[0]!.id : preferred,

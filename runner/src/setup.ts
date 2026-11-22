@@ -27,7 +27,7 @@ export async function setupImageAndMounts() {
 export async function setupAgents(harnesses: MachineHarness[], ask: (message: string) => Promise<string>, login: (harness: MachineHarness) => Promise<void>) {
 	for (const harness of harnesses) {
 		let answer: string;
-		do { answer = (await ask((harness === "claude" ? "Claude Code" : "OpenCode") + ": sign in now? [Y/n] ")).toLowerCase(); }
+		do { answer = (await ask((harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : "OpenCode") + ": sign in now? [Y/n] ")).toLowerCase(); }
 		while (!["", "y", "yes", "n", "no"].includes(answer));
 		if (answer !== "n" && answer !== "no") await login(harness);
 	}

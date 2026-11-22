@@ -1035,6 +1035,7 @@ async function main(): Promise<void> {
 			const options = { models: [{ id: "opus", name: "Reported Opus", efforts: ["high"] }, { id: "sonnet", name: "Reported Sonnet", efforts: ["low"] }],
 				defaultModel: "opus", modes: [{ id: "plan", name: "Plan", description: "Plan first" }], checkedAt: Date.now() };
 			runner.fake.report.harnesses![0]!.options = options;
+			runner.fake.report.harnesses!.push({id:"codex",adapter:"codex-acp 2.9.0",image:"fixture",signIn:"none",modes:["agent-full-access"],options:{...options,modes:[{id:"agent-full-access",name:"Container access",description:null}]}});
 			runner.fake.maxTurns = 2;
 			runner.fake.report.slots = { max: 2, unit: { cpus: 1, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } };
 			await runner.connectControl();
@@ -1057,6 +1058,40 @@ async function main(): Promise<void> {
 					assert(after.availableModes?.some(m => m.id === "auto"), "first turn did not replace modes");
 				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
 				return "model names, efforts, modes and report timestamp persisted before ACP opened";
+			});
+			await check("Codex refuses a forged sandbox mode and prompts with the machine login command", async () => {
+				const launch = {place,profile:"docker-hardened" as const,harness:"codex" as const};
+				assert(await refusal(user.createSession({...launch,mode:"workspace-write"})) === "bad_input","forged launch mode accepted");
+				const created = await user.createSession(launch);
+				const seen = new Watch(client,uid,created.id,token);
+				try {
+					assert(await refusal(seen.conn.setMode({mode:"workspace-write"})) === "bad_input","forged session mode accepted");
+					assert(await refusal(seen.conn.prompt({text:"hello"})) === "harness_signed_out","wrong signed-out failure");
+				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
+				return "restricted mode refused at create and setMode, signed-out turn refused";
+			});
+			await check("Codex keeps a saved restricted mode when the machine loses its inner sandbox", async () => {
+				const report = runner.fake.report;
+				const codex = report.harnesses!.find(h => h.id === "codex")!;
+				report.allowedProfiles = ["docker-hardened", "docker-windlass-sandbox"];
+				codex.modes = ["agent-full-access", "workspace-write"];
+				codex.signIn = "token";
+				runner.report();
+				const hasInner = async () => (await user.machines()).find(m => m.machineId === place.machineId)
+					?.harnesses?.find(h => h.id === "codex")?.modes?.includes("workspace-write");
+				await until("Codex sandbox probe passed", hasInner);
+				const created = await user.createSession({place, profile:"docker-windlass-sandbox", harness:"codex", mode:"workspace-write"});
+				const seen = new Watch(client, uid, created.id, token);
+				try {
+					codex.modes = ["agent-full-access"];
+					codex.modeReason = "The machine's Codex sandbox probe failed.";
+					runner.report();
+					await until("Codex sandbox probe failed", async () => (await hasInner()) === false);
+					const denied = await seen.conn.prompt({text:"hello"}).then(() => "", (error: Error) => error.message);
+					assert(denied.includes(codex.modeReason), "turn omitted the probe failure");
+					assert((await seen.conn.snapshot()).summary.mode === "workspace-write", "saved mode escalated");
+				} finally { await seen.conn.dispose(); await user.deleteSession(created.id); }
+				return "turn refused before creating a container and the saved mode is preserved";
 			});
 			if (process.argv[2] === "inventory") return;
 			const { machineFairnessChecks } = await import("./machine-fairness-check.js");

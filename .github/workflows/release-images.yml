@@ -155,7 +155,7 @@ jobs:
     strategy:
       matrix:
         arch: [arm64, amd64]
-        harness: [claude, opencode]
+        harness: [claude, opencode, codex]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     permissions: *package-write
     env:
@@ -204,6 +204,7 @@ jobs:
     outputs:
       claude: ${{ steps.merge.outputs.claude }}
       opencode: ${{ steps.merge.outputs.opencode }}
+      codex: ${{ steps.merge.outputs.codex }}
     steps:
       - *checkout
       - *node
@@ -212,7 +213,7 @@ jobs:
       - *download-digests
       - id: merge
         env: *version
-        run: node scripts/release-check.ts indexes "$VERSION" "$RUNNER_TEMP/digests" claude opencode
+        run: node scripts/release-check.ts indexes "$VERSION" "$RUNNER_TEMP/digests" claude opencode codex
 
   runner:
     needs: [plan, sandbox-index, harness, harness-index]
@@ -239,6 +240,10 @@ jobs:
             echo 'Skipping the dry runner build because no runner release has been published.' >> "$GITHUB_STEP_SUMMARY"
           else
             gh release download "$tag" --pattern release.json --dir "$RUNNER_TEMP"
+            if ! jq -e '.images.codex' "$RUNNER_TEMP/release.json" >/dev/null; then
+              echo 'The previous release predates Codex. The dry run builds the native harnesses and skips the runner until all sibling pins are available.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             node scripts/release-check.ts validate "$RUNNER_TEMP/release.json"
             echo 'DRY_PINS=true' >> "$GITHUB_ENV"
           fi
@@ -254,6 +259,7 @@ jobs:
           SANDBOX: ${{ needs.sandbox-index.outputs.sandbox }}
           SHOTS: ${{ needs.sandbox-index.outputs.sandbox-shots }}
           CLAUDE: ${{ needs.harness-index.outputs.claude }}
+          CODEX: ${{ needs.harness-index.outputs.codex }}
           OPENCODE: ${{ needs.harness-index.outputs.opencode }}
         run: |
           if [[ "${DRY_PINS:-}" == true ]]; then
@@ -261,13 +267,14 @@ jobs:
             SANDBOX=$(jq -er '.images.sandbox.index' "$pins")
             SHOTS=$(jq -er '.images["sandbox-shots"].index' "$pins")
             CLAUDE=$(jq -er '.images.claude.index' "$pins")
+            CODEX=$(jq -er '.images.codex.index' "$pins")
             OPENCODE=$(jq -er '.images.opencode.index' "$pins")
             export WLP_RUNNER_PLATFORMS=linux/amd64,linux/arm64 WLP_RUNNER_ARCHIVE="$RUNNER_TEMP/runner.tar"
           else
             export WLP_RUNNER_PUSH="$REGISTRY/windlass-runner:runner-v$WLP_RELEASE_VERSION"
           fi
           prefix="$REGISTRY/windlass-platform"
-          export WLP_RUNNER_HARNESSES="claude=$prefix-claude@$CLAUDE opencode=$prefix-opencode@$OPENCODE"
+          export WLP_RUNNER_HARNESSES="claude=$prefix-claude@$CLAUDE opencode=$prefix-opencode@$OPENCODE codex=$prefix-codex@$CODEX"
           result=$(scripts/runner-build.sh --screenshots "$prefix-sandbox@$SANDBOX" "$prefix-sandbox-shots@$SHOTS")
           echo "digest=$result" >> "$GITHUB_OUTPUT"
       - if: needs.plan.outputs.publish == 'true'
@@ -301,10 +308,11 @@ jobs:
           SANDBOX: ${{ needs.sandbox-index.outputs.sandbox }}
           SHOTS: ${{ needs.sandbox-index.outputs.sandbox-shots }}
           CLAUDE: ${{ needs.harness-index.outputs.claude }}
+          CODEX: ${{ needs.harness-index.outputs.codex }}
           OPENCODE: ${{ needs.harness-index.outputs.opencode }}
           RUNNER: ${{ needs.runner.outputs.digest }}
         run: |
-          INDEX_DIGESTS=$(jq -cn '{runner:env.RUNNER,sandbox:env.SANDBOX,"sandbox-shots":env.SHOTS,claude:env.CLAUDE,opencode:env.OPENCODE}')
+          INDEX_DIGESTS=$(jq -cn '{runner:env.RUNNER,sandbox:env.SANDBOX,"sandbox-shots":env.SHOTS,claude:env.CLAUDE,opencode:env.OPENCODE,codex:env.CODEX}')
           export INDEX_DIGESTS
           node scripts/release-check.ts manifest "$VERSION" > release.json
           jq -r '.images[] | .ref + "@" + .index' release.json > "$RUNNER_TEMP/refs"

@@ -23,7 +23,7 @@ import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBloc
 export const ACP_MESSAGE = "acp";
 
 /** Each harness by the name the screens give it. */
-export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code", opencode: "OpenCode" };
+export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code", opencode: "OpenCode", codex: "Codex" };
 
 /** The name of the harness a session runs when it is not Windlass, which it is when the summary names none; null for Windlass. */
 export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string | null {

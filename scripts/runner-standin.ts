@@ -110,7 +110,7 @@ type AgentProcess = Pick<Engine, "input" | "stop">;
 
 interface Box {
 	size?: number;
-	harness?: "claude" | "opencode";
+	harness?: "claude" | "opencode" | "codex";
 	id: string;
 	sessionId: string;
 	profile: "docker-windlass-sandbox" | "docker-hardened";

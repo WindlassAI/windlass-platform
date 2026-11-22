@@ -58,16 +58,17 @@ function headers(input) {
 		delete result[key];
 	return result;
 }
-function broker(allow, denied) {
+function broker(allow, denied, device = false) {
 	const target = async url => {
 		const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+		if (device && (host !== "auth.openai.com" || url.port !== "443")) throw Error("blocked");
 		if (!host || url.username || url.password) throw Error("blocked");
 		return selectAddress(host, allow, lookup, networkInterfaces(), denied);
 	};
 	const server = http.createServer(async (req, res) => {
 		try {
 			const url = new URL(req.url);
-			if (url.protocol !== "http:") throw Error("blocked");
+			if (device || url.protocol !== "http:") throw Error("blocked");
 			const ip = await target(url);
 			if (res.destroyed) return;
 			const out = http.request({ hostname: ip, port: url.port || 80, method: req.method,
@@ -109,19 +110,40 @@ function broker(allow, denied) {
 	rmSync(socket, { force: true });
 	server.listen(socket);
 }
+if (process.argv[1] === "wlp-egress-device") broker([], [], true);
 if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]), JSON.parse(process.argv[3] ?? "[]"));
 // Only the trusted forwarder mounts these sockets. Write its fixed-width identity before
 // connecting the agent byte stream so even a second HTTP request has the same identity.
-function forward(port, path, nonce) {
+function forward(port, path, nonce, signedOutOnDisconnect = false) {
 	const server = net.createServer(client => {
 		const upstream = net.connect(path);
-		if (nonce) upstream.write(nonce);
-		pipes(client, upstream);
+		if (signedOutOnDisconnect) {
+			// The login volume and relay disappear at logout; the local endpoint survives.
+			const signedOut = () => client.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+			client.on("error", () => upstream.destroy());
+			client.on("close", () => upstream.destroy());
+			upstream.once("error", signedOut);
+			upstream.once("connect", () => {
+				upstream.write(nonce);
+				client.pipe(upstream);
+				// If logout closes an outstanding request before its HTTP response,
+				// the CLI can still receive the authentication status.
+				let started = false;
+				upstream.on("data", () => { started = true; });
+				upstream.pipe(client, {end:false});
+				upstream.off("error", signedOut);
+				upstream.on("error", () => {});
+				upstream.on("close", () => { if (started) client.end(); else signedOut(); });
+			});
+		} else {
+			if (nonce) upstream.write(nonce);
+			pipes(client, upstream);
+		}
 	});
 	server.maxConnections = 128;
 	server.listen(port, "127.0.0.1");
 }
 if (process.argv[1] === "wlp-egress-forward") {
 	if (process.argv[2] === "restricted") forward(17891, socket);
-	if (process.argv[3]) forward(17892, "/run/wlp-relay/relay.sock", process.argv[3]);
+	if (process.argv[3]) forward(17892, "/run/wlp-relay/relay.sock", process.argv[3], process.argv[4] === "codex");
 }

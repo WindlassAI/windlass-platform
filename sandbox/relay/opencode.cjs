@@ -52,7 +52,7 @@ async function save(record) {
 		await rename(temp, filename);
 	} finally { await unlink(temp).catch(() => {}); }
 }
-function providerFor(provider, generation, { load = async () => JSON.parse(await readFile(filename, 'utf8')), persist = save, exchange = fetch } = {}) {
+function providerFor(provider, generation, { load = async () => JSON.parse(await readFile(filename, 'utf8')), persist = save, exchange = fetch, responses = false } = {}) {
 	const allowed = new Set(Array.isArray(provider) ? provider : [provider]);
 	for (const id of allowed) if (!['chatgpt','free'].includes(id) && !Object.hasOwn(providers,id)) throw new Error('Unsupported provider.');
 	let refresh;
@@ -92,7 +92,7 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		})().finally(() => { refresh = undefined; });
 	}
 	return {
-		responseFilter: type => secrets.size ? scrubStream(secrets, type) : undefined,
+		responseFilter: type => secrets.size ? scrubStream(secrets, type, responses) : undefined,
 		accepts: url => Boolean(endpointFor(allowed, url)),
 		bearer(h, url) {
 			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;

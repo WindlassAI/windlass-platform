@@ -1,0 +1,10 @@
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+
+Codex ACP adapter, Copyright JetBrains s.r.o., Apache License 2.0.
+Windlass supplies its own gateway launcher and configuration. The upstream
+adapter and CLI are distributed unmodified.

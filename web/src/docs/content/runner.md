@@ -33,8 +33,16 @@ The runner takes one command. With none, it runs `run`.
 | `status` | Says whether the runner is connected, the limits in force, the sandboxes and data volume of each pairing, and each enabled agent’s sign-in status. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
 | `prune` | Removes all containers and data volumes of this runner's pairings. |
-| `login claude\| opencode` | Signs the selected agent in on this machine. The machine must be paired first. |
-| `logout claude\| opencode` | Signs the selected agent out, for this pairing and every earlier one. |
+| `login claude\| opencode\| codex` | Signs the selected agent in on this machine. The machine must be paired first. |
+| `logout claude\| opencode\| codex` | Signs the selected agent out, for this pairing and every earlier one. |
+
+### Codex sign-in
+
+Enable Codex during `windlass-runner setup`, or start the runner with `--harness codex`. Run `windlass-runner login codex` in the machine’s terminal and enter your own OpenAI API key at the hidden prompt. Usage is billed to the API account. ChatGPT device login is available on installations where the owner has enabled it for validation.
+
+The machine’s relay holds the credential. Commands in a session can use its relay to make model requests. **Container access** runs commands as `agent` under the machine’s egress setting. Additional sandbox modes appear when the machine passes its Codex probe on the Windlass sandbox profile. Choose **Plan first** to request a plan before changes.
+
+Run `windlass-runner logout codex` to end access through the machine. The Machines page shows the sign-in state and the terminal command.
 
 ### Status
 
@@ -86,11 +94,12 @@ These options go after the runner image, with the `run` command or with no comma
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
 | `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
-| `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code and OpenCode keep their model relay in all three. |
+| `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code, OpenCode and Codex keep their model relay in all three. |
 | `--egress-allow HOST[,HOST]` | Empty | In `restricted` mode, let commands reach these hosts on your private network. Exact DNS names, up to 64. Given alone, it means `--egress restricted`. The machine's own addresses, Docker's networks and metadata addresses stay blocked. |
 | `--allow-profile ID` | `docker-hardened` | Which Docker profiles agents may use here. Repeat it for both. |
 | `--harness claude` | Off | Offers Claude Code on this machine. Needs a runner built with the Claude Code image. |
-| `--harness opencode` | Off | Offers OpenCode. Repeat `--harness` to offer both agents. |
+| `--harness codex` | Off | Offers Codex on this machine. Uses your personal login on this machine. See [Codex sign-in](#codex-sign-in). |
+| `--harness opencode` | Off | Offers OpenCode. Repeat `--harness` to offer multiple agents. |
 | `--screenshots` | Off | Lets work-item sandboxes here take screenshots. Needs a runner built with the screenshots image. |
 
 The runner saves `--name`, `--egress`, `--egress-allow` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.

@@ -41,7 +41,7 @@ import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profi
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { tokenFilePath } from "./token-file.js";
 
-const SANDBOX_ID = /^(?:(?:claude|opencode)-)?[a-f0-9]{12}$/;
+const SANDBOX_ID = /^(?:(?:claude|opencode|codex)-)?[a-f0-9]{12}$/;
 const STDOUT_CAP = 4 * 1024 * 1024;
 const STDERR_CAP = 256 * 1024;
 
@@ -405,7 +405,7 @@ export type DockerSandboxOptions = {
 	/** Runner-issued placeholder and immutable helper identity for a new Claude session. */
 	machine: string;
 	image: string;
-	harness?: "claude" | "opencode";
+	harness?: "claude" | "opencode" | "codex";
 	sessionRelay(): Promise<{ env: string[]; nonce: string }>;
 });
 
@@ -482,9 +482,9 @@ export class DockerSandboxes implements Sandboxes {
 	async create(input: CreateSandboxInput): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
-		const harnessName = (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
+		const harnessName = (input.harness ?? harness) === "codex" ? "Codex" : (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
 		if (harness !== input.harness) throw new SandboxUserError(`${harnessName} runs only on a machine offering it.`);
-		if (harness && (input.profile !== "docker-hardened" || input.screenshots))
+		if (harness && ((input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) || input.screenshots))
 			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
 		const base = input.screenshots ? this.shotsImage : this.image;
 		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)

@@ -1,6 +1,6 @@
 #!/bin/sh
 # A local build prints its image ID. WLP_RUNNER_PLATFORMS exports an OCI archive.
-# WLP_RUNNER_PUSH is the versioned registry tag. Its four sibling pins must be
+# WLP_RUNNER_PUSH is the versioned registry tag. Its five sibling pins must be
 # registry references; the second tag uses the source commit.
 set -eu
 cd "$(dirname "$0")/.."
@@ -25,7 +25,7 @@ fi
 set -f
 for harness in ${WLP_RUNNER_HARNESSES:-}; do
   case "$harness" in
-    claude=*@sha256:*|opencode=*@sha256:*) set -- "$@" "$harness" ;;
+    claude=*@sha256:*|opencode=*@sha256:*|codex=*@sha256:*) set -- "$@" "$harness" ;;
     *)
       [ -z "$push" ] || { echo "Runner publication requires a registry pin for $harness." >&2; exit 2; }
       id=$(sandbox/harness/build.sh "$harness" "$pin")

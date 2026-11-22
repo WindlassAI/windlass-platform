@@ -49,14 +49,14 @@ export function MachinesCrumb() {
 }
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
-function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
+function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
 	if (info.runnerImage === null) return null;
 	return [
-		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
+		(setup ? "docker run -it --rm" + (agents.codex ? " --log-driver none" : "") : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
 		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
-		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}`,
+		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}`,
 	].join("\n");
 }
 
@@ -368,7 +368,7 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 							<span className="machine-agent-state">
 								{" "}
 								<CheckIcon size={13} />
-								signed in
+								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
 						) : (
 							<span className="machine-agent-state">: {harness.signIn === "none" ? "sign in needed" : "sign-in not reported"}</span>
@@ -618,11 +618,13 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	};
 	const ids = { form: useId(), code: useId(), codeNote: useId(), trust: useId() };
 	const [claude, setClaude] = useState(false);
+	const [codex, setCodex] = useState(false);
 	const [openCode, setOpenCode] = useState(false);
 	const [importKeys, setImportKeys] = useState(false);
+	const offersCodex = info.runnerHarnesses?.includes("codex") === true;
 	const offersOpenCode = info.runnerHarnesses?.includes("opencode") === true;
 	const offersClaude = info.runnerHarnesses?.includes("claude") ?? true;
-	const agents = { claude: offersClaude && claude, openCode: offersOpenCode && openCode };
+	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode };
 	const setup = installCommand(info, agents, { importKeys });
 	const install = installCommand(info, agents);
 	const complete = code.replace(/-/g, "").length === 8;
@@ -795,7 +797,8 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<p className="machine-step">Set it up</p>
 						<div className="machine-setup-agents">
 							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
-							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{offersCodex && <label><input type="checkbox" checked={codex} onChange={e => setCodex(e.target.checked)} /> Enable Codex</label>}
+						{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
 							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						</div>

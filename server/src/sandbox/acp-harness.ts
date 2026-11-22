@@ -7,6 +7,8 @@ import type { Harness, HarnessCapabilities } from "./harness.js";
 import { type AcpProfile, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
 
+import { codexModes, containerMode, innerModesReason } from "./codex-modes.js";
+
 export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
 	platformTools: Object.freeze([]), restrictedReview: false, userServers: "none", projectServerApproval: false,
@@ -181,7 +183,12 @@ export class AcpHarness implements Harness {
 					const cost = object(update.cost);
 					acp.usage = { used: update.used, size: update.size, cost: typeof cost.amount === "number" && typeof cost.currency === "string" ? { amount: cost.amount, currency: cost.currency } : null };
 				}
+				if (profile.id === "codex" && update.sessionUpdate === "current_mode_update" && !codexModes(handle.profile).some(m => m.id === update.currentModeId)) return;
 				if (update.sessionUpdate === "config_option_update") {
+					if (profile.id === "codex") update.configOptions = objects(update.configOptions).map(option =>
+						option.category !== "mode" ? option : {...option, options:codexModes(handle.profile)
+							.filter(mode => configChoices(option).some(choice => choice.id === mode.id))
+							.map(mode => ({value:mode.id,name:mode.name,description:mode.description}))});
 					readConfigs(update.configOptions);
 					if (modes.select) {
 						modes = modeSelection(null, update.configOptions);
@@ -216,8 +223,9 @@ export class AcpHarness implements Harness {
 				rpc.end(end.error?.message || `${profile.name} exited before answering (exit ${end.code ?? end.signal}).`);
 			});
 			const request = (method: string, params: Fields, onResult?: (value: Fields) => void) => rpc.request<Fields>(method, params, { timeoutMs: 60_000, onResult });
-			const init = await request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "windlass-platform", version: "0" } });
+			const init = await request("initialize", { protocolVersion: 1, clientCapabilities: { ...(profile.id === "codex" && {auth:{_meta:{gateway:true}}}), fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "windlass-platform", version: "0" } });
 			if (init.protocolVersion !== 1) throw new Error(`${profile.name} does not speak ACP v1.`);
+			if (profile.id === "codex") await request("providers/set", {providerId:"openai", apiType:"openai", baseUrl:"http://127.0.0.1:17892/codex/v1", headers:{}});
 			const caps = object(init.agentCapabilities);
 			const canSteer = object(object(init._meta).steering).supported === true;
 			const settings = { cwd: handle.cwd, mcpServers: [] };
@@ -244,18 +252,30 @@ export class AcpHarness implements Harness {
 			if (!result.windlassSessionId) await request("session/new", settings, accept());
 			const sessionId = result.windlassSessionId;
 			if (!sessionId) throw new Error(`${profile.name} returned no session id.`);
-			const requested = input.mode ?? (modes.select ? modes.current : "auto");
+			const requested = input.mode ?? (profile.id === "codex" ? containerMode : modes.select ? modes.current : "auto");
+			if (profile.id === "codex") {
+				modes.modes = codexModes(handle.profile).filter(m => modes.modes.some(raw => raw.id === m.id));
+				if (!modes.modes.some(m => m.id === requested)) throw new Error(innerModesReason);
+			}
 			const chosen = modes.modes.some(m => m.id === requested) ? requested : modes.current;
 			if (!chosen) throw new Error(`${profile.name} did not report its current mode.`);
 			if (modes.select) {
 				const reply = await request("session/set_config_option", { sessionId, configId: modes.select.id, value: chosen });
 				readConfigs(reply.configOptions);
 				modes = modeSelection(null, reply.configOptions);
+				if (profile.id === "codex") {
+					if (modes.current !== requested) throw new Error(innerModesReason);
+					modes.modes = codexModes(handle.profile).filter(m => modes.modes.some(raw => raw.id === m.id));
+				}
 				if (!modes.current || !modes.modes.some(m => m.id === modes.current)) throw new Error(`${profile.name} did not acknowledge its mode.`);
 				input.onAcpModes?.(modes.current, modes.modes, modes.current === requested ? undefined : requested);
 			} else {
 				input.onAcpModes?.(chosen, modes.modes, chosen === requested ? undefined : requested);
 				await request("session/set_mode", { sessionId, modeId: chosen });
+			}
+			if (profile.id === "codex") {
+				const collaboration = input.planFirst ? "plan" : "default";
+				await request("session/set_config_option", {sessionId,configId:"collaboration_mode",value:collaboration});
 			}
 			const priorModel = text(configs.model?.currentValue);
 			const priorEffort = text(configs.effort?.currentValue);
@@ -297,13 +317,15 @@ export class AcpHarness implements Harness {
 			acp.stopReason = text((await answer).stopReason) || null;
 		} catch (error) {
 			if (!input.signal?.aborted) {
-				const signedOut = error instanceof AcpError && profile.signedOutCodes.includes(error.code);
+				const info = profile.id === "codex" && error instanceof AcpError ? error.codexErrorInfo : undefined;
+				const status = Object.values(object(info)).map(v => object(v).httpStatusCode).find(Number.isInteger);
+				const signedOut = error instanceof AcpError && (profile.signedOutCodes.includes(error.code) || info === "unauthorized" || status === 401);
 				const said = error instanceof Error ? error.message : String(error);
 				const invalid = phase === "running" && error instanceof AcpError && error.code === -32602;
 				// OpenCode wraps provider messages as JSON-RPC internal errors and omits the HTTP status.
 				const openCodePromptError = profile.id === "opencode" && phase === "running" && error instanceof AcpError && error.code === -32603;
 				const message = openCodePromptError ? said.replace(/^Internal error: /, "") : said;
-				const usageLimit = openCodePromptError && message === "The provider's usage or rate limit was reached.";
+				const usageLimit = status === 429 || info === "usageLimitExceeded" || openCodePromptError && message === "The provider's usage or rate limit was reached.";
 				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : "engine";
 				result.failure = { reason, message: redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : message) };
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";

@@ -20,7 +20,12 @@ export const OPENCODE: AcpProfile = {
 	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
 };
 
-export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE };
+export const CODEX: AcpProfile = {
+	id: "codex", name: "Codex", command: ["wlp-codex-acp"], leftovers: "codex",
+	profiles: ["docker-hardened","docker-windlass-sandbox"], steering: "_session/steering", signedOutCodes: [-32000],
+};
+
+export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };
 
 export function initialHarnessModels(options?: HarnessOptions): ModelList {
 	if (options) return { source: "harness", defaultModel: options.defaultModel, models: options.models, fetchedAt: options.checkedAt };
