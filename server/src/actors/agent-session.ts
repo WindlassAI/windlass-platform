@@ -1108,9 +1108,13 @@ function tail(text: string, lines = 6, chars = 800): string {
 	return kept.length > chars ? kept.slice(-chars) : kept;
 }
 
-/** Docker normally keeps sessions on a shared volume. A reviewer always owns its data. */
-function privateSessionData(meta: SessionMeta, sandboxes: SandboxLayer["sandboxes"]): boolean {
-	return !capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox;
+/**
+ * Docker normally keeps sessions on a shared volume. A reviewer always owns its data, and so does a
+ * hardened Docker sandbox made by a provider that gives each its own (`Sandboxes.privateSessionData`).
+ */
+async function privateSessionData(meta: SessionMeta, sandboxes: SandboxLayer["sandboxes"]): Promise<boolean> {
+	return !capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox
+		|| (await sandboxes.privateSessionData?.(meta.profile)) === true;
 }
 
 interface SnapshotPlan {
@@ -1245,7 +1249,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 		handle = await layer.sandboxes.connect(id);
 		if (!handle) throw new TurnProblem("The new sandbox disappeared right after it was created.");
-		if (meta.windlassSessionId && privateSessionData(meta, layer.sandboxes)) {
+		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes))) {
 			// Windlass's own session went with the old sandbox. Its copy is put into the new one before anything
 			// else happens there; without one, asking for the session would only fail the turn.
 			if (!capabilitiesOf(meta.harness).backups || !(await restoreBackup(c, meta, turn, handle, layer))) {
@@ -1255,7 +1259,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			}
 		}
 		// Where Windlass's session outlives the sandbox, the agent remembers files this new workspace does not have, and is told.
-		if (meta.windlassSessionId && !privateSessionData(meta, layer.sandboxes)) meta.freshWorkspace = true;
+		if (meta.windlassSessionId && !(await privateSessionData(meta, layer.sandboxes))) meta.freshWorkspace = true;
 	}
 
 	if (!meta.cloned && handle.snapshot) {
@@ -1392,7 +1396,7 @@ async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: S
 async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
 	const backups = layer.backups;
 	const session = meta.windlassSessionId;
-	if (!backups || !privateSessionData(meta, layer.sandboxes) || !session) return;
+	if (!backups || !(await privateSessionData(meta, layer.sandboxes)) || !session) return;
 	// Until a copy is saved below, the one there is, if any, is behind this turn.
 	meta.memoryTurn = turn;
 	// A session that is going away needs no copy, and an actor that is stopping has no time for one.
@@ -1440,7 +1444,7 @@ async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (backupRemoved.has(meta)) return;
 	try {
 		const layer = await layerOf(c, meta);
-		if (!layer.backups || !privateSessionData(meta, layer.sandboxes)) return;
+		if (!layer.backups || !(await privateSessionData(meta, layer.sandboxes))) return;
 		for (let attempt = 1; ; attempt += 1) {
 			try {
 				await layer.backups.remove({ uid: meta.uid, sessionId: meta.sessionId });
@@ -2358,7 +2362,7 @@ async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers
 	// A session whose project names no server asks nobody: the user's own have no approval.
 	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
-	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
+	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: await privateSessionData(meta, sandboxes), project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
 	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
 	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
 	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
@@ -3537,7 +3541,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			const servers: ServerQuestionContext = {
 				profile,
 				demo: meta.demo,
-				dataInSandbox: privateSessionData(meta, layer.sandboxes),
+				dataInSandbox: await privateSessionData(meta, layer.sandboxes),
 				project: projectOf(meta),
 				machine: machineOf(meta),
 				hostedEgress: meta.place.kind === "hosted" ? layer.sandboxes.egress?.() : undefined,
@@ -5182,7 +5186,7 @@ export const agentSession = actor({
 			const work = (async () => {
 				const layer = await layerOf(c, meta);
 				if (id) {
-					const memory = !meta.windlassSessionId ? null : !privateSessionData(meta, layer.sandboxes) ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
+					const memory = !meta.windlassSessionId ? null : !(await privateSessionData(meta, layer.sandboxes)) ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
 					await removeSandbox(c, meta, id, throughReviewRun === undefined ? freedNote(memory) : "Released the reviewer’s sandbox for the finished run.");
 					console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
 				}

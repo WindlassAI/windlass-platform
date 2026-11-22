@@ -38,7 +38,7 @@ import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
-import { findProfile } from "./profiles.js";
+import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
 
@@ -536,6 +536,13 @@ class RunnerSandboxes implements Sandboxes {
 	readonly sessionsLiveInSandbox = false;
 
 	constructor(private readonly link: RunnerLink) {}
+
+	/** Except in a hardened sandbox, where a runner that reports `sessionVolumes` gives each its own. */
+	async privateSessionData(profile: SandboxProfileId): Promise<boolean> {
+		if (!SESSION_VOLUME_PROFILES.includes(profile)) return false;
+		const facts = this.link.known ?? await this.link.facts().catch(() => null);
+		return facts?.report?.sessionVolumes === true;
+	}
 
 	price(): null {
 		return null;

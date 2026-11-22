@@ -164,6 +164,12 @@ export interface Sandboxes {
 	 */
 	readonly sessionsLiveInSandbox: boolean;
 	/**
+	 * Where the sessions do not live in the sandbox: whether a sandbox made now with `profile` still has a
+	 * data directory of its own, which goes with it as on E2B (Docker's hardened profile, whose commands
+	 * could otherwise read the user's other sessions). Absent: never. Never throws.
+	 */
+	privateSessionData?(profile: SandboxProfileId): Promise<boolean>;
+	/**
 	 * What this provider's sandboxes may reach, where the deployment sets it: on E2B, WLP_E2B_NETWORK
 	 * (e2b/network.ts). Absent where the provider has no such setting (Docker).
 	 */

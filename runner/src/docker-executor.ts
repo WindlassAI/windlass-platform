@@ -109,10 +109,14 @@ export class Executor extends MachineDocker {
 		this.network = new EgressNetwork(this, policy);
 		const network = this.network.sandboxNetwork();
 		const slots = this.slots;
-		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage, dataVolume: async () => {
-			await this.ownedVolume(true);
-			return this.volume;
-		} });
+		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage,
+			dataVolume: async (_uid, sandbox) => {
+				const name = sandbox === undefined ? this.volume : this.sessionVolume(sandbox);
+				await this.ownedVolume(true, name, sandbox);
+				return name;
+			},
+			dropDataVolume: (_uid, sandbox) => this.dropVolume(this.sessionVolume(sandbox)),
+		});
 		if (codex) {
 			this.codexPin = harnessImage("codex");
 			if (!this.codexPin) throw new Refusal("This runner was built without the Codex image.");
@@ -417,7 +421,7 @@ export class Executor extends MachineDocker {
 			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", gitMirrors: true, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", gitMirrors: true, sessionVolumes: true, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,

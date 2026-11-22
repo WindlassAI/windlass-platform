@@ -1,7 +1,7 @@
 /** The user volume holds Windlass session data. Older servers also put token files there. */
 
 import { assertName } from "../signin/material.js";
-import { DATA_DIR, LABEL, createVolume, helperFlags, runHelper, tmpName, volumeExists } from "./docker.js";
+import { DATA_DIR, LABEL, createVolume, helperFlags, removeVolume, runHelper, tmpName, volumeExists } from "./docker.js";
 import { removeRunningTokenFiles } from "./sandboxes.js";
 import { TOKEN_FILE_PREFIX } from "./token-file.js";
 
@@ -23,6 +23,27 @@ export async function ensureDataVolume(name: string, labels: Record<string, stri
 	const helper = tmpName();
 	const result = await runHelper([...helperFlags(helper, "none"), "-v", `${name}:${DATA_DIR}`], helper, ["true"], { timeoutMs: 60_000, image });
 	if (result.code !== 0) throw new Error(`could not initialise volume ${name}: ${result.stderr.trim()}`);
+}
+
+/** A hardened session's own data volume on the hosted provider (SESSION_VOLUME_PROFILES), by its sandbox id. */
+export const sessionVolume = (uid: string, sandbox: string) => {
+	if (!/^[a-f0-9]{12}$/.test(sandbox)) throw new Error("invalid sandbox id");
+	return `${userVolume(uid)}-${sandbox}`;
+};
+
+/**
+ * Made right before its container, which is the first to mount it, so Docker copies the image
+ * directory's owner and mode onto it then. Labelled with the user and the sandbox.
+ */
+export async function ensureSessionVolume(uid: string, sandbox: string): Promise<string> {
+	const name = sessionVolume(uid, sandbox);
+	if (!(await volumeExists(name))) await createVolume(name, { [`${LABEL}.uid`]: uid, [`${LABEL}.sandbox`]: sandbox });
+	return name;
+}
+
+/** Removes a session's own data volume when it is there. Checks the platform's label first (removeVolume). */
+export async function dropSessionVolume(uid: string, sandbox: string): Promise<void> {
+	await removeVolume(sessionVolume(uid, sandbox));
 }
 
 export function ensureUserVolume(uid: string, image?: string): Promise<void> {

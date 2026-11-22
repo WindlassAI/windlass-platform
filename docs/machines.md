@@ -57,6 +57,28 @@ The transport can still be observed or interrupted by an edge terminating TLS. T
 protects message authenticity and ordering. The operator keeps the offline root separate from the
 platform's token-signing, sealing and backup keys. [Self-hosted cutover and rotation](../deploy/selfhost/README.md#enable-signed-runner-connections)
 
+### Per-session data volumes
+
+Commands in a `docker-hardened` sandbox run directly in the container, so whatever its Windlass data
+directory holds is theirs to read and change. A runner of this release therefore gives each new hardened
+Windlass sandbox a volume of its own, `wlp-machine-<machine id>-<raw id>`. It carries the machine and
+pairing labels plus `dev.windlass-platform.sandbox=<raw id>`, and the container carries
+`dev.windlass-platform.data=own`. The runner makes the volume right before `docker run` and removes it
+with the container on destroy. `prune` removes it with every other volume of the pairing. A
+`docker-windlass-sandbox` session keeps the shared volume: bubblewrap hides the data directory from its
+commands, and the user's sessions there keep sharing Windlass's project-wide MCP approvals. The
+reviewer and the Claude Code, OpenCode and Codex harnesses mount no Windlass data volume at all, as before.
+The hosted Docker provider does the same with `wlp-user-<uid>-<id>`.
+
+A hardened session's Windlass memory is now in its sandbox, as on E2B: when the sandbox is freed or lost,
+the next sandbox starts a new Windlass session, and the timeline says so. The server learns this from
+the report's `sessionVolumes`. A runner sends that field only to a server whose welcome names the
+`session-volumes` capability, which a server names only to runners of 0.3.0 or later. Without the field
+(a 0.2.x runner, or a server before this release) the server treats the machine's hardened sessions as
+sharing the machine volume, which is what such a runner does.
+
+A container made before the upgrade keeps the mount it was made with until it is recreated.
+
 ### Profiles allowed on this machine
 
 The `--allow-profile` rules are in the [runner reference](../web/src/docs/content/runner.md#allowed-profiles).
@@ -132,7 +154,8 @@ protocol names: it makes a session's container, runs the platform's commands in 
 it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code image pins come from the runner build. It touches only containers it labelled for its own machine
 (`dev.windlass-platform.machine=<machine id>`) and keeps Windlass data in
 `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
-volume is on Docker. Each agent container gets 256 CPU shares. The runner scales CPU, memory and process limits
+volume is on Docker. A Windlass session in a new `docker-hardened` sandbox gets a volume of its own
+instead, `wlp-machine-<machine id>-<raw id>` (see [Per-session data volumes](#per-session-data-volumes)). Each agent container gets 256 CPU shares. The runner scales CPU, memory and process limits
 by its slot count. On a machine with one or two CPUs, one slot defaults to half the CPUs, 1536 MiB
 and 512 processes. Larger machines reserve resources for the host before sizing their slots.
 The runner applies these limits on creation and reconnect. A limit below current memory usage waits until the sandbox restarts. Creation requires 5 GB of free disk. It stops a

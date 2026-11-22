@@ -39,7 +39,7 @@ import { type CreateSandboxInput, type ExecOptions, type ExecResult, type Listed
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
 import { codexDefaultMode } from "./codex-modes.js";
-import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
+import { SESSION_VOLUME_PROFILES, commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
 
@@ -378,6 +378,8 @@ interface Inspected {
 	status: string;
 	profile: SandboxProfileId;
 	uid: string;
+	/** Its data volume is its own (OWN_DATA_LABEL), and goes with it. */
+	ownData: boolean;
 }
 
 function stateOf(status: string): "none" | "running" | "paused" {
@@ -444,11 +446,15 @@ export type DockerSandboxOptions = {
 	machine: string | null;
 } & ({
 	/**
-	 * Makes sure the data volume of `uid`'s containers exists and returns its name: the one volume a
-	 * container mounts, at Windlass's data directory. The hosted provider's is `wlp-user-<uid>`, which
-	 * it also takes old sign-ins out of (volumes.ts); a runner's is its own, so the two never share one.
+	 * Makes sure a data volume of `uid`'s exists and returns its name: the one volume a container
+	 * mounts, at Windlass's data directory. Without `sandbox`, the volume the user's sessions share: the
+	 * hosted provider's is `wlp-user-<uid>`, which it also takes old sign-ins out of (volumes.ts); a
+	 * runner's is its own, so the two never share one. With `sandbox` (a raw id), the volume of that one
+	 * sandbox (SESSION_VOLUME_PROFILES), labelled `${LABEL}.sandbox=<id>`.
 	 */
-	dataVolume(uid: string): Promise<string>;
+	dataVolume(uid: string, sandbox?: string): Promise<string>;
+	/** Removes the volume `dataVolume(uid, sandbox)` made, when it is there. */
+	dropDataVolume(uid: string, sandbox: string): Promise<void>;
 	sessionRelay?: never;
 	harness?: never;
 } | {
@@ -458,6 +464,9 @@ export type DockerSandboxOptions = {
 	harness?: "claude" | "opencode" | "codex";
 	sessionRelay(): Promise<{ env: string[]; nonce: string }>;
 });
+
+/** On a container whose data volume is its own. */
+export const OWN_DATA_LABEL = `${LABEL}.data=own`;
 
 export class DockerSandboxes implements Sandboxes {
 	private readonly image: string;
@@ -493,13 +502,17 @@ export class DockerSandboxes implements Sandboxes {
 		const unit = this.resources(size);
 		const matches = shares === "256" && Number(nanos) === Math.round(unit.cpus * 1e9) && Number(memory) === unit.memoryBytes
 			&& Number(swap) === unit.memoryBytes && Number(pids) === unit.pids;
-		return { status, profile: labels[LABEL + ".profile"] as SandboxProfileId, uid: labels[LABEL + ".uid"],
+		return { status, profile: labels[LABEL + ".profile"] as SandboxProfileId, uid: labels[LABEL + ".uid"], ownData: labels[LABEL + ".data"] === "own",
 			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory),
 			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
 	readonly sessionsLiveInSandbox = false;
+	/** Except where the profile gives each sandbox its own (SESSION_VOLUME_PROFILES). */
+	async privateSessionData(profile: SandboxProfileId): Promise<boolean> {
+		return SESSION_VOLUME_PROFILES.includes(profile);
+	}
 	/** A container runs until it is stopped. */
 	readonly idleStopMs = null;
 
@@ -536,11 +549,13 @@ export class DockerSandboxes implements Sandboxes {
 		const profile = findProfile(input.profile);
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
-		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
-		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid);
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
 		const id = (harness ? harness + "-" : "") + randomId(6);
 		const name = containerName(id);
+		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
+		// A session whose commands run directly in the container gets a volume of its own.
+		const own = !harness && !input.privateData && SESSION_VOLUME_PROFILES.includes(input.profile);
+		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
 		const relay = await this.options.sessionRelay?.();
@@ -578,6 +593,7 @@ export class DockerSandboxes implements Sandboxes {
 				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
 				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
 				...(mirror ? ["--mount", mirror] : []),
+				...(own ? ["--label", OWN_DATA_LABEL] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,
 			],
@@ -585,6 +601,7 @@ export class DockerSandboxes implements Sandboxes {
 		);
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
+			if (own) await this.dropOwnVolume(input.uid, id);
 			const message = result.stderr.trim();
 			// Eviction can race docker run. Older daemons also lack volume-subpath.
 			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message)) return this.create({ ...input, mirrorRepo: undefined });
@@ -596,9 +613,14 @@ export class DockerSandboxes implements Sandboxes {
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", 'git init -q && git commit -q --allow-empty -m "Empty workspace"'], { timeoutMs: 60_000 });
 		if (init.code !== 0) {
 			await docker(["rm", "-f", name]);
+			if (own) await this.dropOwnVolume(input.uid, id);
 			throw new Error(`could not set up the workspace: ${init.stderr.trim()}`);
 		}
 		return id;
+	}
+
+	private async dropOwnVolume(uid: string, id: string) {
+		if (this.options.sessionRelay === undefined) await this.options.dropDataVolume(uid, id);
 	}
 
 	private get mirrorScope() {
@@ -692,5 +714,6 @@ export class DockerSandboxes implements Sandboxes {
 		if (found === null) return;
 		if (found.status === "running") await forgetTokenFile(id);
 		await docker(["rm", "-f", "-v", containerName(id)], { timeoutMs: 60_000, check: true });
+		if (found.ownData) await this.dropOwnVolume(found.uid, id);
 	}
 }

@@ -773,7 +773,9 @@ call questions go.
 - **Docker.** Windlass's data is the user's volume and every project directory is `/workspace`, so Windlass's own
   record starts the server in all of that user's sessions with the same definition, whatever the repository, and
   the platform's record matters only after Windlass's expires. The question and panel say "in all your sessions:
-  they share Windlass's data".
+  they share Windlass's data". A `docker-hardened` sandbox has a data volume of its own
+  ([machines](machines.md#per-session-data-volumes)), so there, as on E2B, Windlass's record stays in the
+  sandbox and the platform's record is what the user's other sessions go by.
 - **Tool calls.** Sandboxed profiles ask before every MCP tool call, through the platform's question. In the
   hardened profile the first call runs unasked; its result is untrusted content, so from then on Windlass asks
   before unsandboxable commands and the next MCP call. Only for the user's own servers can the platform answer,
