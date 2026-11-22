@@ -1265,9 +1265,14 @@ async function main(): Promise<void> {
 
 		await check("a server restart during a machine turn interrupts it, ends its engine and lets the next prompt run", async () => {
 			const watch = new Watch(client, uid, main.id, token);
+			let closed = false;
 			try {
 				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
 				const box = await until("the turn's engine to stream", () => watch.windlass(number) >= 3 && boxesOf(main.id).find((box) => box.engines.size === 1));
+				// Close the watcher while its server is there: RivetKit's client can leave the dispose of a connection
+				// whose reconnect gave up across the restart unanswered. The turn goes on without it.
+				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+				closed = true;
 				await within("the server to stop", server.stop(), 90_000);
 				await within("the server to start again", server.start(), 90_000);
 				await machineIs("online");
@@ -1280,7 +1285,7 @@ async function main(): Promise<void> {
 				assert(ended.outcome === "succeeded", `next turn ended ${ended.outcome}: ${ended.message}`);
 				return `turn ${number} interrupted, its engine stopped; turn ${ended.turn} succeeded`;
 			} finally {
-				await within("the watcher of the restarted turn to close", watch.conn.dispose(), 15_000);
+				if (!closed) await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
 			}
 		});
 
