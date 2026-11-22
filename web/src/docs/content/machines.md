@@ -184,16 +184,26 @@ The choice is saved at once. A machine that is not on **Any feature** says so on
 
 ## Agents on your machine
 
-On a machine of yours you can run two more agents, each with your own account:
+On a machine of yours you can run three more agents, each with your own account:
 
 - **Claude Code**, with your Claude subscription;
-- **OpenCode**, with a model provider of your choice, or with OpenCode's free public models.
+- **OpenCode**, with a model provider of your choice, or with OpenCode's free public models;
+- **Codex**, with an OpenAI API key (`windlass-runner login codex` in the machine's terminal).
 
-An agent runs only on a machine whose runner was started with its flag, `--harness claude` or `--harness opencode`. Repeat `--harness` to offer both. The **Enable** boxes of the setup command add these flags, and the command setup prints keeps them. The runner must be a build that includes that agent's image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image." or "Use --harness opencode with a runner built with the pinned OpenCode image."
+An agent runs only on a machine whose runner was started with its flag: `--harness claude`, `--harness opencode` or `--harness codex`. Repeat `--harness` to offer more than one. The **Enable** boxes of the setup command add these flags, and the command setup prints keeps them. The runner must be a build that includes that agent's image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image.", "Use --harness opencode with a runner built with the pinned OpenCode image." or "Use --harness codex with a runner built with the pinned Codex image."
 
 The runner does not save `--harness`. Give it each time you start the runner, or the agent is no longer offered.
 
-Both agents run only in the hardened profile, **Hardened Docker on your machine "…"**. Either can build a work item filed on this machine, without asking and in Quick only (see [Choose the agent](/docs/factory#choose-the-agent)). Neither has a tool to publish: open the pull request from the session panel. Neither gets your saved secrets.
+Claude Code and OpenCode run only in the hardened profile, **Hardened Docker on your machine "…"**. Either can build a work item filed on this machine, without asking and in Quick only (see [Choose the agent](/docs/factory#choose-the-agent)).
+
+Codex runs in both profiles, with different modes:
+
+- **Hardened Docker: Container access.** Commands run as `agent` in the session's container, under the machine's egress setting, and Codex asks for nothing. The container is the boundary.
+- **Windlass sandbox: Read-only or Workspace access (the default).** Every command runs in Codex's own sandbox, without network. Workspace access can change files in the workspace. Codex is offered here only once the runner has checked that its sandbox works on this machine. A request to go outside the sandbox is refused, even if you would allow it. The timeline then notes "Codex asked to run a command outside its sandbox; refused on this profile." or "Codex asked to edit files outside its sandbox; refused on this profile."
+
+On either profile Codex ignores a repository's own Codex settings (`.codex/`), and a repository's setup command cannot change Codex's settings. Codex cannot build work items yet: start a Codex session instead.
+
+None of these agents has a tool to publish: open the pull request from the session panel. None gets your saved secrets.
 
 ## Sign agents in
 
