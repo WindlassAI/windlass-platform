@@ -156,7 +156,7 @@ A sandbox is paused 10 minutes after its last turn. A paused sandbox uses no san
 
 A new sandbox has a fresh workspace. The platform clones the repository at the branch the session started from and runs its setup command. Where the session's work was pushed, it then puts the workspace on the session's branch as GitHub has it. What was only in the old sandbox is lost. The agent is told with its next prompt.
 
-Where the platform keeps a copy of the agent's memory of the conversation, it restores it, and the timeline says "Restored the agent's memory of the conversation into the new sandbox." Otherwise the agent starts without it, and the timeline says so. On Docker, the agent's memory outlives the sandbox, except in a hardened Docker sandbox: its Windlass data is its own, so that other sessions' commands cannot read it, and it goes with the sandbox.
+Where the platform keeps a copy of the agent's memory of the conversation, it restores it, and the timeline says "Restored the agent's memory of the conversation into the new sandbox." Otherwise the agent starts without it, and the timeline says so. On Docker, the agent's memory outlives the sandbox, except in a hardened Docker sandbox: its Windlass data is its own, so that other sessions' commands cannot read it, and it goes with the sandbox. A hardened Docker sandbox made before sandboxes had data of their own still uses the shared data, so the platform removes it when the session next uses it, and the session goes on in a new sandbox as after a lost one.
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 

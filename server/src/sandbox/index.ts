@@ -13,7 +13,7 @@ import type { MemorySignInDirectory } from "../signin/directory.js";
 import { type SignInLogins, type SignInTokens, actorSignIns, memorySignIns } from "../signin/facade.js";
 import { DockerLoginRunner } from "./logins.js";
 import { DockerSandboxes } from "./sandboxes.js";
-import { dropSessionVolume, ensureSessionVolume, ensureUserVolume, removeTokenFiles, userVolume } from "./volumes.js";
+import { dropSessionVolume, ensureSessionVolume, ensureUserVolume, removeTokenFiles, sessionVolume, userVolume } from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
 
 export interface DockerSandboxLayer extends SandboxLayer {
@@ -70,6 +70,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 				return userVolume(uid);
 			},
 			dropDataVolume: dropSessionVolume,
+			ownVolumeName: sessionVolume,
 		}),
 		windlass: new DockerWindlass(signIns.tokens, { image }),
 		logins: signIns.logins,

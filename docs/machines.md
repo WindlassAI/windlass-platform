@@ -61,22 +61,38 @@ platform's token-signing, sealing and backup keys. [Self-hosted cutover and rota
 
 Commands in a `docker-hardened` sandbox run directly in the container, so whatever its Windlass data
 directory holds is theirs to read and change. A runner of this release therefore gives each new hardened
-Windlass sandbox a volume of its own, `wlp-machine-<machine id>-<raw id>`. It carries the machine and
-pairing labels plus `dev.windlass-platform.sandbox=<raw id>`. The runner makes the volume right before `docker run` and removes it
-with the container on destroy. `prune` removes it with every other volume of the pairing. A
-`docker-windlass-sandbox` session keeps the shared volume: bubblewrap hides the data directory from its
-commands, and the user's sessions there keep sharing Windlass's project-wide MCP approvals. The
-reviewer and the Claude Code, OpenCode and Codex harnesses mount no Windlass data volume at all, as before.
-The hosted Docker provider does the same with `wlp-user-<uid>-<id>`.
+Windlass sandbox a volume of its own, `wlp-machine-<machine id>-<raw id>`, when its server's welcome names
+the `session-volumes` capability. The volume carries the machine and pairing labels plus
+`dev.windlass-platform.sandbox=<raw id>`. The runner makes it right before `docker run` and removes it with
+the container on destroy, also when the container was already gone. `prune` removes it with every other
+volume of the pairing. A `docker-windlass-sandbox` session keeps the shared volume: bubblewrap hides the data
+directory from its commands, and the user's sessions there keep sharing Windlass's project-wide MCP approvals.
+The reviewer and the Claude Code, OpenCode and Codex harnesses mount no Windlass data volume at all, as before.
+The hosted Docker provider does the same with `wlp-session-data-<uid>-<id>`, labelled with the user and the
+sandbox. Its prefix is not `wlp-user-`, since a user id may contain `-`. It reuses or removes a volume only
+when those labels match.
 
 A hardened session's Windlass memory is now in its sandbox, as on E2B: when the sandbox is freed or lost,
-the next sandbox starts a new Windlass session, and the timeline says so. The server learns this from
-the report's `sessionVolumes`. A runner sends that field only to a server whose welcome names the
-`session-volumes` capability, which a server names only to runners of 0.3.0 or later. Without the field
-(a 0.2.x runner, or a server before this release) the server treats the machine's hardened sessions as
-sharing the machine volume, which is what such a runner does.
+the next sandbox starts a new Windlass session, and the timeline says so. The server learns this per
+sandbox: the runner's answer to `connect` carries `ownData` for a sandbox that mounts a volume of its own,
+and the session records it for that sandbox. A runner upgraded or downgraded under a live session therefore
+changes nothing for the sandbox the session already has. The report's `sessionVolumes` only decides the
+profile's description. A runner sends `sessionVolumes` and `ownData` only to a server whose welcome names
+`session-volumes`, which a server names only to runners of 0.3.0 or later. A runner whose server did not
+name it (a server before this release) gives hardened sandboxes the machine volume, as a 0.2.x runner does,
+and such a server treats them as sharing it, which they do.
 
-A container made before the upgrade keeps the mount it was made with until it is recreated.
+A hardened Windlass container that still mounts the shared volume is removed when the session next
+connects to it, on a runner whose server names `session-volumes` and on the hosted provider alike. Such a
+container was made before this release, or by this runner for an older server. The session goes on in a
+new sandbox, as after a lost one: the timeline says the files of the old one are gone, and the agent starts
+without its memory of the conversation. The shared volume itself stays.
+
+A volume whose container is gone is swept: by the runner as it lists its sandboxes, at most every
+10 minutes, and by the hosted server at start and every 30 minutes. Only volumes that carry the sandbox
+label (and, on a runner, the pairing's labels) and are older than 10 minutes are swept, since a younger
+one may be a create that has not reached `docker run` yet. Docker refuses to remove a volume a container
+still mounts.
 
 ### Profiles allowed on this machine
 

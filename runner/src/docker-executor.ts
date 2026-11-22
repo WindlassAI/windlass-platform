@@ -102,6 +102,14 @@ export class Executor extends MachineDocker {
 	publishReport?: () => void;
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
+	/**
+	 * The connected server named `session-volumes` in its welcome: it reads the report's `sessionVolumes`
+	 * and a connect's `ownData`, so a new hardened Windlass sandbox gets a data volume of its own. A server
+	 * that did not name it would take the data for shared and fail the next turn with session_not_found,
+	 * so its sandboxes mount the machine volume as before. Set by the control connection on each welcome.
+	 */
+	sessionVolumes = false;
+	private nextVolumeSweep = 0;
 
 	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false, readonly codex = false) {
 		super(identity);
@@ -115,7 +123,8 @@ export class Executor extends MachineDocker {
 				await this.ownedVolume(true, name, sandbox);
 				return name;
 			},
-			dropDataVolume: (_uid, sandbox) => this.dropVolume(this.sessionVolume(sandbox)),
+			dropDataVolume: (_uid, sandbox) => this.dropVolume(this.sessionVolume(sandbox), sandbox),
+			ownVolumeName: (_uid, sandbox) => this.sessionVolume(sandbox),
 		});
 		if (codex) {
 			this.codexPin = harnessImage("codex");
@@ -299,6 +308,20 @@ export class Executor extends MachineDocker {
 			if ((!onlySession || box.sessionId === onlySession) && !found.has(id)) this.boxes.delete(id);
 		}
 		this.dockerHealth = { ok: true };
+		// Only in the service, after its welcome: `status` and `prune` list sandboxes too.
+		if (!onlySession && this.inventoryStarted && Date.now() >= this.nextVolumeSweep) {
+			this.nextVolumeSweep = Date.now() + 10 * 60_000;
+			await this.sweepVolumes();
+		}
+	}
+	/**
+	 * Removes this pairing's session volumes whose container is gone (`DockerSandboxes.sweepDataVolumes`):
+	 * in the serial order, beside the creates, and only those older than `minAgeMs`, so one a create is
+	 * about to mount stays.
+	 */
+	async sweepVolumes(minAgeMs?: number) {
+		try { return await this.provider.sweepDataVolumes(minAgeMs, this.labels); }
+		catch { return 0; }
 	}
 	async secureCredentialPath() {
 		if (this.credentialPathChecked) return;
@@ -485,7 +508,7 @@ export class Executor extends MachineDocker {
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
-		const raw = harness ? await withLoginVolume(this, () => (harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots });
+		const raw = harness ? await withLoginVolume(this, () => (harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes });
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		try { await this.network.attach(raw, containerName(raw)); }
@@ -574,16 +597,22 @@ export class Executor extends MachineDocker {
 				});
 			}
 			if (box.state === "paused") this.room();
-			const handle = await this.provider.connect(box.raw);
+			const handle = await this.provider.connect(box.raw, { ownData: this.sessionVolumes });
 			if (!!box.resizePending !== !!handle?.resizePending) {
 				box.resizePending = handle?.resizePending || undefined;
 				this.publishReport?.();
 			}
 			this.noteState(id, box, handle ? "running" : "none");
-			if (!handle) return null;
+			if (!handle) {
+				// Gone, or removed for mounting the machine volume (`DockerSandboxes.connect`): its forwarder goes too.
+				if (box.egress === "restricted" || box.harness) await this.network.detach(box.raw).catch(() => {});
+				return null;
+			}
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
-			return { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}) };
+			return { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
+				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
+				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}) };
 		}
 		// The server names the token by the external sandbox id; the provider knows the raw id.
 		if (box.state === "running") {

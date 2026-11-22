@@ -16,6 +16,8 @@ import { setTimeout as wait } from "node:timers/promises";
 import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
+import { validValue } from "../server/src/runner/protocol.js";
+import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
 	CAPABILITIES_RUNNER_VERSION, REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, reportFor, secondHello, versionAtLeast, welcomeCapabilities, type Report,
@@ -196,7 +198,7 @@ const lease = (validForMs?: number) => Response.json({ endpoint: null, namespace
 const answer = (status: number, body: unknown = {}) => Response.json(body, { status });
 
 async function withControl(answers: Response[], exercise: (runner: {
-	status: string[]; online(socketIndex?: number, capabilities?: string[]): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
+	status: string[]; online(socketIndex?: number, capabilities?: string[]): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number; owner: Executor;
 }) => Promise<void>) {
 	const abort = new AbortController();
 	const status: string[] = [];
@@ -217,7 +219,7 @@ async function withControl(answers: Response[], exercise: (runner: {
 	} as unknown as Executor;
 	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host", null);
 	try {
-		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
+		const test = exercise({ status, owner, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
 			async online(socketIndex = 0, capabilities?: string[]) {
 				await until(() => sockets.length > socketIndex);
 				const socket = sockets[socketIndex];
@@ -330,8 +332,48 @@ try {
 				const ws = await r.online(0, capabilities && [...capabilities]);
 				const report = ws.sent.find(f => f.kind === "report");
 				assert.equal(Object.hasOwn(report ?? {}, "sessionVolumes"), sent, `welcome capabilities ${JSON.stringify(capabilities)}`);
+				// And makes hardened sandboxes with data of their own only then: an older server would take the data for shared.
+				assert.equal(r.owner.sessionVolumes, sent, `owner.sessionVolumes after welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
 		}
+	});
+	await checkControl("the runner asks its provider for a sandbox with data of its own, and says a connect has it, only for a server that named session-volumes", async () => {
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		for (const named of [false, true]) {
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+			owner.sessionVolumes = named;
+			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			const asked: { create?: boolean; connect?: boolean } = {};
+			owner.provider.create = async (input) => { asked.create = input.ownData; return "0123456789ab"; };
+			owner.provider.connect = async (_raw, options) => {
+				asked.connect = options?.ownData;
+				return { cwd: "/workspace", ownData: true } as unknown as DockerSandboxHandle;
+			};
+			const id = await owner.create("s_volumes", "docker-hardened");
+			const found = await owner.lifecycle("connect", id, "s_volumes");
+			assert.deepEqual(asked, { create: named, connect: named });
+			assert.equal(found && typeof found === "object" && "ownData" in found, named);
+			assert.ok(validValue("connect", found));
+		}
+		// An older server's checks refuse a connect answer with a key they do not know, which is why it is not sent to one.
+		assert.ok(!validValue("connect", { cwd: "/workspace", profile: "docker-hardened", ownData: false }));
+	});
+	await checkControl("a session judges each sandbox by what was recorded when it was made, whatever the runner reports since", async () => {
+		const meta = (ownDataSandbox: string | null) => ({ profile: "docker-hardened" as const, ownDataSandbox });
+		const runner = (sessionVolumes: boolean) => ({ sessionsLiveInSandbox: false, privateSessionData: async () => sessionVolumes });
+		// Upgrade: the old sandbox was made with the machine volume; the runner now reports sessionVolumes.
+		assert.equal(await privateSessionData(meta(null), runner(true), "m_a-0123456789ab"), false, "upgrade: the old sandbox's data is shared, so it is kept");
+		assert.equal(await privateSessionData(meta("m_a-aaaaaaaaaaaa"), runner(true), "m_a-aaaaaaaaaaaa"), true, "upgrade: the new sandbox's data is its own");
+		// Downgrade: the sandbox was made with its own volume; the runner now reports nothing.
+		assert.equal(await privateSessionData(meta("m_a-0123456789ab"), runner(false), "m_a-0123456789ab"), true, "downgrade: the old sandbox's data went with it");
+		assert.equal(await privateSessionData(meta("m_a-0123456789ab"), runner(false), "m_a-bbbbbbbbbbbb"), false, "downgrade: the next sandbox shares the machine volume");
+		// Without a sandbox, the guess the words use; a reviewer and E2B always own their data.
+		assert.equal(await privateSessionData(meta(null), runner(true), null), true);
+		assert.equal(await privateSessionData({ ...meta(null), origin: { role: "reviewer" } }, runner(false), "x"), true);
+		assert.equal(await privateSessionData(meta(null), { sessionsLiveInSandbox: true }, "x"), true);
 	});
 	await checkControl("a failed removal is audited and left unacknowledged on the live control socket", async () => {
 		await withControl([lease()], async r => {

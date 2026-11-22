@@ -118,7 +118,8 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  * server can name more without a new gate.
  *
  *   git-mirrors      the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
- *   session-volumes  the report's `sessionVolumes`
+ *   session-volumes  the report's `sessionVolumes` and a connect's `ownData`; without it, a runner
+ *                    gives no hardened sandbox a data volume of its own
  */
 export const SERVER_CAPABILITIES = ["git-mirrors", "session-volumes"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];

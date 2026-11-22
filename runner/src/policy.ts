@@ -125,8 +125,9 @@ export class MachineDocker {
 			throw new Refusal("The data volume must be a plain local volume owned by this machine.");
 		return true;
 	}
-	async dropVolume(name = this.volume) {
-		if (await this.ownedVolume(false, name)) await removeVolume(name);
+	/** `sandbox`: the volume must be that sandbox's own (`ownedVolume`). */
+	async dropVolume(name = this.volume, sandbox?: string) {
+		if (await this.ownedVolume(false, name, sandbox)) await removeVolume(name);
 	}
 	get pairingLabelFlags() {
 		return Object.entries(this.labels).flatMap(([k, v]) => ["--label", k + "=" + v]);

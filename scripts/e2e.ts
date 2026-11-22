@@ -392,8 +392,8 @@ function removeDemoVolumes(): string[] {
 	const failures: string[] = [];
 	const existing = execFileSync("docker", ["volume", "ls", "-q", "--filter", "label=dev.windlass-platform=1"], { encoding: "utf8" }).split("\n");
 	for (const uid of demoUids) {
-		// The user's volume, and any a hardened sandbox of theirs had of its own (wlp-user-<uid>-<id>).
-		for (const name of existing.filter((name) => name === `wlp-user-${uid}` || /^[a-f0-9]{12}$/.test(name.slice(`wlp-user-${uid}-`.length)) && name.startsWith(`wlp-user-${uid}-`))) {
+		// The user's volume, and any a hardened sandbox of theirs had of its own (wlp-session-data-<uid>-<id>).
+		for (const name of existing.filter((name) => name === `wlp-user-${uid}` || /^[a-f0-9]{12}$/.test(name.slice(`wlp-session-data-${uid}-`.length)) && name.startsWith(`wlp-session-data-${uid}-`))) {
 			try {
 				execFileSync("docker", ["volume", "rm", name], { stdio: "pipe" });
 			} catch (error) {

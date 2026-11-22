@@ -336,11 +336,15 @@ export function serverRecalledNote(question: TurnServerQuestion, outcome: TurnSe
 	}
 }
 
-/** What forgetting a remembered approval does where the session runs, and what it leaves: for the panel, under the list. */
-export function forgettingWords(context: Pick<ServerQuestionContext, "dataInSandbox">): string {
-	return context.dataInSandbox
-		? "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped."
-		: "Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.";
+/**
+ * What forgetting a remembered approval does where the session runs, and what it leaves: for the panel,
+ * under the list. `hardenedOwnData`, for words about every session of a repository where the data is
+ * shared (`dataInSandbox` false): a hardened Docker sandbox has Windlass data of its own all the same.
+ */
+export function forgettingWords(context: Pick<ServerQuestionContext, "dataInSandbox"> & { hardenedOwnData?: boolean }): string {
+	if (context.dataInSandbox) return "Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.";
+	if (context.hardenedOwnData) return "With the Docker + Windlass sandbox profile, forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: those sessions share that record. A hardened Docker sandbox has Windlass data of its own, so there it holds for the next session or sandbox. A running server is not stopped.";
+	return "Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.";
 }
 
 /** The line for an approval given in the session's panel while no question about the server was open. */

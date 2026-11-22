@@ -48,13 +48,13 @@ import type { SandboxProfileId, WindlassEvent } from "../server/src/contract.js"
 import { type AccessToken, type AccessTokens, type RunTurnResult, type ScriptedModel, SandboxUserError, type TurnAnswer, type TurnControl, type TurnQuestion, type Windlass } from "../server/src/sandbox/api.js";
 import { AcpConnection, AcpError, LineSplitter } from "../server/src/sandbox/acp.js";
 import { DEMO_SCENARIOS, DEMO_SPARE_ANSWERS } from "../server/src/sandbox/demo.js";
-import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, PROCESS_MARK, docker, helperFlags, randomId, runHelper, tmpName } from "../server/src/sandbox/docker.js";
+import { DATA_DIR, IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, PROCESS_MARK, createVolume, docker, helperFlags, randomId, removeVolume, runHelper, tmpName } from "../server/src/sandbox/docker.js";
 import { ACCESS_TOKEN_FILE_ENV, NOT_SIGNED_IN, SIGN_IN_EXPIRED, SignInRefreshError, TOKEN_REJECTED, TOKEN_REPLACE_LEAD_MS, TOKEN_VALID_FOR_MS, loginTokenCommand } from "../server/src/sandbox/handoff.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import { DockerSandboxHandle, DockerSandboxes, containerName } from "../server/src/sandbox/sandboxes.js";
 import { TOKEN_REMOVED, tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { runSetupCommand } from "../server/src/sandbox/setup.js";
-import { ensureDataVolume } from "../server/src/sandbox/volumes.js";
+import { dropSessionVolume, ensureDataVolume, ensureSessionVolume, sessionVolume, userVolume } from "../server/src/sandbox/volumes.js";
 import type { SignInMaterial } from "../server/src/signin/material.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { DockerWindlass } from "../server/src/sandbox/windlass.js";
@@ -826,10 +826,13 @@ async function main(): Promise<void> {
 		const mounts = { a: await mountsOf(a.container), b: await mountsOf(b.container), shared: await mountsOf(shared.container), reviewer: await mountsOf(reviewer.container) };
 		expect(
 			"each hardened session mounts a data volume of its own, the Windlass sandbox profile the user's, the reviewer none",
-			mounts.a === `wlp-user-${uid}-${a.id}:${DATA_DIR}` && mounts.b === `wlp-user-${uid}-${b.id}:${DATA_DIR}` && mounts.shared === `wlp-user-${uid}:${DATA_DIR}` && mounts.reviewer === "",
+			mounts.a === `wlp-session-data-${uid}-${a.id}:${DATA_DIR}` && mounts.b === `wlp-session-data-${uid}-${b.id}:${DATA_DIR}` && mounts.shared === `wlp-user-${uid}:${DATA_DIR}` && mounts.reviewer === "",
 			JSON.stringify(mounts),
 		);
-		const labels = (await docker(["volume", "inspect", "--format", "{{json .Labels}}", `wlp-user-${uid}-${a.id}`], { check: true })).stdout.trim();
+		// What the session records for each sandbox when it is made (agent-session.ts `ownDataSandbox`).
+		expect("connect() says a hardened sandbox's data is its own, and the shared and the reviewer's are not", a.ownData && b.ownData && !shared.ownData && !reviewer.ownData);
+		expect("an own volume's name cannot be a user's shared one, though a user id may contain \"-\"", sessionVolume(uid, a.id) !== userVolume(`${uid}-${a.id}`) && !sessionVolume(uid, a.id).startsWith("wlp-user-"));
+		const labels = (await docker(["volume", "inspect", "--format", "{{json .Labels}}", `wlp-session-data-${uid}-${a.id}`], { check: true })).stdout.trim();
 		const parsed = JSON.parse(labels) as Record<string, string>;
 		expect("the session's volume carries the platform's, the user's and the sandbox's labels", parsed[LABEL] === "1" && parsed[`${LABEL}.uid`] === uid && parsed[`${LABEL}.sandbox`] === a.id, labels);
 		expect("the session's own data directory belongs to the agent with mode 0700", (await a.run(`stat -c %U:%a ${DATA_DIR}`)).stdout.trim() === "agent:700");
@@ -855,12 +858,72 @@ async function main(): Promise<void> {
 		})());
 		await layer.sandboxes.destroy(a.id);
 		createdSandboxes.delete(a.id);
-		expect("destroy() removes A's own volume and leaves B's and the user's", (await volumeGone(`wlp-user-${uid}-${a.id}`)) && !(await volumeGone(`wlp-user-${uid}-${b.id}`)) && !(await volumeGone(`wlp-user-${uid}`)));
+		expect("destroy() removes A's own volume and leaves B's and the user's", (await volumeGone(`wlp-session-data-${uid}-${a.id}`)) && !(await volumeGone(`wlp-session-data-${uid}-${b.id}`)) && !(await volumeGone(`wlp-user-${uid}`)));
 		for (const box of [b, shared, reviewer]) {
 			await layer.sandboxes.destroy(box.id);
 			createdSandboxes.delete(box.id);
 		}
-		expect("destroy() removes B's own volume too", await volumeGone(`wlp-user-${uid}-${b.id}`));
+		expect("destroy() removes B's own volume too", await volumeGone(`wlp-session-data-${uid}-${b.id}`));
+
+		// A container gone by another hand leaves its volume, which destroy() still finds by its labels.
+		const c = await make("check-own-data-gone", "docker-hardened");
+		await docker(["rm", "-f", c.container], { check: true });
+		expect("a sandbox's own volume outlives a container removed by another hand", !(await volumeGone(sessionVolume(uid, c.id))));
+		await layer.sandboxes.destroy(c.id);
+		createdSandboxes.delete(c.id);
+		expect("destroy() of a sandbox whose container is already gone removes its own volume", await volumeGone(sessionVolume(uid, c.id)));
+
+		// A hardened container that mounts the user's shared volume: made before own volumes, or by a runner for an older server.
+		const legacy = await layer.sandboxes.create({ uid, sessionId: "check-own-data-legacy", profile: "docker-hardened", ownData: false });
+		createdSandboxes.add(legacy);
+		everySandbox.add(legacy);
+		expect("a hardened sandbox made without data of its own mounts the user's volume", (await mountsOf(containerName(legacy))) === `wlp-user-${uid}:${DATA_DIR}`, await mountsOf(containerName(legacy)));
+		const kept = await layer.sandboxes.connect(legacy, { ownData: false });
+		expect("a runner whose server did not name session-volumes keeps it, and says its data is not its own", kept !== undefined && kept.ownData === false);
+		expect(
+			"otherwise connect() removes a hardened sandbox that mounts the shared volume, as one that was lost, and keeps that volume",
+			(await layer.sandboxes.connect(legacy)) === undefined && (await layer.sandboxes.state(legacy)) === "none" && !(await volumeGone(`wlp-user-${uid}`)),
+		);
+		createdSandboxes.delete(legacy);
+
+		// A volume of the own name without the sandbox's labels is not reused or removed.
+		const forgedId = randomId(6), forged = sessionVolume(uid, forgedId);
+		await createVolume(forged, { [`${LABEL}.uid`]: uid });
+		try {
+			await throwsAny("ensureSessionVolume() refuses a volume of the name without the sandbox's label", () => ensureSessionVolume(uid, forgedId));
+			await throwsAny("dropSessionVolume() refuses to remove it", () => dropSessionVolume(uid, forgedId));
+			expect("the volume with the wrong labels is still there", !(await volumeGone(forged)));
+		} finally {
+			await docker(["volume", "rm", "-f", forged]);
+		}
+
+		// The sweep: an orphan, one a create has just made and not yet mounted, a live sandbox's, and a runner's orphan on this daemon.
+		const live = await make("check-own-data-live", "docker-hardened");
+		const orphanId = randomId(6), freshId = randomId(6), runnerId = randomId(6), runnerMachine = `m_${randomId(8)}`;
+		const runnerVolume = `wlp-machine-${runnerMachine}-${runnerId}`;
+		const owned = { [`${LABEL}.uid`]: uid };
+		await createVolume(sessionVolume(uid, orphanId), { ...owned, [`${LABEL}.sandbox`]: orphanId });
+		await createVolume(runnerVolume, { ...owned, [MACHINE_LABEL]: runnerMachine, [`${LABEL}.sandbox`]: runnerId });
+		// Docker gives a volume's creation time to the second.
+		await wait(3500);
+		await createVolume(sessionVolume(uid, freshId), { ...owned, [`${LABEL}.sandbox`]: freshId });
+		const runner = new DockerSandboxes({ image, machine: runnerMachine, dataVolume: async () => { throw new Error("unexpected create"); },
+			dropDataVolume: async (_uid, sandbox) => removeVolume(`wlp-machine-${runnerMachine}-${sandbox}`), ownVolumeName: (_uid, sandbox) => `wlp-machine-${runnerMachine}-${sandbox}` });
+		try {
+			const swept = await layer.sandboxes.sweepDataVolumes(2000, owned);
+			expect(
+				"the hosted sweep removes only the orphan: not the one a create just made, nor a live sandbox's, nor a runner's",
+				swept >= 1 && (await volumeGone(sessionVolume(uid, orphanId))) && !(await volumeGone(sessionVolume(uid, freshId))) && !(await volumeGone(sessionVolume(uid, live.id))) && !(await volumeGone(runnerVolume)),
+				`swept ${swept}`,
+			);
+			const sweptByRunner = await runner.sweepDataVolumes(2000, owned);
+			expect("a runner's sweep removes its own orphan and none of the hosted provider's", sweptByRunner === 1 && (await volumeGone(runnerVolume)) && !(await volumeGone(sessionVolume(uid, freshId))), `swept ${sweptByRunner}`);
+		} finally {
+			for (const name of [sessionVolume(uid, orphanId), sessionVolume(uid, freshId), runnerVolume]) await docker(["volume", "rm", "-f", name]);
+			await layer.sandboxes.destroy(live.id);
+			createdSandboxes.delete(live.id);
+		}
+		expect("destroy() removes the live sandbox's own volume", await volumeGone(sessionVolume(uid, live.id)));
 	});
 
 	await section("protocol client", async () => {
@@ -1006,7 +1069,7 @@ PYTHON`);
 			const mounted = await mountsOf(handle.container);
 			const holds = (await handle.run(DATA_LS)).stdout.trim();
 			// A hardened session's commands run in the container: its Windlass data is its own.
-			const dataVolume = profileId === "docker-hardened" ? `wlp-user-${uid}-${id}` : `wlp-user-${uid}`;
+			const dataVolume = profileId === "docker-hardened" ? `wlp-session-data-${uid}-${id}` : `wlp-user-${uid}`;
 			expect(
 				`the session's container mounts ${profileId === "docker-hardened" ? "a data volume of its own" : "the user's data volume"} only and holds no sign-in, though the user has one`,
 				mounted === `${dataVolume}:${DATA_DIR}` && !/auth\.json|host-id|auth\.lock/.test(holds) && (await layer.logins.status(uid)) !== null,
@@ -2639,7 +2702,7 @@ PYTHON`);
 	await section("cleanup", async () => {
 		for (const id of createdSandboxes) await layer.sandboxes.destroy(id);
 		for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`]);
-		for (const id of everySandbox) for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}-${id}`]);
+		for (const id of everySandbox) for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-session-data-${user}-${id}`]);
 		await docker(["volume", "rm", "-f", STANDIN_VOLUME]);
 		for (const image of createdImages) await removeImage(image);
 		const now = await listOurs();
@@ -2679,7 +2742,7 @@ async function emergencyCleanup(): Promise<void> {
 	const tmp = await docker(["ps", "-aq", "--filter", `label=${LABEL_ARG}`, "--filter", `name=^wlp-tmp-${PROCESS_MARK}-`]);
 	if (tmp.stdout.trim() !== "") await docker(["rm", "-f", ...tmp.stdout.trim().split("\n")]);
 	for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}`]).catch(() => undefined);
-	for (const id of everySandbox) for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-user-${user}-${id}`]).catch(() => undefined);
+	for (const id of everySandbox) for (const user of allUids) await docker(["volume", "rm", "-f", `wlp-session-data-${user}-${id}`]).catch(() => undefined);
 	await docker(["volume", "rm", "-f", STANDIN_VOLUME]).catch(() => undefined);
 	for (const image of createdImages) await removeImage(image).catch(() => undefined);
 }

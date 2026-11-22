@@ -687,7 +687,8 @@ async function repositoryView(c: UserCtx, repositoryId: GithubId, project: strin
 		name: name === "" ? null : name,
 		defaults,
 		approvals: [...approvals.values()],
-		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox }),
+		// For all the repository's sessions, of either Docker profile: a hardened one's Windlass data may be its own.
+		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox, hardenedOwnData: (await sandboxes.privateSessionData?.("docker-hardened")) === true }),
 		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0, checks: checks.length },
 	};
 }

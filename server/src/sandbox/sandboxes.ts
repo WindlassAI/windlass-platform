@@ -107,6 +107,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly resizePending = false,
 		/** Runs the Git mirror save helper (`DockerSandboxOptions.helperImage`). */
 		readonly helperImage = IMAGE,
+		/** Its data directory is a volume of its own (`SandboxHandle.ownData`). */
+		readonly ownData = false,
 	) {
 		markTurnSandbox(this);
 	}
@@ -380,12 +382,28 @@ interface Inspected {
 	profile: SandboxProfileId;
 	uid: string;
 	/**
-	 * A Windlass sandbox of a profile that gives each its own data volume (SESSION_VOLUME_PROFILES): that
-	 * volume goes with it. One made before this release mounts the shared volume and has none, which
-	 * removing finds. Not a label: a snapshot commit would copy it into the image (snapshots.ts allows none).
+	 * It mounts its own data volume (`DockerSandboxOptions.ownVolumeName`) at the data directory, which
+	 * goes with it. Read from its mounts, not a label: a snapshot commit would copy a label into the image
+	 * (snapshots.ts allows none).
 	 */
 	ownData: boolean;
+	/**
+	 * A Windlass sandbox of SESSION_VOLUME_PROFILES that mounts another data volume there: the user's
+	 * shared one, as before own volumes, or as a runner makes for a server that did not name
+	 * `session-volumes`. Its commands can read the other sessions' data (`connect`).
+	 */
+	sharedData: boolean;
 }
+
+/** A sandbox's own data volume as `docker volume inspect` prints it. */
+interface InspectedVolume {
+	Name: string;
+	CreatedAt?: string;
+	Labels?: Record<string, string> | null;
+}
+
+/** On a volume that is one sandbox's own data volume: that sandbox's raw id. */
+export const SANDBOX_VOLUME_LABEL = `${LABEL}.sandbox`;
 
 function stateOf(status: string): "none" | "running" | "paused" {
 	if (status === "running" || status === "restarting") return "running";
@@ -458,8 +476,15 @@ export type DockerSandboxOptions = {
 	 * sandbox (SESSION_VOLUME_PROFILES), labelled `${LABEL}.sandbox=<id>`.
 	 */
 	dataVolume(uid: string, sandbox?: string): Promise<string>;
-	/** Removes the volume `dataVolume(uid, sandbox)` made, when it is there. */
+	/** Removes the volume `dataVolume(uid, sandbox)` made, when it is there and its labels are that user's and sandbox's. */
 	dropDataVolume(uid: string, sandbox: string): Promise<void>;
+	/**
+	 * The name of the volume `dataVolume(uid, sandbox)` makes for one sandbox. Where it is given, a new
+	 * Windlass sandbox of SESSION_VOLUME_PROFILES gets a volume of its own unless `create` is told
+	 * otherwise (a runner, for a server that did not name `session-volumes`), and the provider tells
+	 * sandboxes and their volumes apart by it. Where it is not, every sandbox mounts `dataVolume(uid)`.
+	 */
+	ownVolumeName?(uid: string, sandbox: string): string;
 	sessionRelay?: never;
 	harness?: never;
 } | {
@@ -468,6 +493,7 @@ export type DockerSandboxOptions = {
 	image: string;
 	harness?: "claude" | "opencode" | "codex";
 	sessionRelay(): Promise<{ env: string[]; nonce: string }>;
+	ownVolumeName?: never;
 });
 
 export class DockerSandboxes implements Sandboxes {
@@ -492,28 +518,36 @@ export class DockerSandboxes implements Sandboxes {
 
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{json .Config.Labels}}`, containerName(id)]);
+		// JSON has no raw newline in it, so each of the two takes a line of its own.
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}\n{{json .Mounts}}\n{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
-		const [status, shares, nanos, memory, swap, pids, ...json] = result.stdout.trim().split("|");
+		const [fields = "", mountsJson = "", labelsJson = ""] = result.stdout.trim().split("\n");
+		const [status, shares, nanos, memory, swap, pids] = fields.split("|");
 		let labels: Record<string, string> | null;
-		try { labels = JSON.parse(json.join("|")); }
-		catch { throw new Error(`docker container inspect returned missing or invalid labels JSON for ${containerName(id)}`); }
+		let mounts: { Type?: string; Name?: string; Destination?: string }[] | null;
+		try { labels = JSON.parse(labelsJson); mounts = JSON.parse(mountsJson); }
+		catch { throw new Error(`docker container inspect returned missing or invalid labels or mounts JSON for ${containerName(id)}`); }
 		if (labels?.[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine) return null;
 		const label = labels[LABEL + ".requested-slots"] || labels[LABEL + ".slots"] || "1";
 		const size = sandboxSlots(/^[1-4]$/.test(label) ? Number(label) : 1, this.options.slots?.max ?? 1);
 		const unit = this.resources(size);
 		const matches = shares === "256" && Number(nanos) === Math.round(unit.cpus * 1e9) && Number(memory) === unit.memoryBytes
 			&& Number(swap) === unit.memoryBytes && Number(pids) === unit.pids;
-		return { status, profile: labels[LABEL + ".profile"] as SandboxProfileId, uid: labels[LABEL + ".uid"], ownData: !labels[LABEL + ".harness"] && SESSION_VOLUME_PROFILES.includes(labels[LABEL + ".profile"] as SandboxProfileId),
+		const profile = labels[LABEL + ".profile"] as SandboxProfileId, uid = labels[LABEL + ".uid"];
+		const data = (mounts ?? []).find((mount) => mount.Destination === DATA_DIR);
+		const windlass = !labels[LABEL + ".harness"] && this.options.sessionRelay === undefined && /^[a-f0-9]{12}$/.test(id);
+		const ownName = windlass && this.options.ownVolumeName && NAME.test(uid ?? "") ? this.options.ownVolumeName(uid!, id) : undefined;
+		const ownData = data?.Type === "volume" && ownName !== undefined && data.Name === ownName;
+		return { status, profile, uid, ownData, sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
 			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory),
 			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
 
 	/** The data directory is a volume of the user's (wlp-user-<uid>): it outlives every sandbox. */
 	readonly sessionsLiveInSandbox = false;
-	/** Except where the profile gives each sandbox its own (SESSION_VOLUME_PROFILES). */
+	/** Except where the profile gives each sandbox its own (SESSION_VOLUME_PROFILES), as the hosted provider's does. */
 	async privateSessionData(profile: SandboxProfileId): Promise<boolean> {
-		return SESSION_VOLUME_PROFILES.includes(profile);
+		return this.options.ownVolumeName !== undefined && SESSION_VOLUME_PROFILES.includes(profile);
 	}
 	/** A container runs until it is stopped. */
 	readonly idleStopMs = null;
@@ -537,7 +571,13 @@ export class DockerSandboxes implements Sandboxes {
 		return { ...profile, layers: [...profile.layers] };
 	}
 
-	async create(input: CreateSandboxInput): Promise<string> {
+	/**
+	 * `ownData` false: a sandbox of SESSION_VOLUME_PROFILES mounts the user's shared volume all the same,
+	 * as a runner makes them for a server that did not name `session-volumes`, which would not know that
+	 * the data went with the sandbox. Left out: it gets one of its own where the provider makes them
+	 * (`DockerSandboxOptions.ownVolumeName`).
+	 */
+	async create(input: CreateSandboxInput & { ownData?: boolean }): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
 		const harnessName = (input.harness ?? harness) === "codex" ? "Codex" : (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
@@ -556,7 +596,7 @@ export class DockerSandboxes implements Sandboxes {
 		const name = containerName(id);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
 		// A session whose commands run directly in the container gets a volume of its own.
-		const own = !harness && !input.privateData && SESSION_VOLUME_PROFILES.includes(input.profile);
+		const own = !harness && !input.privateData && SESSION_VOLUME_PROFILES.includes(input.profile) && this.options.ownVolumeName !== undefined && input.ownData !== false;
 		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
@@ -602,7 +642,8 @@ export class DockerSandboxes implements Sandboxes {
 		);
 		if (result.code !== 0) {
 			await docker(["rm", "-f", name]);
-			if (own) await this.dropOwnVolume(input.uid, id);
+			// The error said below is the one that matters: a volume left behind goes with the next sweep.
+			if (own) await this.dropOwnVolume(input.uid, id).catch(() => {});
 			const message = result.stderr.trim();
 			// Eviction can race docker run. Older daemons also lack volume-subpath.
 			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message)) return this.create({ ...input, mirrorRepo: undefined });
@@ -614,7 +655,7 @@ export class DockerSandboxes implements Sandboxes {
 		const init = await docker(["exec", "-w", WORKSPACE, name, "sh", "-c", INIT_WORKSPACE], { timeoutMs: 60_000 });
 		if (init.code !== 0) {
 			await docker(["rm", "-f", name]);
-			if (own) await this.dropOwnVolume(input.uid, id);
+			if (own) await this.dropOwnVolume(input.uid, id).catch(() => {});
 			throw new Error(`could not set up the workspace: ${init.stderr.trim()}`);
 		}
 		return id;
@@ -622,6 +663,58 @@ export class DockerSandboxes implements Sandboxes {
 
 	private async dropOwnVolume(uid: string, id: string) {
 		if (this.options.sessionRelay === undefined) await this.options.dropDataVolume(uid, id);
+	}
+
+	/**
+	 * The sandboxes' own data volumes of this provider: labelled with a sandbox, with its machine (none
+	 * for the hosted provider) and with `match`, and named as `ownVolumeName` names that sandbox's.
+	 * `sandbox` narrows them to one sandbox's.
+	 */
+	private async ownVolumes(match: Record<string, string>, sandbox?: string): Promise<(InspectedVolume & { uid: string; sandbox: string })[]> {
+		const nameOf = this.options.sessionRelay === undefined ? this.options.ownVolumeName : undefined;
+		if (!nameOf) return [];
+		const filters = [LABEL_ARG, sandbox === undefined ? SANDBOX_VOLUME_LABEL : `${SANDBOX_VOLUME_LABEL}=${sandbox}`, ...(this.machine ? [`${MACHINE_LABEL}=${this.machine}`] : []),
+			...Object.entries(match).map(([k, v]) => `${k}=${v}`)].flatMap((label) => ["--filter", "label=" + label]);
+		const names = (await docker(["volume", "ls", "-q", ...filters], { timeoutMs: 30_000, check: true })).stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+		if (names.length === 0) return [];
+		// One removed in between is left out of the answer, which is then not 0.
+		const inspected = await docker(["volume", "inspect", ...names], { timeoutMs: 30_000 });
+		let volumes: InspectedVolume[];
+		try { volumes = JSON.parse(inspected.stdout || "[]"); } catch { return []; }
+		const found: (InspectedVolume & { uid: string; sandbox: string })[] = [];
+		for (const volume of volumes) {
+			const labels = volume.Labels ?? {};
+			const uid = labels[`${LABEL}.uid`] ?? "", id = labels[SANDBOX_VOLUME_LABEL] ?? "";
+			if (labels[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine || !NAME.test(uid) || !/^[a-f0-9]{12}$/.test(id)) continue;
+			let expected: string;
+			try { expected = nameOf(uid, id); } catch { continue; }
+			if (volume.Name === expected) found.push({ ...volume, uid, sandbox: id });
+		}
+		return found;
+	}
+
+	/**
+	 * Removes the own data volumes of this provider's sandboxes (and, on a runner, of `match`, its pairing)
+	 * whose container is gone and that are older than `minAgeMs`: younger, one may be a create's that has
+	 * not reached `docker run` yet. Docker also refuses to remove a volume a container still mounts.
+	 */
+	async sweepDataVolumes(minAgeMs = 10 * 60_000, match: Record<string, string> = {}): Promise<number> {
+		const volumes = await this.ownVolumes(match);
+		if (volumes.length === 0) return 0;
+		const containers = new Set((await docker(["ps", "-a", "--no-trunc", "--format", "{{.Names}}"], { timeoutMs: 30_000, check: true })).stdout.split("\n").map((line) => line.trim()));
+		let removed = 0;
+		for (const volume of volumes) {
+			const created = Date.parse(volume.CreatedAt ?? "");
+			if (containers.has(containerName(volume.sandbox)) || !Number.isFinite(created) || Date.now() - created < minAgeMs) continue;
+			try {
+				await this.dropOwnVolume(volume.uid, volume.sandbox);
+				removed += 1;
+				console.log(`[wlp] sandbox.volume_swept volume=${volume.Name}`);
+			} catch {
+				// In use after all, or removed meanwhile: the next sweep sees.
+			}
+		}
+		return removed;
 	}
 
 	private get mirrorScope() {
@@ -680,9 +773,20 @@ export class DockerSandboxes implements Sandboxes {
 		}
 	}
 
-	async connect(id: string): Promise<DockerSandboxHandle | undefined> {
+	/**
+	 * `ownData` false: a sandbox that mounts the user's shared volume (`Inspected.sharedData`) is one a
+	 * runner made for a server that did not name `session-volumes`, and is kept (see `create`).
+	 */
+	async connect(id: string, options: { ownData?: boolean } = {}): Promise<DockerSandboxHandle | undefined> {
 		const found = await this.inspect(id);
 		if (found === null || stateOf(found.status) === "none") return undefined;
+		if (found.sharedData && options.ownData !== false) {
+			// Made before sandboxes of its profile had data of their own: its commands can read the user's other
+			// sessions. It is removed, and the session goes on in a new sandbox as from one that was lost.
+			console.log(`[wlp] sandbox.removed_shared_data id=${id}`);
+			await this.destroy(id);
+			return undefined;
+		}
 		const resizePending = await this.reconcile(containerName(id), found);
 		if (found.status === "paused") await docker(["unpause", containerName(id)], { check: true });
 		else if (found.status !== "running" && found.status !== "restarting") {
@@ -694,7 +798,7 @@ export class DockerSandboxes implements Sandboxes {
 			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
 			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
 		}
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
@@ -712,7 +816,13 @@ export class DockerSandboxes implements Sandboxes {
 
 	async destroy(id: string): Promise<void> {
 		const found = await this.inspect(id);
-		if (found === null) return;
+		if (found === null) {
+			// The container is gone already (a removal cut off after it, or by the owner's hand): its own volume
+			// is found by its labels. A namesake of someone else's is no sandbox of this provider's.
+			if (/^[a-f0-9]{12}$/.test(id) && (await docker(["container", "inspect", "--format", "{{.Id}}", containerName(id)])).code !== 0)
+				for (const volume of await this.ownVolumes({}, id)) await this.dropOwnVolume(volume.uid, id);
+			return;
+		}
 		if (found.status === "running") await forgetTokenFile(id);
 		await docker(["rm", "-f", "-v", containerName(id)], { timeoutMs: 60_000, check: true });
 		if (found.ownData) await this.dropOwnVolume(found.uid, id);
