@@ -156,7 +156,9 @@ items have none. The turn gets the same item text and platform notes (setup, fre
 snapshot), and no platform tools: the PR body is the item's, and CI decides the verdict.
 `ItemSummary.agent` holds the harness, the model and what the agent reported: tokens counted against
 the budget (`itemTokens: "budget"`), shown but not counted for a subscription, or "not reported";
-the conversation's cost; Claude Code's 5h window at the first and latest turn
+the conversation's cost; Claude Code's 5h window at the first and latest turn, which it reports only
+with a usage warning: the CLI's `rate_limit_event` has `utilization` only when it warns (status
+`allowed_warning`), so `fiveHour` stays null on most items and the page says "Not reported"
 (`server/src/factory/budget.ts`, `agentTurn`, `noteAgentTurn`). A turn of an agent whose tokens count
 that reports none stops the item with a `budget` question and no way on but hand over or give up
 (`unmeasuredTurn`); it is never taken as 0 tokens. The reported cost is shown, not capped.

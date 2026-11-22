@@ -6,10 +6,16 @@
  *
  * What it holds to: a command is saved for a repository of the GitHub connection and for nothing else,
  * by GitHub's id; what is saved is text of a bounded length; however much a run prints, a bounded end
- * of it is kept; and the note the agent gets says what happened, with the command and the last lines.
+ * of it is kept; the note the agent gets says what happened, with the command and the last lines; and
+ * whatever way a setup ends, on every profile, nothing it started is left running in the sandbox.
  */
 
+import { isDeepStrictEqual } from "node:util";
 import { MAX_SETUP_COMMAND_CHARS, SETUP_OUTPUT_CHARS } from "../server/src/contract.js";
+import { markTurnSandbox } from "../server/src/sandbox/provider.js";
+import { PROFILES } from "../server/src/sandbox/profiles.js";
+import { runSetupCommand, stopCutOffSetup } from "../server/src/sandbox/setup.js";
+import type { SandboxHandle } from "../server/src/sandbox/api.js";
 import { OutputTail, SetupCommandProblem, cleanSetupCommand, lastLines, setupNote, setupProjectKey, setupProjectOf } from "../server/src/setup-command.js";
 
 let failed = 0;
@@ -74,6 +80,48 @@ expect("a run that was stopped at its limit says the limit", setupNote({ command
 expect("a run stopped with its turn, and one cut off with its server, say so", setupNote({ command: "npm ci", state: "stopped", exitCode: null, limitMs: 1, output: "" }).includes("stopped before it finished") && setupNote({ command: "npm ci", state: "interrupted", exitCode: null, limitMs: 1, output: "" }).includes("cut off"));
 const long = setupNote({ command: "make", state: "failed", exitCode: 2, limitMs: 1, output: Array.from({ length: 500 }, (_, index) => `line ${index} ${"x".repeat(80)}`).join("\n") });
 expect("a long output does not make a long note", long.length < 2_600 && long.includes("line 499"), `${long.length} characters`);
+
+// What a setup leaves running: the whole sandbox is swept when it ends, also when it ends normally.
+// A provider's handle stands in here; the Docker and E2B checks run the sweep itself against detached processes.
+function stub(profile: string, exitCode: number | "throws" = 0) {
+	const sweeps: string[] = [];
+	const handle = {
+		id: "sb", uid: "u", cwd: "/workspace", profile,
+		holdForTurn: async () => async () => {},
+		run: async () => {
+			if (exitCode === "throws") throw new Error("the link was lost");
+			return { exitCode, timedOut: false, aborted: false, stdout: "", stderr: "" };
+		},
+		ask: async (argv: string[]) => {
+			if (argv[0] === "/usr/bin/python3" && argv[4]?.includes("expected the sandbox agent")) sweeps.push(argv[5] ?? "");
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	};
+	markTurnSandbox(handle);
+	return { handle: handle as unknown as SandboxHandle, sweeps };
+}
+const profiles = [...PROFILES.filter(p => p.available).map(p => p.id), "e2b", "e2b-open"].filter((id, i, all) => all.indexOf(id) === i);
+for (const profile of profiles) {
+	for (const exitCode of [0, 1, "throws"] as const) {
+		const { handle, sweeps } = stub(profile, exitCode);
+		const result = await runSetupCommand(handle, { command: "npm ci", cwd: "/workspace", timeoutMs: 1000 });
+		const kind = profile.startsWith("e2b") ? "e2b" : "docker";
+		expect(`on ${profile}, a setup that ${exitCode === 0 ? "ends normally" : exitCode === 1 ? "fails" : "cannot be run to its end"} has the sandbox swept (${kind}) before it returns`,
+			isDeepStrictEqual(sweeps, [kind]) && result.cleanupPending === undefined, `${JSON.stringify(sweeps)} ${JSON.stringify(result)}`);
+	}
+}
+{
+	// The server stopped during setup: the actor stops what it left as soon as it wakes, not at the next prompt.
+	const { handle, sweeps } = stub("docker-hardened");
+	let state: "running" | "paused" | "none" = "running";
+	let connects = 0;
+	const sandboxes = { state: async () => state, connect: async () => { connects += 1; return handle; } };
+	expect("a setup cut off with the server is stopped in a running sandbox", await stopCutOffSetup(sandboxes, "sb") && isDeepStrictEqual(sweeps, ["docker"]));
+	state = "paused";
+	expect("a paused sandbox runs nothing and is not started for it", !await stopCutOffSetup(sandboxes, "sb") && connects === 1 && sweeps.length === 1);
+	state = "none";
+	expect("nor is one that is gone", !await stopCutOffSetup(sandboxes, "sb") && connects === 1);
+}
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
 process.exit(failed === 0 ? 0 : 1);
