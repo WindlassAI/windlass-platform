@@ -1096,7 +1096,7 @@ class FakeWindlass implements Windlass {
 						const single = text.includes("(suggest-single)");
 						// A cross-repo feature's planner (factory/cross-repo.ts, plannerText): it reads the sibling's tree and quotes it.
 						const sibling = /is read-only at \.windlass-inputs\/([a-z][a-z0-9-]*)/.exec(text)?.[1];
-						const repos = /Give repos (\[[^\]]*\])/.exec(text)?.[1];
+						const repos = /give repos (\[[^\]]*\])/.exec(text)?.[1];
 						if (sibling && repos) {
 							const [primary] = JSON.parse(repos) as string[];
 							const read = await sandbox.run(`cat .windlass-inputs/${sibling}/CROSS.md`, { timeoutMs: 5000 });

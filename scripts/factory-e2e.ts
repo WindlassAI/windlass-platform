@@ -475,7 +475,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			const granted = standin.appPermissions;
 			standin.appPermissions = { ...granted, actions: "write" };
 			after = () => { standin.appPermissions = granted; };
-			const { user } = await world(server, standin, { WLP_FACTORY_CROSS_REPO: "1", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_CROSS_REPO: "1", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			const ownCi = "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n";
 			const root = resolve(SERVER_DIR, "..");
 			const platform = standin.addRepository({ owner: "ada", name: "xplatform", installation, files: { ".github/workflows/build.yml": ownCi,
@@ -490,7 +490,10 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused a cross-repo filing: " + JSON.stringify(filing.body));
 			const id = filing.body.id as string;
 			const page = await untilItem(user, id, "the cross-repo plan", v => v.question?.kind === "plan_approval" || v.question?.kind === "turn_refused", 120_000);
-			assert(page.plan?.status === "proposed", "No plan: " + stateOf(page));
+			if (page.plan?.status !== "proposed") {
+				const snapshot = await client.agentSession.get([auth.profile.uid, page.sessionId], { params: { token: auth.token } }).snapshot();
+				throw new Error("No plan: " + stateOf(page) + " " + JSON.stringify(snapshot.timeline.filter(e => JSON.stringify(e).includes("plan_reply") || e.kind === "note")).slice(0, 1500));
+			}
 			assert(page.plan.spec.requirements.includes("From cli: only the CLI has this line"), "The planner did not read the CLI's tree: " + JSON.stringify(page.plan.spec.requirements));
 			assert(page.repositories?.length === 2 && page.repositories[1].planningBaseSha === standin.branchHead(cli, "main") && page.integration?.state === "not_run", "Repositories not bound: " + JSON.stringify(page.repositories));
 			assert(page.plan.subtasks.map(s => s.repo).join() === "cli,platform", "Subtasks not on their repositories");
