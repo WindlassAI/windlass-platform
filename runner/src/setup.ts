@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { docker } from "../../server/src/sandbox/docker.js";
+import { RUNNER_LOGS, docker } from "../../server/src/sandbox/docker.js";
 import type { MachineHarness } from "./policy.js";
 import { directory, RunnerError } from "./state.js";
 
@@ -12,7 +12,7 @@ export async function setupImageAndMounts() {
 	const [imageId, configured, mounts]: [string, string, Mount[]] = JSON.parse(result.stdout);
 	if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new RunnerError("Could not determine the runner image ID.");
 	const image = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(configured) ? configured : imageId;
-	const args = ["docker", "run", "-d", "--name", "windlass-runner", "--restart", "unless-stopped"];
+	const args = ["docker", "run", "-d", "--name", "windlass-runner", "--restart", "unless-stopped", ...RUNNER_LOGS];
 	for (const dst of ["/var/run/docker.sock", directory]) {
 		const mount = mounts.find(m => m.Destination === dst);
 		if (!mount || (mount.Type !== "bind" && mount.Type !== "volume")) throw new RunnerError("Mount the Docker socket and runner state for setup.");

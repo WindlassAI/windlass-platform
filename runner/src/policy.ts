@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { MachineSlotCapacity } from "../../server/src/contract.js";
 import type { Args } from "../../server/src/runner/protocol.js";
-import { LABEL, LABEL_ARG, MACHINE_LABEL, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
+import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
 import { DATA_DIR } from "../../server/src/sandbox/provider.js";
@@ -120,7 +120,7 @@ export class MachineDocker {
 		return Object.entries(this.labels).flatMap(([k, v]) => ["--label", k + "=" + v]);
 	}
 	private flags(name: string, profile: Profile) {
-		return ["--rm", "--name", name, "--label", LABEL_ARG, ...this.pairingLabelFlags, "--pull", "never", ...COMMON_RUN_FLAGS, ...PROFILE_RUN_FLAGS[profile]!];
+		return ["--rm", "--name", name, "--label", LABEL_ARG, ...this.pairingLabelFlags, "--pull", "never", ...NO_LOGS, ...COMMON_RUN_FLAGS, ...PROFILE_RUN_FLAGS[profile]!];
 	}
 	private helper(argv: string[], mount = false) {
 		const name = tmpName();
