@@ -90,7 +90,7 @@ export interface ReviewerTaskInput {
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g;
 
 /** Data as it may stand inside a fence: no line of it can be a fence line, or look like one of the platform's headings. */
-function data(value: string): string {
+export function data(value: string): string {
 	return value
 		.replace(/\r\n?/g, "\n")
 		.replace(CONTROL, "")
@@ -108,7 +108,7 @@ function cut(value: string, max: number): { text: string; cut: boolean } {
 	return value.length <= max ? { text: value, cut: false } : { text: `${value.slice(0, Math.max(0, max - 6)).trimEnd()} (cut)`, cut: true };
 }
 
-function fence(label: string, about: string, body: string): string {
+export function fence(label: string, about: string, body: string): string {
 	return `----- BEGIN ${label} (${about}) -----\n${body}\n----- END ${label} -----`;
 }
 

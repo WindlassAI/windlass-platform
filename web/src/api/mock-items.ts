@@ -109,7 +109,7 @@ export interface MockItemsDeps {
 export const MOCK_FACTORY_LIMITS: FactoryLimits = structuredClone(FACTORY_DEFAULTS);
 
 /** The rounds a run allows (server/src/factory/blueprint.ts, `RULES`), as the server sends them in `ItemView.run.caps`. */
-const ROUND_CAPS: RoundCaps = { plan: 3, gate: 2, ci: 2, conflict: 1 };
+const ROUND_CAPS: RoundCaps = { plan: 3, gate: 2, ci: 2, conflict: 1, review: 2 };
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -132,6 +132,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	wait: "Keep waiting",
 	hand_over: "Hand it over as it is",
 	give_up: "Give up",
+	fix: "Have the agent change it",
 };
 const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
 
@@ -517,6 +518,8 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		reviewing(44, "Paginate the artefact list", HARBOR, 71, "running", { turn: "started", interruptions: 0 }),
 		reviewing(45, "Sort the station list by name", HARBOR, 72, "waiting", { turn: "delivered", interruptions: 0 }, `Waiting for one of the 20 sandboxes you may keep to review ${short(hex(45))}: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.`),
 		reviewing(46, "Round the tide heights to centimetres", TIDES, 60, "waiting", { turn: "delivered", interruptions: 1 }),
+		reviewed(77, "Keep the upload queue across restarts", HARBOR, 73, "changes_requested"),
+		reviewed(78, "Read the tide offsets from the station file", TIDES, 61, "needs_person"),
 		// Ended.
 		{
 			n: 32,
@@ -812,6 +815,43 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			verdicts: [verdict],
 			review: { state, recommendation: null },
 			spent: { tokens: 1_300_000, turns: 1, activeSeconds: 40 * 60, hostedSeconds: 40 * 60 },
+		};
+	}
+
+	/**
+	 * An item its second review sent back (R4): round 1 asked for changes and its agent fixes them, or round 1 had questions
+	 * and the person is asked (`review_question`). Its reviews are in `SEEDED_REVIEWS`.
+	 */
+	function reviewed(n: number, title: string, on: typeof HARBOR, pr: number, asked: "changes_requested" | "needs_person"): Seed {
+		const head = hex(n);
+		const verdict: SeedVerdict = { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 22 };
+		const fixing = asked === "changes_requested";
+		const text = `The second agent reviewed ${short(head)} and has questions only you can answer. Read them in its review below; then have the agent change the work, with your note, or hand it over as it is.`;
+		return {
+			n,
+			title,
+			on,
+			// Its fix turn waits for a slot: the seeded items already hold every running turn the mock allows.
+			state: "waiting",
+			filed: 95,
+			pr,
+			body: `${title}.`,
+			acceptance: [],
+			...(fixing ? { wait: { reason: "capacity" as const, sentence: "Waiting for a free slot: 6 of your agents are working.", since: 8, retryAt: null } } : { question: { kind: "review_question" as const, text, choices: choices("fix", "hand_over", "give_up"), asked: 9 } }),
+			run: { n: 1, started: 94, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0, review: fixing ? 1 : 0 }, step: fixing ? { n: 6, kind: "review_fix", started: 9, turn: "delivered" } : { n: 5, kind: "review", started: 21 } },
+			events: [
+				[94, "Started.", undefined, true],
+				[93, "The turn started.", [1, 1, "implement"]],
+				[52, "The checks passed.", [1, 2, "gate"]],
+				[51, `Pushed ${short(head)} to pull request #${pr}.`, [1, 3, "publish"]],
+				[23, "CI passed.", [1, 4, "ci", 5]],
+				[22, `A second agent reviews ${short(head)}.`, [1, 5, "review"]],
+				...(fixing
+					? ([[9, `The second review of ${short(head)}: asks for changes (2 blocking).`, [1, 5, "review"]], [8, "Waiting for a free slot: 6 of your agents are working.", [1, 6, "review_fix"]]] as Array<[number, string, [number, number, StepKind]]>)
+					: ([[9, `The second review of ${short(head)}: needs you.`, [1, 5, "review"]], [9, `Asked: ${text}`, [1, 5, "review"]]] as Array<[number, string, [number, number, StepKind]]>)),
+			],
+			verdicts: [verdict],
+			spent: { tokens: 1_700_000, turns: 2, activeSeconds: 60 * 60, hostedSeconds: 60 * 60 },
 		};
 	}
 
@@ -2077,7 +2117,7 @@ interface SeededReview {
 }
 
 /** Each seeded item's second review: the reviews kept, or the reason the log gives for none. */
-const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off"; reviews?: SeededReview[]; none?: string }> = {
+const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off" | null; reviews?: SeededReview[]; none?: string }> = {
 	// Approves, with one picture of its own and the test run it cites.
 	24: {
 		state: "filed",
@@ -2224,6 +2264,34 @@ const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off"; reviews?
 			},
 		],
 	},
+	// R4: sent back by its review. Not handed over, so the list shows no review word yet.
+	77: {
+		state: null,
+		reviews: [
+			{
+				recommendation: "changes_requested",
+				blocks: [
+					{ kind: "summary", text: "The queue is written to disk, but only when the process exits cleanly, and a crash loses it. That is the case the task is about." },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "blocking", title: "The queue is saved only on a clean exit", text: "`saveQueue()` runs in the `beforeExit` handler, which a crash or a kill never reaches. Save it after each change instead.", at: [{ path: "src/upload/queue.ts", lines: { start: 58, end: 66 } }], refs: [] },
+					{ kind: "finding", id: "r1.f2", root: "r1.f2", severity: "blocking", title: "A half-written queue file is read as empty", text: "Write to a temporary file and rename it, so a crash mid-write leaves the old queue.", at: [{ path: "src/upload/queue.ts", lines: { start: 12, end: 20 } }], refs: [] },
+					{ kind: "finding", id: "r1.f3", root: "r1.f3", severity: "should_fix", title: "The queue file's path is not in the README", text: "Someone clearing state by hand will not find it.", at: [], refs: [] },
+				],
+			},
+		],
+	},
+	78: {
+		state: null,
+		reviews: [
+			{
+				recommendation: "needs_person",
+				blocks: [
+					{ kind: "summary", text: "The offsets are read from the station file as asked. Two stations have offsets in both the file and the old table, and they disagree." },
+					{ kind: "question", text: "For Avonmouth and Ilfracombe the file says +5 min and the old table +7 min. Which should win?" },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "should_fix", title: "The old offset table is still bundled", text: "Nothing reads it now; it could be removed with this change.", at: [{ path: "data/offsets.json", lines: { start: 1, end: 3 } }], refs: [] },
+				],
+			},
+		],
+	},
 	// Each reason there was none.
 	26: { state: "none", none: "handed over as it is, as you asked" },
 	28: { state: "off", none: "turned off for this deployment" },
@@ -2293,7 +2361,7 @@ function withSeededReview(view: ItemView, n: number): ItemView {
 	}
 	// The reason the server hands over with (blueprint.ts, `HandoffReview.reviewNone`), as it was given.
 	const reviewNone = seeded.state === "filed" ? null : (seeded.none ?? last?.said ?? null);
-	return { ...view, events, reviews, reviewerSessionId, reviewNone, review: { state: seeded.state, recommendation: seeded.state === "filed" ? (last?.recommendation ?? null) : null } };
+	return { ...view, events, reviews, reviewerSessionId, reviewNone, review: seeded.state === null ? null : { state: seeded.state, recommendation: seeded.state === "filed" ? (last?.recommendation ?? null) : null } };
 }
 
 /** What the log says of a filed review (blueprint.ts, `reviewEnded`). */

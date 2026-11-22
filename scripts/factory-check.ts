@@ -297,7 +297,7 @@ const publishedVerdict = `${newItem().id}:1:5:1`;
 
 function reviewStarts(reading: CiReading, after = MINUTE): Row {
 	return {
-		fact: ci(reviewHead, reading), after, state: "working", effects: ["verdict", "deliver", "check_turn", "poll_pr"],
+		fact: ci(reviewHead, reading), after, state: "working", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"],
 		also: (o) => {
 			const saved = o.storeVerdict;
 			const delivery = effect(o, "deliver");
@@ -341,7 +341,8 @@ function filing(recommendation: ReviewRecommendation, id = publishedVerdict): It
 }
 const refresh = (fact: Row["fact"]): Row => ({ fact, state: "waiting", wait: "ci", effects: ["poll_ci"] });
 const freshCi = ci(reviewHead, ciPassed);
-for (const [recommendation, words] of [["approve", "approves"], ["changes_requested", "asks for changes (1 blocking)"], ["needs_person", "needs you"]] as const) {
+// Changes requested and needs a person no longer hand over on a single item: R4 below.
+for (const [recommendation, words] of [["approve", "approves"]] as const) {
 	drive(`review: filed ${recommendation} hands over`, reviewerOn(), [...reviewing, {
 		...refresh(endReview({ review: filing(recommendation) })),
 		also: o => holds(o.events.some(e => e.said === `The second review of 1111111: ${words}.`), "expected the recommendation in the log"),
@@ -419,7 +420,7 @@ drive("review: refusal hands over even on an error outcome", reviewerOn(), [...r
 	refresh(endReview({ outcome: "error", refused: "This sandbox cannot run the reviewer." })), handoverWithout(freshCi, "This sandbox cannot run the reviewer."),
 ]);
 
-const budgetReview: Row = { fact: ci(reviewHead, ciPassed), state: "waiting", wait: "budget", effects: ["verdict", "ask", "poll_pr"], also: o =>
+const budgetReview: Row = { fact: ci(reviewHead, ciPassed), state: "waiting", wait: "budget", effects: ["verdict", "verified_check", "ask", "poll_pr"], also: o =>
 	holds(o.storeVerdict?.verdict.id === publishedVerdict && o.item.question?.cause === "turns" && o.item.question.choices.some(c => c.id === "hand_over"), "expected the pinned verdict and budget question before delivery") };
 const tight = () => newItem({ reviewer: { on: true }, budget: { turns: 1 } });
 drive("review: out of budget can hand over", tight(), [...toCi, budgetReview, ...personHandover()]);
@@ -498,6 +499,132 @@ drive("giving up completes the pending check", newItem(), [...toCi,
 	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
 	{ fact: answer("give_up"), state: "failed", effects: ["verified_check"], also: o => holds(effect(o, "verified_check")?.conclusion === "cancelled", "missing cancelled conclusion") },
 ]);
+
+print("\n== R4: the second review sends the builder back");
+
+{
+	type Block = ItemReview["blocks"][number];
+	const blockingAt = (round: number, roots: string[]): Block[] => roots.map((root, i) => ({ kind: "finding", id: `r${round}.f${i + 1}`, root, severity: "blocking", title: `Finding ${root}`, text: `Fix ${root}.`, at: [{ path: "src/add.ts", side: "head", lines: { start: 3, end: 4 } }], refs: [] }));
+	/** A filing of the review at the current key: its round, its head and its blocking roots. */
+	const filedAt = (recommendation: ReviewRecommendation, round: number, head: string, roots: string[] = [], more: Block[] = []): Row["fact"] => (k) =>
+		endReview({ review: { ...filing("approve", k.key), recommendation, round, head, verdictId: k.key, blocks: [{ kind: "summary", text: "Reviewed." }, ...blockingAt(round, roots), ...more] } })(k);
+	const deliverIs = (o: Outcome, test: (text: string) => boolean) => test(effect(o, "deliver")?.text ?? "");
+	const checks = (o: Outcome) => o.effects.filter((e): e is Extract<Effect, { kind: "verified_check" }> => e.kind === "verified_check");
+
+	/** Round 1 asks for changes on H(1): the builder gets a fix turn with the finding, and H(1)'s check says a round 2 is being worked on. */
+	const sentBack: Row = { fact: filedAt("changes_requested", 1, reviewHead, ["r1.f1"]), state: "working", effects: ["deliver", "check_turn", "verified_check"], also: o => {
+		const d = effect(o, "deliver"), check = effect(o, "verified_check");
+		if (o.item.run?.step.kind !== "review_fix" || !d || d.to !== undefined || d.agent !== null) return "the fix is not a builder turn of its own step";
+		if (!deliverIs(o, t => t.includes("r1.f1: Finding r1.f1") && t.includes("Fix r1.f1.") && t.includes("src/add.ts, lines 3–4") && t.includes("concerns"))) return "the fix turn lacks the finding";
+		if (o.item.run.rounds.review !== 1) return `rounds.review is ${o.item.run.rounds.review}`;
+		return holds(check?.key === reviewHead && check.state === "in_progress" && check.title === "Second review asked for changes; round 2 is being worked on" && o.item.pendingChecks?.find(p => p.sha === reviewHead)?.reviewRound === 1, "H(1)'s check does not say round 2 is being worked on");
+	} };
+	const fixed = (head: string): Row[] => [
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+		{ fact: published(head), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+	];
+	const nextReview = (head: string, round: number, previousHead: string, earlier: string[]): Row => ({ fact: ci(head, ciPassed), state: "working", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"], also: o => {
+		const input = effect(o, "deliver")?.reviewerInput, check = effect(o, "verified_check");
+		if (input?.round !== round || input.previousHead !== previousHead || input.head !== head) return `reviewer input round ${input?.round}, previous ${input?.previousHead}`;
+		if (input.earlier.map(e => e.id).join() !== earlier.join() || (earlier.length && input.earlier[0].root !== earlier[0])) return `earlier ${JSON.stringify(input.earlier)}`;
+		return holds(check?.key === head && check.state === "in_progress" && check.title === `Second review of ${head.slice(0, 7)}, round ${round}`, "the new head's check does not name its review round");
+	} });
+	const H3 = H(3), H4 = H(4), H5 = H(5);
+	const round2: Row[] = [...reviewing, sentBack, ...fixed(H3), nextReview(H3, 2, reviewHead, ["r1.f1"])];
+
+	// 1, 2
+	drive("R4 1-2: changes requested, one fix, round 2 approves and hands over", reviewerOn(), [...round2,
+		refresh(filedAt("approve", 2, H3, [], [{ kind: "earlier", finding: "r1.f1", status: "fixed", text: null }])),
+		{ fact: ci(H3, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "poll_pr"], also: o => {
+			const handed = effect(o, "handoff"), [b, a] = checks(o);
+			if (handed?.review !== `${newItem().id}:1:10:1` || handed.reviewNone !== null || handed.verdict.head !== H3) return `handed ${handed?.review} at ${handed?.verdict.head}`;
+			if (b?.key !== H3 || b.state !== "completed" || b.conclusion !== "success") return "B is not completed as a success";
+			if (a?.key !== reviewHead || a.state !== "completed" || a.conclusion !== "cancelled" || a.title !== "Fixed in round 2 on 3333333") return `A completed ${a?.conclusion} ${JSON.stringify(a?.title)}`;
+			return holds(!o.item.pendingChecks?.length && o.item.run?.rounds.review === 1, "pending checks are left over");
+		} },
+	]);
+
+	// 3
+	drive("R4 3: round 2 asks for the same changes and stops as repeated", reviewerOn(), [...round2,
+		{ fact: filedAt("changes_requested", 2, H3, ["r1.f1"]), state: "waiting", wait: "person", effects: ["ask"], also: o =>
+			holds(o.item.question?.kind === "rounds" && o.item.question.cause === "repeated" && o.item.question.text.startsWith("The second agent asks again for the same changes") &&
+				o.item.question.choices.map(c => c.id).join() === "raise,retry,hand_over,give_up" && o.item.question.resume?.kind === "review_fix", `asked ${JSON.stringify(o.item.question)}`) },
+	]);
+
+	// 4, 7
+	const round3: Row[] = [...round2,
+		{ ...sentBack, fact: filedAt("changes_requested", 2, H3, ["r2.f1"]), also: o => holds(o.item.run?.rounds.review === 2 && deliverIs(o, t => t.includes("r2.f1")) && effect(o, "verified_check")?.title === "Second review asked for changes; round 3 is being worked on", "round 2's new finding did not get its fix") },
+		...fixed(H4), nextReview(H4, 3, H3, ["r2.f1"]),
+	];
+	const capped: Row = { fact: filedAt("changes_requested", 3, H4, ["r3.f1"]), state: "waiting", wait: "person", effects: ["ask"], also: o =>
+		holds(o.item.question?.cause === "review" && o.item.question.text === "The second agent still asks for changes after 2 rounds of fixes." && o.item.question.choices.some(c => c.id === "hand_over"), `asked ${JSON.stringify(o.item.question)}`) };
+	drive("R4 4: a third round of changes stops on the cap, and raise runs the fix", reviewerOn(), [...round3, capped,
+		{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn", "verified_check"], also: o =>
+			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 1 && deliverIs(o, t => t.includes("r3.f1")) && effect(o, "verified_check")?.key === H4, "raise did not run the fix") },
+	]);
+	drive("R4 7: Hand it over from the review stop keeps the last review", reviewerOn(), [...round3, capped, refresh(answer("hand_over")),
+		{ fact: ci(H4, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "verified_check", "poll_pr"], also: o => {
+			const handed = effect(o, "handoff"), [c4, ...older] = checks(o);
+			if (handed?.review !== `${newItem().id}:1:15:1` || handed.reviewNone !== null || handed.assessment?.recommendation !== "changes_requested") return `handed ${JSON.stringify(handed && { review: handed.review, none: handed.reviewNone })}`;
+			if (c4?.key !== H4 || c4.conclusion !== "action_required" || c4.title !== "Second review requests changes") return `head's check ${c4?.conclusion} ${c4?.title}`;
+			return holds(older.map(c => `${c.key.slice(0, 1)}:${c.conclusion}:${c.title}`).join() === "1:cancelled:Reworked in round 3 on 4444444,3:cancelled:Reworked in round 3 on 4444444", `older checks ${older.map(c => c.title).join()}`);
+		} },
+	]);
+
+	// 5
+	drive("R4 5: a CI fix between two reviews does not hide the same changes", reviewerOn(), [...reviewing, sentBack,
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+		...pushedAndFailed(H3, "e2e broke"),
+		{ fact: published(H4), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+		nextReview(H4, 2, reviewHead, ["r1.f1"]),
+		{ fact: filedAt("changes_requested", 2, H4, ["r1.f1"]), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", `asked ${o.item.question?.cause}`) },
+	]);
+
+	// 6
+	const question: Block = { kind: "question", text: "Should the range include its end?" };
+	const asked: Row = { fact: filedAt("needs_person", 1, reviewHead, [], [question]), state: "waiting", wait: "person", effects: ["verified_check", "ask"], also: o =>
+		holds(o.item.question?.kind === "review_question" && o.item.question.choices.map(c => `${c.id}:${c.label}`).join() === "fix:Have the agent change it,hand_over:Hand it over as it is,give_up:Give up" &&
+			effect(o, "verified_check")?.state === "in_progress" && effect(o, "verified_check")?.title === "Second review needs you", `asked ${JSON.stringify(o.item.question)}`) };
+	drive("R4 6: needs a person, and the person has the agent change it", reviewerOn(), [...reviewing, asked,
+		{ fact: answer("fix", { note: "use the v2 API" }), state: "working", effects: ["deliver", "check_turn", "verified_check"], also: o =>
+			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 1 && deliverIs(o, t => t.includes("Should the range include its end?") && t.endsWith("The person adds: use the v2 API")), `delivered ${effect(o, "deliver")?.text}`) },
+	]);
+	drive("R4 6: needs a person, handed over as it is with the review", reviewerOn(), [...reviewing, asked, refresh(answer("hand_over")),
+		{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o =>
+			holds(effect(o, "handoff")?.review === publishedVerdict && effect(o, "handoff")?.reviewNone === null && effect(o, "verified_check")?.conclusion === "action_required" && effect(o, "verified_check")?.title === "Second review needs a person", "the handover dropped the review") },
+	]);
+
+	// 8
+	const refiled = (fact: Row["fact"]): Row => ({ fact, state: "working", effects: ["deliver", "check_turn"], also: o => holds(effect(o, "deliver")?.to === "review" && effect(o, "deliver")?.text.includes("File it now") === true, "the wrong round was taken") });
+	drive("R4 8: a round-2 filing in round 1 is refiled", reviewerOn(), [...reviewing, refiled(filedAt("approve", 2, reviewHead))]);
+	drive("R4 8: a round-1 filing in round 2 is refiled", reviewerOn(), [...round2, refiled(filedAt("approve", 1, H3))]);
+
+	// 9
+	let legacy = reviewerOn();
+	{
+		let at = T0;
+		for (const row of reviewing) legacy = advance(legacy, { at: at += MINUTE, ...row.fact({ key: currentKey(legacy) ?? "", prPoll: "", check: "", question: "" }) } as Fact).item;
+		const run = legacy.run!;
+		delete run.rounds.review;
+		for (const field of ["round", "previousHead", "earlier", "open", "lastOpen", "filed"] as const) delete run.review![field];
+	}
+	drive("R4 9: an item stored before R4 counts its first review fix as 1", legacy, [{ ...sentBack, at: T0 + 10 * MINUTE }]);
+
+	// 10
+	const held: Row = { fact: () => ({ kind: "github_feedback", by: "github:alex", ids: ["review:9"], text: "Cover the empty result.", fingerprint: "digest9", others: false }), state: "working", effects: [], also: o => holds(o.feedback?.[0].state === "held", "the feedback was not held") };
+	drive("R4 10: feedback held during the review goes first, with the reviewer's findings", reviewerOn(), [...reviewing, held,
+		{ fact: filedAt("changes_requested", 1, reviewHead, ["r1.f1"]), state: "queued", effects: ["verified_check", "deliver", "check_turn"], also: o => {
+			if (o.item.run?.n !== 2 || o.item.run.step.kind !== "implement" || !o.events.some(e => e.stopReason === "feedback")) return "run 1 did not end for the feedback";
+			if (!deliverIs(o, t => t.startsWith("People on GitHub asked for changes") && t.indexOf("Cover the empty result.") < t.indexOf("The second reviewer also asked, at 1111111") && t.includes("r1.f1: Finding r1.f1"))) return `delivered ${effect(o, "deliver")?.text}`;
+			return holds(o.feedback?.[0].state === "taken" && o.item.run.rounds.review === 0 && o.item.pendingChecks?.find(p => p.sha === reviewHead)?.feedback === true, "the feedback was not taken, or the reviewed head not reopened");
+		} },
+	]);
+	drive("R4 10: feedback held during an approving review waits for the handoff", reviewerOn(), [...reviewing, held, refresh(endReview({ review: filing("approve") })),
+		{ fact: freshCi, state: "queued", effects: ["handoff", "verified_check", "poll_pr", "verified_check", "deliver", "check_turn"], also: o => holds(o.item.run?.n === 2 && effect(o, "handoff")?.review === publishedVerdict, "the approval was not handed over before the feedback") },
+	]);
+}
 
 print("\n== blueprint (continued)");
 

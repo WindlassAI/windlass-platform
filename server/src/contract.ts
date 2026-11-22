@@ -1206,11 +1206,11 @@ export interface Waiting extends Wait {
 }
 
 /**
- * A step of the blueprint. "implement", "ci_fix", "conflict" (and "refine", which is not offered yet)
+ * A step of the blueprint. "implement", "ci_fix", "conflict", "review_fix" (and "refine", which is not offered yet)
  * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "subtasks" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "handoff" | "merged";
+export type StepKind = "subtasks" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1238,8 +1238,8 @@ export interface ItemRun {
 	/** Why it ended other than by handing over: "cancelled", "retried", or the cause of the question given up on. */
 	stopReason: string | null;
 	step: ItemStep;
-	/** The rounds of each kind used in this run: fixing after the checks, after CI, merging the base; `plan` counts planning turns. */
-	rounds: { plan: number; gate: number; ci: number; conflict: number };
+	/** The rounds of each kind used in this run: fixing after the checks, after CI, merging the base, after the second review; `plan` counts planning turns. `review` is absent on runs stored before it was counted. */
+	rounds: { plan: number; gate: number; ci: number; conflict: number; review?: number };
 }
 
 /** The work as the item was given it. `base` is the branch its pull request goes into. */
@@ -1280,7 +1280,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1292,7 +1292,7 @@ export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_ref
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1536,6 +1536,7 @@ export interface RoundCaps {
 	gate: number;
 	ci: number;
 	conflict: number;
+	review: number;
 }
 
 /** An item as the user's index lists it. */

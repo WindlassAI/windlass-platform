@@ -65,7 +65,7 @@ import { grantIsValid, itemActor, sessionActor, userActor } from "./internal.js"
 import type { ItemFacts } from "./user-items.js";
 
 /** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
-const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds };
+const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds, review: RULES.reviewRounds };
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
@@ -271,7 +271,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
-		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: run.rounds, caps: ROUND_CAPS },
+		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: { ...run.rounds, review: run.rounds.review ?? 0 }, caps: ROUND_CAPS },
 		head: stored.item.head,
 		report: run ? await latestReport(c.db, run.n) : null,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),

@@ -215,7 +215,9 @@ export function SecondReview({ view, links, when }: { view: ItemView; links: Scr
 			</h2>
 			<p className="usage-lede">
 				{current?.state === "filed"
-					? "A second agent, with no part in making the change, checked out the pushed commit in its own sandbox and read it against the task. Its own words: the verdict above does not rest on them, and its recommendation does nothing by itself."
+					? view.mode === "orchestrate"
+						? "A second agent, with no part in making the change, checked out the pushed commit in its own sandbox and read it against the task. Its own words: the verdict above does not rest on them, and its recommendation does nothing by itself."
+						: "A second agent, with no part in making the change, checked out the pushed commit in its own sandbox and read it against the task. Its own words: the verdict above does not rest on them. When it asks for changes, the agent that made the change works on its blocking findings and it reviews again, at most twice; when it has questions, you decide."
 					: "Once CI has finished, a second agent with no part in making the change reviews the pushed commit in its own sandbox. Its words are its own: the verdict above never rests on them."}
 			</p>
 			{line ? (

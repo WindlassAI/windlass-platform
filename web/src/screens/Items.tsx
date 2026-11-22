@@ -231,6 +231,7 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 		case "ci_fix":
 			return 3;
 		case "review":
+		case "review_fix":
 			return reviewer ? 4 : 3;
 		case "summary":
 		case "handoff":

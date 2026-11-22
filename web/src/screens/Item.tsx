@@ -57,6 +57,7 @@ const STEP_WORD: Record<StepKind, string> = {
 	ci_fix: "Fixing CI",
 	conflict: "Merging the base",
 	review: "Second review",
+	review_fix: "Fixing what the reviewer asked",
 	handoff: "Handed over",
 	merged: "Waiting for the merge",
 };
@@ -70,10 +71,11 @@ const STEP_DOING: Partial<Record<StepKind, string>> = {
 	gate: "The platform reads what the checks of the last turn found.",
 	publish: "The platform pushes the work and opens or updates the pull request.",
 	review: "A second agent reviews the pushed commit in its own sandbox.",
+	review_fix: "Its agent works on the second review's blocking findings.",
 };
 
 /** Steps that are a turn of the agent, or a push: a second attempt of one is worth saying. Waits on GitHub count every poll as an attempt, which is not. */
-const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "conflict", "publish", "review"]);
+const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "conflict", "publish", "review", "review_fix"]);
 
 const ORDINAL = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
 const ordinal = (n: number) => ORDINAL[n - 1] ?? `${n}th`;
@@ -349,7 +351,7 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 }
 
 /** The run it is in, or ended last: its step, and the rounds of fixing used of what a run allows. */
-function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
+function RunFacts({ run, events, asks, now, reviewer }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number; reviewer: boolean }) {
 	const { step, rounds, caps } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
@@ -389,6 +391,11 @@ function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]
 						<span>
 							merging the base {rounds.conflict} of {caps.conflict}
 						</span>
+						{reviewer && caps.review !== undefined ? (
+							<span>
+								after the second review {rounds.review ?? 0} of {caps.review}
+							</span>
+						) : null}
 					</span>
 				</dd>
 			</div>
@@ -1038,7 +1045,7 @@ export function Item({ page }: { page: ItemPage }) {
 				) : (
 					<Now view={view} now={now} />
 				)}
-				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
+				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} reviewer={view.mode !== "orchestrate" && view.review?.state !== "off"} /> : null}
 			</section>
 
 			{view.plan ? (
