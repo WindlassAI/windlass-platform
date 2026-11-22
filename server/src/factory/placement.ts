@@ -1,10 +1,10 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
-import { providerWait } from "../provider-usage.js";
+import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
 import { sandboxSlots } from "../contract.js";
 import type { ChildPlacement, FeaturePlanEdit, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
-import { slotWait } from "./budget.js";
+import { retryAt, slotWait } from "./budget.js";
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
@@ -12,13 +12,16 @@ export interface PlacementInventory {
 	hostedProfiles: SandboxProfileId[];
 	defaultProfile?: SandboxProfileId;
 	/** Account state from provider routing, when available. */
-	limited?: { machineId: string; harness: string; limitedUntil?: number }[];
+	limited?: { machineId: string; harness: string; limitedUntil?: number; accountKey?: string }[];
 }
 export interface PlacementRoute {
 	preferred: SandboxPlace;
 	alternatives: SandboxPlace[];
 	/** Display names at approval, for a destination later removed from inventory. */
 	names?: Record<string, string>;
+}
+export function limitApplies(limit: NonNullable<PlacementInventory["limited"]>[number], place: string) {
+	return limit.machineId === place || (limit.machineId === WINDLASS_ACCOUNT && limit.harness === "windlass");
 }
 const GiB = 2 ** 30;
 export function placeKey(place: SandboxPlace) { return place.kind === "hosted" ? "hosted" : place.machineId; }
@@ -49,7 +52,7 @@ export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boo
  * profile). Approval refuses only a subtask whose every allowed place is permanently refused. A busy or
  * offline machine is a wait, never a refusal.
  */
-type Candidate = { refused: string; permanent: boolean } | { wait: string; retryAt?: number } | { decision: ChildPlacement; score: number };
+type Candidate = { refused: string; permanent: boolean } | { wait: string; retryAt?: number; accountKey?: string } | { decision: ChildPlacement; score: number };
 export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "host">) {
 	if (machine.slots) return machine.slots;
 	// A disconnected runner loses its hello max. Its busy count is still reported.
@@ -73,12 +76,15 @@ function capabilityFit(machine: Machine, needs: PlacementNeeds): string | null {
 	return null;
 }
 
-function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], name?: string): Candidate {
+function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
 	const needs = task.needs ?? {};
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
-	const limited = inventory.limited?.find(a => a.machineId === placeKey(place) && a.harness === (needs.harness ?? "windlass"));
-	const waiting = (name: string) => ({ wait: limited?.limitedUntil ? providerWait(limited.harness, name, limited.limitedUntil).sentence :
-		`Waiting for the ${needs.harness ?? "windlass"} usage limit on ‘${name}’ to reset.`, retryAt: limited?.limitedUntil });
+	const limited = inventory.limited?.find(a => limitApplies(a, placeKey(place)) && a.harness === (needs.harness ?? "windlass"));
+	const waiting = (name: string) => {
+		const until = limited?.limitedUntil === undefined ? undefined : Math.min(limited.limitedUntil, at + MAX_PROVIDER_WAIT);
+		return { wait: until === undefined ? `Waiting for the ${needs.harness ?? "windlass"} usage limit on ‘${name}’ to reset.`
+			: providerWait(limited!.harness, name, until).sentence, retryAt: until, accountKey: limited?.accountKey };
+	};
 	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place!.prefer}’`;
 	if (place.kind === "hosted") {
 		if (!inventory.hostedProfiles.length || (needs.profile && !inventory.hostedProfiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
@@ -118,17 +124,17 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 }
 
 /**
- * A ready place, else the first wait, else every refusal. `permanent` is true only when each allowed
+ * A ready place, else the earliest wait, else every refusal. `permanent` is true only when each allowed
  * place is refused for good: approval refuses then, and nothing the owner waits for would help.
  */
-export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = []) {
-	const providerLimited = inventory.limited?.some(a => a.machineId === placeKey(route.preferred) && a.harness === (task.needs?.harness ?? "windlass"));
-	const alternatives = providerLimited ? route.alternatives.filter(p => route.preferred.kind === "machine" && p.kind === "machine") : route.alternatives;
-	const candidates = [route.preferred, ...alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
+export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
+	const candidates = [route.preferred, ...route.alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, at, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
 	const ready = candidates.filter(c => "decision" in c).sort((a, b) => b.score - a.score)[0];
 	if (ready) return { decision: ready.decision } as const;
-	const waiting = candidates.find(c => "wait" in c);
-	if (waiting) return { wait: waiting.wait, retryAt: waiting.retryAt } as const;
+	const waits = candidates.filter(c => "wait" in c);
+	const deadline = (wait: typeof waits[number]) => wait.retryAt ?? retryAt(at, 0);
+	const waiting = waits.sort((a, b) => deadline(a) - deadline(b))[0];
+	if (waiting) return { wait: waiting.wait, retryAt: waiting.retryAt, accountKey: waiting.accountKey } as const;
 	const refusals = candidates.flatMap(c => "refused" in c ? [c] : []);
 	return { refused: refusals.map(c => c.refused).join(" "), permanent: refusals.every(c => c.permanent) } as const;
 }

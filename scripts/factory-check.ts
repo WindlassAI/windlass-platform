@@ -1035,6 +1035,24 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const retry = { text: "Continue the original task.", fetchBase: null };
 	const end = (resetsAt?: number) => walk(running.item, [{ ...turnEnded("succeeded", null), at, outcome: "failed",
 		providerRefusal: { kind: "usage_limit", message: "Quota exhausted.", resetsAt, placeName: "Mac", retry } }]);
+	expect("a past or present reset asks the owner without scheduling a retry",
+		[at - MINUTE, at].every(reset => end(reset).item.question?.kind === "turn_refused"));
+	let attempt = running.item;
+	let time = at;
+	for (let n = 0; n < 4; n++) {
+		const refused = walk(attempt, [{ ...turnEnded("succeeded", null), at: time, outcome: "failed",
+			providerRefusal: { kind: "usage_limit", message: "Quota exhausted.", resetsAt: time + MINUTE, retry } }]);
+		const scheduled = refused.last.effects.find(e => e.kind === "provider_retry");
+		if (n === 3) {
+			expect("three automatic provider retries on one step exhaust its allowance",
+				!scheduled && refused.item.question?.kind === "turn_refused");
+			break;
+		}
+		if (!scheduled) throw new Error("expected an automatic retry on attempt " + (n + 1));
+		time = scheduled.at + 1;
+		attempt = advance(refused.item, scheduled).item;
+		attempt = advance(attempt, { kind: "turn_started", key: currentKey(attempt)!, at: time }).item;
+	}
 	const waited = end(reset);
 	const scheduled = waited.last.effects.find(e => e.kind === "provider_retry");
 	const resume = (when: number) => scheduled && advance(waited.item, { ...scheduled, at: when });

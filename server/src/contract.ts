@@ -1188,6 +1188,8 @@ export type WaitReason = "provider" | "children" | "capacity" | "machine" | "rev
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
+	/** The sign-in whose cooldown holds this item, when known. */
+	accountKey?: string;
 	reason: WaitReason;
 	/** "Waiting for one of your 5 factory turns; 5 are running (…)." */
 	sentence: string;
@@ -1221,6 +1223,8 @@ export interface ItemStep {
 	checks: number;
 	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
 	interruptions: number;
+	/** Consecutive automatic retries after a provider refusal on this step. */
+	providerRetries?: number;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */

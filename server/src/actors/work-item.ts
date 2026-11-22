@@ -32,7 +32,7 @@ import { GithubProblem } from "../github/repos.js";
 import { PlanError } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
-import type { PlacementInventory } from "../factory/placement.js";
+import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCi } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
@@ -811,7 +811,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	const session = sessionActor(c, meta.uid, sessionId);
 	switch (effect.kind) {
 		case "provider_retry":
-			await take(c, { ...effect, at: Date.now() });
+			await take(c, { ...effect, at: Date.now(), loginChanged: row.due_at < effect.at });
 			return true;
 		case "verified_check":
 			// A handoff or cancellation can replace a pending row after the due scan.
@@ -916,10 +916,11 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				checkout = { ...effect.reviewerInput, baseSha: meta.reviewBase.sha, report: report ? { title: report.title, description: description?.kind === "text" ? description.text : "", lookAt: lookAt?.kind === "text" ? lookAt.text : "", concerns: risk?.text ?? "", screenshots: report.screenshots.map(s => ({ file: s.id, caption: s.caption })) } : null };
 			}
 			let text = effect.text;
-			if (effect.agent === "planner") {
+			// A provider retry replays the delivered planner prompt, including its inventory.
+			if (effect.agent === "planner" && item.run!.step.attempt === 1) {
 				const inventory = await placementInventory(c, meta.uid);
 				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({ ...description,
-					limited: inventory.limited?.filter(a => a.machineId === machineId).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
+					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, machines: places })
@@ -1223,6 +1224,20 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			if (input.repositoryId !== c.vars.stored?.meta.repository.id || input.installationId !== await binding(c)) return false;
 			return take(c, { kind: "reverify", head: input.head, at: Date.now() });
+		},
+
+		internalProviderChanged: async (c, revision: number): Promise<void> => {
+			requireServiceFor(c, "call");
+			await queued(c, async () => {
+				const item = c.vars.stored?.item;
+				if (item?.revision !== revision || item.wait?.reason !== "provider" || item.question) return;
+				// Admission waits belong to the user's queue. A refused turn or unplaced child has its own timer.
+				const key = currentKey(item);
+				const now = Date.now();
+				const rows = await c.db.execute("UPDATE effects SET due_at=? WHERE id IN (?,?) AND due_at>? RETURNING id",
+					now, "provider_retry:" + key, "dispatch:" + key, now);
+				if (rows.length) await armDueInQueue(c);
+			});
 		},
 
 		internalGithubNudge: async (c, input: GithubNudge): Promise<boolean> => {

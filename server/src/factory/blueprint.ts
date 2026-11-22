@@ -38,7 +38,7 @@ import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, type PlacementInventory } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
-import { MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
+import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, retryAt } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
@@ -59,6 +59,7 @@ export const RULES = {
 	ciRounds: 2,
 	conflictRounds: 1,
 	interruptions: 3,
+	providerRetries: 3,
 	publishTries: 3,
 	/** The first retry of a push that did not get through; each next one waits twice as long. */
 	publishRetryMs: 30_000,
@@ -340,10 +341,11 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 			const job = c.item.jobs?.at(-1);
 			if (fact.key !== key || step.kind !== "subtasks" || c.item.question || !job || job.cancelRequested || job.state !== "draft") return false;
 			let providerUntil: number | undefined;
+			let accountKey: string | undefined;
 			let sentence: string;
 			if (fact.kind === "place_child") {
 				if (!job.route || job.placement) return false;
-				const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm);
+				const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm, c.at);
 				if (fit.decision) {
 					job.placement = fit.decision;
 					dispatchAgain(c);
@@ -352,14 +354,16 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 				if (fit.refused !== undefined) return askPlacement(c, fit.refused);
 				sentence = fit.wait;
 				providerUntil = fit.retryAt;
+				accountKey = fit.accountKey;
 			} else {
 				if (job.id !== fact.child) return false;
 				if (fact.refused) return askPlacement(c, fact.sentence);
 				sentence = fact.sentence;
-				providerUntil = fact.providerUntil;
+				providerUntil = fact.providerUntil === undefined ? undefined : Math.min(fact.providerUntil, c.at + MAX_PROVIDER_WAIT);
+				accountKey = fact.accountKey;
 			}
 			const retry = providerUntil ?? retryAt(c.at, 0);
-			c.state("waiting", { reason: providerUntil ? "provider" : "machine", sentence, retryAt: retry });
+			c.state("waiting", { reason: providerUntil !== undefined ? "provider" : "machine", accountKey, sentence, retryAt: retry });
 			dispatchAgain(c, retry);
 			return true;
 		}
@@ -411,7 +415,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
 			return true;
 		case "provider_retry":
-			if (fact.key !== key || c.item.wait?.reason !== "provider" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
+			if (fact.key !== key || c.item.wait?.reason !== "provider" || (!fact.loginChanged && fact.at < (c.item.wait.retryAt ?? Infinity))) return false;
 			nextTurn(c, fact.plan);
 			return true;
 		case "turn_waiting": {
@@ -585,7 +589,8 @@ function checkTurn(c: Change): void {
 
 const OUTCOME_WORDS: Partial<Record<TurnOutcome, string>> = { stopped: "was stopped", failed: "failed", interrupted: "was cut off", error: "could not run" };
 
-function spendTurn(c: Change, spend: TurnSpend): void {
+function spendTurn(c: Change, spend: TurnSpend, providerRefusal?: ItemProviderRefusal): void {
+	if (!providerRefusal || !usageRefusal(providerRefusal.kind)) delete c.run.step.providerRetries;
 	c.run.step.turn = null;
 	c.item.spent.tokens += spend.tokens;
 	c.item.spent.turns += 1;
@@ -593,17 +598,21 @@ function spendTurn(c: Change, spend: TurnSpend): void {
 }
 
 function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnPlan): void {
-	const reset = refusal.resetsAt;
-	if (usageRefusal(refusal.kind) && reset !== undefined && reset - c.at <= 360 * MINUTE) {
-		const at = Math.max(c.at, reset + MINUTE);
+	const reset = refusal.resetsAt !== undefined && refusal.resetsAt > c.at ? refusal.resetsAt : undefined;
+	const retries = c.run.step.providerRetries ?? 0;
+	if (usageRefusal(refusal.kind) && reset !== undefined && reset - c.at <= MAX_PROVIDER_WAIT && retries < RULES.providerRetries) {
+		c.run.step.providerRetries = retries + 1;
+		const at = reset + MINUTE;
 		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : c.item.place.machineId);
 		const wait = providerWait("windlass", place, at, reset);
-		c.state("waiting", wait);
+		c.state("waiting", { ...wait, accountKey: refusal.accountKey });
 		c.say(wait.sentence);
 		c.effects.push({ kind: "provider_retry", key: c.key, at, plan: { ...plan, ...refusal.retry, newStep: false } });
 		return;
 	}
-	ask(c, "turn_refused", refusalMessage(refusal), [choice("again"), ...handOver(c.item), choice("give_up")], null,
+	const message = refusalMessage({ ...refusal, resetsAt: reset })
+		+ (retries >= RULES.providerRetries ? " This step has used its three automatic provider retries." : "");
+	ask(c, "turn_refused", message, [choice("again"), ...handOver(c.item), choice("give_up")], null,
 		{ ...plan, ...refusal.retry, newStep: false });
 }
 
@@ -611,7 +620,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	const { item, run } = c;
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
-	spendTurn(c, fact.spend);
+	spendTurn(c, fact.spend, fact.providerRefusal);
 
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	const result = gateResult(fact.outcome, fact.verified);
@@ -946,7 +955,7 @@ function reviewerInput(c: Change, ci: CiProgress, pr: number): ReviewerInput {
 function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): void {
 	const { review: pending, ci } = c.run;
 	if (!pending || !ci) throw new Error("the review turn has no verdict");
-	spendTurn(c, fact.spend);
+	spendTurn(c, fact.spend, fact.providerRefusal);
 	if (fact.refused) return readForHandoff(c, ci, skippedReview(fact.refused));
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, reviewPlan(c));
 	if (CUT_SHORT.has(fact.outcome)) {
@@ -1292,6 +1301,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			if (resume !== null) nextTurn(c, { ...resume, text: withNote(resume.text, note) });
 			break;
 		case "again":
+			if (question.kind === "turn_refused") delete run.step.providerRetries;
 			if (question.kind === "placement_refused") {
 				delete item.jobs!.at(-1)!.placement;
 				c.state("waiting", { reason: "children", sentence: "Checking the approved places again.", retryAt: null });

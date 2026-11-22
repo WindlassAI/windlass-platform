@@ -21,7 +21,8 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
+import { windlassAccountKey } from "../provider-usage.js";
+import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, PlanSubtask } from "../contract.js";
@@ -495,7 +496,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const placement = state.items.get(request.item)?.placement;
 		const capacity = machine && placement ? machineSlots(machine) : null;
 		const answer = admit({
-			provider: accounts.get(placeKey(session.place))?.find(a => a.harness === (session.harness ?? "windlass")),
+			provider: accountsAt(accounts, placeKey(session.place)).find(a => a.harness === (session.harness ?? "windlass")),
 			at: now,
 			limits,
 			turns: { running: own + slots.length, factory: slots.map((slot) => slot.title) },
@@ -591,6 +592,20 @@ async function armQueue(c: ItemsCtx): Promise<void> {
 	state.queueAt = { id, at };
 	await c.db.execute("INSERT OR REPLACE INTO turn_queue (id, schedule, at) VALUES (1, ?, ?)", id, at);
 	if (before !== null) await c.schedule.cancel(before.id).catch(() => false);
+}
+
+/** Recheck persisted timers on adoption. A late summary or an actor restart can also reveal a wait on an older login. */
+export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSummary>, adopted = false) {
+	const waits = [...items].filter(item => item.wait?.reason === "provider" && (adopted || item.wait.accountKey));
+	if (!waits.length) return;
+	const [signin] = await c.db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id=1 AND sealed IS NOT NULL");
+	if (!signin) return;
+	const current = windlassAccountKey(String(signin.generation));
+	for (const item of waits) {
+		if (item.wait!.accountKey === current) continue;
+		await itemActor(c, c.key[0]!, item.id).internalProviderChanged(item.revision).catch(error =>
+			c.log.warn({ msg: "Could not advance the item's provider retry", item: item.id, error: String(error) }));
+	}
 }
 
 /** Removal also reaches drafts and work waiting on GitHub. Repeat on wake in case a notification was cut off. */
@@ -775,7 +790,7 @@ export const itemActions = {
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
-						sentence: fit.refused ?? fit.wait, providerUntil: fit.retryAt, refused: fit.refused !== undefined,
+						sentence: fit.refused ?? fit.wait, providerUntil: fit.retryAt, accountKey: fit.accountKey, refused: fit.refused !== undefined,
 					});
 					return null;
 				}
@@ -964,6 +979,7 @@ export const itemActions = {
 		if (typeof summary?.id !== "string") return;
 		const before = c.vars.items.items.get(summary.id);
 		await noteItem(c, summary);
+		await notifyProviderWaits(c, [summary]);
 		if (summary.parent && before && summary.revision > before.revision && (ended(summary) || summary.question?.id !== before.question?.id)) {
 			const parent = itemActor(c, c.key[0]!, summary.parent.itemId);
 			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, state: summary.state }).catch(error =>

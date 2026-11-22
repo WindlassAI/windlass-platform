@@ -82,7 +82,7 @@ import type { MachineUpdate } from "./machine.js";
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -1394,6 +1394,7 @@ export const user = actor({
 		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
 		queueChanged(c);
 		await notifyRemovedMachines(c);
+		await notifyProviderWaits(c, c.vars.items.items.values());
 		// A try whose next schedule was set and not stored, because the server stopped in between, is set again.
 		try {
 			const late = await c.db.execute<{ session: string; tries: number }>("SELECT session, tries FROM backup_removal WHERE due_at < ?", Date.now() - BACKUP_REMOVE_LATE_MS);
@@ -1434,7 +1435,7 @@ export const user = actor({
 		internalObserveUsage: async (c, location: AccountLocation, generation: string, observation: UsageObservation) => {
 			requireServiceFor(c, "call");
 			if (await recordProviderUsage(c.db, location, generation, observation)) {
-				if (location.place !== "hosted") await machinesChanged(c);
+				if (c.vars.machines.size && (location.harness === "windlass" || location.place !== "hosted")) await machinesChanged(c);
 				queueChanged(c);
 			}
 		},
@@ -2217,6 +2218,7 @@ export const user = actor({
 				await (await signIn(c)).adopt(sealed);
 				if (c.vars.machines.size) await machinesChanged(c);
 				queueChanged(c);
+				await notifyProviderWaits(c, c.vars.items.items.values(), true);
 				// From here on the actor is a user's, and stays.
 				c.vars.reached = true;
 				console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);

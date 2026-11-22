@@ -163,11 +163,17 @@ class Server {
 
 type Client = ReturnType<typeof createClient<Registry>>;
 
-/** One server with a GitHub stand-in, a demo user connected to it as "ada", and a repository. */
-async function world(server: Server, standin: GithubStandin, env: Record<string, string> = {}) {
+async function fixtureLogin(client: Client, code: string) {
+	const login = client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]);
+	const { redirectPrefix } = await login.start();
+	return login.finish(`${redirectPrefix}?${new URLSearchParams({ code })}`);
+}
+
+/** One server with a GitHub stand-in, a user connected to it as "ada", and a repository. */
+async function world(server: Server, standin: GithubStandin, env: Record<string, string> = {}, loginCode?: string) {
 	await server.start({ ...standin.env(), ...env });
 	const client: Client = createClient<Registry>({ endpoint: ENDPOINT, headers: { Origin: ORIGIN } });
-	const auth: AuthResult = await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+	const auth: AuthResult = loginCode ? await fixtureLogin(client, loginCode) : await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const { url } = await user.githubConnect({ origin: ORIGIN });
 	const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });
@@ -260,13 +266,19 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(view.question?.kind === "turn_refused" && view.question.text.includes(reason), stateOf(view));
 			assert(view.spent.turns === 1 && snapshot.summary.turns === 1 && view.question.choices.map(c => c.id).join() === "again,give_up", stateOf(view));
 			assert(!JSON.stringify([snapshot.timeline, view]).includes("fixture-secret-value"), "provider error leaked a saved secret");
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: view.question.id, choice: "again" } });
+			await untilItem(user, item.id, "the retried planner", v => v.spent.turns === 2);
+			const prompts = (await session.snapshot()).timeline.filter(e => e.kind === "user");
+			assert(prompts.length === 2, "expected two planner deliveries");
+			for (const prompt of prompts) assert(prompt.text.split("Placement inventory (read-only data):").length === 2,
+				`turn ${prompt.turn} has ${prompt.text.split("Placement inventory (read-only data):").length - 1} inventories`);
 			return view.question.text;
 		});
 	} finally { await refusalServer.stop(); refusalServer.remove(); }
 	const usageServer = new Server();
 	try {
 		await check("orchestrator usage: Windlass two-hour reset reaches the item and gates later work", async () => {
-			const { user, client, auth } = await world(usageServer, standin);
+			const { user, client, auth } = await world(usageServer, standin, { WLP_ALLOWED_EMAILS: "routing@example.com" }, "routing");
 			const startedAt = Date.now();
 			const item = await user.createItem({ repository: { id: harbor.id }, title: "Run the checks", body: "Run (usage-limit)", start: true });
 			const view = await untilItem(user, item.id, "the provider outcome", v => !!v.question || v.wait?.reason === "provider");
@@ -276,6 +288,9 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const next = await user.createItem({ repository: { id: harbor.id }, title: "Continue checks", body: "Verify the build", start: true });
 			const queued = await untilItem(user, next.id, "the account cooldown", v => v.wait?.reason === "provider");
 			assert(queued.spent.turns === 0 && queued.wait?.retryAt === view.wait.retryAt, stateOf(queued));
+			const renewed = await fixtureLogin(client, "routing");
+			assert(renewed.profile.uid === auth.profile.uid, "the second login must replace the same account");
+			await untilItem(user, item.id, "the refused turn to retry on the new login", v => v.spent.turns >= 2, 15_000);
 			return view.wait.sentence;
 		});
 	} finally { await usageServer.stop(); usageServer.remove(); }

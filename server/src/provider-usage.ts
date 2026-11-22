@@ -7,6 +7,10 @@ export type UsageObservation =
 	| { kind: "success"; at: number; startedAt: number };
 
 export const MINUTE = 60_000;
+export const MAX_PROVIDER_WAIT = 360 * MINUTE;
+export const WINDLASS_ACCOUNT = "*";
+export const windlassAccountKey = (generation: string) => `${WINDLASS_ACCOUNT}/windlass/${generation}`;
+
 export const resetTime = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < 8.64e15 - MINUTE ? value : undefined;
 
@@ -66,8 +70,9 @@ export function observeUsage(previous: StoredUsage, observation: UsageObservatio
 		return { ...previous, backoff: 0, lastSuccess: at, refusedUntil: 0, account: { ...account, state: accountState(previous, at), limitedUntil: null } };
 	}
 	const refusal = observation.kind === "refusal";
+	const reset = refusal && observation.resetsAt !== null && observation.resetsAt > at ? observation.resetsAt : null;
 	const window: UsageWindow = refusal ? { kind: observation.window?.kind ?? "other", usedPct: observation.window?.usedPct ?? null,
-		resetsAt: observation.resetsAt, observedAt: at, source: "refusal" } : observation.event.window;
+		resetsAt: reset, observedAt: at, source: "refusal" } : observation.event.window;
 	if (refusal && at <= Math.max(previous.lastRefusal, previous.lastSuccess)) return previous;
 	const older = account.windows.find(w => w.kind === window.kind && w.source === window.source);
 	if ((older && older.observedAt > at) || (!refusal && at < previous.lastSuccess)) return previous;

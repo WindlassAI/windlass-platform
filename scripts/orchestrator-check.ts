@@ -897,6 +897,34 @@ test("a limited account waits or uses an approved alternative at the child bound
 	}
 });
 
+test("fresh placement retries the soonest approved wait and caps a long provider reset", () => {
+	const at = 1000, hour = 3600_000;
+	const machines = [machineReport(), machineReport("Linux box", linuxId, { turns: { running: 1, max: 1, queued: 0 } })];
+	const place = (overflow: boolean, reset: number) => {
+		const item = placementFeature(machines, {}, ["Linux box"], overflow);
+		return advance(item, { kind: "place_child", at, key: currentKey(item)!, inventory: {
+			machines: plannerMachines(machines), hostedProfiles: [], limited: [{ machineId: macId, harness: "windlass", limitedUntil: at + reset }],
+		} });
+	};
+	for (const [overflow, reset, delay] of [[true, 4 * hour, 30_000], [true, 10_000, 10_000], [false, 168 * hour, 6 * hour]] as const) {
+		const result = place(overflow, reset);
+		assert.equal(result.item.wait?.retryAt, at + delay);
+		assert.equal(result.effects.find(e => e.kind === "dispatch")?.at, at + delay);
+	}
+});
+
+test("shared Windlass cooldown covers hosted and every approved machine, in either order", () => {
+	const machines = [machineReport(), machineReport("Linux box", linuxId)];
+	for (const prefer of ["Mac", "hosted"]) {
+		const item = placementFeature(machines, {}, prefer === "Mac" ? ["Linux box", "hosted"] : ["Mac"], true, prefer);
+		const result = advance(item, { kind: "place_child", at: 6, key: currentKey(item)!, inventory: {
+			machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"], limited: [{ machineId: "*", harness: "windlass", limitedUntil: 1000 }],
+		} });
+		assert.equal(result.item.wait?.reason, "provider");
+		assert.equal(result.item.jobs![0].placement, undefined);
+	}
+});
+
 test("hosted requires an approved route and a deployment profile", () => {
 	const mac = machineReport();
 	const item = placementFeature([mac]);
@@ -912,25 +940,21 @@ test("a signed-in Claude installation cannot silently launch a Windlass child", 
 	assert.throws(() => placementFeature([mac], { harness: "claude" }), /work items.*Windlass/i);
 });
 
-test("5c.5 child creation rereads the owner's account after dispatch; only approved machine overflow can run", async t => {
+test("5c.5 a Windlass limit still gates every approved machine at child creation", async t => {
 	for (const overflow of [false, true]) {
-		const { raw, create, delivered, facts, child } = await childCreation(t, overflow);
+		const { raw, create, delivered, facts } = await childCreation(t, overflow);
 		const until = Date.now() + 3600_000;
 		raw.exec("CREATE TABLE machines(id TEXT PRIMARY KEY, facts TEXT, expires INTEGER); CREATE TABLE signin(id INTEGER, generation INTEGER)");
 		raw.prepare("INSERT INTO machines VALUES(?, '{}', NULL)").run(macId);
 		raw.exec("CREATE TABLE IF NOT EXISTS provider_usage(place TEXT,harness TEXT,generation TEXT,data TEXT,PRIMARY KEY(place,harness))");
-		const account = { key: macId + "/windlass/0", harness: "windlass", state: "limited", limitedUntil: until, windows: [] };
-		raw.prepare("INSERT INTO provider_usage VALUES(?,?,?,?)").run(macId, "windlass", "0", JSON.stringify({ account, backoff: 1, lastRefusal: Date.now() }));
+		const { recordProviderUsage } = await import("../server/src/actors/provider-accounts.js");
+		type Db = Parameters<typeof recordProviderUsage>[0];
+		const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args),
+			transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
+		await recordProviderUsage(db, { place: macId, harness: "windlass" }, "0", { kind: "refusal", at: Date.now(), resetsAt: until - 60_000 });
 		await create();
-		if (overflow) {
-			assert.deepEqual(delivered[0]?.place, { kind: "machine", machineId: linuxId });
-			assert.ok(child()?.task.body.includes(head) && child()?.task.body.includes("Prior subtask report"));
-			await create();
-			assert.equal(delivered.length, 1);
-		} else {
-			assert.equal(delivered.length, 0);
-			assert.ok(facts[0]?.kind === "placement_wait" && !facts[0].refused && facts[0].providerUntil === until);
-		}
+		assert.equal(delivered.length, 0);
+		assert.ok(facts[0]?.kind === "placement_wait" && !facts[0].refused && facts[0].providerUntil === until);
 	}
 });
 
@@ -952,15 +976,37 @@ test("5c.2 unknown resets back off per login, and only a successful real probe c
 		const refusal = { kind: "refusal" as const, at: now, resetsAt: null };
 		await recordProviderUsage(db, location, "1", refusal);
 		await recordProviderUsage(db, location, "1", refusal);
-		const account = (await providerAccounts(db, now)).get("hosted")?.[0];
+		assert.deepEqual(raw.prepare("SELECT place FROM provider_usage WHERE harness='windlass'").all().map(r => r.place), ["*"]);
+		const account = (await providerAccounts(db, now)).get("*")?.[0];
 		assert.equal(account?.state, "limited");
 		assert.equal(account.limitedUntil, now + minutes * 60_000);
 		now = account.limitedUntil!;
-		assert.equal((await providerAccounts(db, now)).get("hosted")?.[0].state, "ok");
+		assert.equal((await providerAccounts(db, now)).get("*")?.[0].state, "ok");
 	}
 	await recordProviderUsage(db, location, "1", { kind: "success", startedAt: now, at: now + 1 });
 	await recordProviderUsage(db, location, "1", { kind: "refusal", at: now + 2, resetsAt: null });
-	assert.equal((await providerAccounts(db, now + 2)).get("hosted")?.[0].limitedUntil, now + 2 + 15 * 60_000);
+	assert.equal((await providerAccounts(db, now + 2)).get("*")?.[0].limitedUntil, now + 2 + 15 * 60_000);
+});
+
+test("legacy Windlass rows retain the longest cooldown for the latest sign-in on upgrade", async t => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { machineTables } = await import("../server/src/actors/user-machines.js");
+	const { PROVIDER_TABLE, providerAccounts } = await import("../server/src/actors/provider-accounts.js");
+	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
+	const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) } as Parameters<typeof machineTables>[0];
+	raw.exec(PROVIDER_TABLE);
+	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,2)");
+	for (const [place, generation, until] of [[macId, "1", 900], ["hosted", "2", 200], [linuxId, "2", 400]] as const) {
+		const account = { key: `${place}/windlass/${generation}`, harness: "windlass", state: "limited", limitedUntil: until, windows: [] };
+		raw.prepare("INSERT INTO provider_usage VALUES(?,?,?,?)").run(place, "windlass", generation, JSON.stringify({ account, backoff: 1, lastRefusal: 1, lastSuccess: -1 }));
+	}
+	await machineTables(db);
+	await machineTables(db);
+	const accounts = await providerAccounts(db, 100);
+	assert.equal(accounts.get("*")?.[0]?.key, "*/windlass/2");
+	assert.equal(accounts.get("*")?.[0]?.limitedUntil, 400);
+	assert.equal(raw.prepare("SELECT count(*) AS n FROM provider_usage").get()?.n, 1);
 });
 
 test("5c.7 new machine login ignores a stale refusal; page and stored reading contain only public window data", async t => {

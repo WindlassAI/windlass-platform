@@ -206,7 +206,7 @@ import { REPORT_TAKEN } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
-import { resetTime, type LimitEvent, type UsageObservation } from "../provider-usage.js";
+import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
 import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal } from "../factory/types.js";
@@ -3750,7 +3750,7 @@ fi`, { signal, timeoutMs: 5000 });
 			message = refusalMessage(safe);
 			if (active.item) {
 				const { text, fetchBase } = active.item.row;
-				active.item.providerRefusal = { ...safe, placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase } };
+				active.item.providerRefusal = { ...safe, accountKey: generation === null ? undefined : windlassAccountKey(generation), placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase } };
 			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
 				message += " You can change the model or reasoning effort with your next prompt.";
 			}

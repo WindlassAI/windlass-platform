@@ -170,6 +170,7 @@ export interface SessionInternal {
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature"): Promise<string | null>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }): Promise<void>;
