@@ -358,6 +358,10 @@ export class Executor extends MachineDocker {
 			this.signIn = "unknown";
 		}
 	}
+	/** The welcome's `gitHost`, which an --egress-domains list takes in place of github.com. */
+	platformGitHost(host: string | undefined) {
+		this.network.platformGitHost(host);
+	}
 	async checkAuthenticatedNetwork() {
 		this.enforceEgress = true;
 		await this.serial(() => this.refresh());
