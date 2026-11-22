@@ -277,6 +277,19 @@ cd server && E2B_API_KEY=e2b_... WLP_E2B_CHECK_NETWORK=1 WLP_MODEL_RELAY_URL=htt
   WLP_E2B_WINDLASS_VERSION=0.6.0 WLP_PUBLIC_URL=https://<platform hostname> npx tsx ../scripts/e2b-check.ts
 ```
 
+Before turning the relay on for E2B, and after any change to the route, make one real model request through
+it from an E2B sandbox. It runs a server of its own in its own process behind a Cloudflare quick tunnel
+(`cloudflared` on the PATH), one sandbox and one short turn, and touches no deployment:
+
+```sh
+windlass login token --json > /tmp/relay-token.json && chmod 600 /tmp/relay-token.json   # where a ChatGPT sign-in is saved
+cd server && E2B_API_KEY=e2b_... WLP_RELAY_CHECK_TOKEN_FILE=/tmp/relay-token.json npx tsx ../scripts/model-relay-e2b-check.ts
+rm /tmp/relay-token.json
+```
+
+On the live server, `[wlp] model_relay.failed` and `model_relay.detail` lines say what the relay refused
+or could not reach.
+
 ### Network
 
 `WLP_E2B_NETWORK` sets what every sandbox of the deployment may reach: the hosted counterpart of a machine's

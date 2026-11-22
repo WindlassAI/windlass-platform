@@ -11,7 +11,7 @@
  */
 
 import { createRequire } from "node:module";
-import { Readable, Transform, pipeline } from "node:stream";
+import { Readable, pipeline } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "./actors/internal.js";
@@ -160,39 +160,78 @@ export function modelRelayRoute(request: Request, pathname: string, relayHost: s
 	return null;
 }
 
-/** A counter of the request body's bytes: past `max` in this request, or past the budget of all, it fails the body. */
-function counted(max: number, budget: BodyBudget): { stream: Transform; over: () => "large" | "busy" | null; done: () => void } {
+/**
+ * The request body, read as it comes and counted: past `max` in this request, or past the budget of all
+ * bodies in flight, reading stops and the request is refused. It is sent upstream whole, with its length,
+ * as Windlass sends it to api.openai.com itself: the server's HTTP listener (RivetKit's) has the whole body
+ * in memory before the route runs, so streaming it on saved nothing, and a chunked upload with no length
+ * is a request shape api.openai.com was never sent by Windlass (docs/model-relay.md, "Limits").
+ */
+async function readBody(request: Request, max: number, budget: BodyBudget): Promise<{ body: Uint8Array; taken: number } | { over: "large" | "busy"; taken: number }> {
+	const parts: Uint8Array[] = [];
 	let size = 0;
-	let over: "large" | "busy" | null = null;
-	let given = false;
-	const done = () => {
-		if (given) return;
-		given = true;
-		budget.give(size);
-	};
-	const stream = new Transform({
-		transform(chunk: Buffer, _encoding, callback) {
-			if (size + chunk.length > max) {
-				over = "large";
-				return callback(new Error("the request body is too large for the relay"));
-			}
-			if (!budget.take(chunk.length)) {
-				over = "busy";
-				return callback(new Error("the relay is sending too many request bodies at once"));
-			}
-			size += chunk.length;
-			callback(null, chunk);
-		},
-		flush(callback) {
-			done();
-			callback();
-		},
-	});
-	stream.on("close", done);
-	return { stream, over: () => over, done };
+	if (request.body === null) return { body: new Uint8Array(), taken: 0 };
+	const reader = request.body.getReader();
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		if (size + value.byteLength > max) {
+			await reader.cancel().catch(() => undefined);
+			return { over: "large", taken: size };
+		}
+		if (!budget.take(value.byteLength)) {
+			await reader.cancel().catch(() => undefined);
+			return { over: "busy", taken: size };
+		}
+		size += value.byteLength;
+		parts.push(value);
+	}
+	return { body: Buffer.concat(parts), taken: size };
 }
 
+/** At most 60 lines a minute, so that requests nobody's turn sent cannot fill the log; the next line says how many were left out. */
+const logged = { minute: 0, lines: 0, dropped: 0 };
+function relayLog(line: string): void {
+	const minute = Math.floor(Date.now() / 60_000);
+	if (minute !== logged.minute) Object.assign(logged, { minute, lines: 0 });
+	if (logged.lines >= 60) {
+		logged.dropped += 1;
+		return;
+	}
+	logged.lines += 1;
+	const dropped = logged.dropped ? ` (${logged.dropped} earlier line(s) left out)` : "";
+	logged.dropped = 0;
+	console.warn(`${line.replace(/\s+/g, " ").slice(0, 400)}${dropped}`);
+}
+/** One line per refused or failed request, with no bearer, token or body in it: what the relay answered, and why. */
+function logFailure(path: string, status: number, why: string, began: number): void {
+	relayLog(`[wlp] model_relay.failed status=${status} path=${path} ms=${Date.now() - began}: ${why}`);
+}
+/** Why a fetch failed, as undici says it (its cause's code and message): never the request. */
+const fetchFailure = (error: unknown) => {
+	const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
+	return [error instanceof Error ? error.message : String(error), cause?.code, cause?.message].filter(Boolean).join(": ");
+};
+
+/** The relay's answer, and a line in the server's log for every one that is not a 200 (relay_lease_ended included). */
 export async function modelRelayResponse(request: Request, deps: RelayRouteDeps = defaults): Promise<Response> {
+	const began = Date.now();
+	const path = new URL(request.url).pathname;
+	let response: Response;
+	try {
+		response = await answer(request, deps, (why) => relayLog(`[wlp] model_relay.detail path=${path} ms=${Date.now() - began}: ${why}`));
+	} catch (error) {
+		logFailure(path, 500, `the relay failed: ${fetchFailure(error)}`, began);
+		throw error;
+	}
+	if (response.status !== 200) {
+		const error = ((await response.clone().json().catch(() => ({}))) as { error?: { code?: string | null; message?: string } }).error;
+		logFailure(path, response.status, `${error?.code ? `${error.code}: ` : ""}${error?.message ?? ""}`, began);
+	}
+	return response;
+}
+
+async function answer(request: Request, deps: RelayRouteDeps, note: (why: string) => void): Promise<Response> {
 	if (!config.modelRelay.on) return refusal(404, "The model relay is off.");
 	const url = new URL(request.url);
 	const method = MODEL_RELAY_PATHS.get(url.pathname);
@@ -218,13 +257,14 @@ export async function modelRelayResponse(request: Request, deps: RelayRouteDeps 
 	// The lease's end (`close`, here or in the process that holds it) aborts the request from here on.
 	const ended = new AbortController();
 	const untrack = trackRequest(placeholder.nonce, ended) || watchRemote(placeholder.nonce, placeholder.uid, placeholder.sessionId, placeholder.expiresAt, deps, ended);
-	let body: ReturnType<typeof counted> | null = null;
+	let taken = 0;
 	let released = false;
 	const release = () => {
 		if (!released) {
 			released = true;
 			untrack();
-			body?.done();
+			deps.bodies.give(taken);
+			taken = 0;
 			slot.release();
 		}
 	};
@@ -249,25 +289,24 @@ export async function modelRelayResponse(request: Request, deps: RelayRouteDeps 
 			if (value !== null) headers[name] = value;
 		}
 		const signal = AbortSignal.any([request.signal, ended.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]);
-		// The body streams upstream as it arrives, counted: never whole in memory.
-		let upstreamBody: ReadableStream | undefined;
-		if (method === "POST" && request.body !== null) {
-			body = counted(maxBody, deps.bodies);
-			const source = Readable.fromWeb(request.body as WebReadableStream<Uint8Array>);
-			pipeline(source, body.stream, () => undefined);
-			upstreamBody = Readable.toWeb(body.stream) as unknown as ReadableStream;
+		// The body whole, counted as it is read, and sent with its length.
+		let upstreamBody: Uint8Array | undefined;
+		if (method === "POST") {
+			const read = await readBody(request, maxBody, deps.bodies);
+			taken = read.taken;
+			if ("over" in read) {
+				release();
+				return read.over === "large" ? refusal(413, "The request is too large for the relay.") : refusal(503, "The relay is sending too many request bodies at once. Try again.", { "retry-after": "2" });
+			}
+			upstreamBody = read.body;
 		}
 		let reply: Response;
 		try {
-			reply = await deps.fetch(UPSTREAM + url.pathname.slice(RELAY_BASE_PATH.length), {
-				method, headers, body: upstreamBody, redirect: "manual", signal, ...(upstreamBody && { duplex: "half" }),
-			} as RequestInit);
-		} catch {
-			const over = body?.over() ?? null;
+			reply = await deps.fetch(UPSTREAM + url.pathname.slice(RELAY_BASE_PATH.length), { method, headers, body: upstreamBody as BodyInit | undefined, redirect: "manual", signal });
+		} catch (error) {
 			release();
-			if (over === "large") return refusal(413, "The request is too large for the relay.");
-			if (over === "busy") return refusal(503, "The relay is sending too many request bodies at once. Try again.", { "retry-after": "2" });
 			if (ended.signal.aborted) return leaseEnded();
+			note(`api.openai.com could not be reached: ${fetchFailure(error)}`);
 			return refusal(502, "The provider failed or couldn't be reached.");
 		}
 		const replyHeaders = Object.fromEntries(reply.headers.entries());
@@ -290,7 +329,10 @@ export async function modelRelayResponse(request: Request, deps: RelayRouteDeps 
 		// fetch has decoded the body already. Every token is taken out before a byte goes back.
 		const scrubbed = scrubStream(secrets, type, true);
 		// One pipeline: the client going away stops the provider's stream too, and the slot is freed once either ends.
-		pipeline(Readable.fromWeb(reply.body as WebReadableStream<Uint8Array>), scrubbed, () => release());
+		pipeline(Readable.fromWeb(reply.body as WebReadableStream<Uint8Array>), scrubbed, (error) => {
+			if (error && !ended.signal.aborted && !request.signal.aborted) note(`the provider's stream broke off: ${fetchFailure(error)}`);
+			release();
+		});
 		(scrubbed as unknown as Readable).on("close", release);
 		const stop = () => (scrubbed as unknown as Readable).destroy();
 		request.signal.addEventListener("abort", stop, { once: true });

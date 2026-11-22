@@ -82,15 +82,15 @@ const REAL_B = "real-chatgpt-token-B-" + "b".repeat(48);
 
 // ---- the E2B route ----------------------------------------------------------------------------
 
-interface Seen { url: string; method: string; authorization: string | null; headers: Headers; body: string; streamed: boolean; signal: AbortSignal | null }
+interface Seen { url: string; method: string; authorization: string | null; headers: Headers; body: string; whole: boolean; signal: AbortSignal | null }
 function upstream(reply: (seen: Seen) => Response | Promise<Response>, read = true) {
 	const seen: Seen[] = [];
 	const fetch = async (input: string | URL | Request, init?: RequestInit & { duplex?: string }) => {
 		const headers = new Headers(init?.headers);
-		// The body comes as a stream sent as it arrives (`duplex: "half"`), never read whole first.
-		const streamed = init?.body instanceof ReadableStream && init.duplex === "half";
+		// The body comes whole, so that fetch sends it with its length, as Windlass sends it to api.openai.com itself.
+		const whole = init?.body === undefined || init.body instanceof Uint8Array;
 		const body = read && init?.body ? await new Response(init.body).text() : "";
-		const s = { url: String(input), method: init?.method ?? "GET", authorization: headers.get("authorization"), headers, body, streamed, signal: init?.signal ?? null };
+		const s = { url: String(input), method: init?.method ?? "GET", authorization: headers.get("authorization"), headers, body, whole, signal: init?.signal ?? null };
 		seen.push(s);
 		if (init?.redirect !== "manual") throw new Error("redirects must not be followed");
 		return reply(s);
@@ -134,7 +134,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	expect("a Responses call reaches api.openai.com with the turn's token in place of the placeholder", streamed.status === 200 && up.seen[0]?.url === "https://api.openai.com/v1/responses"
 		&& up.seen[0].authorization === `Bearer ${REAL_A}` && up.seen[0].method === "POST", JSON.stringify(up.seen[0]?.url));
 	expect("only Windlass's own headers are passed on", up.seen[0].headers.get("cookie") === null && up.seen[0].headers.get("session-id") === "s1");
-	expect("the request body is streamed upstream, not read whole first", up.seen[0].streamed && up.seen[0].body === "{}");
+	expect("the request body goes upstream whole, with its length, not as a chunked stream", up.seen[0].whole && up.seen[0].body === "{}" && (up.seen.at(-1)?.whole ?? false));
 	expect("the token is taken out of the streamed answer", !text.includes(REAL_A) && text.includes("echo Bearer [redacted]"), text);
 	const models = await modelRelayResponse(call(lease.placeholder, "/model-relay/v1/models"), deps(up.fetch));
 	expect("the model list goes too, scrubbed", models.status === 200 && up.seen[1]?.url === "https://api.openai.com/v1/models" && !(await models.text()).includes(REAL_A));
@@ -255,33 +255,28 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	expect("a request queued while its turn ended is answered 401, and never reaches the provider", late.status === 401 && (await code(late)) === "relay_lease_ended" && up.seen.length === 1, `${late.status}, ${up.seen.length} sent`);
 }
 {
-	// The body streams through a counter: past its limit the request fails as too large, and the bodies in flight have a ceiling.
+	// The body is counted as it is read: past its limit the request fails as too large, and the bodies in flight have a ceiling.
 	const up = upstream(() => sse("ok"));
 	const a = openRelayLease({ uid: "u1", sessionId: "big", origin: "https://relay.example.com", ttlMs: 60_000 });
 	await a.hand({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 });
 	const chunks = (n: number, size: number) => new ReadableStream<Uint8Array>({ start(c) { for (let i = 0; i < n; i++) c.enqueue(new Uint8Array(size).fill(97)); c.close(); } });
 	const streamed = (body: ReadableStream<Uint8Array>) => call(a.placeholder, "/model-relay/v1/responses", { body, duplex: "half" } as RequestInit);
 	const large = await modelRelayResponse(streamed(chunks(8, 1024)), deps(up.fetch, { bodyBytes: 4096 }));
-	expect("a body past the limit with no content-length is cut off as it streams, and refused as too large", large.status === 413, String(large.status));
+	expect("a body past the limit with no content-length is cut off as it is read, refused as too large, and nothing is sent", large.status === 413 && up.seen.length === 0, String(large.status));
 	const declared = await modelRelayResponse(call(a.placeholder, "/model-relay/v1/responses", { body: "x".repeat(5000), headers: { "content-length": "5000" } }), deps(up.fetch, { bodyBytes: 4096 }));
 	expect("a body that declares more than the limit is refused before anything is sent", declared.status === 413);
-	// Two bodies at once in a budget of one: the first holds its bytes while the provider reads it slowly, the second is refused.
+	// Two bodies at once in a budget of one: the first holds its bytes until its answer has ended, the second is refused.
 	const bodies = new BodyBudget(3000);
 	let hold!: () => void;
-	const slow = upstream(async (seen) => seen.body === "" ? new Promise<Response>((resolve) => (hold = () => resolve(sse("ok")))) : sse("ok"), false);
-	const slowFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-		const reader = (init!.body as ReadableStream<Uint8Array>).getReader();
-		await reader.read();
-		// The first chunk is in; the rest stays unread while the answer is pending.
-		return slow.fetch(input, { ...init, body: undefined });
-	}) as typeof globalThis.fetch;
-	const open = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(2000).fill(98)); } });
-	const holding = modelRelayResponse(streamed(open), deps(slowFetch, { bodies }));
+	const slow = upstream(() => new Promise<Response>((resolve) => (hold = () => resolve(sse("ok")))));
+	const holding = modelRelayResponse(streamed(chunks(2, 1000)), deps(slow.fetch, { bodies }));
 	for (let i = 0; i < 100 && bodies.inFlight === 0; i++) await sleep(5);
 	const refused = await modelRelayResponse(streamed(chunks(2, 1000)), deps(async (input, init) => { await new Response(init!.body).arrayBuffer(); return sse("ok"); }, { bodies }));
 	expect("past the ceiling of bodies in flight across requests a request is refused with retry-after", refused.status === 503 && refused.headers.get("retry-after") === "2" && bodies.inFlight === 2000, `${refused.status}, ${bodies.inFlight} in flight`);
 	hold?.();
 	await (await holding).text().catch(() => "");
+	for (let i = 0; i < 100 && bodies.inFlight !== 0; i++) await sleep(5);
+	expect("a body's bytes are given back once its answer has ended", bodies.inFlight === 0, String(bodies.inFlight));
 	await a.close();
 }
 {

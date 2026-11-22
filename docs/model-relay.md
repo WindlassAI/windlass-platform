@@ -135,9 +135,13 @@ deployment ceiling and 16 in flight per user. It also has:
 
 - 300 requests a minute per user, after a burst of 100, counted from the placeholder's signed user before
   any lookup. Past it the answer is a 503 with `retry-after`.
-- request bodies streamed upstream as they arrive (`duplex: "half"`), through a counter that fails the
-  request with a 413 past 32 MiB, and 256 MiB of request bodies being sent at once across all requests.
-  Past that, a 503 with `retry-after`.
+- request bodies counted as they are read, with a 413 past 32 MiB, and 256 MiB of request bodies in
+  flight across all requests. Past that, a 503 with `retry-after`. The body is then sent upstream whole,
+  with its `content-length`, the way Windlass sends it to `api.openai.com` itself. The server's HTTP
+  listener (RivetKit's) already holds the whole body before the route runs, so streaming it on saved no
+  memory. Every answer of the route that is not a 200 is a line `[wlp] model_relay.failed status=... path=...`
+  in the server's log, and a failure to reach `api.openai.com` or a stream that broke off is a
+  `model_relay.detail` line with undici's reason. There are at most 60 of these lines a minute.
 
 The E2B route's limits are those of one server process. A deployment of several processes has each limit
 once per process, so its real ceilings are that many times higher. The per-user limits bound how many
@@ -191,10 +195,17 @@ Turns that are already running keep the mode they started with.
   own `relay_lease_ended`, a lease's end stopping its running requests, expired files deleted, tokens
   removed from responses, and only the two routes.
 - `scripts/model-relay-route-check.ts` (CI heavy `rules`): the E2B route, with signed, expired, forged and
-  ended leases, refresh, caps, a queued request whose turn ended, streamed and capped bodies, the rate per
+  ended leases, refresh, caps, a queued request whose turn ended, bodies sent whole and capped, the rate per
   user, ended leases remembered, `close` aborting running requests here and in another process, the
   relay's own hostname, the version gates, the E2B network with the relay's host and without
   `api.openai.com`, an E2B sandbox with no session, and the mapping of the relay's refusals.
+- `scripts/model-relay-e2b-check.ts` (by hand: it needs an E2B key and a real access token): one real
+  model request from an E2B sandbox through a relay hostname to `api.openai.com`. It starts the server in
+  its own process on ports and storage of its own, behind a Cloudflare quick tunnel, makes one sandbox under
+  `restricted`, and runs one real turn through the platform's turn code: "Reply with exactly: relay ok".
+  It checks the answer, that the model call reached `api.openai.com` and was answered, that the relay
+  logged no failure, and that the token is nowhere in the sandbox. Nothing in CI makes a real model
+  request, so run it before turning the relay on for E2B and after changing the route.
 - `scripts/model-relay-docker-check.ts` (CI heavy `sandbox-docker`): the hosted relay with real
   containers. It repeats the experiments of the token-exposure note in a hardened session container: a
   scan of the files, of `/proc/*/environ` and `/dev/shm`, and a process left over from setup. The real
