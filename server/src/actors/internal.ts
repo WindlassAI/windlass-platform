@@ -27,6 +27,7 @@ export interface SessionCreateInput {
 	mode?: string;
 	harness?: HarnessId;
 	harnessOptions?: HarnessOptions;
+	codexModes?: HarnessOptions["modes"];
 	/** A service token bound to this actor's key: proof that `user` created it. */
 	grant: string;
 	title: string;

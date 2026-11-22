@@ -1,0 +1,243 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { parseRunnerFrame } from "../server/src/runner/control.js";
+import { codexModes, reportedCodexModes } from "../server/src/sandbox/codex-modes.js";
+import { initialSessionModes } from "../server/src/sandbox/profiles.js";
+import { launchModes } from "../web/src/lib/modes.js";
+Object.assign(globalThis, { SANDBOX_IMAGE: "fixture", SHOTS_IMAGE_PIN: "", HARNESS_IMAGES: { codex: "fixture" } });
+const { devicePrompt } = await import("../runner/src/codex-login.js");
+
+test("device login emits only the official URL and challenge, refusing foreign hosts and redirects", () => {
+	const parse = devicePrompt();
+	assert.equal(parse("ABCD-EFGH"), undefined);
+	assert.equal(parse("https://auth.openai.com/codex/device"), undefined);
+	assert.equal(parse("ABCD-EFGH"), "https://auth.openai.com/codex/device\nABCD-EFGH");
+	assert.equal(parse("ABCD-EFGH"), undefined);
+	for (const url of [
+		"https://other.example/codex/device",
+		"https://auth.openai.com/codex/device?redirect_uri=https://other.example",
+		"https://auth.openai.com.example/codex/device",
+	])
+		assert.throws(() => devicePrompt()(url), /unexpected verification URL/);
+	assert.throws(() => devicePrompt()("device code login is not enabled"), /workspace admin/);
+});
+test("Codex catalogs have independent model and byte limits on both frame shapes", () => {
+	const options = {
+		models: [{ id: "fixture", name: "Example", efforts: ["low"] }],
+		defaultModel: "fixture",
+		modes: codexModes("docker-hardened"),
+		checkedAt: 1,
+	};
+	const entry = {
+		id: "codex",
+		adapter: "codex-acp 2.9.0",
+		image: "fixture",
+		signIn: "token",
+		method: "api-key",
+		modes: ["agent-full-access"],
+	};
+	const report = {
+		kind: "report",
+		docker: { ok: true },
+		commandSandbox: { ok: true },
+		freeDiskBytes: 1,
+		sandboxes: [],
+	};
+	for (const frame of [
+		(opts: unknown) => ({ ...report, harnesses: [{ ...entry, options: opts }] }),
+		(opts: unknown) => ({ kind: "catalog", id: "codex", options: opts }),
+	]) {
+		assert.ok(parseRunnerFrame(JSON.stringify(frame(options))));
+		for (const [n, size] of [
+			[40, 8],
+			[32, 512],
+		] as const) {
+			const models = Array.from({ length: n }, (_, i) => ({
+				id: i ? String(i) : "fixture",
+				name: "a".repeat(size),
+				efforts: ["low"],
+			}));
+			assert.equal(parseRunnerFrame(JSON.stringify(frame({ ...options, models }))), null);
+		}
+	}
+});
+test("the Windlass sandbox profile offers Codex only Read-only and Workspace access, starting in workspace-write", () => {
+	const probed = reportedCodexModes(true);
+	assert.deepEqual(probed, ["agent-full-access", "read-only", "workspace-write"]);
+	assert.deepEqual(reportedCodexModes(false), ["agent-full-access"]);
+	const inner = codexModes("docker-windlass-sandbox", probed);
+	assert.deepEqual(inner.map((m) => m.id), ["read-only", "workspace-write"]);
+	// Auto review's reviewer model approves running outside the sandbox: not offered even when a runner reports it.
+	assert.deepEqual(codexModes("docker-windlass-sandbox", [...probed, "agent"]).map((m) => m.id), ["read-only", "workspace-write"]);
+	assert.deepEqual(codexModes("docker-hardened", probed).map((m) => m.id), ["agent-full-access"]);
+	assert.deepEqual(initialSessionModes("docker-windlass-sandbox", "codex", false, inner), { mode: "workspace-write", availableModes: inner });
+	assert.equal(initialSessionModes("docker-hardened", "codex", false, codexModes("docker-hardened", probed)).mode, "agent-full-access");
+	assert.equal(launchModes("codex", { id: "docker-windlass-sandbox", approval: "auto" })?.default, "workspace-write");
+	assert.equal(launchModes("codex", { id: "docker-hardened", approval: "full" })?.default, "agent-full-access");
+});
+test("Codex reports its sign-in generation, so a usage limit ends with that sign-in", async (t) => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { machineTables } = await import("../server/src/actors/user-machines.js");
+	const { recordProviderUsage, providerAccounts, loginGeneration } = await import("../server/src/actors/provider-accounts.js");
+	const { compactReport } = await import("../server/src/runner/catalog.js");
+	const { Executor } = await import("../runner/src/docker-executor.js");
+	const raw = new DatabaseSync(":memory:");
+	t.after(() => raw.close());
+	type Db = Parameters<typeof machineTables>[0];
+	const db = { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args), transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
+	await machineTables(db);
+	const machineId = "m_0000000000000001";
+	const runner = new Executor({ uid: "u_fixture", machineId }, {}, false, false, ["docker-hardened"], { mode: "open", allow: [] }, false, true);
+	const state = runner as unknown as { dockerHealth: { ok: boolean }; codexCredential?: { harness: "codex"; provider: "openai"; generation: string } };
+	state.dockerHealth = { ok: true };
+	const publish = () => {
+		const frame = parseRunnerFrame(JSON.stringify(compactReport(runner.report())));
+		assert.ok(frame && frame.kind === "report");
+		raw.prepare("INSERT OR REPLACE INTO machines(id,name,os,arch,facts) VALUES(?,'Box','linux','arm64',?)").run(machineId, JSON.stringify({ status: "online", report: frame }));
+		return frame.harnesses?.find((h) => h.id === "codex");
+	};
+	const location = { place: machineId, harness: "codex" as const };
+	const first = "a".repeat(32), second = "b".repeat(32);
+	state.codexCredential = { harness: "codex", provider: "openai", generation: first };
+	assert.equal(publish()?.loginGeneration, first);
+	assert.equal(await loginGeneration(db, location), first);
+	const at = Date.now();
+	assert.ok(await recordProviderUsage(db as never, location, first, { kind: "refusal", at, resetsAt: at + 3_600_000 }));
+	assert.equal((await providerAccounts(db, at)).get(machineId)?.[0]?.state, "limited");
+	state.codexCredential = undefined;
+	assert.equal(publish()?.signIn, "none");
+	assert.equal((await providerAccounts(db, at)).size, 0, "the limit outlived logout");
+	state.codexCredential = { harness: "codex", provider: "openai", generation: second };
+	assert.equal(publish()?.loginGeneration, second);
+	assert.equal((await providerAccounts(db, at)).size, 0, "another account inherited the limit");
+	assert.equal(await recordProviderUsage(db as never, location, first, { kind: "refusal", at: at + 1, resetsAt: null }), false);
+});
+
+/**
+ * The real ACP client against a scripted Codex agent. The session/new reply is the recorded codex-acp 2.9.0
+ * handshake; the permission requests are the shapes codex-acp 2.9.0 sends for `exec_command` with
+ * `sandbox_permissions: "require_escalated"` and for `apply_patch` outside the writable roots.
+ */
+async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-sandbox", during: (emit: (frame: unknown) => void, sessionId: string, promptId: unknown) => void,
+	answered: (frame: { id: unknown; result?: unknown }) => boolean,
+	/** legacy: modes only in session/new's `modes` (no mode config option), so the client uses session/set_mode. */
+	legacy?: { openIn: string; reportSetMode: boolean }) {
+	const { readFileSync } = await import("node:fs");
+	const { harnessOf } = await import("../server/src/sandbox/harness.js");
+	const { markTurnSandbox } = await import("../server/src/sandbox/provider.js");
+	const opened = JSON.parse(readFileSync(new URL("../fixtures/codex/handshake.jsonl", import.meta.url), "utf8").split("\n")[2]).result;
+	const signals: string[] = [];
+	const methods: string[] = [];
+	const notes: string[] = [];
+	const permissions: unknown[] = [];
+	let finished = false;
+	const sandbox = {
+		profile, cwd: "/workspace",
+		async stopLeftovers() { return 0; },
+		async sweep() { return 0; },
+		start(_argv: string[], opts: { onStdout?: (chunk: string) => void }) {
+			let finish!: (end: { code: number | null; signal: string | null; error: null }) => void;
+			const ended = new Promise<{ code: number | null; signal: string | null; error: null }>((resolve) => { finish = resolve; });
+			const emit = (frame: unknown) => queueMicrotask(() => opts.onStdout!(JSON.stringify({ jsonrpc: "2.0", ...(frame as object) }) + "\n"));
+			let mode = legacy?.openIn ?? (profile === "docker-hardened" ? "agent-full-access" : "workspace-write");
+			const options = (current: string) => opened.configOptions.filter((o: { id: string }) => !legacy || o.id !== "mode")
+				.map((o: { id: string }) => (o.id === "mode" ? { ...o, currentValue: current } : o));
+			let prompt: unknown;
+			const process = {
+				tag: "fixture", ended, hasEnded: false,
+				write(line: string) {
+					const frame = JSON.parse(line);
+					methods.push(frame.method);
+					if (frame.method === "initialize") emit({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+					else if (frame.method === "providers/set") emit({ id: frame.id, result: {} });
+					else if (frame.method === "session/new") emit({ id: frame.id, result: { ...opened, configOptions: options(mode), modes: { ...opened.modes, currentModeId: mode } } });
+					else if (frame.method === "session/set_config_option") {
+						if (frame.params.configId === "mode") mode = frame.params.value;
+						emit({ id: frame.id, result: { configOptions: options(mode) } });
+					} else if (frame.method === "session/set_mode") {
+						if (!legacy || legacy.reportSetMode) {
+							mode = frame.params.modeId;
+							if (legacy) emit({ method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "current_mode_update", currentModeId: mode } } });
+						}
+						emit({ id: frame.id, result: {} });
+					} else if (frame.method === "session/prompt") {
+						prompt = frame.id;
+						during(emit, frame.params.sessionId, frame.id);
+					} else if (frame.method === undefined && frame.id !== undefined) {
+						permissions.push(frame.result);
+						if (answered(frame)) emit({ id: prompt, result: { stopReason: "end_turn" } });
+					}
+					return true;
+				},
+				closeStdin() { if (finished) return; finished = true; process.hasEnded = true; finish({ code: 0, signal: null, error: null }); },
+				async signal(sig: string) { signals.push(sig); if (!finished) { finished = true; process.hasEnded = true; finish({ code: null, signal: sig, error: null }); } },
+				killClient() {},
+			};
+			return process;
+		},
+	};
+	markTurnSandbox(sandbox);
+	const asked: unknown[] = [];
+	const result = await harnessOf({ machine: { name: "Bench" } } as never, "codex").runTurn(sandbox as never, {
+		prompt: "go", onAcpNote: (text) => notes.push(text),
+		onQuestion: async (question) => { asked.push(question); return { choice: question.choices.find((c) => c.approve)?.id ?? "" }; },
+	});
+	return { result, notes, permissions, asked, signals, methods };
+}
+const escalated = (sessionId: string) => ({ method: "session/request_permission", id: 0, params: { sessionId,
+	toolCall: { toolCallId: "exec-1", title: "id > /home/agent/escalated; echo wrote", rawInput: { command: "id > /home/agent/escalated; echo wrote", cwd: "/workspace" }, kind: "execute", status: "pending" },
+	options: [{ optionId: "allow_once", name: "Yes, proceed", kind: "allow_once" },
+		{ optionId: "accept_execpolicy_amendment", name: "Yes, and don't ask again for commands that start with `id`", kind: "allow_always" },
+		{ optionId: "cancel", name: "No, and tell Codex what to do differently", kind: "reject_once" }] } });
+const edit = (sessionId: string) => ({ method: "session/request_permission", id: 1, params: { sessionId,
+	toolCall: { toolCallId: "exec-2", title: "Edit files", locations: [{ path: "/workspace/.codex/config.toml" }], kind: "edit", status: "pending" },
+	options: [{ optionId: "allow_once", name: "Yes, proceed", kind: "allow_once" },
+		{ optionId: "allow_for_session", name: "Yes, and don't ask again for these files", kind: "allow_always" },
+		{ optionId: "cancel", name: "No, and tell Codex what to do differently", kind: "reject_once" }] } });
+const declinable = (sessionId: string) => { const frame = escalated(sessionId); frame.id = 2;
+	frame.params.options.splice(2, 0, { optionId: "decline", name: "No, continue without running it", kind: "reject_once" }); return frame; };
+
+test("on the Windlass sandbox profile every Codex request to leave its sandbox is refused without asking, with a note", async () => {
+	const turn = await scriptedCodexTurn("docker-windlass-sandbox", (emit, id) => { emit(escalated(id)); emit(edit(id)); emit(declinable(id)); }, () => true);
+	assert.equal(turn.result.failure, null);
+	assert.deepEqual(turn.asked, [], "the user was asked about a request outside the sandbox");
+	assert.deepEqual(turn.permissions, [
+		{ outcome: { outcome: "selected", optionId: "cancel" } },
+		{ outcome: { outcome: "selected", optionId: "cancel" } },
+		{ outcome: { outcome: "selected", optionId: "decline" } },
+	]);
+	assert.deepEqual(turn.notes, [
+		"Codex asked to run a command outside its sandbox; refused on this profile.",
+		"Codex asked to edit files outside its sandbox; refused on this profile.",
+		"Codex asked to run a command outside its sandbox; refused on this profile.",
+	]);
+});
+test("on the hardened profile, where the container is the boundary, a Codex request still reaches the user", async () => {
+	const turn = await scriptedCodexTurn("docker-hardened", (emit, id) => emit(escalated(id)), () => true);
+	assert.equal(turn.result.failure, null);
+	assert.equal(turn.asked.length, 1);
+	assert.deepEqual(turn.permissions, [{ outcome: { outcome: "selected", optionId: "allow_once" } }]);
+	assert.deepEqual(turn.notes, []);
+});
+test("a Codex mode the profile forbids, reported by the agent, ends the turn and stops the agent", { timeout: 10_000 }, async () => {
+	for (const update of [{ sessionUpdate: "current_mode_update", currentModeId: "agent-full-access" },
+		{ sessionUpdate: "config_option_update", configOptions: [{ id: "mode", category: "mode", type: "select", currentValue: "agent", options: [] }] }]) {
+		const turn = await scriptedCodexTurn("docker-windlass-sandbox", (emit, sessionId) => emit({ method: "session/update", params: { sessionId, update } }), () => false);
+		assert.equal(turn.result.failure?.reason, "engine");
+		assert.match(turn.result.failure.message, /^Codex switched to the mode “(Container access|agent)”, which this sandbox profile does not allow\. The turn was stopped\.$/);
+		assert.deepEqual(turn.signals, ["TERM"], "the agent process was left running");
+	}
+});
+test("on the session/set_mode path a Codex mode counts only once Codex opened in it or reported it", { timeout: 10_000 }, async () => {
+	const { innerModesReason } = await import("../server/src/sandbox/codex-modes.js");
+	const end = (emit: (frame: unknown) => void, _: string, id: unknown) => emit({ id, result: { stopReason: "end_turn" } });
+	const ignored = await scriptedCodexTurn("docker-windlass-sandbox", () => {}, () => false, { openIn: "read-only", reportSetMode: false });
+	assert.equal(ignored.result.failure?.message, innerModesReason);
+	assert.ok(ignored.methods.includes("session/set_mode"));
+	assert.ok(!ignored.methods.includes("session/prompt"), "a turn was prompted in a mode Codex never reported");
+	for (const legacy of [{ openIn: "read-only", reportSetMode: true }, { openIn: "workspace-write", reportSetMode: false }]) {
+		const turn = await scriptedCodexTurn("docker-windlass-sandbox", end, () => false, legacy);
+		assert.equal(turn.result.failure, null, JSON.stringify(legacy));
+		assert.ok(turn.methods.includes("session/prompt"));
+	}
+});

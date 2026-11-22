@@ -186,10 +186,15 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 	&& v.models.some(model => model.id === v.defaultModel)
 	&& new Set(v.models.map(m => m.id)).size === v.models.length
 	&& Buffer.byteLength(JSON.stringify(v)) <= MAX_HARNESS_OPTIONS_BYTES);
-const harnessId = oneOf("claude", "opencode");
+export function boundedCodexOptions(options: HarnessOptions) {
+	return options.models.length <= 32 && Buffer.byteLength(JSON.stringify(options)) <= 16 * 1024;
+}
+const harnessId = oneOf("claude", "opencode", "codex");
 const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
-const catalog = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
-const harnesses = list(object({ id: harnessId, loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
+const catalogShape = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
+const catalog = is<Of<typeof catalogShape>>(v => catalogShape(v) && (v.id !== "codex" || boundedCodexOptions(v.options)));
+const harnessEntry = object({ id: harnessId, loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), method: optional(oneOf("api-key", "chatgpt")), modes: optional(list(line(64), 16)), modeReason: optional(line(500)), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) });
+const harnesses = list(is<Of<typeof harnessEntry>>(v => harnessEntry(v) && (v.id === "codex" ? !v.options || boundedCodexOptions(v.options) : v.method === undefined && v.modes === undefined && v.modeReason === undefined)), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
 const nonnegative = is<number>(v => typeof v === "number" && Number.isFinite(v) && v >= 0);

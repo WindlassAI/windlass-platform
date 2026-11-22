@@ -55,6 +55,7 @@ import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../
 import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
+import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { HARNESS_PROFILE, itemHarnesses, machineUnusable, offeredHarnesses } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
@@ -93,10 +94,10 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 			: profile.approval === "auto"
 				? { text: "commands sandboxed", long: "runs what the sandbox contains, refuses the rest", open: false }
 				: { text: "runs every call", long: "runs every call without asking", open: true },
-		claude && (claude.opencode || profile.claudeRelay) && !profile.commandNetwork && profile.available
-			? { text: claude.opencode ? "OpenCode relay" : "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
+		claude && (claude.codex || claude.opencode || profile.claudeRelay) && !profile.commandNetwork && profile.available
+			? { text: claude.codex ? "Codex relay" : claude.opencode ? "OpenCode relay" : "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
 			: { text: profile.commandNetwork ? "network on" : "no network", long: commandNetworkFact(profile, claude), open: profile.commandNetwork },
-		claude?.opencode
+		claude?.codex ? {text:"credentials on machine", long:"Commands can use the Codex model relay. OpenAI credentials stay on the machine.",open:true} : claude?.opencode
 			? { text: "credentials on machine", long: "Commands can use the OpenCode model relay. Provider credentials stay on the machine.", open: true }
 			: claude
 			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
@@ -144,7 +145,7 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 }
 
 /** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
-export function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
+export function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode" | "codex") {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const machineId = machine?.machineId;
@@ -219,7 +220,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [effortChoice, setEffort] = useState(draft?.effort ?? "");
 	// Where it runs: undefined until chosen; null is this platform.
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
-	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" ? draft.harness : null);
+	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" || draft?.harness === "codex" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
@@ -346,13 +347,15 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
 			? null
 			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "runs only on a machine of yours"}, so this one is ${HARNESS_NAMES[harness]}.`;
-	const catalogs = { claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
+	// Codex is not offered for work items (`itemHarnesses`), so an item does not fetch its catalog.
+	const catalogs = { codex: useCatalog(item ? null : chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
 	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
 	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
 	const lastOf = last.of[harness] ?? null;
 
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
-	const profile = other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
+	const hasCodexSandbox = (machine: MachineSummary | null) => harness === "codex" && machine?.harnesses?.some(h => h.id === "codex" && h.modes?.includes("workspace-write"));
+	const profile = hasCodexSandbox(chosenMachine) && profileChoice === "docker-windlass-sandbox" ? profileChoice : other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
 	const modelList = other ? options.models : models.list;
 	const offers = (id: string) => modelList?.models.some((candidate) => candidate.id === id) === true;
 	// Another harness's "" is its own default model, the one its runner reported as that: nothing is sent for it, so the adapter starts on its own.
@@ -364,10 +367,13 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const effort = efforts.includes(effortChoice) ? effortChoice : "";
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
+	const reportedModes = harness === "codex" && chosenProfile
+		? codexModes(chosenProfile.id, chosenMachine?.harnesses?.find(h => h.id === "codex")?.modes ?? [])
+		: options.modes;
 	// Claude Code's modes as its machine reported them, where it did.
-	const modes = launch && other && options.modes ? { modes: options.modes, default: options.modes.some((mode) => mode.id === launch.default) ? launch.default : (options.modes[0] as SessionMode).id } : launch;
+	const modes = launch && other && reportedModes?.length ? { modes: reportedModes, default: reportedModes.some((mode) => mode.id === launch.default) ? launch.default : (reportedModes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? (started.harness === harness ? modes.modes.find((candidate) => candidate.id === started.mode) : undefined) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
-	const claude: ClaudeFacts | null = other ? { opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
+	const claude: ClaudeFacts | null = other ? { codex: harness === "codex", opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	// Saved defaults that differ from what is chosen, and those that cannot be used.
@@ -672,14 +678,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	);
 
 	// ---- where it runs, and its sandbox -------------------------------------------------------------
-	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE));
+	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(chosenMachine) && candidate.id === "docker-windlass-sandbox")));
 	const sandboxWarn = (chosenProfile !== null && sandboxOpen(chosenProfile, claude)) || (!other && ignored.profile !== null) || defaultsErrors.length > 0 || available.length === 0;
 	/** The sandboxes of a place, as rows: choosing one chooses the place too. */
 	const profileRows = (machine: MachineSummary | null): MenuItem[] => {
 		const here = machine === null ? (chosenMachine === null) : chosenMachine?.machineId === machine.machineId;
 		const list = machine ? machine.profiles : (info?.profiles ?? []);
 		return list
-			.filter((candidate) => !other || candidate.id === HARNESS_PROFILE)
+			.filter((candidate) => !other || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(machine) && candidate.id === "docker-windlass-sandbox"))
 			.map((candidate) => {
 				const facts = sandboxFacts(candidate, here ? claude : null);
 				return {
@@ -711,7 +717,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					warn: false,
 				}
 			: null,
-		other ? { text: `${other} runs in the hardened container only.`, warn: false } : null,
+		other && !hasCodexSandbox(chosenMachine) ? { text: `${other} runs in the hardened container only.`, warn: false } : null,
 	].filter((note) => note !== null);
 	const whereGroups: MenuGroup[] =
 		mine.length > 0
@@ -863,7 +869,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					};
 				})
 			: []),
-		...(["claude", "opencode"] as const).flatMap(id => {
+		...(["claude", "opencode", "codex"] as const).flatMap(id => {
 			if (harnessesHere(chosenMachine).some(h => h.id === id)) return [];
 			const hosts = mine.filter(machine => why(machine) === null && harnessesHere(machine).some(h => h.id === id));
 			if (hosts.length === 0) return [];
@@ -898,7 +904,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								{offeredHarnesses(chosenMachine).map(offered => <HarnessStatus key={offered.id} harness={offered} />)}
 							</details>
 						: null}
-					{(["claude", "opencode"] as const).map(id => catalogs[id].error && <p key={id} role="status">
+					{(["claude", "opencode", "codex"] as const).map(id => catalogs[id].error && <p key={id} role="status">
 						{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
 					</p>)}
 					{harnessProblem ? <p className="tone-warn" role="status">{harnessProblem}</p> : null}

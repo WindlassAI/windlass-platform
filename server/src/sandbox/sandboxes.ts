@@ -38,11 +38,12 @@ import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type Sandb
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
+import { codexDefaultMode } from "./codex-modes.js";
 import { commonRunFlags, resourceFlags, findProfile, profilesFor } from "./profiles.js";
 import { type Answer, type InternalExecResult, GIT_USER_ENV, NAME, type ProcessEnd, RUN_TAG, SECRET_FILE_SCRIPT, SWEEP_SCRIPT, type SandboxProcess, type StartOptions, type TurnSandbox, assertEnvNames, gitProcess, signalGitProcess, markTurnSandbox } from "./provider.js";
 import { TOKEN_FILE_PREFIX, tokenFilePath } from "./token-file.js";
 
-const SANDBOX_ID = /^(?:(?:claude|opencode)-)?[a-f0-9]{12}$/;
+const SANDBOX_ID = /^(?:(?:claude|opencode|codex)-)?[a-f0-9]{12}$/;
 const STDOUT_CAP = 4 * 1024 * 1024;
 const STDERR_CAP = 256 * 1024;
 
@@ -454,7 +455,7 @@ export type DockerSandboxOptions = {
 	/** Runner-issued placeholder and immutable helper identity for a new Claude session. */
 	machine: string;
 	image: string;
-	harness?: "claude" | "opencode";
+	harness?: "claude" | "opencode" | "codex";
 	sessionRelay(): Promise<{ env: string[]; nonce: string }>;
 });
 
@@ -524,9 +525,9 @@ export class DockerSandboxes implements Sandboxes {
 	async create(input: CreateSandboxInput): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
-		const harnessName = (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
+		const harnessName = (input.harness ?? harness) === "codex" ? "Codex" : (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
 		if (harness !== input.harness) throw new SandboxUserError(`${harnessName} runs only on a machine offering it.`);
-		if (harness && (input.profile !== "docker-hardened" || input.screenshots))
+		if (harness && ((input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) || input.screenshots))
 			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
 		const base = input.screenshots ? this.shotsImage : this.image;
 		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)
@@ -574,6 +575,8 @@ export class DockerSandboxes implements Sandboxes {
 				// Windlass reads its handed-in token in this container's /dev/shm.
 				...(!harness ? ["--ipc", "private"] : []),
 				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, ...relay.env] : []),
+				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
+				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
 				...(mirror ? ["--mount", mirror] : []),
 				...(volume ? ["-v", `${volume}:${DATA_DIR}`] : []),
 				image,

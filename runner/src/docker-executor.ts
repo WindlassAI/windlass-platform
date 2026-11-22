@@ -2,6 +2,11 @@ import { dropPreviousSnapshots } from "./snapshot-retention.js";
 import type { SnapshotSelection, SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import type { HarnessOptions } from "../../server/src/contract.js";
+import { innerModesReason, reportedCodexModes } from "../../server/src/sandbox/codex-modes.js";
+import { codexLogin } from "./codex-login.js";
+import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
+import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
+import { tmpName } from "../../server/src/sandbox/docker.js";
 import { currentProvider, installedProvider } from "./opencode-login.js";
 import { ensureRelay, prepareRelay, removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { probeHarnessOptions } from "./harness-options.js";
@@ -69,6 +74,13 @@ export class Executor extends MachineDocker {
 	readonly slots: Report["slots"];
 	get maxTurns() { return this.slots?.max; }
 	readonly boxes = new Map<string, Box>();
+	private readonly codexPin?: string;
+	private readonly codexProvider?: DockerSandboxes;
+	private codexCredential?: ReturnType<typeof codexLogin>;
+	private codexOptions?: HarnessOptions;
+	private codexGeneration?: string;
+	private nextCodexProbe = 0;
+	private codexInner?: boolean;
 	private readonly opencodePin?: string;
 	private readonly opencodeProvider?: DockerSandboxes;
 	private opencodeLogin?: ReturnType<typeof currentProvider>;
@@ -91,7 +103,7 @@ export class Executor extends MachineDocker {
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
 
-	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false) {
+	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false, readonly codex = false) {
 		super(identity);
 		this.slots = limits.slots === null ? undefined : limits.slots ?? localSizing({ slots: limits.maxTurns?.toString() });
 		this.network = new EgressNetwork(this, policy);
@@ -101,6 +113,16 @@ export class Executor extends MachineDocker {
 			await this.ownedVolume(true);
 			return this.volume;
 		} });
+		if (codex) {
+			this.codexPin = harnessImage("codex");
+			if (!this.codexPin) throw new Refusal("This runner was built without the Codex image.");
+			this.codexProvider = new DockerSandboxes({slots,network,machine:identity.machineId,image:this.codexPin,harness:"codex",
+				sessionRelay:async () => {
+					const login = codexLogin(this);
+					if (!login) throw new Refusal("Run windlass-runner login codex on this machine.");
+					return prepareRelay(this, login);
+				}});
+		}
 		if (opencode) {
 			this.opencodePin = harnessImage("opencode");
 			if (!this.opencodePin) throw new Refusal("This runner was built without the OpenCode image.");
@@ -120,6 +142,11 @@ export class Executor extends MachineDocker {
 	/** Caller holds the login lock while preparing the relay and issuing a session credential. */
 	prepareClaudeRelay() { return prepareRelay(this); }
 	requireHarness(profile: Profile, harness: MachineHarness = "claude") {
+		if (harness === "codex") {
+			if (!this.codexPin) throw new Refusal("Start the runner with --harness codex.");
+			if (profile !== "docker-hardened" && !(profile === bubblewrap && this.codexInner)) throw new Refusal(innerModesReason);
+			return;
+		}
 		if (harness === "opencode") {
 			if (!this.opencodeProvider) throw new Refusal("Start the runner with --harness opencode.");
 			if (profile !== "docker-hardened") throw new Refusal("OpenCode requires the docker-hardened profile.");
@@ -130,11 +157,17 @@ export class Executor extends MachineDocker {
 	}
 	async prepareHarness(profile: Profile, harness: MachineHarness = "claude") {
 		this.requireHarness(profile, harness);
+		if (harness === "codex") return this.ensureImage(this.codexPin);
 		if (harness === "opencode") return this.ensureImage(this.opencodePin);
 		try { await this.ensureImage(this.claudePin); }
 		catch { throw new Refusal("The pinned Claude Code image is missing on this machine. Update the runner and start it with --harness claude."); }
 	}
 	private async refreshLogin() {
+		if (this.codexPin) {
+			const credential = codexLogin(this);
+			this.codexCredential = credential && await this.ownedVolume(false, this.codexVolume) ? credential : undefined;
+			if ((this.codexCredential?.generation ?? "signed-out") !== this.codexGeneration) this.codexOptions = undefined;
+		}
 		if (this.opencodePin) {
 			this.opencodeLogin = await installedProvider(this);
 			if ((this.opencodeLogin?.generation ?? "signed-out") !== this.probedLogin) this.opencodeOptions = undefined;
@@ -150,11 +183,43 @@ export class Executor extends MachineDocker {
 		if (signedIn) await this.restoreRelay();
 		await this.refreshClaudeOptions(true);
 		await this.refreshOpenCodeOptions(true);
+		await this.refreshCodexOptions(true);
 	}
 	private async ensureSignedInRelay() {
 		await withLoginVolume(this, async () => {
 			if (await loginFileState(this) === "token") await ensureRelay(this);
 		});
+	}
+	private async refreshCodexOptions(force = false) {
+		const pin = this.codexPin;
+		const login = this.codexCredential;
+		const generation = login?.generation ?? "signed-out";
+		if (!pin || (!force && generation === this.codexGeneration && Date.now() < this.nextCodexProbe)) return;
+		this.codexGeneration = generation;
+		this.nextCodexProbe = Date.now() + INVENTORY_RETRY_MS;
+		let options: HarnessOptions | undefined;
+		try {
+			await this.ensureImage(pin);
+			if (this.codexInner === undefined && this.allowedProfiles.includes(bubblewrap)) {
+				let passed = true;
+				for (const mode of ["read-only", "workspace-write"]) {
+					const result = await docker(["run","--rm","--name",tmpName(),"--pull","never","--log-driver","none",
+						...this.pairingLabelFlags,...commonRunFlags(1,"none"),...PROFILE_RUN_FLAGS[bubblewrap]!,
+						pin,"codex","-c",`sandbox_mode="${mode}"`,"sandbox","--","/bin/true"], {timeoutMs:30_000});
+					if (result.code !== 0) { passed = false; break; }
+				}
+				this.codexInner = passed;
+			}
+			options = await probeHarnessOptions(this, pin, undefined, { login });
+		} catch {
+			// The session can disappear normally if the owner logs out during discovery.
+		}
+		await this.refreshLogin();
+		if ((this.codexCredential?.generation ?? "signed-out") !== generation) return;
+		if (options) {
+			this.codexOptions = options;
+			this.nextCodexProbe = Date.now() + INVENTORY_TTL_MS;
+		} else console.log("Could not read Codex model options.");
 	}
 	private async refreshOpenCodeOptions(force = false) {
 		const pin = this.opencodePin;
@@ -175,6 +240,8 @@ export class Executor extends MachineDocker {
 		} catch { console.log("Could not read OpenCode model options."); }
 	}
 	private async restoreRelay() {
+		if (this.codex && this.codexCredential && [...this.boxes.values()].some(b => b.harness === "codex"))
+			await withLoginVolume(this, async () => { const login = codexLogin(this); if (login) await ensureRelay(this,login); });
 		if (this.opencode && this.opencodeLogin && [...this.boxes.values()].some(b => b.harness === "opencode")) {
 			await withLoginVolume(this, async () => { const login = currentProvider(this); if (login) await ensureRelay(this, login); });
 		}
@@ -217,11 +284,11 @@ export class Executor extends MachineDocker {
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
 			const [name, state, sessionId, profile, harness, egress, relay] = line.split("|");
-			const raw = /^wlp-session-((?:(?:claude|opencode)-)?[a-f0-9]{12})$/.exec(name)?.[1];
-			if (!raw || (raw.startsWith("claude-") && harness !== "claude") || (raw.startsWith("opencode-") !== (harness === "opencode")) || (harness && harness !== "claude" && harness !== "opencode") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
+			const raw = /^wlp-session-((?:(?:claude|opencode|codex)-)?[a-f0-9]{12})$/.exec(name)?.[1];
+			if (!raw || (raw.startsWith("claude-") && harness !== "claude") || (raw.startsWith("opencode-") !== (harness === "opencode")) || (raw.startsWith("codex-") !== (harness === "codex")) || (harness && harness !== "claude" && harness !== "opencode" && harness !== "codex") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
-			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" || harness === "opencode" ? { harness: harness as MachineHarness } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
+			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" || harness === "opencode" || harness === "codex" ? { harness: harness as MachineHarness } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
 			this.boxes.set(id, Object.assign(box, { egress, legacyClaude: !!harness && !/^[0-9a-f]{32}$/.test(relay), state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {
@@ -233,12 +300,14 @@ export class Executor extends MachineDocker {
 		if (this.credentialPathChecked) return;
 		if (this.claude) await withLoginVolume(this, () => stopLegacyClaude(this));
 		else await retireClaudeRelay(this);
+		if (!this.codex && codexLogin(this)) await withLoginVolume(this, () => removeRelay(this,"codex"));
 		if (!this.opencode && currentProvider(this)) await withLoginVolume(this, () => removeRelay(this, "opencode"));
 		const pair = loadPair();
 		if (pair?.current.machineId === this.identity.machineId) {
 			for (const old of pair.previous) {
 				const machine = new MachineDocker(old);
 				await retireClaudeRelay(machine);
+				if (codexLogin(machine)) await withLoginVolume(machine, () => removeRelay(machine,"codex"));
 				if (currentProvider(machine)) await withLoginVolume(machine, () => removeRelay(machine, "opencode"));
 			}
 		}
@@ -278,6 +347,7 @@ export class Executor extends MachineDocker {
 			if (this.inventoryStarted) {
 				await this.refreshClaudeOptions();
 				await this.refreshOpenCodeOptions();
+				await this.refreshCodexOptions();
 			}
 		} catch (error) {
 			const reason = error instanceof RunnerError ? error.message : "Docker did not provide a diagnostic.";
@@ -310,6 +380,7 @@ export class Executor extends MachineDocker {
 				this.inventoryStarted = true;
 				await this.refreshClaudeOptions();
 				await this.refreshOpenCodeOptions();
+				await this.refreshCodexOptions();
 				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
 				this.freeDiskBytes = await this.disk();
@@ -330,6 +401,15 @@ export class Executor extends MachineDocker {
 			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn, loginGeneration: this.claudeGeneration,
 			...(this.claudeOptions && { options: this.claudeOptions }),
+		});
+		if (this.codexPin) harnesses.push({
+			id:"codex", adapter:"codex-acp 2.9.0", image:this.codexPin.split("@").at(-1)!,
+			signIn:!this.dockerHealth.ok ? "unknown" : this.codexCredential ? "token" : "none",
+			loginGeneration:this.codexCredential?.generation,
+			...(this.codexCredential && {method:this.codexCredential.provider === "chatgpt" ? "chatgpt" : "api-key"}),
+			modes:reportedCodexModes(!!this.codexInner),
+			...(!this.codexInner && {modeReason:innerModesReason}),
+			...(this.codexOptions && {options:this.codexOptions}),
 		});
 		if (this.opencodePin) harnesses.push({
 			id: "opencode", adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,
@@ -401,7 +481,7 @@ export class Executor extends MachineDocker {
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
-		const raw = harness ? await withLoginVolume(this, () => (harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots });
+		const raw = harness ? await withLoginVolume(this, () => (harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots });
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		try { await this.network.attach(raw, containerName(raw)); }
@@ -484,8 +564,8 @@ export class Executor extends MachineDocker {
 				this.requireHarness(box.profile, box.harness);
 				if (box.harness === "claude") await this.ensureSignedInRelay();
 				else await withLoginVolume(this, async () => {
-					const login = currentProvider(this);
-					if (!login) throw new Refusal("Run windlass-runner login opencode on this machine.");
+					const login = box.harness === "codex" ? codexLogin(this) : currentProvider(this);
+					if (!login) throw new Refusal(`Run windlass-runner login ${box.harness} on this machine.`);
 					await ensureRelay(this, login);
 				});
 			}

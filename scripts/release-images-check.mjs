@@ -62,15 +62,16 @@ test("context-only and registry-pin builds do not resolve mutable local tags", t
 	assert.match(calls[0],new RegExp("--build-arg SANDBOX_IMAGE="+ref+" "));
 	assert.equal(calls.length,2);
 });
-test("the release gate compares each embedded pin and verifies all five indexes", t => {
+test("the release gate compares each embedded pin and verifies all six indexes", t => {
 	const dir = scratch(t), bundle = join(dir,"runner.cjs");
 	const version = "0.1.0";
 	const release = {version,commit:"a".repeat(40),windlass:"v0.5.0",signer:"https://github.com/WindlassAI/windlass-platform/.github/workflows/release-images.yml@refs/tags/runner-v"+version,images:{}};
-	for (const role of ["runner","sandbox","sandbox-shots","claude","opencode"]) {
+	for (const role of ["runner","sandbox","sandbox-shots","claude","opencode","codex"]) {
 		const name = role === "runner" ? "windlass-runner" : "windlass-platform-"+role;
 		release.images[role] = {ref:"ghcr.io/windlassai/"+name, index:pin, platforms:{"linux/amd64":pin,"linux/arm64":pin}};
 	}
 	Object.assign(release.images.claude, {adapter:"0.109.0", cli:"2.1.328"});
+	Object.assign(release.images.codex, {adapter:"2.9.0", cli:"0.171.0"});
 	release.images.opencode.version = "1.19.6";
 	const image = role => release.images[role].ref+"@"+pin;
 	// Drive the publication entry point. The Buildx stand-in writes only its local
@@ -87,7 +88,7 @@ fs.writeFileSync(args[args.indexOf("--metadata-file")+1], JSON.stringify({"conta
 	const tag = release.images.runner.ref + ":runner-v" + version;
 	const result = execFileSync(join(root,"scripts/runner-build.sh"),["--screenshots",image("sandbox"),image("sandbox-shots")], {
 		encoding:"utf8", env:{...process.env,PATH:dir+":"+process.env.PATH,TRACE:trace,WLP_RUNNER_PUSH:tag,WLP_RUNNER_RELEASE_DIR:dir,
-			WLP_RUNNER_HARNESSES:"claude="+image("claude")+" opencode="+image("opencode")},
+			WLP_RUNNER_HARNESSES:"claude="+image("claude")+" opencode="+image("opencode")+" codex="+image("codex")},
 	});
 	assert.equal(result.trim(),pin);
 	const args = JSON.parse(readFileSync(trace));
@@ -100,12 +101,12 @@ fs.writeFileSync(args[args.indexOf("--metadata-file")+1], JSON.stringify({"conta
 	node("scripts/release-check.ts","scan",bundle);
 	const checked=[];
 	verifyRelease(release,bundle,(ref,identity) => { assert.equal(identity,release.signer); checked.push(ref); });
-	assert.equal(new Set(checked).size,5);
+	assert.equal(new Set(checked).size,6);
 	const missing=structuredClone(release);
 	delete missing.images["sandbox-shots"];
 	assert.throws(() => verifyRelease(missing,bundle,assert.fail),/Missing or invalid sandbox-shots index/);
 	const mismatch=structuredClone(release);
-	mismatch.images.opencode.index="sha256:"+"2".repeat(64);
-	assert.throws(() => verifyRelease(mismatch,bundle,()=>{}),/opencode bundle pin does not match/);
-	assert.throws(() => verifyRelease(release,bundle,ref=>{ if (ref === image("opencode")) throw Error("unsigned"); }),/Could not verify opencode index/);
+	mismatch.images.codex.index="sha256:"+"2".repeat(64);
+	assert.throws(() => verifyRelease(mismatch,bundle,()=>{}),/codex bundle pin does not match/);
+	assert.throws(() => verifyRelease(release,bundle,ref=>{ if (ref === image("codex")) throw Error("unsigned"); }),/Could not verify codex index/);
 });

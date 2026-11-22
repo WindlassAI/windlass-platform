@@ -335,7 +335,7 @@ describe("the start composer's agent picker", () => {
 	it("offers Windlass or Claude Code on a machine that reports it, and its sign-in where it is not signed in", async () => {
 		await open();
 		place("m_workshop");
-		expect(agents()).toEqual(["Windlass", "Claude Code", "OpenCode"]);
+		expect(agents()).toEqual(["Windlass", "Claude Code", "OpenCode", "Codex"]);
 		showCommands();
 		expect(text()).toContain("OpenCode: signed in");
 		expect(text()).toContain("Claude Code: sign in needed");
@@ -363,7 +363,8 @@ describe("the start composer's agent picker", () => {
 			for (const feed of feeds) feed.onMachineHost?.({ machineId: machine!.machineId, host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 } });
 		});
 		await settle();
-		expect(catalogsRead).toEqual(["claude", "opencode"]);
+		expect([...catalogsRead].sort()).toEqual(["claude", "codex", "opencode"]);
+		expect(catalog("codex")).toEqual(["6.2 Sol"]);
 		showCommands();
 		expect(text()).toContain("docker exec -it windlass-runner windlass-runner login opencode");
 		agent("opencode");
@@ -556,12 +557,16 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		act(() => checkbox("Enable Claude Code").click());
 		if (!supported) {
 			expect(host.textContent).not.toContain("Enable OpenCode");
+			expect(host.textContent).not.toContain("Enable Codex");
 			expect(host.textContent).not.toContain("Import existing OpenCode");
 			expect(command()).not.toMatch(/--harness opencode|\/import\/opencode/);
 			return;
 		}
 		act(() => checkbox("Enable OpenCode").click());
 		expect(command()).toContain("--harness claude --harness opencode");
+		act(() => checkbox("Enable Codex").click());
+		expect(command()).toContain("docker run -it --rm --log-driver none");
+		expect(command()).toContain("--harness codex");
 		const background = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;
 		expect(background()).toContain("--harness claude --harness opencode");
 		expect(command()).toContain("--harness opencode");

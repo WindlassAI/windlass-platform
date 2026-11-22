@@ -21,7 +21,7 @@ export type Profile = Args<"create">["profile"];
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
 export type Limits = { slots?: MachineSlotCapacity | null; maxTurns?: number; maxRunning?: number; maxSandboxes?: number };
 // The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
-export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^(?:claude|opencode)-/, "")}`;
+export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^(?:claude|opencode|codex)-/, "")}`;
 export function rawId(machine: string, id: string) {
 	const prefix = externalId(machine, "");
 	const raw = id.slice(prefix.length);
@@ -33,6 +33,7 @@ function imageRole(pin: string) {
 	if (pin === image) return "sandbox";
 	if (pin === shotsImage) return "screenshots";
 	if (pin === harnessImage("claude")) return "Claude Code";
+	if (pin === harnessImage("codex")) return "Codex";
 	return "OpenCode";
 }
 
@@ -94,9 +95,11 @@ export class MachineDocker {
 	readonly labels: Record<string, string>;
 	readonly volume: string;
 	readonly claudeVolume: string;
+	readonly codexVolume: string;
 	readonly opencodeVolume: string;
 	constructor(readonly identity: Identity) {
 		this.labels = { [MACHINE_LABEL]: identity.machineId, [LABEL + ".uid"]: identity.uid };
+		this.codexVolume = "wlp-harness-codex-" + identity.machineId;
 		this.opencodeVolume = "wlp-harness-opencode-" + identity.machineId;
 		this.claudeVolume = "wlp-harness-claude-" + identity.machineId;
 		this.volume = "wlp-machine-" + identity.machineId;

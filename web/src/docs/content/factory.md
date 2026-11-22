@@ -65,6 +65,8 @@ An item's builder runs **Windlass** by default. On one of your machines, it can 
 
 An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code and OpenCode alike. The composer offers it in the agent's menu, beside each model, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
 
+Codex is not offered for work items yet: the **Agent** choice does not list it, and an item filed with Codex is refused. Start a Codex session instead.
+
 What changes with Claude Code or OpenCode:
 
 - **Where.** Only on your machine, in **Hardened Docker on your machine "…"**. Hosted items run Windlass.

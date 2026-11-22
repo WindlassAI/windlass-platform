@@ -26,7 +26,7 @@ import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from ".
 import { choosePlacement, machineSlots, placeKey, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HarnessId, ItemFeed, PlanSubtask } from "../contract.js";
-import { harnessName, knownHarness } from "../sandbox/harnesses.js";
+import { harnessName, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -259,6 +259,8 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0") throw bad("Orchestrated work items are disabled.");
 	const harness = input.harness === undefined || input.harness === null ? "windlass" : knownHarness(input.harness);
 	if (harness === null) throw bad("Choose an agent this platform runs: windlass, or one of your machine's.");
+	const notForItems = itemHarnessProblem(harness);
+	if (notForItems) throw bad(notForItems);
 	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
 	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
 	const body = typeof input.body === "string" ? input.body.trim() : "";

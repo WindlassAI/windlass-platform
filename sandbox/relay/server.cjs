@@ -5,7 +5,7 @@ const net = require('node:net');
 const { pipeline, Transform } = require('node:stream');
 const { StringDecoder } = require('node:string_decoder');
 const { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } = require('node:zlib');
-const { rmSync } = require('node:fs');
+const { existsSync, rmSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
 const http = require('node:http');
 const https = require('node:https');
@@ -48,10 +48,10 @@ function matcher(secrets) {
 	};
 }
 
-function scrubStream(secrets, type) {
+function scrubStream(secrets, type, responses = false) {
 	const decoder = new StringDecoder('utf8');
 	const consume = matcher(secrets);
-	if (type === 'text/event-stream' || type === 'application/json') return structuredStream(secrets, type);
+	if (type === 'text/event-stream' || type === 'application/json') return structuredStream(secrets, type, responses);
 	return new Transform({
 		transform(chunk, encoding, done) { done(null, consume(decoder.write(chunk), false)); },
 		flush(done) { done(null, consume(decoder.end(), true)); },
@@ -59,10 +59,11 @@ function scrubStream(secrets, type) {
 }
 // Decode provider strings before comparing them to credentials. Keep only a possible secret
 // suffix between deltas in the same block, so ordinary model text is delivered immediately.
-function structuredStream(secrets, type) {
+function structuredStream(secrets, type, responses) {
 	const decoder = new StringDecoder('utf8');
 	const scalar = matcher(secrets);
 	const blocks = new Map();
+	const deltas = new Map();
 	const limit = 16 * 1024 * 1024;
 	let buffer = '', data = [], frameSize = 0, fields = [], skipLF = false;
 	const clean = value => {
@@ -82,10 +83,30 @@ function structuredStream(secrets, type) {
 			type:'content_block_delta', index, delta:{type:'text_delta', text},
 		}) + '\n\n');
 	}
+	// A Responses stream can split one string over several delta events. Keep
+	// each text/tool stream independent, including interleaved output items.
+	function endDelta(key, output) {
+		const {event, consume} = deltas.get(key);
+		deltas.delete(key);
+		const delta = consume('', true);
+		if (delta) output('event: ' + event.type + '\ndata: ' + JSON.stringify(clean({...event, delta})) + '\n\n');
+	}
+	function responseDelta(event, output) {
+		const key = JSON.stringify([event.type.replace(/\.(?:done|delta)$/, ''), event.item_id, event.output_index, event.content_index, event.summary_index]);
+		if (event.type.endsWith('.delta') && typeof event.delta === 'string') {
+			if (!deltas.has(key)) {
+				if (deltas.size >= 256) throw Error('Too many open response deltas');
+				deltas.set(key, {event:{...event, delta:''}, consume:matcher(secrets)});
+			}
+			event.delta = deltas.get(key).consume(event.delta, false);
+		} else if (event.type.endsWith('.done') && deltas.has(key)) endDelta(key, output);
+		else if (event.type === 'response.completed') for (const key of deltas.keys()) endDelta(key, output);
+	}
 	function frame(output) {
 		let body = data.join('\n');
 		if (body.trim() && body.trim() !== '[DONE]') {
 			const event = JSON.parse(body);
+			if (responses && typeof event?.type === 'string') responseDelta(event, output);
 			if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && typeof event.delta.text === 'string') {
 				if (!Number.isSafeInteger(event.index)) throw Error('Invalid content block');
 				if (!blocks.has(event.index)) {
@@ -135,6 +156,7 @@ function structuredStream(secrets, type) {
 				else line(buffer, output);
 			}
 			if (data.length || fields.length) frame(output);
+			for (const key of deltas.keys()) endDelta(key, output);
 			for (const index of blocks.keys()) endBlock(index, output);
 		}
 	}
@@ -149,7 +171,17 @@ function structuredStream(secrets, type) {
 }
 exports.scrubStream = scrubStream;
 
-function reject(res, status) {
+/**
+ * The runner writes this into the socket volume before it stops a relay for a logout, and the next relay
+ * removes it. Without it a stopping or missing relay is being replaced (update, re-pair, new login): retryable.
+ */
+const SIGNED_OUT = '/workspace/signed-out';
+exports.SIGNED_OUT = SIGNED_OUT;
+/** A stopping relay starts no refresh: the request is refused as retryable, or as signed out after a logout. */
+class Stopping extends Error {}
+exports.Stopping = Stopping;
+
+function reject(res, status, restarting = false) {
 	let type = 'api_error', message = 'The provider rejected the request.';
 	if (status === 401) {
 		type = 'authentication_error';
@@ -160,6 +192,9 @@ function reject(res, status) {
 	} else if (status === 429) {
 		type = 'rate_limit_error';
 		message = "The provider's usage or rate limit was reached.";
+	} else if (restarting) {
+		message = 'The relay is restarting. Try again.';
+		res.setHeader('retry-after', '1');
 	} else if (status >= 500) {
 		message = "The provider failed or couldn't be reached.";
 	}
@@ -169,11 +204,14 @@ function reject(res, status) {
 
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider }) {
+	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT) }) {
 	const sessions = new WeakMap();
 	const httpServer = http.createServer(async (req, res) => {
+		// One request per connection: the session's forwarder then knows, for the request on a connection,
+		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
+		if (provider?.closeEachReply) res.setHeader('connection', 'close');
 		try {
-			if (req.headers.host !== '127.0.0.1:17892' || req.method !== 'POST' || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
+			if (req.headers.host !== '127.0.0.1:17892' || (provider?.methodFor ? req.method !== provider.methodFor(req.url) : req.method !== 'POST') || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
 				return reject(res, 403);
 			const bearer = provider ? provider.bearer(req.headers, req.url) : req.headers.authorization;
 			const match = /^Bearer ([a-f0-9]{32})\.([A-Za-z0-9_-]{86})$/.exec(bearer ?? '');
@@ -197,7 +235,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				target = { hostname: 'api.anthropic.com', path: req.url, headers };
 			}
 			if (res.destroyed) return;
-			const up = forward({ ...target, port: 443, method: 'POST' }, reply => {
+			const up = forward({ ...target, port: 443, method: req.method }, reply => {
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					reject(res, reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502);
@@ -216,8 +254,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 					if (!decode) { reject(res, 502); reply.destroy(); return; }
 					stages.push(decode());
 				}
-				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type);
+				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url);
 				if (filter) stages.push(filter);
+				if (provider?.catalogFilter && req.method === 'GET') stages.push(provider.catalogFilter());
 				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});
 			});
@@ -229,7 +268,12 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			res.on('close', () => up.destroy());
 			req.on('error', () => up.destroy());
 			req.pipe(up);
-		} catch { if (!res.headersSent) reject(res, 502); else res.destroy(); }
+		} catch (error) {
+			if (res.headersSent) res.destroy();
+			else if (!(error instanceof Stopping)) reject(res, 502);
+			else if (signedOut()) reject(res, 401);
+			else reject(res, 503, true);
+		}
 	});
 	// Consume exactly one identity before the HTTP parser sees this connection. The
 	// remainder may already contain HTTP bytes or may arrive in subsequent packets.
@@ -255,6 +299,19 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	ingress.on('close', () => httpServer.close());
 	ingress.maxConnections = 256;
 	return ingress;
+};
+
+/**
+ * The runner stops a relay that refreshes with SIGTERM before removing it (logout, re-pair, update):
+ * a refresh already sent spends the old refresh token, so its reply must reach the volume first.
+ */
+exports.stopOnSignal = function stopOnSignal(server, provider) {
+	process.once('SIGTERM', async () => {
+		server.close();
+		try { await provider.drain?.(); }
+		finally { process.exit(0); }
+	});
+	return server;
 };
 
 if (process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY) {

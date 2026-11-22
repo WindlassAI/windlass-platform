@@ -13,6 +13,7 @@
 import type { EgressMode, HarnessId, SandboxProfile, SandboxProfileId, SessionMode, SessionSummary } from "../contract.js";
 import { machineHarness } from "./harnesses.js";
 import { hostedNetworkSentence, hostedNetworkText } from "./e2b/network.js";
+import { codexDefaultMode } from "./codex-modes.js";
 
 export function cpuFlags(cpus: number) {
 	return ["--cpu-shares", "256", "--cpus", String(cpus)];
@@ -234,7 +235,7 @@ export function initialSessionModes(profile: SandboxProfileId, harness?: Harness
 	const approval = findProfile(profile).approval;
 	const machine = machineHarness(harness);
 	if (machine && fixed) return { mode: machine.itemMode, availableModes: reported ?? [] };
-	const preferred = harness === "claude" ? "auto" : harness === "opencode" ? "build" : approval;
+	const preferred = harness === "claude" ? "auto" : harness === "opencode" ? "build" : harness === "codex" ? codexDefaultMode(profile) : approval;
 	const availableModes = reported ?? (fixed || (harness && harness !== "windlass") ? [] : windlassModes(approval));
 	return {
 		mode: availableModes.length && !availableModes.some(mode => mode.id === preferred) ? availableModes[0]!.id : preferred,

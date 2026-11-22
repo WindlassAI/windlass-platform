@@ -16,6 +16,7 @@ import { linkProps } from "../lib/router";
 import { MachineState } from "../screens/Machines";
 import { HarnessStatus } from "./HarnessStatus";
 import { machineLabel } from "../lib/machines";
+import { machineHarness } from "../../../server/src/sandbox/harnesses.js";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -133,8 +134,11 @@ export const HARNESS_PROFILE = "docker-hardened";
 
 /** The harnesses a machine offers besides Windlass, as its runner last reported them. */
 export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarness[] => machine?.harnesses ?? [];
-/** The harnesses a work item can run on this machine: those it reports signed in. An item is not watched, so one that needs a sign-in is not offered. */
-export const itemHarnesses = (machine: MachineSummary | null): ReportedHarness[] => offeredHarnesses(machine).filter((harness) => harness.signIn === "token");
+/**
+ * The harnesses a work item can run on this machine: those work items may run (server/src/sandbox/harnesses.ts,
+ * `items`; not Codex for now) that it reports signed in. An item is not watched, so one that needs a sign-in is not offered.
+ */
+export const itemHarnesses = (machine: MachineSummary | null): ReportedHarness[] => offeredHarnesses(machine).filter((harness) => machineHarness(harness.id)?.items === true && harness.signIn === "token");
 
 /**
  * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented

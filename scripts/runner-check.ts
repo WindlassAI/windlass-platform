@@ -499,8 +499,8 @@ require("node:module").syncBuiltinESMExports();`);
 			const hostedDocker = new DockerSandboxes({ machine: null, dataVolume: async () => { throw new Error("unexpected volume"); } });
 			const hostedE2b = new E2bSandboxes(new FakeE2b(), readE2bSettings({}));
 			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes]) {
-				for (const harness of ["claude", "opencode"] as const) {
-					const name = harness === "claude" ? "Claude Code" : "OpenCode";
+				for (const harness of ["claude", "opencode", "codex"] as const) {
+					const name = harness === "codex" ? "Codex" : harness === "claude" ? "Claude Code" : "OpenCode";
 					await assert.rejects(provider.create({ ...create, harness, uid, sessionId, profile: provider === hostedE2b ? "e2b" : create.profile }), new RegExp(name + " runs only on a machine"));
 				}
 			}

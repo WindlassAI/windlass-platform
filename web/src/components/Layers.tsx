@@ -51,9 +51,11 @@ export function Layers({ profile, compact = false }: { profile: Pick<SandboxProf
 export interface ClaudeFacts {
 	mode: SessionMode;
 	opencode?: boolean;
+	codex?: boolean;
 }
 
 export function commandNetworkFact(profile: SandboxProfile, claude: ClaudeFacts | null) {
+	if (claude?.codex && !profile.commandNetwork && profile.available) return "commands can reach this session’s Codex model relay";
 	if (claude?.opencode && !profile.commandNetwork && profile.available)
 		return "commands can reach this session’s OpenCode model relay";
 	if (claude && profile.claudeRelay && !profile.commandNetwork && profile.available)
@@ -101,7 +103,7 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 			<li>
 				<span className="fact-key">sign-in</span>
 				{claude ? (
-					<span className="fact-value fact-open">{claude.opencode ? "Commands can use the OpenCode model relay. Provider credentials stay on the machine." : <>commands in this container can use your Claude login. {claudeLoginFact(profile)}</>}</span>
+					<span className="fact-value fact-open">{claude.codex ? "Commands can use the Codex model relay. OpenAI credentials stay on the machine." : claude.opencode ? "Commands can use the OpenCode model relay. Provider credentials stay on the machine." : <>commands in this container can use your Claude login. {claudeLoginFact(profile)}</>}</span>
 				) : (
 					<span className="fact-value">
 						your ChatGPT sign-in is never in the sandbox

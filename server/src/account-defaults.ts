@@ -77,7 +77,7 @@ export const LAST_START_TABLE = `
 	)
 `;
 
-const HARNESSES: readonly HarnessId[] = ["windlass", "claude", "opencode"];
+const HARNESSES: readonly HarnessId[] = ["windlass", "claude", "opencode", "codex"];
 
 /** Where the newest agent was started; none before the first, or once forgotten. A row the code no longer reads (another agent's id) is none. */
 export async function readLastStart(db: DefaultsDb): Promise<LastStart | null> {

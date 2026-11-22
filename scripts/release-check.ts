@@ -11,6 +11,7 @@ const refs = {
 	sandbox: prefix + "windlass-platform-sandbox",
 	"sandbox-shots": prefix + "windlass-platform-sandbox-shots",
 	claude: prefix + "windlass-platform-claude",
+	codex: prefix + "windlass-platform-codex",
 	opencode: prefix + "windlass-platform-opencode",
 };
 type Role = keyof typeof refs;
@@ -56,7 +57,7 @@ function validate(release: Release) {
 		for (const platform of arches) assert(digest.test(entry.platforms?.[platform]), `Missing ${role} ${platform} manifest`);
 	}
 	assert(Object.keys(release.images).length === roles.length, "Unexpected images in release");
-	for (const [name, value] of [["Claude adapter", release.images.claude.adapter], ["Claude CLI", release.images.claude.cli], ["OpenCode", release.images.opencode.version]]) {
+	for (const [name, value] of [["Claude adapter", release.images.claude.adapter], ["Claude CLI", release.images.claude.cli], ["OpenCode", release.images.opencode.version], ["Codex adapter", release.images.codex.adapter], ["Codex CLI", release.images.codex.cli]]) {
 		assert(typeof value === "string" && semver.test(value), `Missing or invalid ${name} version`);
 	}
 }
@@ -117,6 +118,9 @@ function makeRelease(version: string, sums: Record<Role, string>): Release {
 	};
 	images.claude.adapter = JSON.parse(read("sandbox/harness/claude/package.json")).dependencies["@agentclientprotocol/claude-agent-acp"];
 	images.claude.cli = capture("sandbox/harness/claude/Dockerfile", /--cli --version\)" = '(\d+\.\d+\.\d+) /);
+	const codex = JSON.parse(read("sandbox/harness/codex/package.json")).dependencies;
+	images.codex.adapter = codex["@agentclientprotocol/codex-acp"];
+	images.codex.cli = codex["@openai/codex"];
 	images.opencode.version = capture("sandbox/harness/opencode/Dockerfile", /opencode --version\)" = (\d+\.\d+\.\d+)/);
 	const windlass = capture("sandbox/fetch-windlass.sh", /^RELEASE=(\S+)$/m);
 	const release = { version, commit: output("git", ["rev-parse", "HEAD"]), windlass, signer: identity(version), images };

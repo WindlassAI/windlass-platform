@@ -139,7 +139,8 @@ import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVe
 import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { itemSignInMessage, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
+import { itemHarnessProblem, itemSignInMessage, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -953,8 +954,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	if (knownHarness(harness) === null) throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
 		if (item?.role === "reviewer") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
+		const notForItems = item ? itemHarnessProblem(harness) : null;
+		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
-		if (input.profile !== "docker-hardened") throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
+		if (input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
 		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
 	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
@@ -1019,9 +1022,11 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
 		const options = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
 		if (offered?.optionsDigest && !options) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
-		const modes = initialSessionModes(chosen.id, harness, !!item, options?.modes);
+		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
+			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
+		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, offered?.modes ?? []) : options?.modes);
 		if (input.mode !== undefined) {
-			if (typeof input.mode !== "string" || !input.mode.trim() || (harness === "windlass" && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
+			if (typeof input.mode !== "string" || !input.mode.trim() || ((harness === "windlass" || harness === "codex") && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
@@ -1061,8 +1066,9 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			harness,
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
-			mode: input.mode,
-			...(options && { harnessOptions: options }),
+			mode: harness === "codex" ? modes.mode : input.mode,
+			...(harness === "codex" && {codexModes:modes.availableModes}),
+			...(options && {harnessOptions:options}),
 			model,
 			repoUrl,
 			repo,

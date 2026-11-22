@@ -365,11 +365,14 @@ export interface TurnControl {
 export interface RunTurnInput {
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
 	mode?: string;
+	planFirst?: boolean;
 	/** Efforts already observed on other models in this session. */
 	harnessModels?: ModelList | null;
 	onEffortFallback?: (fallback: string | null) => void;
 	/** The effective ACP mode and choices on open. fallbackFrom names a requested mode the agent no longer offers. */
 	onAcpModes?: (mode: string, offered: SessionMode[], fallbackFrom?: string) => void;
+	/** A note for the timeline from the platform's side of the ACP link, such as a refused permission request. */
+	onAcpNote?: (text: string) => void;
 	/**
 	 * A work item's turn, which nobody watches: the requested `mode` must be offered (no fallback to the
 	 * agent's current one), and a permission the agent still asks for is allowed once, as Windlass's
