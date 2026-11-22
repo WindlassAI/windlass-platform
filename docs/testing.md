@@ -15,6 +15,8 @@ Two workflows run the checks on GitHub Actions.
 each group (or each shard of one) is one job. `scripts/ci-heavy.mjs select` reads the changed files
 against the merge base (the pull request's base, or `main` for a branch) and picks the groups:
 
+In the Actions UI each job shows a readable title (for example "Factory 1 of 3" for `factory/1`, "Runner: full check" for `runner-docker/runner`); the titles live in `TITLES` in `scripts/ci-heavy.mjs`. Use the group/shard id with `node scripts/ci-heavy.mjs run <group>[/<shard>]`.
+
 - a file that a group lists runs that group;
 - a core file (the package files, the lockfile, `server/src/contract.ts`, the CI files) runs every group;
 - documentation (`docs/**`, any `*.md`) runs nothing, and neither does a file no group lists;
