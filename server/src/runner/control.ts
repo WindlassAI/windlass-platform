@@ -117,9 +117,10 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  * frame with a key they do not know. A name this runner does not know is ignored, so a later
  * server can name more without a new gate.
  *
- *   git-mirrors   the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
+ *   git-mirrors     the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
+ *   egress-domains  the report's `egressDomains`
  */
-export const SERVER_CAPABILITIES = ["git-mirrors"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -204,6 +205,8 @@ const host = object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegat
 const hostFrame = object({ kind: oneOf("host"), host: nullable(host) });
 const report = object({
 	egress: optional(egressMode),
+	/** How many public hosts the owner's `--egress-domains` list names (github.com included); absent: any public host. The list stays on the machine. */
+	egressDomains: optional(is<number>(v => positiveLimit(v) && v <= 64)),
 	name: optional(validMachineName),
 	host: optional(host),
 	slots: optional(slots),
@@ -233,9 +236,10 @@ export type Report = Of<typeof report>;
 
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
-	if (named?.includes("git-mirrors" satisfies Capability)) return report;
-	const { gitMirrors: _, ...rest } = report;
-	return rest as R;
+	const rest = { ...report };
+	if (!named?.includes("git-mirrors" satisfies Capability)) delete rest.gitMirrors;
+	if (!named?.includes("egress-domains" satisfies Capability)) delete rest.egressDomains;
+	return rest;
 }
 export type RunnerFrame = Of<typeof runnerFrame>;
 

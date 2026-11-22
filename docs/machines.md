@@ -75,6 +75,15 @@ What each `--egress` mode allows is in the in-app docs
 - The proxy checks every DNS answer and connects to the address it checked. Host interfaces, Linux bridge
   subnets, loopback, link-local, cloud metadata and CGNAT stay blocked even for `--egress-allow` names.
 - The platform's own clone, fetch and push commands use the same proxy.
+- With `--egress-domains` (`Egress.domains` in `runner/src/egress-policy.ts`, presets from
+  `server/src/sandbox/e2b/network.ts` `PRESETS`), the broker gets the expanded list as its third argument.
+  `targetAddress` matches the requested name before `selectAddress` resolves it, refuses IP literals and
+  every port but 443 for `CONNECT` and 80 for plain HTTP. After `200 Connection Established` the broker
+  holds the client's bytes until the first TLS record is complete (5 s, at most 16 KiB), and
+  `clientHelloName` must find exactly one `server_name` equal to the tunnel's host and no Encrypted Client
+  Hello before anything is written upstream. `github.com` and `api.openai.com` are always added, for the
+  platform's git and Windlass's model requests through this proxy. The report carries only the list's size
+  (`egressDomains`, behind the `egress-domains` server capability).
 - Windlass's inner command sandbox has its own loopback and cannot use the proxy.
 
 In `open` mode sessions use a machine bridge with inter-container communication disabled. In `none` mode a

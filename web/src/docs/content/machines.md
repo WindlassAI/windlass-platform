@@ -139,6 +139,38 @@ To let commands reach a host on your private network, name it:
 
 Give exact DNS names, up to 64, separated by commas. IP addresses are refused. A listed name is still refused if it resolves to the machine itself, a Docker network or a metadata address. `--egress-allow` alone means `restricted`. `--egress restricted` without `--egress-allow` empties the list.
 
+### Only some public hosts
+
+By default `restricted` lets commands reach any public host. To let them reach only the hosts you name, give `--egress-domains`:
+
+```sh
+<runner image> --platform <platform address> --egress restricted --egress-domains @npm,@pypi,@github,mirror.example.com
+```
+
+Each entry is an exact DNS name, `*.` and a name for any of its subdomains (`*.example.com` takes `cdn.example.com`, not `example.com`), or a preset. The presets are the same as a hosted deployment's `WLP_E2B_NETWORK_ALLOW`, so one list can be used in both places:
+
+| Preset | Hosts |
+| --- | --- |
+| `@npm` | `registry.npmjs.org`, `registry.yarnpkg.com` |
+| `@pypi` | `pypi.org`, `files.pythonhosted.org` |
+| `@github` | `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `release-assets.githubusercontent.com` |
+| `@crates` | `crates.io`, `index.crates.io`, `static.crates.io` |
+| `@go` | `proxy.golang.org`, `sum.golang.org` |
+
+Two hosts are always in the list, because the platform's own steps use the same proxy: `github.com`, for the platform's clone, fetch and push, and `api.openai.com`, for Windlass's model requests. Commands can reach them too. The whole list, these two included, holds up to 64 hosts. IP addresses and ports are refused.
+
+With a list, the proxy:
+
+- refuses an unlisted name before any DNS lookup, so a command cannot send data out in the names it looks up;
+- refuses IP addresses;
+- connects HTTPS only to port 443 and plain `http:` only to port 80;
+- reads the start of each HTTPS connection and sends it on only if the TLS server name is the host the command asked for. A connection without a server name, with another one, or with Encrypted Client Hello is closed;
+- still refuses your private network (unless the name is also in `--egress-allow`), the machine itself, Docker's networks and metadata addresses, even for a listed name.
+
+The list narrows what commands can reach; it does not seal it. A listed host behind a shared CDN can be asked, inside its encrypted connection, for another site on the same CDN.
+
+The runner saves the list with the mode and prints it, expanded, when it starts and in `status`: "Network egress is restricted. Only these public hosts: api.openai.com (always: Windlass's model requests use it), github.com (always: the platform's git uses it), registry.npmjs.org, …". `--egress-domains` alone means `restricted`. `--egress restricted` without `--egress-domains` takes the list away. The platform learns only how many hosts the list has, not which.
+
 ### None
 
 In `none` mode commands have no network. A repository cannot be cloned there, so an agent on a repository is refused: "This machine uses --egress none. Start the session without a repository or restart the runner with --egress restricted." Start it with **No repository**, or change the mode.
@@ -158,6 +190,7 @@ When you choose **Hardened Docker on your machine "…"**, the **sandbox** chip 
 | Mode | The network fact |
 | --- | --- |
 | `restricted` | "commands can reach public sites and hosts allowed by the owner through the web proxy" |
+| `restricted` with `--egress-domains` | "commands can reach only the 9 public hosts the owner allows, through the web proxy", with the list's size |
 | `open` | "commands can reach the internet and the local network" |
 | `none` | "commands have no network" |
 

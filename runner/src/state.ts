@@ -7,7 +7,7 @@ import { MACHINE_PROFILES, type MachineProfile } from "../../server/src/runner/p
 import { MACHINE_ID, validAllowedProfiles } from "../../server/src/runner/control.js";
 import { list, object, is, text, json, nullable, optional, count } from "../../server/src/runner/check.js";
 import { NAME } from "../../server/src/sandbox/provider.js";
-import { egressFlags, open, restricted, type Egress } from "./egress-policy.js";
+import { egressFlags, open, PLATFORM_HOSTS, restricted, type Egress } from "./egress-policy.js";
 import { egressMode } from "../../server/src/runner/control.js";
 import manifest from "../package.json";
 
@@ -89,7 +89,7 @@ export function pairingProfiles(id: string, requested?: MachineProfile[]): Machi
 	return stored;
 }
 const egressFile = (id: string) => `egress-${id}.json`;
-const validEgress = object({ mode: egressMode, allow: list(text(253), 64) });
+const validEgress = object({ mode: egressMode, allow: list(text(253), 64), domains: optional(list(text(255), 64)) });
 export function pairingEgress(id: string, requested?: Egress): Egress {
 	if (requested) {
 		save(egressFile(id), requested);
@@ -98,12 +98,13 @@ export function pairingEgress(id: string, requested?: Egress): Egress {
 	const stored = read(egressFile(id));
 	if (stored === undefined) return open;
 	if (!validEgress(stored)) throw new RunnerError("Invalid egress policy. Set --egress to reset it.");
-	return egressFlags(stored.mode, stored.allow.length ? stored.allow.join(",") : undefined)!;
+	return egressFlags(stored.mode, stored.allow.length ? stored.allow.join(",") : undefined, stored.domains?.join(","))!;
 }
 export function egressNote(id: string) {
 	if (read(egressFile(id)) === undefined) return "Network egress is open for this existing pairing. Start the runner with --egress restricted to opt in.";
-	const { mode, allow } = pairingEgress(id);
-	return `Network egress is ${mode}.${allow.length ? " Allowed hosts: " + allow.join(", ") : ""}`;
+	const { mode, allow, domains } = pairingEgress(id);
+	const only = domains?.map(host => PLATFORM_HOSTS[host] ? `${host} (always: ${PLATFORM_HOSTS[host]})` : host);
+	return `Network egress is ${mode}.${only ? " Only these public hosts: " + only.join(", ") + "." : ""}${allow.length ? " Allowed hosts: " + allow.join(", ") : ""}`;
 }
 export function storePair(current: Identity, key: KeyObject, platform: string, profiles: MachineProfile[] = ["docker-hardened"], pin?: Pin) {
 	const prior = loadPair();

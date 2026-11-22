@@ -101,7 +101,7 @@ export class EgressNetwork {
 			const volume = broker + "-socket";
 			await this.machine.ownedVolume(true, volume);
 			const mount = `type=volume,src=${volume},dst=/workspace`;
-			await this.ensure("broker", broker, revision, "host", source, [mount], [JSON.stringify(this.policy.allow), JSON.stringify(denied)], ["/workspace/egress.sock"]);
+			await this.ensure("broker", broker, revision, "host", source, [mount], [JSON.stringify(this.policy.allow), JSON.stringify(denied), JSON.stringify(this.policy.domains ?? null)], ["/workspace/egress.sock"]);
 			mounts.push(mount + ",readonly");
 			probes.push("17891");
 		}

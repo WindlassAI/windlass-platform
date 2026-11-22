@@ -422,6 +422,7 @@ export class Executor extends MachineDocker {
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin && { claudeRelay: true as const }),
+			...(this.network.policy.domains && { egressDomains: this.network.policy.domains.length }),
 			...(harnesses.length ? { harnesses } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
