@@ -432,7 +432,9 @@ export class DockerSandboxes implements Sandboxes {
 		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
 		const [status, shares, nanos, memory, swap, pids, ...json] = result.stdout.trim().split("|");
-		const labels = JSON.parse(json.join("|")) as Record<string, string> | null;
+		let labels: Record<string, string> | null;
+		try { labels = JSON.parse(json.join("|")); }
+		catch { throw new Error(`docker container inspect returned missing or invalid labels JSON for ${containerName(id)}`); }
 		if (labels?.[LABEL] !== "1" || (labels[MACHINE_LABEL] ?? "") !== this.machine) return null;
 		const label = labels[LABEL + ".requested-slots"] || labels[LABEL + ".slots"] || "1";
 		const size = sandboxSlots(/^[1-4]$/.test(label) ? Number(label) : 1, this.options.slots?.max ?? 1);
