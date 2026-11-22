@@ -62,7 +62,7 @@ checkout; on CI that comparison is skipped and the rest runs.
    covers what you changed (`cd server && npx tsx ../scripts/<name>.ts`), nothing more. Leave the
    Docker checks, the e2e runs and the full suite to CI.
 2. **Push a `wip/<name>` branch** to `git@github.com:WindlassAI/windlass-platform.git`
-   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Both workflows run on it. The plan job's summary says which
+   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Both workflows run on it; on `wip/*` the CI workflow runs only typecheck and the secret scan, and CI heavy runs the tests. The plan job's summary says which
    groups ran and which changed file chose each one; each job's summary has a table of its checks with
    their times.
 3. **Read the result** with one call per look, no more than once a minute:

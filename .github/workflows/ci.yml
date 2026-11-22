@@ -26,6 +26,8 @@ jobs:
       - run: pnpm --filter @windlass-platform/web build
 
   test:
+    # Agents' wip/* branches get the same suites from ci-heavy.yml, chosen by path; running both doubled the queue.
+    if: ${{ !startsWith(github.ref, 'refs/heads/wip/') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
