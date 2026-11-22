@@ -58,7 +58,7 @@ const STEP_WORD: Record<StepKind, string> = {
 	ci_fix: "Fixing CI",
 	conflict: "Merging the base",
 	review: "Second review",
-	review_fix: "Fixing what the reviewer asked",
+	review_fix: "Fixing the review",
 	handoff: "Handed over",
 	merged: "Waiting for the merge",
 };
