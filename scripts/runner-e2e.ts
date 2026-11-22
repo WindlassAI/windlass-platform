@@ -47,9 +47,14 @@ const OFFLINE_WAIT_MS = 15_000;
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 let failed = 0;
+/** A case that has not finished in this time fails by name, rather than holding the run until CI stops it. */
+const CHECK_MS = 5 * 60_000;
+
 async function check(name: string, body: () => Promise<string>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const limit = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`did not finish in ${CHECK_MS / 1000} s`)), CHECK_MS); });
 	try {
-		console.log(`PASS  ${name}  (${await body()})`);
+		console.log(`PASS  ${name}  (${await Promise.race([body(), limit]).finally(() => clearTimeout(timer))})`);
 	} catch (error) {
 		failed += 1;
 		console.log(`FAIL  ${name}  -- ${error instanceof Error ? error.message : String(error)}`);

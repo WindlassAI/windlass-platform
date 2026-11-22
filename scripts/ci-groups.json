@@ -200,8 +200,14 @@
         "scripts/{sandbox,mcp,github,verified,sizing}-check.ts",
         "scripts/e2b-provider-test.ts"
       ],
+      "shards": {
+        "1": { "only": ["sandbox-1", "github-docker", "verified-docker"] },
+        "2": { "only": ["sandbox-2", "e2b-provider-docker", "sizing-docker"] },
+        "mcp": { "only": ["mcp"] }
+      },
       "checks": {
-        "sandbox": "tsx ../scripts/sandbox-check.ts",
+        "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,protocol client,seccomp,reviewer commands' tsx ../scripts/sandbox-check.ts",
+        "sandbox-2": "WLP_CHECK_SECTIONS='failures,sign-in,token source,session token isolation,hand-off,valid-for' tsx ../scripts/sandbox-check.ts",
         "mcp": "tsx ../scripts/mcp-check.ts",
         "github-docker": "tsx ../scripts/github-check.ts --docker",
         "verified-docker": "tsx ../scripts/verified-check.ts --docker",

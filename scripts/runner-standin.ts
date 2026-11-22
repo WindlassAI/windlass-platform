@@ -16,10 +16,21 @@ const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 export function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
 }
+/** How long one probe of `until` may take before it is asked again. */
+const ATTEMPT_MS = 15_000;
+/**
+ * Asks `probe` until it gives a value, for `ms` at most. A call made while a restarted engine still
+ * answers `service_unavailable` can be left without an answer: such an attempt is abandoned after
+ * ATTEMPT_MS and the probe is asked again, so the wait still ends by its deadline.
+ */
 export async function until<T>(what: string, probe: () => T | undefined | null | false | Promise<T | undefined | null | false>, ms = 30_000): Promise<T> {
 	const end = Date.now() + ms;
 	for (;;) {
-		const value = await probe();
+		const attempt = Promise.resolve().then(probe);
+		attempt.catch(() => undefined);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const abandoned = new Promise<undefined>((done) => { timer = setTimeout(done, Math.max(50, Math.min(ATTEMPT_MS, end - Date.now()))); });
+		const value = await Promise.race([attempt, abandoned]).finally(() => clearTimeout(timer));
 		if (value !== undefined && value !== null && value !== false) return value;
 		if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
 		await sleep(50);
