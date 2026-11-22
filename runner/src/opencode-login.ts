@@ -12,14 +12,18 @@ import { supported, validLogin } from "./opencode-providers.js";
 
 type Credential = { provider: "free" } | { provider: string; key: string } |
 	{ provider: "chatgpt"; access: string; refresh: string; expires: number; accountId?: string };
+const generationId = /^[a-f0-9]{32}$/;
 const metadata = (m: MachineDocker) => "opencode-" + m.identity.machineId + ".json";
 
 export function currentProvider(m: MachineDocker): ProviderLogin | undefined {
 	const value = read(metadata(m));
 	if (value == null) return;
 	const login = value as ProviderLogin;
-	if (!validLogin(login.provider) || (login.providers !== undefined && (!Array.isArray(login.providers) || !login.providers.includes(login.provider) || !login.providers.every(validLogin))) || !/^[a-f0-9]{32}$/.test(login.generation))
-		throw new RunnerError("Invalid OpenCode login metadata. Sign in again.");
+	const ids = login.providers;
+	if (!validLogin(login.provider) || !generationId.test(login.generation) ||
+		(ids !== undefined && (!Array.isArray(ids) || !ids.includes(login.provider) || !ids.every(validLogin))) ||
+		(login.sessionGeneration !== undefined && !generationId.test(login.sessionGeneration)))
+		throw new RunnerError("Invalid OpenCode login metadata. Log out of OpenCode and sign in again.");
 	return login;
 }
 
@@ -54,6 +58,7 @@ export async function storeProvider(m: MachineDocker, credential?: Credential, a
 			finally { await m.dropVolume(m.opencodeVolume); }
 			return;
 		}
+		const previous = await installedProvider(m);
 		await removeRelay(m, "opencode");
 		await m.ownedVolume(true, m.opencodeVolume);
 		const login = { provider: credential.provider, generation: randomBytes(16).toString("hex") };
@@ -93,7 +98,9 @@ process.stdout.write(JSON.stringify(Object.keys(records))); `;
 		const providers = JSON.parse(stored.stdout);
 		if (!Array.isArray(providers) || !providers.includes(login.provider) || !providers.every(validLogin))
 			throw new RunnerError("Could not confirm the stored OpenCode providers.");
-		save(metadata(m), { ...login, providers });
+		// Keep existing session signatures valid, including those minted before the upgrade.
+		// Logout clears this metadata, so the next login starts a new signing domain.
+		save(metadata(m), { ...login, providers, sessionGeneration: previous?.sessionGeneration ?? previous?.generation ?? login.generation });
 	});
 }
 

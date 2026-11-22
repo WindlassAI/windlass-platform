@@ -51,7 +51,7 @@ export const machineProfile = oneOf(...MACHINE_PROFILES);
 export const PROFILE_DENIED = "This machine’s owner has not allowed the Windlass sandbox profile. Start the runner with --allow-profile docker-windlass-sandbox to allow it.";
 const harness = optional(oneOf("claude", "opencode"));
 const sandbox = { id };
-const startOptions = { cwd: optional(string), env: optional(env), secretEnv: optional(env) };
+const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
 /**
  * The methods of `Sandboxes`, `SandboxHandle`, `TurnSandbox` and `SandboxProcess` that cross to a
@@ -59,7 +59,7 @@ const startOptions = { cwd: optional(string), env: optional(env), secretEnv: opt
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
 const operations = {
-	create: [object({ profile: machineProfile, harness, screenshots: optional(boolean) }), id],
+	create: [object({ profile: machineProfile, size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean) }), id],
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],

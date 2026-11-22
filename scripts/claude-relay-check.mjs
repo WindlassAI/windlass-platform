@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { connect } from 'node:net';
 import { request } from 'node:http';
 import { PassThrough } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import { after, before, test } from 'node:test';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -27,8 +28,8 @@ before(async () => {
 				const response = new PassThrough();
 				Object.assign(response, upstream);
 				callback(response);
-				response.write(upstream.statusCode === 200 ? 'first\n' : token);
-				release = () => response.end('last\n');
+				response.write(upstream.first ?? (upstream.statusCode === 200 ? 'first\n' : token));
+				release = () => response.end(upstream.last ?? 'last\n');
 				if (!upstream.holdOpen) release();
 			});
 			return input;
@@ -77,6 +78,56 @@ test('rewrite only the bearer, use the pinned TLS origin, stream before upstream
 	release();
 	assert.equal((await chunks.next()).value.toString(), 'last\n');
 });
+test('a successful upstream response cannot echo the setup token across chunks', async () => {
+	for (const type of ['application/json', 'text/event-stream']) {
+		reset();
+		upstream.headers['content-type'] = type;
+		upstream.first = (type === 'application/json' ? '{"text":"' : '') + 'before ' + token.slice(0, 17);
+		upstream.last = token.slice(17) + ' after' + (type === 'application/json' ? '"}' : '');
+		const res = await call();
+		let body = '';
+		for await (const chunk of res) body += chunk;
+		assert.equal(type === 'application/json' ? JSON.parse(body).text : body, 'before [redacted] after');
+	}
+});
+test('the Claude filter scrubs decoded provider responses', async () => {
+	reset();
+	upstream.headers['content-encoding'] = 'gzip';
+	upstream.first = gzipSync('before ' + token + ' after');
+	upstream.last = '';
+	const res = await call();
+	let body = '';
+	for await (const chunk of res) body += chunk;
+	assert.equal(res.statusCode, 200);
+	assert.ok(body === 'before [redacted] after');
+});
+
+test('decoded JSON and interleaved content blocks scrub model text across SSE events', async () => {
+	const event = (index, s) => 'data: ' + JSON.stringify({type:'content_block_delta', index, delta:{type:'text_delta',text:s}}) + '\r\n\r\n';
+	reset();
+	upstream.first = event(2, 'one ' + token.slice(0, 11)).replace('sk-ant', '\\u0073k-ant') + event(3, 'separate');
+	upstream.last = event(2, token.slice(11) + ' two') + 'data: {"type":"content_block_stop","index":2}\n\n';
+	const stream = await call(); let body = '';
+	for await (const part of stream) body += part;
+	const events = body.split(/\r?\n/).filter(s => s.startsWith('data:')).map(s => JSON.parse(s.slice(5)));
+	assert.equal(events.filter(e => e.index === 2).map(e => e.delta?.text ?? '').join(''), 'one [redacted] two');
+	assert.equal(events.find(e => e.index === 3).delta.text, 'separate');
+	reset(); upstream.headers['content-type'] = 'application/json';
+	upstream.first = JSON.stringify({text:token}).replace('sk-ant', '\\u0073k-ant'); upstream.last = '';
+	const response = await call(); body = ''; for await (const part of response) body += part;
+	assert.deepEqual(JSON.parse(body), {text:'[redacted]'});
+});
+
+test('a chunk ending with a complete shorter secret waits for the longer one', async () => {
+	const { scrubStream } = await import('../sandbox/relay/server.cjs');
+	for (const secrets of [['fixture', 'fixture-long'], ['fixture-long', 'fixture']]) {
+		const stream = scrubStream(secrets);
+		stream.write('fixture'); stream.end('-long fixture.');
+		let body = ''; for await (const part of stream) body += part;
+		assert.equal(body, '[redacted] [redacted].');
+	}
+});
+
 test('foreign target, method and unapproved endpoint never reach upstream', async () => {
 	for (const bad of [{ host: 'foreign.invalid' }, { path: 'https://foreign.invalid/v1/messages' },
 		{ path: '//foreign.invalid/v1/messages' }, { path: '/api/oauth/profile' }, { method: 'GET' }]) {
@@ -115,10 +166,17 @@ test('logout takes effect on the next request', async () => {
 	reset(); login = undefined; assert.equal(await responseStatus(), 401); assert.equal(sent, undefined);
 });
 test('upstream redirect and diagnostics cannot disclose the credential', async () => {
-	for (const status of [302, 401, 429, 500]) {
+	for (const [status, expected, message] of [
+		[302, 502, "The provider failed or couldn't be reached."],
+		[400, 400, 'The provider rejected the request.'],
+		[401, 401, 'Provider sign-in is missing or the session placeholder is no longer valid.'],
+		[403, 403, 'This request is not allowed by the relay.'],
+		[429, 429, "The provider's usage or rate limit was reached."],
+		[503, 503, "The provider failed or couldn't be reached."],
+	]) {
 		reset(); upstream = { statusCode: status, headers: { location: 'https://foreign.invalid/' + token, 'x-secret': token } };
 		const res = await call(); let body = ''; for await (const data of res) body += data;
-		assert.ok(res.statusCode >= 400); assert.equal(res.headers.location, undefined);
+		assert.equal(res.statusCode, expected); assert.equal(JSON.parse(body).error.message, message); assert.equal(res.headers.location, undefined);
 		assert.ok(!JSON.stringify(res.headers).includes(token)); assert.ok(!body.includes(token));
 	}
 });

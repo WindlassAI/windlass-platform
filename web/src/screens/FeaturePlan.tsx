@@ -12,10 +12,26 @@
  *
  * A subtask that has started has its own item: its row says its state and where it is on its track,
  * and leads to it.
+ *
+ * Placement: each subtask says where it runs (the planner's preferred place, why, the alternatives it
+ * may overflow to, and what it needs of a place), and the feature whether overflow is allowed. While
+ * the plan is open the owner changes the place, the alternatives and overflow as they change budgets:
+ * drafts, saved together as the next version. A choice the server would refuse at approval says why
+ * before it is saved (lib/placement.ts runs the server's check), and the server's own refusal is
+ * shown under the subtask it names. Once a subtask has its item, its row says where it ran and why;
+ * the subtask the feature waits to place says which machine it waits for and what for.
  */
-import type { FeaturePlan, ItemAction, ItemBudget, ItemSummary, ItemView, PlanSubtask } from "@contract";
+import { MAX_NOTE_CHARS, type FeaturePlan, type ItemAction, type ItemBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type PlanSubtask, type Waiting } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { WarnIcon } from "../components/Icons";
+import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
+import { ChevronIcon, WarnIcon } from "../components/Icons";
+import { ItemSpend } from "../components/ItemSpend";
+import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
+import { Pill } from "../components/ui/Pill";
+import { machineLabel } from "../lib/machines";
+import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placementWait, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
+import { useApp } from "../state/app";
+import { useMachines } from "./Machines";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
@@ -29,7 +45,7 @@ export interface PlanActing {
 	act(action: ItemAction): Promise<boolean>;
 }
 
-const PLAN_QUESTIONS = new Set(["plan_approval", "replan_approval"]);
+const PLAN_QUESTIONS = new Set(["plan_approval", "replan_approval", "single_suggested"]);
 
 /** Whether the plan is the one its item asks about now: its budgets and questions can be changed, and it approved. */
 export function planOpen(view: ItemView): boolean {
@@ -37,6 +53,8 @@ export function planOpen(view: ItemView): boolean {
 }
 
 type Drafts = Record<string, Record<keyof ItemBudget, string>>;
+
+const placesOf = (plan: FeaturePlan): Record<string, PlaceDraft> => Object.fromEntries(plan.subtasks.map((task) => [task.key, placeDraftOf(task)]));
 
 const draftsOf = (plan: FeaturePlan): Drafts => Object.fromEntries(plan.subtasks.map((task) => [task.key, Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, field.toInput(task.budget[field.key])])) as Record<keyof ItemBudget, string>]));
 
@@ -46,10 +64,19 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const open = view ? planOpen(view) : false;
 	const [drafts, setDrafts] = useState<Drafts>(() => (plan ? draftsOf(plan) : {}));
 	const [answers, setAnswers] = useState<Record<string, string>>({});
+	const [places, setPlaces] = useState<Record<string, PlaceDraft>>(() => (plan ? placesOf(plan) : {}));
+	const [overflow, setOverflow] = useState(plan?.overflow ?? false);
 	const version = plan?.version ?? 0;
+	// The user's machines: their names for the place menus, and their secrets switch for what the plan would send where.
+	const { platform } = useApp();
+	const machines = useMachines(platform.info?.machines != null && view?.mode === "orchestrate" && plan !== null && plan.status !== "superseded").list;
 	// Another version is another plan: what was typed for the one before is not this one's.
 	useEffect(() => {
-		if (plan) setDrafts(draftsOf(plan));
+		if (plan) {
+			setDrafts(draftsOf(plan));
+			setPlaces(placesOf(plan));
+			setOverflow(plan.overflow ?? false);
+		}
 		setAnswers({});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [view?.id, version]);
@@ -68,18 +95,32 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const problems = plan && pool ? budgetProblems(plan.compare.singleBudget, pool, parsed) : { fields: {}, total: [], any: false };
 	const budgetsChanged = plan ? plan.subtasks.some((task) => PLAN_FIELDS.some((field) => parsed[task.key]?.[field.key] !== task.budget[field.key])) : false;
 	const answered = Object.entries(answers).filter(([, text]) => text.trim() !== "");
-	const dirty = budgetsChanged || answered.length > 0;
+	const placesDirty = plan ? plan.subtasks.some((task) => places[task.key] !== undefined && placeChanged(task, places[task.key]!)) || overflow !== (plan.overflow ?? false) : false;
+	const dirty = budgetsChanged || answered.length > 0 || placesDirty;
+	/** A subtask as it would be saved: its budget and place as edited. */
+	const edited = (task: PlanSubtask): PlanSubtask => {
+		const place = places[task.key];
+		const budgeted = { ...task, budget: parsed[task.key] ?? task.budget };
+		return place && placeChanged(task, place) ? withPlace(budgeted, place) : budgeted;
+	};
 	const unanswered = plan ? plan.questions.filter((question) => !question.answer).length : 0;
 
 	const save = () => {
 		if (!plan) return Promise.resolve(false);
 		const questions = plan.questions.map((question) => (answers[question.id]?.trim() ? { ...question, answer: answers[question.id]!.trim() } : question));
-		const subtasks: PlanSubtask[] = plan.subtasks.map((task) => ({ ...task, budget: parsed[task.key] ?? task.budget }));
-		return acting.act({ kind: "edit_plan", version: plan.version, plan: { questions, spec: plan.spec, subtasks, singleSuggested: plan.singleSuggested } });
+		const subtasks: PlanSubtask[] = plan.subtasks.map(edited);
+		return acting.act({ kind: "edit_plan", version: plan.version, plan: { questions, spec: plan.spec, subtasks, singleSuggested: plan.singleSuggested, overflow } });
 	};
-	const approve = () => (plan ? acting.act({ kind: "approve_plan", version: plan.version }) : Promise.resolve(false));
+	const approve = () => {
+		if (view?.question?.kind === "single_suggested") return acting.act({ kind: "answer", question: view.question.id, choice: "run_single" });
+		return plan ? acting.act({ kind: "approve_plan", version: plan.version }) : Promise.resolve(false);
+	};
 	const reset = () => {
-		if (plan) setDrafts(draftsOf(plan));
+		if (plan) {
+			setDrafts(draftsOf(plan));
+			setPlaces(placesOf(plan));
+			setOverflow(plan.overflow ?? false);
+		}
 		setAnswers({});
 	};
 
@@ -90,6 +131,12 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		setDraft: (key: string, field: keyof ItemBudget, text: string) => setDrafts((now) => ({ ...now, [key]: { ...now[key]!, [field]: text } })),
 		answers,
 		setAnswer: (id: string, text: string) => setAnswers((now) => ({ ...now, [id]: text })),
+		machines,
+		places,
+		setPlace: (key: string, draft: PlaceDraft) => setPlaces((now) => ({ ...now, [key]: draft })),
+		overflow,
+		setOverflow,
+		edited,
 		parsed,
 		pool,
 		problems,
@@ -105,6 +152,19 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 
 export type PlanReview = ReturnType<typeof usePlanReview>;
 
+/**
+ * The subtasks of the saved version that no allowed place can ever take, in the words of the server's
+ * check (lib/placement.ts); those already done are not placed again. Empty until the machines are read.
+ */
+function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null): { task: PlanSubtask; reason: string }[] {
+	if (!machines) return [];
+	const done = new Set((view.children ?? []).filter((child) => child.state === "done" && child.parent).map((child) => child.parent!.key));
+	return plan.subtasks.flatMap((task) => {
+		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines);
+		return reason ? [{ task, reason }] : [];
+	});
+}
+
 /** What the server's refusal of an approval says to do instead: the feature as one item. */
 const SINGLE_INSTEAD = /single item/i;
 
@@ -117,11 +177,15 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 	const ids = { title: useId() };
 	if (!plan || !view.question) return null;
 	const busy = acting.busy !== null;
+	const single = view.question.kind === "single_suggested";
 	const replan = view.question.kind === "replan_approval";
 	const tasks = plan.subtasks.length;
 	const totalTokens = sumBudgets(Object.values(review.parsed)).tokens;
 	const refused = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
+	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines);
 	const blocked = review.problems.any ? "Fix the figures marked below first." : review.dirty ? "Save your changes, then approve this version." : review.unanswered > 0 ? `Answer ${review.unanswered === 1 ? "the question" : `the ${review.unanswered} questions`} and save first.` : null;
+	// The owner's choice: a place no allowed machine can ever take holds approval back, with the server's words. A busy or offline one does not.
+	const placeBlocked = blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
 	const revise = view.question.choices.find((choice) => choice.id === "revise");
 	const giveUp = view.question.choices.find((choice) => choice.id === "give_up");
 	return (
@@ -131,9 +195,11 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				<span className="item-question-when">{when}</span>
 			</p>
 			<p className="item-question-text">
-				{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.
+				{single ? view.question.text : <>{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.</>}
 				<span className="plan-version"> Version {plan.version}</span>
 			</p>
+
+			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} refusal={refused} /> : null}
 
 			{plan.questions.length > 0 ? (
 				<div className="plan-asks">
@@ -175,12 +241,17 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						</button>
 					</>
 				) : (
-					<button type="button" className="button button-primary" disabled={busy || blocked !== null} onClick={() => void review.approve()} aria-describedby={blocked ? `${ids.title}-why` : undefined}>
-						{acting.busy === "approve_plan" ? "Approving…" : `Approve version ${plan.version}`}
+					<button type="button" className="button button-primary" disabled={busy || blocked !== null || placeBlocked !== null} onClick={() => void review.approve()} aria-describedby={blocked || placeBlocked ? `${ids.title}-why` : undefined}>
+						{single ? "Approve for one implementer" : acting.busy === "approve_plan" ? "Approving…" : `Approve version ${plan.version}`}
+					</button>
+				)}
+				{single && !review.dirty && view.question.choices.some(option => option.id === "orchestrate_anyway") && (
+					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "orchestrate_anyway" })}>
+						Ask for subtasks
 					</button>
 				)}
 				{refused && SINGLE_INSTEAD.test(refused) && !replan ? (
-					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "run_single" })}>
+					<button type="button" className="button button-outline" disabled={busy || blocked !== null} onClick={() => void acting.act({ kind: "run_single" })}>
 						{acting.busy === "run_single" ? "Starting…" : "Run as a single item"}
 					</button>
 				) : null}
@@ -199,7 +270,15 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				<p className="field-note" id={`${ids.title}-why`}>
 					{blocked}
 				</p>
+			) : placeBlocked && !review.dirty ? (
+				<p className="field-note plan-blocked-place" id={`${ids.title}-why`}>
+					<span className="plan-blocked-dot" aria-hidden="true" />
+					<span>
+						<strong>{placeBlocked.task.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.reason} Choose another place below and save, or ask for a new plan.
+					</span>
+				</p>
 			) : null}
+			{!single && <p className="field-note">Sizing beyond one slot is not supported by current runners.</p>}
 		</section>
 	);
 }
@@ -238,20 +317,49 @@ function PlanAsk({ question, value, disabled, onChange }: { question: FeaturePla
 
 const STATUS_WORD: Record<FeaturePlan["status"], string> = { proposed: "proposed", approved: "approved", superseded: "superseded" };
 
-/** The plan's section: the spec, the subtasks, and what they may spend together. */
+/** How long a part of the spec may be before the rest of it waits behind "Show more". */
+const SPEC_SHOWN = 3;
+
+/**
+ * The plan's section: what it is for, then the spec as one column of short lists, the subtasks, and
+ * what they may spend together. A plan that was set aside (superseded: the item runs as one item, or
+ * the re-plans ran out) is one line, its version, its state and the start of its goal, that opens to
+ * the whole plan.
+ */
 export function PlanSection({ view, review, acting }: { view: ItemView; review: PlanReview; acting: PlanActing }) {
 	const { plan, pool } = review;
 	const heading = useId();
+	const [opened, setOpened] = useState(false);
 	if (!plan || !pool) return null;
-	const hosted = view.place.kind === "hosted";
-	const fields = PLAN_FIELDS.filter((field) => hosted || field.key !== "hostedSeconds");
-	const editing = review.open;
-	const children = new Map((view.children ?? []).filter((child) => child.parent).map((child) => [child.parent!.key, child]));
-	const single = plan.compare.singleBudget;
-	const floor = subtaskFloor(single);
-	const reserve = closingReserve(single);
-	const total = sumBudgets(Object.values(review.parsed));
-	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
+	const singleSpend = view.mode === "single" || plan.subtasks.length === 0 ? (
+		<>
+			<p className="plan-single">Runs as one item after this plan</p>
+			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent, view.budget)} fields={PLAN_FIELDS.filter(field => field.key !== "hostedSeconds")} />
+		</>
+	) : null;
+	if (plan.status === "superseded") {
+		return (
+			<section className={`usage-section feature-plan plan-set-aside${opened ? " plan-set-aside-open" : ""}`} aria-labelledby={heading}>
+				<h2 className="usage-title plan-set-aside-title" id={heading}>
+					<button type="button" className="plan-set-aside-row" aria-expanded={opened} onClick={() => setOpened((value) => !value)}>
+						<ChevronIcon size={12} className={`plan-set-aside-chevron${opened ? " plan-set-aside-chevron-open" : ""}`} />
+						<span className="plan-set-aside-name">The plan</span>
+						<span className="usage-count">
+							v{plan.version} · {STATUS_WORD[plan.status]}
+						</span>
+						<span className="plan-set-aside-goal">{plan.spec.goal.replace(/`/g, "")}</span>
+					</button>
+				</h2>
+				{opened ? (
+					<div className="plan-set-aside-body">
+						<p className="plan-set-aside-note">{view.mode === "single" ? "Set aside: the work runs as one item, under its own budget." : "Set aside: no subtask of it runs any more."}</p>
+						<PlanBody view={view} review={review} acting={acting} pool={pool} />
+					</div>
+				) : null}
+				{singleSpend}
+			</section>
+		);
+	}
 	return (
 		<section className="usage-section feature-plan" aria-labelledby={heading}>
 			<h2 className="usage-title" id={heading}>
@@ -260,76 +368,134 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 					v{plan.version} · {STATUS_WORD[plan.status]}
 				</span>
 			</h2>
-			<p className="plan-goal">
-				<Inline text={plan.spec.goal} />
-			</p>
-
-			<div className="usage-card plan-card">
-				<dl className="plan-spec">
-					{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" lines={plan.spec.requirements} /> : null}
-					{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" lines={plan.spec.acceptance} /> : null}
-					{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" lines={plan.spec.outOfScope} /> : null}
-				</dl>
-				{plan.singleSuggested ? <p className="plan-single">The planner suggests one item instead: {plan.singleSuggested}</p> : null}
-
-				<ol className="plan-tasks" aria-label="Subtasks">
-					{plan.subtasks.map((task) => (
-						<SubtaskRow key={task.key} task={task} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
-					))}
-				</ol>
-
-				<div className="plan-total" aria-label="What the subtasks spend together">
-					<p className="plan-total-head">Together</p>
-					<dl className="plan-total-figures">
-						{fields.map((field) => {
-							const over = review.problems.total.includes(field.key);
-							const share = Math.min(100, (total[field.key] / Math.max(1, plan.budget[field.key])) * 100);
-							const kept = Math.min(100 - share, (reserve[field.key] / Math.max(1, plan.budget[field.key])) * 100);
-							return (
-								<div key={field.key} className={over ? "plan-total-over" : undefined}>
-									<dt>{field.label}</dt>
-									<dd className="plan-total-number">
-										{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])}</span>
-									</dd>
-									<dd>
-										<span className="usage-meter plan-meter" aria-hidden="true">
-											<span className={`usage-meter-used${over ? " item-meter-reached" : ""}`} style={{ width: `${share}%` }} />
-											<span className="plan-meter-kept" style={{ width: `${kept}%` }} />
-										</span>
-									</dd>
-									{over ? <dd className="plan-total-why tone-bad">over what the subtasks may share</dd> : null}
-								</div>
-							);
-						})}
-					</dl>
-					<p className="usage-note plan-total-note">
-						The feature may spend three single items ({PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens, {plan.budget.turns} turns). {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns are kept for the summary and the review; the hatched part of each bar. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
-					</p>
-				</div>
-			</div>
+			<PlanBody view={view} review={review} acting={acting} pool={pool} />
+			{singleSpend}
 		</section>
 	);
 }
 
-function SpecList({ term, lines }: { term: string; lines: string[] }) {
+function PlanBody({ view, review, acting, pool }: { view: ItemView; review: PlanReview; acting: PlanActing; pool: ItemBudget }) {
+	const plan = review.plan!;
+	const hosted = view.place.kind === "hosted";
+	const fields = PLAN_FIELDS.filter((field) => hosted || field.key !== "hostedSeconds");
+	const editing = review.open;
+	const children = new Map((view.children ?? []).filter((child) => child.parent).map((child) => [child.parent!.key, child]));
+	const single = plan.compare.singleBudget;
+	const floor = subtaskFloor(single);
+	const reserve = closingReserve(single);
+	const total = sumBudgets(Object.values(review.parsed));
+	const spent = view.children?.length ? sumBudgets(view.children.map(child => child.spent)) : null;
+	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
+	const setAside = plan.status === "superseded";
+	const machines = review.machines;
+	const placing = plan.subtasks.some((task) => task.place || task.needs) || plan.overflow === true || (view.children ?? []).some((child) => child.placement);
+	const refusal = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
+	// The subtask the feature waits to place: a machine wait is about the next one to start.
+	const waitingKey = plan.status === "approved" && view.wait?.reason === "machine" ? (nextSubtask(plan, view.children ?? [])?.key ?? null) : null;
+	const place = (task: PlanSubtask): PlaceRow => ({
+		machines,
+		parent: parentPlaceName(view.place, machines),
+		overflow: editing ? review.overflow : plan.overflow === true,
+		draft: review.places[task.key] ?? placeDraftOf(task),
+		// The server's refusal is about the place it was sent; a place changed since is checked here again.
+		problem: plan.status !== "proposed" ? null : ((review.places[task.key] && placeChanged(task, review.places[task.key]!) ? null : refusalFor(task, refusal)) ?? (machines ? placementProblem(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines) : null)),
+		wait: task.key === waitingKey ? view.wait : null,
+		ahead: plan.status !== "proposed" || !machines ? null : placementWait(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines),
+		secrets: (name) => secretsFor(name, view.placementReview, machines),
+		onPlace: (draft) => review.setPlace(task.key, draft),
+	});
 	return (
-		<div>
-			<dt>{term}</dt>
+		<>
+			<p className="plan-goal">
+				<Inline text={plan.spec.goal} />
+			</p>
+
+			<dl className="plan-spec">
+				{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" kind="requirements" lines={plan.spec.requirements} /> : null}
+				{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} /> : null}
+				{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} /> : null}
+			</dl>
+
+			{view.mode !== "single" && plan.subtasks.length > 0 ? (
+				<div className="usage-card plan-card">
+					<p className="plan-card-head">
+						Subtasks <span className="plan-card-count">{plan.subtasks.length}, in order</span>
+					</p>
+					{placing || editing ? <FeaturePlacement parent={parentPlaceName(view.place, machines)} editing={editing} overflow={editing ? review.overflow : plan.overflow === true} disabled={acting.busy !== null} onOverflow={review.setOverflow} /> : null}
+					<ol className="plan-tasks" aria-label="Subtasks">
+						{plan.subtasks.map((task) => (
+							<SubtaskRow key={task.key} task={task} place={placing || editing ? place(task) : null} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} setAside={setAside} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
+						))}
+					</ol>
+
+					<div className="plan-total" aria-label="Allotted to subtasks">
+						<p className="plan-total-head">Allotted to subtasks</p>
+						<dl className="plan-total-figures">
+							{fields.map((field) => {
+								const over = review.problems.total.includes(field.key);
+								const share = Math.min(100, (total[field.key] / Math.max(1, plan.budget[field.key])) * 100);
+								const kept = Math.min(100 - share, (reserve[field.key] / Math.max(1, plan.budget[field.key])) * 100);
+								return (
+									<div key={field.key} className={over ? "plan-total-over" : undefined}>
+										<dt>{field.label}</dt>
+										<dd className="plan-total-number">
+											{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])}</span>
+										</dd>
+										<dd>
+											<span className="usage-meter plan-meter" aria-hidden="true">
+												<span className={`usage-meter-used${over ? " item-meter-reached" : ""}`} style={{ width: `${share}%` }} />
+												<span className="plan-meter-kept" style={{ width: `${kept}%` }} />
+											</span>
+										</dd>
+										{spent && <dd className="tone-dim">Spent by subtasks: {field.spelled(spent[field.key])}</dd>}
+										{over ? <dd className="plan-total-why tone-bad">over what the subtasks may share</dd> : null}
+									</div>
+								);
+							})}
+						</dl>
+						<p className="usage-note plan-total-note">
+							The feature may spend three single items ({PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens, {plan.budget.turns} turns). {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns are kept for the summary and the review; the hatched part of each bar. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
+						</p>
+					</div>
+				</div>
+			) : null}
+		</>
+	);
+}
+
+/** One part of the spec: its name in the margin, its lines as a list, the first few shown and the rest behind "Show more". */
+function SpecList({ term, kind, lines }: { term: string; kind: "requirements" | "acceptance" | "out"; lines: string[] }) {
+	const [all, setAll] = useState(false);
+	const list = useId();
+	// Folding away a single line saves nothing: a part one longer than the shown lines is shown whole.
+	const folds = lines.length > SPEC_SHOWN + 1;
+	const shown = folds && !all ? lines.slice(0, SPEC_SHOWN) : lines;
+	return (
+		<div className={`plan-spec-part plan-spec-${kind}`}>
+			<dt>
+				{term}
+				<span className="plan-spec-count">{lines.length}</span>
+			</dt>
 			<dd>
-				<ul>
-					{lines.map((line, index) => (
+				<ul id={list}>
+					{shown.map((line, index) => (
 						<li key={index}>
 							<Inline text={line} />
 						</li>
 					))}
 				</ul>
+				{folds ? (
+					<button type="button" className="link plan-spec-more" aria-expanded={all} aria-controls={list} onClick={() => setAll((value) => !value)}>
+						{all ? "Show fewer" : `Show ${lines.length - SPEC_SHOWN} more`}
+					</button>
+				) : null}
 			</dd>
 		</div>
 	);
 }
 
-/** Text with `code` in the mono face, as the planner writes commands. */
-function Inline({ text }: { text: string }) {
+/** Text with `code` in the mono face, as the planner writes commands. Nothing else in it is read as markup. */
+export function Inline({ text }: { text: string }) {
 	const parts = text.split(/(`[^`]+`)/);
 	return (
 		<>
@@ -346,7 +512,7 @@ function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, n, numbers, child, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; n: number; numbers: Map<string, number>; child: ItemSummary | null; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
+function SubtaskRow({ task, place, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
 	const base = useId();
 	return (
 		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}`}>
@@ -400,6 +566,7 @@ function SubtaskRow({ task, n, numbers, child, fields, editing, drafts, problems
 							</ul>
 						</dd>
 					</div>
+					{place ? <SubtaskPlace task={task} child={child} row={place} editing={editing} disabled={disabled} /> : null}
 				</dl>
 				{editing && drafts ? (
 					<div className="plan-budget" role="group" aria-label={`Budget of ${task.title}`}>
@@ -447,9 +614,421 @@ function SubtaskRow({ task, n, numbers, child, fields, editing, drafts, problems
 						<span className="plan-task-word">{STATE_WORD[child.state].toLowerCase()}</span>
 					)
 				) : (
-					<span className="plan-task-word tone-faint">{editing ? "planned" : "not started"}</span>
+					<span className={`plan-task-word${place?.wait ? "" : " tone-faint"}`}>{editing ? "planned" : setAside ? "not run" : place?.wait ? "waits for a machine" : "not started"}</span>
 				)}
 			</div>
 		</li>
+	);
+}
+
+/** What a subtask's row needs to say where it runs. */
+interface PlaceRow {
+	/** The user's machines; null until read, or where the deployment has none. */
+	machines: MachineSummary[] | null;
+	/** The name of the feature's place, which a subtask without one inherits. */
+	parent: string;
+	overflow: boolean;
+	draft: PlaceDraft;
+	/** Why the server would refuse its place, or did; only while the plan is proposed. */
+	problem: string | null;
+	/** The feature's wait, when it waits to place this subtask. */
+	wait: Waiting | null;
+	/** What it would wait for if the plan were approved now: a busy or offline place. Only while the plan is proposed. */
+	ahead: string | null;
+	/** Whether repository secrets go to a place, by its name; null when not known. */
+	secrets(name: string): boolean | null;
+	onPlace(draft: PlaceDraft): void;
+}
+
+/**
+ * The feature's placement line, over its subtasks: where a subtask without a place runs, whether a
+ * subtask may overflow to its alternatives, and which named places get no repository secrets.
+ */
+function FeaturePlacement({ parent, editing, overflow, disabled, onOverflow }: { parent: string; editing: boolean; overflow: boolean; disabled: boolean; onOverflow(on: boolean): void }) {
+	const id = useId();
+	return (
+		<div className="plan-placement" aria-label="Placement">
+			<p className="plan-placement-line">
+				<span className="plan-placement-term">placement</span>
+				<span>
+					A subtask with no place runs where the feature does: <strong className="plan-place-name">{placeWord(parent)}</strong>.
+				</span>
+			</p>
+			<div className="plan-placement-line">
+				<span className="plan-placement-term" id={id}>
+					overflow
+				</span>
+				{editing ? (
+					<div className="segmented plan-overflow" role="radiogroup" aria-labelledby={id}>
+						{[false, true].map((on) => (
+							<label key={String(on)} className={`segment${overflow === on ? " segment-chosen" : ""}`}>
+								<input className="segment-radio" type="radio" name={id} checked={overflow === on} disabled={disabled} onChange={() => onOverflow(on)} />
+								{on ? "Allowed" : "Off"}
+							</label>
+						))}
+					</div>
+				) : (
+					<strong className="plan-overflow-word">{overflow ? "allowed" : "off"}</strong>
+				)}
+				<span className="tone-dim">{overflow ? "A subtask whose machine is busy may run on one of the alternatives it lists." : "Each subtask waits for its preferred place."}</span>
+			</div>
+		</div>
+	);
+}
+
+/** The menu of places a subtask may prefer: the feature's own, the user's machines, and this platform. */
+function placeMenu(row: PlaceRow, current: string | null): MenuSpec {
+	const machineItems: MenuItem[] = (row.machines ?? []).map((machine) => {
+		const name = machineLabel(machine);
+		const policy = orchestratorOf(machine);
+		return {
+			id: `m:${machine.machineId}`,
+			label: name,
+			textValue: name,
+			description: policy === "never" ? "Its owner keeps it out of features." : [machine.status, ...(machine.slots ? [`${machine.slots.busy} of ${machine.slots.max} slots busy`] : []), ...(policy === "named" ? ["when named"] : []), machine.sendSecrets ? "secrets sent" : "no secrets"].join(" · "),
+			disabled: policy === "never",
+			wrap: true,
+			checked: current === name,
+			onSelect: () => row.onPlace({ prefer: name, allow: row.draft.allow.filter((other) => other !== name) }),
+		};
+	});
+	return {
+		label: "Runs on",
+		width: 320,
+		groups: [
+			{ id: "feature", items: [{ id: "inherit", label: "Same as the feature", description: placeWord(row.parent), checked: current === null, onSelect: () => row.onPlace({ prefer: null, allow: [] }) }] },
+			...(machineItems.length > 0 ? [{ id: "machines", label: "Your machines", items: machineItems }] : []),
+			{ id: "hosted", items: [{ id: "hosted", label: "This platform", description: "A hosted sandbox · secrets sent", checked: current === HOSTED, onSelect: () => row.onPlace({ prefer: HOSTED, allow: row.draft.allow.filter((other) => other !== HOSTED) }) }] },
+		],
+	};
+}
+
+/** The menu of alternatives: every other place, each checked or not; it stays open while they are chosen. */
+function allowMenu(row: PlaceRow): MenuSpec {
+	const toggle = (name: string) => row.onPlace({ ...row.draft, allow: row.draft.allow.includes(name) ? row.draft.allow.filter((other) => other !== name) : [...row.draft.allow, name] });
+	const names = [...(row.machines ?? []).map((machine) => ({ name: machineLabel(machine), never: orchestratorOf(machine) === "never", secrets: machine.sendSecrets })), { name: HOSTED, never: false, secrets: true }].filter((place) => place.name !== row.draft.prefer);
+	return {
+		label: "Alternatives",
+		width: 300,
+		header: row.overflow ? undefined : <span className="tone-dim">Overflow is off for this feature: alternatives are used once it is allowed.</span>,
+		groups: [
+			{
+				id: "allow",
+				items: names.map((place) => ({
+					id: place.name,
+					label: place.name === HOSTED ? "This platform" : place.name,
+					description: place.never ? "Its owner keeps it out of features." : place.secrets ? "secrets sent" : "no secrets",
+					disabled: place.never,
+					checked: row.draft.allow.includes(place.name),
+					keepOpen: true,
+					onSelect: () => toggle(place.name),
+				})),
+			},
+		],
+	};
+}
+
+/** Where a subtask runs: planned, chosen while the plan is open, or where its item was placed; what it needs; and why it cannot be placed or waits. */
+function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubtask; child: ItemSummary | null; row: PlaceRow; editing: boolean; disabled: boolean }) {
+	const needs = needsWords(task.needs);
+	const prefer = editing ? row.draft.prefer : (task.place?.prefer ?? null);
+	const allow = (editing ? row.draft.allow : (task.place?.allow ?? [])).filter((name) => name !== prefer);
+	const preferMoved = editing && prefer !== (task.place?.prefer ?? null);
+	const allowMoved = editing && JSON.stringify(allow) !== JSON.stringify((task.place?.allow ?? []).filter((name) => name !== prefer));
+	const reason = preferMoved ? (prefer === null ? null : OWNER_REASON) : task.place?.reason;
+	const childWait = child?.wait?.reason === "machine" ? child.wait : null;
+	const ended = child && ["done", "failed", "cancelled"].includes(child.state);
+	return (
+		<>
+			{child?.placement ? (
+				<div className="plan-place">
+					<dt>{ended ? "ran on" : "runs on"}</dt>
+					<dd>
+						<strong className="plan-place-name">{placedWords(child.placement)}</strong>
+						<SecretsTag sent={child.placement.sendSecrets} done={ended === true} />
+						<span className="plan-place-why">{child.placement.reason}</span>
+					</dd>
+				</div>
+			) : (
+				<div className="plan-place">
+					<dt>runs on</dt>
+					<dd>
+						{editing ? (
+							<span className="plan-place-picks">
+								<Menu spec={placeMenu(row, prefer)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={preferMoved ? "changed" : null} dotLabel={preferMoved ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Runs on: ${prefer === null ? `same as the feature, ${placeWord(row.parent)}` : placeWord(prefer)}`} secondary={prefer === null ? placeWord(row.parent) : undefined}>{prefer === null ? "Same as the feature" : placeWord(prefer)}</Pill>} />
+								{prefer !== null ? (
+									<Menu spec={allowMenu(row)} trigger={(props) => <Pill {...props} disabled={disabled} dot={allowMoved ? "changed" : null} dotLabel={allowMoved ? "changed, not saved" : undefined} className="plan-place-pick plan-place-allow" aria-label={`Alternatives: ${allow.length ? allow.map(placeWord).join(", ") : "none"}`}>{allow.length ? `or ${allow.map(placeWord).join(", ")}` : "No alternatives"}</Pill>} />
+								) : null}
+								<SecretsTag sent={row.secrets(prefer ?? row.parent)} />
+							</span>
+						) : (
+							<>
+								<strong className="plan-place-name">{prefer === null ? placeWord(row.parent) : placeWord(prefer)}</strong>
+								{prefer === null ? <span className="tone-faint"> as the feature</span> : null}
+								<SecretsTag sent={row.secrets(prefer ?? row.parent)} />
+								{allow.length > 0 ? (
+									<span className={row.overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
+										{" "}
+										or {allow.map(placeWord).join(", ")}
+										{row.overflow ? null : " · overflow off"}
+									</span>
+								) : null}
+							</>
+						)}
+						{reason ? <span className="plan-place-why">{reason}</span> : null}
+					</dd>
+				</div>
+			)}
+			{needs.length > 0 ? (
+				<div>
+					<dt>needs</dt>
+					<dd className="plan-paths">
+						{needs.map((word) => (
+							<span key={word} className="plan-path plan-need">
+								{word}
+							</span>
+						))}
+					</dd>
+				</div>
+			) : null}
+			{row.wait || childWait ? (
+				<div className="plan-place-wait">
+					<dt>waits</dt>
+					<dd role="status">
+						<span className="plan-place-dot" aria-hidden="true" />
+						{(row.wait ?? childWait)!.sentence}
+					</dd>
+				</div>
+			) : null}
+			{row.ahead && !row.problem && !child ? (
+				<div className="plan-place-wait plan-place-ahead">
+					<dt>if approved</dt>
+					<dd>
+						<span className="plan-place-dot" aria-hidden="true" />
+						{row.ahead}
+					</dd>
+				</div>
+			) : null}
+			{row.problem && !child ? (
+				<div className="plan-place-problem">
+					<dt>can't place</dt>
+					<dd role="alert">{row.problem}</dd>
+				</div>
+			) : null}
+		</>
+	);
+}
+
+/**
+ * Whether repository secrets go to a place: a small dot and two words. Sent is the warm signal: the
+ * owner should see where the repository's secrets would go before approving a plan the planner wrote,
+ * perhaps from an issue anyone could file.
+ */
+function SecretsTag({ sent, done = false }: { sent: boolean | null; done?: boolean }) {
+	const words = sent === true ? (done ? "secrets were sent" : "secrets sent") : sent === false ? "no secrets" : "secrets unknown";
+	const means = sent === true ? "Repository and account secrets this item is allowed are sent to this place." : sent === false ? "No saved secret is sent to this machine: what needs one fails there." : "This place is not among your machines as last read.";
+	// The space keeps the place and its secrets apart when read aloud.
+	return (
+		<>
+			{" "}
+			<span className={`plan-secrets plan-secrets-${sent === true ? "sent" : sent === false ? "none" : "unknown"}`} title={means}>
+				{words}
+			</span>
+		</>
+	);
+}
+
+/**
+ * On the approval card: where each subtask of the version shown would run, why, where it may overflow
+ * to, and whether each of those places gets the repository's secrets. Read from the saved plan, the
+ * version an approval approves, and the owner's current secrets policy (`placementReview`).
+ */
+function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; refusal: string | null }) {
+	const heading = useId();
+	const parent = parentPlaceName(view.place, machines);
+	const overflow = plan.overflow === true;
+	const secrets = (name: string) => secretsFor(name, view.placementReview, machines);
+	return (
+		<div className="plan-routes" role="group" aria-labelledby={heading}>
+			<p className="plan-routes-head">
+				<span id={heading}>Where each subtask runs</span>
+				<span className="plan-routes-overflow">
+					overflow <strong>{overflow ? "allowed" : "off"}</strong>
+				</span>
+			</p>
+			<ol className="plan-routes-list">
+				{plan.subtasks.map((task, index) => {
+					const route = routeWords(task, parent, overflow);
+					const fit = machines ? placementFit(task, view.place, overflow, machines) : null;
+					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);
+					const wait = !problem && fit && "wait" in fit ? fit.wait : null;
+					return (
+						<li key={task.key} className="plan-route">
+							<span className="plan-route-n" aria-hidden="true">
+								{index + 1}
+							</span>
+							<div className="plan-route-main">
+								<p className="plan-route-title">{task.title}</p>
+								<p className="plan-route-why">{route.inherited ? "Names no place: it runs where the feature does." : route.reason}</p>
+								{problem ? <p className="plan-route-problem">Can't be placed: {problem}</p> : null}
+								{wait ? <p className="plan-route-wait">If approved now: {wait}</p> : null}
+							</div>
+							<ul className="plan-route-places" aria-label={`Places for ${task.title}`}>
+								<li>
+									<span className="plan-place-name">{placeWord(route.prefer)}</span>
+									{route.inherited ? <span className="tone-faint"> the feature's</span> : null}
+									<SecretsTag sent={secrets(route.prefer)} />
+								</li>
+								{route.alternatives.map((name) => (
+									<li key={name} className={overflow ? undefined : "plan-route-unused"}>
+										<span className="tone-faint">or </span>
+										<span className="plan-place-name">{placeWord(name)}</span>
+										{overflow ? <SecretsTag sent={secrets(name)} /> : <span className="tone-faint"> not used: overflow off</span>}
+									</li>
+								))}
+							</ul>
+						</li>
+					);
+				})}
+			</ol>
+			<p className="plan-routes-note">
+				This platform always gets the repository's secrets; a machine gets them only while its <strong>Send saved secrets</strong> switch is on, on{" "}
+				<a className="link" {...linkProps({ name: "machines" })}>
+					Machines
+				</a>
+				.
+			</p>
+		</div>
+	);
+}
+
+/**
+ * A subtask the feature could not place once it got there (question kind "placement_refused",
+ * blueprint.ts `askPlacement`): a machine was removed, its owner's policy changed, or it lacks what the
+ * subtask needs. Three answers: revise the placement (the planner files the remaining subtasks again;
+ * a place picked here goes to it as the owner's note), retry the approved places (after the owner
+ * changed what refused it), or give up the subtask: it is cancelled, and the feature re-plans or stops.
+ */
+export function PlacementQuestion({ view, question, review, acting, when }: { view: ItemView; question: ItemQuestion; review: PlanReview; acting: PlanActing; when: ReactNode }) {
+	const ids = { title: useId(), note: useId() };
+	const about = refusedSubtask(view.plan ?? null, question.text);
+	const task = about?.task ?? null;
+	const [revising, setRevising] = useState(false);
+	const [draft, setDraft] = useState<PlaceDraft>(() => (task ? placeDraftOf(task) : { prefer: null, allow: [] }));
+	const [note, setNote] = useState("");
+	const busy = acting.busy !== null;
+	const offered = (id: string) => question.choices.find((choice) => choice.id === id) ?? null;
+	const revise = offered("revise");
+	const again = offered("again");
+	const giveUp = offered("give_up");
+	const machines = review.machines;
+	const parent = parentPlaceName(view.place, machines);
+	const overflow = view.plan?.overflow === true;
+	const route = task ? routeWords(task, parent, overflow) : null;
+	const moved = task !== null && placeChanged(task, draft);
+	const picked = task && moved ? withPlace(task, draft) : null;
+	const check = picked && machines ? placementFit(picked, view.place, overflow, machines) : null;
+	const pickRefused = check && "refused" in check ? check.refused : null;
+	const pickWait = check && "wait" in check ? check.wait : null;
+	const row: PlaceRow = { machines, parent, overflow, draft, problem: pickRefused, wait: null, ahead: pickWait, secrets: (name) => secretsFor(name, view.placementReview, machines), onPlace: setDraft };
+	const send = (choice: "revise" | "again" | "give_up") => {
+		const words = [
+			...(picked ? [`Run “${picked.title}” on ${placeWord(draft.prefer ?? parent)}${draft.allow.length ? `, or ${draft.allow.map(placeWord).join(", ")}` : ""}.`] : []),
+			...(note.trim() ? [note.trim()] : []),
+		].join(" ").slice(0, MAX_NOTE_CHARS);
+		return acting.act({ kind: "answer", question: question.id, choice, ...(choice === "revise" && words ? { note: words } : {}) });
+	};
+	return (
+		<section className="item-question placement-question" aria-labelledby={ids.title}>
+			<p className="item-question-head" id={ids.title}>
+				It asks you
+				<span className="item-question-when">{when}</span>
+			</p>
+			<p className="item-question-text">{task ? <>“{task.title}” can't be placed</> : "A subtask can't be placed"}</p>
+			<dl className="placement-question-facts">
+				<div className="plan-place-problem">
+					<dt>refused</dt>
+					<dd role="alert">{about?.reason ?? question.text}</dd>
+				</div>
+				{route ? (
+					<div className="plan-place">
+						<dt>approved</dt>
+						<dd>
+							<strong className="plan-place-name">{placeWord(route.prefer)}</strong>
+							{route.inherited ? <span className="tone-faint"> as the feature</span> : null}
+							{route.alternatives.length > 0 ? (
+								<span className={overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
+									{" "}
+									or {route.alternatives.map(placeWord).join(", ")}
+									{overflow ? null : " · overflow off"}
+								</span>
+							) : null}
+						</dd>
+					</div>
+				) : null}
+			</dl>
+
+			{revising && task ? (
+				<div className="placement-revise">
+					<dl className="placement-question-facts">
+						<SubtaskPlace task={task} child={null} row={row} editing disabled={busy} />
+					</dl>
+					<div>
+						<label className="label" htmlFor={ids.note}>
+							A note to the planner<span className="label-optional">optional</span>
+						</label>
+						<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS - 200} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+					</div>
+					<div className="item-choices">
+						<button type="button" className="button button-primary" disabled={busy || pickRefused !== null} onClick={() => void send("revise")} aria-describedby={`${ids.title}-revise`}>
+							{acting.busy === "revise" ? "Sending…" : "Ask for a revised plan"}
+						</button>
+						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRevising(false)}>
+							Back
+						</button>
+					</div>
+					<p className="field-note" id={`${ids.title}-revise`}>
+						{pickRefused
+							? "Choose a place that can take it."
+							: picked
+								? "The planner files the remaining subtasks again with this place; the new plan comes to you for approval."
+								: "Pick where it should run, or leave the place to the planner. The new plan comes to you for approval."}
+					</p>
+				</div>
+			) : (
+				<>
+					<div className="item-choices">
+						{revise && task ? (
+							<button type="button" className="button button-primary" disabled={busy} onClick={() => setRevising(true)}>
+								{revise.label}…
+							</button>
+						) : null}
+						{again ? (
+							<button type="button" className={`button ${revise && task ? "button-outline" : "button-primary"}`} disabled={busy} onClick={() => void send("again")}>
+								{acting.busy === "again" ? "Checking…" : again.label}
+							</button>
+						) : null}
+						{giveUp ? (
+							<button type="button" className="button button-quiet" disabled={busy} onClick={() => void send("give_up")}>
+								{acting.busy === "give_up" ? "Sending…" : giveUp.label}
+							</button>
+						) : null}
+					</div>
+					<p className="field-note">
+						Retry once you have changed what refused it, on{" "}
+						<a className="link" {...linkProps({ name: "machines" })}>
+							Machines
+						</a>
+						. Giving up cancels the subtask; the planner then revises what is left for you to approve, or the feature stops.
+					</p>
+				</>
+			)}
+			{acting.error ? (
+				<p className="callout callout-bad" role="alert">
+					<WarnIcon />
+					<span>{acting.error}</span>
+				</p>
+			) : null}
+		</section>
 	);
 }

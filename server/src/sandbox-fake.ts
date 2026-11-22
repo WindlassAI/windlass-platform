@@ -316,7 +316,7 @@ export class FakeHandle implements SandboxHandle {
 			this.sandbox.reviewCloneFailed = true;
 			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
 		}
-		if (head && command.includes('base64 -w0 "$patch"')) return ok("0\n");
+		if (head && command.includes('base64 -w0 "$patch"')) return ok(`0 ${createHash("sha256").digest("hex")}\n`);
 		if (head && command.includes('echo "wlp:committed $committed"')) return ok(`wlp:committed 1\nwlp:head ${head}\n`);
 		if (head && command.includes('echo "wlp:pushed $sha"')) return ok(`wlp:pushed ${head}\n`);
 		if (head && command.includes('echo "wlp:review ')) return !process.env.WLP_FAKE_REVIEW_MISSING && command.includes("git checkout -q -f --detach " + head) ? ok("wlp:review " + head) : { ...ok("wlp:missing"), exitCode: 1 };
@@ -1185,6 +1185,8 @@ class FakeWindlass implements Windlass {
 			const files = session.agent === "planner" ? undefined : this.sandboxes.all.get(sandbox.id)?.files;
 			files?.set(`notes/turn-${turn}.md`, `# Turn ${turn}\n\n${input.prompt.slice(0, 200)}\n`);
 			if (turn === 1) files?.set("made.txt", "hello\n");
+			if (text.includes("(change-setup-fixture)")) files?.set("index/setup.sh", "echo child-setup\n");
+			if (text.includes("(consume-setup-fixture)")) files?.set("search/result.txt", "second subtask\n");
 			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
 
 			let failure: RunTurnResult["failure"] = null;

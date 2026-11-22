@@ -306,7 +306,7 @@ async function cases() {
 	state.items.set(itemId, summary);
 	const alarms = new Set<string>();
 	const c = {
-		vars: { items: state, sessions: new Map([[sessionId, { id: sessionId, item: { id: itemId } } as SessionSummary]]) },
+		vars: { tokenGen: 0, items: state, sessions: new Map([[sessionId, { id: sessionId, item: { id: itemId } } as SessionSummary]]) },
 		db,
 		key: [uid],
 		conn: { params: serviceParams() },
@@ -380,7 +380,7 @@ async function cases() {
 		await settle(screenshots.map((s) => s.id));
 		const profile = { uid, email: null, demo: false };
 		c.vars.profile = profile;
-		c.conn!.params = { token: issueUserToken(profile) };
+		c.conn!.params = { token: issueUserToken(profile, 0) };
 		try {
 			const [link] = await itemActions.itemAttachmentLinks(c, itemId);
 			assert.ok(link.expiresAt > Date.now() + 590_000 && bucket.use(link.url, "GET").status === 200);
@@ -620,9 +620,9 @@ async function cases() {
 		await sweep(end + 179 * day);
 		assert.equal(rows().find(r => r.id === row.id)?.state, "kept");
 		const profile = { uid, email: null, demo: false };
-		c.conn!.params = { token: issueUserToken(profile) };
+		c.conn!.params = { token: issueUserToken(profile, 0) };
 		assert.equal((await itemActions.itemAttachmentLinks(c, itemId)).length, 1);
-		c.conn!.params = { token: issueUserToken({ ...profile, uid: "other" }) };
+		c.conn!.params = { token: issueUserToken({ ...profile, uid: "other" }, 0) };
 		await assert.rejects(async () => itemActions.itemAttachmentLinks(c, itemId));
 		c.conn!.params = serviceParams();
 		const remove = bucket.remove.bind(bucket);
@@ -641,7 +641,7 @@ async function cases() {
 		await sweep(end + 181 * day + 1);
 		assert.equal(await bucket.size(row.key), null);
 		assert.equal(rows().find(r => r.id === row.id)?.state, "removed");
-		c.conn!.params = { token: issueUserToken(profile) };
+		c.conn!.params = { token: issueUserToken(profile, 0) };
 		assert.equal((await itemActions.itemAttachmentLinks(c, itemId)).length, 0);
 		c.conn!.params = serviceParams();
 		state.items.set(itemId, summary);
@@ -659,6 +659,8 @@ async function cases() {
 		const repo = join(root, "git");
 		mkdirSync(repo);
 		run("git", ["init", "--quiet", "-b", "work"], repo);
+		run("git", ["-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "Base", "--allow-empty"], repo);
+		const baseSha = run("git", ["rev-parse", "HEAD"], repo);
 		mkdirSync(join(repo, ".wlp-shots"));
 		writeFileSync(join(repo, name), one);
 		writeFileSync(join(repo, "normal"), "change");
@@ -669,7 +671,7 @@ async function cases() {
 		try {
 			run(
 				"bash",
-				["-c", commitScript({ sessionId, branch: "work", base: "main", pushed: "0".repeat(40), author: { name: "test", email: "test@example.org" } })],
+				["-c", commitScript({ sessionId, branch: "work", baseSha, pushed: null, author: { name: "test", email: "test@example.org" } })],
 				repo,
 				"normal change\n",
 			);

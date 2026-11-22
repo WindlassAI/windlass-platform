@@ -1,4 +1,5 @@
 /** cd server && npx tsx ../scripts/machine-check.ts */
+import { optionsDigest } from "../server/src/runner/catalog.js";
 import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -9,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { MachineSummary } from "../server/src/contract.js";
+import type { MachineHostUpdate, MachineSummary } from "../server/src/contract.js";
 import type { Registry } from "../server/src/client.js";
 import { CONTROL_DEAD_MS, REFUSED_RETRY_MS, parseConnection, parseServerFrame, RUNNER_PAIR_PATH } from "../server/src/runner/control.js";
 import { FakeRunner, controlProxy, post } from "./runner-fake.js";
@@ -200,6 +201,8 @@ async function check() {
 		const row = async () => (await user.machines()).find(r => r.machineId === machineId)!;
 		const observer = user.connect();
 		const events: MachineSummary[][] = [];
+		const samples: MachineHostUpdate[] = [];
+		observer.on("machineHost", update => samples.push(update as MachineHostUpdate));
 		observer.on("machines", rows => events.push(rows as MachineSummary[]));
 		await observer.me();
 		step("wrong and replayed proofs, foreign origin, runner version and signed clock correction");
@@ -232,6 +235,28 @@ async function check() {
 		loginSocket.send({ ...runner.report, name: "Workshop" });
 		await eventually(async () => (await row()).name === "Workshop");
 		const harness = { id: "claude", adapter: "fixture", image: "fixture", signIn: "none" } as const;
+		// Exercise the actual gateway and action transport with more than 256 KiB.
+		const models = Array.from({ length: 1000 }, (_, i) => ({ id: "provider/model-" + i, name: "Model " + i + "x".repeat(256), efforts: [] }));
+		const options = { models, defaultModel: models[0]!.id, modes: [], checkedAt: 1000 };
+		const catalogDigest = optionsDigest(options);
+		const host = { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 };
+		loginSocket.send({ kind: "catalog", id: "claude", options });
+		loginSocket.send({ ...runner.report, host, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: options.checkedAt }] });
+		await eventually(() => events.at(-1)?.some(r => r.harnesses?.[0]?.optionsDigest === catalogDigest) === true);
+		assert.equal((await row()).harnesses?.[0]?.options, undefined);
+		assert.deepEqual(await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }), options);
+		const beforeSample = events.length;
+		// An older runner sends inline options even when only its load changes.
+		loginSocket.send({ ...runner.report, host: { ...host, load1: 2 }, harnesses: [{ ...harness, options }] });
+		await eventually(() => samples.some(sample => sample.machineId === machineId && sample.host?.load1 === 2));
+		assert.equal(events.length, beforeSample);
+		assert.equal((await row()).host?.load1, 2);
+		loginSocket.send({ kind: "host", host: { ...host, load1: 3 } });
+		await eventually(() => samples.at(-1)?.host?.load1 === 3);
+		assert.equal(events.length, beforeSample);
+		loginSocket.send({ ...runner.report, harnesses: [{ ...harness, optionsDigest: catalogDigest, optionsCheckedAt: 2000 }] });
+		await eventually(async () => (await row()).harnesses?.[0]?.optionsCheckedAt === 2000);
+		assert.equal((await user.machineCatalog({ machineId, id: "claude", digest: catalogDigest }))?.checkedAt, 2000);
 		loginSocket.send({ ...runner.report, harnesses: [harness] });
 		await eventually(async () => (await row()).harnesses?.[0]?.signIn === "none");
 		loginSocket.send({ ...runner.report, claudeLogin: true, harnesses: [harness] });

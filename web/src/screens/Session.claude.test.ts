@@ -7,12 +7,14 @@
  * And every agent's mode on its page: the composer's picker before the model, which follows the live
  * summary, the panel's line, and none on a work item's agent, whose mode is its profile's.
  */
-import type { AuthResult, ModelList, SessionSummary } from "@contract";
+import type { MachineSummary, AuthResult, ModelList, SessionSummary } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockClient, type MockClient } from "../api/mock";
 import { Composer } from "../components/Composer";
+import acpSource from "../lib/acp.ts?raw";
+import { signInWords } from "../lib/acp";
 import { saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
 import { useSession } from "../state/hooks";
@@ -37,12 +39,12 @@ async function until(ready: () => boolean, steps = 60): Promise<void> {
 	expect(ready()).toBe(true);
 }
 
-function Page({ id }: { id: string }) {
-	return createElement(Session, { sessionId: id, state: useSession(id) });
+function Page({ id, machine }: { id: string; machine?: MachineSummary }) {
+	return createElement(Session, { sessionId: id, state: useSession(id), machine });
 }
 
 /** Opens the agent `id`, or the one `pick` chooses of the user's agents. */
-async function open(id: string | { harness: "claude" | "opencode" } | ((sessions: SessionSummary[]) => SessionSummary | undefined)): Promise<void> {
+async function open(id: string | { harness: "claude" | "opencode" } | ((sessions: SessionSummary[]) => SessionSummary | undefined), machine?: MachineSummary): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173", machine: typeof id === "object" ? "fresh" : "online" });
 	const begun = client.login.start();
 	vi.advanceTimersByTime(1000);
@@ -63,7 +65,7 @@ async function open(id: string | { harness: "claude" | "opencode" } | ((sessions
 		id = (found as SessionSummary).id;
 	}
 	const shown = id;
-	act(() => root.render(createElement(AppProvider, { client, children: createElement(Page, { id: shown }) })));
+	act(() => root.render(createElement(AppProvider, { client, children: createElement(Page, { id: shown, machine }) })));
 	await wait();
 }
 
@@ -100,11 +102,35 @@ it.each(["claude", "opencode"] as const)("shows %s models and modes in the idle 
 	expect(Array.from(details.querySelectorAll('[aria-label="Available modes"] li'), el => el.textContent)).toEqual(modeNames);
 });
 
+it("documents the three sign-in labels used by the session and composer", () => {
+	const comment = acpSource.match(/Its sign-in in a few words: ([^\n]+) [*]\//)?.[1];
+	for (const signIn of ["token", "none", "unknown"] as const) {
+		const words = signInWords({ id: "opencode", signIn, adapter: "OpenCode", image: "fixture" });
+		expect(comment).toContain(JSON.stringify(words));
+	}
+});
+
+it.each(["token", "none", "unknown"] as const)("shows session login instructions only when OpenCode needs sign-in (%s)", async signIn => {
+	await open({ harness: "opencode" }, { name: "workshop", harnesses: [{ id: "opencode", signIn, adapter: "OpenCode", image: "fixture" }] } as MachineSummary);
+	const banner = host.querySelector(".session-main .machine-harness");
+	if (signIn === "token") expect(banner).toBeNull();
+	else {
+		expect(banner?.textContent).toContain("so this agent cannot run a turn");
+		expect(banner?.querySelector("pre")?.textContent).toContain("windlass-runner login opencode");
+	}
+});
+
 describe("a Claude Code agent's page", () => {
 	it("shows its turn in the platform's blocks: the plan, the calls with the edit's diff, the context instead of tokens", async () => {
 		await open("nas-claude");
 		const turn = host.querySelector(".turn") as HTMLElement;
 		expect(turn.querySelector(".block-plan")).not.toBeNull();
+		// The three calls, settled one after the other, are one row of work, folded until it is opened.
+		const work = turn.querySelector(".work-row") as HTMLButtonElement;
+		expect(work.querySelector(".work-text")?.textContent).toBe("Read 1 file, changed 1 file and ran 1 command");
+		expect(work.getAttribute("aria-expanded")).toBe("false");
+		expect(turn.querySelectorAll(".tool-name")).toHaveLength(0);
+		act(() => work.click());
 		expect([...turn.querySelectorAll(".tool-name")].map((name) => name.textContent)).toEqual(["read", "edit", "shell"]);
 		expect([...turn.querySelectorAll(".tool-target")].map((target) => target.textContent)).toEqual(["README.md", "README.md", "npm test"]);
 		// The edit's diff, counted as Windlass's edits are.

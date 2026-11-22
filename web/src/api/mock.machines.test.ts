@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveAuth } from "../lib/authStore";
 import { NewAgent } from "../screens/NewAgent";
 import { AppProvider } from "../state/app";
-import type { UserApi } from "./client";
+import type { UserFeed, UserApi } from "./client";
 import { createMockClient, MOCK_MACHINE_STATES, type MockClient, type MockMachineSession } from "./mock";
 
 const auth = { token: "mock:chatgpt:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
@@ -227,6 +227,8 @@ describe("the start composer's agent picker", () => {
 	let root: Root;
 	let client: MockClient;
 	let created: CreateSessionInput[];
+	let catalogsRead: string[];
+	let feeds: Set<UserFeed>;
 
 	/** Lets the mock answer, in steps: what one answer renders can ask the next. */
 	async function settle(steps = 12): Promise<void> {
@@ -240,6 +242,8 @@ describe("the start composer's agent picker", () => {
 	 */
 	async function open(machine: "full" | "fresh" = "full"): Promise<void> {
 		created = [];
+		catalogsRead = [];
+		feeds = new Set();
 		history.replaceState(null, "", "/new");
 		host = document.createElement("div");
 		document.body.append(host);
@@ -249,7 +253,14 @@ describe("the start composer's agent picker", () => {
 		const user = client.user.bind(client);
 		(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
 			const api = user(who);
-			return { ...api, createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)) };
+			return { ...api, createSession: (input: CreateSessionInput) => (created.push(input), api.createSession(input)),
+				machineCatalog: input => { catalogsRead.push(input.id); return api.machineCatalog(input); },
+				watch: feed => {
+					feeds.add(feed);
+					const close = api.watch(feed);
+					return () => { feeds.delete(feed); close(); };
+				},
+			};
 		};
 		act(() => root.render(createElement(AppProvider, { client, children: createElement(NewAgent) })));
 		await settle();
@@ -338,12 +349,21 @@ describe("the start composer's agent picker", () => {
 
 	it("offers both reported catalogs on a fresh machine and launches OpenCode in its selected mode", async () => {
 		await open("fresh");
-		expect((await client.user(auth).machines())[0]).toMatchObject({ agents: 0, sandboxes: [] });
+		const [machine] = await client.user(auth).machines();
+		expect(machine).toMatchObject({ agents: 0, sandboxes: [] });
+		expect(machine!.harnesses!.every(h => h.optionsDigest && !h.options)).toBe(true);
+		expect(catalogsRead).toEqual([]);
 		place("m_workshop");
 		agents();
+		await settle();
 		const catalog = (id: string) => Array.from(pop()!.querySelectorAll(`[data-value^="${id}:"] .ui-item-label`), row => row.textContent);
 		expect(catalog("claude")).toEqual(["Default (recommended)", "Opus", "Haiku"]);
 		expect(catalog("opencode")).toEqual(["OpenAI/GPT-5.4", "OpenAI/GPT-5.4 mini"]);
+		act(() => {
+			for (const feed of feeds) feed.onMachineHost?.({ machineId: machine!.machineId, host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 } });
+		});
+		await settle();
+		expect(catalogsRead).toEqual(["claude", "opencode"]);
 		showCommands();
 		expect(text()).toContain("docker exec -it windlass-runner windlass-runner login opencode");
 		agent("opencode");
@@ -375,6 +395,7 @@ describe("the start composer's agent picker", () => {
 	it("launches Claude Code in the hardened container, on its default model, with the line that says what that means", async () => {
 		await open();
 		place("m_nas");
+		await settle();
 		agents();
 		agent("claude");
 		agents();
@@ -399,6 +420,7 @@ describe("the start composer's agent picker", () => {
 	it("starts Claude Code on Auto, of its five modes, each said with what it does; another is sent when chosen", async () => {
 		await open();
 		place("m_nas");
+		await settle();
 		agents();
 		agent("claude");
 		const offered = modes();
@@ -436,6 +458,7 @@ describe("the start composer's agent picker", () => {
 	it("keeps a choice of Ask across sandboxes and agents, and stands on the default where the choice is not offered", async () => {
 		await open();
 		place("m_nas");
+		await settle();
 		mode("Ask");
 		// Claude Code has no Ask: Auto, its default.
 		agents();
@@ -456,6 +479,7 @@ describe("the start composer's agent picker", () => {
 		expect(sandboxLine()).toContain("runs what the sandbox contains, refuses the rest");
 		expect(sandboxLine()).toContain("commands cannot read the session's access token");
 		place("m_nas");
+		await settle();
 		agents();
 		agent("claude");
 		expect(sandboxLine()).toContain("runs in Auto mode");
@@ -517,7 +541,7 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		expect(command()).toContain("--harness opencode");
 		expect(command()).not.toContain("/import/opencode");
 		act(() => checkbox("Import existing OpenCode API keys").click());
-		expect(command()).toContain('/opencode:/import/opencode:ro');
+		expect(command()).toContain('--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"');
 		expect(background()).not.toContain('/import/opencode');
 	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
 });

@@ -654,7 +654,7 @@ class ContainerMachine implements FakeMachine {
 
 	async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
 		const envs = Object.entries(options.envs ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
-		const child: ChildProcess = spawn("docker", ["exec", ...(options.stdin ? ["-i"] : []), "-u", "agent", "-w", options.cwd, ...envs, this.container, "bash", "-l", "-c", command], { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+		const child: ChildProcess = spawn("docker", ["exec", ...(options.stdin ? ["-i"] : []), "-u", options.gitUser ? "nobody" : "agent", "-w", options.cwd, ...envs, this.container, "bash", "-l", "-c", command], { stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"] });
 		child.stdout?.setEncoding("utf8").on("data", (text: string) => options.onStdout?.(text));
 		child.stderr?.setEncoding("utf8").on("data", (text: string) => options.onStderr?.(text));
 		child.stdin?.on("error", () => undefined);
@@ -749,6 +749,11 @@ if (withDocker) {
 			const log = await handle.run("git log --oneline | wc -l; git status --short | wc -l; whoami; pwd; echo $LANG $NO_COLOR");
 			expect("a new sandbox has an empty git repository in /workspace, and commands run as agent with the image's environment", log.exitCode === 0 && log.stdout.trim().split(/\s+/).join(" ") === "1 0 agent /workspace C.UTF-8 1", log.stdout.trim());
 			expect("the Windlass version is known once a sandbox was made", version !== null && /^\d+\.\d+\.\d+/.test(version), String(version));
+			const isolated = await handle.run('id -u; pwd; test -z "${GIT_CONFIG_COUNT-}"', {
+				gitUser: true, cwd: "/workspace", env: { GIT_CONFIG_COUNT: "1" },
+			});
+			expect("Git transport selects the separate uid and clean environment through the E2B command adapter",
+				isolated.exitCode === 0 && isolated.stdout === "65534\n/\n", isolated.stdout.trim());
 			const odd = ["a b", "it's", "$HOME", 'x"y', "`uname`", "", "é✓", "a\nb", "*", "~", "; echo no"];
 			const echoed = await handle.exec(["printf", "[%s]", ...odd]);
 			expect("every argument arrives as it was given, whatever is in it", echoed.exitCode === 0 && echoed.stdout === odd.map((item) => `[${item}]`).join(""), echoed.stdout);

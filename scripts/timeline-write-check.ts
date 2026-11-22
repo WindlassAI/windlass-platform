@@ -23,8 +23,8 @@ function fixture() {
 	let writes = 0, failNextInsert = false;
 	const vars = { nextSeq: 1, unwritten: [], serial: Promise.resolve(), pending: [], turn: { controller: new AbortController(), done: new Promise<void>(() => {}) },
 		meta: { uid: "u_fixture", status: "running", profile: "docker-hardened", place: { kind: "hosted" } }, arming: Promise.resolve() };
-	const c = { vars, key: ["u_fixture", "s_test"], conn: { params: { token: issueUserToken({ uid: "u_fixture", email: null, demo: true }) } },
-		client: () => ({ user: { get: () => ({ internalSessionChanged: async () => {} }) } }), log: console,
+	const c = { vars, key: ["u_fixture", "s_test"], conn: { params: { token: issueUserToken({ uid: "u_fixture", email: null, demo: true }, 0) } },
+		client: () => ({ user: { get: () => ({ internalTokenGeneration: async () => 0, internalSessionChanged: async () => {} }) } }), log: console,
 		broadcast: (name: string, value: never) => { if (name === "delta") deltas.push(value); if (name === "item") items.push(value); },
 		keepAwake: <T>(p: Promise<T>) => p,
 		db: { async execute(query: string, ...args: SQLInputValue[]) {

@@ -86,7 +86,7 @@ function createIndexes(version: string, dir: string, names: string[]) {
 			assert(digest.test(sum), `Invalid ${role} ${platform} build digest`);
 			return ref + "@" + sum;
 		});
-		const annotations = { source: repository, licenses: "MIT", revision, version, description: "Windlass " + role };
+		const annotations = { source: repository, licenses: "Apache-2.0", revision, version, description: "Windlass " + role };
 		const args = Object.entries(annotations).flatMap(([key, value]) => ["--annotation", `index:org.opencontainers.image.${key}=${value}`]);
 		imagetools("create", ...args, "-t", ref + ":" + tag, "-t", ref + ":sha-" + revision.slice(0, 12), ...sources);
 		const descriptor = imagetools("inspect", ref + ":" + tag).match(/^Digest:\s+(sha256:[0-9a-f]{64})$/m);

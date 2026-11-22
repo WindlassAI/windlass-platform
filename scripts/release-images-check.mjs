@@ -9,6 +9,7 @@ import { verifyRelease } from "./release-check.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const workflow = join(root, ".github/workflows/release-images.yml");
+const licenseLabel = "org.opencontainers.image.licenses=" + JSON.parse(readFileSync(join(root, "package.json"))).license;
 const node = (file, ...args) => execFileSync(process.execPath, [join(root,file), ...args], {encoding:"utf8", stdio:"pipe"});
 const pin = "sha256:" + "1".repeat(64);
 const ref = "ghcr.io/windlassai/windlass-platform-sandbox@" + pin;
@@ -20,6 +21,7 @@ function scratch(t) {
 test("release permissions and immutable action references", t => {
 	const dir = scratch(t), source = readFileSync(workflow,"utf8");
 	node("scripts/workflow-lint.ts", workflow);
+	assert.ok(source.split("\n").some(line => line.trim() === licenseLabel));
 	for (const [file, pattern, replacement, reason] of [
 		["action", /actions\/checkout@[a-f0-9]{40}/, "actions/checkout@v7", /Unpinned action/],
 		["scope", /permissions:\n  contents: read/, "permissions:\n  contents: write", /workflow scope/],
@@ -47,6 +49,7 @@ test("context-only and registry-pin builds do not resolve mutable local tags", t
 	for (const variant of ["base","shots"]) {
 		const context = join(dir,variant);
 		execFileSync(join(root,"sandbox/build.sh"),["--context",context],{env:{...env,WLP_SANDBOX_VARIANT:variant}});
+		assert.deepEqual(readFileSync(join(context, "Dockerfile")), readFileSync(join(root, "sandbox/Dockerfile")));
 		assert.deepEqual(readdirSync(context).sort(), ["Dockerfile","windlass","wlp-run",...(variant === "shots" ? ["wlp-shot"] : [])]);
 	}
 	assert.throws(() => readFileSync(trace), {code:"ENOENT"});
@@ -73,6 +76,7 @@ test("the release gate compares each embedded pin and verifies all five indexes"
 	// Drive the publication entry point. The Buildx stand-in writes only its local
 	// metadata file, just as a successful multi-platform push would.
 	const trace = join(dir, "build-args.json");
+	writeFileSync(join(dir, "package.json"), JSON.stringify({type:"commonjs"}));
 	writeFileSync(join(dir,"docker"), `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
@@ -89,6 +93,7 @@ fs.writeFileSync(args[args.indexOf("--metadata-file")+1], JSON.stringify({"conta
 	const args = JSON.parse(readFileSync(trace));
 	assert.equal(args[args.indexOf("--platform")+1],"linux/amd64,linux/arm64");
 	assert.ok(args.includes("--push") && args.includes("--sbom=true") && args.includes("mode=max"));
+	assert.ok(args.includes(licenseLabel) && args.includes("index:"+licenseLabel));
 	const tags = args.flatMap((arg,i) => arg === "--tag" ? [args[i+1]] : []);
 	assert.equal(tags[0],tag);
 	assert.match(tags[1],/^ghcr\.io\/windlassai\/windlass-runner:sha-[0-9a-f]{12}$/);

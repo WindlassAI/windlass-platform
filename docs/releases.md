@@ -33,11 +33,29 @@ Compare the full reference printed above with the runner digest in the Machines 
 
 ## Cut a release
 
-1. On the release branch, dispatch **Release images** with a version and leave **push** disabled. Confirm the base, screenshots and both harness builds on each architecture. Dry runs pass the native base through a temporary OCI archive. The runner builds against the most recent published runner manifest when one exists. The first dry run records the runner skip in its job summary.
-2. After review and CI on the protected main branch, the owner tags the intended commit `runner-v<version>`. Use a Docker-tag-compatible semantic version, such as `0.1.0` or `0.1.0-rc.1`. The tag starts publication. To repeat a failed run manually, select that same tag, supply its version, and enable **push**. This binds the signing certificate to the tag.
-3. The workflow pushes each native build by digest, joins its manifests under `runner-v<version>` and `sha-<12 commit characters>`, then builds the runner against the four resulting indexes. BuildKit includes maximal provenance and an SBOM. Cosign signs all five index digests through GitHub OIDC. The release job signs the manifest, checks the pins from the same executable copied into the runner, verifies each index signature and creates a draft with both files.
-4. Review the commit, Windlass and harness versions, each image's index and its two platform digests in the draft. Check public package visibility before publishing. If a package needs to be made public, the owner changes that package's visibility in GitHub. Making a package public is permanent.
-5. Check all five digest pulls on a clean Docker host with empty registry credentials. The commands below use the draft's verified `release.json` in the current directory. Then publish the draft. The deploy operator can set `WLP_RUNNER_IMAGE` to the verified runner reference.
+1. Push the branch with `git push git@github.com:WindlassAI/windlass-platform.git release-images`, open a PR into `main`, and merge it after review and CI. GitHub requires the workflow file on the default branch before accepting its first manual dispatch. [GitHub workflow dispatch requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+2. Dispatch a build from `main`. Choose an unused Docker-compatible semantic version. The examples use `0.1.0`.
+
+   ```sh
+   repo=WindlassAI/windlass-platform
+   version=0.1.0
+   tag=runner-v$version
+   gh workflow run release-images.yml --repo "$repo" --ref main -f version="$version" -f push=false
+   ```
+
+3. Open that dispatch in Actions. Check that the base sandbox, screenshots sandbox, Claude and OpenCode jobs succeeded on **both** amd64 and arm64. The harness jobs use the dry run's native base OCI archive. On the first release, the runner job records a skip because there is no previously published manifest. Once the dry run succeeds, copy its run ID into the commands below. Tagging that run's exact commit keeps a later merge to main out of the release.
+
+   ```sh
+   run_id=123456789  # replace with the successful dry run ID
+   commit=$(gh run view "$run_id" --repo "$repo" --json headSha --jq .headSha)
+   git fetch origin main
+   git tag "$tag" "$commit" &&
+     git push git@github.com:WindlassAI/windlass-platform.git "refs/tags/$tag"
+   ```
+
+4. Wait for the tag workflow. It publishes the five indexes under `runner-v<version>` and `sha-<12 commit characters>`, with BuildKit provenance, SBOMs and keyless cosign signatures. It signs the manifest and verifies the runner's embedded pins and all five index signatures before creating the draft. To retry a failed run, use **Re-run failed jobs** on that tag run or dispatch the workflow at the same tag with its version and **push** enabled.
+5. As the owner, download both draft assets into an empty directory and verify the manifest signature using **Verify before setup**. Compare its version and commit with the tag and dry-run commit. Review the Windlass and harness versions and both platform digests for each image. Check all five GHCR packages. If one is private, open its **Package settings → Change visibility → Public**. GitHub makes that change permanent. Verify the runner signature at the digest in that manifest.
+6. On a clean Docker host, test anonymous pulls of every verified index with empty registry credentials. Publish the draft after all five pulls succeed.
 
 ```sh
 (
@@ -49,6 +67,8 @@ Compare the full reference printed above with the runner digest in the Machines 
   while IFS= read -r ref; do docker pull "$ref"; done < "$docker_config/refs"
 )
 ```
+
+Publish the reviewed draft in GitHub Releases. For deployment, update all server nodes to the compatible version first. Read `capabilities` from the verified runner, then advertise `WLP_RUNNER_IMAGE` and `WLP_RUNNER_CAPABILITIES` together so Machines offers the correct harnesses. [Self-hosted deployment order and commands](../deploy/selfhost/runner-release.md)
 
 ## Developer checks
 

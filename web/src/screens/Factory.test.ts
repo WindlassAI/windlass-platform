@@ -235,9 +235,9 @@ describe("filing a work item from the Factory page", () => {
 		expect(filed[0]?.idempotencyKey).toBeTruthy();
 		expect(location.pathname).toBe("/factory");
 		expect(field().value).toBe("");
-		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Add the tests command to the README”. Open");
+		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Add the tests command to the README”: its plan comes to you for approval. Open");
 		expect((await listed()).length).toBe(before + 1);
-		expect(groups().find((group) => group.name === "In progress")?.titles).toContain("Add the tests command to the README");
+		expect(groups().find((group) => group.name === "Needs you")?.titles).toContain("Add the tests command to the README");
 	});
 
 	it("files a draft from the line under it, into Drafts", async () => {

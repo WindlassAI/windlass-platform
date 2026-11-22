@@ -46,7 +46,7 @@ export function sessionModelWords(summary: Pick<SessionSummary, "harness" | "har
 /** A harness a machine's runner reported, as `MachineSummary.harnesses` lists it. */
 export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 
-/** Its sign-in in a few words: "signed in", "not signed in", "unknown". */
+/** Its sign-in in a few words: "signed in", "sign in needed", "unknown". */
 export function signInWords(harness: ReportedHarness): string {
 	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "unknown";
 }

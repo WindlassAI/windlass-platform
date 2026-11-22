@@ -71,7 +71,7 @@
  * up, a turn that runs is stopped at the end of its hold, with a line that says so, and its sandbox
  * is suspended with its files as they are.
  *
- * A prompt can come with the key of its submission (submissions.ts; README, "A message sent twice"):
+ * A prompt can come with the key of its submission (submissions.ts; docs/architecture.md, "A message sent twice"):
  * the session takes a key once. The keys of its newest messages are in `meta.submissions`, each with
  * what its prompt was answered, kept in the synchronous step that takes the message, so a prompt with
  * one of them is answered from there before anything is awaited and adds nothing; a prompt that is
@@ -125,7 +125,7 @@ import {
 	pushedForAgent,
 } from "../agent-publish.js";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, maySubscribe, requireService, requireUser } from "../auth.js";
+import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, checkGeneration, disconnectRevoked, requireService, requireServiceFor } from "../auth.js";
 import { config } from "../config.js";
 import {
 	generatedSessionTitle,
@@ -389,7 +389,7 @@ interface SessionMeta {
 	 * commit GitHub had (`at`) only after it (`putWorkspaceOnWork`), in the clone's `directory`. Kept until
 	 * that is done, so a turn cut off in between does not run the setup on the branch next time.
 	 */
-	workDue?: { branch: string; at: string; directory: string } | null;
+	workDue?: { branch: string; at: string; directory: string; setupBase?: string; setUp?: boolean } | null;
 	/** The workspace was put on the session's branch after a setup run on the base, and the agent has not been told that its branch's dependencies were not installed by it. */
 	setupOnBase?: { branch: string; base: string } | null;
 	/**
@@ -519,6 +519,27 @@ interface HeldSecrets {
 	/** The checks the user saved for the session's repository (repository-checks.ts); none for a session that is not on one. */
 	checks: RepositoryCheck[];
 	redactor: Redactor;
+}
+
+/** Agent-session sockets can outlive a browser login and can be served on a different host. */
+async function sessionCaller(c: { key: string[]; client(): unknown }, params: unknown) {
+	const caller = authenticate(c.key, params);
+	if (caller.kind === "user") checkGeneration(caller, await userActor(c, c.key[0]).internalTokenGeneration());
+	return caller;
+}
+
+async function requireSessionUser(c: { key: string[]; client(): unknown; conn?: { params: unknown } | null }) {
+	const caller = await sessionCaller(c, c.conn?.params);
+	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+}
+
+async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promise<boolean> {
+	try {
+		await requireSessionUser(c);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 interface SessionVars {
@@ -1137,8 +1158,8 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
 	if (meta.setupUnfinished?.state === "interrupted" && !signal.aborted) await stopLeftoverSetup(handle);
 	// The repository's setup command, once in this sandbox, before Windlass is started in it, on the base; only then the session's branch.
-	const setUp = meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted ? await runSetup(c, meta, turn, handle, signal, secrets) : false;
-	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle, setUp);
+	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal, secrets);
+	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
 		const cloned = await handle.run(cloneCommand(meta.repoUrl), { timeoutMs: CLONE_TIMEOUT_MS, signal });
@@ -1565,6 +1586,12 @@ function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConnection |
 	return userActor(c, meta.uid).internalGithubConnection();
 }
 
+/** The work item owns its parent link, including for older sessions without owned-path metadata. */
+async function childSetupSeed(c: Ctx, meta: SessionMeta): Promise<string | undefined> {
+	if (!meta.origin || meta.origin.role === "reviewer") return undefined;
+	return (await itemActor(c, meta.uid, meta.origin.itemId).internalSetupSeed("child")) ?? undefined;
+}
+
 /**
  * Clones the session's repository into the sandbox that was just made, with a token GitHub issued for
  * reading that one repository; it is given to the one `git clone` and revoked after it (github/git.ts).
@@ -1575,19 +1602,20 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	if (!repo) return true;
 	const app = githubApp();
 	if (!app) throw new ReviewRefused(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
-	// A sandbox made in place of a lost one: what the platform pushed is all that is left of the work, so
-	// the workspace goes back on the session's branch as GitHub has it, but only once the setup command
-	// has run on the branch it started from (`putWorkspaceOnWork`): the setup command never runs on what
-	// the session pushed, which is the agent's, with the network and every secret saved for the repository.
-	const work = meta.origin?.role !== "reviewer" && meta.pushedHead && meta.publishBranch ? meta.publishBranch : undefined;
-	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${repo.branch}`);
+	// Child sessions keep the feature branch as their publishing base. Setup uses its immutable seed,
+	// even after siblings have integrated or this child needs to recover its own published branch.
+	const childSeed = await childSetupSeed(c, meta);
+	const pinnedBase = meta.origin?.role === "reviewer" ? meta.reviewBase : childSeed;
+	const work = meta.origin?.role === "reviewer" ? undefined : (meta.pushedHead && meta.publishBranch) || (childSeed ? repo.branch : undefined);
+	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${pinnedBase ?? repo.branch}`);
 	try {
-		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, meta.origin?.role === "reviewer" ? meta.reviewBase : undefined);
+		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase);
 		if (!cloned || signal.aborted) return false;
 		const directory = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 		if (cloned.workAt && work) {
-			meta.workDue = { branch: work, at: cloned.workAt, directory };
-		} else if (cloned.workGone) {
+			meta.workDue = { branch: cloned.workGone ? repo.branch : work, at: cloned.workAt, directory, setupBase: childSeed };
+		}
+		if (cloned.workGone) {
 			meta.pushedHead = null;
 			note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
 		}
@@ -1610,12 +1638,12 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 /**
  * Puts the new sandbox's clone on the session's branch, after the setup command ran on the base
  * (`meta.workDue`). Whatever was pushed to the branch since, by anyone, is in the workspace then: it is
- * what the next push starts from. `setUp` says a setup command ran in this sandbox: then what the
+ * what the next push starts from. The saved work records whether setup ran in this sandbox: then what the
  * branch changed in its dependencies was not installed by it, and the agent is told so with its next
  * prompt. Throws a TurnProblem when git could not do it: nothing is started, and the next turn tries
  * again, without running the setup a second time.
  */
-async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, setUp: boolean): Promise<void> {
+async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle): Promise<void> {
 	const due = meta.workDue;
 	const repo = meta.repo;
 	if (!due || !repo) return;
@@ -1626,10 +1654,11 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 		throw new TurnProblem(`The new sandbox could not be put on ${due.branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
 	}
 	meta.workDue = null;
-	meta.pushedHead = head;
+	if (due.branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
-	if (setUp && capabilitiesOf(meta.harness).events === "windlass") meta.setupOnBase = { branch: due.branch, base: repo.branch };
-	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${setUp ? ` The setup command ran on ${repo.branch} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
+	const base = due.setupBase ?? repo.branch;
+	if (due.setUp && capabilitiesOf(meta.harness).events === "windlass") meta.setupOnBase = { branch: due.branch, base };
+	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
 
@@ -1662,19 +1691,19 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
  * workspace be put on the session's branch (`meta.workDue`), before the next turn runs the setup there,
  * with the network and the repository's secrets, on what the agent wrote.
  */
-async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null): Promise<boolean> {
+async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null): Promise<void> {
 	const project = setupProjectOf(meta);
 	const directory = meta.setupDue;
-	if (!project || typeof directory !== "string") return false;
+	if (!project || typeof directory !== "string") return;
 	const saved = await orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS);
-	if (signal.aborted) return false;
+	if (signal.aborted) return;
 	// It stays due, and nothing of the turn is started: the setup only ever runs before the agent's first turn in the sandbox.
 	if (saved === null) throw new TurnProblem(`The setup command for ${project.label} could not be read, so nothing was started in the new sandbox. Send the prompt again.`);
 	meta.setupDue = null;
 	const command = typeof saved.command === "string" ? saved.command.trim() : "";
 	if (command === "") {
 		void persist(c);
-		return false;
+		return;
 	}
 
 	const handed = (secrets?.opened ?? []).filter(secret => meta.origin?.role !== "reviewer" || secret.scope === "setup");
@@ -1682,6 +1711,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	const id = `su_${randomBytes(6).toString("hex")}`;
 	const limitMs = config.setupTimeoutMs;
 	meta.setupRunning = { id, command, limitMs };
+	if (meta.workDue) meta.workDue.setUp = true;
 	append(c, { turn, kind: "setup", id, command, state: "started", exitCode: null, durationMs: null, limitMs, output: "", truncated: false });
 	await persist(c);
 
@@ -1720,7 +1750,6 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	meta.setupUnfinished = result.state === "succeeded" ? null : { command, state: result.state, exitCode: result.exitCode, limitMs, output: lastLines(result.problem === null ? output : `${output}\n${result.problem}`) };
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
-	return true;
 }
 
 /** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
@@ -1783,7 +1812,7 @@ function publishBlocked(c: Ctx, meta: SessionMeta): string | null {
 async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, files: WorkspaceFile[] | null): Promise<boolean | null> {
 	if (c.vars.turn || !meta.sandboxId) return null;
 	if (files && files.length > 0) return true;
-	const key = `${meta.turns}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
+	const key = `${meta.turns}:${repo.baseSha ?? ""}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
 	if (c.vars.unpushed?.key === key) return c.vars.unpushed.value;
 	// Only a turn or a push changes the answer, and the key names both: what was found while the sandbox
 	// ran still holds while it is paused, so a paused sandbox is not started to be asked again.
@@ -1796,7 +1825,7 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 		if (!c.vars.idling && (!hostedLimitsApply(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
 			const sandbox = await sandboxes.connect(meta.sandboxId);
 			sandboxChanged(c);
-			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.branch, meta.pushedHead ?? null);
+			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.baseSha ?? null, meta.pushedHead ?? null);
 		}
 	} catch (error) {
 		c.log.warn({ msg: "could not read whether the workspace has commits to push", error: describeError(error) });
@@ -3937,6 +3966,10 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 		// Confirm the session socket before recording a turn. An online control socket alone cannot run it.
 		if (meta.place.kind === "machine") await runnerLink(c, meta.place.machineId).ready();
+		if (meta.sandboxId && meta.cloned && typeof meta.setupDue === "string" && !meta.workDue?.setupBase && await childSetupSeed(c, meta)) {
+			// An older server left setup pending on an unpinned child checkout. No agent has run there yet.
+			await removeSandbox(c, meta, meta.sandboxId, "Recreating the subtask sandbox to run setup at the feature’s base commit.");
+		}
 		if (row.checkout) {
 			const run = Number(row.key.split(":")[1]);
 			if (meta.sandboxId && (meta.reviewRun !== run || meta.reviewBase !== row.checkout.baseSha)) {
@@ -4041,7 +4074,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	if (meta.origin?.role === "reviewer") {
 		fact = reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage);
 	} else {
-		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.branch, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
+		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.baseSha ?? null, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
@@ -4096,6 +4129,9 @@ export const agentSession = actor({
 	options: {
 		name: "Agent session",
 		icon: "robot",
+		// A browser connection must read its generation from the user actor, which may be waking
+		// and migrating its database after a restart. Allow that actor its migration window.
+		onBeforeConnectTimeout: 30_000,
 		// `changes`, `diff` and the internal destroy wait on the sandbox; a turn itself runs in the
 		// background under `keepAwake` and is not bound by this.
 		actionTimeout: 120_000,
@@ -4364,9 +4400,9 @@ export const agentSession = actor({
 		machine: event<NonNullable<SessionSnapshot["machine"]>>({ canSubscribe: (c) => maySubscribe(c) }),
 	},
 
-	onBeforeConnect: (c, params: unknown) => {
+	onBeforeConnect: async (c, params: unknown) => {
 		assertOrigin(c);
-		if (!isRunnerSocket(c.request)) authenticate(c.key, params);
+		if (!isRunnerSocket(c.request)) await sessionCaller(c, params);
 		if (!c.vars.meta) throw new UserError("That agent does not exist.", { code: "session_not_found" });
 	},
 
@@ -4386,8 +4422,12 @@ export const agentSession = actor({
 	},
 
 	actions: {
+		internalDisconnectRevoked: async (c, generation: number): Promise<void> => {
+			requireServiceFor(c, "call");
+			await disconnectRevoked(c.conns, generation);
+		},
 		snapshot: async (c): Promise<SessionSnapshot> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			try {
 				const { sandboxes } = await layerOf(c, meta);
@@ -4420,7 +4460,7 @@ export const agentSession = actor({
 		},
 
 		setMode: async (c, input: { mode: string }): Promise<SessionSummary> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
 			const mode = input?.mode;
@@ -4436,7 +4476,7 @@ export const agentSession = actor({
 		},
 
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.", { code: "item_session" });
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {
@@ -4464,7 +4504,7 @@ export const agentSession = actor({
 		},
 
 		stop: async (c): Promise<void> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			const turn = c.vars.turn;
 			if (!turn) return;
@@ -4483,8 +4523,8 @@ export const agentSession = actor({
 
 		// Synchronous from the check to the settling, so of two answers sent at once exactly one finds
 		// the question pending.
-		answer: (c, input: { questionId: string; choice: string; note?: string }): void => {
-			requireUser(c);
+		answer: async (c, input: { questionId: string; choice: string; note?: string }): Promise<void> => {
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.questionId !== "string" || typeof input.choice !== "string") {
 				throw new UserError("Choose one of the question's answers.", { code: "bad_answer" });
@@ -4516,7 +4556,7 @@ export const agentSession = actor({
 		},
 
 		stopCall: async (c, input: { messageId: string; callId: string }): Promise<{ stopped: boolean; message: string | null }> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.messageId !== "string" || input.messageId === "" || typeof input.callId !== "string" || input.callId === "") {
 				throw new UserError("Say which tool call to stop.", { code: "bad_call" });
@@ -4538,7 +4578,7 @@ export const agentSession = actor({
 		},
 
 		changes: async (c): Promise<WorkspaceFile[]> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			// The sandbox is this read's until it is done: it may resume a paused one and read it.
 			const release = takeSandbox(c);
@@ -4554,7 +4594,7 @@ export const agentSession = actor({
 		},
 
 		diff: async (c): Promise<string> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			const release = takeSandbox(c);
 			try {
@@ -4569,7 +4609,7 @@ export const agentSession = actor({
 		},
 
 		publishState: async (c): Promise<PublishState> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			try {
 				await checkPull(c, meta);
@@ -4580,7 +4620,7 @@ export const agentSession = actor({
 		},
 
 		publish: async (c, input: { message: PublishMessage }): Promise<PublishResult> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
 			const message = cleanMessage(input);
@@ -4629,7 +4669,7 @@ export const agentSession = actor({
 		},
 
 		setPublishUnasked: async (c, input: { unasked: boolean }): Promise<SessionSummary> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (typeof input !== "object" || input === null || typeof input.unasked !== "boolean") throw new UserError("Say whether the agent may publish without asking.", { code: "bad_input" });
 			if (!meta.repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { code: "publish_blocked" });
@@ -4656,7 +4696,7 @@ export const agentSession = actor({
 		},
 
 		servers: async (c): Promise<SessionServers> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			try {
 				return await sessionServers(c, meta);
@@ -4666,7 +4706,7 @@ export const agentSession = actor({
 		},
 
 		approveServer: async (c, input: { name: string; fingerprint: string }): Promise<SessionServers> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot start MCP servers.", { code: "reviewer" });
@@ -4704,7 +4744,7 @@ export const agentSession = actor({
 		},
 
 		forgetServer: async (c, input: { name: string }): Promise<SessionServers> => {
-			requireUser(c);
+			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
 			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || input.name.length > 200) {

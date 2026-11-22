@@ -7,7 +7,9 @@ import { loadPair, Refusal, RunnerError } from "./state.js";
 
 declare const CLAUDE_RELAY_SCRIPT: string;
 declare const OPENCODE_RELAY_SCRIPT: string;
-export interface ProviderLogin { provider: string; providers?: string[]; generation: string }
+export interface ProviderLogin { provider: string; providers?: string[]; generation: string; sessionGeneration?: string }
+// Pre-upgrade metadata used its credential generation as the signing epoch.
+const sessionDomain = (login: ProviderLogin) => "windlass-opencode-relay-v1-" + (login.sessionGeneration ?? login.generation);
 export function projection(selected: string | string[], placeholder: string) {
 	const ids = typeof selected === "string" ? [selected] : selected;
 	const auth: Record<string, unknown> = {}, config: Record<string, unknown> = {};
@@ -16,7 +18,7 @@ export function projection(selected: string | string[], placeholder: string) {
 		const route = selected === "chatgpt" ? "openai" : selected;
 		const p = providers[id];
 		config[id] = {
-			options: { baseURL: relayUrl + "/" + route, ...(selected === "free" && { headers: { "x-wlp-session": placeholder } }) },
+			options: { baseURL: relayUrl + "/" + route, ...(selected === "free" && { headers: { authorization: "Bearer " + placeholder } }) },
 			...(p?.blocked && { blacklist: p.blocked }),
 			...(p?.variants && { models: Object.fromEntries(Object.keys(p.variants).map(model => [model, {headers: {"x-wlp-route":model}}])) }),
 		};
@@ -92,7 +94,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,
-			...(login ? ["-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
+			...(login ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
 			image, "node", "-e", script], { check: true });
 		box = await ownedRelay(m, harness);
 	}
@@ -106,7 +108,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 
 export async function prepareRelay(m: MachineDocker, login?: ProviderLogin) {
 	const key = await ensureRelay(m, login);
-	const domain = login ? "windlass-opencode-relay-v1-" + login.generation : "windlass-claude-relay-v2";
+	const domain = login ? sessionDomain(login) : "windlass-claude-relay-v2";
 	const nonce = randomBytes(16).toString("hex");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
 	return {

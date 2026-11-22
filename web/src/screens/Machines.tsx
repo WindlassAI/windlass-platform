@@ -28,6 +28,7 @@ import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
+import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -54,7 +55,7 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 		(setup ? "docker run -it --rm" : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
-		...(agents.openCode && setup?.importKeys ? ['  -v "${XDG_DATA_HOME:-$HOME/.local/share}/opencode:/import/opencode:ro" \\'] : []),
+		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
 		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}`,
 	].join("\n");
 }
@@ -99,16 +100,20 @@ export function useMachines(enabled = true): MachinesState {
 	const auth = useAuth();
 	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({ list: null, error: null });
 	const asked = useRef(0);
+	const samplesDuringReload = useRef<Map<string, MachineSummary["host"]> | null>(null);
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
+		const samples = new Map<string, MachineSummary["host"]>();
+		samplesDuringReload.current = samples;
 		client
 			.user(auth)
 			.machines()
 			.then(
-				(list) => mine === asked.current && setState({ list, error: null }),
+				(list) => mine === asked.current && setState({ list: list.map(machine =>
+					samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine), error: null }),
 				(failure: unknown) => mine === asked.current && setState((now) => ({ list: now.list, error: explain(failure) })),
-			);
+			).finally(() => { if (samplesDuringReload.current === samples) samplesDuringReload.current = null; });
 	}, [client, auth, explain]);
 
 	const replace = useCallback((list: MachineSummary[]) => {
@@ -123,6 +128,11 @@ export function useMachines(enabled = true): MachinesState {
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
 			onMachines: replace,
+			onMachineHost: ({ machineId, host }) => {
+				samplesDuringReload.current?.set(machineId, host ?? undefined);
+				setState(now => ({ ...now, list: now.list?.map(machine =>
+					machine.machineId === machineId ? { ...machine, host: host ?? undefined } : machine) ?? null }));
+			},
 			onConnection: (connection) => {
 				if (connection !== "connected") return;
 				// What the actor sent while the feed was down is lost: the list is read again when it is back.
@@ -244,6 +254,56 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 					{error}
 				</p>
 			) : null}
+		</div>
+	);
+}
+
+/**
+ * Whether features may place subtasks on the machine (`MachineSummary.orchestrator`): a segmented
+ * choice of three, saved as soon as it is chosen with `setMachineDetails`, which keeps the note and tags.
+ */
+function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState<Orchestrator | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const ids = { label: useId(), means: useId() };
+	const saved = orchestratorOf(machine);
+	const shown = busy ?? saved;
+	const set = (orchestrator: Orchestrator) => {
+		if (orchestrator === saved || busy) return;
+		setBusy(orchestrator);
+		setError(null);
+		client
+			.user(auth)
+			.setMachineDetails({ machineId: machine.machineId, whenToUse: machine.whenToUse ?? "", tags: machine.tags ?? [], orchestrator })
+			.then(
+				(list) => {
+					onChanged(list);
+					setBusy(null);
+				},
+				(failure: unknown) => {
+					setError(explain(failure));
+					setBusy(null);
+				},
+			);
+	};
+	return (
+		<div className="machine-policy">
+			<p className="machine-policy-label" id={ids.label}>
+				Subtasks of features
+			</p>
+			<div className="segmented machine-policy-choice" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.means}>
+				{ORCHESTRATOR_CHOICES.map((choice) => (
+					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} title={choice.means}>
+						<input className="segment-radio" type="radio" name={ids.label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+						{choice.label}
+					</label>
+				))}
+			</div>
+			<p className={`field-note${error ? " tone-bad" : ""}`} id={ids.means} role={error ? "alert" : undefined}>
+				{error ?? ORCHESTRATOR_CHOICES.find((choice) => choice.id === shown)!.means}
+			</p>
 		</div>
 	);
 }
@@ -432,6 +492,11 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</div>
 				<p className="agent-meta">
 					<span>runner {machine.runnerVersion}</span>
+					{orchestratorNote(machine) ? (
+						<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
+							{orchestratorNote(machine)}
+						</span>
+					) : null}
 					<span className="machine-sandbox-count">
 						{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}
 						{machine.maxSandboxes ? (
@@ -513,6 +578,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						</dd>
 					</div>
 				</dl>
+				<PlacementPolicy machine={machine} onChanged={onChanged} />
 				<SecretsSwitch machine={machine} onChanged={onChanged} />
 			</div>
 		</li>
@@ -716,6 +782,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<div className="machine-setup-agents">
 							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
 							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
 						</div>
 						<Command text={setup} label="The setup command" />

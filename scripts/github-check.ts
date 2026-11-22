@@ -23,10 +23,11 @@
  *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
  */
 
+import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { imageId } from "./check-image.js";
 import { changedReviewPaths, checkoutReview, reviewCheckoutScript } from "../server/src/github/git.js";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -50,7 +51,7 @@ const state = await import("../server/src/github/state.js");
 const repos = await import("../server/src/github/repos.js");
 const publish = await import("../server/src/github/publish.js");
 const gitSteps = await import("../server/src/github/git.js");
-const { redact } = await import("../server/src/github/redact.js");
+const { redact, pushTokenKinds } = await import("../server/src/github/redact.js");
 type StoredConnection = import("../server/src/github/repos.js").StoredConnection;
 type StoredRepository = import("../server/src/github/publish.js").StoredRepository;
 type ConnectStore = import("../server/src/github/connect.js").ConnectStore;
@@ -366,7 +367,7 @@ await section("connect: a state works once, for the user it was signed for, and 
 
 	const fresh = store.begin("u_ada");
 	const parts = fresh.state.split(".");
-	const tampered = `${parts[0]}.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8")), uid: "u_mallory" }), "utf8").toString("base64url")}.${parts[2]}`;
+	const tampered = `${parts[0]}.${parts[1]}.${Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(parts[2] as string, "base64url").toString("utf8")), uid: "u_mallory" }), "utf8").toString("base64url")}.${parts[3]}`;
 	const forged = await visit(standin.authorize("mallory", begun.url).replace(encodeURIComponent(begun.state), encodeURIComponent(tampered)));
 	expect("a state whose user was changed is refused", forged.error === "state" && forged.ticket === null, forged.location);
 	expect("and it did not use up the real one", store.pending.size > 0 && (await visit(standin.authorize("ada", fresh.url))).ticket !== null);
@@ -549,10 +550,10 @@ await section("publish: a pull request is opened, then the same branch is update
 	const sandbox = localSandbox("publish");
 	const repository = stored(harbor, adaInstallation);
 	await publish.cloneRepository(app, adaConnection, repository, sandbox);
-	expect("with no changes, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, "main", null)) === false);
+	expect("with no changes, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null)) === false);
 	writeFileSync(join(sandbox.cwd, "src/add.ts"), "export const add = (a: number, b: number) => a + b\n");
 	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- add() adds\n");
-	expect("with changed files, it says there is", (await publish.hasUnpushedWork(sandbox, "main", null)) === true);
+	expect("with changed files, it says there is", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null)) === true);
 
 	const from = standin.minted.length;
 	const input = { evidence: NOTHING_VERIFIED, app, connection: adaConnection, repository, sandbox, sessionId: "s_0123456789abcdef", branch: BRANCH };
@@ -574,7 +575,7 @@ await section("publish: a pull request is opened, then the same branch is update
 	expect("no file in the workspace, the home directory or /tmp holds a token", tokens.every((token) => filesHolding(sandbox.cwd, token).length === 0 && filesHolding(sandbox.home, token).length === 0) && readdirSync("/tmp").every((name) => !/^wlp-(push|publish|message)/.test(name)));
 	const local = await sandbox.run("git symbolic-ref --short HEAD; git status --porcelain; git config --list --local");
 	expect("the workspace is on the session's branch, clean, and its configuration is as it was", local.stdout.startsWith(`${BRANCH}\n`) && !tokens.some((token) => local.stdout.includes(token)) && !/helper|extraheader/i.test(local.stdout), local.stdout.split("\n").slice(0, 2).join(" | "));
-	expect("with everything pushed, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, "main", first.head)) === false);
+	expect("with everything pushed, git says there is nothing GitHub lacks", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, first.head)) === false);
 
 	const nothing = await problem(() => publish.publishWork({ ...input, pull: first.pull, pushed: first.head, message: { title: "Again", body: "" } }));
 	expect("pushing again with nothing new is said so, and makes no commit", nothing?.message === `There is nothing to push: ${BRANCH} at GitHub already has everything in the workspace.` && standin.branchHead(harbor, BRANCH) === first.head, nothing?.message);
@@ -586,7 +587,7 @@ await section("publish: a pull request is opened, then the same branch is update
 	// The agent commits its own work: nothing is uncommitted, and the commit still has to go.
 	writeFileSync(join(sandbox.cwd, "CHANGES.md"), "- add() adds\n- and says so\n- twice\n");
 	await sandbox.run("git commit --quiet -am 'The agent commits by itself'");
-	expect("a commit of the agent's own is something GitHub lacks", (await publish.hasUnpushedWork(sandbox, "main", second.head)) === true);
+	expect("a commit of the agent's own is something GitHub lacks", (await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, second.head)) === true);
 	const third = await publish.publishWork({ ...input, pull: second.pull, pushed: second.head, message: { title: "unused", body: "" } });
 	expect("it is pushed as it is, with no commit of the platform's on top", third.committedFiles === 0 && standin.lastCommit(harbor, BRANCH).message === "The agent commits by itself" && !third.opened);
 
@@ -815,6 +816,101 @@ await section("a push that would send a saved secret's value is refused, and the
 	expect("without the value, the push goes", clean.pushed && standin.branchHead(harbor, branch) === clean.head, JSON.stringify(clean));
 });
 
+await section("provider credentials are refused before any push token is issued", async () => {
+	const repository = stored(harbor, adaInstallation);
+	const sandbox = localSandbox("provider-credentials");
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const branch = "windlass/provider-credentials";
+	const input = { app, connection: adaConnection, repository, sandbox, branch, sessionId: "provider-credentials", pushed: null };
+	const examples = [
+		["Anthropic OAuth setup token", "sk-ant-oat01-"], ["Anthropic API key", "sk-ant-api03-"], ["Anthropic admin key", "sk-ant-admin01-"],
+		["OpenCode API key", "oc_sk_"], ["OpenRouter API key", "sk-or-v1-"], ["OpenAI API key", "sk-proj-"],
+		["Groq API key", "gsk_"], ["Google API key", "AIza"], ["Hugging Face access token", "hf_"],
+		["Perplexity API key", "pplx-"], ["xAI API key", "xai-"], ["NVIDIA API key", "nvapi-"],
+		["Fireworks API key", "fw_"], ["Cerebras API key", "csk-"], ["Vercel AI Gateway key", "vck_"],
+		["Kimi API key", "sk-kimi-"], ["Alibaba plan API key", "sk-sp-"], ["MiniMax API key", "sk-cp-"], ["provider API key", "sk-"],
+	] as const;
+	const values = examples.map(([, prefix]) => prefix + randomBytes(32).toString("hex"));
+	expect("each credential alone is identified, and prefix-only documentation is allowed",
+		examples.every(([kind, prefix], i) => pushTokenKinds(values[i]!).includes(kind) && pushTokenKinds(prefix + "…").length === 0));
+	const file = join(sandbox.cwd, values[0]!);
+	writeFileSync(file, values.join("\n"));
+	const staged = await sandbox.run("git add -A && git commit -qm fixtures && git rm -q -- " + values[0] + " && git commit -qm removed");
+	expect("the fixture credential file exists only in an earlier commit", staged.exitCode === 0);
+	const from = standin.minted.length;
+	const refused = await problem(() => publish.pushWork(input, "Check credential history"));
+	expect("the refusal identifies each kind, with no credential from a filename or blob in the message",
+		examples.every(([kind]) => refused?.message.includes(kind)) && values.every(value => !refused?.message.includes(value)));
+	expect("no push token was issued and the branch is absent", !standin.minted.slice(from).some(entry => entry.permissions?.contents === "write") &&
+		standin.branchHead(harbor, branch) === null);
+});
+
+await section("credential shape scope and scan limits", async () => {
+	const remote = standin.addRepository({ owner: "ada", name: "shape-scope", private: true, installation: adaInstallation });
+	repos.forgetGithubCaches();
+	const key = "sk-proj-" + "f".repeat(40);
+	const path = "checks/fixtures.txt";
+	const sources = ["factory-check.ts", "github-check.ts", "reviewer-task-check.ts"];
+	const existing = sources.map(file => {
+		const lines = readFileSync(new URL(file, import.meta.url), "utf8").split("\n");
+		const fixture = lines.find(line => pushTokenKinds(line).includes("GitHub token"));
+		if (!fixture) throw Error("Missing existing credential fixture in " + file);
+		return fixture;
+	}).join("\n");
+	standin.commit(remote, "main", { [path]: existing + "\n" + key + "\nafter\n" }, "Existing fixtures");
+	const sandbox = localSandbox("shape-scope");
+	const repository = stored(remote, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const input = { app, connection: adaConnection, repository, sandbox, branch: "windlass/scope", sessionId: "scope", pushed: null };
+	for (const [label, contents] of [["context", existing + "\n" + key + "\nchanged\n"], ["deletion", "changed\n"]] as const) {
+		writeFileSync(join(sandbox.cwd, path), contents);
+		expect(label + " allows an ordinary push", await problem(() => publish.pushWork(input, label)) === null);
+	}
+	writeFileSync(join(sandbox.cwd, path), "++" + key + "\n");
+	const refused = await problem(() => publish.pushWork(input, "added"));
+	expect("the refusal names the safe path for an added line that resembles a header", !!refused?.message.includes(path) && !refused.message.includes(key));
+	writeFileSync(join(sandbox.cwd, path), "normal\n");
+	const message = await problem(() => publish.pushWork(input, "example patch\n\ndiff --git a/a b/a\n-" + key));
+	expect("a patch quoted in a commit message is still checked", !!message?.message.includes("OpenAI API key"));
+	writeFileSync(join(sandbox.cwd, path), "sk-proj-" + "a".repeat(7_900_000));
+	const large = await problem(() => publish.pushWork(input, "Large addition"));
+	expect("a near-limit credential gets a bounded diagnostic", !!large?.message.includes("OpenAI API key") && large.message.length < 300);
+});
+
+await section("a mismatched outgoing object digest refuses the push", async () => {
+	const sandbox = localSandbox("range");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	writeFileSync(join(sandbox.cwd, "change"), "change");
+	const original = sandbox.run.bind(sandbox);
+	sandbox.run = async (command, options) => {
+		const result = await original(command, options);
+		if (command.includes('base64 -w0 "$patch"')) result.stdout = result.stdout.replace(/^([0-9]+) [a-f0-9]{64}/, "$1 " + "0".repeat(64));
+		return result;
+	};
+	const branch = "windlass/object-digest";
+	const refused = await problem(() => publish.pushWork({ app, connection: adaConnection, sandbox, repository, branch, sessionId: "range", pushed: null }, "Range"));
+	expect("only the digest recorded for the scanned head authorizes transport", !!refused?.message.includes("no longer match") && standin.branchHead(harbor, branch) === null);
+});
+
+await section("missing recovered base requires fetch_base", async () => {
+	const remote = standin.addRepository({ owner: "ada", name: "base-recovery", private: true, installation: adaInstallation });
+	repos.forgetGithubCaches();
+	const sandbox = localSandbox("missing-base");
+	const repository = stored(remote, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	repository.baseSha = null;
+	standin.commit(remote, "main", { "remote.txt": "new base" }, "Advance remote");
+	writeFileSync(join(sandbox.cwd, "local.txt"), "work");
+	const input = { app, connection: adaConnection, repository, sandbox, branch: "windlass/missing-base", sessionId: "missing-base", pushed: null };
+	const from = standin.minted.length;
+	const refused = await problem(() => publish.pushWork(input, "Local work"));
+	expect("a recovered SHA missing locally stops before a write token", !!refused?.message.includes("fetch_base") &&
+		!standin.minted.slice(from).some(entry => entry.permissions?.contents === "write"));
+	await publish.fetchBase(app, adaConnection, repository, sandbox);
+	expect("the same changes publish after a confirmed fetch", (await publish.pushWork(input, "Local work")).pushed);
+});
+
 await section("nested repositories are refused before turn-end diff, panel probe or commit", async () => {
 	const { DIFF_COMMAND } = await import("../server/src/actors/agent-session.js");
 	const sandbox = localSandbox("nested");
@@ -822,13 +918,13 @@ await section("nested repositories are refused before turn-end diff, panel probe
 	await publish.cloneRepository(app, adaConnection, repository, sandbox);
 	const inner = "packages/example/inner";
 	await sandbox.run(`mkdir -p ${inner} && git init -q ${inner} && git -C ${inner} commit -q --allow-empty -m inner`);
-	const input = { sessionId: "guard-nested", branch: "main", base: "main", pushed: null, author: { name: "Fixture", email: "fixture@example.invalid" } };
+	const input = { sessionId: "guard-nested", branch: "main", baseSha: repository.baseSha ?? null, pushed: null, author: { name: "Fixture", email: "fixture@example.invalid" } };
 	for (const state of ["untracked", "indexed", "unpopulated"]) {
 		if (state === "indexed") await sandbox.run(`git add -- ${inner}`);
 		if (state === "unpopulated") await sandbox.run(`mv ${inner} ../saved-inner`);
 		const why = state === "untracked" ? "nested" : "gitlink";
 		// Each sentinel is reached only if the generated command passes its guard and returns successfully.
-		for (const [name, command] of [["turn-end diff", DIFF_COMMAND], ["panel probe", gitSteps.probeScript("main", null)], ["commit", gitSteps.commitScript(input)]]) {
+		for (const [name, command] of [["turn-end diff", DIFF_COMMAND], ["panel probe", gitSteps.probeScript(repository.baseSha ?? null, null)], ["commit", gitSteps.commitScript(input)]]) {
 			const marker = join(sandbox.home, `completed-${state}-${name}`);
 			const result = await sandbox.run(`${command}\ntouch "$HOME/completed-${state}-${name}"`, { stdin: "Fixture\n" });
 			expect(`${state}: ${name} refused before completing`, result.exitCode === 3 && gitSteps.markers(result.stdout).get("unsafe") === why && !existsSync(marker));
@@ -851,13 +947,13 @@ await section("husky configuration works for the session and the platform push",
 	writeFileSync(join(sandbox.cwd, "work.txt"), "changed\n");
 	const status = await sandbox.run(STATUS_COMMAND);
 	const diff = await sandbox.run(DIFF_COMMAND);
-	const dirty = await publish.hasUnpushedWork(sandbox, "main", null);
+	const dirty = await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null);
 	const branch = "windlass/husky-000001";
 	const input = { app, connection: adaConnection, repository, sandbox, sessionId: "guard-husky", branch, pushed: null };
 	const err = await problem(() => publish.pushWork(input, "Husky work"));
 	expect("husky status, diff, panel probe and push succeed without invoking any hook", setup.exitCode === 0 && status.stdout.includes("work.txt") && diff.stdout.includes("+changed") && dirty === true && err === null && standin.fileOn(harbor, branch, "work.txt") === "changed\n" && !existsSync(marker));
 	await sandbox.run("git config filter.lfs.required true");
-	const probe = await gitSteps.probeWork(sandbox, "main", null);
+	const probe = await gitSteps.probeWork(sandbox, repository.baseSha ?? null, null);
 	expect("a local LFS filter is still refused", !probe.ok && probe.marks.get("unsafe") === "filter.lfs.required");
 });
 
@@ -879,7 +975,7 @@ await section("private git captures file content and modes", async () => {
 	].join("\n"));
 	const status = await sandbox.run(STATUS_COMMAND);
 	const diff = await sandbox.run(DIFF_COMMAND);
-	const dirty = await publish.hasUnpushedWork(sandbox, "main", null);
+	const dirty = await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null);
 	expect("private status, diff and probe see edits, removals and links", prepared.exitCode === 0 && status.stdout.includes("upload.data") && status.stdout.includes("src/add.ts") && diff.stdout.includes("+../outside") && !diff.stdout.includes("outside the worktree") && dirty === true);
 	const result = await publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "private-content", pushed: null }, "Snapshot content");
 	const tree = execFileSync("git", ["--git-dir", harbor.path, "ls-tree", "-r", branch], { encoding: "utf8" });
@@ -955,6 +1051,29 @@ await section("screenshots in an earlier local commit stay off the remote", asyn
 	if (prepared.exitCode !== 0) throw new Error("could not prepare screenshot history");
 	const refused = await problem(() => publish.pushWork({ app, connection: adaConnection, repository, sandbox, branch, sessionId: "committed-screenshots", pushed: null }, "Fixture"));
 	expect("a later deletion cannot publish a screenshot in history", refused?.message.includes("contains .wlp-shots") === true && standin.branchHead(harbor, branch) === null);
+});
+
+await section("only a GitHub-confirmed base bounds the workspace", async () => {
+	const sandbox = localSandbox("base-state");
+	const repository = stored(harbor, adaInstallation);
+	const expected = standin.branchHead(harbor, repository.branch);
+	const legacy = join("/tmp", "wlp-base-" + createHash("sha256").update(sandbox.cwd + "\n" + repository.branch).digest("hex"));
+	writeFileSync(legacy, "obsolete fixture\n", { flag: "wx" });
+	try {
+		await publish.cloneRepository(app, adaConnection, repository, sandbox);
+		await publish.fetchBase(app, adaConnection, repository, sandbox);
+		expect("clone and fetch leave the obsolete record alone and keep the observed base in platform state",
+			readFileSync(legacy, "utf8") === "obsolete fixture\n" && repository.baseSha === expected);
+		const storedBase = JSON.parse(JSON.stringify(repository)).baseSha;
+		expect("the actor-held base survives serialization and identifies a clean workspace",
+			await publish.hasUnpushedWork(sandbox, storedBase, null) === false);
+		await sandbox.run("echo change > ordinary.txt && git add ordinary.txt && git commit -qm work && git update-ref refs/remotes/origin/main HEAD");
+		const work = await gitSteps.readWork(sandbox, storedBase);
+		expect("the probe and verification diff still report the work", await publish.hasUnpushedWork(sandbox, storedBase, null) === true &&
+			work?.files.some(file => file.path === "ordinary.txt") === true);
+	} finally {
+		rmSync(legacy, { force: true });
+	}
 });
 
 await section("outgoing history is checked before the push transport", async () => {
@@ -1062,8 +1181,8 @@ await section("a workspace whose git would start a program of the agent's is ref
 		const branch = `windlass/unsafe-${randomBytes(3).toString("hex")}`;
 		const before = standin.branchHead(harbor, branch);
 		const push = await problem(() => publish.pushWork({ app, connection: adaConnection, repository, sandbox, sessionId: "s_unsafe00000000", branch, pushed: null, lease: null }, "Try"));
-		const probe = await publish.hasUnpushedWork(sandbox, "main", null);
-		const read = await readWork(sandbox, "main");
+		const probe = await publish.hasUnpushedWork(sandbox, repository.baseSha ?? null, null);
+		const read = await readWork(sandbox, repository.baseSha ?? null);
 		const status = await sandbox.run(`${WORKSPACE_GIT_START}\ngit --no-optional-locks status --porcelain=v1`);
 		expect(
 			`${variant.name}: the push, the probe, the read and the session's status are refused, nothing is pushed, and no program of the workspace's ran`,
@@ -1306,19 +1425,43 @@ await section("docker: the same git commands in a container of the sandbox image
 	docker(["run", "-d", "--rm", "--name", name, "--label", "dev.windlass-platform=1", "--network", "host", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", await imageId(), "sleep", "600"]);
 	try {
 		const inside = app;
+		const handle = new (class extends DockerSandboxHandle { override get container() { return name; } })(name, "docker-hardened", "fixture");
 		const stdins: string[] = [];
+		let protectedPush = false;
 		const sandbox: SandboxHandle = {
 			id: name,
 			cwd: "/workspace",
 			profile: "docker-hardened",
-			run(command, options = {}) {
+			async run(command, options = {}) {
 				if (options.stdin) stdins.push(options.stdin);
-				// As the Docker layer runs a command: `docker exec -i`, the script as one argument, standard input from the server.
-				return run(["docker", "exec", "-i", "-w", options.cwd ?? "/workspace", name, "bash", "-c", command], { ...options, cwd: scratch, env: { PATH: process.env.PATH ?? "" } });
+				if (command.includes("push --porcelain")) {
+					expect("the authenticated push requires the transport uid", options.gitUser === true);
+					if (!options.gitUser) throw new Error("missing transport uid");
+					// Inert sentinels in the workspace user's exchange directory. The transport
+					// repository must remain inaccessible from that same container and mount namespace.
+					const privateDir = command.match(/private='(\/tmp\/wlp-transport-[a-f0-9]{32})'/)?.[1];
+					if (!privateDir) throw new Error("missing transport directory");
+					const exchange = privateDir.replace("wlp-transport-", "wlp-git-attempt-");
+					const checked = docker(["exec", name, "sh", "-ec", [
+						'test "$(stat -c %u:%a "$1")" = 65534:700',
+						'test ! -w "$1/repo/config"',
+						'test ! -r "$1/patch"',
+						'git rev-parse HEAD > "$2/head"',
+						'git config --file "$2/repo/config" http.proxy http://invalid.invalid',
+						'echo isolated',
+					].join("\n"), "fixture", privateDir, exchange]);
+					protectedPush = checked.trim() === "isolated";
+				}
+				return handle.run(command, options);
 			},
 			readTextFile: async () => "",
 			writeTextFile: async () => undefined,
 		};
+		const identity = await handle.run('id -u; pwd; test -z "${GIT_CONFIG_COUNT-}${GIT_SSH_COMMAND-}${SSL_CERT_FILE-}${LD_LIBRARY_PATH-}"', {
+			gitUser: true, cwd: "/workspace", env: { GIT_CONFIG_COUNT: "7", GIT_SSH_COMMAND: "fixture", SSL_CERT_FILE: "/fixture", LD_LIBRARY_PATH: "/fixture" },
+		});
+		expect("the transport starts as uid 65534 outside the workspace with inherited overrides removed",
+			identity.exitCode === 0 && identity.stdout === "65534\n/\n");
 		const version = await sandbox.run("git --version; id -un; git init --quiet . && echo ready");
 		expect("the container is the sandbox image's: its git, its user", version.stdout.includes("git version") && version.stdout.includes("agent") && version.stdout.includes("ready"), version.stdout.trim().replace(/\n/g, ", "));
 		// A watcher inside the container, as the agent's user: every process's arguments and environment, over and over.
@@ -1331,14 +1474,14 @@ await section("docker: the same git commands in a container of the sandbox image
 		await sandbox.run("echo container >> CHANGES.md");
 		const branch = "windlass/container-000000";
 		const published = await publish.publishWork({ evidence: NOTHING_VERIFIED, app: inside, connection: adaConnection, repository, sandbox, sessionId: "s_container", branch, pull: null, pushed: null, message: { title: "Pushed from the sandbox image", body: "" } });
-		expect("and the work is pushed from it and the pull request opened", published.opened && standin.fileOn(harbor, branch, "CHANGES.md")?.includes("container") === true);
+		expect("and the work is pushed from it and the pull request opened", protectedPush && published.opened && published.head === standin.branchHead(harbor, branch) && standin.fileOn(harbor, branch, "CHANGES.md")?.includes("container") === true);
 		const tokens = tokensSince(from);
 		const used = tokens.filter((token) => stdins.includes(`${token}\n`));
 		const search = await sandbox.run("kill $(cat /home/agent/watcher.pid); sleep 0.3; wc -c < /home/agent/watcher.log; grep -c 'git-remote-http' /home/agent/watcher.log; ls /tmp; echo searched");
 		const grep = docker(["exec", "-i", name, "bash", "-c", `while IFS= read -r t; do grep -r -l -F -- "$t" /workspace /home/agent /tmp 2>/dev/null; done; echo searched`], `${tokens.join("\n")}\n`);
 		expect("two tokens went into the container, on standard input", used.length === 2, `${used.length} of ${tokens.length} issued`);
 		expect("no file in the workspace, the home directory or /tmp holds one, and the watcher saw none in any process's arguments or environment", grep.trim() === "searched" && search.stdout.includes("searched") && /^[1-9]\d{3,}\n[1-9]/.test(search.stdout.trim()), `the watcher recorded ${search.stdout.trim().split("\n")[0]} bytes and saw git's own processes ${search.stdout.trim().split("\n")[1]} times; files holding a token: ${grep.trim() === "searched" ? "none" : grep.trim()}`);
-		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message|wlp-git[.-]/.test(search.stdout));
+		expect("nothing of the push is left in /tmp", !/wlp-push|wlp-publish|wlp-message|wlp-git[.-]|wlp-transport-/.test(search.stdout));
 		const arguments_ = execFileSync("ps", ["-eo", "args"], { encoding: "utf8" });
 		expect("and the server's own process list never had one either", tokens.every((token) => !arguments_.includes(token)));
 		const reviewDir = "/tmp/reviewer-workspace";
@@ -1380,7 +1523,7 @@ await section("a replaced sandbox: the workspace goes back on the session's bran
 	);
 	expect("what was pushed is in it, and what was not is not", seen.stdout.includes("KEPT.md") && !seen.stdout.includes("LOST.md"));
 	expect("the repository's configuration holds no token", !/x-access-token|ghs_|gh[a-z]_/.test(seen.stdout));
-	expect("nothing in it is something GitHub lacks", (await publish.hasUnpushedWork(replaced, "main", head)) === false);
+	expect("nothing in it is something GitHub lacks", (await publish.hasUnpushedWork(replaced, repository.baseSha ?? null, head)) === false);
 
 	writeFileSync(join(replaced.cwd, "AFTER.md"), "written in the new sandbox\n");
 	const next = await publish.publishWork({ ...input, sandbox: replaced, pull: pushed.pull, pushed: head, message: { title: "After the replacement", body: "" } });
@@ -1444,9 +1587,36 @@ await section("a replaced sandbox: the setup command runs on the base, never on 
 	const seen = await replaced.run("git symbolic-ref --short HEAD; cat README.md; ls node_modules BRANCH_ONLY.md");
 	expect(
 		"then the workspace is on the session's branch at the commit GitHub has, the setup's edit to a tracked file gone, its untracked file kept, and nothing counted as unpushed",
-		head === pushed.head && seen.stdout.startsWith(`${branch}\n`) && !seen.stdout.includes("rewritten by the setup") && seen.stdout.includes("kept.txt") && seen.stdout.includes("BRANCH_ONLY.md") && (await publish.hasUnpushedWork(replaced, "main", head)) === false,
+		head === pushed.head && seen.stdout.startsWith(`${branch}\n`) && !seen.stdout.includes("rewritten by the setup") && seen.stdout.includes("kept.txt") && seen.stdout.includes("BRANCH_ONLY.md") && (await publish.hasUnpushedWork(replaced, repository.baseSha ?? null, head)) === false,
 		`${head} ${pushed.head} | ${seen.stdout.split("\n").join(" | ")}`,
 	);
+});
+
+await section("replaced subtask sandbox: setup at the seed, then recover the subtask branch", async () => {
+	const feature = "windlass/feature-check", child = "windlass/child-check";
+	const seed = standin.branchHead(harbor, "main")!;
+	standin.commit(harbor, feature, { "sibling.txt": "first subtask" }, "Integrate first subtask", "main");
+	standin.commit(harbor, child, { "resumed.txt": "second subtask" }, "Push second subtask", feature);
+	const repository = stored(harbor, adaInstallation, feature);
+	for (const work of [child, "windlass/deleted-child"]) {
+		const box = localSandbox("replaced-subtask");
+		const cloned = await publish.cloneRepository(app, adaConnection, repository, box, undefined, work, seed);
+		expect("setup starts on the feature seed, before either child's changes", (await box.run("git rev-parse HEAD")).stdout.trim() === seed && !existsSync(join(box.cwd, "sibling.txt")));
+		expect("the publishing base is the independently confirmed feature tip", repository.baseSha === standin.branchHead(harbor, feature));
+		const branch = work === child ? child : feature;
+		expect("restore the published work or fall back to the integrated feature", cloned !== false && cloned.workAt === standin.branchHead(harbor, branch)
+			&& cloned.workGone === (work !== child) && await publish.putOnWork(box, cloned.directory, branch) === cloned.workAt);
+	}
+	const racing = localSandbox("racing-subtask");
+	const original = racing.run.bind(racing);
+	racing.run = async (command, options) => {
+		const result = await original(command, options);
+		if (command.includes("wlp_git clone --quiet")) standin.commit(harbor, feature, { "sibling-2.txt": "later" }, "Advance feature");
+		return result;
+	};
+	await publish.cloneRepository(app, adaConnection, repository, racing, undefined, child, seed);
+	expect("a feature ref that moved during clone leaves the subtask base unconfirmed", repository.baseSha === null);
+
 });
 
 async function verifyReviewCheckout(box: SandboxHandle) {

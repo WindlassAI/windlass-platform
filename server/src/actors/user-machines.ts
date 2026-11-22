@@ -4,11 +4,12 @@ import type { createClient } from "rivetkit/client";
 import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { machineLabel, MAX_MACHINES, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
+import { machineLabel, MAX_MACHINES, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
 import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { codeDigest } from "../runner-keys.js";
+import { compactReport, type CatalogId } from "../runner/catalog.js";
 import { MACHINE_ID, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
 import { MACHINE_PROFILES } from "../runner/protocol.js";
 import { createGrant, isActorGone } from "./internal.js";
@@ -17,11 +18,11 @@ import { asPairingError, pairingGone } from "./machine-pairing.js";
 
 interface Ctx {
 	db: RawAccess; key: string[]; client(): unknown; conn?: { params: unknown } | null;
-	vars: { machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
+	vars: { tokenGen: number; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
 	broadcast(name: string, ...args: unknown[]): void;
 }
-const actors = (c: Ctx) => c.client() as ReturnType<typeof createClient<Registry>>;
-const machine = (c: Ctx, id: string) => actors(c).machine.get([c.key[0]!, id], { params: serviceParams() });
+const actors = (c: Pick<Ctx, "client">) => c.client() as ReturnType<typeof createClient<Registry>>;
+const machine = (c: Pick<Ctx, "client" | "key">, id: string) => actors(c).machine.get([c.key[0]!, id], { params: serviceParams() });
 const missing = () => new UserError("That machine is not in your account.", { code: "machine_not_found" });
 const full = () => new UserError(`An account can connect up to ${MAX_MACHINES} machines.`, { code: "too_many_machines" });
 function enabled() {
@@ -38,6 +39,16 @@ export function launchPlace(raw: unknown): SandboxPlace {
 export async function machineTables(db: RawAccess) {
 	await db.execute(`CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, facts TEXT NOT NULL,
 		send INTEGER NOT NULL DEFAULT 1, login TEXT, expires INTEGER)`);
+	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machines)")).some(column => column.name === "host"))
+		await db.execute("ALTER TABLE machines ADD COLUMN host TEXT");
+	// Older account indexes still contain the machine's inline models and host.
+	const legacy = await db.execute<{ id: string; facts: string }>(`SELECT id, facts FROM machines WHERE facts LIKE '%"options":%' OR json_type(facts, '$.report.host') IS NOT NULL`);
+	for (const row of legacy) {
+		const facts: MachineUpdate = JSON.parse(row.facts);
+		if (!facts.report) continue;
+		const { host, ...report } = facts.report;
+		await db.execute("UPDATE machines SET facts = ?, host = ? WHERE id = ?", JSON.stringify({ ...facts, report: compactReport(report) }), host ? JSON.stringify(host) : null, row.id);
+	}
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_details (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
 }
@@ -51,14 +62,16 @@ async function pairing(c: Ctx, input: { code: string }) {
 }
 
 export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "sessions"> }): Promise<MachineSummary[]> {
-	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
+	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; host: string | null; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, host, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
 		const titles = new Map(sessions.map(s => [s.id, s.title]));
 		return {
-			...row.details ? JSON.parse(row.details) as import("../contract.js").MachineDetails : { whenToUse: "", tags: [] },
-			host: report?.host, screenshots: report?.screenshots,
+			whenToUse: "", tags: [], orchestrator: "yes" as const,
+			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
+			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
+			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
 			profiles: report ? machineProfiles(machineLabel(row), report) : [], sendSecrets: !!row.send, agents: sessions.length,
 			sandboxes: (report?.sandboxes ?? []).map(({ sessionId, state, usedAt }) => ({ sessionId, state, usedAt, title: titles.get(sessionId) ?? null })).sort((a, b) => b.usedAt - a.usedAt),
@@ -114,7 +127,17 @@ export async function logoutMachines(c: Ctx) {
 	});
 }
 
+export async function machineCatalog(c: Pick<Ctx, "client" | "key">, machineId: string, id: CatalogId, digest: string): Promise<HarnessOptions | null> {
+	return machine(c, machineId).internalCatalog(id, digest);
+}
+
 export const machineActions = {
+	async machineCatalog(c: Ctx, input: { machineId: string; id: CatalogId; digest: string }) {
+		requireUser(c); enabled();
+		if (!input || (input.id !== "opencode" && input.id !== "claude") || typeof input.digest !== "string" || !/^[a-f0-9]{64}$/.test(input.digest) ||
+			typeof input.machineId !== "string" || !MACHINE_ID.test(input.machineId) || await machineSecrets(c.db, input.machineId) === null) throw missing();
+		return machineCatalog(c, input.machineId, input.id, input.digest);
+	},
 	async machines(c: Ctx): Promise<MachineSummary[]> {
 		requireUser(c); enabled();
 		return listMachines(c);
@@ -162,11 +185,15 @@ export const machineActions = {
 		catch (error) { if (isActorGone(error)) throw missing(); throw error; }
 		return listMachines(c);
 	},
-	async setMachineDetails(c: Ctx, input: { machineId: string; whenToUse: string; tags: string[] }) {
+	async setMachineDetails(c: Ctx, input: { machineId: string } & import("../contract.js").MachineDetails) {
 		requireUser(c); enabled();
 		let details;
 		try { details = machineDetails(input); } catch (error) { throw new UserError((error as Error).message, { code: "bad_input" }); }
-		const rows = await c.db.execute("INSERT OR REPLACE INTO machine_details SELECT id, ? FROM machines WHERE id=? AND expires IS NULL RETURNING id", JSON.stringify(details), input.machineId);
+		// Older settings forms send only text and tags. Preserve the owner's placement policy on those writes.
+		const rows = await c.db.execute(`INSERT OR REPLACE INTO machine_details SELECT m.id,
+			json_set(?, '$.orchestrator', COALESCE(?, json_extract(d.data, '$.orchestrator'), 'yes'))
+			FROM machines m LEFT JOIN machine_details d ON d.id=m.id WHERE m.id=? AND m.expires IS NULL RETURNING id`,
+			JSON.stringify(details), input.orchestrator ?? null, input.machineId);
 		if (!rows.length) throw missing();
 		return changed(c);
 	},
@@ -193,11 +220,32 @@ export const machineActions = {
 		const [row] = await c.db.execute<{ login: string | null }>("SELECT login FROM machines WHERE id = ? AND expires IS NULL", id);
 		return row ?? null;
 	},
-	async internalMachineChanged(c: Ctx, id: string, facts: MachineUpdate | null): Promise<void> {
+	async internalMachineChanged(c: Ctx, id: string, facts: MachineUpdate | null): Promise<boolean> {
 		requireServiceFor(c, "call");
-		const rows = facts === null
-			? await c.db.execute("DELETE FROM machines WHERE id = ? RETURNING id", id)
-			: await c.db.execute("UPDATE machines SET name = COALESCE(?, name), facts = ? WHERE id = ? AND expires IS NULL AND facts <> ? RETURNING id", facts.name ?? null, JSON.stringify(facts), id, JSON.stringify(facts));
-		if (rows.length) await changed(c);
+		if (!facts) {
+			if ((await c.db.execute("DELETE FROM machines WHERE id = ? RETURNING id", id)).length) await changed(c);
+			return true;
+		}
+		return publishMachineUpdate(c, id, facts);
 	},
 };
+
+export async function publishMachineUpdate(c: Ctx, id: string, update: MachineUpdate) {
+	const { host: sampled, ...facts } = update;
+	// During a rolling deploy an older machine actor may still publish inline options.
+	const host = sampled ?? facts.report?.host;
+	if (facts.report && (facts.report.host || facts.report.harnesses?.some(entry => entry.options))) {
+		const { host: _host, ...report } = facts.report;
+		facts.report = compactReport(report);
+	}
+	const data = JSON.stringify(facts);
+	const sample = host ? JSON.stringify(host) : null;
+	const rows = await c.db.execute("UPDATE machines SET name = COALESCE(?, name), facts = ?, host = ? WHERE id = ? AND expires IS NULL AND facts <> ? RETURNING id", facts.name ?? null, data, sample, id, data);
+	if (rows.length) { await changed(c); return true; }
+	if ((await c.db.execute("UPDATE machines SET host = ? WHERE id = ? AND expires IS NULL AND host IS NOT ? RETURNING id", sample, id, sample)).length) {
+		const machine = c.vars.machines.get(id);
+		if (machine) c.vars.machines.set(id, { ...machine, host });
+		c.broadcast("machineHost", { machineId: id, host: host ?? null });
+	}
+	return false;
+}

@@ -332,7 +332,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						{reach.text}
 					</p>
 				) : null}
-				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} />)}
+				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />

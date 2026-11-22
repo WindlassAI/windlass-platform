@@ -12,6 +12,8 @@
  *                              the sandbox layer (default docker). docker: containers on this machine, for
  *                              one server. e2b: E2B microVMs, which every server of a deployment reaches
  *                              (the variables below). fake keeps everything in memory
+ *   WLP_SECRET_KEYS            ordered signing roots (id:secret,id:secret), overriding WLP_SECRET
+ *   WLP_SIGNIN_KEYS            ordered sealing roots, overriding WLP_SIGNIN_KEY
  *   WLP_SECRET                 signs tokens; when unset one is generated and kept in .data/secret.
  *                              Required with a remote engine: every server must sign with the same one
  *   WLP_SIGNIN_KEY             what the key that encrypts ChatGPT sign-ins in actor storage is derived from
@@ -61,8 +63,8 @@
  *                              is reached makes work wait, with a sentence, and never refuses it
  *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_TURNS, WLP_FACTORY_ITEM_ACTIVE_SECONDS,
  *   WLP_FACTORY_ITEM_HOSTED_SECONDS
- *                              a new work item's budget (default 4,000,000 tokens, 10 turns, 4 hours
- *                              working, 1.5 hours of hosted sandbox); a person raises one item's when
+ *                              a new work item's budget (default 6,000,000 tokens, 14 turns, 4 hours
+ *                              working, 2 hours of hosted sandbox); a person raises one item's when
  *                              it stops on it. The same on every server, like all of these
  *   WLP_HTTP_PORT, PORT        where the platform's HTTP routes listen (`/platform/info`, `/health`);
  *                              WLP_HTTP_PORT first, then PORT, which Rivet Cloud sets on its nodes
@@ -73,7 +75,7 @@
  *                              on that port (web.ts): one address for the whole platform. Unset: it
  *                              serves none, and the web app is hosted elsewhere. server/Dockerfile sets it
  *
- * What browsers connect with (`GET /platform/connection`, platform-info.ts; README, "Running on several
+ * What browsers connect with (`GET /platform/connection`, platform-info.ts; docs/operating.md, "Running on several
  * servers"). None of it is needed with the local engine, which asks for no token:
  *
  *   WLP_PUBLIC_ENDPOINT        the Rivet endpoint browsers connect to, without a namespace or a token in
@@ -94,7 +96,7 @@
  *                              minute, and at most the 24 hours a Rivet Cloud cluster issues one for).
  *                              A server hands one token to every browser until half of that is gone
  *
- * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; README, "E2B"). The defaults are sized for E2B's
+ * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; docs/operating.md, "E2B"). The defaults are sized for E2B's
  * free Hobby plan, which runs on a one-time credit: every one of them errs on the side of using less.
  *
  *   E2B_API_KEY                the E2B account's API key. Required: without it the server does not start
@@ -132,7 +134,7 @@
  *   WLP_E2B_WINDLASS_VERSION   the Windlass version in the template, to show it before the first sandbox
  *                              was made (default: learned from the first sandbox)
  *
- * The bucket (read by `backupConfig` below; README, "The agent's memory outlives its sandbox"). Where
+ * The bucket (read by `backupConfig` below; docs/architecture.md, "The agent's memory outlives its sandbox"). Where
  * Windlass's own session data lives on the sandbox's disk (E2B), a copy of it is kept in a bucket after
  * every turn and put back into the sandbox that replaces a lost one (sandbox/backup.ts). Any store
  * that speaks the S3 protocol will do, and changing the provider is changing these. With none of the
@@ -163,7 +165,7 @@
  *                              fake layer's Windlass sessions live in its sandboxes, as on E2B, and
  *                              are copied to that directory and restored from it (sandbox-fake.ts)
  *
- * GitHub (read by `githubConfig` below; README, "GitHub"). A GitHub App of this deployment's own lets a
+ * GitHub (read by `githubConfig` below; docs/github-and-repositories.md, "GitHub"). A GitHub App of this deployment's own lets a
  * user connect GitHub, launch an agent on a repository the app was installed on, private ones included,
  * and get the work back as a pull request. With none of the first five set the feature is off: the web
  * app shows nothing of it and every session behaves as before. With only some of them set it is off
@@ -209,11 +211,12 @@
  *
  * The Rivet engine is RivetKit's to configure, from its own variables: without RIVET_ENDPOINT it starts
  * a local engine on :6420 (development), with it the server joins that engine as one of its nodes
- * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; README, "Running on
+ * (RIVET_ENDPOINT, RIVET_NAMESPACE, RIVET_TOKEN, RIVET_POOL, RIVET_NODE_VERSION; docs/operating.md, "Running on
  * several servers"). `engine` below is what this server makes of them; it never holds the token, and
  * neither does anything else in `config`: the admin token is read where it is used (`engineAdminToken`).
  */
 
+import { configuredKeys, type Keyring } from "./keyring.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -271,8 +274,8 @@ export interface Config {
 	accountEmails: ReadonlyMap<string, string>;
 	sandbox: SandboxMode;
 	allowDockerHosted: boolean;
-	secret: Buffer;
-	/** False when a remote engine is configured and WLP_SECRET is not: the server refuses to start (startup.ts). */
+	signingKeys: Keyring;
+	/** False when a remote engine is configured without a shared signing key: the server refuses to start (startup.ts). */
 	secretConfigured: boolean;
 	/** The settings that are set to something that cannot be used, each in words that do not repeat its value: the server refuses to start (startup.ts). */
 	unusable: string[];
@@ -531,15 +534,13 @@ function readSecret(): Buffer {
 	return Buffer.from(generated, "utf8");
 }
 
-/**
- * What the key that encrypts sign-ins is derived from: WLP_SIGNIN_KEY when it is set, so the token
- * secret can be changed without every user having to sign in with ChatGPT again, and otherwise the
- * server's secret. Either way it is the derivation's input, never the key itself (signin/seal.ts), and
- * it has to be the same on every server: a sign-in sealed by one must open on the others.
- */
-export function signInKeySecret(): Buffer {
+// Preserve the legacy blob id for a singleton seal key. With no dedicated key, the
+// complete signing ring is available to decrypt blobs during a signing-key rotation.
+export function signInKeys(): Keyring | Buffer {
+	const ring = configuredKeys("WLP_SIGNIN_KEYS", 32);
+	if (ring) return ring;
 	const own = process.env.WLP_SIGNIN_KEY;
-	if (own === undefined) return config.secret;
+	if (own === undefined) return process.env.WLP_SECRET_KEYS === undefined ? config.signingKeys[0].secret : config.signingKeys;
 	if (own.length < 32) throw new Error("WLP_SIGNIN_KEY must be at least 32 characters long");
 	return Buffer.from(own, "utf8");
 }
@@ -715,8 +716,8 @@ export const config: Config = {
 	accountEmails: readAccountEmails(),
 	sandbox: readSandboxMode(),
 	allowDockerHosted: process.env.WLP_ALLOW_DOCKER_HOSTED === "1",
-	secret: readSecret(),
-	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET),
+	signingKeys: configuredKeys("WLP_SECRET_KEYS", 16) ?? [{ id: "default", secret: readSecret() }],
+	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET_KEYS || process.env.WLP_SECRET),
 	unusable,
 	engine,
 	browsers: readBrowsers(),

@@ -130,7 +130,7 @@ export interface ModelChoice {
 
 /**
  * The models a user may start a session on or switch a turn to, and the efforts each accepts
- * (README, "Models"). They are no fact of the deployment: they are what the user's ChatGPT plan
+ * (docs/architecture.md, "Models"). They are no fact of the deployment: they are what the user's ChatGPT plan
  * offers, as Windlass lists them with that user's sign-in, kept in the user's actor for about an hour.
  */
 export interface ModelList {
@@ -380,7 +380,7 @@ export interface CreateSessionInput {
  * every attempt of that submission: when no answer came, when the answer was a failure to reach the
  * server, and when the user sends again what was refused, unchanged. The server takes a key at most
  * once and answers a repeat with what the first attempt was answered, so a message that reaches it
- * twice is one message (README, "A message sent twice").
+ * twice is one message (docs/architecture.md, "A message sent twice").
  *
  * A string of 1 to MAX_IDEMPOTENCY_KEY_CHARS characters. Left out, or null: no key, and every call
  * is a submission of its own. Anything else is refused with the code `bad_idempotency_key` and is
@@ -484,7 +484,7 @@ export interface PullRequestInfo {
 	pushedAt: number;
 	/**
 	 * What the section the platform keeps in its description said when it was last written, in a few
-	 * words (`Verified`; README, "What a pull request shows was verified"): "2 checks passed",
+	 * words (`Verified`; docs/github-and-repositories.md, "What a pull request shows was verified"): "2 checks passed",
 	 * "1 of 2 checks failing", "nothing verified", with "1 thing to look at" where the section lists
 	 * observations.
 	 */
@@ -547,7 +547,7 @@ export interface RepositorySetup {
 /**
  * One of the checks a user saved for a repository of their GitHub connection: a command that tells
  * whether the code is right, which Windlass runs before it calls a turn done and sends the agent back
- * with when it fails (README, "A repository's checks"). The first four fields are Windlass's own
+ * with when it fails (docs/github-and-repositories.md, "A repository's checks"). The first four fields are Windlass's own
  * (`checks[]` in its configuration), with its limits.
  */
 export interface RepositoryCheck {
@@ -673,7 +673,7 @@ export type Verified = ({
 
 /**
  * Something in a pull request's changes that a reviewer would want to look at, as an observation
- * (README, "What a pull request shows was verified", says exactly what each one looks for):
+ * (docs/github-and-repositories.md, "What a pull request shows was verified", says exactly what each one looks for):
  *
  *   tests_removed    test files deleted, or renamed to a path that is not a test's
  *   tests_skipped    tests newly skipped or disabled in test files
@@ -690,7 +690,7 @@ export interface VerifiedFlag {
 }
 
 /**
- * Who a repository's secret is handed to (README, "A repository's secrets"). Every secret goes to the
+ * Who a repository's secret is handed to (docs/github-and-repositories.md, "A repository's secrets"). Every secret goes to the
  * repository's setup command. Beyond that:
  *
  *   "setup"   the MCP servers the repository names, and not the commands the agent runs
@@ -743,7 +743,7 @@ export interface RepositorySecrets {
 // --- A repository's page ---------------------------------------------------------------------
 
 /**
- * What a new session on a repository starts with, where its user said so (README, "A repository's
+ * What a new session on a repository starts with, where its user said so (docs/github-and-repositories.md, "A repository's
  * page"): the launch form starts from them when that repository is picked, and its user can still
  * choose otherwise for one session. Kept as they were saved: a default may come to name a sandbox
  * this deployment no longer offers or a model its user's account no longer does, and such a one is
@@ -804,7 +804,7 @@ export interface SavedRepository {
 
 /**
  * What a new session starts with where neither the launch form nor the chosen repository says so
- * (README, "Account settings"): a sandbox profile and a model, the user's own, whatever the
+ * (docs/github-and-repositories.md, "Account settings"): a sandbox profile and a model, the user's own, whatever the
  * repository. Kept as they were saved, as a repository's are: one that names a sandbox this
  * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
  * it says so.
@@ -901,7 +901,7 @@ export interface AccountSecrets {
 // --- Usage -----------------------------------------------------------------------------------
 
 /**
- * A user's sandbox time today and the sandboxes they keep, in numbers (README, "Usage and limits").
+ * A user's sandbox time today and the sandboxes they keep, in numbers (docs/architecture.md, "Usage and limits").
  *
  * Sandbox time is the time a hosted sandbox runs: from when it is created or resumed, for a turn or
  * to read the workspace, until it is suspended, removed or stops by itself. A sandbox that is paused
@@ -1050,9 +1050,14 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 	return name ? what + " (" + name.slice(0, 6).toLowerCase() + ")" : what;
 }
 
+/** Latest host sample for an already listed machine. */
+export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
+export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
 /** One of the user's machines, as the Machines page lists it. */
-export interface MachineDetails { whenToUse: string; tags: string[] }
 export interface MachineSummary extends Partial<MachineDetails> {
+	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
+	slots?: { max: number; busy: number; queued: number; unit: { cpus: number; memoryBytes: number; pids: number } };
+	personalRunning?: number;
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
 	screenshots?: boolean;
@@ -1060,7 +1065,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1203,7 +1208,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1461,6 +1466,7 @@ export interface RoundCaps {
 
 /** An item as the user's index lists it. */
 export interface ItemSummary {
+	placement?: ChildPlacement;
 	mode?: ItemMode;
 	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;
@@ -1494,8 +1500,11 @@ export interface ItemSummary {
 
 /** An item's page. */
 export interface ItemView extends ItemSummary {
+	canRetry?: boolean;
 	plan?: FeaturePlan | null;
 	children?: ItemSummary[];
+	/** Current owner policy for the places named in the proposed plan. */
+	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */
@@ -1515,7 +1524,29 @@ export interface ItemView extends ItemSummary {
 
 export type ItemMode = "single" | "orchestrate";
 
+export interface PlacementNeeds {
+	tags?: string[];
+	screenshots?: boolean;
+	egress?: "open" | "restricted";
+	profile?: "docker-hardened" | "docker-windlass-sandbox";
+	harness?: HarnessId;
+	cpus?: number;
+	memoryGiB?: number;
+}
+
+export interface ChildPlacement {
+	place: SandboxPlace;
+	name: string;
+	reason: string;
+	units: number;
+	sendSecrets: boolean;
+	profile?: SandboxProfileId;
+}
+
 export interface PlanSubtask {
+	/** Older plans inherit the feature's place. */
+	place?: { prefer: string; reason: string; allow?: string[] };
+	needs?: PlacementNeeds;
 	key: string;
 	title: string;
 	brief: string;
@@ -1526,6 +1557,7 @@ export interface PlanSubtask {
 }
 
 export interface FeaturePlanEdit {
+	overflow?: boolean;
 	questions: { id: string; text: string; options?: string[]; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
@@ -1596,6 +1628,7 @@ export interface ApiToken {
 }
 
 export interface UserActions {
+	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
 	/**
@@ -1747,6 +1780,7 @@ export interface UserActions {
 	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
 	 */
 	machines(): Promise<MachineSummary[]>;
+	machineCatalog(input: { machineId: string; id: "claude" | "opencode"; digest: string }): Promise<HarnessOptions | null>;
 	/**
 	 * Looks up the code a runner printed ("XXXX-XXXX": Crockford base32, so case, spaces and dashes do
 	 * not matter, O reads as 0 and I and L as 1) and answers with what that machine said of itself. The
@@ -1770,7 +1804,7 @@ export interface UserActions {
 	 */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
-	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
+	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	listItems(): Promise<ItemSummary[]>;
@@ -1802,6 +1836,7 @@ export interface UserEvents {
 	usage: UsageNumbers;
 	/** The user's machines, after one was paired or removed, or its status, warnings or secrets switch changed. */
 	machines: MachineSummary[];
+	machineHost: MachineHostUpdate;
 	/** The user's work items, newest first, after any of them changed. */
 	items: ItemSummary[];
 }

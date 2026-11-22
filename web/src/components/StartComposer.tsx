@@ -33,7 +33,7 @@
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemSummary, type HarnessId, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -49,7 +49,7 @@ import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
-import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SingleIcon, SlidersIcon, SplitIcon, WarnIcon } from "./Icons";
+import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
 import { HARNESS_PROFILE, machineUnusable, offeredHarnesses } from "./PlaceChoice";
@@ -64,7 +64,8 @@ import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
-import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
+import { ItemModePicker, ItemModeCost } from "./ItemModePicker";
+import { orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
 function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boolean {
@@ -139,8 +140,29 @@ function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefau
 	return { defaults: mine ? state.defaults : null, checks: mine ? state.checks : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
 }
 
+/** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
+function useCatalog(machine: MachineSummary | null, id: "claude" | "opencode") {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const machineId = machine?.machineId;
+	const digest = machine?.harnesses?.find(entry => entry.id === id)?.optionsDigest;
+	const [result, setResult] = useState<{ machineId: string; digest: string; options?: HarnessOptions; error?: string }>();
+	const [retry, setRetry] = useState(0);
+	useEffect(() => {
+		if (!machineId || !digest) return;
+		let current = true;
+		client.user(auth).machineCatalog({ machineId, id, digest }).then(
+			options => current && setResult({ machineId, digest, options: options ?? undefined }),
+			error => current && setResult({ machineId, digest, error: explain(error) }),
+		);
+		return () => { current = false; };
+	}, [client, auth, machineId, id, digest, explain, retry]);
+	const match = result?.machineId === machineId && result?.digest === digest ? result : undefined;
+	return { options: match?.options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
+}
+
 /** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
-type Picker = "repo" | "where" | "agent" | "mode" | "itemMode" | "criteria" | "plus" | "settings";
+type Picker = "repo" | "where" | "agent" | "mode" | "criteria" | "plus" | "settings";
 
 /** "github.com/acme/web" for a pasted address: the chip's few words. */
 const shortAddress = (url: string) => url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -181,7 +203,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Agent or work item: the page's, unless its user switched before leaving for GitHub on a page that offers the switch. Without work items on this deployment, an agent.
 	const [kindChoice, setKind] = useState<StartKind>((switchable ? draft?.kind : null) ?? startKind);
 	const item = kindChoice === "item" && Boolean(info?.items);
-	const [orchestrate, setOrchestrate] = useState(false);
+	const [itemMode, setItemMode] = useState<ItemMode>(draft?.itemMode ?? "orchestrate");
 	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
 	// The work item filed last from here, said under the field until another is written.
 	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean; feature: boolean } | null>(null);
@@ -308,7 +330,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const wantedHarness = harnessChoice ?? last.harness ?? "windlass";
 	const harness: HarnessId = wantedHarness !== "windlass" && hardened && offeredHarnesses(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
-	const options = harnessOptions(chosenMachine, harness);
+	const catalogs = { claude: useCatalog(item ? null : chosenMachine, "claude"), opencode: useCatalog(item ? null : chosenMachine, "opencode") };
+	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
+	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
 	const lastOf = last.of[harness] ?? null;
 
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
@@ -343,7 +367,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A work item waits for what its repository starts on, and where it runs; none of an agent's defaults.
 	const reading = item
 		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || (machinesReading && wantedMachine !== null)
-		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (machinesReading && wantedMachine !== null);
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null);
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
 	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
@@ -413,7 +437,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title: filing.title,
-			...(orchestrate && info?.items?.orchestrate && { mode: "orchestrate" as const }),
+			mode: info?.items?.orchestrate ? itemMode : "single",
 			body: filing.body,
 			acceptance,
 			start: now,
@@ -427,6 +451,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			asked.current = null;
 			setPrompt("");
 			setCriteria("");
+			setItemMode("orchestrate");
 			setFiled({ id: made.id, title: made.title, started: now, feature: input.mode === "orchestrate" });
 		} catch (failure) {
 			setError(explain(failure));
@@ -524,7 +549,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				) : (
 					<>
 						{notice?.tone === "bad" ? `${notice.text} ` : github.error ? `${github.error} ` : null}
-						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, criteria } })} disabled={busy !== null}>
+						<button type="button" className="link" onClick={() => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } })} disabled={busy !== null}>
 							Connect GitHub
 						</button>{" "}
 						to choose one of your own repositories, private ones included, and get the work back as a pull request. What you wrote here is kept.
@@ -790,7 +815,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		},
 		...(chosenMachine && offersOther
 			? offeredHarnesses(chosenMachine).map((offered) => {
-					const options = harnessOptions(chosenMachine, offered.id);
+					const options = harnessOptions(chosenMachine, offered.id, catalogs[offered.id].options);
 					const name = HARNESS_NAMES[offered.id];
 					const rows = modelRows(offered.id, options.models);
 					return {
@@ -801,7 +826,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 							? [{ id: `${offered.id}:none`, label: name, icon: <AgentGlyph harness={name} />, description: `Runs only in the hardened container, which “${machineLabel(chosenMachine)}” cannot make now.`, disabled: true }]
 							: rows.length > 0
 								? rows
-								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
+								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: catalogs[offered.id].reading ? "Reading models…" : `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
 					};
 				})
 			: []),
@@ -840,6 +865,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								{offeredHarnesses(chosenMachine).map(offered => <HarnessStatus key={offered.id} harness={offered} />)}
 							</details>
 						: null}
+					{(["claude", "opencode"] as const).map(id => catalogs[id].error && <p key={id} role="status">
+						{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
+					</p>)}
 					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
 				</>
 			) : undefined,
@@ -893,38 +921,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		</div>
 	);
 
-	// ---- how a work item runs: single, or a feature a planner splits ------------------------------------
+	// ---- how a work item runs: plan first or quick ------------------------------------
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
-	const orchestrating = orchestrateOffered && orchestrate;
+	const orchestrating = orchestrateOffered && itemMode === "orchestrate";
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
-	const itemModeValue = orchestrating ? ITEM_MODE_WORDS.orchestrate.name : ITEM_MODE_WORDS.single.name;
-	const itemModeSpec: MenuSpec | null = orchestrateOffered
-		? {
-				label: "How it runs",
-				width: 340,
-				groups: [
-					{
-						id: "item-mode",
-						items: (["single", "orchestrate"] as const).map((id) => ({
-							id,
-							label: ITEM_MODE_WORDS[id].name,
-							icon: id === "single" ? <SingleIcon size={16} /> : <SplitIcon size={16} />,
-							description: ITEM_MODE_WORDS[id].description,
-							wrap: true,
-							checked: (id === "orchestrate") === orchestrating,
-							tone: id === "orchestrate" && orchestrating && orchestrateWarn ? ("warn" as const) : undefined,
-							onSelect: () => setOrchestrate(id === "orchestrate"),
-						})),
-					},
-				],
-				footer: <p className={`ui-menu-note${orchestrateWarn ? " tone-warn" : ""}`}>{orchestrateWarn ?? "Approving a plan needs saved checks and CI that reports on pushes. Without them, file it as single."}</p>,
-			}
-		: null;
-	const itemModePill = (props: TriggerProps) => (
-		<Pill {...props} outlined className="mode-picker" data-picker="item-mode" data-value={itemModeValue} icon={orchestrating ? <SplitIcon size={14} /> : <SingleIcon size={14} />} dot={orchestrateWarn ? "warn" : null} dotLabel={orchestrateWarn ? "cannot be approved here" : undefined} disabled={busy !== null} aria-label={`How it runs: ${itemModeValue}`}>
-			{itemModeValue}
-		</Pill>
-	);
+	const itemModeControl = orchestrateOffered ? <ItemModePicker costId={ids.kind + "-cost"} value={itemMode} onChange={setItemMode} disabled={busy !== null} /> : null;
 
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
@@ -988,7 +989,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const anyOpen = facts.some((fact) => fact.open);
 
 	// ---- the phone: one summary row, a sheet of settings --------------------------------------------------
-	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), orchestrating ? "orchestrate" : null, item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
+	const summary = [item ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
 	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null || orchestrateWarn !== null;
 	const settingsSpec: MenuSpec = {
 		label: "Settings",
@@ -1000,7 +1001,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
 					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
 					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
-					...(itemModeSpec ? [{ id: "item-mode", label: "How it runs", icon: orchestrating ? <SplitIcon size={16} /> : <SingleIcon size={16} />, description: itemModeValue, tone: orchestrateWarn ? ("warn" as const) : undefined, submenu: itemModeSpec }] : []),
 					...(item ? [{ id: "criteria", label: "Acceptance criteria", icon: <SlidersIcon size={16} />, description: criteriaValue, tone: criteriaWrong ? ("warn" as const) : undefined, panel: criteriaField }] : []),
 					...(hasSetup && setupForm ? [{ id: "setup", label: "Setup and secrets", icon: <PlusIcon size={16} />, description: setupSummary ?? undefined, panel: setupForm }] : []),
 				],
@@ -1058,7 +1058,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					</span>
 				</p>
 			) : null}
-			{phone && kindSwitch ? <div className="start-kinds">{kindSwitch}</div> : null}
+			{phone && (kindSwitch || itemModeControl) ? <div className="start-kinds">{kindSwitch}{itemModeControl}</div> : null}
+			{phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} mode={itemMode} />}
 			<div className="start-box">
 				<label className="visually-hidden" htmlFor={ids.text}>
 					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
@@ -1117,7 +1118,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								</Pill>
 							) : null}
 							<span className="start-tools-end">
-								{itemModeSpec ? <Menu spec={itemModeSpec} align="end" open={open === "itemMode"} onOpenChange={openOnly("itemMode")} trigger={itemModePill} surface="popover" /> : modeControl}
+								{item ? itemModeControl : modeControl}
 								<SplitButton type="submit" className="start-launch" icon={<SendIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"}>
 									{launchWord}
 								</SplitButton>
@@ -1135,6 +1136,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					)}
 				</div>
 			</div>
+			{!phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} mode={itemMode} />}
 			{facts.length > 0 || chosenMachine ? (
 				<p className={`start-sandbox${anyOpen ? " start-sandbox-open" : ""}`} title={facts.map((fact) => fact.long).join("; ") || undefined}>
 					{anyOpen ? <WarnIcon size={13} /> : <ShieldGlyph />}

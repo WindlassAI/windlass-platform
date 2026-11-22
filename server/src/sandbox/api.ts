@@ -40,6 +40,8 @@ import type { ProjectChecks } from "../windlass-config.js";
 // ---------------------------------------------------------------------------------------------
 
 export interface ExecOptions {
+	/** Run as the unprivileged transport user, outside the workspace. */
+	gitUser?: true;
 	/** Defaults to the sandbox's workspace. */
 	cwd?: string;
 	env?: Record<string, string>;
@@ -93,6 +95,8 @@ export interface SandboxHandle {
 }
 
 export interface CreateSandboxInput {
+	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
+	size?: number;
 	/** Machine-only. The default harness uses the ordinary Windlass image. */
 	harness?: Exclude<HarnessId, "windlass">;
 	/** An item's reviewer keeps Windlass data inside its own sandbox, including approval records. */

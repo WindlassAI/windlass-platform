@@ -7,6 +7,7 @@ import type { SandboxProfile, SessionSummary } from "@contract";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { clockDuration } from "../lib/format";
 import type { SessionView, TurnView } from "../lib/timeline";
+import { liveStep } from "../lib/workGroups";
 import { useNow } from "../state/hooks";
 import { PlatformPrompts, Turn } from "./Blocks";
 import { ArrowDownIcon, AskIcon, Mark } from "./Icons";
@@ -16,17 +17,25 @@ const NEAR = 48;
 
 const STARTERS = ["Run the tests and fix what fails.", "Check what the sandbox allows.", "Run the full build and tell me if it passes."];
 
+/**
+ * The line at the end of a live turn: what the agent does now, in a few words and what it acts on
+ * (lib/workGroups.ts `liveStep`), which step it is at and how long the turn has run.
+ */
 function Working({ summary, turn }: { summary: SessionSummary; turn: TurnView | null }) {
 	const now = useNow(1000);
 	const since = turn?.blocks[0]?.at ?? summary.updatedAt;
 	const elapsed = Math.max(0, now - since);
 	const waiting = summary.status === "waiting";
-	const words = summary.status === "starting" ? "getting the sandbox ready" : summary.status === "stopping" ? "stopping" : waiting ? "waiting for your answer" : turn && turn.steps > 0 ? `working · step ${turn.steps}` : "working";
+	const running = summary.status === "running";
+	const step = running ? liveStep(turn) : null;
+	const words = summary.status === "starting" ? "getting the sandbox ready" : summary.status === "stopping" ? "stopping" : waiting ? "waiting for your answer" : (step?.words ?? "working");
 	return (
 		<p className={`working working-${summary.status}`} role="status">
 			<span className="working-weight" aria-hidden="true" />
 			{waiting ? <AskIcon size={16} /> : <Mark size={17} turning={summary.status !== "stopping"} />}
-			<span>{words}</span>
+			<span className="working-words">{words}</span>
+			{step?.target ? <code className="working-target">{step.target}</code> : null}
+			{running && turn && turn.steps > 0 ? <span className="working-step">step {turn.steps}</span> : null}
 			<span className="working-time">{clockDuration(elapsed)}</span>
 		</p>
 	);

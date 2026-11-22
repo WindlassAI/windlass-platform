@@ -13,6 +13,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
 import type { ExecResult, SandboxHandle } from "./api.js";
 
 /** Windlass's data directory inside a sandbox (`$XDG_DATA_HOME` is unset, so `~/.local/share/windlass`). */
@@ -35,7 +36,30 @@ export interface InternalExecResult extends ExecResult {
 	leftovers: number;
 }
 
+// Apply these before the provider starts its shell. In particular E2B uses a login shell.
+export const GIT_USER_ENV = { HOME: "/nonexistent", PATH: "/usr/bin:/bin", ENV: "/dev/null", BASH_ENV: "/dev/null" };
+
+// Existing sandbox images have a single agent-owned wlp-run pid directory.
+// Give the transport uid its own per-command directory and signal the entire Git process group.
+export function gitProcess(tag: string, argv: string[]): string[] {
+	return ["/bin/sh", "-ec", `export PATH=/usr/bin:/bin
+umask 077
+proxy=
+if [ "\${https_proxy:-}" = '${RUNNER_HTTP_PROXY}' ]; then proxy='${RUNNER_HTTP_PROXY}'; fi
+dir=/tmp/wlp-transport-process-$1
+shift
+mkdir -m 700 -- "$dir"
+trap 'rm -rf -- "$dir"' EXIT
+/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C.UTF-8 https_proxy="$proxy" setsid -w /bin/sh -ec 'echo $$ > "$0/pid"; exec "$@"' "$dir" "$@"`, "git-run", tag, ...argv];
+}
+
+export function signalGitProcess(tag: string, signal: string): string[] {
+	return ["/bin/sh", "-ec", 'dir=/tmp/wlp-transport-process-$1; [ ! -L "$dir" ] && [ -O "$dir" ] && read -r pid < "$dir/pid" && /bin/kill -s "$2" -- "-$pid"', "git-stop", tag, signal];
+}
+
 export interface StartOptions {
+	/** Run as the unprivileged transport user, outside the workspace. */
+	gitUser?: true;
 	cwd?: string;
 	env?: Record<string, string>;
 	/** `ExecOptions.secretEnv`: environment whose values are on no command line. A name that is also in `env` keeps `env`'s value. */

@@ -15,6 +15,8 @@
  *                               show; the actor then closes the socket
  *   report     runner → actor   what the machine has: Docker, the probe, free disk, its sandboxes. Sent
  *                               after welcome and whenever what it says changed, at most every REPORT_MS
+ *   catalog    runner → actor   changed options for one harness, before the report referencing their digest
+ *   host       runner → actor   changed host sample between inventory reports
  *   heartbeat  either way       sent every CONTROL_HEARTBEAT_MS; a socket that is silent for CONTROL_DEAD_MS is closed
  *   attach     actor → runner   a session wants its sandbox: open that session's socket with the ticket
  *   remove     actor → runner   remove one sandbox (its session was deleted); answered with `removed`
@@ -153,16 +155,21 @@ export const validHarnessOptions = is<HarnessOptions>(v => optionsShape(v)
 	&& v.models.some(model => model.id === v.defaultModel)
 	&& new Set(v.models.map(m => m.id)).size === v.models.length
 	&& Buffer.byteLength(JSON.stringify(v)) <= MAX_HARNESS_OPTIONS_BYTES);
-const harnesses = list(object({ id: oneOf("claude", "opencode"), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
+const harnessId = oneOf("claude", "opencode");
+const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
+const catalog = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
+const harnesses = list(object({ id: harnessId, optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) }), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
 const nonnegative = is<number>(v => typeof v === "number" && Number.isFinite(v) && v >= 0);
 export const validMachineName = is<string>(v => typeof v === "string" && v.length <= 64 && v.trim().length > 0 && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v));
 export const egressMode = oneOf("open", "restricted", "none");
+const host = object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegative(v) && v > 0), memoryBytes: count, memoryFreeBytes: count, load1: nullable(nonnegative) });
+const hostFrame = object({ kind: oneOf("host"), host: nullable(host) });
 const report = object({
 	egress: optional(egressMode),
 	name: optional(validMachineName),
-	host: optional(object({ cpus: positiveLimit, sandboxCpus: is<number>(v => nonnegative(v) && v > 0), memoryBytes: count, memoryFreeBytes: count, load1: nullable(nonnegative) })),
+	host: optional(host),
 	/** Absent on pre-policy runners, which allowed both Docker profiles. */
 	allowedProfiles: optional(validAllowedProfiles),
 	/** Accepted for compatibility with older runner reports. */
@@ -182,10 +189,26 @@ const report = object({
 	maxRunning: optional(positiveLimit),
 	maxSandboxes: optional(positiveLimit),
 });
-const runnerFrame = either(either(hello, report), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
+const runnerFrame = either(either(hello, either(report, either(catalog, hostFrame))), either(object({ kind: oneOf("heartbeat") }), object({ kind: oneOf("removed"), sandbox: sandboxId })));
 export type Hello = Of<typeof hello>;
 export type Report = Of<typeof report>;
 export type RunnerFrame = Of<typeof runnerFrame>;
+
+/** Bound pending work before parsing another frame. Include the frame currently being processed. */
+export class ControlQueue {
+	private frames = 0;
+	private bytes = 0;
+	reserve(bytes: number) {
+		if (this.frames >= 128 || this.bytes + bytes > 2 * MAX_REPORT_BYTES) return false;
+		this.frames++;
+		this.bytes += bytes;
+		return true;
+	}
+	release(bytes: number) {
+		this.frames--;
+		this.bytes -= bytes;
+	}
+}
 
 function frameText(data: unknown, maxBytes = MAX_CONTROL_FRAME_BYTES): unknown {
 	if (typeof data !== "string" || data.length > maxBytes || Buffer.byteLength(data) > maxBytes) return undefined;
@@ -195,7 +218,7 @@ function frameText(data: unknown, maxBytes = MAX_CONTROL_FRAME_BYTES): unknown {
 /** For the actor: null for anything a runner sent that is not a frame of this module. */
 export function parseRunnerFrame(data: unknown, allowLargeReport = true): RunnerFrame | null {
 	const v = frameText(data, allowLargeReport ? MAX_REPORT_BYTES : MAX_CONTROL_FRAME_BYTES);
-	if (plain(v) && v.kind !== "report" && typeof data === "string" && Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return null;
+	if (plain(v) && v.kind !== "report" && v.kind !== "catalog" && typeof data === "string" && Buffer.byteLength(data) > MAX_CONTROL_FRAME_BYTES) return null;
 	return runnerFrame(v) ? v : null;
 }
 

@@ -13,6 +13,8 @@
  * sandbox, so the list of secrets is said for the sandbox a new agent starts in when nothing else is
  * chosen: the account's default, or the deployment's first.
  */
+import { useState } from "react";
+import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
 import { AccountSecretsBlock } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
@@ -141,6 +143,49 @@ export function Settings() {
 			) : null}
 
 			{info?.items ? <ApiTokens /> : null}
+			<SessionSettings />
 		</main>
+	);
+}
+
+function SessionSettings() {
+	const { client, signOut, explain } = useApp();
+	const auth = useAuth();
+	const [confirm, setConfirm] = useState(false);
+	const [revokeApiTokens, setRevokeApiTokens] = useState(true);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	async function revoke() {
+		setBusy(true);
+		setError(null);
+		try {
+			await client.user(auth).signOutEverywhere({ revokeApiTokens });
+			signOut("You signed out everywhere.");
+		} catch (failure) {
+			setError(explain(failure));
+			setBusy(false);
+		}
+	}
+	return (
+		<section className="usage-section" aria-labelledby="settings-sessions">
+			<h2 className="usage-title" id="settings-sessions">Sign-in</h2>
+			<button type="button" className="button button-quiet button-small" onClick={() => { setError(null); setRevokeApiTokens(true); setConfirm(true); }}>
+				Sign out everywhere
+			</button>
+			{confirm && (
+				<Dialog title="Sign out everywhere?" size="small" dismissable={!busy} onClose={() => setConfirm(false)}
+					footer={<>
+						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setConfirm(false)} data-autofocus>Cancel</button>
+						<button type="button" className="button button-danger" disabled={busy} onClick={revoke}>{busy ? "Signing out…" : "Sign out everywhere"}</button>
+					</>}>
+					<p>You’ll need to sign in again on every device, including this one. Your running agents will keep working.</p>
+					<p>Paired machines keep working. You can remove them on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.</p>
+					<label>
+						<input type="checkbox" checked={revokeApiTokens} disabled={busy} onChange={event => setRevokeApiTokens(event.target.checked)} /> Also revoke all API tokens
+					</label>
+					{error && <p className="callout callout-warn" role="alert">{error}</p>}
+				</Dialog>
+			)}
+		</section>
 	);
 }

@@ -58,7 +58,7 @@ if [ -n "$push" ] || [ -n "${WLP_RUNNER_RELEASE_DIR:-}" ]; then
   revision=$(git rev-parse HEAD)
   : "${version:?set WLP_RELEASE_VERSION for a dry run}"
   set -- "$@" --provenance mode=max --sbom=true --annotation "index:org.opencontainers.image.description=Windlass machine runner"
-  for field in "source=https://github.com/WindlassAI/windlass-platform" "revision=$revision" "version=$version" "licenses=MIT"; do
+  for field in "source=https://github.com/WindlassAI/windlass-platform" "revision=$revision" "version=$version" "licenses=Apache-2.0"; do
     set -- "$@" --label "org.opencontainers.image.$field" --annotation "index:org.opencontainers.image.$field"
   done
 fi

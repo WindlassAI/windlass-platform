@@ -14,12 +14,13 @@
 import { randomBytes } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, clientError } from "../auth.js";
+import { assertOrigin, clientError, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
 import { NOT_INVITED, mayUse, normalizeEmail } from "../access.js";
 import { getLayer } from "../layer.js";
 import { claimAccountUid } from "./account-email.js";
+import { SealError, serverSealer } from "../signin/seal.js";
 import { issueUserToken } from "../tokens.js";
 
 /** How long a started attempt is accepted: ten minutes. */
@@ -98,6 +99,17 @@ export const login = actor({
 
 	createVars: async (c): Promise<LoginVars> => {
 		const [row] = await c.db.execute<AttemptRow>("SELECT state, expires_at, sealed, schedule_id FROM attempt WHERE id = 1");
+		if (row?.sealed && !serverSealer().isCurrent(row.sealed)) {
+			const sealer = serverSealer();
+			try {
+				const next = sealer.seal("attempt", c.key[0], sealer.open("attempt", c.key[0], row.sealed));
+				await c.db.execute("UPDATE attempt SET sealed = ? WHERE id = 1 AND sealed = ?", next, row.sealed);
+				row.sealed = next;
+			} catch (error) {
+				// An unreadable attempt can still expire, or be explicitly restarted.
+				if (!(error instanceof SealError)) throw error;
+			}
+		}
 		return {
 			attempt: row
 				? { state: row.state, expiresAt: row.expires_at, sealed: row.sealed, scheduleId: row.schedule_id }
@@ -171,11 +183,12 @@ export const login = actor({
 						attempt.sealed = null;
 						throw new UserError(NOT_INVITED, { code: "not_invited" });
 					}
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
 					await logins.adopt(attemptId, finished.attempt, uid);
 					// The user's actor has it: nothing of the sign-in stays here.
 					attempt.sealed = null;
 
-					const token = issueUserToken(profile);
+					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
 					attempt.state = "done";
@@ -184,7 +197,7 @@ export const login = actor({
 					return { token, profile };
 				} catch (error) {
 					await save(c).catch(() => undefined);
-					throw clientError(c.log, error, "The sign-in could not be finished. Start again.");
+					throw clientError(c.log, error, "The sign-in could not be finished. Try the same address again.");
 				}
 			}),
 
@@ -196,10 +209,11 @@ export const login = actor({
 				try {
 					const { logins } = await getLayer();
 					const uid = `demo_${randomBytes(6).toString("hex")}`;
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
 					await logins.ensureUserVolume(uid);
 
 					const profile: UserProfile = { uid, email: null, demo: true };
-					const token = issueUserToken(profile);
+					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");
 					attempt.state = "done";

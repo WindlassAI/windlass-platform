@@ -237,6 +237,7 @@ describe("each picker of the start composer", () => {
 		await show();
 		open("on");
 		pick("m_nas");
+		await settle();
 		open("agent");
 		pick("claude:default");
 		// nas's runner reported Claude Code's models: the adapter's default, by the name it gives it.
@@ -264,7 +265,7 @@ describe("each picker of the start composer", () => {
 
 	/** The machines, each of whose Claude Code reports these options. */
 	const reporting = (options: { models: Array<{ id: string; name: string | null; efforts: string[] }>; defaultModel: string }) => (list: MachineSummary[]) =>
-		list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, options: { ...options, modes: [], checkedAt: 1 } })) }));
+		list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map((harness) => ({ ...harness, optionsDigest: undefined, options: { ...options, modes: [], checkedAt: 1 } })) }));
 	/** The agent picker's rows of Claude Code's models: each as shown (its "default" tag after it), and whether it is chosen. */
 	const modelRows = () => [...pop().querySelectorAll('[data-value^="claude:"]')].map((row) => [`${row.querySelector(".ui-item-label")?.textContent}${row.querySelector(".ui-tag") ? " default" : ""}`, row.getAttribute("aria-checked") === "true"]);
 

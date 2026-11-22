@@ -300,8 +300,12 @@ export class AcpHarness implements Harness {
 				const signedOut = error instanceof AcpError && profile.signedOutCodes.includes(error.code);
 				const said = error instanceof Error ? error.message : String(error);
 				const invalid = phase === "running" && error instanceof AcpError && error.code === -32602;
-				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : "engine";
-				result.failure = { reason, message: redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : said) };
+				// OpenCode wraps provider messages as JSON-RPC internal errors and omits the HTTP status.
+				const openCodePromptError = profile.id === "opencode" && phase === "running" && error instanceof AcpError && error.code === -32603;
+				const message = openCodePromptError ? said.replace(/^Internal error: /, "") : said;
+				const usageLimit = openCodePromptError && message === "The provider's usage or rate limit was reached.";
+				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : "engine";
+				result.failure = { reason, message: redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : message) };
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
 		} finally {

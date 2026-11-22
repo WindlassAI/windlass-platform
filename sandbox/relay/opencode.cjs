@@ -1,10 +1,8 @@
 // This process owns refresh. Setup stops it before replacing or removing a login.
 const { createPublicKey, randomUUID } = require('node:crypto');
 const { readFile, rename, unlink, writeFile } = require('node:fs/promises');
-const { Transform } = require('node:stream');
-const { StringDecoder } = require('node:string_decoder');
 const { rmSync } = require('node:fs');
-const { createRelay } = require('./server.cjs');
+const { createRelay, scrubStream } = require('./server.cjs');
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
@@ -47,42 +45,6 @@ function accountId(token) {
 	return c.chatgpt_account_id || c['https://api.openai.com/auth']?.chatgpt_account_id || c.organizations?.[0]?.id;
 }
 
-// Filter at the credential boundary, before any result can enter an agent file, log or ACP stream.
-function scrubStream(secrets) {
-	const decoder = new StringDecoder('utf8');
-	let pending = '';
-	function consume(text, final) {
-		const input = pending + text;
-		pending = '';
-		let result = '', start = 0;
-		while (start < input.length) {
-			let at = input.length, size = 0;
-			for (const secret of secrets) {
-				let i = input.indexOf(secret[0], start);
-				while (i >= 0 && i <= at) {
-					if (input.startsWith(secret, i)) {
-						if (i < at || secret.length > size) { at = i; size = secret.length; }
-						break;
-					}
-					if (!final && secret.startsWith(input.slice(i))) {
-						if (i < at) { at = i; size = 0; }
-						break;
-					}
-					i = input.indexOf(secret[0], i + 1);
-				}
-			}
-			result += input.slice(start, at);
-			if (!size) { pending = input.slice(at); break; }
-			result += '[redacted]';
-			start = at + size;
-		}
-		return result;
-	}
-	return new Transform({
-		transform(chunk, encoding, done) { done(null, consume(decoder.write(chunk), false)); },
-		flush(done) { done(null, consume(decoder.end(), true)); },
-	});
-}
 async function save(record) {
 	const temp = filename + '.' + randomUUID();
 	try {
@@ -130,11 +92,13 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		})().finally(() => { refresh = undefined; });
 	}
 	return {
-		responseFilter: () => secrets.size ? scrubStream(secrets) : undefined,
+		responseFilter: type => secrets.size ? scrubStream(secrets, type) : undefined,
 		accepts: url => Boolean(endpointFor(allowed, url)),
 		bearer(h, url) {
 			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;
-			if (kind === 'free') return 'Bearer ' + h['x-wlp-session'];
+			// Sessions created by older runners carry the lease in a separate header.
+			if (kind === 'free' && h['x-wlp-session'] && (!h.authorization || h.authorization === 'Bearer public'))
+				return 'Bearer ' + h['x-wlp-session'];
 			if (kind === 'messages') return 'Bearer ' + h['x-api-key'];
 			if (kind === 'google') return 'Bearer ' + h['x-goog-api-key'];
 			return h.authorization;
@@ -146,10 +110,11 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 			const record = await credential(provider);
 			if (!record) return;
 			const headers = { 'content-type': 'application/json' };
-			const attribution = ['user-agent', 'x-title', 'http-referer', 'x-source', 'x-cerebras-3rd-party-integration', 'x-billing-invoke-origin'];
-			if (endpoint.hostname === 'opencode.ai') attribution.push('x-opencode-client','x-opencode-session','x-opencode-session-id',
+			const allowedHeaders = provider === 'free' ? ['user-agent', 'accept', 'accept-encoding', 'content-length', 'x-parent-session-id']
+				: ['user-agent', 'x-title', 'http-referer', 'x-source', 'x-cerebras-3rd-party-integration', 'x-billing-invoke-origin'];
+			if (endpoint.hostname === 'opencode.ai') allowedHeaders.push('x-opencode-client','x-opencode-session','x-opencode-session-id',
 				'x-opencode-parent-session-id','x-opencode-project','x-opencode-request');
-			for (const name of attribution) if (h[name]) headers[name] = h[name];
+			for (const name of allowedHeaders) if (h[name]) headers[name] = h[name];
 			if (provider === 'free') headers.authorization = 'Bearer public';
 			else if (endpoint.kind === 'google') headers['x-goog-api-key'] = record.key;
 			else if (endpoint.kind === 'messages') {
@@ -178,9 +143,11 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 exports.providerFor = providerFor;
 if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const generation = process.env.WLP_OPENCODE_GENERATION;
+	const domain = process.env.WLP_OPENCODE_SESSION_DOMAIN;
+	if (!domain) throw new Error('Missing session signing domain.');
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
 	createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE,
-		domain: 'windlass-opencode-relay-v1-' + generation, provider: providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation) }).listen(socket);
+		domain, provider: providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation) }).listen(socket);
 }

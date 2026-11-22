@@ -1,4 +1,7 @@
-import { approvalText, featureCap, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { approvalText, featureCap, singleAfterPlanning, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
+import { plannerMachines } from "../../../server/src/machines/details.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -21,6 +24,7 @@ import { approvalText, featureCap, validatePlan } from "../../../server/src/fact
  * mock.ts wires it in with one hook: `createMockItems(…)` once, and `...items.calls(auth)` in the user's interface.
  */
 import {
+	machineLabel,
 	MAX_ACCEPTANCE_CRITERIA,
 	MAX_API_TOKENS,
 	MAX_ITEM_BODY_CHARS,
@@ -120,7 +124,7 @@ const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
 const CHOICES: Record<ChoiceId, string> = {
-	run_single: "Run as single item", orchestrate_anyway: "Orchestrate anyway",
+	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
 	raise: "Raise the limit and go on",
@@ -1055,7 +1059,168 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	const tokens = child(theme, "tokens", { n: 66, title: "", on: HARBOR, state: "waiting", filed: 47, question: { kind: "no_change", text: "The agent ended its turn without changing anything.", choices: choices("again", "give_up"), asked: 6 }, run: { n: 1, started: 47, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 46 } }, spent: { tokens: 410_000, turns: 1, activeSeconds: 19 * 60, hostedSeconds: 19 * 60 } });
 	theme.children = [tokens].map(summaryOf);
 
-	return [search, exporting, writer, flag, theme, tokens];
+	// 4. Run as one item after its plan: the plan stays on the page, superseded. The planner wrote its spec as long sentences, as planners do.
+	const resumePlan = featurePlan(
+		1,
+		"superseded",
+		{
+			goal: "Resume an interrupted upload from the last confirmed chunk instead of starting the file again, so that a dropped connection on a large release artefact costs seconds rather than the whole transfer.",
+			requirements: [
+				"Uploads are split into chunks of 8 MiB, and after each chunk the server's confirmation is written to a small state file beside the artefact, so that a restarted upload can read which chunks the server already holds.",
+				"When an upload starts and a state file for the same artefact and the same checksum exists, the client asks the server which chunks it holds and sends only the missing ones, in order, before it finalises the upload.",
+				"A state file whose checksum no longer matches the artefact on disk is discarded with a warning, and the upload starts from the first chunk, so that a rebuilt artefact is never stitched together with parts of the old one.",
+				"The retry policy of the HTTP client is used for each chunk, with its capped backoff, and an upload gives up after five failed attempts on the same chunk with an error that names the chunk and the last status the server answered.",
+				"The progress line counts the chunks already confirmed when it resumes, and says that it resumed and from which chunk.",
+				"`harbor upload --restart` ignores any state file and starts again from the first chunk.",
+			],
+			outOfScope: ["Uploading several chunks at once: chunks stay sequential, as the server expects them in order.", "Resuming downloads, which go through another client.", "Changing the server's chunk API, which already answers which chunks it holds."],
+			acceptance: [
+				"Killing `harbor upload` halfway through a 200 MiB artefact and running it again sends only the remaining chunks, which the test checks against the stand-in server's request log.",
+				"A state file left from a different build of the artefact is discarded with the warning, and the whole file is sent.",
+				"`pnpm test src/upload` and `pnpm test test/e2e/upload.test.ts` pass.",
+			],
+		},
+		[
+			{ key: "state", title: "Keep the chunk state beside the artefact", brief: "Write and read the state file, keyed by the artefact's checksum.", acceptance: ["Run `pnpm test src/upload/state.test.ts`."], dependsOn: [], owns: ["src/upload/state/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 30 * 60 } },
+			{ key: "resume", title: "Send only the missing chunks", brief: "Ask the server which chunks it holds, then send the rest in order.", acceptance: ["Run `pnpm test src/upload`."], dependsOn: ["state"], owns: ["src/upload/client.ts", "src/upload/chunks.ts"], budget: { tokens: 2_200_000, turns: 6, activeSeconds: 1.5 * HOUR_S, hostedSeconds: 45 * 60 } },
+		],
+	);
+	const resuming = feature(
+		{ n: 67, title: "Resume interrupted uploads", on: HARBOR, state: "working", filed: 95, body: "A dropped connection near the end of a large upload starts the whole file again. Resume from the last chunk the server confirmed.", acceptance: resumePlan.spec.acceptance,
+			run: { n: 2, started: 40, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 39, turn: "started" } },
+			events: [[94, "Started.", undefined, true], [80, "The planner filed a proposal.", [1, 1, "refine"]], [41, "Run as single item.", [1, 1, "refine"], true], [40, "Started run 2 as a single item.", [2, 1, "implement"]]],
+			spent: { tokens: 640_000, turns: 2, activeSeconds: 21 * 60, hostedSeconds: 21 * 60 } },
+		resumePlan,
+		null,
+	);
+	resuming.mode = "single";
+	resuming.budget = { ...resumePlan.compare.singleBudget };
+
+	// 5. Placement proposed: a subtask on each policy's machine. The last names "ci-box", whose owner said never: approval is refused with the server's reason.
+	const chartPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Catch visual regressions in the tide chart: capture it in both themes on every pull request and compare against a kept baseline.",
+			requirements: ["Fixtures for three tide days with known extremes.", "Captures at 1280 and 390 wide, light and dark.", "A diff that fails above 0.2% changed pixels."],
+			outOfScope: ["Other charts."],
+			acceptance: ["A screenshot of each capture.", "`pnpm test test/visual` passes."],
+		},
+		[
+			{ key: "fixtures", title: "Record the chart fixtures", brief: "Generate three tide days with known extremes and keep them in test/visual/fixtures.", acceptance: ["Run `pnpm test test/visual/fixtures.test.ts`."], dependsOn: [], owns: ["test/visual/fixtures/**"], budget: { tokens: 1_200_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "nas", reason: "Big builds, and both its slots are free." }, needs: { cpus: 4, memoryGiB: 6 } },
+			{ key: "capture", title: "Capture the chart in both themes", brief: "Render the chart for each fixture at two widths and both themes, and save the captures.", acceptance: ["A screenshot of each capture."], dependsOn: ["fixtures"], owns: ["test/visual/capture/**"], budget: { tokens: 1_600_000, turns: 5, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 },
+				place: { prefer: "studio", reason: "The only machine that reports screenshots.", allow: ["nas"] }, needs: { screenshots: true } },
+			{ key: "compare", title: "Compare captures against the baseline", brief: "Diff each capture against the kept baseline and fail above 0.2% changed pixels.", acceptance: ["Run `pnpm test test/visual`."], dependsOn: ["capture"], owns: ["test/visual/compare/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "ci-box", reason: "Idle, with four slots free." } },
+		],
+	);
+	chartPlan.overflow = true;
+	const chart = feature(
+		{ n: 68, title: "Visual regression checks for the tide chart", on: HARBOR, state: "waiting", filed: 18, body: "Capture the tide chart on every pull request and compare it with a baseline.", acceptance: chartPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "plan_approval", text: approvalText(chartPlan), choices: choices("approve", "revise", "give_up"), asked: 4 },
+			run: { n: 1, started: 17, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 16 } },
+			events: [[17, "Started.", undefined, true], [16, "The planner's turn started.", [1, 1, "refine"]], [4, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 290_000, turns: 1, activeSeconds: 9 * 60, hostedSeconds: 0 } },
+		chartPlan,
+		null,
+	);
+
+	// 6. Placed and running: the first subtask ran on the feature's machine, the second overflowed from the busy "studio" to "nas", and the third waits for two free slots on "studio".
+	const tablePlan = featurePlan(
+		1,
+		"approved",
+		{
+			goal: "Publish the nightly tide table as a PDF beside the CSV.",
+			requirements: ["One page per station.", "A proof screenshot of each page."],
+			outOfScope: ["Printing."],
+			acceptance: ["A screenshot of the first page.", "`pnpm test src/export` passes."],
+		},
+		[
+			{ key: "query", title: "Read the night's readings", brief: "Query the readings of the last night by station.", acceptance: ["Run `pnpm test src/export/query.test.ts`."], dependsOn: [], owns: ["src/export/query/**"], budget: { tokens: 800_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 } },
+			{ key: "render", title: "Render the table as a PDF", brief: "Lay out one page per station with the headless browser.", acceptance: ["Run `pnpm test src/export/pdf.test.ts`."], dependsOn: ["query"], owns: ["src/export/pdf/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 25 * 60 },
+				place: { prefer: "studio", reason: "Its browser is warm from the last export.", allow: ["nas"] } },
+			{ key: "proof", title: "Screenshot each page as a proof", brief: "Capture every page of the PDF and attach the first to the report.", acceptance: ["A screenshot of the first page."], dependsOn: ["render"], owns: ["test/export/proof/**"], budget: { tokens: 700_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 },
+				place: { prefer: "studio", reason: "The only machine that reports screenshots." }, needs: { screenshots: true, cpus: 4 } },
+		],
+	);
+	tablePlan.overflow = true;
+	tablePlan.approvedAt = ago(55);
+	tablePlan.approvedBy = `person:${uid}`;
+	const table = feature(
+		{ n: 69, title: "Nightly tide table as a PDF", on: HARBOR, state: "waiting", filed: 75, pr: 71, body: "Publish the nightly tide table as a PDF too.", acceptance: tablePlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			run: { n: 1, started: 74, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "subtasks", started: 55 } },
+			events: [[74, "Started.", undefined, true], [58, "The planner filed a proposal.", [1, 1, "refine"]], [55, "Approved the plan.", [1, 1, "refine"], true], [54, "Opened draft pull request #71 for the feature branch.", [1, 2, "subtasks"]], [33, "Integrated “Read the night's readings” at 9c1e7a2.", [1, 2, "subtasks"]], [8, "Integrated “Render the table as a PDF” at 51d0be4.", [1, 2, "subtasks"]]],
+			spent: { tokens: 1_900_000, turns: 6, activeSeconds: 48 * 60, hostedSeconds: 0 } },
+		tablePlan,
+		{ reason: "machine", sentence: slotWaitSentence("studio", 2, 0), since: ago(7), retryAt: at + 30_000 },
+	);
+	const nas: SandboxPlace = { kind: "machine", machineId: "m_nas" };
+	const query = child(table, "query", { n: 70, title: "", on: HARBOR, state: "done", filed: 54, place: nas, run: { n: 1, started: 54, ended: 33, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 33 } }, spent: { tokens: 610_000, turns: 2, activeSeconds: 19 * 60, hostedSeconds: 0 } });
+	query.placement = { place: nas, name: "nas", reason: "Same place as the feature", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	const render = child(table, "render", { n: 72, title: "", on: HARBOR, state: "done", filed: 32, place: nas, run: { n: 1, started: 32, ended: 8, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 8 } }, spent: { tokens: 1_020_000, turns: 3, activeSeconds: 27 * 60, hostedSeconds: 0 } });
+	render.placement = { place: nas, name: "nas", reason: "Approved overflow from ‘studio’", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	table.children = [query, render].map(summaryOf);
+
+	// 7. A subtask that could not be placed once the feature got to it: "ci-box" was approved, and its owner set it to never since.
+	const alertsPlan = featurePlan(
+		1,
+		"approved",
+		{
+			goal: "Mail a station's subscribers when its reading crosses the flood line.",
+			requirements: ["A subscriber list per station.", "One mail per crossing, not per reading."],
+			outOfScope: ["Text messages."],
+			acceptance: ["`pnpm test src/alerts` passes."],
+		},
+		[
+			{ key: "detect", title: "Detect flood-line crossings", brief: "Compare each reading with the station's flood line and record a crossing once.", acceptance: ["Run `pnpm test src/alerts/detect.test.ts`."], dependsOn: [], owns: ["src/alerts/detect/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 35 * 60, hostedSeconds: 20 * 60 } },
+			{ key: "mail", title: "Send the alert mails", brief: "Mail each subscriber of the station once per crossing, through the release relay.", acceptance: ["Run `pnpm test src/alerts/mail.test.ts`."], dependsOn: ["detect"], owns: ["src/alerts/mail/**"], budget: { tokens: 1_100_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 25 * 60 },
+				place: { prefer: "ci-box", reason: "It holds the release relay's credentials." } },
+		],
+	);
+	alertsPlan.approvedAt = ago(40);
+	alertsPlan.approvedBy = `person:${uid}`;
+	const alerts = feature(
+		{ n: 73, title: "Flood alerts by mail", on: HARBOR, state: "waiting", filed: 62, pr: 74, body: "Mail subscribers when a station crosses its flood line.", acceptance: alertsPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "placement_refused", text: "Send the alert mails: ‘ci-box’: owner placement policy is never.", choices: [{ id: "revise", label: "Revise the placement" }, { id: "again", label: "Retry allowed places" }, { id: "give_up", label: "Give up the subtask" }], asked: 3 },
+			run: { n: 1, started: 61, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "subtasks", started: 40 } },
+			events: [[61, "Started.", undefined, true], [45, "The planner filed a proposal.", [1, 1, "refine"]], [40, "Approved the plan.", [1, 1, "refine"], true], [39, "Opened draft pull request #74 for the feature branch.", [1, 2, "subtasks"]], [4, "Integrated “Detect flood-line crossings” at 3be91f0.", [1, 2, "subtasks"]]],
+			spent: { tokens: 820_000, turns: 3, activeSeconds: 31 * 60, hostedSeconds: 0 } },
+		alertsPlan,
+		null,
+	);
+	const detect = child(alerts, "detect", { n: 75, title: "", on: HARBOR, state: "done", filed: 39, place: nas, run: { n: 1, started: 39, ended: 4, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 4 } }, spent: { tokens: 540_000, turns: 2, activeSeconds: 22 * 60, hostedSeconds: 0 } });
+	detect.placement = { place: nas, name: "nas", reason: "Same place as the feature", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	alerts.children = [detect].map(summaryOf);
+
+	// 8. The planner suggests one implementer, and asks two things first: the owner answers and saves them before approving it.
+	const roundPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Show tide heights to the centimetre everywhere they are printed.",
+			requirements: ["One rounding function used by the table, the chart labels and the CLI."],
+			outOfScope: ["Changing stored readings."],
+			acceptance: ["`pnpm test src/units` passes."],
+		},
+		[],
+		[
+			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"] },
+			{ id: "csv", text: "Should the CSV export round too, or keep the raw millimetres?" },
+		],
+	);
+	roundPlan.singleSuggested = "One function and its callers in a single change: splitting it would cost more than it saves.";
+	const rounding = feature(
+		{ n: 76, title: "Round tide heights to centimetres", on: HARBOR, state: "waiting", filed: 12, body: "Heights print with three decimals in some places and none in others.", acceptance: roundPlan.spec.acceptance,
+			question: { kind: "single_suggested", text: roundPlan.singleSuggested, choices: choices("run_single", "orchestrate_anyway"), asked: 2 },
+			run: { n: 1, started: 11, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 10 } },
+			events: [[11, "Started.", undefined, true], [10, "The planner's turn started.", [1, 1, "refine"]], [2, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 140_000, turns: 1, activeSeconds: 5 * 60, hostedSeconds: 0 } },
+		roundPlan,
+		null,
+	);
+
+	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
@@ -1153,6 +1318,11 @@ export function createMockItems(deps: MockItemsDeps) {
 	}
 
 	/** Where an item on a machine stands with it now: null for a hosted item. */
+	/** The places a feature's subtasks may take, as the server reads them for placement: the user's machines, and the platform's own sandboxes. */
+	function placementInventory(auth: AuthResult): PlacementInventory {
+		return { machines: plannerMachines(deps.machines(auth)?.list ?? []), hostedProfiles: ["docker-windlass-sandbox", "docker-hardened"] };
+	}
+
 	function machineOfItem(auth: AuthResult, item: ItemView): { machine: MachineSummary | null } | null {
 		if (item.place.kind !== "machine") return null;
 		const { machineId } = item.place;
@@ -1244,7 +1414,8 @@ export function createMockItems(deps: MockItemsDeps) {
 			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
-				item.mode = "single"; plan.status = "superseded"; item.budget = { ...plan.compare.singleBudget };
+				if (plan.questions.some(q => !q.answer)) throw conflict("Answer and save the plan’s questions before approving one implementer.");
+				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = singleAfterPlanning(plan.compare.singleBudget, item.spent, item.budget);
 				return beginRun(auth, item, "Run as single item.");
 			case "edit_plan": {
 				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");
@@ -1258,24 +1429,37 @@ export function createMockItems(deps: MockItemsDeps) {
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
 				if (deps.checks && deps.checks(auth, item.repository.id) === 0) throw new PlatformError("user", "Use a single item or add saved repository checks before approving orchestration.", { reason: "bad_input" });
+				// Every remaining subtask's place is bound now, and refused as the server refuses it (factory/placement.ts, `approveRoutes`).
+				const inventory: PlacementInventory = placementInventory(auth);
+				let routes;
+				try { routes = approveRoutes(plan, item.place, inventory, new Set()); }
+				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				const sub = plan.subtasks.find(s => s.dependsOn.length === 0)!;
-				const session = await deps.session(auth, { title: sub.title, place: item.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
+				const fit = choosePlacement(sub, routes[sub.key]!, inventory);
+				const approved = { plan: { ...plan, status: "approved" as const, approvedAt: at, approvedBy: "person:" + auth.profile.uid }, state: "waiting" as const, question: null, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" as const } }, pullRequest: { number: 1, url: item.repository.url + "/pull/1" } };
+				// No place can take the first subtask yet: the feature waits for one, and says which and for what.
+				if (fit.wait !== undefined) return change(auth, item, { ...approved, wait: { reason: "machine", sentence: fit.wait, since: at, retryAt: at + 30_000 } }, ["Approved the plan."], "person");
+				// Refused for now (low disk, no available profile): approval stands, and the feature asks (blueprint.ts, `askPlacement`).
+				if (fit.refused !== undefined) return change(auth, item, { ...approved, wait: { reason: "person", sentence: fit.refused, since: at, retryAt: null },
+					question: { id: `${item.id}:placement${at}`, kind: "placement_refused", askedAt: at, text: `${sub.title}: ${fit.refused}`, choices: [{ id: "revise", label: "Revise the placement" }, { id: "again", label: "Retry allowed places" }, { id: "give_up", label: "Give up the subtask" }] } }, ["Approved the plan."], "person");
+				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id } });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } } };
+					pullRequest:null, head:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+					place: fit.decision.place, placement: fit.decision };
+				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
-				return change(auth, item, { plan: { ...plan, status: "approved", approvedAt: at, approvedBy: "person:" + auth.profile.uid }, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf), state: "waiting", question: null,
-					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null }, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" } },
-					pullRequest: { number: 1, url: item.repository.url + "/pull/1" } }, ["Approved the plan."], "person");
+				return change(auth, item, { ...approved, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf),
+					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null } }, ["Approved the plan."], "person");
 			}
 			case "start":
 				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
 				return beginRun(auth, item, "Started.");
 			case "retry":
-				if (item.state !== "failed") throw conflict(`This item is ${now}: only a failed item can be retried.`);
+				if (!canRetry(item)) throw conflict(`This item is ${now}: only a failed item can be retried.`);
 				return beginRun(auth, item, "Started again.");
 			case "send_back": {
-				if (item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
+				if (item.mode === "orchestrate" || item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
 				const note = action.note.trim();
 				if (note === "") throw new PlatformError("user", "Say what to change: the note is what the agent is given.", { reason: "bad_input" });
 				return beginRun(auth, item, `Sent back: ${note}`);
@@ -1310,6 +1494,18 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!picked) throw conflict("That is not one of the question's answers.");
 				const note = action.note?.trim() || null;
 				const said = `Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`;
+				// A subtask that could not be placed (blueprint.ts, `askPlacement`): the planner files the rest again, the approved places are checked again, or the subtask is given up and the rest re-planned.
+				if (question.kind === "placement_refused" && plan) {
+					const sub = plan.subtasks.find((one) => question.text.startsWith(one.title + ": "));
+					if (action.choice === "revise" || action.choice === "give_up" || !sub) {
+						plan.status = "superseded";
+						return beginRun(auth, item, action.choice === "give_up" && sub ? `${said} Cancelled “${sub.title}”.` : said);
+					}
+					const inventory = placementInventory(auth);
+					const fit = choosePlacement(sub, bindRoute(sub, item.place, plan.overflow === true, inventory.machines), inventory);
+					if (fit.refused !== undefined) return change(auth, item, { question: { ...question, id: `${question.id}:again${deps.now()}`, askedAt: deps.now(), text: `${sub.title}: ${fit.refused}` } }, [said, "Checked the approved places again: still refused."], "person");
+					return change(auth, item, { question: null, state: "waiting", wait: fit.wait !== undefined ? { reason: "machine", sentence: fit.wait, since: deps.now(), retryAt: deps.now() + 30_000 } : { reason: "children", sentence: `Running ‘${sub.title}’ on ‘${fit.decision.name}’.`, since: deps.now(), retryAt: null } }, [said], "person");
+				}
 				const run = item.run;
 				if (action.choice === "give_up") return change(auth, item, { state: "failed", wait: null, question: null, run: run ? { ...run, endedAt: deps.now(), stopReason: question.kind } : null }, [said], "person");
 				if (action.choice === "retry") {
@@ -1328,6 +1524,27 @@ export function createMockItems(deps: MockItemsDeps) {
 		}
 	}
 
+	const canRetry = (item: ItemView) => item.state === "failed" && !item.parent && !item.children?.length;
+	const pageOf = (item: ItemView) => structuredClone({ ...item, canRetry: canRetry(item) });
+
+	/**
+	 * A feature's page while its plan is proposed carries the owner's current secrets policy for each place
+	 * the plan names, or inherits (user-items.ts, `attachmentStates`).
+	 */
+	function withPlacementReview(auth: AuthResult, view: ItemView): ItemView {
+		delete view.placementReview;
+		if (view.mode !== "orchestrate" || view.plan?.status !== "proposed") return view;
+		const names = new Set(view.plan.subtasks.flatMap((t) => (t.place ? [t.place.prefer, ...(t.place.allow ?? [])] : [])));
+		const parent = view.place;
+		const inheritsPlace = view.plan.subtasks.some((t) => !t.place);
+		if (inheritsPlace && parent.kind === "hosted") names.add("hosted");
+		view.placementReview = (deps.machines(auth)?.list ?? [])
+			.filter((m) => names.has(machineLabel(m)) || (parent.kind === "machine" && parent.machineId === m.machineId && inheritsPlace))
+			.map((m) => ({ name: machineLabel(m), sendSecrets: m.sendSecrets }));
+		if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
+		return view;
+	}
+
 	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems() {
@@ -1336,7 +1553,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async item(id) {
 				await answer(220);
-				return structuredClone(itemOf(auth, id));
+				return withPlacementReview(auth, pageOf(itemOf(auth, id)));
 			},
 			// As the server's `links`: the kept screenshots only, each a fresh ten-minute link. The mock's are the
 			// fixtures under web/public/mock/, with a query that differs on every answer as a signed link does.
@@ -1388,7 +1605,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const id = `it_${fresh(12)}`;
 				const item: ItemView = {
 					id,
-					mode: input.mode ?? "single", parent: null, plan: null, children: [],
+					mode: input.mode ?? "orchestrate", parent: null, plan: null, children: [],
 					title,
 					repository,
 					place,
@@ -1399,7 +1616,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					question: null,
 					pullRequest: null,
 					verdict: null,
-					budget: input.mode === "orchestrate" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
+					budget: input.mode !== "single" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
 					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 					sessionId: session.id,
 					createdAt: at,
@@ -1429,7 +1646,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				await answer(360);
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
-				return structuredClone(item);
+				return withPlacementReview(auth, pageOf(item));
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {
@@ -1477,7 +1694,7 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	/** Seeds the user's items, and with them their sessions, before anything is asked of either. */
 	const prepare = (auth: AuthResult): void => void keptOf(auth);
-	return { calls, machinesChanged, prepare };
+	return { calls, machinesChanged, prepare, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
 }
 
 // ---- the agent's reports on the item's page (Reviewer slice R1-C) -----------------------------------

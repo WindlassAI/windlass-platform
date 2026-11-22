@@ -17,7 +17,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const dir = await mkdtemp(join(root, '.f3-check-'));
 const id = randomBytes(8).toString('hex'), prefix = 'f3-check-' + id, machineId = 'm_' + id;
 const relayName = 'wlp-opencode-relay-' + machineId;
-const uplink = prefix + '-uplink', upstream = prefix + '-upstream';
+const uplink = prefix + '-uplink', upstream = prefix + '-upstream', native = prefix + '-native';
 const token = 'oc-fixture-' + randomBytes(32).toString('hex');
 const identity = { uid: 'fixture', machineId };
 const {privateKey} = generateKeyPairSync('ed25519');
@@ -48,7 +48,7 @@ async function create(session, machine = owner) {
 }
 let adapter;
 async function turn(first, proxyEnv, scan, model) {
-	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,...(first === native ? ['opencode','acp'] : ['wlp-opencode-acp'])], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -83,6 +83,13 @@ try {
 	const mounts = ['key.pem','cert.pem','expected','upstream.cjs'].flatMap(file => ['--mount',`type=bind,src=${dir}/${file},dst=/fixture/${file},readonly`]);
 	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','auth.openai.com','--network-alias','chatgpt.com','--network-alias','api.openai.com','--network-alias','api.anthropic.com','--network-alias','opencode.ai','--network-alias','api.z.ai','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
+	const freeModel = 'opencode/deepseek-v4.1-flash-free';
+	await cmd(['run','-d','--pull','never','--network',uplink,'--name',native,'--cap-drop','ALL',
+		'--mount',`type=bind,src=${dir}/cert.pem,dst=/fixture-ca.pem,readonly`, '-e','NODE_EXTRA_CA_CERTS=/fixture-ca.pem',
+		'-e','OPENCODE_DISABLE_MODELS_FETCH=true','-e','OPENCODE_DISABLE_AUTOUPDATE=true',
+		'-e','XDG_CONFIG_HOME=/tmp/native-config',image,'sleep','infinity']);
+	await turn(native, [], false, freeModel);
+	ok('Pinned native ACP completed a direct anonymous turn at the private TLS recorder.');
 	storePair(identity, privateKey, 'https://fixture.invalid');
 	await owner.loginChanged(false);
 	const catalog = owner.report().harnesses[0].options;
@@ -144,17 +151,25 @@ try {
 	execFileSync(process.execPath,[bundle,'login','opencode','--provider','openai'],{input:token+'-key\n'});
 	const open = executor('open');
 	const third = await create('third',open);
+	const revoked = await cmd(['exec',first,'node','-e',`fetch('http://127.0.0.1:17892/openai/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))`]);
+	assert.equal(revoked, '401', 'a placeholder from before full logout must stay revoked');
 	await channelTurn(open, 'third', saved.get(third).id);
 	assert.match(await cmd(['logs',upstream]),/authorized api.openai.com \/v1\/responses/);
 	ok('Open API-key turn and resumed plan turn through the server harness and runner channel.');
 	await storeProvider(owner, {provider:'anthropic',key:token+'-key'});
+	await open.lifecycle('connect', saved.get(third).id, 'third');
+	await channelTurn(open, 'third', saved.get(third).id);
+	ok('The existing OpenCode sandbox still runs with its original placeholder after a second provider signs in.');
 	const anth = await create('anthropic',open);
 	await channelTurn(open,'anthropic',saved.get(anth).id,'anthropic/claude-opus-4-6');
 	ok('Anthropic API-key turn over the runner session channel.');
 	await storeProvider(owner,{provider:'free'});
 	const free = await create('free',owner);
-	await channelTurn(owner,'free',saved.get(free).id,'opencode/big-pickle');
-	ok('Explicit public models completed a restricted turn without an owner credential.');
+	await channelTurn(owner,'free',saved.get(free).id,freeModel);
+	ok('Restricted free turn matched the native TLS request headers and public authorization.');
+	await channelTurn(owner,'free',saved.get(free).id,'opencode/big-pickle', {reason:'usage_limit',
+		message:"The provider's usage or rate limit was reached."});
+	ok('The pinned ACP harness surfaced the fixed 429 message and the platform classified it as a usage limit.');
 	await storeProvider(owner,{provider:'opencode-go',key:token+'-go'});
 	await storeProvider(owner,{provider:'zai-coding-plan',key:token+'-glm'});
 	const both = await create('both',owner);
@@ -176,7 +191,7 @@ try {
 	adapter?.stdin.end();
 	const filters = Object.entries(owner.labels).flatMap(([key,value]) => ['--filter','label='+key+'='+value]);
 	for (const id of (await cmd(['ps','-aq',...filters])).split(/\s+/).filter(Boolean)) await cmd(['rm','-fv',id]);
-	for (const name of [relayName, upstream]) await docker(['rm','-fv',name]);
+	for (const name of [relayName, upstream, native]) await docker(['rm','-fv',name]);
 	for (const vol of (await cmd(['volume','ls','-q',...filters])).split(/\s+/).filter(Boolean)) await cmd(['volume','rm',vol]);
 	for (const net of (await cmd(['network','ls','-q',...filters])).split(/\s+/).filter(Boolean)) await cmd(['network','rm',net]);
 	await cmd(['network','rm',uplink]);

@@ -303,8 +303,8 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 }
 
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
-export async function turnFlags(sandbox: SandboxHandle, base: string, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
-	const work = await readWork(sandbox, base);
+export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
+	const work = await readWork(sandbox, baseSha);
 	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns && (path => ownsPath(owns, path)));
 }
 

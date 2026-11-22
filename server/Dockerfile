@@ -7,7 +7,7 @@
 # There is no Docker inside it, so the Docker sandbox layer cannot run here: start it with WLP_SANDBOX=e2b.
 # The engine is not in it either. RIVET_ENDPOINT names the one it joins (a Rivet Cloud cluster sets it
 # for its own nodes), and WLP_SECRET must be set, to the same value on every server, or it refuses to
-# start. README, "Running on several servers", has the variables.
+# start. docs/operating.md, "Running on several servers", has the variables.
 
 # The image is built for the machine that runs it on the machine that builds it, which may be of another
 # architecture (`rivet deploy` builds linux/amd64, also on an arm64 machine): the first stage runs on the
@@ -41,13 +41,8 @@ COPY web/package.json web/
 RUN pnpm install --frozen-lockfile --filter @windlass-platform/web
 COPY web web
 # The files the web app shares with the server, and the recorded runs its mock replays.
-COPY server/src/factory/feature-plan.ts server/src/factory/feature-plan.ts
-COPY server/src/machines/details.ts server/src/machines/details.ts
-COPY server/src/contract.ts server/src/contract.ts
-COPY server/src/github/ids.ts server/src/github/ids.ts
-COPY server/src/verified.ts server/src/verified.ts
-COPY server/src/sandbox/profiles.ts server/src/sandbox/profiles.ts
-COPY server/src/sandbox/harnesses.ts server/src/sandbox/harnesses.ts
+# The web app imports shared server modules (contract, plan and placement rules); copy them all so a new import cannot break the image.
+COPY server/src server/src
 COPY fixtures fixtures
 # `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
 RUN pnpm --filter @windlass-platform/web exec vite build

@@ -1,5 +1,5 @@
 /**
- * A submission and its key (README, "A message sent twice"; contract.ts, `IdempotencyKey`).
+ * A submission and its key (docs/architecture.md, "A message sent twice"; contract.ts, `IdempotencyKey`).
  *
  * Why. A call can reach an actor twice. RivetKit's client sends an action again when the engine
  * reports that the answer was lost on its way, an action that is in flight when its actor is put to

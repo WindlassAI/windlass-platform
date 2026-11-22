@@ -722,6 +722,7 @@ const admissions: Array<[string, Parameters<typeof admit>[0], WaitReason | null,
 	["the kept sandboxes are all taken, for a session that needs one", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), usage: { ...usage(3600), sandboxes: { kept: 20, limit: 20 } }, needsSandbox: true }, attempt: 0 }, "capacity", /20 sandboxes you may keep/, T0 + 30_000],
 	["the user's hosted sandboxes are all running", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), running: 3 }, attempt: 0 }, "capacity", /one of your 3 hosted sandboxes: 3 running/, T0 + 30_000],
 	["the deployment is full: tried again, spaced up to 5 min", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), deploymentFull: 10 }, attempt: 6 }, "capacity", /this deployment runs 10 at once and all are in use/, T0 + 5 * MINUTE],
+	["two-slot child waits with one slot free", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: { ...machine(true, 0), slots: { free: 1, units: 2 } }, attempt: 0 }, "machine", /Waiting for 2 free slots on ‘nas’/, T0 + 30_000],
 	["the machine is offline", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: machine(false, 0), attempt: 0 }, "machine", /^Waiting for your machine "nas" to come back online\.$/, T0 + 30_000],
 	["the machine runs all it can", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: machine(true, 3), attempt: 0 }, "machine", /Waiting for ‘nas’: 3 of 3 sandboxes running there/, T0 + 30_000],
 	["a machine with room starts", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: machine(true, 2), attempt: 0 }, null, null, null],
@@ -848,6 +849,14 @@ const turnEnded = (outcome: "succeeded" | "unresolved", evidence: Verified | nul
 const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) => ({ kind: "ci_read", webhooks: false, head, reading, mergeable: true, prHead, openItems: 1 });
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
+
+{
+	const child = newItem();
+	child.parent = { itemId: "i_feature", title: "Feature", key: "first" };
+	const waiting = walk(child, [...pushedRun(H(1)), { ...ciFact(pendingBuild), at: T0 + 96 * MINUTE }]);
+	expect("a subtask waiting on CI offers only wait or give up", waiting.item.question?.kind === "ci_timeout" &&
+		waiting.item.question.choices.map(choice => choice.id).join() === "wait,give_up");
+}
 
 {
 	// Run 1 passed its gate and CI at H(1); run 2 was sent back, its checks failed twice, and it pushed nothing.
@@ -988,6 +997,10 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	for (const fields of [
 		{ kind: "rate_limit", retryable: true, retryAfterMs: 1_000 }, { kind: "transport", retryable: false }, { kind: "server", status: 503, retryable: true },
 	]) expect(`a transient provider error stays on the retry path: ${JSON.stringify(fields)}`, failedStep(fields) === null);
+	expect("an HTTP 429 with no retry scheduled is a usage limit", isDeepStrictEqual(
+		failedStep({kind:"rate_limit",status:429}), {kind:"usage_limit",message}));
+	expect("an HTTP 429 with a short scheduled retry stays on the retry path",
+		failedStep({kind:"rate_limit",status:429,retryable:true,retryAfterMs:1_000}) === null);
 	const step = failedStep({ kind: "auth" });
 	const result = { aborted: false, timedOut: false, exitCode: 0, stderrTail: "", summary: null, windlassSessionId: null, failure: { reason: "invalid_request", message } };
 	expect("an ACP invalid request before the first step keeps the provider's reason", isDeepStrictEqual(turnRefusal("error", result, null), { kind: "invalid_request", message }));

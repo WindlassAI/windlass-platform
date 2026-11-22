@@ -98,8 +98,8 @@ Keep the login and socket volumes private to their designated containers. Restri
 and none use Docker’s `none` network. Open uses the pairing bridge with inter-container
 communication disabled. The wrapper includes loopback in both forms of `NO_PROXY`.
 The relay needs outbound HTTPS to Anthropic in all modes. A command in a Claude
-session can call that session’s model API and consume quota. See the machine runner
-section of the repository README for the upgrade and credential rotation steps.
+session can call that session’s model API and consume quota. See [docs/machines.md](../../docs/machines.md#claude-code-on-this-machine)
+for the upgrade and credential rotation steps.
 
 ## OpenCode 1.19.6
 
@@ -115,6 +115,22 @@ The [route table](providers.json) comes from the models.dev snapshot embedded in
 | `zhipuai`, `zhipuai-coding-plan` | Same paths on `open.bigmodel.cn` | Bearer |
 
 For both OpenCode services the model selects the rest of the URL. OpenAI chat and Responses use `openai/v1/chat/completions` or `openai/v1/responses` with `Authorization: Bearer <key>`. Anthropic Messages uses `anthropic/v1/messages` with `x-api-key`. Gemini uses `google/v1beta/models/<model>:streamGenerateContent?alt=sse` with `x-goog-api-key`. [OpenCode Go](https://opencode.ai/docs/go) · [Pay-as-you-go models](https://opencode.ai/docs/zen)
+
+A local TLS capture of the anonymous 1.19.6 TUI used `POST /inference/openai/v1/chat/completions` on
+`opencode.ai` for `deepseek-v4.1-flash-free`. The client sent `authorization`, `user-agent`,
+`x-opencode-client`, `x-opencode-project`, `x-opencode-request`, `x-opencode-session`, and
+`x-opencode-session-id`, plus `host`, `connection`, `accept`, `accept-encoding`, `content-type`,
+and `content-length`. The session generates its own request and session IDs. The unsigned-in
+provider uses a public bearer. This flow has no anonymous install ID to copy or persist.
+[Provider loader](https://github.com/anomalyco/opencode/blob/v1.19.6/packages/opencode/src/provider/provider.ts) · [Request headers](https://github.com/anomalyco/opencode/blob/v1.19.6/packages/opencode/src/session/llm/request.ts)
+
+The runner configures the free provider’s loopback authorization header with the signed session
+placeholder and leaves the native provider unsigned-in. The relay also accepts the older
+`x-wlp-session` lease. It constructs the upstream public authorization, preserves the client’s
+allowlisted attribution and HTTP negotiation headers, and decodes compressed responses before
+redaction. OpenCode’s ACP entry point sets its own client identifier. A single live test using
+the pinned ACP harness and this relay returned HTTP 429. The private TLS check covers request
+parity and error propagation. [ACP entry point](https://github.com/anomalyco/opencode/blob/v1.19.6/packages/opencode/src/cli/cmd/acp.ts)
 
 The table includes OpenAI, Anthropic, Google, OpenRouter, both Moonshot regions, Kimi coding plans, MiniMax, DeepSeek and Groq. The `unavailable` section lists each excluded provider and the reason. These include local and tenant-specific endpoints, separate credential exchanges and adapters outside the supported wire protocols. A provider’s `blocked` list excludes individual model endpoints outside those protocols. The restricted OpenCode command proxy denies direct access to catalog inference hostnames. Its ordinary public repository access stays available.
 
