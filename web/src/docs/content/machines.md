@@ -139,6 +139,46 @@ To let commands reach a host on your private network, name it:
 
 Give exact DNS names, up to 64, separated by commas. IP addresses are refused. A listed name is still refused if it resolves to the machine itself, a Docker network or a metadata address. `--egress-allow` alone means `restricted`. `--egress restricted` without `--egress-allow` empties the list.
 
+### Only some public hosts
+
+By default `restricted` lets commands reach any public host. To let them reach only the hosts you name, give `--egress-domains`:
+
+```sh
+<runner image> --platform <platform address> --egress restricted --egress-domains @npm,@pypi,@github,mirror.example.com
+```
+
+Each entry is an exact DNS name, `*.` and a name for any of its subdomains (`*.example.com` takes `cdn.example.com`, not `example.com`), or a preset. The presets are the same as a hosted deployment's `WLP_E2B_NETWORK_ALLOW`, so one list can be used in both places:
+
+| Preset | Hosts |
+| --- | --- |
+| `@npm` | `registry.npmjs.org`, `registry.yarnpkg.com` |
+| `@pypi` | `pypi.org`, `files.pythonhosted.org` |
+| `@github` | `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `release-assets.githubusercontent.com` |
+| `@crates` | `crates.io`, `index.crates.io`, `static.crates.io` |
+| `@go` | `proxy.golang.org`, `sum.golang.org` |
+
+A wildcard reaches every site under its name, whoever runs it. On a shared hosting domain that means any customer's site, an attacker's among them: `*.s3.amazonaws.com` would let a command upload to anyone's bucket. So a wildcard on a public suffix is refused: a name under which different owners' sites live, as the [Public Suffix List](https://publicsuffix.org/) records them (a copy of its version of 21 November 2026 is built into the runner), or a name with one under it. `*.co.uk`, `*.github.io`, `*.amazonaws.com`, `*.workers.dev`, `*.vercel.app`, `*.appspot.com` and `*.blob.core.windows.net` are refused: "--egress-domains: *.github.io is refused. github.io is a public suffix (publicsuffix.org): different owners' sites live under it, so the wildcard would let commands reach anyone's site there. Name the exact hosts instead." `*.githubusercontent.com` is refused too: every GitHub user's files, gists and uploads are served under it, so it would reach anyone's content there, not only GitHub's own. `@github` names its exact hosts instead. A hosting domain that is not on the list is not refused, so check what a wildcard covers before you give it.
+
+Two hosts are always in the list, because the platform's own steps use the same proxy: the platform's git host, for its clone, fetch and push, and `api.openai.com`, for Windlass's model requests. The git host is the one the platform names when the runner connects (its `WLP_GITHUB_URL`, `github.com` unless it uses GitHub Enterprise). A platform older than this runner names none, and the runner uses `github.com`; with such a platform and another git host, add that host to `--egress-domains` yourself. Commands can reach these two hosts too, except `api.openai.com` in Codex and OpenCode sessions, whose proxy refuses the model hosts to commands. The whole list, these two included, holds up to 64 hosts. IP addresses and ports are refused.
+
+The list limits which services commands can reach. It does not stop a command from sending data out through one of them. `github.com` and `api.openai.com` take uploads to any account a command has a token for: a command can push your repository's contents to a repository of its own on GitHub, or send them in a request to OpenAI with its own key. So can any listed host that stores what it is sent, such as a package registry a command can publish to.
+
+With a list, the proxy:
+
+- refuses an unlisted name before any DNS lookup. With exact names only, a command cannot send data out in the names it looks up. A `*.name` entry lets any name under it be looked up, `<data>.example.com` included, so whoever runs `example.com`'s DNS can read what a command puts in those names;
+- refuses a name under a wildcard that is not a valid DNS name (an empty label, a label over 63 characters or with characters a name cannot have) before any lookup;
+- refuses IP addresses;
+- connects HTTPS only to port 443 and plain `http:` only to port 80;
+- reads the start of each HTTPS connection and sends it on only if the TLS server name is the host the command asked for. A connection without a server name, with another one, or with Encrypted Client Hello is closed;
+- still refuses your private network (unless the name is also in `--egress-allow`), the machine itself, Docker's networks and metadata addresses, even for a listed name;
+- lets an `--egress-allow` name that is not in the list reach only your private network. If it answers with a public address, the connection is refused.
+
+A browser must turn Encrypted Client Hello off to reach listed hosts over HTTPS, since the proxy cannot see which site such a connection is for. Chrome and Firefox send it on every connection, even with no key for the site. In Firefox, set `network.dns.echconfig.enabled` to `false` and `security.tls.ech.grease_probability` to `0`. Chrome has no command-line switch for it any more, only the full browser's `EncryptedClientHelloEnabled` policy, and the sandbox's browser has neither (`wlp-headless-shell`, Chrome's headless shell, which `wlp-shot` uses): with a list, it can load pages from `127.0.0.1` but no listed HTTPS host. Without `--egress-domains` the proxy does not read the connection, and browsers work as they do elsewhere.
+
+The list narrows what commands can reach; it does not seal it. A listed host behind a shared CDN can be asked, inside its encrypted connection, for another site on the same CDN.
+
+The runner saves the list with the mode and prints it, expanded, when it starts and in `status`: "Network egress is restricted. Only these public hosts: api.openai.com (always: Windlass's model requests use it; refused to commands in Codex and OpenCode sessions), github.com (always until the platform names its git host: the platform's git uses it), registry.npmjs.org, …". When the runner connects to a platform whose git host is another, it says so: "The platform's git host is git.example.com: the list of public hosts has it in place of github.com." `--egress-domains` alone means `restricted`. `--egress` or `--egress-allow` without `--egress-domains` takes the list away, and the runner says so: "The --egress-domains list was removed: commands can reach any public host again. Give --egress-domains with the other --egress flags to keep a list." The platform learns only how many hosts the list has, not which.
+
 ### None
 
 In `none` mode commands have no network. A repository cannot be cloned there, so an agent on a repository is refused: "This machine uses --egress none. Start the session without a repository or restart the runner with --egress restricted." Start it with **No repository**, or change the mode.
@@ -158,6 +198,7 @@ When you choose **Hardened Docker on your machine "…"**, the **sandbox** chip 
 | Mode | The network fact |
 | --- | --- |
 | `restricted` | "commands can reach public sites and hosts allowed by the owner through the web proxy" |
+| `restricted` with `--egress-domains` | "commands can reach only the 9 public hosts the owner allows, through the web proxy", with the list's size |
 | `open` | "commands can reach the internet and the local network" |
 | `none` | "commands have no network" |
 
@@ -306,7 +347,7 @@ docker exec windlass-runner windlass-runner logout opencode
 
 No agent's login is ever inside its container. The runner keeps each login in a login volume on the machine that no session mounts. A separate relay container on the machine holds it instead, and is the only one that reads it.
 
-Each Claude Code or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
+Each Claude Code, Codex or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
 
 When the relay refuses a request, or the provider answers with an error, the agent gets one of these fixed messages. The relay does not pass the provider's own reason on.
 
@@ -317,8 +358,21 @@ When the relay refuses a request, or the provider answers with an error, the age
 | "The provider's usage or rate limit was reached." | The provider answered that a usage or rate limit was reached. |
 | "The provider failed or couldn't be reached." | The provider failed, or the relay could not reach it. |
 | "The provider rejected the request." | The provider refused it for another reason. |
+| "Too many model requests at once from this session (8)." | The session had 8 model requests in flight, and none finished while this one waited 90 seconds. |
+| "Too many model requests at once on this machine (24)." | The machine's sessions had 24 requests in flight through this relay, and none finished while this one waited 90 seconds. |
+| "Too many model requests waiting from this session (32)." | 32 of the session's requests were already waiting at the relay. |
+| "Too many model requests waiting on this machine (128)." | 128 requests were already waiting at this relay. |
+| "Too many connections to the model relay from this session (32)." | The session already has 32 connections open to the relay. |
 
-So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, in every network mode, `none` included.
+The relay passes on the provider's rate-limit headers, and nothing else from its reply headers: `retry-after`, `anthropic-ratelimit-*`, `x-ratelimit-*` and Codex's `x-codex-*` usage and credit headers. It passes them on a successful reply and on a usage-limit (429) or overload (503, 529) refusal. The agent reads them as it would without a relay, so the platform sees the same "limited until" times. The relay never passes on cookies, request IDs, redirects or account names, and drops any header value over 64 characters, with a character other than letters, digits, spaces and `. , : _ + -`, or containing the login.
+
+## Limits on model requests
+
+Each relay holds one login for the whole machine, so it limits how hard sessions can use it. A session can have at most 8 model requests in flight and 32 connections open to the relay. All sessions on the machine together can have at most 24 requests in flight through one agent's relay. Claude Code, Codex and OpenCode each have their own relay and their own 24.
+
+A request over a limit waits at the relay for up to 90 seconds, in the order it came, and goes on to the provider as soon as one of the requests ahead of it finishes. A waiting request costs nothing at the provider, and one that its agent gives up on leaves the line. A session at its own limit does not hold up other sessions waiting for the machine's. If no slot frees in 90 seconds, or 32 of the session's requests (128 on the machine) are already waiting, the agent gets a 503 with `retry-after: 2`, a busy error it retries a limited number of times: Claude Code up to 10 times over about 3 minutes, Codex for about a minute. Then the turn ends with that error. A connection past the session's 32 is answered with the same kind of 503 and closed, and a connection that sends no request within 10 seconds is closed. The refusal is not a 429: Claude Code does not retry a 429 on a subscription login and would take it as your usage limit being reached. Normal work, including a few subagents at once, stays well under the limits. A runaway command that fires hundreds of requests in parallel gets most of them refused instead of spending your subscription.
+
+So commands in a session cannot read your login. They can still use that session's relay and consume your subscription or your providers' quota, within these limits, in every network mode, `none` included.
 
 In `restricted` mode, commands in an OpenCode session also cannot reach any model provider's host, or any bare IP address, through the proxy. `--egress-allow` does not reopen them. Model requests go only through the relay.
 

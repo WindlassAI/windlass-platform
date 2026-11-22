@@ -1210,6 +1210,8 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
 	screenshots?: boolean;
 	egress?: EgressMode;
+	/** With `egress` restricted: how many public hosts the owner's list allows. Absent: any public host. */
+	egressDomains?: number;
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];

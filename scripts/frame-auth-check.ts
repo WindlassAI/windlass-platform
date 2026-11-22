@@ -67,7 +67,7 @@ async function controlChecks() {
 	const pin = state.pairingTrust(paired);
 	let welcomes = 0, effects = 0;
 	const owner = {
-		identity: paired.current, serial: async (fn: () => Promise<void>) => fn(), checkAuthenticatedNetwork: async () => {},
+		identity: paired.current, serial: async (fn: () => Promise<void>) => fn(), checkAuthenticatedNetwork: async () => {}, platformGitHost: () => {},
 		welcome: async () => { welcomes++; }, create: () => { effects++; }, requestedRemoval: () => { effects++; },
 		prune: () => { effects++; }, report: () => ({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [] }),
 	} as unknown as Executor;

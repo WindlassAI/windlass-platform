@@ -382,7 +382,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					Session details, tokens and changes
 				</a>
 			</div>
-			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} domains={machine?.egressDomains} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

@@ -102,6 +102,8 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 			await refresh?.catch(() => {});
 		},
 		responseFilter: type => secrets.size ? scrubStream(secrets, type, responses) : undefined,
+		/** The credentials this relay has read, so no forwarded header can carry one. */
+		secrets: () => secrets,
 		accepts: url => Boolean(endpointFor(allowed, url)),
 		bearer(h, url) {
 			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;

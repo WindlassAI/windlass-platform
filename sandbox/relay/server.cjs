@@ -181,7 +181,36 @@ exports.SIGNED_OUT = SIGNED_OUT;
 class Stopping extends Error {}
 exports.Stopping = Stopping;
 
-function reject(res, status, restarting = false) {
+// One session (nonce) and the whole relay (the machine's one credential) each have a ceiling on requests in
+// flight. A request over it waits at the relay, before it reaches the provider, in one FIFO across the relay
+// (a session's requests keep their order; a session at its own ceiling does not hold up the others), for up to
+// `waitMs`. Only if no slot frees in that time, or the wait list is full, is it refused: a 503 with retry-after,
+// which every harness retries a limited number of times. Claude Code never retries a 429 on a subscription login
+// and records it as the account's limit being reached, so a 429 here would end the turn and mark the machine's
+// account limited. A session's connections past its ceiling are answered 503 and closed before any request.
+const SESSION_REQUESTS = 8, SESSION_CONNECTIONS = 32, MACHINE_REQUESTS = 24;
+exports.limits = { sessionRequests: SESSION_REQUESTS, sessionConnections: SESSION_CONNECTIONS, machineRequests: MACHINE_REQUESTS,
+	sessionWaiting: 32, machineWaiting: 128, waitMs: 90_000, firstRequestMs: 10_000 };
+
+// Rate-limit facts the harness reads to report its own limit state. Nothing that names an account or a
+// request (request-id, cookies, cf-*, organization ids), and only short values from a small character set.
+const limitHeader = /^(?:retry-after(?:-ms)?|anthropic-ratelimit-[a-z0-9-]+|x-ratelimit-[a-z0-9-]+|x-codex(?:-[a-z0-9]+)*-(?:primary|secondary)-(?:used-percent|window-minutes|reset-at)|x-codex(?:-[a-z0-9]+)*-limit-name|x-codex-credits-(?:has-credits|unlimited|balance)|x-codex-rate-limit-reached-type)$/;
+function limitHeaders(headers, secrets = []) {
+	const result = {};
+	let count = 0;
+	for (const [name, value] of Object.entries(headers ?? {})) {
+		if (count >= 24) break;
+		// Real values are numbers, timestamps, durations and status words.
+		if (name.length > 64 || !limitHeader.test(name) || typeof value !== 'string' || !/^[A-Za-z0-9 .,:_+-]{0,64}$/.test(value)) continue;
+		if ([...secrets].some(secret => secret && value.includes(secret))) continue;
+		result[name] = value;
+		count++;
+	}
+	return result;
+}
+exports.limitHeaders = limitHeaders;
+
+function reject(res, status, { restarting = false, message: own, headers = {} } = {}) {
 	let type = 'api_error', message = 'The provider rejected the request.';
 	if (status === 401) {
 		type = 'authentication_error';
@@ -198,15 +227,78 @@ function reject(res, status, restarting = false) {
 	} else if (status >= 500) {
 		message = "The provider failed or couldn't be reached.";
 	}
-	res.writeHead(status, { 'content-type': 'application/json' });
-	res.end(JSON.stringify({ type: 'error', error: { type, message } }));
+	res.writeHead(status, { ...headers, 'content-type': 'application/json' });
+	res.end(JSON.stringify({ type: 'error', error: { type, message: own ?? message } }));
 }
 
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT) }) {
+	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides }) {
+	const limits = { ...exports.limits, ...overrides };
 	const sessions = new WeakMap();
+	// Per nonce: open connections, requests in flight and requests waiting. `waiting` is the relay's one FIFO.
+	const open = new Map(), inFlight = new Map(), queued = new Map(), waiting = [];
+	// Per socket: what to run when it closes (one listener, however many requests are pipelined on it).
+	const onClose = new WeakMap();
+	let machineInFlight = 0;
+	const add = (map, key, n) => { const v = (map.get(key) ?? 0) + n; if (v) map.set(key, v); else map.delete(key); };
+	const busy = (res, message) => reject(res, 503, { message, headers: { 'retry-after': '2' } });
+	const room = nonce => (inFlight.get(nonce) ?? 0) < limits.sessionRequests && machineInFlight < limits.machineRequests;
+	const full = nonce => (inFlight.get(nonce) ?? 0) >= limits.sessionRequests
+		? `Too many model requests at once from this session (${limits.sessionRequests}).`
+		: `Too many model requests at once on this machine (${limits.machineRequests}).`;
+	function leave(entry) {
+		const at = waiting.indexOf(entry);
+		if (at < 0) return false;
+		waiting.splice(at, 1);
+		add(queued, entry.nonce, -1);
+		return true;
+	}
+	// Give freed slots to the earliest waiters whose session has room.
+	function drain() {
+		for (let i = 0; i < waiting.length && machineInFlight < limits.machineRequests;) {
+			const entry = waiting[i];
+			if (room(entry.nonce)) { leave(entry); entry.grant(); } else i++;
+		}
+	}
+	// Counted from the accepted lease to the end of the response, and released once on every path. Uses
+	// req.socket: a pipelined request's response is not attached to its socket until the ones before it finish.
+	function admit(req, res, nonce) {
+		const closing = onClose.get(req.socket);
+		return new Promise(resolve => {
+			let released = false;
+			const release = () => {
+				if (released) return;
+				released = true;
+				res.off('close', release); closing.delete(release);
+				machineInFlight--;
+				add(inFlight, nonce, -1);
+				drain();
+			};
+			const start = () => {
+				add(inFlight, nonce, 1);
+				machineInFlight++;
+				res.once('close', release); closing.add(release);
+				resolve(true);
+			};
+			if (room(nonce)) return start();
+			if ((queued.get(nonce) ?? 0) >= limits.sessionWaiting)
+				return busy(res, `Too many model requests waiting from this session (${limits.sessionWaiting}).`), resolve(false);
+			if (waiting.length >= limits.machineWaiting)
+				return busy(res, `Too many model requests waiting on this machine (${limits.machineWaiting}).`), resolve(false);
+			const done = () => { clearTimeout(timer); res.off('close', gone); closing.delete(gone); };
+			// The client went away while waiting: it leaves the queue and never reaches the provider.
+			const gone = () => { if (leave(entry)) { done(); resolve(false); } };
+			const entry = { nonce, grant: () => { done(); start(); } };
+			const timer = setTimeout(() => { if (leave(entry)) { done(); busy(res, full(nonce)); resolve(false); } }, limits.waitMs);
+			res.once('close', gone); closing.add(gone);
+			waiting.push(entry);
+			add(queued, nonce, 1);
+		});
+	}
 	const httpServer = http.createServer(async (req, res) => {
+		// A request arrived: the socket's idle deadline (ingress) no longer applies. Node's own keep-alive one does.
+		req.socket.setTimeout(0);
 		// One request per connection: the session's forwarder then knows, for the request on a connection,
 		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
 		if (provider?.closeEachReply) res.setHeader('connection', 'close');
@@ -218,8 +310,10 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (!match || !verify(null, Buffer.from(domain + '\n' + machine + '\n' + match[1]),
 				publicKey, Buffer.from(match[2], 'base64url'))) return reject(res, 401);
 			if (sessions.get(req.socket) !== match[1]) return reject(res, 401);
+			if (req.socket.destroyed || res.destroyed || !await admit(req, res, match[1])) return;
 			let target;
 			let claudeToken;
+			const secrets = () => claudeToken ? [claudeToken] : provider?.secrets?.() ?? [];
 			if (provider) {
 				target = await provider.target(req.url, req.headers);
 				if (!target) return reject(res, 401);
@@ -238,7 +332,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			const up = forward({ ...target, port: 443, method: req.method }, reply => {
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
-					reject(res, reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502);
+					const status = reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502;
+					// The relay's own body, never the upstream's; a limit refusal keeps its rate-limit headers.
+					reject(res, status, { headers: [429, 503, 529].includes(status) ? limitHeaders(reply.headers, secrets()) : {} });
 					reply.destroy();
 					return;
 				}
@@ -257,7 +353,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url);
 				if (filter) stages.push(filter);
 				if (provider?.catalogFilter && req.method === 'GET') stages.push(provider.catalogFilter());
-				res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+				res.writeHead(200, { ...limitHeaders(reply.headers, secrets()), 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});
 			});
 			up.on('error', () => {
@@ -272,7 +368,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (res.headersSent) res.destroy();
 			else if (!(error instanceof Stopping)) reject(res, 502);
 			else if (signedOut()) reject(res, 401);
-			else reject(res, 503, true);
+			else reject(res, 503, { restarting: true });
 		}
 	});
 	// Consume exactly one identity before the HTTP parser sees this connection. The
@@ -286,8 +382,22 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			socket.removeListener('readable', identify);
 			const nonce = bytes.toString('latin1');
 			if (!/^[0-9a-f]{32}$/.test(nonce)) return socket.destroy();
-			socket.setTimeout(0);
+			// Past the session's ceiling: a fixed refusal, and the socket never reaches the HTTP server.
+			if ((open.get(nonce) ?? 0) >= limits.sessionConnections) {
+				const body = JSON.stringify({ type: 'error', error: { type: 'api_error',
+					message: `Too many connections to the model relay from this session (${limits.sessionConnections}).` } });
+				socket.on('data', () => {}).resume();
+				socket.end('HTTP/1.1 503 Service Unavailable\r\nretry-after: 2\r\nconnection: close\r\ncontent-type: application/json\r\n'
+					+ `content-length: ${Buffer.byteLength(body)}\r\n\r\n` + body);
+				return;
+			}
+			// Until its first request an identified socket has an idle deadline, so idle sockets cannot hold the session's connections.
+			socket.setTimeout(limits.firstRequestMs);
 			sessions.set(socket, nonce);
+			add(open, nonce, 1);
+			const closing = new Set();
+			onClose.set(socket, closing);
+			socket.once('close', () => { add(open, nonce, -1); for (const run of [...closing]) run(); });
 			httpServer.emit('connection', socket);
 			socket.resume();
 		}

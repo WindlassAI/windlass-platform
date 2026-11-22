@@ -43,15 +43,18 @@ export function machineDetailsProblem(whenToUse: string, tags: string[]): string
 	return null;
 }
 
-/** Network reach of a process outside a per-command sandbox, including repository setup. `hosted`: a hosted sandbox of a deployment with a network mode (`PlatformInfo.hostedEgress`). */
-export function workspaceNetwork(egress?: EgressMode, hosted = false): string {
+/**
+ * Network reach of a process outside a per-command sandbox, including repository setup. `hosted`: a hosted sandbox of a
+ * deployment with a network mode (`PlatformInfo.hostedEgress`). `domains`: a machine's count of allowed public hosts (`MachineSummary.egressDomains`).
+ */
+export function workspaceNetwork(egress?: EgressMode, hosted = false, domains?: number): string {
 	if (hosted) switch (egress) {
 		case "restricted": return "The workspace can reach only the model API, GitHub and the hosts this deployment allows.";
 		case "none": return "The workspace can reach only the model API.";
 	}
 	switch (egress) {
 		case "open": return "The workspace can reach the internet and the local network.";
-		case "restricted": return "The workspace can reach public sites and hosts allowed by the owner through the web proxy.";
+		case "restricted": return domains ? `The workspace can reach only the ${domains} public ${domains === 1 ? "host" : "hosts"} the owner allows, through the web proxy.` : "The workspace can reach public sites and hosts allowed by the owner through the web proxy.";
 		case "none": return "The workspace has no direct outbound network access.";
 		default: return "Network access follows the workspace’s network policy.";
 	}
@@ -59,5 +62,5 @@ export function workspaceNetwork(egress?: EgressMode, hosted = false): string {
 
 export function hardenedItemNote(machine: MachineSummary): string {
 	if (machine.profiles.find(profile => profile.available)?.id !== "docker-hardened") return "";
-	return " This machine runs commands directly in the container, where they can read the session’s access token. " + workspaceNetwork(machine.egress);
+	return " This machine runs commands directly in the container, where they can read the session’s access token. " + workspaceNetwork(machine.egress, false, machine.egressDomains);
 }

@@ -41,7 +41,7 @@ async function main() {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
 	const { positionals, values } = parseArgs({ allowPositionals: true, options: {
-		provider: { type: "string" }, egress: { type: "string" }, "egress-allow": { type: "string" },
+		provider: { type: "string" }, egress: { type: "string" }, "egress-allow": { type: "string" }, "egress-domains": { type: "string" },
 		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false },
 		slots: { type: "string" }, "slot-cpus": { type: "string" }, "slot-memory": { type: "string" }, "sandbox-memory": { type: "string" }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
 	} });
@@ -68,11 +68,11 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode", "codex"].includes(agent)
 		: positionals.length <= 1 && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]].");
+		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].");
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
-	const requestedEgress = egressFlags(values.egress, values["egress-allow"]);
-	if (requestedEgress && command !== "run" && command !== "setup") throw new RunnerError("Use --egress and --egress-allow with setup or run.");
+	const requestedEgress = egressFlags(values.egress, values["egress-allow"], values["egress-domains"]);
+	if (requestedEgress && command !== "run" && command !== "setup") throw new RunnerError("Use --egress, --egress-allow and --egress-domains with setup or run.");
 	const flags = values["allow-profile"];
 	if (flags && ((command !== "run" && command !== "setup") || flags.some(id => !machineProfile(id))))
 		throw new RunnerError("Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox.");
@@ -285,6 +285,6 @@ async function main() {
 }
 void main().catch(error => {
 	console.error(error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
-		? "Give --slots or --max-turns a count, --slot-cpus a CPU count, --slot-memory or --sandbox-memory a size, --egress a mode, --egress-allow a hostname list, --allow-profile a profile ID, each sandbox count a positive whole number and --platform a URL." : category(error));
+		? "Give --slots or --max-turns a count, --slot-cpus a CPU count, --slot-memory or --sandbox-memory a size, --egress a mode, --egress-allow or --egress-domains a hostname list, --allow-profile a profile ID, each sandbox count a positive whole number and --platform a URL." : category(error));
 	process.exitCode = 1;
 });

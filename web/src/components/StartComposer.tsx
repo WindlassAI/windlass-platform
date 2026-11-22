@@ -972,7 +972,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
 		<div className="start-setup">
-			<SetupField egress={chosenMachine?.egress ?? (chosenMachine ? undefined : info?.hostedEgress)} hosted={!chosenMachine} setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
+			<SetupField egress={chosenMachine?.egress ?? (chosenMachine ? undefined : info?.hostedEgress)} hosted={!chosenMachine} domains={chosenMachine?.egressDomains} setup={setup} repository={repositoryName(chosen.repository)} disabled={busy !== null} />
 			{!other ? <SecretsField repositoryId={chosen.repository.id} repository={repositoryName(chosen.repository)} profile={profile} disabled={busy !== null} /> : null}
 		</div>
 	) : null;
