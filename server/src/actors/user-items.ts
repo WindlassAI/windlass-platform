@@ -31,7 +31,7 @@ import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
-import { resolveRepository, type StoredConnection } from "../github/repos.js";
+import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
 import { ALIAS } from "../factory/feature-plan.js";
@@ -329,14 +329,18 @@ function cleanRepositories(raw: unknown, primary: GithubId, mode: string, bad: (
 /**
  * Binds a cross-repo filing's repositories to the user's GitHub connection now: GitHub's ids for each and
  * its installation, which are the authority from here on, and the commit of each base the planner reads.
- * The primary is the item's session's own repository.
+ * The primary is the item's session's own repository. Each must be one the user can write to, and not
+ * archived: the feature pushes a branch and opens a pull request in every one of them.
  */
 async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBranch: string | undefined): Promise<FeatureRepository[]> {
 	const app = githubApp(), connection = c.vars.github;
 	if (!app || !connection) throw new UserError("Connect GitHub to file a feature over two repositories.", { code: "github_not_connected" });
 	const bound: FeatureRepository[] = [];
 	for (const [i, entry] of list.entries()) {
-		const { installation, repository } = await resolveRepository(app, connection, entry.id, "read");
+		const { installation, repository } = await resolveRepository(app, connection, entry.id, "write").catch((error: unknown) => {
+			if (error instanceof GithubProblem) throw new UserError(`${entry.alias}: ${error.message}`, { code: error.code });
+			throw error;
+		});
 		const baseRef = (i === 0 ? primaryBranch : entry.branch) ?? repository.defaultBranch;
 		const planningBaseSha = await app.withToken(installation.id, { repositoryId: entry.id, permissions: { metadata: "read", contents: "read" } }, token => refHead(app, token, repository.owner, repository.name, baseRef));
 		bound.push({ alias: entry.alias, repositoryId: entry.id, installationId: installation.id, owner: repository.owner, name: repository.name, url: app.repositoryUrl(repository.owner, repository.name), private: repository.private, baseRef, planningBaseSha });

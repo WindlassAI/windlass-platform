@@ -485,6 +485,11 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			for (const repo of [platform, cli]) await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
 			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }, { alias: "docs", id: harbor.id }], title: "Three", body: "x", mode: "orchestrate" }), "bad_input");
 			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Quick", body: "x", mode: "single" }), "bad_input");
+			// Bound for writing at filing: the feature pushes to every repository, so an archived one (readable, not writable) is refused at once.
+			cli.archived = true;
+			const archived = await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Archived", body: "x", mode: "orchestrate" }), "github_denied");
+			cli.archived = false;
+			assert(/^cli: .*archived/.test(archived), "An archived sibling was bound: " + archived);
 			const token = (await user.createApiToken({ name: "cross", scopes: ["items:create", "items:read"] })).secret;
 			const filing = await api("/api/items", { method: "POST", token, key: "cross-feature", body: JSON.stringify({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Search across repositories", body: "Index in the CLI and search in the platform.", start: true }) });
 			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused a cross-repo filing: " + JSON.stringify(filing.body));
