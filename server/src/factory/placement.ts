@@ -144,7 +144,8 @@ export function choosePlacement(task: PlanSubtask, route: PlacementRoute, invent
 	const waits = candidates.filter(c => "wait" in c);
 	const deadline = (wait: typeof waits[number]) => placementRetryAt(at, wait.providerUntil, wait.dailyCap);
 	const waiting = waits.sort((a, b) => deadline(a) - deadline(b))[0];
-	if (waiting) return { ...waiting, retryAt: deadline(waiting) } as const;
+	if (waiting) return { wait: waiting.wait, retryAt: deadline(waiting), providerUntil: waiting.providerUntil,
+		dailyCap: waiting.dailyCap, accountKey: waiting.accountKey } as const;
 	const refusals = candidates.flatMap(c => "refused" in c ? [c] : []);
 	return { refused: refusals.map(c => c.refused).join(" "), permanent: refusals.every(c => c.permanent) } as const;
 }
