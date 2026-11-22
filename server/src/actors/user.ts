@@ -1,5 +1,6 @@
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
+import type { AgentModels } from "../factory/placement.js";
 /**
  * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
  *
@@ -112,6 +113,9 @@ import {
 	type RepositoryApproval,
 	type RepositoryCheck,
 	type RepositoryChecks,
+	type RepositoryNetwork,
+	type NetworkScan,
+	type EgressMode,
 	type RepositoryDefaults,
 	type RepositorySecrets,
 	type RepositorySetup,
@@ -152,6 +156,7 @@ import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
+import { NETWORK_TABLE, NetworkProblem, REQUESTS_TABLE, addEntry, cleanEntries, cleanEntry, dismissRequest, fileRequests, mayChangeNetwork, networkLimit, networkPresets, readNetwork, readRequests, saveNetwork, scanForHosts, scanPaths } from "../repository-network.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
@@ -635,7 +640,8 @@ async function repositoryName(c: UserCtx, repositoryId: GithubId, project: strin
 	const known = repositoryLabel(c.vars, repositoryId);
 	if (known !== "") return known;
 	const [row] = await c.db.execute<{ label: string }>(
-		"SELECT label FROM (SELECT label, updated_at FROM repository_defaults WHERE project = ? UNION ALL SELECT label, updated_at FROM setup_command WHERE project = ? UNION ALL SELECT label, updated_at FROM repository_checks WHERE project = ? UNION ALL SELECT label, updated_at FROM repo_secret WHERE project = ?) WHERE label != '' ORDER BY updated_at DESC LIMIT 1",
+		"SELECT label FROM (SELECT label, updated_at FROM repository_defaults WHERE project = ? UNION ALL SELECT label, updated_at FROM setup_command WHERE project = ? UNION ALL SELECT label, updated_at FROM repository_checks WHERE project = ? UNION ALL SELECT label, updated_at FROM repo_secret WHERE project = ? UNION ALL SELECT label, updated_at FROM repository_network WHERE project = ?) WHERE label != '' ORDER BY updated_at DESC LIMIT 1",
+		project,
 		project,
 		project,
 		project,
@@ -672,6 +678,7 @@ async function repositoryView(c: UserCtx, repositoryId: GithubId, project: strin
 	const [setup] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM setup_command WHERE project = ?", project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
 	const { checks } = await readChecks(c.db, project);
+	const network = await readNetwork(c.db, project);
 	const name = await repositoryName(c, repositoryId, project);
 	const { sandboxes } = await getLayer();
 	// The book is read last and in one step: what is listed is what is remembered when the answer is made.
@@ -687,9 +694,44 @@ async function repositoryView(c: UserCtx, repositoryId: GithubId, project: strin
 		name: name === "" ? null : name,
 		defaults,
 		approvals: [...approvals.values()],
-		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox }),
-		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0, checks: checks.length },
+		// For all the repository's sessions, of either Docker profile: a hardened one's Windlass data may be its own.
+		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox, hardenedOwnData: (await sandboxes.privateSessionData?.("docker-hardened")) === true }),
+		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0, checks: checks.length, network: network.entries.length },
 	};
+}
+
+/**
+ * What the deployment's hosted sandboxes reach whatever a repository's list says (sandbox/e2b/network.ts):
+ * null where hosted sandboxes have no list of hosts (not on E2B).
+ */
+async function hostedNetwork(): Promise<{ mode: EgressMode; hosts: string[] } | null> {
+	const { sandboxes } = await getLayer();
+	const hosts = sandboxes.allowedHosts?.();
+	const mode = sandboxes.egress?.();
+	return hosts === undefined || mode === undefined ? null : { mode, hosts: [...hosts] };
+}
+
+/** A repository's network list as its settings show it. */
+async function networkView(c: UserCtx, project: string): Promise<RepositoryNetwork> {
+	const hosted = await hostedNetwork();
+	const saved = await readNetwork(c.db, project);
+	const deploymentHosts = hosted?.mode === "restricted" ? hosted.hosts : [];
+	return { ...saved, requests: await readRequests(c.db, project, [...saved.hosts, ...deploymentHosts]), presets: networkPresets(), hosted, limit: networkLimit(deploymentHosts) };
+}
+
+/** The deployment's hosts a repository's list is held against: only where the list applies, in `restricted`. */
+async function deploymentHostsForLimit(): Promise<string[]> {
+	const hosted = await hostedNetwork();
+	return hosted?.mode === "restricted" ? hosted.hosts : [];
+}
+
+function networkInput<T>(read: () => T): T {
+	try {
+		return read();
+	} catch (error) {
+		if (error instanceof NetworkProblem) throw new UserError(error.message, { code: "bad_network" });
+		throw error;
+	}
 }
 
 /** A name a client sent, for a log line: what is printable of it. */
@@ -1097,6 +1139,26 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	return summary;
 }
 
+/**
+ * The models a subtask's agent may choose, by the lists `makeSession` holds a session to: the account's
+ * for Windlass, each machine harness's catalog (or only its default where its runner reported none).
+ * A list that cannot be read is left out, and the child's creation judges it. Each is read at once.
+ */
+export async function agentModels(c: CreateCtx & { key: string[] }): Promise<AgentModels> {
+	const profile = c.vars.profile;
+	const harnesses = [...c.vars.machines.values()].flatMap(m => (m.harnesses ?? []).filter(h => machineHarnesses[h.id]?.items).map(h => ({ m, h })));
+	const [windlass, catalogs] = await Promise.all([
+		profile ? modelsOf(c, profile.demo).catch(() => null) : null,
+		Promise.all(harnesses.map(({ m, h }) => h.optionsDigest ? machineCatalog(c, m.machineId, h.id, h.optionsDigest).catch(() => null) : undefined)),
+	]);
+	const machines: NonNullable<AgentModels["machines"]> = {};
+	harnesses.forEach(({ m, h }, i) => {
+		const options = catalogs[i];
+		if (options !== null) (machines[m.machineId] ??= {})[h.id] = initialHarnessModels(options);
+	});
+	return { windlass, machines };
+}
+
 /** `makeSession` for an item's session, as user-items.ts asks for it, with the action's own context. */
 function itemSession(c: CreateCtx): MakeSession {
 	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
@@ -1270,6 +1332,9 @@ export const user = actor({
 			await db.execute(DEFAULTS_TABLE);
 			// The checks of repositories (repository-checks.ts): one row per repository, `project` as above, the list as JSON.
 			await db.execute(CHECKS_TABLE);
+			// The network lists of repositories and the hosts their sessions could not reach (repository-network.ts), `project` as above.
+			await db.execute(NETWORK_TABLE);
+			await db.execute(REQUESTS_TABLE);
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
@@ -1480,6 +1545,7 @@ export const user = actor({
 			}
 		},
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()]); },
+		internalAgentModels: (c): Promise<AgentModels> => { requireService(c); return agentModels(c); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
 		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
@@ -1515,7 +1581,7 @@ export const user = actor({
 		revokeApiToken: (c, id: string): Promise<ApiToken[]> => itemActions.revokeApiToken(c, id),
 		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
 		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
-		internalFeatureChild: (c, input: { parent: string; child: string; cancel?: boolean }) => itemActions.internalFeatureChild(c, input, itemSession(c)),
+		internalFeatureChild: (c, input: { parent: string; child: string; cancel?: boolean }) => itemActions.internalFeatureChild(c, input, itemSession(c), () => agentModels(c)),
 		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
 		internalItemFacts: (c, ids: string[] | string): ItemFacts => itemActions.internalItemFacts(c, typeof ids === "string" ? [ids] : ids),
 		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
@@ -1857,6 +1923,113 @@ export const user = actor({
 			}
 		},
 
+		// --- network lists of repositories (repository-network.ts) ------------------------------------
+
+		repositoryNetwork: async (c, repositoryId: GithubId): Promise<RepositoryNetwork> => {
+			requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			try {
+				return await networkView(c, project);
+			} catch (error) {
+				throw clientError(c.log, error, "The repository's network list could not be read. Try again.");
+			}
+		},
+
+		saveRepositoryNetwork: async (c, input: { repositoryId: GithubId; entries: string[] }): Promise<RepositoryNetwork> => {
+			const profile = requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			if (!mayChangeNetwork(profile.uid, c.key[0]!)) throw new UserError("Only whoever changes this repository's settings can change its network list.", { code: "forbidden" });
+			const limitHosts = await deploymentHostsForLimit();
+			const entries = networkInput(() => cleanEntries(input?.entries, limitHosts));
+			try {
+				const saved = await saveNetwork(c.db, project, await labelFor(c, input.repositoryId, project), entries, Date.now());
+				console.log(`[wlp] network.saved uid=${profile.uid} project=${project} entries=${entries.length} hosts=${saved.hosts.length}`);
+				return await networkView(c, project);
+			} catch (error) {
+				throw clientError(c.log, error, "The network list could not be saved. Try again.");
+			}
+		},
+
+		dismissNetworkRequest: async (c, input: { repositoryId: GithubId; host: string }): Promise<RepositoryNetwork> => {
+			requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			const host = approvalText(input?.host, 260);
+			try {
+				await dismissRequest(c.db, project, host);
+				return await networkView(c, project);
+			} catch (error) {
+				throw clientError(c.log, error, "The request could not be dismissed. Try again.");
+			}
+		},
+
+		scanRepositoryNetwork: async (c, repositoryId: GithubId): Promise<NetworkScan> => {
+			requireUser(c);
+			const project = setupKeyOf(repositoryId);
+			const app = requireGithub();
+			const connection = requireConnection(c);
+			let resolved: Awaited<ReturnType<typeof resolveRepository>>;
+			try {
+				resolved = await resolveRepository(app, connection, repositoryId, "read");
+			} catch (error) {
+				throw githubError(c.log, error, "The repository could not be checked at GitHub. Try again.");
+			}
+			const { owner, name, defaultBranch } = resolved.repository;
+			let read: { commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean };
+			try {
+				read = await app.withToken(resolved.installation.id, { repositoryId, permissions: { metadata: "read", contents: "read" } }, (token) => app.scanFiles(token, owner, name, defaultBranch, scanPaths), { revokeAfter: true });
+			} catch (error) {
+				throw githubError(c.log, error, "The repository's files could not be read at GitHub. Try again.");
+			}
+			try {
+				const hosted = await hostedNetwork();
+				const saved = await readNetwork(c.db, project);
+				const setup = (await setupRow(c.db, project))?.command ?? "";
+				const proposals = scanForHosts(read.files, setup, [...saved.hosts, ...(hosted?.mode === "restricted" ? hosted.hosts : [])]);
+				return { proposals, commit: read.commit, branch: defaultBranch, files: read.files.length, incomplete: read.incomplete };
+			} catch (error) {
+				throw clientError(c.log, error, "The repository's files could not be read. Try again.");
+			}
+		},
+
+		/**
+		 * "Allow for this repository" from a session's timeline (`allowHost` of the session): `by` is who
+		 * asked, as the session checked it. Someone who may change the repository's settings adds the host
+		 * to its list; anyone else would file a request, but only the session's own user reaches `allowHost`
+		 * today, and that is this actor's. Answers with the session's hosts then, as a turn gets them.
+		 */
+		internalAllowHost: async (c, input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: RepositoryNetwork }> => {
+			requireService(c);
+			const session = c.vars.sessions.get(approvalText(input?.sessionId, 200));
+			const project = setupProjectKey(session?.repository?.id);
+			if (!session || project === null) throw new UserError("This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox (WLP_E2B_NETWORK_ALLOW).", { code: "bad_network" });
+			const host = cleanEntry(input?.host);
+			if (host === null || host.startsWith("@")) throw new UserError("That is not an exact host name.", { code: "bad_network" });
+			const allowed = mayChangeNetwork(typeof input?.by === "string" ? input.by : null, c.key[0]!);
+			try {
+				if (allowed) {
+					const label = session.repository ? `${session.repository.owner}/${session.repository.name}` : "";
+					const saved = await addEntry(c.db, project, label, host, await deploymentHostsForLimit(), Date.now());
+					console.log(`[wlp] network.allowed uid=${c.key[0]} project=${project} host=${host} session=${input.sessionId}`);
+					return { allowed, hosts: saved.hosts, network: await networkView(c, project) };
+				}
+				await fileRequests(c.db, project, [host], input.sessionId, Date.now());
+				return { allowed, hosts: (await readNetwork(c.db, project)).hosts, network: await networkView(c, project) };
+			} catch (error) {
+				if (error instanceof UserError) throw error;
+				if (error instanceof NetworkProblem) throw new UserError(error.message, { code: "bad_network" });
+				throw clientError(c.log, error, "The host could not be allowed. Try again.");
+			}
+		},
+
+		/** Hosts a session's sandbox looked up and could not reach: filed as requests on its repository. */
+		internalNetworkRequests: async (c, input: { sessionId: string; hosts: string[] }): Promise<{ filed: string[]; full: string[] }> => {
+			requireService(c);
+			const session = c.vars.sessions.get(approvalText(input?.sessionId, 200));
+			const project = setupProjectKey(session?.repository?.id);
+			if (!session || project === null || !Array.isArray(input?.hosts)) return { filed: [], full: [] };
+			return await fileRequests(c.db, project, input.hosts.filter((host): host is string => typeof host === "string").slice(0, 50), input.sessionId, Date.now());
+		},
+
 		/** The setup command of a session's repository, for that session when its sandbox is new. */
 		internalHasChecks: async (c, repositoryId: GithubId): Promise<boolean> => {
 			requireService(c);
@@ -1945,6 +2118,8 @@ export const user = actor({
 			};
 			const project = setupProjectKey(session.repository?.id);
 			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
+			// The hosts its repository's list allows, for a hosted sandbox. A session has one repository.
+			const network = session.place.kind === "hosted" ? (await readNetwork(c.db, project)).hosts : [];
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
@@ -1952,7 +2127,7 @@ export const user = actor({
 			const setup = includeSnapshotSetup && config.snapshots && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
-			return { project, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			return { project, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -1982,7 +2157,7 @@ export const user = actor({
 			// What is saved for it is named as GitHub names it now: its page then says the name without asking, also once GitHub no longer answers for it.
 			const name = `${found.owner}/${found.name}`;
 			try {
-				for (const table of ["setup_command", "repository_checks", "repo_secret", "repository_defaults"]) await c.db.execute(`UPDATE ${table} SET label = ? WHERE project = ? AND label != ?`, name, project, name);
+				for (const table of ["setup_command", "repository_checks", "repo_secret", "repository_defaults", "repository_network"]) await c.db.execute(`UPDATE ${table} SET label = ? WHERE project = ? AND label != ?`, name, project, name);
 			} catch (error) {
 				c.log.warn({ msg: "could not note what a repository is called now", project, error: String(error) });
 			}
@@ -2031,6 +2206,8 @@ export const user = actor({
 				await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_checks WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
+				await c.db.execute("DELETE FROM repository_network WHERE project = ?", project);
+				await c.db.execute("DELETE FROM network_request WHERE project = ?", project);
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
 				await dropHostedSnapshots(profile.uid, String(repositoryId));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);
@@ -2044,7 +2221,7 @@ export const user = actor({
 			requireUser(c);
 			try {
 				const rows = await c.db.execute<{ project: string; label: string }>(
-					"SELECT project, MAX(label) AS label FROM (SELECT project, label FROM setup_command UNION ALL SELECT project, label FROM repository_checks UNION ALL SELECT project, label FROM repo_secret UNION ALL SELECT project, label FROM repository_defaults) GROUP BY project",
+					"SELECT project, MAX(label) AS label FROM (SELECT project, label FROM setup_command UNION ALL SELECT project, label FROM repository_checks UNION ALL SELECT project, label FROM repo_secret UNION ALL SELECT project, label FROM repository_defaults UNION ALL SELECT project, label FROM repository_network) GROUP BY project",
 				);
 				const now = Date.now();
 				const found = new Map<GithubId, string>();

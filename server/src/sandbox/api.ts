@@ -15,6 +15,8 @@
  *   volume     wlp-user-<uid>                     Windlass's data directory in that user's sessions: its session
  *                                                 logs and memory, and while a turn runs the access token file of
  *                                                 that turn. No sign-in
+ *   volume     wlp-session-data-<uid>-<sandboxId>  the same for one docker-hardened sandbox, its own, labelled
+ *                                                 with the user and `dev.windlass-platform.sandbox=<sandboxId>`
  *   container  wlp-session-<sandboxId>            one per agent session; the workspace is /workspace
  *
  * On E2B a session's sandbox is a microVM made from the template `windlass-platform-sandbox`, which is
@@ -92,9 +94,22 @@ export interface SandboxHandle {
 	readonly runnerScreenshots?: boolean;
 	readonly snapshot?: SnapshotSource;
 	readonly profile: SandboxProfileId;
+	/**
+	 * Docker: this sandbox's Windlass data directory is a volume of its own (SESSION_VOLUME_PROFILES),
+	 * which goes with it, as its container mounts it. Absent where the data is the user's shared volume,
+	 * on E2B (`Sandboxes.sessionsLiveInSandbox` says that), and from a runner that does not say.
+	 */
+	readonly ownData?: boolean;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
+	/**
+	 * The hosts commands in the sandbox looked up and could not reach since it was made, each once, in
+	 * the order first asked: on E2B out of `open`, what its lookup stub wrote (e2b/network.ts, `DNS_STUB`),
+	 * without the hosts it may reach and those `skip` names (the ones the caller has seen already), so
+	 * that many it has seen do not use up the limit and hide one it has not. Absent where nothing records them.
+	 */
+	blockedHosts?(skip?: Iterable<string>): Promise<string[]>;
 	/**
 	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
 	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
@@ -103,7 +118,20 @@ export interface SandboxHandle {
 	saveMirror?(stage: string, partial: boolean): Promise<boolean>;
 }
 
+/** What a connect is told besides the sandbox's id. */
+export interface ConnectOptions {
+	/**
+	 * The hosts the session's repositories allow besides the deployment's (repository-network.ts): on E2B
+	 * with WLP_E2B_NETWORK=restricted, the sandbox's network is set to both at every connect. Ignored elsewhere.
+	 */
+	network?: readonly string[];
+	/** Docker: whether a hardened sandbox's Windlass data is its own (a runner's `session-volumes`); see DockerSandboxes.connect. */
+	ownData?: boolean;
+}
+
 export interface CreateSandboxInput {
+	/** As `ConnectOptions.network`, from the first command in the sandbox. */
+	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
 	fromSnapshot?: SnapshotSelection;
@@ -164,10 +192,38 @@ export interface Sandboxes {
 	 */
 	readonly sessionsLiveInSandbox: boolean;
 	/**
+	 * Where the sessions do not live in the sandbox: whether a sandbox made now with `profile` would have a
+	 * data directory of its own, which goes with it as on E2B (Docker's hardened profile, whose commands
+	 * could otherwise read the user's other sessions). A guess, for words said before there is a sandbox:
+	 * what a sandbox that exists has is what its handle said (`SandboxHandle.ownData`). Absent: never.
+	 * Never throws.
+	 */
+	privateSessionData?(profile: SandboxProfileId): Promise<boolean>;
+	/**
+	 * Docker: removes the sandboxes' own data volumes whose container is gone, which a create cut off
+	 * between the volume and `docker run`, or a removal cut off after the container, leaves. One younger
+	 * than `minAgeMs` (10 minutes) may belong to a create still under way and stays. Returns how many went.
+	 */
+	sweepDataVolumes?(minAgeMs?: number): Promise<number>;
+	/**
 	 * What this provider's sandboxes may reach, where the deployment sets it: on E2B, WLP_E2B_NETWORK
 	 * (e2b/network.ts). Absent where the provider has no such setting (Docker).
 	 */
 	egress?(): EgressMode;
+	/**
+	 * The hosts every sandbox of this provider may reach by the deployment's own settings: on E2B the
+	 * model API, the git host, the bucket and WLP_E2B_NETWORK_ALLOW (e2b/network.ts), empty in `open`.
+	 * Absent where the provider has no list of hosts (Docker).
+	 */
+	allowedHosts?(): readonly string[];
+	/**
+	 * Lets a running sandbox reach `hosts` besides the deployment's (a session's repository's network
+	 * list, repository-network.ts), at once. Only for a sandbox a turn of this server holds (`holdFor`):
+	 * the change never starts a sandbox or pushes its timeout out, so it costs nothing a meter does not
+	 * count. False otherwise: the hosts are handed to its next `connect` instead. Absent where the
+	 * provider has no list of hosts.
+	 */
+	setNetwork?(id: string, hosts: readonly string[]): Promise<boolean>;
 	/** Every profile, available or not, in the order the picker shows them. */
 	profiles(): SandboxProfile[];
 	profile(id: SandboxProfileId): SandboxProfile;
@@ -189,7 +245,7 @@ export interface Sandboxes {
 	 * a turn runs in it (e2b/sandboxes.ts, "The dead-man switch"), so `state` may say "paused" of a
 	 * sandbox nobody suspended.
 	 */
-	connect(id: string): Promise<SandboxHandle | undefined>;
+	connect(id: string, options?: ConnectOptions): Promise<SandboxHandle | undefined>;
 	/** "none" when it does not exist. */
 	state(id: string): Promise<"none" | "running" | "paused">;
 	/**
@@ -199,8 +255,9 @@ export interface Sandboxes {
 	suspend(id: string): Promise<void>;
 	/**
 	 * Removes it with its files. A no-op when already gone. On Docker the user's data volume stays, and an
-	 * access token file a turn left in it for this sandbox is removed when the sandbox was running. On
-	 * E2B Windlass's data directory goes with the sandbox.
+	 * access token file a turn left in it for this sandbox is removed when the sandbox was running; a data
+	 * volume of the sandbox's own goes, even where its container was already gone. On E2B Windlass's data
+	 * directory goes with the sandbox.
 	 */
 	destroy(id: string): Promise<void>;
 }

@@ -85,6 +85,7 @@ export interface UserInternal {
 	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
 	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
 	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
+	internalAgentModels(): Promise<import("../factory/placement.js").AgentModels>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
@@ -104,6 +105,10 @@ export interface UserInternal {
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
 	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
+	/** "Allow for this repository" from a session: `by` is who asked. Someone who may change the repository's settings allows the host; anyone else would file a request, but today only the session's own user calls it (repository-network.ts). */
+	internalAllowHost(input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: import("../contract.js").RepositoryNetwork }>;
+	/** Hosts a session's sandbox could not reach, filed as requests on its repository's network list; `full` are those not filed because its requests are full. */
+	internalNetworkRequests(input: { sessionId: string; hosts: string[] }): Promise<{ filed: string[]; full: string[] }>;
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;
 	/** The session's sandbox stopped: counts the seconds it ran of its hold. `known` is false when that hold is not open any more. */
@@ -134,6 +139,12 @@ export interface SealedSecrets {
 	screenshots?: boolean;
 	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
 	project: string | null;
+	/**
+	 * The hosts its repository's network list allows (repository-network.ts), presets expanded, for a
+	 * hosted session: what its sandbox may reach besides the platform's and the deployment's. They are
+	 * no secret either. Absent from a server that does not know of lists.
+	 */
+	network?: string[];
 	secrets: Array<{ name: string; scope: SecretScope; sealed: string }>;
 	/** The checks the user saved for that repository (repository-checks.ts); none without one. They are no secret: they come with the secrets because a turn needs both before it starts. */
 	checks: RepositoryCheck[];

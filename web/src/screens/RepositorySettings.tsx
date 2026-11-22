@@ -11,6 +11,7 @@ import { ChecksEditor } from "../components/Checks";
 import { DefaultsSection } from "../components/Defaults";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
+import { NetworkSection } from "../components/Network";
 import { SecretsBlock } from "../components/Secrets";
 import { RepositoryApprovals } from "../components/Servers";
 import { SetupEditor } from "../components/SetupCommand";
@@ -87,6 +88,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.setup ? "the setup command" : null,
 		view.saved.checks > 0 ? (view.saved.checks === 1 ? "its one check" : `its ${view.saved.checks} checks`) : null,
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
+		view.saved.network > 0 ? "its network list" : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
 		view.defaults.screenshots ? "the choice to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
@@ -152,7 +154,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const account = useAccount();
 	const models = useModels();
 	const now = useNow(15_000);
-	const ids = { setup: sectionHeading("setup"), checks: sectionHeading("checks") };
+	const ids = { setup: sectionHeading("setup"), checks: sectionHeading("checks"), network: sectionHeading("network") };
 	const [forgetting, setForgetting] = useState(false);
 	/** Counted up when everything saved was deleted: the setup command and the secrets are read anew. */
 	const [generation, setGeneration] = useState(0);
@@ -163,7 +165,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.screenshots || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.screenshots || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.
@@ -252,6 +254,14 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						</div>
 					</section>
 
+					<section className="usage-section repo-saved repo-network" aria-labelledby={ids.network}>
+						<h2 className="usage-title" id={ids.network}>
+							Network
+							{view.saved.network > 0 ? <span className="usage-count">{view.saved.network}</span> : null}
+						</h2>
+						<NetworkSection key={generation} repositoryId={page.id} name={name} labelledBy={ids.network} onSaved={page.reload} />
+					</section>
+
 					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">
 						<SecretsBlock
 							key={generation}
@@ -288,7 +298,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						</h2>
 						<p className="usage-lede">
 							{anything
-								? `Deletes the setup command, the checks, the secrets, the defaults (screenshots return to off) and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
+								? `Deletes the setup command, the checks, the network list, the secrets, the defaults (screenshots return to off) and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
 								: `Nothing is saved for ${name}.`}
 						</p>
 						{anything ? (

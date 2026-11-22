@@ -23,6 +23,7 @@ import type {
 	GithubRepository,
 	GithubRepositoryList,
 	GithubStatus,
+	HostAllowed,
 	ItemAction,
 	ItemFeed,
 	ItemListPage,
@@ -33,6 +34,7 @@ import type {
 	MachineClaim,
 	MachineSummary,
 	ModelList,
+	NetworkScan,
 	PendingQuestion,
 	PlatformInfo,
 	PromptInput,
@@ -42,6 +44,7 @@ import type {
 	RepositoryCheck,
 	RepositoryChecks,
 	RepositoryDefaults,
+	RepositoryNetwork,
 	RepositorySecrets,
 	RepositorySetup,
 	RepositoryView,
@@ -170,6 +173,14 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	repositoryChecks(repositoryId: GithubId): Promise<RepositoryChecks>;
 	/** Saves the list whole, or none with an empty one. Throws with reason `bad_checks` for a list that cannot be saved. */
 	saveRepositoryChecks(repositoryId: GithubId, checks: RepositoryCheck[]): Promise<RepositoryChecks>;
+	/** The repository's network list, the requests its sessions filed, and what the deployment's hosted sandboxes reach anyway. */
+	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
+	/** Saves the list whole: preset ids and exact host names. Throws with reason `bad_network` for an entry or a length that cannot be saved. */
+	saveRepositoryNetwork(repositoryId: GithubId, entries: string[]): Promise<RepositoryNetwork>;
+	/** Takes a request off the list without allowing it. */
+	dismissNetworkRequest(repositoryId: GithubId, host: string): Promise<RepositoryNetwork>;
+	/** Reads the repository's manifests, lockfiles, install scripts and CI files at GitHub and proposes the hosts they name. Saves nothing. */
+	scanRepositoryNetwork(repositoryId: GithubId): Promise<NetworkScan>;
 	/**
 	 * The secrets saved for a repository, without their values, and what each reaches in a sandbox of
 	 * `profile`: the sandbox of the session `sessionId` names, whose Windlass may be an older one, or
@@ -286,6 +297,8 @@ export interface SessionApi {
 	approveServer(name: string, fingerprint: string): Promise<SessionServers>;
 	/** Forgets the remembered approvals of that server for the session's project. */
 	forgetServer(name: string): Promise<SessionServers>;
+	/** "Allow for this repository": adds a blocked host to the network list of the session's repository, and lets its running sandbox reach it at once. */
+	allowHost(host: string): Promise<HostAllowed>;
 }
 
 export interface PlatformClient {

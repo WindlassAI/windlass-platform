@@ -20,8 +20,9 @@
  *   8. with WLP_E2B_CHECK_NETWORK=1, the network modes (server/src/sandbox/e2b/network.ts): one short sandbox
  *      in `restricted` and then one in `none`, never two at once, no turn in either. In each: the platform's
  *      own clone of a public repository (github.com), the model API, a host that is not allowed (by name,
- *      by address, over plain HTTP), a lookup, and what 169.254.169.254 answers; `restricted` is paused and
- *      resumed once to see the configuration and the names hold.
+ *      by address, over plain HTTP), a lookup, and what 169.254.169.254 answers. `restricted` is paused and
+ *      resumed once to see the configuration and the names hold; then its lookup stub must name the host that
+ *      was refused, and a host allowed while it runs (a repository's list) must be reached at once.
  *
  * Limits on itself:
  *
@@ -335,6 +336,28 @@ async function main(): Promise<number> {
 						handle = (await boxes.connect(id)) as E2bSandboxHandle;
 						runs();
 						await probe(handle, ", after a pause and resume");
+						// The lookup stub (network.ts DNS_STUB) and a host a repository's list allows while the sandbox runs.
+						const stub = await sh(handle, "grep nameserver /etc/resolv.conf; ps -o user= -p \"$(cat /run/wlp-dns.pid)\"");
+						expect("restricted: the resolver is the lookup stub, which runs as nobody and survived the pause", stub === "nameserver 127.0.0.1 nobody", stub);
+						const blocked = await handle.blockedHosts();
+						expect("restricted: the stub names example.com, which a command could not reach, and not a host it may", blocked.includes("example.com") && !blocked.includes("registry.npmjs.org") && !blocked.includes("github.com"), blocked.join(","));
+						// Only a sandbox a turn holds is changed at once (setNetwork never resumes or extends one by itself).
+						const unheld = await boxes.setNetwork(id, ["example.com"]);
+						const release = await handle.holdForTurn();
+						let applied = false;
+						let reached = "";
+						try {
+							applied = await boxes.setNetwork(id, ["example.com"]);
+							reached = await sh(handle, "curl -sS --max-time 15 https://example.com/ | head -c 200; echo exit=$?");
+						} finally {
+							await release();
+						}
+						expect("restricted: a host allowed while a turn holds the sandbox (a repository's list, setNetwork) is reached at once, and not without a hold", !unheld && applied && reached.includes("Example Domain"), `${unheld ? "applied without a hold | " : ""}${reached}`);
+						// What keeps the agent from standing in for the lookup stub or racing root's files in /run and /tmp: the kernel's own settings in the guest.
+						const kernel = await sh(handle, "cat /proc/sys/net/ipv4/ip_unprivileged_port_start /proc/sys/fs/protected_symlinks /proc/sys/fs/protected_regular");
+						const [portStart, symlinks, regular] = kernel.split(/\s+/).map((value) => Number(value));
+						console.log(`      in the guest: net.ipv4.ip_unprivileged_port_start=${portStart} fs.protected_symlinks=${symlinks} fs.protected_regular=${regular}`);
+						expect("restricted: in the guest an unprivileged process cannot bind port 53, and symlinks and files in sticky directories are protected", Number.isInteger(portStart) && portStart! > 53 && symlinks! >= 1 && regular! >= 1, kernel);
 					}
 				} finally {
 					await boxes.destroy(id);

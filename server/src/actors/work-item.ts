@@ -34,7 +34,7 @@ import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
-import { PlanError } from "../factory/feature-plan.js";
+import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
@@ -46,7 +46,7 @@ import { recentSubject, type IssueBinding } from "../factory/intake.js";
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
-import type { ItemReview } from "../contract.js";
+import type { ItemReview, ModelList } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
@@ -55,7 +55,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, canRetry, currentKey, nextPrPoll, prPollKey, reviewSendsBack } from "../factory/blueprint.js";
+import { RULES, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, reviewSendsBack } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -267,11 +267,14 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const run = stored.item.run;
 	const events = await c.db.execute<{ data: string }>("SELECT data FROM (SELECT seq, data FROM events ORDER BY seq DESC LIMIT ?) ORDER BY seq", VIEW_EVENTS);
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
+	const plan = stored.item.featurePlan;
+	const completed = completedKeys(stored.item);
 	return {
 		...summaryOf(stored),
 		feedback: await feedbackView(c.db),
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
-		plan: stored.item.featurePlan ?? null,
+		plan: plan ?? null,
+		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
@@ -684,12 +687,13 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 	await c.db.execute("INSERT OR REPLACE INTO feedback_cursor VALUES(1,?)", now);
 }
 
-async function placementInventory(c: Ctx, uid: string): Promise<PlacementInventory> {
+/** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
+async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
-	const [machines, limited, dailyTokenWait] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait()]);
+	const [machines, limited, dailyTokenWait, models] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels()]);
 	const { sandboxes } = await getLayer();
 	const hostedProfiles = sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait };
+	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }) };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored) {
@@ -1042,7 +1046,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const job = item.jobs?.at(-1);
 			if (effect.kind === "dispatch" && item.pr && job) {
 				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
-					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid), at: Date.now() });
+					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid, item.agent?.model), at: Date.now() });
 					return true;
 				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
@@ -1128,12 +1132,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			}
 			// A provider retry replays the delivered planner prompt, including its inventory.
 			if (effect.agent === "planner" && item.run!.step.attempt === 1) {
-				const inventory = await placementInventory(c, meta.uid);
+				const inventory = await placementInventory(c, meta.uid, item.agent?.model);
+				// Each agent's models in short: "sonnet (low/high)". The planner may propose one; the person approves it.
+				const listed = (list?: ModelList | null) => list?.models.map(m => m.efforts.length ? `${m.id} (${m.efforts.join("/")})` : m.id);
 				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({ ...description,
+					agentModels: Object.fromEntries(Object.entries(inventory.models?.machines?.[machineId] ?? {}).map(([id, list]) => [id, listed(list)])),
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
-				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, machines: places })
+				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places })
 					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
@@ -1227,10 +1234,16 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 		if (typeof value !== "string" || value.length > MAX_NOTE_CHARS) throw bad(`A note is text of at most ${MAX_NOTE_CHARS} characters.`);
 		return value;
 	};
+	// The subtasks whose agent works without asking that the person confirmed on the approval card.
+	const agentsOf = (value: unknown): { agents?: string[] } => {
+		if (value === undefined || value === null) return {};
+		if (!Array.isArray(value) || value.length > 6 || !value.every(key => typeof key === "string" && key.length <= 32)) throw bad("Confirm the subtasks by their keys.");
+		return { agents: value as string[] };
+	};
 	switch (action?.kind) {
 		case "cancel_subtask": return { kind: action.kind, key: action.key, by, at };
 		case "edit_plan": return { kind: action.kind, version: action.version, plan: action.plan, by, at };
-		case "approve_plan": return { kind: action.kind, version: action.version, by, at };
+		case "approve_plan": return { kind: action.kind, version: action.version, by, at, ...agentsOf(action.agents) };
 		case "run_single": return { kind: action.kind, by, at };
 		case "start":
 		case "cancel":
@@ -1247,7 +1260,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 				if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > most) throw bad(`A budget's ${name} is a number above 0 and at most ${most}.`);
 				budget[name] = value;
 			}
-			return { kind: "answer", at, by, question: action.question, choice: action.choice, note: note(action.note, false), budget };
+			return { kind: "answer", at, by, question: action.question, choice: action.choice, note: note(action.note, false), budget, ...agentsOf(action.agents) };
 		}
 		default:
 			throw bad("Say what to do with the item.");
@@ -1407,7 +1420,7 @@ export const workItem = actor({
 			try {
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
-					fact.inventory = await placementInventory(c, stored.meta.uid);
+					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored);
 				}
 				changed = await take(c, fact);

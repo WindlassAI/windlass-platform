@@ -70,7 +70,7 @@ E2B never lets a sandbox reach private or link-local addresses on its side, in a
 | Network | What the microVM can reach |
 | --- | --- |
 | Open | Any public host. This is the default. |
-| Restricted | Only the model API, GitHub, the bucket that keeps the agent's memory, and the hosts the operator lists, such as the npm and PyPI registries. Other names do not resolve. |
+| Restricted | Only the model API, GitHub, the bucket that keeps the agent's memory, the hosts the operator lists, such as the npm and PyPI registries, and the hosts the repository's network list allows (repository settings, **Network**). Other names do not resolve, and the timeline names each host a command could not reach. |
 | None | Only the model API and that bucket. A session here cannot have a repository: "This deployment's hosted sandboxes have no network for repositories (WLP_E2B_NETWORK=none). Start the session without a repository, or on a machine of yours." |
 
 The **sandbox** chip and each E2B sandbox's description say which applies. Every host that is allowed is still a way out: in **Restricted**, a command could push to a repository on GitHub with a credential of its own. Address `169.254.169.254` answers in every mode: it is the microVM's own Firecracker metadata service, not a cloud provider's, and holds nothing of other sandboxes.

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelList, SandboxProfile, TimelineItem } from "@contract";
 import { ChecksProblem, cleanChecks } from "../../../server/src/repository-checks";
 import { DefaultsProblem, cleanDefaults } from "../../../server/src/repository-defaults";
+import { NetworkProblem, cleanEntries } from "../../../server/src/repository-network";
 import { PlatformError, type SessionFeed } from "./client";
 import { MOCK_FORGETTING, MOCK_PROFILES, createMockClient } from "./mock";
 
@@ -107,8 +108,37 @@ describe("the mock's repository page", () => {
 		// What was saved before a refusal is still there; an empty list saves none, and deleting what is saved takes the checks too.
 		expect((await user.repositoryChecks(7103)).checks).toHaveLength(1);
 		expect(await user.saveRepositoryChecks(7103, [])).toEqual({ checks: [], updatedAt: null });
-		expect((await user.forgetRepository(7101)).saved).toEqual({ setup: false, secrets: 0, checks: 0 });
+		expect((await user.forgetRepository(7101)).saved).toEqual({ setup: false, secrets: 0, checks: 0, network: 0 });
 		expect((await user.repositoryChecks(7101)).checks).toEqual([]);
+		mock.dispose();
+	});
+
+	it("keeps a repository's network list as the server does: presets and exact names, refused in the server's words, deleted with what is saved", async () => {
+		const mock = make();
+		const user = mock.user(ada);
+		const empty = await user.repositoryNetwork(7101);
+		expect(empty.entries).toEqual([]);
+		expect(empty.presets.map((preset) => preset.id)).toEqual(expect.arrayContaining(["@node", "@playwright", "@prisma", "@debian", "@ubuntu"]));
+		expect(empty.hosted?.mode).toBe("restricted");
+		const saved = await user.saveRepositoryNetwork(7101, ["@prisma", "Registry.Example.com"]);
+		expect(saved.entries).toEqual(["@prisma", "registry.example.com"]);
+		expect(saved.hosts).toEqual(["binaries.prisma.sh", "registry.example.com"]);
+		for (const entries of [["*.example.com"], ["10.0.0.1"], ["@nope"]]) {
+			const refused = await refusal(user.saveRepositoryNetwork(7101, entries));
+			let server = "";
+			try {
+				cleanEntries(entries, []);
+			} catch (error) {
+				if (error instanceof NetworkProblem) server = error.message;
+			}
+			expect([refused.reason, refused.message]).toEqual(["bad_network", server]);
+		}
+		expect((await user.repository(7101)).saved.network).toBe(2);
+		const scan = await user.scanRepositoryNetwork(7101);
+		expect(scan.proposals.some((proposal) => proposal.entry === "@prisma")).toBe(false);
+		expect(scan.proposals.every((proposal) => proposal.sources.length > 0)).toBe(true);
+		expect((await user.forgetRepository(7101)).saved.network).toBe(0);
+		expect((await user.repositoryNetwork(7101)).entries).toEqual([]);
 		mock.dispose();
 	});
 
@@ -174,7 +204,7 @@ describe("the mock's repository page", () => {
 		const user = mock.user(ada);
 		expect((await user.savedRepositories()).map((repository) => `${repository.id} ${repository.name}`)).toEqual(["7101 acme/harbor", "7190 acme/old-pier", "7105 acme/quay", "7102 ada/tide-tables"]);
 		const emptied = await user.forgetRepository(7190);
-		expect(emptied).toMatchObject({ defaults: { profile: null, model: null }, approvals: [], saved: { setup: false, secrets: 0, checks: 0 } });
+		expect(emptied).toMatchObject({ defaults: { profile: null, model: null }, approvals: [], saved: { setup: false, secrets: 0, checks: 0, network: 0 } });
 		expect((await user.repositorySetup(7190)).command).toBe("");
 		expect((await user.repositorySecrets(7190, "docker-windlass-sandbox")).secrets).toEqual([]);
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7190)).toBe(false);

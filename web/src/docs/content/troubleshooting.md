@@ -129,7 +129,7 @@ Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-r
 Claude Code and OpenCode run only on your machines, and only in **Hardened Docker on your machine "…"**. Choose both under **on** and **sandbox**.
 
 **"… runs only on a machine of yours."** or **"Plan first runs only with Windlass."**\
-A work item runs Claude Code or OpenCode only on your machine, and only Quick. Choose the machine and **Quick**, or Windlass. See [Choose the agent](/docs/factory#choose-the-agent).
+A work item runs Claude Code or OpenCode only on your machine. A Plan first feature's planner runs Windlass, so file it on Windlass and choose the agent for each subtask on its plan, or file it as **Quick**. See [Choose the agent](/docs/factory#choose-the-agent) and [Each subtask's agent](/docs/factory#each-subtasks-agent).
 
 **"A work item's reviewer runs only with Windlass."**\
 The second reviewer always runs Windlass, on hosted sandboxes.

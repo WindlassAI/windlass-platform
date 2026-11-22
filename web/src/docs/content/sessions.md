@@ -30,6 +30,10 @@ At the end of each turn, a summary line gives the outcome, the number of steps, 
 
 You can copy a prompt, an answer (as Markdown) or a code block with the copy button beside it.
 
+### A host the sandbox cannot reach
+
+Where the platform limits its hosted sandboxes' network, a command that looks up a host the sandbox may not reach fails at once. After the setup command and at the end of each turn, the timeline names each such host once: "A command in this sandbox could not reach registry.example.com…". On an agent with a repository, choose **Allow for this repository** to add the host to the repository's network list. While a turn is running, this agent's sandbox reaches it at once; otherwise it applies from the next turn, as it does for the repository's other hosted agents. **Network list** opens the list in the repository's settings, where the host also waits under **Asked for by its agents** until you allow or dismiss it. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+
 ## Send a prompt
 
 When the agent is **idle**, type in **Tell the agent what to do** and press <kbd>Enter</kbd>, or choose **Send**. <kbd>Shift</kbd>+<kbd>Enter</kbd> makes a new line.
@@ -144,7 +148,7 @@ Your approval is remembered for 30 days, for that repository and exactly that de
 
 The side panel's **MCP servers** section lists each server with its command, its state in the last turn and, where an approval is remembered, until when, with **Forget**. A server that waits because you said **Not now** has **Approve…** there; it starts with the next turn.
 
-> **Note** Forgetting holds for new sessions and new sandboxes. A sandbox where the server already started goes on starting it, and a running server is not stopped. On a Docker platform, Windlass's own approval holds in all your sessions, since they share its data.
+> **Note** Forgetting holds for new sessions and new sandboxes. A sandbox where the server already started goes on starting it, and a running server is not stopped. On a Docker platform, Windlass's own approval holds in all your sessions with the Windlass sandbox, since they share its data. A hardened Docker sandbox has Windlass data of its own, so there the platform's approval is what your other sessions go by.
 
 A repository's hooks do not run, and its language servers do not start.
 
@@ -156,7 +160,7 @@ A sandbox is paused 10 minutes after its last turn. A paused sandbox uses no san
 
 A new sandbox has a fresh workspace. The platform clones the repository at the branch the session started from and runs its setup command. Where the session's work was pushed, it then puts the workspace on the session's branch as GitHub has it. What was only in the old sandbox is lost. The agent is told with its next prompt.
 
-Where the platform keeps a copy of the agent's memory of the conversation, it restores it, and the timeline says "Restored the agent's memory of the conversation into the new sandbox." Otherwise the agent starts without it, and the timeline says so.
+Where the platform keeps a copy of the agent's memory of the conversation, it restores it, and the timeline says "Restored the agent's memory of the conversation into the new sandbox." Otherwise the agent starts without it, and the timeline says so. On Docker, the agent's memory outlives the sandbox, except in a hardened Docker sandbox: its Windlass data is its own, so that other sessions' commands cannot read it, and it goes with the sandbox. A hardened Docker sandbox made before sandboxes had data of their own still uses the shared data, so the platform removes it when the session next uses it, and the session goes on in a new sandbox as after a lost one.
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 

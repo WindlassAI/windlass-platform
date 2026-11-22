@@ -148,6 +148,7 @@ import {
 	type PublishMessage,
 	type PublishResult,
 	type PublishState,
+	type HostAllowed,
 	type PullRequestInfo,
 	type RepositoryCheck,
 	type SandboxPlace,
@@ -164,11 +165,13 @@ import {
 	type Verified,
 	type WindlassEvent,
 	type WorkspaceFile,
+	WIDE_HOSTS,
 } from "../contract.js";
+import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview } from "../github/git.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
-import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
+import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
@@ -219,6 +222,7 @@ import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import { itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
+import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
@@ -317,6 +321,12 @@ interface SessionMeta {
 	sandboxId: string | null;
 	sandbox: "none" | "running" | "paused";
 	/**
+	 * The sandbox whose Windlass data directory is a volume of its own, as its provider said when it was
+	 * made (`SandboxHandle.ownData`): that data goes with it. Another id, or none, is a sandbox whose data
+	 * is the user's shared volume.
+	 */
+	ownDataSandbox?: string | null;
+	/**
 	 * Why the session's sandbox hands the account's secrets to no MCP server, or to some only, as its
 	 * last turn found it (account-secrets.ts, `accountSecretsNote`); null where it hands them all over.
 	 * Said in the panel beside the user's own servers.
@@ -385,6 +395,14 @@ interface SessionMeta {
 	 * commands have none: a sandbox the agent has worked in is not set up after the fact.
 	 */
 	setupDue?: string | null;
+	/**
+	 * The hosts the network list of the session's repository allowed when a turn last read it, and any
+	 * allowed from here since (repository-network.ts): every connect to a hosted sandbox adds them to the
+	 * deployment's. Absent: none.
+	 */
+	networkHosts?: string[];
+	/** The blocked hosts the timeline named for the sandbox it has now: each is named once per sandbox (`noteBlockedHosts`). */
+	hostsNoted?: string[];
 	snapshotCommit?: string | null;
 	cloneDirectory?: string;
 	/** The setup run in progress, as its starting item has it. Still set when the actor wakes: the run was cut off with its server. */
@@ -528,6 +546,10 @@ interface HeldSecrets {
 	servers: TurnPersonalServer[];
 	/** The checks the user saved for the session's repository (repository-checks.ts); none for a session that is not on one. */
 	checks: RepositoryCheck[];
+	/** The hosts its repository's network list allows (repository-network.ts); absent when the user's actor did not say. */
+	network?: string[];
+	/** When they were asked for: a host allowed from the session after this is not in them (`SessionVars.hostsAllowed`). */
+	networkAt?: number;
 	redactor: Redactor;
 }
 
@@ -538,9 +560,11 @@ async function sessionCaller(c: { key: string[]; client(): unknown }, params: un
 	return caller;
 }
 
-async function requireSessionUser(c: { key: string[]; client(): unknown; conn?: { params: unknown } | null }) {
+/** The caller, who must be the session's user; answers with their id. */
+async function requireSessionUser(c: { key: string[]; client(): unknown; conn?: { params: unknown } | null }): Promise<string> {
 	const caller = await sessionCaller(c, c.conn?.params);
 	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+	return caller.profile.uid;
 }
 
 async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promise<boolean> {
@@ -628,6 +652,12 @@ interface SessionVars {
 	runner: RunnerLink | null;
 	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
 	setupReap: Promise<void> | null;
+	/**
+	 * The hosts allowed from this session (`allowHost`), with when: a turn whose list of hosts was read
+	 * before one of them keeps it all the same (`openSandbox`). This instance's only: a turn that starts
+	 * on another reads the list after the click.
+	 */
+	hostsAllowed: Map<string, number>;
 }
 
 /** What the helpers below need of an actor context; every hook's and action's `c` fits. */
@@ -1110,11 +1140,6 @@ function tail(text: string, lines = 6, chars = 800): string {
 	return kept.length > chars ? kept.slice(-chars) : kept;
 }
 
-/** Docker normally keeps sessions on a shared volume. A reviewer always owns its data. */
-function privateSessionData(meta: SessionMeta, sandboxes: SandboxLayer["sandboxes"]): boolean {
-	return !capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox;
-}
-
 interface SnapshotPlan {
 	writer: boolean;
 	key: SnapshotRequest;
@@ -1192,13 +1217,70 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 	return true;
 }
 
+/** What every connect to the session's sandbox is told: the hosts its repository's network list allows, for a hosted one. */
+function connectOptions(meta: SessionMeta): { network?: string[] } {
+	return meta.place.kind === "hosted" && meta.networkHosts && meta.networkHosts.length > 0 ? { network: meta.networkHosts } : {};
+}
+
+/** How many blocked hosts the timeline names for one sandbox. */
+const MAX_HOSTS_NOTED = 40;
+
+/**
+ * Names in the timeline each host a command in the session's hosted sandbox looked up and could not
+ * reach (the sandbox's `blockedHosts`, from its lookup stub), once per sandbox, and files them as
+ * requests on its repository's network list. Only where the deployment's hosted sandboxes are
+ * `restricted`, where a list can help. Never throws: it only reports.
+ */
+async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
+	if (meta.place.kind !== "hosted" || !sandbox.blockedHosts || layer.sandboxes.egress?.() !== "restricted") return;
+	const allowed = new Set(meta.networkHosts ?? []);
+	const noted = new Set(meta.hostsNoted ?? []);
+	if (noted.size >= MAX_HOSTS_NOTED) return;
+	let found: string[];
+	try {
+		// What was named already is left out before the stub's log is cut to its first names, so it cannot hide a later one.
+		found = await sandbox.blockedHosts([...allowed, ...noted]);
+	} catch (error) {
+		c.log.warn({ msg: "could not read which hosts the sandbox could not reach", error: describeError(error) });
+		return;
+	}
+	const named = found.filter((host) => !allowed.has(host) && !noted.has(host)).slice(0, MAX_HOSTS_NOTED - noted.size);
+	if (named.length === 0) return;
+	meta.hostsNoted = [...noted, ...named];
+	const project = setupProjectOf(meta);
+	for (const host of named) append(c, { turn, kind: "platform", level: "warn", text: blockedHostNote(host, project?.label ?? null), code: "host_blocked", host, ...(project ? { repository: true } : {}) });
+	if (meta.hostsNoted.length >= MAX_HOSTS_NOTED) note(c, turn, "info", `This sandbox's timeline names at most ${MAX_HOSTS_NOTED} hosts its commands could not reach, and has named them; it names no more until the agent has a new sandbox.`);
+	console.log(`[wlp] network.blocked session=${meta.sessionId} hosts=${named.length}`);
+	if (project) {
+		const filed = await userActor(c, meta.uid)
+			.internalNetworkRequests({ sessionId: meta.sessionId, hosts: named })
+			.catch((error: unknown) => {
+				c.log.warn({ msg: "could not file the blocked hosts as requests", error: describeError(error) });
+				return null;
+			});
+		// The requests already waiting are kept over new ones: what a command looks up cannot push out a host a person may want.
+		const left: string[] = filed?.full ?? [];
+		if (left.length > 0) note(c, turn, "info", `${left.length === 1 ? "1 host was" : `${left.length} hosts were`} not filed as a request for ${project.label}: it has as many waiting as it keeps. Allow or dismiss some in its network list to make room.`);
+	}
+	void persist(c);
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
 	// A setup cut off with the server is being stopped: let it finish first, or it could stop this turn's processes.
 	await c.vars.setupReap;
-	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId) : undefined;
+	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it. A host
+	// allowed from the session after the list was read is kept: `allowHost` put it in `networkHosts` already.
+	if (secrets?.network !== undefined) {
+		const hosts = hostsForTurn(secrets.network, secrets.networkAt ?? 0, c.vars.hostsAllowed);
+		meta.networkHosts = meta.place.kind === "hosted" && hosts.length > 0 ? hosts : undefined;
+	}
+	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, connectOptions(meta)) : undefined;
 	sandboxChanged(c);
+	// An actor stopped between a create and its first connect learns it here. Only a yes is taken: a
+	// runner downgraded since says nothing of a sandbox the newer one made with a volume of its own.
+	if (handle?.ownData) meta.ownDataSandbox = handle.id;
 	if (handle) {
 		if (meta.sandbox === "paused") note(c, turn, "info", "Resuming sandbox");
 		noteSandbox(c, meta, "running");
@@ -1216,6 +1298,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		meta.setupUnfinished = null;
 		meta.workDue = null;
 		meta.setupOnBase = null;
+		meta.hostsNoted = undefined;
 		await dropWorkspace(c);
 		// The session holds its turn here, so it is making no other sandbox: one the provider has for it is one it never heard of.
 		await sweepSandboxes(c, meta, layer);
@@ -1231,7 +1314,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		const vars = c.vars;
 		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;
 		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
-		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot, mirrorRepo: meta.repo ? String(meta.repo.id) : undefined });
+		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot, mirrorRepo: meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1247,9 +1330,11 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			await layer.sandboxes.destroy(id);
 			throw new TurnProblem("The agent was deleted.");
 		}
-		handle = await layer.sandboxes.connect(id);
+		handle = await layer.sandboxes.connect(id, connectOptions(meta));
 		if (!handle) throw new TurnProblem("The new sandbox disappeared right after it was created.");
-		if (meta.windlassSessionId && privateSessionData(meta, layer.sandboxes)) {
+		// Recorded for this sandbox from what it has, not from what the provider would make now.
+		meta.ownDataSandbox = handle.ownData ? id : null;
+		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes, id))) {
 			// Windlass's own session went with the old sandbox. Its copy is put into the new one before anything
 			// else happens there; without one, asking for the session would only fail the turn.
 			if (!capabilitiesOf(meta.harness).backups || !(await restoreBackup(c, meta, turn, handle, layer))) {
@@ -1259,7 +1344,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			}
 		}
 		// Where Windlass's session outlives the sandbox, the agent remembers files this new workspace does not have, and is told.
-		if (meta.windlassSessionId && !privateSessionData(meta, layer.sandboxes)) meta.freshWorkspace = true;
+		if (meta.windlassSessionId && !(await privateSessionData(meta, layer.sandboxes, id))) meta.freshWorkspace = true;
 	}
 
 	if (!meta.cloned && handle.snapshot) {
@@ -1279,7 +1364,11 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
 	if (meta.setupUnfinished?.state === "interrupted" && !signal.aborted) await stopLeftoverSetup(handle);
 	// The repository's setup command, once in this sandbox, before Windlass is started in it, on the base; only then the session's branch.
-	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal, secrets, plan, layer);
+	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) {
+		await runSetup(c, meta, turn, handle, signal, secrets, plan, layer);
+		// What the setup command could not reach is said before the agent starts on it.
+		await noteBlockedHosts(c, meta, turn, handle, layer);
+	}
 	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
@@ -1396,7 +1485,7 @@ async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: S
 async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
 	const backups = layer.backups;
 	const session = meta.windlassSessionId;
-	if (!backups || !privateSessionData(meta, layer.sandboxes) || !session) return;
+	if (!backups || !(await privateSessionData(meta, layer.sandboxes, sandbox.id)) || !session) return;
 	// Until a copy is saved below, the one there is, if any, is behind this turn.
 	meta.memoryTurn = turn;
 	// A session that is going away needs no copy, and an actor that is stopping has no time for one.
@@ -1444,7 +1533,7 @@ async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 	if (backupRemoved.has(meta)) return;
 	try {
 		const layer = await layerOf(c, meta);
-		if (!layer.backups || !privateSessionData(meta, layer.sandboxes)) return;
+		if (!layer.backups || (!meta.backup && !(await privateSessionData(meta, layer.sandboxes, meta.sandboxId)))) return;
 		for (let attempt = 1; ; attempt += 1) {
 			try {
 				await layer.backups.remove({ uid: meta.uid, sessionId: meta.sessionId });
@@ -1582,7 +1671,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 	// Starting a paused sandbox to read it uses its user's sandbox time, as a turn does: refused when none is left.
 	// So does a stretch carried over a wake: it is settled where it can have ended, and the read takes a hold of its own.
 	if (!c.vars.turn && (!meta.meter || carriedOver(c, meta))) await holdSandbox(c, meta, true);
-	const sandbox = await sandboxes.connect(meta.sandboxId);
+	const sandbox = await sandboxes.connect(meta.sandboxId, connectOptions(meta));
 	sandboxChanged(c);
 	if (!sandbox) {
 		noteSandbox(c, meta, "none");
@@ -1678,6 +1767,7 @@ const PULL_FRESH_MS = 20_000;
  */
 async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
+	const networkAt = Date.now();
 	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId, config.snapshots && (meta.place.kind === "hosted" || !!config.machines?.identity)), RECALL_WAIT_MS);
 	if (sealed === null) {
 		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
@@ -1721,6 +1811,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		account: sealed.redactOnly ? [] : account,
 		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 		checks: project && sealed.project === project.key ? (sealed.checks ?? []) : [],
+		...(sealed.network !== undefined && { network: project && sealed.project === project.key ? sealed.network : [], networkAt }),
 		redactor: new SecretRedactor([...opened, ...account]),
 	};
 }
@@ -2006,7 +2097,7 @@ async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, f
 	try {
 		const { sandboxes } = await layerOf(c, meta);
 		if (!c.vars.idling && (!hostedLimitsApply(meta.place) || meta.meter) && (await sandboxes.state(meta.sandboxId)) === "running") {
-			const sandbox = await sandboxes.connect(meta.sandboxId);
+			const sandbox = await sandboxes.connect(meta.sandboxId, connectOptions(meta));
 			sandboxChanged(c);
 			if (sandbox && !c.vars.turn) value = await hasUnpushedWork(sandbox, repo.baseSha ?? null, meta.pushedHead ?? null);
 		}
@@ -2082,7 +2173,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	const { sandboxes } = await layerOf(c, meta);
 	// A push starts a paused sandbox, which uses its user's sandbox time; a stretch carried over a wake is settled as for a read (`workspaceView`).
 	if (!meta.meter || carriedOver(c, meta)) await holdSandbox(c, meta, true);
-	const sandbox = meta.sandboxId ? await sandboxes.connect(meta.sandboxId) : undefined;
+	const sandbox = meta.sandboxId ? await sandboxes.connect(meta.sandboxId, connectOptions(meta)) : undefined;
 	sandboxChanged(c);
 	if (!sandbox) {
 		noteSandbox(c, meta, "none");
@@ -2362,7 +2453,7 @@ async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers
 	// A session whose project names no server asks nobody: the user's own have no approval.
 	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
 	const project = projectOf(meta);
-	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: sandboxes.sessionsLiveInSandbox, project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
+	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: await privateSessionData(meta, sandboxes, meta.sandboxId), project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
 	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
 	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
 	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
@@ -3541,7 +3632,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			const servers: ServerQuestionContext = {
 				profile,
 				demo: meta.demo,
-				dataInSandbox: privateSessionData(meta, layer.sandboxes),
+				dataInSandbox: await privateSessionData(meta, layer.sandboxes, sandbox.id),
 				project: projectOf(meta),
 				machine: machineOf(meta),
 				hostedEgress: meta.place.kind === "hosted" ? layer.sandboxes.egress?.() : undefined,
@@ -3844,6 +3935,8 @@ fi`, { signal, timeoutMs: 5000 });
 		if (used) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
 			const saving = caps.backups && result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
+			// What the turn's commands could not reach, named before the turn is reported as ended.
+			if (layer && !c.vars.stopping && !c.vars.destroying) await noteBlockedHosts(c, meta, turn, used, layer);
 			const copied = reviewer || c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
 			if (!copied) await dropWorkspace(c);
 			await saving;
@@ -4506,6 +4599,7 @@ export const agentSession = actor({
 			carried: null,
 			runner: null,
 			setupReap: null,
+			hostsAllowed: new Map(),
 		};
 	},
 
@@ -5035,13 +5129,48 @@ export const agentSession = actor({
 				const forgotten = await serverApprovals.forget(c, meta, input.name);
 				if (forgotten > 0) {
 					const { sandboxes } = await layerOf(c, meta);
-					note(c, meta.turns, "info", serverForgottenNote({ name: input.name }, { dataInSandbox: sandboxes.sessionsLiveInSandbox }));
+					note(c, meta.turns, "info", serverForgottenNote({ name: input.name }, { dataInSandbox: await privateSessionData(meta, sandboxes, meta.sandboxId) }));
 					serversChanged(c, meta);
 				}
 				return await sessionServers(c, meta);
 			} catch (error) {
 				throw clientError(c.log, error, "The approval could not be forgotten. Try again.");
 			}
+		},
+
+		allowHost: async (c, input: { host: string }): Promise<HostAllowed> => {
+			const by = await requireSessionUser(c);
+			const meta = liveMeta(c);
+			const host = typeof input?.host === "string" ? input.host.trim().toLowerCase().replace(/\.$/, "") : "";
+			if (!isHostName(host)) throw new UserError("That is not an exact host name.", { code: "bad_network" });
+			if (meta.place.kind !== "hosted") throw new UserError("A repository's network list is for hosted sandboxes, and this agent runs on a machine of yours: its runner's --egress settings say what it reaches.", { code: "bad_network" });
+			const project = setupProjectOf(meta);
+			if (!project) throw new UserError("This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox, in WLP_E2B_NETWORK_ALLOW.", { code: "bad_network" });
+			const { sandboxes } = await layerOf(c, meta);
+			// In `none` the list applies nowhere: saying it was allowed would promise a host nothing reaches.
+			if (sandboxes.egress?.() === "none") throw new UserError(`This deployment gives hosted sandboxes no network but the model API (WLP_E2B_NETWORK=none), so a host allowed for ${project.label} would be reached by nothing here.`, { code: "bad_network" });
+			const answer = await userActor(c, meta.uid).internalAllowHost({ sessionId: meta.sessionId, host, by });
+			if (!answer.allowed) {
+				note(c, meta.turns, "info", `${host} was asked for: whoever changes the settings of ${project.label} can allow it there.`);
+				return { network: answer.network, applied: false };
+			}
+			meta.networkHosts = answer.hosts.length > 0 ? answer.hosts : undefined;
+			c.vars.hostsAllowed.set(host, Date.now());
+			let applied = false;
+			// At once only while a turn holds the sandbox, and so its time is on the meter: between turns a change
+			// would start a paused sandbox, or push a running one's timeout out, with nothing counting it.
+			const turn = c.vars.turn;
+			if (meta.sandboxId && turn && !turn.closed) {
+				try {
+					applied = (await sandboxes.setNetwork?.(meta.sandboxId, meta.networkHosts ?? [])) ?? false;
+				} catch (error) {
+					c.log.warn({ msg: "could not change the running sandbox's network", error: describeError(error) });
+				}
+			}
+			const wide = WIDE_HOSTS[host];
+			note(c, meta.turns, "info", `${host} is allowed for ${project.label}. ${applied ? "This sandbox reaches it now; for the repository's other hosted agents it applies from the next turn." : "It applies from the next turn, in this agent's sandbox and the repository's other hosted agents'."}${wide ? ` ${wide}` : ""}`);
+			await persist(c);
+			return { network: answer.network, applied };
 		},
 
 		// --- called by the actor's own schedule only ------------------------------------------------
@@ -5195,7 +5324,7 @@ export const agentSession = actor({
 			const work = (async () => {
 				const layer = await layerOf(c, meta);
 				if (id) {
-					const memory = !meta.windlassSessionId ? null : !privateSessionData(meta, layer.sandboxes) ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
+					const memory = !meta.windlassSessionId ? null : !(await privateSessionData(meta, layer.sandboxes, id)) ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
 					await removeSandbox(c, meta, id, throughReviewRun === undefined ? freedNote(memory) : "Released the reviewer’s sandbox for the finished run.");
 					console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
 				}

@@ -584,6 +584,117 @@ export interface RepositoryChecks {
 	updatedAt: number | null;
 }
 
+// --- A repository's network list -------------------------------------------------------------
+
+/**
+ * A named set of hosts that WLP_E2B_NETWORK_ALLOW and a repository's network list can allow with one
+ * entry ("@npm", "@playwright"), shown as a checkbox in the repository's settings. Exact names only:
+ * a wildcard cannot be pinned in a sandbox's /etc/hosts. Each list is the hosts the tool's own code or
+ * documentation names for its downloads, with the hosts a download is redirected to (docs/operating.md,
+ * "E2B", "Network", says where each comes from).
+ */
+export interface NetworkPreset {
+	id: string;
+	/** In words, for the repository's settings: "Playwright browsers". */
+	name: string;
+	/** What it is for, in a few words. */
+	about: string;
+	hosts: readonly string[];
+}
+
+export const NETWORK_PRESETS: readonly NetworkPreset[] = [
+	{ id: "@npm", name: "npm registry", about: "npm, pnpm, Yarn and Bun packages", hosts: ["registry.npmjs.org", "registry.yarnpkg.com"] },
+	{ id: "@pypi", name: "PyPI", about: "pip, uv and Poetry packages", hosts: ["pypi.org", "files.pythonhosted.org"] },
+	{ id: "@github", name: "GitHub downloads", about: "Release assets, raw files and archives", hosts: ["github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com"] },
+	{ id: "@crates", name: "crates.io", about: "Cargo packages", hosts: ["crates.io", "index.crates.io", "static.crates.io"] },
+	{ id: "@go", name: "Go module proxy", about: "Go modules and their checksums", hosts: ["proxy.golang.org", "sum.golang.org"] },
+	{ id: "@node", name: "nodejs.org", about: "Node.js downloads, and the headers node-gyp builds native addons with", hosts: ["nodejs.org"] },
+	{ id: "@playwright", name: "Playwright browsers", about: "What playwright install downloads. On x86_64 its Chromium download redirects to Google Cloud Storage, which is not in this preset: add @gcs for it", hosts: ["cdn.playwright.dev", "playwright.download.prss.microsoft.com"] },
+	{ id: "@gcs", name: "Google Cloud Storage", about: "Reaches every public Google Cloud Storage bucket, anyone's, not only the one a download needs. Playwright's Chromium for x86_64 comes from it", hosts: ["storage.googleapis.com"] },
+	{ id: "@prisma", name: "Prisma engines", about: "The engines Prisma downloads when it is installed", hosts: ["binaries.prisma.sh"] },
+	{ id: "@debian", name: "Debian packages", about: "Debian's apt sources", hosts: ["deb.debian.org", "security.debian.org"] },
+	{ id: "@ubuntu", name: "Ubuntu packages", about: "Ubuntu's apt sources; the sandbox runs Ubuntu", hosts: ["archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"] },
+];
+
+/**
+ * Hosts that serve far more than what a download needs, with the sentence said wherever someone can
+ * allow one: on the timeline's line about it, beside a request, and beside a proposal.
+ */
+export const WIDE_HOSTS: Readonly<Record<string, string>> = {
+	"storage.googleapis.com": "storage.googleapis.com serves every public Google Cloud Storage bucket, anyone's: allowed, it lets a command send to or fetch from any of them, not only the one a download needs.",
+};
+
+/**
+ * A host a command in one of the repository's hosted sandboxes looked up and could not reach, kept for
+ * the repository until it is allowed or dismissed: a request, which only the person who changes the
+ * repository's settings can grant. Nobody is asked when one is filed.
+ */
+export interface NetworkRequest {
+	host: string;
+	/** When a command last asked for it, ms since the epoch. */
+	at: number;
+	/** The session whose sandbox it was looked up in; null when that is not known. */
+	sessionId: string | null;
+}
+
+/**
+ * The hosts a repository's hosted sandboxes may reach besides the platform's own and the deployment's
+ * (docs/github-and-repositories.md, "A repository's network"): exact host names and presets, saved for
+ * the repository by GitHub's id, like its setup command. They apply where the deployment runs hosted
+ * sandboxes on E2B with WLP_E2B_NETWORK=restricted, from the next command of every hosted session on
+ * the repository: a sandbox is changed at once when a host is allowed from its session while a turn runs in it.
+ */
+export interface RepositoryNetwork {
+	/** What is saved: preset ids ("@playwright") and exact host names, in the order they were added. */
+	entries: string[];
+	/** The hosts they come to, sorted, each once. */
+	hosts: string[];
+	/** When the list was last saved, ms since the epoch; null when none is saved. */
+	updatedAt: number | null;
+	/** Hosts its sessions' commands asked for and could not reach, the newest first. */
+	requests: NetworkRequest[];
+	/** The presets that can be chosen. */
+	presets: NetworkPreset[];
+	/**
+	 * What the deployment's hosted sandboxes reach whatever the list says: `mode` is WLP_E2B_NETWORK, and
+	 * `hosts` the model API, the git host, the bucket and the deployment's own list (empty in `open`).
+	 * Null where hosted sandboxes are not on E2B: the list then applies nowhere on this deployment.
+	 */
+	hosted: { mode: EgressMode; hosts: string[] } | null;
+	/** How many hosts the list may come to here (MAX_REPOSITORY_HOSTS, less where the deployment's own list leaves less room). */
+	limit: number;
+}
+
+/** A host or a preset found in a repository's files (`scanRepositoryNetwork`): a proposal, never applied by itself. */
+export interface NetworkProposal {
+	/** A preset id or an exact host name: what allowing it saves. */
+	entry: string;
+	/** For a preset, its hosts; for a host, that host. */
+	hosts: string[];
+	/** Where it was found, in words, at most five: "package.json scripts.postinstall", ".github/workflows/ci.yml line 31". */
+	sources: string[];
+}
+
+/** What a scan of a repository's files found. */
+export interface NetworkScan {
+	/** Not yet reachable from its sandboxes: presets first, then hosts by name. */
+	proposals: NetworkProposal[];
+	/** The commit that was read, and the branch it is the head of. */
+	commit: string | null;
+	branch: string | null;
+	/** How many files were read. */
+	files: number;
+	/** True when GitHub's list of files was cut short, or more files matched than are read: something may be missing. */
+	incomplete: boolean;
+}
+
+/** What `allowHost` did. */
+export interface HostAllowed {
+	network: RepositoryNetwork;
+	/** True when the session's sandbox was changed at once, which happens only while a turn holds it; false when it applies from the next turn. */
+	applied: boolean;
+}
+
 /** How one check ended, in Windlass's words (`CheckEvidence.status`). */
 export type CheckStatus = "passed" | "failed" | "timed_out" | "could_not_start" | "interrupted";
 
@@ -799,8 +910,8 @@ export interface RepositoryView {
 	approvals: RepositoryApproval[];
 	/** What forgetting an approval does and does not do on this deployment, in a sentence or two. */
 	forgetting: string;
-	/** What else is saved for it: whether a setup command is, how many secrets, and how many checks. */
-	saved: { setup: boolean; secrets: number; checks: number };
+	/** What else is saved for it: whether a setup command is, how many secrets, how many checks, and how many entries its network list has. */
+	saved: { setup: boolean; secrets: number; checks: number; network: number };
 }
 
 /** A repository the user's actor keeps something for: a setup command, a secret, a default or a remembered approval. */
@@ -1676,6 +1787,13 @@ export interface ItemView extends ItemSummary {
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
+	/**
+	 * With a plan: the keys of its subtasks still to run whose agent works without asking, as approval counts
+	 * them (`unattendedKeys`, past the integrated subtasks); approving needs the person's confirmation of each.
+	 */
+	unattended?: string[];
+	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
+	completedSubtasks?: string[];
 	children?: ItemSummary[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
@@ -1703,9 +1821,23 @@ export interface PlacementNeeds {
 	screenshots?: boolean;
 	egress?: "open" | "restricted";
 	profile?: "docker-hardened" | "docker-windlass-sandbox";
-	harness?: HarnessId;
 	cpus?: number;
 	memoryGiB?: number;
+}
+
+/**
+ * The agent a Plan-first subtask's item runs, as the planner proposed it or the person chose it on the
+ * approval card. Absent: Windlass on the feature's model and effort. A machine harness (Claude Code,
+ * OpenCode) works without asking and runs only on a machine signed into it, in its hardened container;
+ * approving a plan that names one needs the person's confirmation of each such subtask (`approve_plan`'s
+ * `agents`). Codex is not offered for work items.
+ */
+export interface SubtaskAgent {
+	harness: HarnessId;
+	/** One the place offers for this agent. Left out: the feature's model for Windlass, the agent's own default otherwise. */
+	model?: string;
+	/** One the place offers for the model. Left out: the feature's effort for Windlass on its model, the agent's default otherwise. */
+	effort?: string;
 }
 
 export interface ChildPlacement {
@@ -1723,6 +1855,8 @@ export interface PlanSubtask {
 	/** Older plans inherit the feature's place. */
 	place?: { prefer: string; reason: string; allow?: string[] };
 	needs?: PlacementNeeds;
+	/** Absent: Windlass on the feature's model. */
+	agent?: SubtaskAgent;
 	key: string;
 	title: string;
 	brief: string;
@@ -1787,7 +1921,11 @@ export interface CreateItemInput {
 export type ItemAction =
 	| { kind: "cancel_subtask"; key: string }
 	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
-	| { kind: "approve_plan"; version: number }
+	/**
+	 * `agents`: the keys of the subtasks still to run whose agent works without asking (`SubtaskAgent`), each
+	 * one confirmed by the person. Approval is refused (`bad_input`) unless it lists every one of them.
+	 */
+	| { kind: "approve_plan"; version: number; agents?: string[] }
 	| { kind: "run_single" }
 	/** A draft: start it. */
 	| { kind: "start" }
@@ -1797,7 +1935,7 @@ export type ItemAction =
 	/** An item in review: a new run, with the person's note to the agent. */
 	| { kind: "send_back"; note: string }
 	/** The open question: one of its choices, with a note to the agent, and for "raise" on a budget question the new budget. */
-	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> };
+	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] };
 
 /** What an API token may do. */
 export type ApiTokenScope = "items:create" | "items:read";
@@ -1865,6 +2003,23 @@ export interface UserActions {
 	 * Throws a UserError with code `bad_checks` for a list that cannot be saved, with what is wrong.
 	 */
 	saveRepositoryChecks(input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
+	/** The repository's network list, with the requests its sessions filed and what the deployment allows anyway. Asks GitHub nothing. */
+	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
+	/**
+	 * Saves the repository's network list whole: preset ids and exact host names. An empty one saves
+	 * none. A request for a host the list now allows is taken off. Throws a UserError with code
+	 * `bad_network` for an entry that is no preset and no exact DNS name, or a list that comes to more
+	 * than `RepositoryNetwork.limit` hosts.
+	 */
+	saveRepositoryNetwork(input: { repositoryId: GithubId; entries: string[] }): Promise<RepositoryNetwork>;
+	/** Takes a request off the repository's list without allowing it. */
+	dismissNetworkRequest(input: { repositoryId: GithubId; host: string }): Promise<RepositoryNetwork>;
+	/**
+	 * Reads the repository's manifests, lockfiles, install scripts and CI files at its default branch,
+	 * and the saved setup command, and answers with the hosts and presets they name that its sandboxes
+	 * cannot reach yet. A fixed reading: no agent, no command. Nothing is saved. Throws as `githubRepository` does.
+	 */
+	scanRepositoryNetwork(repositoryId: GithubId): Promise<NetworkScan>;
 	/**
 	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
 	 * in a sandbox of `profile`. Saved values stay on the server.
@@ -2155,8 +2310,15 @@ export type TimelineItem =
 			 * about a tool of one of the user's own MCP servers whose tools run without asking
 			 * (`PersonalServer.unasked`). The `approval.answered` that follows has choice "once", and nobody was asked.
 			 */
-			code?: "question_expired" | "question_allowed";
+			code?: "question_expired" | "question_allowed" | "host_blocked";
 			call?: { messageId: string; callId: string };
+			/**
+			 * With `code` "host_blocked": the host a command in the session's sandbox asked for and could
+			 * not reach, which the line names. `repository` is set when the session's repository's network
+			 * list can allow it (`allowHost`); without it only the deployment's operator can.
+			 */
+			host?: string;
+			repository?: boolean;
 	  }
 	/** A durable Windlass event, or one of the stored ephemeral ones (`notice`, `workspace.changes`, `cli.summary`). */
 	| { seq: number; at: number; turn: number; kind: "windlass"; event: WindlassEvent }
@@ -2518,6 +2680,17 @@ export interface AgentSessionActions {
 	 * stopped. Resolves when nothing was remembered, too.
 	 */
 	forgetServer(input: { name: string }): Promise<SessionServers>;
+	/**
+	 * "Allow for this repository": adds the host to the network list of the session's repository and,
+	 * while a turn holds the session's sandbox, lets that sandbox reach it at once (`applied`); otherwise
+	 * it applies from the next turn. Only the person who can change the repository's settings may. Today
+	 * that is the only person who can call it at all (a session's actions are its user's), so the other
+	 * branch, which files a request (`NetworkRequest`) and answers `applied: false`, cannot run yet.
+	 * Throws a UserError with code `bad_network` for a host that is not an exact DNS name, a session with
+	 * no repository of the GitHub connection, a list that is full, or a deployment in
+	 * WLP_E2B_NETWORK=none, where no host but the model API is reached whatever the list says.
+	 */
+	allowHost(input: { host: string }): Promise<HostAllowed>;
 }
 
 export interface AgentSessionEvents {
@@ -2569,6 +2742,8 @@ export const MAX_SETUP_COMMAND_CHARS = 2_000;
 export const SETUP_OUTPUT_CHARS = 32_000;
 /** A repository's checks: how many one repository may have, and Windlass's own limit on how long one may run. */
 export const MAX_CHECKS_PER_REPOSITORY = 20;
+/** How many hosts one repository's network list may come to, presets expanded. */
+export const MAX_REPOSITORY_HOSTS = 40;
 export const MAX_CHECK_NAME_CHARS = 64;
 export const MAX_CHECK_TIMEOUT_SECONDS = 3600;
 /** How many glob patterns one check's `when` may hold, and how long one may be. */

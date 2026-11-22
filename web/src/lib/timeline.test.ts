@@ -490,6 +490,17 @@ describe("a turn the platform ended", () => {
 			{ kind: "platform", level: "info", text: "Creating sandbox" },
 		]);
 	});
+
+	it("carries the host of a line about a blocked host, and whether the repository's list can allow it", () => {
+		let view = applyItem(emptyView(), { seq: 1, at: 1, turn: 1, kind: "user", text: "go", model: "gpt-test", effort: "low" });
+		view = applyItem(view, { seq: 2, at: 2, turn: 1, kind: "platform", level: "warn", text: "A command in this sandbox could not reach cdn.example.org", code: "host_blocked", host: "cdn.example.org", repository: true });
+		view = applyItem(view, { seq: 3, at: 3, turn: 1, kind: "platform", level: "info", text: "Creating sandbox" });
+		expect(turn(view).blocks.slice(1)).toMatchObject([
+			{ kind: "platform", level: "warn", blocked: { host: "cdn.example.org", repository: true } },
+			{ kind: "platform", text: "Creating sandbox" },
+		]);
+		expect("blocked" in turn(view).blocks[2]!).toBe(false);
+	});
 });
 
 describe("events the reducer does not show", () => {

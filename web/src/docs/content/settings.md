@@ -66,6 +66,34 @@ Commands that Windlass runs before it calls a turn done, in the agent's own sand
 
 Agents on the repository have new checks from their next turn.
 
+### Network
+
+Where the platform limits its hosted sandboxes' network (**Restricted**, see Security), the repository's agents reach the model API, GitHub, the bucket that keeps their memory and the hosts the platform allows. Here you can let them reach more, for every hosted agent on the repository. It changes nothing for agents on your own machines.
+
+**Presets** are named sets of hosts, chosen with a checkbox each. A preset the platform allows for every sandbox already is shown checked and cannot be changed here.
+
+| Preset | For | Hosts |
+| --- | --- | --- |
+| npm registry `@npm` | npm, pnpm, Yarn and Bun packages | `registry.npmjs.org`, `registry.yarnpkg.com` |
+| PyPI `@pypi` | pip, uv and Poetry packages | `pypi.org`, `files.pythonhosted.org` |
+| GitHub downloads `@github` | Release assets, raw files and archives | `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `release-assets.githubusercontent.com` |
+| crates.io `@crates` | Cargo packages | `crates.io`, `index.crates.io`, `static.crates.io` |
+| Go module proxy `@go` | Go modules and their checksums | `proxy.golang.org`, `sum.golang.org` |
+| nodejs.org `@node` | Node.js downloads, and the headers node-gyp builds native addons with | `nodejs.org` |
+| Playwright browsers `@playwright` | What `playwright install` downloads, except Chromium on x86_64, which comes from Google Cloud Storage (`@gcs`) | `cdn.playwright.dev`, `playwright.download.prss.microsoft.com` |
+| Google Cloud Storage `@gcs` | Every public Google Cloud Storage bucket, anyone's. Playwright's Chromium for x86_64 comes from it | `storage.googleapis.com` |
+| Prisma engines `@prisma` | The engines Prisma downloads when it is installed | `binaries.prisma.sh` |
+| Debian packages `@debian` | Debian's apt sources | `deb.debian.org`, `security.debian.org` |
+| Ubuntu packages `@ubuntu` | Ubuntu's apt sources; the sandbox runs Ubuntu | `archive.ubuntu.com`, `security.ubuntu.com`, `ports.ubuntu.com` |
+
+`@gcs` is a preset of its own because `storage.googleapis.com` serves every public Google Cloud Storage bucket, not only Playwright's: allowed, it lets a command send to or fetch from any of them. The page says so wherever you can allow it.
+
+- **Hosts** are exact names, such as `registry.example.com`: no addresses, ports, paths or wildcards. A repository can allow 40 hosts, presets counted by their hosts, and fewer where the platform's own list leaves less room.
+- **Asked for by its agents** lists the hosts a command in one of the repository's sandboxes looked up and could not reach. Choose **Allow** or **Dismiss**. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect. The list keeps 30 hosts; once it is full, a new one is not added, and the agent's timeline says so, until you allow or dismiss some.
+- **Look for hosts in the repository** reads the manifests, lockfiles, install scripts and CI files of the default branch, and the setup command, and lists the presets and hosts they name that the sandboxes cannot reach yet, each with where it was found, for example "package.json scripts.postinstall". Nothing is allowed until you choose **Allow** for it: a file in a repository can name any host.
+
+A change applies to each agent from its next turn. **Allow for this repository** in an agent's timeline applies at once to that agent's sandbox while a turn is running in it, and otherwise from its next turn. Only you can change this list: it is saved with your settings for the repository.
+
 ### Secrets
 
 Repository secrets go to the setup command, and to the MCP servers the repository names, where their definition reads it as `${NAME}`. Choose **Also the agent's commands** to give one to the agent's commands too.
@@ -81,7 +109,7 @@ An agent asks before it starts an MCP server that the repository names: **Start 
 
 ### Delete what is saved
 
-**Delete what is saved…** removes the setup command, the checks, the secrets, the defaults and the remembered approvals of the repository at once. Screenshots return to off. The repository's agents are not deleted. This cannot be undone, and a secret's value cannot be read back, so keep a copy of any you still need.
+**Delete what is saved…** removes the setup command, the checks, the network list and its requests, the secrets, the defaults and the remembered approvals of the repository at once. Screenshots return to off. The repository's agents are not deleted. This cannot be undone, and a secret's value cannot be read back, so keep a copy of any you still need.
 
 ## Usage
 

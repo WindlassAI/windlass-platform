@@ -15,6 +15,9 @@ import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
+import { machineProfiles } from "../server/src/machines/profiles.js";
+import { validValue } from "../server/src/runner/protocol.js";
+import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
 	CAPABILITIES_RUNNER_VERSION, REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, reportFor, secondHello, versionAtLeast, welcomeCapabilities, type Report,
@@ -64,6 +67,24 @@ expect("a welcome with or without capabilities passes, and unknown names are kep
 	&& parseServerFrame(JSON.stringify({ kind: "welcome", idleSuspendMs: 1, capabilities: "git-mirrors" })) === null);
 expect("a report without the capability drops gitMirrors and keeps the rest", !("gitMirrors" in reportFor(mirrorReport as unknown as Report, undefined)) && reportFor(mirrorReport as unknown as Report, ["git-mirrors"]).gitMirrors === true
 	&& reportFor(mirrorReport as unknown as Report, []).freeDiskBytes === 12);
+// The same for sessionVolumes: a hardened Windlass session's own data volume. A 0.2.x runner never sends it.
+const volumesReport = { ...mirrorReport, sessionVolumes: true };
+expect("this server's checks take a report with sessionVolumes, and name session-volumes to a runner that reads capabilities",
+	parseRunnerFrame(JSON.stringify(volumesReport))?.kind === "report" && welcomeCapabilities(CAPABILITIES_RUNNER_VERSION).capabilities?.includes("session-volumes") === true
+	&& !("capabilities" in welcomeCapabilities("0.2.1")));
+expect("each field goes only with its own capability", (() => {
+	const none = reportFor(volumesReport as unknown as Report, undefined), mirrors = reportFor(volumesReport as unknown as Report, ["git-mirrors"]);
+	const volumes = reportFor(volumesReport as unknown as Report, ["session-volumes"]), both = reportFor(volumesReport as unknown as Report, ["git-mirrors", "session-volumes"]);
+	return !("sessionVolumes" in none) && !("gitMirrors" in none) && mirrors.gitMirrors === true && !("sessionVolumes" in mirrors)
+		&& volumes.sessionVolumes === true && !("gitMirrors" in volumes) && both.gitMirrors === true && both.sessionVolumes === true;
+})());
+expect("a machine whose report has no sessionVolumes (a 0.2.1 runner) describes hardened sessions as sharing the machine volume, one that has it as having their own", (() => {
+	const plain = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] } as unknown as Report;
+	const hardened = (report: Report) => machineProfiles("box", report).find(profile => profile.id === "docker-hardened")!;
+	const old = hardened(plain), current = hardened({ ...plain, sessionVolumes: true });
+	return !old.summary.includes("data directory of its own") && !old.layers.join(" ").includes("of the session's own")
+		&& current.summary.includes("data directory of its own") && current.layers.join(" ").includes("a data directory of the session's own");
+})());
 
 expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kind === "hello"
 	&& parseRunnerFrame(JSON.stringify({ kind: "report", docker: { ok: false, reason: "permission denied" }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [{ id: "m_0123456789abcdef-0123456789ab", sessionId: "s_0123456789abcdef", state: "paused", usedAt: 5 }] }))?.kind === "report");
@@ -177,7 +198,7 @@ const lease = (validForMs?: number) => Response.json({ endpoint: null, namespace
 const answer = (status: number, body: unknown = {}) => Response.json(body, { status });
 
 async function withControl(answers: Response[], exercise: (runner: {
-	status: string[]; online(socketIndex?: number, capabilities?: string[]): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number;
+	status: string[]; online(socketIndex?: number, capabilities?: string[]): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number; owner: Executor;
 }) => Promise<void>) {
 	const abort = new AbortController();
 	const status: string[] = [];
@@ -192,13 +213,13 @@ async function withControl(answers: Response[], exercise: (runner: {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
 		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {},
-		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true }),
+		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
 	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host", null);
 	try {
-		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
+		const test = exercise({ status, owner, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
 			async online(socketIndex = 0, capabilities?: string[]) {
 				await until(() => sockets.length > socketIndex);
 				const socket = sockets[socketIndex];
@@ -304,6 +325,55 @@ try {
 				assert.equal(Object.hasOwn(report ?? {}, "gitMirrors"), sent, `welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
 		}
+	});
+	await checkControl("a runner sends sessionVolumes only to a server whose welcome names session-volumes", async () => {
+		for (const [capabilities, sent] of [[undefined, false], [[], false], [["git-mirrors"], false], [["git-mirrors", "session-volumes"], true]] as const) {
+			await withControl([lease()], async r => {
+				const ws = await r.online(0, capabilities && [...capabilities]);
+				const report = ws.sent.find(f => f.kind === "report");
+				assert.equal(Object.hasOwn(report ?? {}, "sessionVolumes"), sent, `welcome capabilities ${JSON.stringify(capabilities)}`);
+				// And makes hardened sandboxes with data of their own only then: an older server would take the data for shared.
+				assert.equal(r.owner.sessionVolumes, sent, `owner.sessionVolumes after welcome capabilities ${JSON.stringify(capabilities)}`);
+			});
+		}
+	});
+	await checkControl("the runner asks its provider for a sandbox with data of its own, and says a connect has it, only for a server that named session-volumes", async () => {
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		for (const named of [false, true]) {
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+			owner.sessionVolumes = named;
+			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			const asked: { create?: boolean; connect?: boolean } = {};
+			owner.provider.create = async (input) => { asked.create = input.ownData; return "0123456789ab"; };
+			owner.provider.connect = async (_raw, options) => {
+				asked.connect = options?.ownData;
+				return { cwd: "/workspace", ownData: true } as unknown as DockerSandboxHandle;
+			};
+			const id = await owner.create("s_volumes", "docker-hardened");
+			const found = await owner.lifecycle("connect", id, "s_volumes");
+			assert.deepEqual(asked, { create: named, connect: named });
+			assert.equal(found && typeof found === "object" && "ownData" in found, named);
+			assert.ok(validValue("connect", found));
+		}
+		// An older server's checks refuse a connect answer with a key they do not know, which is why it is not sent to one.
+		assert.ok(!validValue("connect", { cwd: "/workspace", profile: "docker-hardened", ownData: false }));
+	});
+	await checkControl("a session judges each sandbox by what was recorded when it was made, whatever the runner reports since", async () => {
+		const meta = (ownDataSandbox: string | null) => ({ profile: "docker-hardened" as const, ownDataSandbox });
+		const runner = (sessionVolumes: boolean) => ({ sessionsLiveInSandbox: false, privateSessionData: async () => sessionVolumes });
+		// Upgrade: the old sandbox was made with the machine volume; the runner now reports sessionVolumes.
+		assert.equal(await privateSessionData(meta(null), runner(true), "m_a-0123456789ab"), false, "upgrade: the old sandbox's data is shared, so it is kept");
+		assert.equal(await privateSessionData(meta("m_a-aaaaaaaaaaaa"), runner(true), "m_a-aaaaaaaaaaaa"), true, "upgrade: the new sandbox's data is its own");
+		// Downgrade: the sandbox was made with its own volume; the runner now reports nothing.
+		assert.equal(await privateSessionData(meta("m_a-0123456789ab"), runner(false), "m_a-0123456789ab"), true, "downgrade: the old sandbox's data went with it");
+		assert.equal(await privateSessionData(meta("m_a-0123456789ab"), runner(false), "m_a-bbbbbbbbbbbb"), false, "downgrade: the next sandbox shares the machine volume");
+		// Without a sandbox, the guess the words use; a reviewer and E2B always own their data.
+		assert.equal(await privateSessionData(meta(null), runner(true), null), true);
+		assert.equal(await privateSessionData({ ...meta(null), origin: { role: "reviewer" } }, runner(false), "x"), true);
+		assert.equal(await privateSessionData(meta(null), { sessionsLiveInSandbox: true }, "x"), true);
 	});
 	await checkControl("a failed removal is audited and left unacknowledged on the live control socket", async () => {
 		await withControl([lease()], async r => {

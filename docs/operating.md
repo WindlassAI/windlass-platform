@@ -262,14 +262,27 @@ microVM and share it, so the server adds the hosts its own steps need, from its 
 | Mode | What E2B is asked for | Repositories |
 |---|---|---|
 | `open` (default) | nothing: as before network modes. E2B still blocks private and link-local ranges | allowed |
-| `restricted` | every destination denied, the hosts above and `WLP_E2B_NETWORK_ALLOW` allowed by name, no DNS server | allowed |
+| `restricted` | every destination denied, the hosts above, `WLP_E2B_NETWORK_ALLOW` and the session's repository's network list allowed by name, no DNS server | allowed |
 | `none` | every destination denied, the model API and the bucket allowed by name, no DNS server | refused at launch and when a turn starts; the factory does not place items on hosted |
 
-`WLP_E2B_NETWORK_ALLOW` takes exact host names and presets, comma-separated, and only with `restricted`:
-`@npm` (`registry.npmjs.org`, `registry.yarnpkg.com`), `@pypi` (`pypi.org`, `files.pythonhosted.org`), `@github`
-(`github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`,
-`release-assets.githubusercontent.com`), `@crates`, `@go`. Default `@npm,@pypi,@github`; at most 64 hosts in all.
-No addresses, ports or wildcards. E2B matches names only on ports 443 and 80, so in `restricted` and `none` the
+`WLP_E2B_NETWORK_ALLOW` takes exact host names and presets, comma-separated, and only with `restricted`. Default
+`@npm,@pypi,@github`; at most 64 hosts in all, with the platform's own and a repository's list. No addresses,
+ports or wildcards. The presets (`NETWORK_PRESETS` in `server/src/contract.ts`), each from the tool's own code
+or documentation, with every host a download is redirected to (checked 2026-11-22):
+
+| Preset | Hosts | Where they come from |
+|---|---|---|
+| `@npm` | `registry.npmjs.org`, `registry.yarnpkg.com` | npm's `registry` default (npm/cli `workspaces/config/lib/definitions/definitions.js`); Yarn's (yarnpkg/berry `packages/plugin-npm/sources/index.ts`) |
+| `@pypi` | `pypi.org`, `files.pythonhosted.org` | pip's index (pypa/pip `src/pip/_internal/models/index.py`); files redirect within `files.pythonhosted.org` |
+| `@github` | `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `release-assets.githubusercontent.com` | archives, raw files and release assets, with their redirects |
+| `@crates` | `crates.io`, `index.crates.io`, `static.crates.io` | `index.crates.io/config.json` (`dl`, `api`); a download on `crates.io` redirects to `static.crates.io` |
+| `@go` | `proxy.golang.org`, `sum.golang.org` | Go's `go.env` (`GOPROXY`, `GOSUMDB`); module zips come from the proxy itself, no redirect |
+| `@node` | `nodejs.org` | node-gyp's headers (`process.release.headersUrl`, `lib/process-release.js`), its `SHASUMS256.txt`, and Node's `/dist`; no redirect |
+| `@playwright` | `cdn.playwright.dev`, `playwright.download.prss.microsoft.com` | Playwright's mirrors (`packages/playwright-core/src/server/registry/index.ts`); `cdn.playwright.dev/dbazure/…` redirects to the Microsoft host. Chrome for Testing builds (`cdn.playwright.dev/builds/cft/…`, Chromium on x86_64) answer 307 to `storage.googleapis.com/chrome-for-testing-public/…`, which is `@gcs`. `playwright install chrome` (`dl.google.com`) and msedge are not in it |
+| `@gcs` | `storage.googleapis.com` | Google Cloud Storage, a preset of its own because it serves every public bucket, anyone's. The scan proposes it with `@playwright` |
+| `@prisma` | `binaries.prisma.sh` | `@prisma/fetch-engine` (`PRISMA_ENGINES_MIRROR` default), checksums from the same host. Prisma 6 downloads its engines, 7 only the schema engine, 8 nothing |
+| `@debian` | `deb.debian.org`, `security.debian.org` | the `debian:bookworm` and `trixie` images' `debian.sources` (both suites on `deb.debian.org`); installed systems use `security.debian.org`. apt uses plain HTTP, which E2B matches by `Host` on port 80 |
+| `@ubuntu` | `archive.ubuntu.com`, `security.ubuntu.com`, `ports.ubuntu.com` | `ubuntu:24.04`'s `ubuntu.sources` (amd64; `ports.ubuntu.com` on arm64). Regional mirrors (`<cc>.archive.ubuntu.com`) are not in it | E2B matches names only on ports 443 and 80, so in `restricted` and `none` the
 server does not start when `WLP_GITHUB_URL` or the bucket endpoint is not an `https` address on the default
 port.
 
@@ -286,7 +299,54 @@ How it is built:
 - The profiles' texts follow the mode (the **sandbox** chip, a setup command's note, what an MCP server can
   reach in Settings), and `PlatformInfo.hostedEgress` carries it to the web app when it is not `open`.
 
-What it does not do: an allowed host is still a way out (a command can push to someone else's repository on
+#### A repository's network list
+
+In `restricted`, each repository can allow hosts of its own, on top of the platform's and the deployment's
+(`server/src/repository-network.ts`; the people who use it read about it in the in-app docs, *Settings*). It is
+kept with the repository's other settings, under GitHub's id, in the `user` actor of the person who saved it
+(`repository_network`), and only that person can change it. It holds presets and exact names, at most 40 hosts,
+and no more than leaves the whole within 64 (a save is refused otherwise, with the reason). A session reads it
+with its secrets when a turn starts (`SealedSecrets.network`), keeps it in its state, and every connect to its
+sandbox sets E2B's configuration and the pinned names to the deployment's hosts and the list's together. A
+session has one repository, so it gets that repository's hosts. If the deployment's own list grew so that the
+whole passes 64, the repository's hosts that do not fit are left out and logged (`e2b.network.dropped`). The
+changes of one sandbox's network run one at a time on the server (`E2bSandboxes.serial`), and the root script
+holds `/run/wlp-network.lock` and stages the names file under a `mktemp` name in `/run`, so a connect and an
+allow at the same moment cannot leave `/etc/hosts` empty or E2B's list and the names file from different calls.
+
+**Blocked hosts.** Out of `open`, the sandbox's resolver is a lookup stub on `127.0.0.1:53`, written and started by
+the same root script that pins the names (`DNS_STUB` in `network.ts`, run with the template's `python3`, so no
+template rebuild is needed). It answers every question NXDOMAIN at once, as the empty resolver file did, and
+writes each name it is asked for once to `/var/log/wlp-dns.log`. glibc, Go, Python, Node and curl read
+`/etc/hosts` first and ask the resolver only for a name that is not pinned, so every line there is a host a
+command wanted and E2B would refuse: a signal that rests on no error message. It binds as root, opens the log as
+root and then runs as `nobody`, so the agent can neither write the log nor stop it; it is a reporter, not a fence.
+After the setup command and at the end of each turn the session reads the log, and the timeline names each new
+host once per sandbox (at most 40), with **Allow for this repository**; the host is also filed as a request on the
+repository's list (`network_request`, at most 30 per repository and 1,000 per user). The requests waiting are
+kept over new ones: past the cap a new host is not filed and the timeline says so, so names looked up by the
+hundred cannot push out one the person wants. The settings show requests with Allow and Dismiss. The log is
+read whole (the stub stops at 256 KiB), and names the timeline named already are left out before the 50-name
+cut, so earlier ones cannot hide a later one. A TCP client of the stub has one second in all, so a slow one
+cannot hold it. Allowing from the timeline saves the host to the list, and while a turn holds the sandbox it
+changes the sandbox at once (`updateNetwork` and the pinned names, `E2bSandboxes.setNetwork`); otherwise it
+applies from the next turn, since a change between turns would start a paused sandbox or push a running one's
+timeout out with no meter counting it. In `none` it is refused, since nothing but the model API is reached
+there. Only the person whose settings it is can allow (`mayChangeNetwork`). A call from anyone else would file
+a request instead, but a session's actions are its own user's, so today that call cannot happen.
+
+**Proposed hosts.** The repository's settings can read its manifests, lockfiles, install scripts and CI files at
+the default branch through the GitHub App (the tree, then at most 60 files by blob, 16 MiB in all), and the saved setup
+command, and list the presets and hosts they name that the sandboxes cannot reach yet, each with where it was
+found ("package.json scripts.postinstall", at most 200 characters each). A fixed reading (`scanForHosts`): no agent, no command, and nothing
+saved. Pages about a project (homepages, repository and funding links, `[project.urls]`), comments, and CI keys
+that are no steps are passed over. Each proposal is allowed by its own click, since a repository's text can name
+a host chosen to send data to.
+
+What it does not do: a lookup the stub logs may have been made to look plausible (the agent and a repository's
+scripts choose what they look up), so the timeline asks for a host only to be allowed if it is expected; and
+`@gcs` (`storage.googleapis.com`) reaches every public Google Cloud Storage bucket, which its preset, its
+proposal and the timeline's line about it all say. An allowed host is still a way out (a command can push to someone else's repository on
 GitHub with a credential of its own); `api.openai.com` is reachable by commands in every mode, since the engine
 needs it and runs as the same user; a remote MCP server by `url` is reachable in `restricted` only when its host
 is in `WLP_E2B_NETWORK_ALLOW`; and `169.254.169.254` answers in every mode, as the microVM's own Firecracker
@@ -296,8 +356,10 @@ is not used inside the microVM: without a guest firewall it could be bypassed, a
 are the same user.
 
 `scripts/e2b-provider-test.ts --docker` proves the modes on the platform's real clone, push, model and bucket
-steps against a stand-in of E2B's filter; `WLP_E2B_CHECK_NETWORK=1 scripts/e2b-check.ts` proves them at E2B
-(two short sandboxes, no turn).
+steps against a stand-in of E2B's filter, with a repository's host and one allowed while the sandbox runs, and
+that the lookup stub names a blocked host; `scripts/network-check.ts` holds the list's rules, its storage, the
+reading of a repository's files and the stub; `WLP_E2B_CHECK_NETWORK=1 scripts/e2b-check.ts` proves the modes at
+E2B (two short sandboxes, no turn).
 
 ## The GitHub App
 

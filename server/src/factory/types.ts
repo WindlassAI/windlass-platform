@@ -301,7 +301,8 @@ export type Fact =
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
-	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number }
+	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
+	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[] }
 	| { kind: "run_single"; at: number; by: string }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
@@ -310,7 +311,7 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
-	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> }
+	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }

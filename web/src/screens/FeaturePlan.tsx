@@ -20,8 +20,14 @@
  * before it is saved (lib/placement.ts runs the server's check), and the server's own refusal is
  * shown under the subtask it names. Once a subtask has its item, its row says where it ran and why;
  * the subtask the feature waits to place says which machine it waits for and what for.
+ *
+ * Agents: each subtask names the agent, model and effort it runs (lib/subtask-agents.ts), the planner's
+ * proposal or the owner's change, chosen from what its preferred place has signed in and offers. One
+ * that works without asking (Claude Code, OpenCode) is marked so wherever it is shown, and the approval
+ * card holds approval back until the owner confirms each such subtask: the planner reads text an issue's
+ * author may have written, so its choice of such an agent is never approved by default.
  */
-import { MAX_NOTE_CHARS, type FeaturePlan, type ItemAction, type ItemBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type PlanSubtask, type Waiting } from "@contract";
+import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemAction, type ItemBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
@@ -30,7 +36,11 @@ import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placementWait, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
-import { useApp } from "../state/app";
+import { useApp, useAuth } from "../state/app";
+import { useModels } from "../state/hooks";
+import { effortChoices, effortsOf, modelLabel, type ReportedOptions } from "../lib/models";
+import type { AgentModels } from "../../../server/src/factory/placement.js";
+import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { useMachines } from "./Machines";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
@@ -56,6 +66,39 @@ type Drafts = Record<string, Record<keyof ItemBudget, string>>;
 
 const placesOf = (plan: FeaturePlan): Record<string, PlaceDraft> => Object.fromEntries(plan.subtasks.map((task) => [task.key, placeDraftOf(task)]));
 
+/** Each subtask's agent as the owner edits it: null runs Windlass on the feature's model. */
+const agentsOf = (plan: FeaturePlan): Record<string, SubtaskAgent | null> => Object.fromEntries(plan.subtasks.map((task) => [task.key, cleanAgent(task.agent) ?? null]));
+
+/**
+ * The catalogs of every agent the user's machines report, fetched once per digest: the models and
+ * efforts a subtask's agent may choose there, as the server checks a child's session against them.
+ */
+function useCatalogs(machines: MachineSummary[] | null): Catalogs {
+	const { client } = useApp();
+	const auth = useAuth();
+	const [catalogs, setCatalogs] = useState<Record<string, ReportedOptions>>({});
+	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest && entry.id !== "codex").map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode", digest: entry.optionsDigest! })));
+	const keys = wanted.map((one) => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
+	useEffect(() => {
+		let current = true;
+		for (const one of wanted) {
+			const key = `${one.machineId}/${one.id}/${one.digest}`;
+			if (catalogs[key]) continue;
+			client.user(auth).machineCatalog(one).then((options) => current && options && setCatalogs((now) => ({ ...now, [key]: options })), () => undefined);
+		}
+		return () => {
+			current = false;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [client, auth, keys]);
+	const out: Catalogs = {};
+	for (const one of wanted) {
+		const options = catalogs[`${one.machineId}/${one.id}/${one.digest}`];
+		if (options) (out[one.machineId] ??= {})[one.id] = options;
+	}
+	return out;
+}
+
 const draftsOf = (plan: FeaturePlan): Drafts => Object.fromEntries(plan.subtasks.map((task) => [task.key, Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, field.toInput(task.budget[field.key])])) as Record<keyof ItemBudget, string>]));
 
 /** The plan's budgets, questions and the actions on them, kept together so that its question card and its section agree. */
@@ -66,18 +109,27 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const [answers, setAnswers] = useState<Record<string, string>>({});
 	const [places, setPlaces] = useState<Record<string, PlaceDraft>>(() => (plan ? placesOf(plan) : {}));
 	const [overflow, setOverflow] = useState(plan?.overflow ?? false);
+	const [agents, setAgents] = useState<Record<string, SubtaskAgent | null>>(() => (plan ? agentsOf(plan) : {}));
+	// The subtasks whose agent works without asking that the owner confirmed for this version.
+	const [confirmed, setConfirmed] = useState<string[]>([]);
 	const version = plan?.version ?? 0;
 	// The user's machines: their names for the place menus, and their secrets switch for what the plan would send where.
 	const { platform } = useApp();
 	const machines = useMachines(platform.info?.machines != null && view?.mode === "orchestrate" && plan !== null && plan.status !== "superseded").list;
+	// What each place's agents offer: the account's models for Windlass, each machine agent's catalog.
+	const accountModels = useModels().list;
+	const catalogs = useCatalogs(open ? machines : null);
+	const models: AgentModels = useMemo(() => agentModelsOf(machines, catalogs, accountModels), [machines, catalogs, accountModels]);
 	// Another version is another plan: what was typed for the one before is not this one's.
 	useEffect(() => {
 		if (plan) {
 			setDrafts(draftsOf(plan));
 			setPlaces(placesOf(plan));
 			setOverflow(plan.overflow ?? false);
+			setAgents(agentsOf(plan));
 		}
 		setAnswers({});
+		setConfirmed([]);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [view?.id, version]);
 
@@ -90,19 +142,23 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		return out;
 	}, [plan, drafts]);
 
-	const done = (view?.children ?? []).filter((child) => child.state === "done").map((child) => child.budget);
-	const pool = plan && view ? subtaskPool(plan, view.spent, done) : null;
+	const doneBudgets = (view?.children ?? []).filter((child) => child.state === "done").map((child) => child.budget);
+	const pool = plan && view ? subtaskPool(plan, view.spent, doneBudgets) : null;
 	const problems = plan && pool ? budgetProblems(plan.compare.singleBudget, pool, parsed) : { fields: {}, total: [], any: false };
 	const budgetsChanged = plan ? plan.subtasks.some((task) => PLAN_FIELDS.some((field) => parsed[task.key]?.[field.key] !== task.budget[field.key])) : false;
 	const answered = Object.entries(answers).filter(([, text]) => text.trim() !== "");
 	const placesDirty = plan ? plan.subtasks.some((task) => places[task.key] !== undefined && placeChanged(task, places[task.key]!)) || overflow !== (plan.overflow ?? false) : false;
-	const dirty = budgetsChanged || answered.length > 0 || placesDirty;
-	/** A subtask as it would be saved: its budget and place as edited. */
+	const agentsDirty = plan ? plan.subtasks.some((task) => task.key in agents && agentChanged(task, agents[task.key])) : false;
+	const dirty = budgetsChanged || answered.length > 0 || placesDirty || agentsDirty;
+	/** A subtask as it would be saved: its budget, place and agent as edited. */
 	const edited = (task: PlanSubtask): PlanSubtask => {
 		const place = places[task.key];
 		const budgeted = { ...task, budget: parsed[task.key] ?? task.budget };
-		return place && placeChanged(task, place) ? withPlace(budgeted, place) : budgeted;
+		const placed = place && placeChanged(task, place) ? withPlace(budgeted, place) : budgeted;
+		return task.key in agents && agentChanged(task, agents[task.key]) ? withAgent(placed, agents[task.key]) : placed;
 	};
+	/** The saved version's subtasks still to run whose agent works without asking, as the server counts them: each needs the owner's confirmation. */
+	const unattended = plan && !plan.singleSuggested ? (view?.unattended ?? []) : [];
 	const unanswered = plan ? plan.questions.filter((question) => !question.answer).length : 0;
 
 	const save = () => {
@@ -113,13 +169,14 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	};
 	const approve = () => {
 		if (view?.question?.kind === "single_suggested") return acting.act({ kind: "answer", question: view.question.id, choice: "run_single" });
-		return plan ? acting.act({ kind: "approve_plan", version: plan.version }) : Promise.resolve(false);
+		return plan ? acting.act({ kind: "approve_plan", version: plan.version, ...(unattended.length > 0 && { agents: unattended.filter((key) => confirmed.includes(key)) }) }) : Promise.resolve(false);
 	};
 	const reset = () => {
 		if (plan) {
 			setDrafts(draftsOf(plan));
 			setPlaces(placesOf(plan));
 			setOverflow(plan.overflow ?? false);
+			setAgents(agentsOf(plan));
 		}
 		setAnswers({});
 	};
@@ -136,6 +193,16 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		setPlace: (key: string, draft: PlaceDraft) => setPlaces((now) => ({ ...now, [key]: draft })),
 		overflow,
 		setOverflow,
+		agents,
+		setAgent: (key: string, agent: SubtaskAgent | null) => setAgents((now) => ({ ...now, [key]: agent })),
+		models,
+		catalogs,
+		accountModels,
+		unattended,
+		confirmed,
+		setConfirmed: (key: string, on: boolean) => setConfirmed((now) => (on ? [...new Set([...now, key])] : now.filter((one) => one !== key))),
+		/** Subtasks whose agent works without asking that the owner has not confirmed yet. */
+		unconfirmed: unattended.filter((key) => !confirmed.includes(key)),
 		edited,
 		parsed,
 		pool,
@@ -156,11 +223,11 @@ export type PlanReview = ReturnType<typeof usePlanReview>;
  * The subtasks of the saved version that no allowed place can ever take, in the words of the server's
  * check (lib/placement.ts); those already done are not placed again. Empty until the machines are read.
  */
-function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null): { task: PlanSubtask; reason: string }[] {
+function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null, models?: AgentModels): { task: PlanSubtask; reason: string }[] {
 	if (!machines) return [];
-	const done = new Set((view.children ?? []).filter((child) => child.state === "done" && child.parent).map((child) => child.parent!.key));
+	const done = new Set(view.completedSubtasks ?? []);
 	return plan.subtasks.flatMap((task) => {
-		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines);
+		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines, models);
 		return reason ? [{ task, reason }] : [];
 	});
 }
@@ -182,8 +249,9 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 	const tasks = plan.subtasks.length;
 	const totalTokens = sumBudgets(Object.values(review.parsed)).tokens;
 	const refused = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
-	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines);
-	const blocked = review.problems.any ? "Fix the figures marked below first." : review.dirty ? "Save your changes, then approve this version." : review.unanswered > 0 ? `Answer ${review.unanswered === 1 ? "the question" : `the ${review.unanswered} questions`} and save first.` : null;
+	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines, review.models);
+	const unconfirmed = single ? 0 : review.unconfirmed.length;
+	const blocked = review.problems.any ? "Fix the figures marked below first." : review.dirty ? "Save your changes, then approve this version." : review.unanswered > 0 ? `Answer ${review.unanswered === 1 ? "the question" : `the ${review.unanswered} questions`} and save first.` : unconfirmed > 0 ? `Confirm ${unconfirmed === 1 ? "the agent that works" : `the ${unconfirmed} agents that work`} without asking first.` : null;
 	// The owner's choice: a place no allowed machine can ever take holds approval back, with the server's words. A busy or offline one does not.
 	const placeBlocked = blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
 	const revise = view.question.choices.find((choice) => choice.id === "revise");
@@ -199,7 +267,9 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				<span className="plan-version"> Version {plan.version}</span>
 			</p>
 
-			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} refusal={refused} /> : null}
+			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
+
+			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.dirty} /> : null}
 
 			{plan.questions.length > 0 ? (
 				<div className="plan-asks">
@@ -398,12 +468,24 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 		overflow: editing ? review.overflow : plan.overflow === true,
 		draft: review.places[task.key] ?? placeDraftOf(task),
 		// The server's refusal is about the place it was sent; a place changed since is checked here again.
-		problem: plan.status !== "proposed" ? null : ((review.places[task.key] && placeChanged(task, review.places[task.key]!) ? null : refusalFor(task, refusal)) ?? (machines ? placementProblem(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines) : null)),
+		problem: plan.status !== "proposed" ? null : ((review.places[task.key] && placeChanged(task, review.places[task.key]!)) || (task.key in review.agents && agentChanged(task, review.agents[task.key])) ? null : refusalFor(task, refusal)) ?? (machines ? placementProblem(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines, review.models) : null),
 		wait: task.key === waitingKey ? view.wait : null,
-		ahead: plan.status !== "proposed" || !machines ? null : placementWait(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines),
+		ahead: plan.status !== "proposed" || !machines ? null : placementWait(review.edited(task), view.place, editing ? review.overflow : plan.overflow === true, machines, review.models),
 		secrets: (name) => secretsFor(name, view.placementReview, machines),
 		onPlace: (draft) => review.setPlace(task.key, draft),
 	});
+	const agentRow = (task: PlanSubtask): AgentRow => {
+		const draft = editing && task.key in review.agents ? review.agents[task.key] ?? undefined : task.agent;
+		const machine = preferredMachine(editing ? review.edited(task) : task, parentPlaceName(view.place, machines), machines);
+		const harness = draft?.harness ?? "windlass";
+		return {
+			draft,
+			changed: editing && agentChanged(task, review.agents[task.key]),
+			machine,
+			list: harness === "windlass" ? review.accountModels : machineModels(machine, harness, review.catalogs),
+			onAgent: (agent) => review.setAgent(task.key, agent),
+		};
+	};
 	return (
 		<>
 			<p className="plan-goal">
@@ -424,7 +506,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 					{placing || editing ? <FeaturePlacement parent={parentPlaceName(view.place, machines)} editing={editing} overflow={editing ? review.overflow : plan.overflow === true} disabled={acting.busy !== null} onOverflow={review.setOverflow} /> : null}
 					<ol className="plan-tasks" aria-label="Subtasks">
 						{plan.subtasks.map((task) => (
-							<SubtaskRow key={task.key} task={task} place={placing || editing ? place(task) : null} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} setAside={setAside} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
+							<SubtaskRow key={task.key} task={task} place={placing || editing ? place(task) : null} agent={agentRow(task)} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} setAside={setAside} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
 						))}
 					</ol>
 
@@ -512,7 +594,7 @@ export function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, place, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
+function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
 	const base = useId();
 	return (
 		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}`}>
@@ -567,6 +649,7 @@ function SubtaskRow({ task, place, n, numbers, child, setAside, fields, editing,
 						</dd>
 					</div>
 					{place ? <SubtaskPlace task={task} child={child} row={place} editing={editing} disabled={disabled} /> : null}
+					<SubtaskAgentFact title={task.title} child={child} row={agent} editing={editing && !child} disabled={disabled} />
 				</dl>
 				{editing && drafts ? (
 					<div className="plan-budget" role="group" aria-label={`Budget of ${task.title}`}>
@@ -819,6 +902,166 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 	);
 }
 
+/** What a subtask's row needs to say which agent it runs, and to change it while the plan is open. */
+interface AgentRow {
+	/** The agent as saved, or as edited while the plan is open; undefined runs Windlass on the feature's model. */
+	draft: SubtaskAgent | undefined;
+	changed: boolean;
+	/** The machine the subtask prefers, whose agents it may choose; null for this platform. */
+	machine: MachineSummary | null;
+	/** The models its agent offers there; null where none were read. */
+	list: ModelList | null;
+	onAgent(agent: SubtaskAgent | null): void;
+}
+
+/** "works without asking": the words, with a small warm dot, wherever an agent that never asks is named. */
+function UnattendedTag() {
+	return (
+		<>
+			{" "}
+			<span className="plan-unattended" title={UNATTENDED_MEANS}>
+				{UNATTENDED_WORDS}
+			</span>
+		</>
+	);
+}
+
+/** The agents the subtask's place offers: Windlass, and each machine agent signed in there; one not signed in is shown, not chosen. */
+function agentMenu(row: AgentRow, title: string): MenuSpec {
+	const current = row.draft?.harness ?? "windlass";
+	return {
+		label: `Agent for ${title}`,
+		width: 300,
+		groups: [
+			{
+				id: "agents",
+				items: agentChoices(row.machine).map((choice) => ({
+					id: choice.id,
+					label: choice.name,
+					description: choice.problem ?? (worksWithoutAsking(choice.id) ? `In its hardened container; ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
+					disabled: choice.problem !== null,
+					wrap: true,
+					checked: current === choice.id,
+					onSelect: () => row.onAgent(choice.id === "windlass" ? null : { harness: choice.id }),
+				})),
+			},
+		],
+		...(row.machine ? {} : { header: <span className="tone-dim">This platform runs Windlass only. Claude Code and OpenCode run on a machine of yours that is signed into them.</span> }),
+	};
+}
+
+/** The models its agent offers at the place, the default first: for Windlass "the feature's model" stands for none chosen. */
+function modelMenu(row: AgentRow, harness: HarnessId): MenuSpec {
+	const list = row.list;
+	const chosen = row.draft?.model ?? "";
+	const none = harness === "windlass" ? "The feature's model" : "Its default model";
+	return {
+		label: "Model",
+		width: 280,
+		groups: [
+			{ id: "inherit", items: [{ id: "", label: none, checked: chosen === "", onSelect: () => row.onAgent(harness === "windlass" ? (row.draft?.effort ? { harness, effort: row.draft.effort } : null) : { harness }) }] },
+			...(list && list.models.length > 0
+				? [{ id: "models", items: list.models.map((model) => ({ id: model.id, label: modelLabel(list, model.id), checked: chosen === model.id, onSelect: () => row.onAgent({ harness, model: model.id }) })) }]
+				: []),
+		],
+	};
+}
+
+/** The efforts its model offers, or every effort its agent reported where it reports a model's only once selected. */
+function effortMenu(row: AgentRow, harness: HarnessId, efforts: string[]): MenuSpec {
+	const chosen = row.draft?.effort ?? "";
+	const pick = (effort: string) => {
+		const next = { harness, ...(row.draft?.model && { model: row.draft.model }), ...(effort && { effort }) };
+		row.onAgent(cleanAgent(next) ?? null);
+	};
+	return {
+		label: "Effort",
+		width: 220,
+		groups: [{ id: "efforts", items: [{ id: "", label: "Default", checked: chosen === "", onSelect: () => pick("") }, ...effortChoices(efforts).map((effort) => ({ id: effort, label: effort, checked: chosen === effort, onSelect: () => pick(effort) }))] }],
+	};
+}
+
+/** Which agent a subtask runs, on which model and effort: as chosen while the plan is open, or what its item runs. */
+function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: string; child: ItemSummary | null; row: AgentRow; editing: boolean; disabled: boolean }) {
+	const harness = row.draft?.harness ?? "windlass";
+	const parts = agentParts(row.draft, row.list);
+	if (child?.agent) {
+		const ran = cleanAgent({ harness: child.agent.harness, model: child.agent.model, ...(child.agent.effort && { effort: child.agent.effort }) });
+		const words = agentParts(ran ?? { harness: child.agent.harness, model: child.agent.model }, null);
+		return (
+			<div className="plan-agent">
+				<dt>agent</dt>
+				<dd>
+					<strong className="plan-agent-name">{words.name}</strong>
+					<span className="tone-dim"> · {child.agent.model}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
+					{words.unattended ? <UnattendedTag /> : null}
+				</dd>
+			</div>
+		);
+	}
+	// A model that reports its efforts only once selected: any effort its agent reported (account-models.ts, `checkItemEffort`).
+	const list = row.list;
+	const model = row.draft?.model ?? (harness === "windlass" ? "" : (list?.defaultModel ?? ""));
+	const own = effortsOf(list, model);
+	const efforts = own.length > 0 || harness === "windlass" ? own : [...new Set((list?.models ?? []).flatMap((one) => one.efforts))];
+	return (
+		<div className="plan-agent">
+			<dt>agent</dt>
+			<dd>
+				{editing ? (
+					<span className="plan-place-picks">
+						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
+						<Menu spec={modelMenu(row, harness)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Model: ${parts.model}`}>{parts.model}</Pill>} />
+						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
+						{parts.unattended ? <UnattendedTag /> : null}
+					</span>
+				) : (
+					<>
+						<strong className="plan-agent-name">{parts.name}</strong>
+						<span className="tone-dim"> · {parts.model}{parts.effort ? ` · ${parts.effort} effort` : ""}</span>
+						{parts.unattended ? <UnattendedTag /> : null}
+					</>
+				)}
+			</dd>
+		</div>
+	);
+}
+
+/**
+ * On the approval card, before approval: each subtask still to run whose agent works without asking,
+ * with a box the owner ticks for it. Approval is held back (and refused by the server) until every one is
+ * ticked: the planner chose these agents from the item's text, which an issue's author may have written.
+ */
+function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; review: PlanReview; disabled: boolean }) {
+	const heading = useId();
+	const tasks = plan.subtasks.filter((task) => review.unattended.includes(task.key));
+	return (
+		<div className="plan-unattended-confirm" role="group" aria-labelledby={heading}>
+			<p className="plan-routes-head" id={heading}>
+				Agents that work without asking
+			</p>
+			<p className="plan-unattended-note">
+				{UNATTENDED_MEANS} The planner proposed {tasks.length === 1 ? "this one" : "these"} from the item's text, which may come from an issue anyone could file. Confirm each one, or choose Windlass for it below and save.
+			</p>
+			<ul className="plan-unattended-list">
+				{tasks.map((task) => {
+					const name = agentParts(task.agent, null).name;
+					return (
+						<li key={task.key}>
+							<label className="plan-unattended-row">
+								<input type="checkbox" checked={review.confirmed.includes(task.key)} disabled={disabled} onChange={(event) => review.setConfirmed(task.key, event.target.checked)} />
+								<span>
+									Run <strong>{task.title}</strong> on {name}, which {UNATTENDED_WORDS}
+								</span>
+							</label>
+						</li>
+					);
+				})}
+			</ul>
+		</div>
+	);
+}
+
 /**
  * Whether repository secrets go to a place: a small dot and two words. Sent is the warm signal: the
  * owner should see where the repository's secrets would go before approving a plan the planner wrote,
@@ -843,7 +1086,7 @@ function SecretsTag({ sent, done = false }: { sent: boolean | null; done?: boole
  * to, and whether each of those places gets the repository's secrets. Read from the saved plan, the
  * version an approval approves, and the owner's current secrets policy (`placementReview`).
  */
-function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; refusal: string | null }) {
+function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; models: AgentModels; catalogs: Catalogs; accountModels: ModelList | null; refusal: string | null }) {
 	const heading = useId();
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = plan.overflow === true;
@@ -859,9 +1102,11 @@ function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: F
 			<ol className="plan-routes-list">
 				{plan.subtasks.map((task, index) => {
 					const route = routeWords(task, parent, overflow);
-					const fit = machines ? placementFit(task, view.place, overflow, machines) : null;
+					const fit = machines ? placementFit(task, view.place, overflow, machines, models) : null;
 					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);
 					const wait = !problem && fit && "wait" in fit ? fit.wait : null;
+					const harness = task.agent?.harness ?? "windlass";
+					const agent = agentParts(task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
 					return (
 						<li key={task.key} className="plan-route">
 							<span className="plan-route-n" aria-hidden="true">
@@ -870,6 +1115,11 @@ function PlanRoutes({ view, plan, machines, refusal }: { view: ItemView; plan: F
 							<div className="plan-route-main">
 								<p className="plan-route-title">{task.title}</p>
 								<p className="plan-route-why">{route.inherited ? "Names no place: it runs where the feature does." : route.reason}</p>
+								<p className="plan-route-agent">
+									<span className="plan-agent-name">{agent.name}</span>
+									<span className="tone-dim"> · {agent.model}{agent.effort ? ` · ${agent.effort} effort` : ""}</span>
+									{agent.unattended ? <UnattendedTag /> : null}
+								</p>
 								{problem ? <p className="plan-route-problem">Can't be placed: {problem}</p> : null}
 								{wait ? <p className="plan-route-wait">If approved now: {wait}</p> : null}
 							</div>
