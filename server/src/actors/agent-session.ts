@@ -3164,8 +3164,10 @@ function idleDue(meta: SessionMeta): number | null {
 
 /**
  * Sets the durable schedule to look at the session when its sandbox is next due, not before `notBefore`.
- * A check already set for that moment is kept; one set for another is replaced. Queued, so two calls
- * cannot both schedule; never rejects.
+ * A check already set for that moment is kept; one set for another is replaced. A later look
+ * (`notBefore`, from a check that found the sandbox taken or failed) keeps a check set for sooner: what
+ * had the sandbox set it since, as a read that resumed it does for its idle time from then, and the
+ * queue may run that arming before this one. Queued, so two calls cannot both schedule; never rejects.
  */
 function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
 	const run = c.vars.arming.then(async () => {
@@ -3177,6 +3179,7 @@ function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
 		// the next (a deploy or a crash while it ran) would otherwise stand for ever, the wake's repair included.
 		const armed = current !== null && current.at > Date.now() ? current : null;
 		if (armed?.at === at || (armed === null && at === null)) return;
+		if (notBefore > 0 && armed !== null && at !== null && armed.at < at) return;
 		meta.idleCheck = at === null ? null : { id: await c.schedule.at(at, "internalIdle"), at };
 		// Written before the old one is cancelled: a crash in between leaves the old one, which still works.
 		await persist(c);
