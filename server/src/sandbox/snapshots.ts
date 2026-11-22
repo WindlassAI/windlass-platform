@@ -76,22 +76,26 @@ export class DockerSnapshots {
 	}
 
 	private async rows(): Promise<Row[]> {
-		const refs = (await docker(["image", "ls", "--filter", "label=" + S + "=1", "--filter", "reference=" + this.namespace + ":*",
-			"--format", "{{.Repository}}:{{.Tag}}"], { check: true })).stdout.trim().split(/\s+/).filter(Boolean);
-		// Older runners could leave an untagged image pinned by a consumer. Only their
-		// persisted machine id can establish ownership of a pre-deployment label.
+		// A single scoped listing suffices unless there are untagged images. The persisted
+		// pairing id also scopes old runner images without an index label.
 		const pairing = this.machine !== "" && this.deployment === this.machine;
 		const scope = pairing ? S + ".machine=" + this.machine : S + ".index=" + this.namespace;
-		const dangling = (await docker(["image", "ls", "-q", "--no-trunc", "--filter", "dangling=true",
-			"--filter", "label=" + S + "=1", "--filter", "label=" + scope], { check: true })).stdout.trim().split(/\s+/).filter(Boolean);
-		const names = [...refs, ...new Set(dangling)];
+		const filters = ["--filter", "label=" + S + "=1", "--filter", "label=" + scope];
+		const listing = await docker(["image", "ls", "--all", ...filters, "--format", "{{.Repository}}:{{.Tag}}"], { check: true });
+		const refs = listing.stdout.trim().split(/\s+/);
+		const names = refs.filter(tag => tag.startsWith(this.namespace + ":"));
+		if (refs.includes("<none>:<none>")) {
+			// --all also shows intermediate layers. Let Docker identify which are dangling.
+			const dangling = await docker(["image", "ls", "-q", "--no-trunc", "--filter", "dangling=true", ...filters], { check: true });
+			names.push(...new Set(dangling.stdout.trim().split(/\s+/).filter(Boolean)));
+		}
 		if (!names.length) return [];
 		const images: Image[] = JSON.parse((await docker(["image", "inspect", ...names], { check: true })).stdout);
 		return images.flatMap((image, i) => {
 			const labels = image.Config.Labels, tag = names[i];
 			const index = labels[S + ".index"];
 			if (index !== this.namespace && !(pairing && index === undefined)) return [];
-			const untagged = i >= refs.length;
+			const untagged = tag === image.Id;
 			if (untagged && image.RepoTags?.length) return [];
 			if (labels[S+".machine"] !== this.machine || (!untagged && !image.RepoTags?.includes(tag))) throw new Error("Snapshot index changed");
 			const bytes = Number(labels[S+".writable"]) + Math.max(0, image.Size - Number(labels[S+".base-size"]));

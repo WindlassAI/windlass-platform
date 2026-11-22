@@ -67,7 +67,7 @@ if (process.argv.includes("--docker")) {
 			"--label", attemptLabel+"="+request.attempt, "--label", candidateLabel+"="+selected.key, "-v", volume+":"+DATA_DIR, base);
 		return selected;
 	};
-	const bigBox = container + "-large";
+	const bigBox = container + "-large", alias = container + ":alias";
 	try {
 		const selected = await producer(container, source);
 		await checked("exec", container, "sh", "-c", "touch /workspace/installed && echo data-only > "+DATA_DIR+"/volume-secret");
@@ -133,12 +133,30 @@ if (process.argv.includes("--docker")) {
 		const current = { uid: "newOwner", machineId: "m_" + randomBytes(8).toString("hex") };
 		storePair({ uid, machineId: machine }, key, platform);
 		storePair(current, key, platform);
+		const last = await cache.select(source, uid, profile);
+		assert.equal(last.hit, true);
+		await checked("tag", last.image, alias);
+		await checked("run", "-d", "--pull", "never", "--name", consumer, last.image);
 		await snapshotMaintenance(current, key, platform, null)(Date.now());
 		assert.equal(await cache.has(uid, source.repo), false, "re-pairing retained the previous owner's snapshot");
+		assert.equal(await checked("image", "inspect", "--format", "{{.Id}}", alias), last.image, "removed a tag outside the index");
+		// Replacing the tags leaves a pinned image with no repository name, as on older runners.
+		const tags: string[] = JSON.parse(await checked("image", "inspect", "--format", "{{json .RepoTags}}", last.image));
+		const heldTag = tags.find(tag => tag.includes(":held-"));
+		assert.ok(heldTag);
+		await checked("image", "rm", heldTag);
+		await checked("tag", base, alias);
+		const owners: string[] = [];
+		await cache.sweepOwners(async owner => { owners.push(owner); return null; });
+		assert.deepEqual(owners, [uid], "the untagged image disappeared from accounting");
+		await checked("rm", "-fv", consumer);
+		await cache.sweep(uid);
+		assert.notEqual((await docker(["image", "inspect", last.image])).code, 0, "released untagged layer survived the sweep");
 		console.log("PASS Docker admission, refusal memory, deployment isolation, unknown owners, transport cleanup, disk pressure, pinned layers and re-pairing");
 	} finally {
 		await docker(["rm", "-fv", container, consumer, bigBox]);
 		await cache.drop(uid);
+		await docker(["image", "rm", alias]);
 		await docker(["volume", "rm", volume]);
 		rmSync(directory, { recursive: true, force: true });
 	}
