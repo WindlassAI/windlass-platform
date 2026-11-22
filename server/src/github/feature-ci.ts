@@ -1,6 +1,7 @@
 import { minimatch } from "minimatch";
 import { parse } from "yaml";
 import { GithubError, type GithubApp } from "./app.js";
+import { ownApp } from "./ids.js";
 import { refHead } from "./feature.js";
 
 const record = (v: unknown) => (v ?? {}) as Record<string, unknown>;
@@ -53,8 +54,8 @@ export async function hasPushCi(app: GithubApp, token: string, owner: string, re
 		const pulls = await app.call({ path: path + "/pulls", auth, what: "check for pull-request-only CI" });
 		if (!Array.isArray(pulls.body) || pulls.body.length) continue;
 		const checks = await app.call({ path: path + "/check-runs", auth, what: "look for external push checks" });
-		const runs = record(checks.body).check_runs as {app?: {slug?: string}; conclusion?: string}[];
-		if (runs.some(r => r.app?.slug && r.app.slug !== "github-actions" && r.conclusion === "success")) return true;
+		const runs = record(checks.body).check_runs as {app?: {id?: unknown; slug?: string}; conclusion?: string}[];
+		if (runs.some(r => r.app?.slug && r.app.slug !== "github-actions" && !ownApp(r.app, app.settings) && r.conclusion === "success")) return true;
 		const status = await app.call({ path: path + "/status", auth, what: "look for external push statuses" });
 		if ((record(status.body).statuses as {state: string}[]).some(s => s.state === "success")) return true;
 	}

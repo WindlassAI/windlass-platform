@@ -91,5 +91,8 @@ What a handed-over work item's evidence says: CI, your checks and what was seen 
 ### Windlass
 The coding agent the platform runs, and the platform itself.
 
+### windlass/verified
+The GitHub check run that publishes a Factory verdict for one commit. Its details link opens the evidence for the item's owner.
+
 ### Work item
 A task that an agent carries on its own from your words to a reviewed pull request.

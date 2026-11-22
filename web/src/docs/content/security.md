@@ -19,8 +19,8 @@ Every Docker sandbox, on the platform or on a machine, is a container with:
 
 - a non-root user, `agent`;
 - no Linux capabilities, and no way to gain privileges (`no-new-privileges`);
-- 1536 MiB of memory, with no extra swap;
-- at most 512 processes;
+- a memory limit with no extra swap (1536 MiB on hosted Docker, sized by slot on a machine);
+- a process limit (512 on hosted Docker, sized by slot on a machine);
 - a CPU cap and a small CPU share;
 - network access according to the platform or machine policy.
 

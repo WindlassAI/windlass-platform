@@ -408,7 +408,7 @@ export function reportBlocks(report: Omit<AgentReport, "screenshots"> & Partial<
 }
 
 /** Bound outside text before escaping, so twenty all-punctuation criteria still fit in GitHub's comment. */
-function commentText(value: string, max: number): string {
+export function commentText(value: string, max: number): string {
 	const line = value.replace(/\s+/g, " ").replace(CONTROL, "").trim();
 	const bounded = line.length > max ? `${line.slice(0, max)}…` : line;
 	return bounded.replace(/([\\`*_{}\[\]()<>!&~|@#:$.])/g, "\\$1").replace(/^([-+=])/, "\\$1");

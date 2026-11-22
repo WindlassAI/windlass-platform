@@ -40,6 +40,7 @@ import { childItemId } from "./feature-ids.js";
 import { emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
 import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, retryAt } from "./budget.js";
+import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
@@ -255,6 +256,14 @@ function apply(c: Change, fact: Fact): boolean {
 			if (item.run?.step.turn) c.effects.push({ kind: "withdraw", key: c.key });
 			askRemoved(c);
 			return true;
+		case "reverify": {
+			const ci = item.run?.ci;
+			if (item.state !== "review" || item.run?.step.kind !== "merged" || !ci || (fact.head !== ci.head && fact.head !== ci.moved)) return false;
+			if (item.lastReverifyAt !== undefined && c.at < item.lastReverifyAt + 60_000) return false;
+			item.lastReverifyAt = c.at;
+			readForHandoff(c, ci);
+			return true;
+		}
 		case "start":
 			if (item.state !== "draft") return false;
 			c.say("Started.");
@@ -293,7 +302,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -494,6 +503,9 @@ function beginRun(c: Change, plan: TurnPlan): void {
 		ci: null,
 		review: null,
 	};
+	if (item.state === "review" && item.head && !item.parent) {
+		pendingCheck(c, item.head, `Sent back: being reworked in run ${c.run.n}`, true);
+	}
 	item.question = null;
 	c.state("queued");
 	nextTurn(c, plan);
@@ -657,6 +669,29 @@ function ciProgress(head: string, since: number, gate: Run["gate"], webhooks: bo
 	return { webhooks, head, since, last: null, mergeable: null, gate, moved: null, handed: null, secondReview: null };
 }
 
+function checkTiming(c: Change) {
+	const { n, kind, attempt } = c.run.step;
+	return { run: c.run.n, step: { run: c.run.n, n, kind, attempt }, startedAt: c.run.startedAt, changedAt: c.at };
+}
+
+function pendingCheck(c: Change, head: string, title: string, existingOnly = false): void {
+	if (!isSha(head)) return;
+	const pending = c.item.pendingChecks ??= [];
+	const previous = pending.find(check => check.sha === head);
+	if (previous) previous.existingOnly &&= existingOnly;
+	else pending.push({ sha: head, existingOnly });
+	c.effects.push({ kind: "verified_check", key: head, state: "in_progress", ...checkTiming(c), verdictId: null, conclusion: null, title, summary: title + ".", existingOnly });
+}
+
+function stopPendingChecks(c: Change): void {
+	for (const { sha, existingOnly } of c.item.pendingChecks ?? []) {
+		const title = "Stopped before it was verified";
+		c.effects.push({ kind: "verified_check", key: sha, existingOnly, state: "completed", ...checkTiming(c),
+			verdictId: null, conclusion: "cancelled", title, summary: title + "." });
+	}
+	c.item.pendingChecks = [];
+}
+
 function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void {
 	const { item, run } = c;
 	item.head = fact.head;
@@ -665,6 +700,7 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	c.enter("ci");
 	// The gate this commit rests on is kept with it: a later turn's gate is not about it until it is pushed.
 	run.ci = ciProgress(fact.head, c.at, run.gate, fact.webhooks);
+	if (fact.pr && !item.parent) pendingCheck(c, fact.head, `Waiting for CI on ${shortSha(fact.head)}`);
 	if (item.machineRemoved) return askRemoved(c);
 	pollCi(c, fact.openItems, null, `Waiting for CI to start on ${shortSha(fact.head)}.`);
 }
@@ -914,7 +950,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	const blocking = filed.blocks.filter((block) => block.kind === "finding" && block.severity === "blocking").length;
 	const words = { approve: "approves", changes_requested: `asks for changes (${blocking} blocking)`, needs_person: "needs you" };
 	c.say(`The second review of ${shortSha(pending.head)}: ${words[filed.recommendation]}.`);
-	readForHandoff(c, ci, { review: filed.id, reviewNone: null });
+	readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment: { recommendation: filed.recommendation, blocking } });
 }
 
 /** Hands over the commit this run pushed, with the evidence kept for that commit: never a later, unpushed turn's. */
@@ -950,6 +986,15 @@ function verdictAt(c: Change, ci: CiProgress) {
 function handVerdict(c: Change, ci: CiProgress, review: HandoffReview, reviewDone?: true): void {
 	const record = verdictAt(c, ci);
 	c.effects.push({ kind: "handoff", ...record, ...review, ...(reviewDone ? { reviewDone } : {}) });
+	const { verdict } = record;
+	const key = verdict.moved ?? verdict.head;
+	if (!c.item.parent && isSha(key)) {
+		const assessment = review.review !== null ? review.assessment ?? null : null;
+		const title = checkTitle(verdict, assessment);
+		c.effects.push({ kind: "verified_check", key, state: "completed", ...checkTiming(c),
+			verdictId: verdict.id, conclusion: checkConclusion(verdict, assessment), title, summary: title });
+		c.item.pendingChecks = c.item.pendingChecks?.filter(check => check.sha !== key);
+	}
 	c.say(record.words);
 }
 
@@ -1000,6 +1045,7 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 }
 
 function cancel(c: Change): void {
+	stopPendingChecks(c);
 	const { item } = c;
 	const run = item.run;
 	if (item.jobs?.length) c.effects.push({ kind: "cancel_children", key: String(item.revision+1), ids: item.jobs.map(j => j.id) });
@@ -1186,6 +1232,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			item.run.endedAt = c.at;
 			item.run.stopReason = question.cause ?? question.kind;
 		}
+		stopPendingChecks(c);
 		c.state("failed");
 		return true;
 	}

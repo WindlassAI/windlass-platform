@@ -714,6 +714,9 @@ async function main(): Promise<void> {
 					stderr.trim().split("\n")[0] ?? "",
 				);
 			}
+			const cache = await docker(["run", "--rm", "--pull", "never", "--network", "none", "--user", "agent",
+				"--mount", "type=volume,dst=/tmp/.cache", image, "sh", "-c", "test -O /tmp/.cache && touch /tmp/.cache/check"]);
+			expect("an empty cache volume inherits agent ownership and can be written", cache.code === 0, cache.stderr);
 			const version = await layer.windlass.version();
 			expect("windlass.version() reports the same version", version === printed, String(version));
 			const problem = await layer.windlass.problem();
@@ -742,7 +745,7 @@ async function main(): Promise<void> {
 				const hasBrowser = expected === shotsImage;
 				const files = hasBrowser ? "test -x /usr/local/bin/wlp-shot && test -x /usr/local/bin/wlp-headless-shell"
 					: "test ! -e /usr/local/bin/wlp-shot && test ! -e /usr/local/bin/wlp-headless-shell && test ! -d /opt/wlp-browser";
-				await docker(["exec", containerName(id), "sh", "-c", files], { check: true });
+				await docker(["exec", containerName(id), "sh", "-c", "test -O /tmp/.cache && " + files], { check: true });
 				await sandboxes.destroy(id);
 			}
 		}

@@ -109,6 +109,7 @@ class Engine {
 type AgentProcess = Pick<Engine, "input" | "stop">;
 
 interface Box {
+	size?: number;
 	harness?: "claude" | "opencode";
 	id: string;
 	sessionId: string;
@@ -326,7 +327,7 @@ export class StandInRunner {
 				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
 				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
 				if (!had && this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
-				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, profile: op.args.profile, harness: op.args.harness, state: "running", files: new Map(), engines: new Set() };
+				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, size: op.args.size, profile: op.args.profile, harness: op.args.harness, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
 				if (this.loseCreates > 0) {
 					// Before any report: the real runner reports at most once a minute, so the server cannot count on one.

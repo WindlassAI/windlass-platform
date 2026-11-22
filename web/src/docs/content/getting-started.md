@@ -36,11 +36,13 @@ Open the account menu and choose **Sign out**. This signs you out in this browse
 
 Connect GitHub to launch agents on your own repositories, private ones included, and to get their work back as pull requests. Without it, an agent can still clone a public repository by its address, or start in an empty one.
 
-1. Open the account menu and choose **Connect GitHub**.
-2. Authorize the Windlass GitHub App at GitHub.
+1. Open the account menu and choose **Connect GitHub**. You can also connect from the repository chip when you start an agent.
+2. GitHub opens in a new window. Authorize the Windlass GitHub App there.
 3. If the App is not installed on your account yet, GitHub shows its installation page. Choose the account and the repositories the App may see.
 
-When you are back, the menu says **GitHub connected** and lists the accounts the connection covers. Organizations are marked **organization**.
+When GitHub is done, its window closes. What you were writing stays where it was, and the repository list fills in. If your browser blocks the window, the whole page goes to GitHub instead and comes back with what you wrote. If you close the window early, nothing is connected.
+
+The menu then says **GitHub connected** and lists the accounts the connection covers. Organizations are marked **organization**.
 
 - To choose which repositories the App may see, follow the **repositories** link beside an account. It opens that installation's settings at GitHub.
 - To add another account or organization, choose **Add an account**.
@@ -56,7 +58,7 @@ The platform acts as the App's installation. It keeps no GitHub token of yours. 
 | --- | --- | --- |
 | Contents | Read and write | Clone the repository, and push the agent's branch. |
 | Pull requests | Read and write | Open and update the pull request. |
-| Checks | Read-only | Read CI on a work item's pull request. |
+| Checks | Read and write | Read CI and publish the Factory verdict as `windlass/verified` on the pull request's head commit. |
 | Commit statuses | Read-only | Read CI on a work item's pull request. |
 | Actions | Read-only | Read CI on a work item's pull request. |
 | Issues | Read and write | Read an issue filed as a work item, and comment on it. |

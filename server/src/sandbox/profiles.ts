@@ -16,8 +16,13 @@ export function cpuFlags(cpus: number) {
 	return ["--cpu-shares", "256", "--cpus", String(cpus)];
 }
 
-/** What every session container gets: non-root, no privilege gain, no capabilities, limits for a 2-CPU host. */
-export const commonRunFlags = (cpus: number, network = "bridge") => [
+/** Docker accepts an integer byte count, or an exact MiB count with the m suffix. */
+export function resourceFlags(cpus: number, bytes = 1536 * 2 ** 20, pids = 512) {
+	const memory = bytes % (2 ** 20) === 0 ? (bytes / 2 ** 20) + "m" : String(bytes);
+	return ["--memory", memory, "--memory-swap", memory, ...cpuFlags(cpus), "--pids-limit", String(pids)];
+}
+
+export const commonRunFlags = (cpus: number, network = "bridge", memoryBytes?: number, pids?: number) => [
 	"--init",
 	"--user",
 	"agent",
@@ -27,13 +32,7 @@ export const commonRunFlags = (cpus: number, network = "bridge") => [
 	"ALL",
 	"--network",
 	network,
-	"--memory",
-	"1536m",
-	"--memory-swap",
-	"1536m",
-	...cpuFlags(cpus),
-	"--pids-limit",
-	"512",
+	...resourceFlags(cpus, memoryBytes, pids),
 	"--hostname",
 	"sandbox",
 ];

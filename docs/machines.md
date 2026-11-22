@@ -124,10 +124,10 @@ protocol names: it makes a session's container, runs the platform's commands in 
 it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code image pins come from the runner build. It touches only containers it labelled for its own machine
 (`dev.windlass-platform.machine=<machine id>`) and keeps Windlass data in
 `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
-volume is on Docker. Each agent container gets 256 CPU shares and a cap of half the CPUs available to
-the runner (at least 0.5 CPU). Set `WLP_RUNNER_CPUS` in the runner's environment to override the cap.
-The runner applies that policy when it creates or reconnects a sandbox. Each container gets 1536 MiB
-of memory, 512 processes and no capabilities, and creation requires 5 GB of free disk. It stops a
+volume is on Docker. Each agent container gets 256 CPU shares. The runner scales CPU, memory and process limits
+by its slot count. On a machine with one or two CPUs, one slot defaults to half the CPUs, 1536 MiB
+and 512 processes. Larger machines reserve resources for the host before sizing their slots.
+The runner applies these limits on creation and reconnect. A limit below current memory usage waits until the sandbox restarts. Creation requires 5 GB of free disk. It stops a
 sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
 a command runs in it or the session's socket is connected, and it removes one by itself in one case
 only: a container it finds after a restart whose workspace was never set up (no `/workspace/.git`: the
@@ -231,8 +231,8 @@ The platform counts nothing of a machine: its sandboxes take no
 sandbox time and no place among the kept sandboxes, have no price, and its turns are not among the
 user's agents working at once: one rule, `hostedLimitsApply` (`server/src/usage.ts`), holds a session
 to the daily time, the kept sandboxes and the running agents, and it holds only a hosted one.
-A runner accepts two simultaneous turns by default. Set `--max-turns N` to change this.
-The machine actor queues additional turns in arrival order and keeps them across runner reconnects.
+The runner sizes its turn capacity from the machine. Set `--slots N` or `--max-turns N` to override it.
+The machine actor queues turns in arrival order and waits until the head can take all its slots. The queue survives reconnects.
 Stop cancels a queued turn. Older runners omit the turn limit and allow unlimited concurrent turns.
 For optional limits on Docker containers, its runner takes `--max-running` and `--max-sandboxes`, with no
 default, after the command above, and a turn that would pass one ends with "This machine has reached its

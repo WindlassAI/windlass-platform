@@ -110,7 +110,7 @@ const ended = (outcome: "succeeded" | "unresolved" | "interrupted" | "stopped", 
 	report: more.report ?? null,
 	spend: { tokens: more.tokens ?? 100_000, hostedSeconds: 0 },
 });
-const published = (head: string): Row["fact"] => (k) => ({ kind: "published", webhooks: false, key: k.key, head, pr: { number: 7, url: "https://github.invalid/pull/7" }, openItems: 1 });
+const published = (head: string, pr: { number: number; url: string } | null = { number: 7, url: "https://github.invalid/pull/7" }): Row["fact"] => (k) => ({ kind: "published", webhooks: false, key: k.key, head, pr, openItems: 1 });
 const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", webhooks: false, prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
@@ -190,13 +190,13 @@ print("\n== blueprint");
 
 const toReview: Row[] = [
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
-	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"], also: (o) => holds(effect(o, "poll_ci")?.at === o.item.run?.ci?.since! + 60_000, "the first poll is a minute after the push") },
+	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"], also: (o) => holds(effect(o, "verified_check")?.state === "in_progress" && effect(o, "verified_check")?.key === H(1) && effect(o, "poll_ci")?.at === o.item.run?.ci?.since! + 60_000, "the first poll is a minute after the push") },
 	{ fact: ci(H(1), ciRead([{ name: "build", state: "pending" }])), after: 60_000, state: "waiting", wait: "ci", effects: ["poll_ci"], also: (o) => holds(/0 of 1 checks finished/.test(o.item.wait?.sentence ?? ""), "the wait says how far CI is") },
 	{
 		fact: ci(H(1), ciRead([{ name: "build", state: "passed" }])),
 		after: 60_000,
 		state: "review",
-		effects: ["handoff", "poll_pr"],
+		effects: ["handoff", "verified_check", "poll_pr"],
 		also: (o) => {
 			const verdict = effect(o, "handoff")?.verdict;
 			const words = effect(o, "handoff")?.words;
@@ -267,7 +267,7 @@ const ciFix: Row[] = [
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ];
 const pushedAndFailed = (head: string, log: string): Row[] => [
-	{ fact: published(head), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(head), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{
 		fact: ci(head, failingCi(log)),
 		after: 60_000,
@@ -289,7 +289,7 @@ const begun: Row[] = [
 print("\n== the advisory second review");
 
 const reviewHead = H(1);
-const toCi: Row[] = [...begun, { fact: published(reviewHead), state: "waiting", wait: "ci", effects: ["poll_ci"] }];
+const toCi: Row[] = [...begun, { fact: published(reviewHead), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] }];
 const reviewerOn = () => newItem({ reviewer: { on: true } });
 const ciPassed = ciRead([{ name: "build", state: "passed" }]);
 const publishedVerdict = `${newItem().id}:1:5:1`;
@@ -345,17 +345,17 @@ for (const [recommendation, words] of [["approve", "approves"], ["changes_reques
 		...refresh(endReview({ review: filing(recommendation) })),
 		also: o => holds(o.events.some(e => e.said === `The second review of 1111111: ${words}.`), "expected the recommendation in the log"),
 	}, {
-		fact: freshCi, state: "review", effects: ["handoff", "poll_pr"],
+		fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"],
 		also: (o) => {
 			const handed = effect(o, "handoff");
-			return holds(handed?.review === publishedVerdict && handed.reviewNone === null && handed.verdict.id === publishedVerdict && handed.verdict.result === "pass" &&
+			return holds(effect(o, "verified_check")?.conclusion === (recommendation === "approve" ? "success" : "action_required") && handed?.review === publishedVerdict && handed.reviewNone === null && handed.verdict.id === publishedVerdict && handed.verdict.result === "pass" &&
 				o.item.spent.tokens === 100_019 && o.item.spent.turns === 2 && o.item.spent.hostedSeconds === 7, "expected the filed review on the original verdict, its recommendation and exactly one turn's spend");
 		},
 	}]);
 }
 
 function handoverWithout(fact: Row["fact"], reason: string): Row {
-	return { fact, state: "review", effects: ["handoff", "poll_pr"], also: (o) => {
+	return { fact, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: (o) => {
 		const handoff = effect(o, "handoff");
 		return holds(handoff?.review === null && handoff.reviewNone === reason && o.events.some(e => e.said.startsWith("No second review:")), `expected handover because ${reason}`);
 	} };
@@ -372,13 +372,13 @@ drive("review: a machine item hands over after CI without a reviewer turn", { ..
 ]);
 drive("review: a rerun that fails during review changes the platform verdict", reviewerOn(), [...reviewing,
 	refresh(endReview({ review: filing("approve") })),
-	{ fact: ci(reviewHead, failingCi("rerun failed")), state: "review", effects: ["handoff", "poll_pr"],
+	{ fact: ci(reviewHead, failingCi("rerun failed")), state: "review", effects: ["handoff", "verified_check", "poll_pr"],
 		also: o => holds(effect(o, "handoff")?.verdict.result === "fail" && effect(o, "handoff")?.review === publishedVerdict, "expected fresh failure alongside the pinned filing") },
 ]);
 drive("review: a moved PR skips the reviewer", reviewerOn(), [...toCi, handoverWithout(movedReading, "the pull request moved after the agent pushed")]);
 drive("review: a branch name cannot pin the checkout", reviewerOn(), [...begun,
 	{ fact: published("work"), state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	handoverWithout(ci("work", ciPassed), "the push did not identify the commit to review"),
+	{ ...handoverWithout(ci("work", ciPassed), "the push did not identify the commit to review"), effects: ["handoff", "poll_pr"] },
 ]);
 
 function retryReview(fact: Row["fact"], instruction: string, interruptions: number): Row {
@@ -408,7 +408,7 @@ drive("review: one refile survives an intervening error", reviewerOn(), [...revi
 	refresh(endReview()), handoverWithout(freshCi, "The reviewer did not file a review the platform could read."),
 ]);
 drive("review: a later filing keeps the first verdict id", reviewerOn(), [...reviewing, refile, refresh(keys => endReview({ review: filing("approve", keys.key) })(keys)), {
-	fact: freshCi, state: "review", effects: ["handoff", "poll_pr"],
+	fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"],
 	also: o => holds(effect(o, "handoff")?.review === `${o.item.id}:1:5:2` && effect(o, "handoff")?.verdict.id === publishedVerdict, "expected attempt two's filing on attempt one's verdict"),
 }]);
 drive("review: a filing for another head is unreadable", reviewerOn(), [...reviewing,
@@ -436,7 +436,7 @@ drive("review: watchdog and cancellation reach the reviewer", reviewerOn(), [...
 	{ fact: k => ({ kind: "turn_waiting", key: k.key, wait: { reason: "capacity", sentence: "Waiting for a slot for the reviewer.", retryAt: null } }), state: "waiting", wait: "capacity", effects: [] },
 	{ fact: started(), state: "working", effects: ["check_turn"], also: o => holds(effect(o, "check_turn")?.to === "review", "started reviewer turn checked on builder") },
 	{ fact: k => ({ kind: "turn_running", key: k.check }), state: "working", effects: ["check_turn"], also: o => holds(effect(o, "check_turn")?.to === "review", "running reviewer turn checked on builder") },
-	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["withdraw"], also: o => holds(effect(o, "withdraw")?.to === "review", "cancel withdrew the builder") },
+	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["verified_check", "withdraw"], also: o => holds(effect(o, "withdraw")?.to === "review", "cancel withdrew the builder") },
 ]);
 drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
 	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
@@ -444,7 +444,7 @@ drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
 ]);
 drive("review: a rounds question can hand over failing CI", reviewerOn(), [...begun,
 	...pushedAndFailed(reviewHead, "build failed"),
-	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", "expected a rounds question") },
 	...personHandover(ci(H(2), failingCi("build failed"))),
 ]);
@@ -458,7 +458,7 @@ drive("review: PR reads leave the turn pinned while the branch moves", reviewerO
 	{ ...refile, also: o => holds(effect(o, "deliver")?.reviewerInput?.verdictWords.startsWith("Ready for review.") === true &&
 		effect(o, "deliver")?.checkout?.head === reviewHead, "refiling uses the original verdict and head") },
 	refresh(k => endReview({ review: filing("approve", k.key) })(k)),
-	{ fact: movedReading, state: "review", effects: ["handoff", "poll_pr"], also: o =>
+	{ fact: movedReading, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o =>
 		holds(effect(o, "handoff")?.review === null && effect(o, "handoff")?.verdict.moved === H(2), "handover rereads and marks the moved PR unverified") },
 ]);
 for (const state of ["merged", "closed"] as const) {
@@ -469,13 +469,33 @@ for (const state of ["merged", "closed"] as const) {
 }
 drive("review: moving away and back updates the same verdict", reviewerOn(), [...reviewing,
 	refresh(endReview({ review: filing("approve") })),
-	{ fact: freshCi, state: "review", effects: ["handoff", "poll_pr"] },
-	...[H(2), reviewHead].flatMap((head): Row[] => [{ fact: prAt(head), state: "review", effects: ["poll_ci"] }, { fact: keys => ({ ...freshCi(keys), prHead: head }), state: "review", effects: ["handoff", "poll_pr"], also: o => {
+	{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"] },
+	...[H(2), reviewHead].flatMap((head): Row[] => [{ fact: prAt(head), state: "review", effects: ["poll_ci"] }, { fact: keys => ({ ...freshCi(keys), prHead: head }), state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o => {
 		const update = effect(o, "handoff");
-		return holds(update?.reviewDone === true && update.verdict.id === publishedVerdict && (head === reviewHead
+		const check = effect(o, "verified_check");
+		return holds(check?.state === "completed" && check.key === head && check.conclusion === (head === reviewHead ? "success" : "action_required") && update?.reviewDone === true && update.verdict.id === publishedVerdict && (head === reviewHead
 			? update.review === publishedVerdict && update.reviewNone === null
 			: update.review === null && update.reviewNone?.includes("moved") === true), "expected the original filing only on the head reviewed");
 	} }]),
+]);
+
+drive("check re-run reads current CI at most once a minute and keeps the verdict id", reviewerOn(), [
+	...reviewing, refresh(endReview({ review: filing("approve") })),
+	{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"] },
+	{ fact: () => ({ kind: "reverify", head: H(2) }), state: "review", effects: [], unchanged: true },
+	{ fact: () => ({ kind: "reverify", head: reviewHead }), state: "review", effects: ["poll_ci"] },
+	{ fact: freshCi, after: 1, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o => holds(effect(o, "verified_check")?.verdictId === publishedVerdict, "changed verdict id") },
+	{ fact: () => ({ kind: "reverify", head: reviewHead }), after: 1, state: "review", effects: [], unchanged: true },
+]);
+drive("a working item ignores re-run", newItem(), [...begun,
+	{ fact: () => ({ kind: "reverify", head: reviewHead }), state: "working", effects: [], unchanged: true },
+]);
+drive("subtask publication never opens a check", { ...newItem(), parent: { itemId: "i_feature", key: "first", title: "Feature" } }, [
+	...begun, { fact: published(reviewHead, null), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+]);
+drive("giving up completes the pending check", newItem(), [...toCi,
+	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: answer("give_up"), state: "failed", effects: ["verified_check"], also: o => holds(effect(o, "verified_check")?.conclusion === "cancelled", "missing cancelled conclusion") },
 ]);
 
 print("\n== blueprint (continued)");
@@ -532,10 +552,10 @@ print("\n== blueprint (continued)");
 const pendingBuild = ciRead([{ name: "build", state: "pending" }]);
 drive("a second base conflict asks the person after one resolving turn", newItem(), [
 	...begun,
-	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(1), pendingBuild, false), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "the resolving turn fetches the base") },
 	...ciFix,
-	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(2), pendingBuild, true), state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(2), pendingBuild, false), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "rounds" && o.item.question.cause === "conflict", "the conflict round was used") },
 ]);
@@ -544,15 +564,15 @@ drive("a failure only CI catches, fixed within two rounds", newItem(), [
 	...begun,
 	...pushedAndFailed(H(1), "Error: timeout waiting for #login"),
 	...pushedAndFailed(H(2), "Error: element #submit not found"),
-	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(3), ciRead([{ name: "e2e", state: "passed" }])), after: 60_000, state: "review", effects: ["handoff", "poll_pr"] },
+	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+	{ fact: ci(H(3), ciRead([{ name: "e2e", state: "passed" }])), after: 60_000, state: "review", effects: ["handoff", "verified_check", "poll_pr"] },
 ]);
 
 drive("a third CI failure is handed to the person", newItem(), [
 	...begun,
 	...pushedAndFailed(H(1), "Error: timeout waiting for #login"),
 	...pushedAndFailed(H(2), "Error: element #submit not found"),
-	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{
 		fact: ci(H(3), failingCi("Error: 500 from /api/session")),
 		after: 60_000,
@@ -562,13 +582,13 @@ drive("a third CI failure is handed to the person", newItem(), [
 		also: (o) => holds(o.item.question?.kind === "rounds" && o.item.question.choices.map((c) => c.id).join() === "raise,retry,hand_over,give_up", `asked with the four choices: ${JSON.stringify(o.item.question?.choices)}`),
 	},
 	{ fact: answer("hand_over"), state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(3), failingCi("Error: 500 from /api/session")), state: "review", effects: ["handoff", "poll_pr"], also: (o) => holds(effect(o, "handoff")?.verdict.result === "fail", "handed over as failing") },
+	{ fact: ci(H(3), failingCi("Error: 500 from /api/session")), state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: (o) => holds(effect(o, "handoff")?.verdict.result === "fail", "handed over as failing") },
 ]);
 
 drive("the same CI failure after a fix stops the run at once", newItem(), [
 	...begun,
 	...pushedAndFailed(H(1), "Error: timeout waiting for #login after 5012 ms"),
-	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(2), failingCi("Error: timeout waiting for #login after 4980 ms")), after: 60_000, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "repeated" && o.item.run?.rounds.ci === 1, "stopped with a round left, on the fingerprint") },
 	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 ]);
@@ -627,7 +647,7 @@ drive("the item's budget runs out, and the person raises it", newItem({ budget: 
 const fourHours = 4 * 60 * MINUTE;
 drive("four hours working uses the active-time budget, four hours waiting does not", newItem(), [
 	...begun,
-	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(1), pendingBuild), after: fourHours, state: "waiting", wait: "person", effects: ["ask"] },
 	{ fact: answer("wait"), after: fourHours, state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(1), failingCi("Error: login timed out")), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.spent.activeSeconds === 60, "only the first minute of work counts") },
@@ -660,12 +680,12 @@ drive("a plan for approval, a question to the person and its answer", newItem({ 
 
 drive("CI cannot be read for lack of permission", newItem(), [
 	...begun,
-	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{
 		fact: ci(H(1), { kind: "not_permitted", said: "Resource not accessible by integration" }, null),
 		after: 60_000,
 		state: "review",
-		effects: ["handoff", "poll_pr"],
+		effects: ["handoff", "verified_check", "poll_pr"],
 		also: (o) => {
 			const verdict = effect(o, "handoff")?.verdict;
 			const words = o.events.map((event) => event.said).join(" ");
@@ -676,21 +696,21 @@ drive("CI cannot be read for lack of permission", newItem(), [
 
 drive("no CI on the repository, CI that does not finish, a conflict, send back and cancel", newItem(), [
 	...begun,
-	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(1), ciRead([]), null), after: 9 * MINUTE, state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(1), ciRead([]), null), after: 2 * MINUTE, state: "review", effects: ["handoff", "poll_pr"], also: (o) => holds(effect(o, "handoff")?.verdict.ci.state === "none" && effect(o, "handoff")?.verdict.result === "pass", "no CI after 10 minutes: handed over on the user's checks") },
-	{ fact: () => ({ kind: "send_back", by: "person:u1", note: "Also handle negatives." }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.run?.n === 2 && /negatives/.test(effect(o, "deliver")?.text ?? ""), "a new run with the note") },
+	{ fact: ci(H(1), ciRead([]), null), after: 2 * MINUTE, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: (o) => holds(effect(o, "handoff")?.verdict.ci.state === "none" && effect(o, "handoff")?.verdict.result === "pass", "no CI after 10 minutes: handed over on the user's checks") },
+	{ fact: () => ({ kind: "send_back", by: "person:u1", note: "Also handle negatives." }), state: "queued", effects: ["verified_check", "deliver", "check_turn"], also: (o) => holds(effect(o, "verified_check")?.key === H(1) && effect(o, "verified_check")?.state === "in_progress" && o.item.run?.n === 2 && /negatives/.test(effect(o, "deliver")?.text ?? ""), "a new run with the note") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "connection reset", transient: true }), state: "working", effects: ["publish"], also: (o) => holds(effect(o, "publish")?.at === T0 + 19 * MINUTE + 30_000, "a push that did not get through is tried again after 30 s") },
-	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(2), ciRead([{ name: "build", state: "pending" }]), false), after: 60_000, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.fetchBase === "main", "a conflict: the base is fetched and merged") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
-	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(3), ciRead([{ name: "build", state: "pending" }])), after: 91 * MINUTE, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "ci_timeout", "CI still running after 90 minutes: a person is asked") },
 	{ fact: answer("wait"), state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: [] },
+	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["verified_check", "verified_check", "verified_check"] },
 	{ fact: ci(H(3), ciRead([{ name: "build", state: "passed" }])), state: "cancelled", effects: [] },
 ]);
 
@@ -698,7 +718,7 @@ drive("GitHub refuses the push: a question with GitHub's reason, then a push aga
 	...begun,
 	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GH006: Protected branch update failed", transient: false }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "publish_refused" && /GH006/.test(o.item.question.text), "GitHub's reason is in the question") },
 	{ fact: answer("again"), state: "working", effects: ["publish"] },
-	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 ]);
 
 drive("cancelling a running turn withdraws it", newItem(), [
@@ -745,7 +765,7 @@ drive("a machine wait spends nothing, even when repeated hours later", machineIt
 	{ fact: k => ({ kind: "turn_waiting", key: k.key, wait: offlineAdmission.wait }), state: "waiting", wait: "machine", effects: [] },
 	{ fact: started(), after: fourHours, state: "working", effects: ["check_turn"], also: o => holds(Object.values(o.item.spent).every(n => n === 0), "no budget charged before start") },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
-	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["poll_ci"], also: o => holds(o.item.spent.turns === 1 && o.item.spent.activeSeconds === 60 && o.item.spent.tokens === 100_000 && o.item.spent.hostedSeconds === 0, "only the running minute and its turn and tokens count") },
+	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"], also: o => holds(o.item.spent.turns === 1 && o.item.spent.activeSeconds === 60 && o.item.spent.tokens === 100_000 && o.item.spent.hostedSeconds === 0, "only the running minute and its turn and tokens count") },
 ]);
 for (const field of ["tokens", "turns", "activeSeconds"] as const) {
 	expect(`on a machine the ${field} limit still applies`, budgetStop(machineItem.budget, { ...machineItem.spent, [field]: machineItem.budget[field] }, machineItem.place)?.cause === field);
@@ -803,7 +823,7 @@ const unread = verdict(PASSED, "not_permitted");
 	};
 	// A pass whose CI has not spoken says both halves in its first words; every other pass is ready.
 	const headline = (result: Verdict["result"], state: CiState) =>
-		result === "pass" && state === "not_run" ? "Your checks passed; CI did not start." : result === "pass" && state === "unread" ? "Your checks passed; CI has not been read." : result === "pass" && state === "timed_out" ? "Your checks passed; CI had not finished." : { pass: "Ready for review.", fail: "Failing.", incomplete: "Incomplete: the last turn did not finish.", unverified: "Not verified." }[result];
+		result === "pass" && state === "not_run" ? "Your checks passed; CI did not start." : result === "pass" && (state === "unread" || state === "not_permitted") ? "Your checks passed; CI has not been read." : result === "pass" && state === "timed_out" ? "Your checks passed; CI had not finished." : { pass: "Ready for review.", fail: "Failing.", incomplete: "Incomplete: the last turn did not finish.", unverified: "Not verified." }[result];
 	const wrong: string[] = [];
 	for (const [name, evidence] of Object.entries(checksOf) as Array<[keyof typeof checksOf, Verified]>) {
 		for (const state of CI) {
@@ -1037,6 +1057,33 @@ standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const repo = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation });
 const HEAD = standin.branchHead(repo, repo.defaultBranch)!;
+const { checkConclusion, checkSummary } = await import("../server/src/factory/verified-check.js");
+{
+	const privateText = "@someone https://private.invalid/ <!-- private -->";
+	const v = verdictOf({ id: "v", item: "i", run: 1, head: HEAD, at: T0, place: { kind: "hosted" }, gate: null,
+		ci: { state: "passed", runs: [], said: null }, acceptance: [privateText], mergeable: false });
+	for (const [result, state, expected] of [
+		["pass", "passed", "success"], ["pass", "unread", "action_required"], ["pass", "not_permitted", "action_required"],
+		["pass", "timed_out", "action_required"], ["pass", "not_run", "action_required"], ["fail", "failed", "failure"],
+		["incomplete", "passed", "failure"], ["unverified", "none", "action_required"],
+	] as const) expect(`check conclusion for ${result}, CI ${state}`, checkConclusion({ ...v, result, ci: { ...v.ci, state } }) === expected);
+	const flagged = { ...v, report: privateText, flags: Array.from({ length: 6 }, () => ({ kind: "tests_removed" as const, where: ["a".repeat(180)] })) };
+	expect("flagged pass requires action", checkConclusion(flagged) === "action_required");
+	const review = { recommendation: "changes_requested" as const, blocking: 1, findings: [privateText] };
+	for (const recommendation of ["changes_requested", "needs_person"] as const) {
+		const assessment = { recommendation, blocking: 0 };
+		expect(`second review ${recommendation} blocks an otherwise ready commit`, checkConclusion(v, assessment) === "action_required");
+		expect(`second review ${recommendation} preserves failure`, checkConclusion({ ...v, result: "fail" }, assessment) === "failure");
+	}
+	const budget = newItem().budget;
+	const url = "https://windlass.invalid/items/i";
+	const summary = checkSummary({ ...flagged, ci: { state: "not_run", said: privateText,
+		runs: Array.from({ length: 20 }, () => ({ name: "**x**" + "x".repeat(180), app: "ci", url: privateText, conclusion: "failure" })) } },
+		review, budget, budget, url);
+	expect("public summary admits only platform facts and escapes run names", summary.includes("\\*\\*x\\*\\*") && summary.includes("1 blocking finding") &&
+		!["@someone", "private.invalid", "<!--", "private -->"].some(text => summary.includes(text)));
+	expect("public output fits 4000 characters and keeps the evidence link", summary.length <= 4000 && summary.includes(url));
+}
 const ciData = { runs: [] as unknown[], statuses: [] as unknown[] };
 repo.ci.set(HEAD, ciData);
 const secrets = { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem };
@@ -1078,6 +1125,17 @@ try {
 	const huge = await readCi(app, target);
 	const hugeLog = huge.kind === "read" ? huge.logs[0] : undefined;
 	expect("a log larger than the most that is read is not read to its end, and says so", hugeLog !== undefined && hugeLog.text === null && "why" in hugeLog && /larger than 16 MiB/.test(hugeLog.why), hugeLog && "why" in hugeLog ? hugeLog.why : "");
+
+	const own = { ...checkRun(4, "windlass/verified", "failure"), app: { id: standin.appId, slug: "old-slug" } };
+	ciData.runs = [own, checkRun(5, "build", "success")];
+	ciData.statuses = [];
+	expect("our failing check beside passing CI is excluded by App id", ciState(await readCi(app, target)) === "passed");
+	ciData.runs = [own];
+	expect("our check alone is no CI", ciState(await readCi(app, target)) === "none");
+	ciData.runs = [{ ...own, name: "another App check", app: { slug: standin.slug } }];
+	expect("older check records fall back to the App slug", ciState(await readCi(app, target)) === "none");
+	ciData.runs = [{ ...own, app: { id: "123", slug: standin.slug } }];
+	expect("a foreign App id takes precedence over a matching name and slug", ciState(await readCi(app, target)) === "failed");
 
 	ciData.runs = [checkRun(1, "build", null)];
 	ciData.statuses = [];

@@ -101,6 +101,8 @@
  *   machine_unreachable `internalDestroy()` (the user's `deleteSession`): the machine's actor could not record the removal of the sandbox
  */
 
+import { canReuseSnapshot, canSaveSnapshot, DEFERRED_INPUTS, digest, snapshotGeneration, snapshotWriter, snapshotPrompt, type SnapshotRequest } from "../sandbox/snapshot-key.js";
+
 import { setTimeout as delay } from "node:timers/promises";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -164,7 +166,7 @@ import {
 	type WorkspaceFile,
 } from "../contract.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
-import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutReview } from "../github/git.js";
+import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview } from "../github/git.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -197,7 +199,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { itemActor, grantIsValid, type ReserveAnswer, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN } from "../agent-publish.js";
@@ -214,7 +216,7 @@ import { initialSessionModes } from "../sandbox/profiles.js";
 import { machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
-import { fetchBase } from "../github/publish.js";
+import { fetchBase, sessionRepository } from "../github/publish.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
@@ -289,6 +291,7 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 // ---------------------------------------------------------------------------------------------
 
 interface SessionMeta {
+	size?: number;
 	uid: string;
 	sessionId: string;
 	demo: boolean;
@@ -378,6 +381,7 @@ interface SessionMeta {
 	 * commands have none: a sandbox the agent has worked in is not set up after the fact.
 	 */
 	setupDue?: string | null;
+	snapshotCommit?: string | null;
 	cloneDirectory?: string;
 	/** The setup run in progress, as its starting item has it. Still set when the actor wakes: the run was cut off with its server. */
 	setupRunning?: { id: string; command: string; limitMs: number } | null;
@@ -389,7 +393,7 @@ interface SessionMeta {
 	 * commit GitHub had (`at`) only after it (`putWorkspaceOnWork`), in the clone's `directory`. Kept until
 	 * that is done, so a turn cut off in between does not run the setup on the branch next time.
 	 */
-	workDue?: { branch: string; at: string; directory: string; setupBase?: string; setUp?: boolean } | null;
+	workDue?: { branch: string; at?: string; directory: string; setupBase?: string; setUp?: boolean } | null;
 	/** The workspace was put on the session's branch after a setup run on the base, and the agent has not been told that its branch's dependencies were not installed by it. */
 	setupOnBase?: { branch: string; base: string } | null;
 	/**
@@ -509,6 +513,7 @@ interface ActiveTurn {
  * values out of text.
  */
 interface HeldSecrets {
+	snapshotSetup?: SealedSecrets["snapshotSetup"];
 	screenshots: boolean;
 	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
 	opened: OpenedSecret[];
@@ -1089,8 +1094,86 @@ function privateSessionData(meta: SessionMeta, sandboxes: SandboxLayer["sandboxe
 	return !capabilitiesOf(meta.harness).backups || meta.origin?.role === "reviewer" || sandboxes.sessionsLiveInSandbox;
 }
 
+interface SnapshotPlan {
+	writer: boolean;
+	key: SnapshotRequest;
+	commit: string;
+	defaultBranch: string;
+	command: string;
+	updatedAt: number | null;
+}
+async function setupRevision(app: NonNullable<ReturnType<typeof githubApp>>, connection: StoredConnection, repo: StoredRepository, revision: string) {
+	const resolved = await sessionRepository(app, connection, repo, "read");
+	const { owner, name, defaultBranch } = resolved.repository;
+	const inputs = await app.withToken(resolved.installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read" } },
+		token => app.setupInputs(token, owner, name, revision), { revokeAfter: true });
+	return { ...inputs, defaultBranch };
+}
+
+async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, layer: SandboxLayer): Promise<SnapshotPlan | null> {
+	if (!secrets?.snapshotSetup || !layer.sandboxes.hasSnapshot || !canReuseSnapshot(config.snapshots, meta.harness, secrets.opened.length)) return null;
+	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
+	if (!project || !app || !repo) return null;
+	try {
+		const saved = secrets.snapshotSetup, command = saved.command;
+		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : repo.branch;
+		if (!revision) return null;
+		const key = { repo: String(repo.id), attempt: randomBytes(16).toString("hex"), generation: snapshotGeneration(String(repo.id), saved.updatedAt, saved.connectedAt) };
+		const mayWrite = snapshotWriter(meta.origin) && !meta.pushedHead && !meta.windlassSessionId && !(await childSetupSeed(c, meta));
+		// A never-saved setup needs no Docker index lookup, runner request or GitHub tree.
+		if (!saved.previouslySaved || !(await layer.sandboxes.hasSnapshot(meta.uid, key.repo))) {
+			if (!mayWrite) return null;
+			return { key: { ...key, inputs: DEFERRED_INPUTS }, commit: "", defaultBranch: repo.branch, writer: true, command, updatedAt: saved.updatedAt };
+		}
+		const connection = await githubConnection(c, meta);
+		if (!connection || connection.connectedAt !== saved.connectedAt) return null;
+		const { commit, dependencies, defaultBranch } = await setupRevision(app, connection, repo, revision);
+		if (!dependencies) return null;
+		return { writer: mayWrite && repo.branch === defaultBranch, key: { ...key, inputs: digest([dependencies, saved.command]) },
+			commit, defaultBranch, command, updatedAt: saved.updatedAt };
+	} catch { return null; } // A missing permission, truncated tree or unavailable API still allows a normal clone.
+}
+
+async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, plan: SnapshotPlan | null) {
+	const source = sandbox.snapshot, repo = meta.repo, app = githubApp();
+	if (!source || !repo || !app || !plan || source.attempt !== plan.key.attempt || source.repo !== plan.key.repo || source.inputs !== plan.key.inputs || source.generation !== plan.key.generation) return false;
+	const work = meta.origin?.role !== "reviewer" && meta.pushedHead ? meta.publishBranch : null;
+	const connection = await githubConnection(c, meta);
+	if (!connection || snapshotGeneration(String(repo.id), plan.updatedAt, connection.connectedAt) !== source.generation) return false;
+	const fetchedWork = await fetchBase(app, connection, repo, sandbox, work);
+	let head: string;
+	if (meta.origin?.role === "reviewer") {
+		const pinned = await checkoutPreparedReviewBase(sandbox, repo.branch, plan.commit);
+		if (!pinned.ok) return false;
+		head = pinned.marks.get("work") ?? "";
+		if (head !== plan.commit) return false;
+		repo.baseSha = plan.commit;
+	} else head = await putOnWork(sandbox, ".", repo.branch);
+	if (head !== plan.commit) {
+		// The branch moved during startup. Decide using the immutable tree we actually checked out.
+		const latest = await setupRevision(app, connection, repo, head);
+		if (latest.commit !== head || digest([latest.dependencies, plan.command]) !== source.inputs) return false;
+	}
+	const saved = await userActor(c, meta.uid).internalSetupCommand(setupProjectOf(meta)!.key);
+	if (saved.command !== plan.command || saved.updatedAt !== plan.updatedAt) return false;
+	if (work && fetchedWork) meta.workDue = { branch: work, directory: "." };
+	else if (work) {
+		meta.pushedHead = null;
+		note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
+	}
+	c.vars.unpushed = null;
+	meta.cloneDirectory = ".";
+	meta.cloned = true;
+	meta.setupDue = null;
+	meta.snapshotCommit = source.commit;
+	note(c, turn, "info", `Started from a prepared sandbox. Setup ran at ${source.commit} on ${new Date(source.created).toISOString()}.`);
+	await persist(c);
+	return true;
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
-async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null): Promise<SandboxHandle> {
+async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
+	let plan: SnapshotPlan | null = null;
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId) : undefined;
 	sandboxChanged(c);
 	if (handle) {
@@ -1104,6 +1187,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
 		meta.accountSecrets = null;
+		meta.snapshotCommit = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
 		meta.setupUnfinished = null;
@@ -1122,7 +1206,9 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
 		// stopped), and the sandbox would be left behind, paused and holding one of the person's places. So it goes first.
 		const vars = c.vars;
-		const id = await layer.sandboxes.create(sessionSandboxInput(meta, secrets?.screenshots));
+		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;
+		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
+		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1153,12 +1239,24 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (meta.windlassSessionId && !privateSessionData(meta, layer.sandboxes)) meta.freshWorkspace = true;
 	}
 
+	if (!meta.cloned && handle.snapshot) {
+		// A restarted actor can find the container before it recorded the successful refresh.
+		if (!await restorePrepared(c, meta, turn, handle, plan).catch(() => false)) {
+			await layer.sandboxes.destroy(handle.id);
+			meta.sandboxId = null;
+			meta.cloned = false;
+			await persist(c);
+			if (!allowSnapshot) throw new TurnProblem("Could not replace the prepared sandbox.");
+			return openSandbox(c, meta, turn, signal, layer, secrets, false);
+		}
+	}
+
 	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
 	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
 	if (meta.setupUnfinished?.state === "interrupted" && !signal.aborted) await stopLeftoverSetup(handle);
 	// The repository's setup command, once in this sandbox, before Windlass is started in it, on the base; only then the session's branch.
-	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal, secrets);
+	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) await runSetup(c, meta, turn, handle, signal, secrets, plan, layer);
 	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
 		note(c, turn, "info", `Cloning ${meta.repoUrl}`);
@@ -1525,7 +1623,7 @@ const PULL_FRESH_MS = 20_000;
  */
 async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
-	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId), RECALL_WAIT_MS);
+	const sealed = await orNull(secretsActor(c, meta.uid, meta.sessionId).internalSessionSecrets(meta.sessionId, config.snapshots && (meta.place.kind === "hosted" || !!config.machines?.identity)), RECALL_WAIT_MS);
 	if (sealed === null) {
 		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
 	}
@@ -1562,6 +1660,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	if (capabilitiesOf(meta.harness).events === "acp" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the harness session.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
+		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
 		screenshots: sealed.screenshots === true,
 		opened: sealed.redactOnly ? [] : opened,
 		account: sealed.redactOnly ? [] : account,
@@ -1691,7 +1790,7 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
  * workspace be put on the session's branch (`meta.workDue`), before the next turn runs the setup there,
  * with the network and the repository's secrets, on what the agent wrote.
  */
-async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null): Promise<void> {
+async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null, plan: SnapshotPlan | null, layer: SandboxLayer): Promise<void> {
 	const project = setupProjectOf(meta);
 	const directory = meta.setupDue;
 	if (!project || typeof directory !== "string") return;
@@ -1726,6 +1825,11 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 		waiting = "";
 		setupOutput(c, turn, id, text);
 	};
+	// Sample the pristine checkout before setup can change HEAD or the dependency files.
+	const eligible = plan?.writer && directory === "." && meta.repo?.branch === plan.defaultBranch && !meta.workDue && !meta.windlassSessionId
+		&& snapshotWriter(meta.origin) && handed.length === 0 && saved.updatedAt === plan.updatedAt && command === plan.command;
+	// cloneRepository confirmed this immutable checkout against GitHub before setup started.
+	const original = eligible ? meta.repo?.baseSha : null;
 	const result = await runSetupCommand(sandbox, {
 		command,
 		cwd: directory === "." ? sandbox.cwd : `${sandbox.cwd}/${directory}`,
@@ -1751,6 +1855,29 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
 	if (result.cleanupPending) throw new TurnProblem("The platform could not stop leftover setup processes. Send the prompt again to retry cleanup.");
+	if (plan && original && (!plan.commit || original === plan.commit) && !signal.aborted &&
+		layer.sandboxes.saveSnapshot && canSaveSnapshot(meta.origin, handed.length, result.state === "succeeded", result.durationMs, config.snapshotMinSetupMs)) {
+		// The setup can outlive an edit or a disconnect. Do not replace the newer image with its result.
+		const [current, connection] = await Promise.all([
+			orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS),
+			githubConnection(c, meta).catch(() => null),
+		]);
+		if (!current || !connection || current.command !== plan.command ||
+			snapshotGeneration(plan.key.repo, current.updatedAt, connection.connectedAt) !== plan.key.generation) return;
+		let inputs = plan.key.inputs;
+		if (inputs === DEFERRED_INPUTS) {
+			const app = githubApp(), repo = meta.repo;
+			if (!app || !repo) return;
+			const revision = await setupRevision(app, connection, repo, original).catch(() => null);
+			if (!revision?.dependencies || revision.commit !== original || revision.defaultBranch !== repo.branch) return;
+			inputs = digest([revision.dependencies, command]);
+		}
+		const began = Date.now();
+		note(c, turn, "info", "Saving a prepared sandbox for later sessions");
+		const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: original, created: began }).catch(() => false);
+		if (saved) await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt).catch(() => undefined);
+		note(c, turn, "info", saved ? `Saved the prepared sandbox in ${Math.round((Date.now()-began)/1000)} seconds.` : "The prepared sandbox could not be saved.");
+	}
 }
 
 /** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
@@ -3007,6 +3134,7 @@ async function removeSandbox(c: Ctx, meta: SessionMeta, id: string, text: string
 	meta.setupUnfinished = null;
 	meta.workDue = null;
 	meta.setupOnBase = null;
+	meta.snapshotCommit = null;
 	await dropWorkspace(c);
 	note(c, meta.turns, "info", text);
 	await closeMeter(c, meta, "now", use);
@@ -3210,12 +3338,16 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			let announced = false;
 			for (;;) {
 				signal.throwIfAborted();
-				const slot = await machine.turnSlot(meta.sessionId, turn);
+				const slot = await machine.turnSlot(meta.sessionId, turn, meta.size ?? meta.origin?.size ?? 1);
 				signal.throwIfAborted();
 				if (slot.state === "granted") break;
+				if (slot.state === "unsupported") throw new TurnProblem("This runner does not support sizing beyond one slot.");
 				if (slot.state === "offline" || slot.state === "removed") throw runnerLink(c, meta.place.machineId).away(slot.state);
 				if (!announced && slot.state === "waiting") {
-					note(c, turn, "info", `Waiting for a free slot on your machine (${slot.busy} of ${slot.max} busy).`);
+					const size = slot.size ?? 1;
+					const waiting = slot.behind ? "Waiting behind an earlier turn" : `Waiting for ${size} free slot${size === 1 ? "" : "s"}`;
+					const free = slot.max === null ? "" : `; ${Math.max(0, slot.max - slot.busy)} of ${slot.max} free`;
+					note(c, turn, "info", `${waiting} on ${meta.machineName ? `‘${meta.machineName}’` : "your machine"}${free}.`);
 					announced = true;
 				}
 				await delay(1000, undefined, { signal });
@@ -3291,6 +3423,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			});
 		} else if (!signal.aborted) {
 			// Told once: with the first prompt Windlass takes in the new sandbox.
+			const prepared = meta.snapshotCommit;
 			const fresh = meta.freshWorkspace === true;
 			// And once: that the repository's setup command did not succeed in this sandbox.
 			const unfinished = meta.setupUnfinished ?? null;
@@ -3384,7 +3517,7 @@ fi`, { signal, timeoutMs: 5000 });
 				onUnasked: (call) => {
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
 				},
-				prompt: reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`,
+				prompt: (prepared ? snapshotPrompt(prepared) : "") + (reviewer ? text : `${fresh ? FRESH_WORKSPACE : ""}${unfinished ? setupNote(unfinished) : ""}${onBase ? setupOnBaseNote(onBase) : ""}${text}`),
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				reportScreenshots: browser,
 				onReview: reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
@@ -3483,6 +3616,7 @@ fi`, { signal, timeoutMs: 5000 });
 			// Windlass took the prompt if it said anything at all; a turn that never reached it is told again.
 			if (fresh && events > 0) meta.freshWorkspace = false;
 			if (unfinished && events > 0 && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
+			if (prepared && events > 0 && meta.snapshotCommit === prepared) meta.snapshotCommit = null;
 			if (onBase && events > 0 && meta.setupOnBase === onBase) meta.setupOnBase = null;
 		}
 	} catch (error) {
@@ -4173,6 +4307,7 @@ export const agentSession = actor({
 				titleIsTyped: input.titleIsTyped === true,
 				place: input.place,
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
+				...(input.size && { size: input.size }),
 				harness: input.harness,
 				profile: input.profile,
 				...initialSessionModes(input.profile, input.harness, !!input.origin, input.harnessOptions?.modes),

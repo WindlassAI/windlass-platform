@@ -211,7 +211,7 @@ await standin.start();
 standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
-standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "read", statuses: "read", actions: "read" };
+standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "write", statuses: "read", actions: "read" };
 
 if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const singleServer = new Server();
@@ -306,6 +306,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const base = standin.branchHead(harbor,"main")!;
 			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
+				if (v.run?.step.kind === "subtasks") assert(!standin.checks.some(r => r.external_id.includes(feature.id)), "A check appeared during feature integration");
 				for (const child of v.children ?? []) {
 					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
 					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
@@ -318,6 +319,8 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
 			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
 			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			await waitFor("one successful feature check", () => standin.checks.find(r => r.external_id === done.verdicts.at(-1)?.id && r.conclusion === "success"), 30_000);
+			assert(standin.checks.filter(r => r.external_id.includes(feature.id)).length === 1 && !standin.checks.some(r => done.children!.some(child => r.external_id.includes(child.id))), "Extra feature or child checks were posted");
 			const [first, secondChild] = done.children;
 			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
 			assert(standin.fileOn(harbor, branchFor(first.title, first.sessionId), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
@@ -381,7 +384,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
 			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "true" });
 			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report) (review-files) (lookup-limit)", start: true });
-			const view = await untilItem(user, item.id, "the second review handoff", v => v.state === "review", CI_WAIT_MS);
+			const view = await untilItem(user, item.id, "the second review handoff and its published check", v => v.state === "review" && v.verifiedCheck?.state === "completed", CI_WAIT_MS);
 			assert(view.reviewerSessionId, "missing reviewer session");
 			const keys = [auth.profile.uid, view.reviewerSessionId];
 			const session = client.agentSession.get(keys, { params: { token: auth.token } });
@@ -403,6 +406,11 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(setup?.kind === "platform" && setup.text.includes("SETUP_ONLY") && !setup.text.includes("BUILD_ONLY") && !setup.text.includes("ACCOUNT_ONLY"), "reviewer setup secret scopes differ");
 			assert(view.review?.state === "filed" && view.review.recommendation === "approve" && view.reviews.length === 1, "missing filed recommendation");
 			const [r] = view.reviews;
+			const check = standin.checks.find(run => run.repository === harbor.id && run.external_id === r.verdictId);
+			assert(check && check.head_sha === r.head && check.conclusion === "success", "Missing check for the reviewed commit");
+			const privateWords = [view.task.title, view.task.body, ...view.task.acceptance, view.report?.title, ...r.blocks.map(b => "text" in b ? b.text : "")];
+			assert(!privateWords.some(words => words && check.output.summary.includes(words)), "Private task or filing text reached the public check");
+			assert(check.output.summary.includes("0 blocking findings"), "The public check omitted the review counts");
 			const [shot] = r.screenshots;
 			assert(r.head === head && r.base === standin.branchHead(harbor, "main") && r.by.sessionId === view.reviewerSessionId && r.verdictId === view.verdicts[0]?.id && view.verdicts.length === 1, "review provenance or strip differs");
 			assert(r.blocks.some(b => b.kind === "text" && b.refs[0]?.ref === "command/review_step/shell_1") && r.records.some(record => record.kind === "command" && record.command === "pwd" && record.exitCode === 0), "missing reviewer command");
@@ -543,7 +551,7 @@ async function drained(jobs: Promise<unknown>[]): Promise<void> {
 async function memoryChecks(): Promise<void> {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
 	process.env.WLP_SANDBOX = "fake";
-	const { workItem, REPORTS_TABLE, REVIEWS_TABLE } = await import("../server/src/actors/work-item.js");
+	const { workItem, REPORTS_TABLE, REVIEWS_TABLE, CHECKS_TABLE } = await import("../server/src/actors/work-item.js");
 	const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -600,6 +608,7 @@ async function memoryChecks(): Promise<void> {
 		await db.execute("CREATE TABLE effects (id TEXT PRIMARY KEY, effect TEXT, due_at INTEGER, attempts INTEGER)");
 		await db.execute("CREATE TABLE github_binding (id INTEGER PRIMARY KEY, installation TEXT NOT NULL)");
 		await db.execute("CREATE TABLE verdicts (id TEXT PRIMARY KEY, run INTEGER, head TEXT, at INTEGER, data TEXT)");
+		await db.execute(CHECKS_TABLE);
 		await db.execute(REPORTS_TABLE);
 		await db.execute(REVIEWS_TABLE);
 		const meta = { uid: "u", sessionId: "s", reviewerSessionId: answers.freeReviewer ? "review-session" : null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };

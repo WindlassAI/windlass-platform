@@ -40,7 +40,10 @@
  *   pull requests            https://docs.github.com/en/rest/pulls/pulls ("Pull requests: write" to create)
  */
 
+import { dependencyHash, SHA, type TreeEntry } from "../sandbox/snapshot-key.js";
+
 import type { GithubId } from "../contract.js";
+import { VERIFIED_NAME, type CheckRunUpdate } from "./checks.js";
 import { decimalId, githubId, githubJsonInteger, parseGithubJson } from "./ids.js";
 import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import { githubClientSecret, githubConfig, githubPrivateKey } from "../config.js";
@@ -90,7 +93,7 @@ export type PermissionLevel = "read" | "write";
 export interface TokenScope {
 	/** GitHub's id of the one repository the token is good for; omitted only to list the installation's repositories. */
 	repositoryId?: GithubId;
-	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: "read"; statuses?: "read"; actions?: "read" };
+	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: PermissionLevel; statuses?: "read"; actions?: "read" };
 }
 
 export interface InstallationToken {
@@ -493,6 +496,41 @@ export class GithubApp {
 		return "none";
 	}
 
+	async findCheckRun(token: string, owner: string, name: string, sha: string, item: string): Promise<string | null> {
+		const { items, truncated } = await this.pages({
+			path: `/repos/${owner}/${name}/commits/${sha}/check-runs`, auth: { bearer: token }, what: "find the item's check run",
+			query: { check_name: VERIFIED_NAME, app_id: this.settings.appId, filter: "all" },
+		}, body => {
+			const runs = record(body).check_runs;
+			if (!Array.isArray(runs)) throw new Error("GitHub did not list check runs");
+			return runs;
+		});
+		for (const fields of items.map(record)) {
+			if (fields.name !== VERIFIED_NAME || fields.head_sha !== sha || decimalId(record(fields.app).id) !== this.settings.appId) continue;
+			const external = text(fields.external_id);
+			if (external.startsWith(item + ":") || external.startsWith("pending:" + item + ":")) {
+				const id = decimalId(fields.id);
+				if (!id) throw new Error("GitHub returned an invalid check run id");
+				return id;
+			}
+		}
+		if (truncated) throw new Error("GitHub cut the list of matching check runs short");
+		return null;
+	}
+
+	async createCheckRun(token: string, owner: string, name: string, sha: string, update: CheckRunUpdate): Promise<string> {
+		const { body } = await this.call({ method: "POST", path: `/repos/${owner}/${name}/check-runs`, auth: { bearer: token },
+			body: { ...update, name: VERIFIED_NAME, head_sha: sha }, what: "create the item's check run" });
+		const id = decimalId(record(body).id);
+		if (!id) throw new Error("GitHub returned an invalid check run id");
+		return id;
+	}
+
+	async updateCheckRun(token: string, owner: string, name: string, id: string, update: CheckRunUpdate): Promise<void> {
+		await this.call({ method: "PATCH", path: `/repos/${owner}/${name}/check-runs/${id}`, auth: { bearer: token },
+			body: update, what: "update the item's check run" });
+	}
+
 	/** The sole annotation of each candidate check run, in one request with the same Checks permission. */
 	async checkAnnotations(token: string, ids: string[]): Promise<Map<string, string>> {
 		const path = this.settings.apiUrl.endsWith("/api/v3") ? "/../graphql" : "/graphql";
@@ -549,6 +587,23 @@ export class GithubApp {
 		const pull = this.pullOf(answer.body);
 		if (pull?.number !== number) throw new GithubError(answer.status, "the answer does not describe the requested pull request", `could not read pull request #${number} of ${owner}/${name}`);
 		return pull;
+	}
+
+	/** Resolve a branch (or pinned review base) once. Every dependency read uses immutable objects. */
+	async setupInputs(token: string, owner: string, name: string, revision: string) {
+		const prefix = `/repos/${owner}/${name}`;
+		const auth = { bearer: token };
+		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the setup revision" });
+		const commit = text(record(body).sha), treeSha = text(record(record(record(body).commit).tree).sha);
+		if (!SHA.test(commit) || !SHA.test(treeSha)) throw new Error("Missing setup revision");
+		const tree = record((await this.call({ path: prefix + "/git/trees/" + treeSha, query: { recursive: "1" }, auth, what: "read the dependency tree" })).body);
+		if (tree.sha !== treeSha || tree.truncated !== false || !Array.isArray(tree.tree)) throw new Error("Incomplete dependency tree");
+		const files = tree.tree.map((entry): TreeEntry => {
+			const e = record(entry);
+			if (!text(e.path) || !SHA.test(text(e.sha))) throw new Error("Incomplete tree entry");
+			return { path: text(e.path), sha: text(e.sha), mode: text(e.mode), type: text(e.type) };
+		});
+		return { commit, dependencies: dependencyHash(files) };
 	}
 
 	async fileAt(token: string, owner: string, name: string, path: string, sha: string): Promise<string> {

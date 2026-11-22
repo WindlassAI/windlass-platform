@@ -43,7 +43,7 @@ export async function stub(storage: string, tls?: ServerOptions) {
 	const signed = (statement: string, signature: string) => verify(null, Buffer.from(statement), publicKey, Buffer.from(signature, "base64url"));
 	let live: { ws: WS; epoch: string; heardAt: number } | null = null;
 	const state = {
-		report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
+		helloSlots: undefined as Report["slots"], report: null as Report | null, reports: 0, gatewayLifetime: 0, epoch: "", connections: 0, connectionRequests: 0, pairStarts: 0, pairingMode: "approve" as "approve" | "gone" | "refused" | "waiting", startFailures: 0, pollFailures: 0, clockRefusals: 0,
 		refusal: null as Refusal | null, httpRefusal: null as "removed" | "unknown" | null, idleMs: 600_000, removed: "", lastErrorKind: "",
 	};
 	let observeControl: ((text: string) => void) | undefined;
@@ -95,7 +95,7 @@ export async function stub(storage: string, tls?: ServerOptions) {
 				send(ws, greeting.welcome); codecs.set(ws, greeting.auth);
 				if (refused) { ws.close(); return; }
 				live?.ws.close(); live = { ws, epoch: f.epoch, heardAt: Date.now() };
-				state.connections++; state.epoch = f.epoch;
+				state.connections++; state.helloSlots = f.slots; state.epoch = f.epoch;
 				for (const s of wanted) ticket(s);
 			} else if (live?.ws === ws) {
 				live.heardAt = Date.now();

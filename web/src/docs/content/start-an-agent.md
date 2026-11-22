@@ -106,4 +106,6 @@ The platform takes each choice from the first of these that has one:
 4. what your newest agent on that repository was launched with, or your newest agent overall if none is on it;
 5. the platform's own default.
 
+**Where it runs, the agent and the mode** have no saved default. They start where your last agent started, on any browser, even if you deleted that agent. A work item does not count. If that machine is gone or cannot be used, or it no longer offers that agent, the agent starts on **this platform** with Windlass, and the chip shows a warning dot that says why.
+
 See [Settings, usage and limits](/docs/settings) to save defaults.

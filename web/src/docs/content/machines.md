@@ -82,11 +82,11 @@ When you start an agent, choose the machine under **on**. Each machine offers tw
 
 ### Turn limit and queueing
 
-A runner runs 2 turns at once by default. More turns wait in a queue, in the order they arrive. A waiting agent says "Waiting for a free slot on your machine (2 of 2 busy)." **Stop** takes a turn out of the queue. To change the limit, start the runner with `--max-turns`. See [Runner reference](/docs/runner#run-options).
+The runner sizes its slots from the machine’s CPU and memory. A personal turn takes one slot by default. A large factory turn can take up to four. Turns wait in arrival order, so a large turn at the head waits for enough free slots before a smaller turn can start. **Stop** takes a turn out of the queue. Set the capacity with `--slots` or `--max-turns`. See [Runner reference](/docs/runner#run-options).
 
 ### CPU and memory
 
-Each sandbox gets 1536 MiB of memory, at most 512 processes and no Linux capabilities. Its CPU is capped at half the CPUs the runner can use, at least 0.5 CPU. To change the cap, set `WLP_RUNNER_CPUS` in the runner's environment, for example `-e WLP_RUNNER_CPUS=2` before the image. **Details** on the Machines page shows the CPUs given to sandboxes under **Capacity**.
+On a machine with one or two CPUs, one slot defaults to half the available CPUs, 1536 MiB of memory and 512 processes. Larger machines reserve CPU and memory for the host before dividing resources into slots. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget.
 
 ## Network access
 

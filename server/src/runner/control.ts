@@ -138,6 +138,12 @@ export type ServerFrame = Of<typeof serverFrame>;
 
 // ---- Runner → actor ----
 
+const slots = object({
+	max: is<number>(v => positiveLimit(v) && v <= 64),
+	unit: object({ cpus: is<number>(v => typeof v === "number" && Number.isFinite(v) && v > 0), memoryBytes: positiveLimit, pids: positiveLimit }),
+	reserve: object({ cpus: count, memoryBytes: count }),
+});
+
 /**
  * The hello keeps this shape in every release, so an actor can tell any runner that it is outdated.
  * `epoch` is made once per runner process; `time` is the runner's clock when it sent this, for the
@@ -146,7 +152,7 @@ export type ServerFrame = Of<typeof serverFrame>;
  * `controlProof` (else "unknown"; a removed machine's key is kept to check it before "removed" is
  * said), the release (else "outdated", recorded for the page), then `secondHello`.
  */
-const helloBase = { kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, maxTurns: optional(positiveLimit) };
+const helloBase = { kind: oneOf("hello"), runnerVersion: version, epoch, time, signature, slots: optional(slots), maxTurns: optional(positiveLimit) };
 const hello = either(object({ ...helloBase, protocol: optional(oneOf(1)) }), object({ ...helloBase, protocol: oneOf(2), ...helloFields }));
 const modelChoice = object({ id: line(512), name: nullable(line(512)), efforts: list(line(64), 16) });
 const optionsShape = object({
@@ -173,6 +179,7 @@ const report = object({
 	egress: optional(egressMode),
 	name: optional(validMachineName),
 	host: optional(host),
+	slots: optional(slots),
 	/** Absent on pre-policy runners, which allowed both Docker profiles. */
 	allowedProfiles: optional(validAllowedProfiles),
 	/** Accepted for compatibility with older runner reports. */
@@ -187,7 +194,7 @@ const report = object({
 	screenshots: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
-	sandboxes: list(object({ id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
+	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
 	/** The caps its owner set (`--max-running`, `--max-sandboxes`), left out where none is set. */
 	maxRunning: optional(positiveLimit),
 	maxSandboxes: optional(positiveLimit),
