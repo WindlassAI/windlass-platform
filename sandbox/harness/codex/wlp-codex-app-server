@@ -4,40 +4,76 @@
 // config.toml (MCP servers, sandbox settings, permission profiles and more), hooks and exec policy rules.
 // A cloned repository's contents are untrusted, so this filter drops that override on its way to Codex.
 // The workspace then has no trust decision and Codex ignores its .codex/ (it still reads AGENTS.md).
-// codex-acp writes Codex's own config only to trust hooks; those writes are refused too.
+// codex-acp writes Codex's own config only to trust hooks; those writes are refused too. Only single
+// JSON objects reach Codex, each as this filter parsed it: a batch or an unparsable line stops Codex.
+//
+// Codex also loads a user layer from CODEX_HOME every turn: config.toml, rules/*.rules, hooks.json,
+// AGENTS.md and .env. A repository's setup command and Container access commands run as agent outside
+// Codex's sandbox, so CODEX_HOME is root's (Dockerfile) and only the subdirectories Codex writes are
+// agent's. Codex does not start unless that holds.
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const { once } = require('node:events');
+const fs = require('node:fs');
 const codex = '/usr/local/bin/codex';
+const home = '/opt/wlp-codex/home';
+const USER_LAYER = ['config.toml', 'managed_config.toml', 'requirements.toml', 'rules', 'hooks.json', 'hooks', 'AGENTS.md', 'AGENTS.override.md', '.env'];
 const WRITES = new Set(['config/batchWrite', 'config/value/write', 'config/write']);
 const args = process.argv.slice(2);
-const child = spawn(codex, args, { stdio: [args[0] === 'app-server' ? 'pipe' : 'inherit', 'inherit', 'inherit'] });
+
+function userLayerProblem() {
+	const stat = fs.lstatSync(home, { throwIfNoEntry: false });
+	if (!stat?.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) !== 0) return home + ' is not a directory only root can change';
+	try {
+		fs.accessSync(home, fs.constants.W_OK);
+		return home + ' is writable by this user';
+	} catch {}
+	const found = USER_LAYER.filter((name) => fs.lstatSync(home + '/' + name, { throwIfNoEntry: false }));
+	return found.length ? 'found ' + found.join(', ') + ' in ' + home : null;
+}
+const problem = userLayerProblem();
+if (problem) {
+	process.stderr.write(`wlp-codex-app-server: refusing to start Codex: ${problem}.\n`);
+	process.exit(1);
+}
+
+const env = { ...process.env, CODEX_HOME: home, CODEX_SQLITE_HOME: home + '/sqlite' };
+const child = spawn(codex, args, { env, stdio: [args[0] === 'app-server' ? 'pipe' : 'inherit', 'inherit', 'inherit'] });
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
 child.on('exit', (code) => process.exit(code ?? 1));
 if (args[0] === 'app-server') {
 	child.stdin.on('error', () => {});
+	/** The line Codex gets, or null to stop: a single JSON object, re-serialized, with the overrides removed. */
 	const filter = (line) => {
 		let msg;
 		try {
 			msg = JSON.parse(line);
 		} catch {
-			return line;
+			return null;
 		}
-		if (msg === null || typeof msg !== 'object' || typeof msg.method !== 'string') return line;
+		if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) return null;
 		if (WRITES.has(msg.method)) {
 			// Codex answers it as an unknown method.
 			msg.method = 'wlp/refused/' + msg.method;
 			return JSON.stringify(msg);
 		}
 		const config = msg.params?.config;
-		if (config === null || typeof config !== 'object') return line;
-		for (const key of Object.keys(config))
-			if (key === 'projects' || key.startsWith('projects.') || key === 'bypass_hook_trust') delete config[key];
+		if (config !== null && typeof config === 'object')
+			for (const key of Object.keys(config))
+				if (key === 'projects' || key.startsWith('projects.') || key === 'bypass_hook_trust') delete config[key];
 		return JSON.stringify(msg);
 	};
 	(async () => {
-		for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity }))
-			if (!child.stdin.write(filter(line) + '\n')) await once(child.stdin, 'drain');
+		for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+			if (line.trim() === '') continue;
+			const filtered = filter(line);
+			if (filtered === null) {
+				process.stderr.write('wlp-codex-app-server: refused a line that is not a single JSON object; stopping Codex.\n');
+				child.kill('SIGTERM');
+				return;
+			}
+			if (!child.stdin.write(filtered + '\n')) await once(child.stdin, 'drain');
+		}
 		child.stdin.end();
 	})().catch(() => child.kill());
 }

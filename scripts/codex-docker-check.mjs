@@ -128,7 +128,7 @@ async function scan(name) {
 needles=[v.encode() for v in json.load(sys.stdin).values()]
 found=set()
 files=glob.glob('/proc/[0-9]*/environ')+glob.glob('/proc/[0-9]*/cmdline')
-for root in ['/home/agent','/tmp','/workspace']:
+for root in ['/home/agent','/tmp','/workspace',os.environ['CODEX_HOME']]:
  for base,dirs,names in os.walk(root):
   files += [os.path.join(base,n) for n in names]
 for path in files:
@@ -270,10 +270,10 @@ try {
 	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe });
 	await cmd(['exec', first, 'sh', '-ec', 'test ! -e "$CODEX_HOME/auth.json"']);
 	assert.equal(await scan(first), 0);
-	// Positive control proves the scan detects a projected credential.
-	await cmd(['exec', '-i', first, 'sh', '-ec', 'cat > "$CODEX_HOME/auth.json"'], { stdin: JSON.stringify(markers) });
+	// Positive control proves the scan detects a projected credential. CODEX_HOME is root's (the image's Dockerfile).
+	await cmd(['exec', '-i', '-u', 'root', first, 'sh', '-ec', 'cat > "$CODEX_HOME/auth.json"'], { stdin: JSON.stringify(markers) });
 	assert.equal(await scan(first), Object.keys(markers).length);
-	await cmd(['exec', first, 'sh', '-ec', 'rm "$CODEX_HOME/auth.json"']);
+	await cmd(['exec', '-u', 'root', first, 'sh', '-ec', 'rm "$CODEX_HOME/auth.json"']);
 	process.env.F3_PAUSE_PROBE = '1';
 	const probing = runner.loginChanged(true);
 	await until(() =>

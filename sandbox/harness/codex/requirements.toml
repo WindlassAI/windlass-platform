@@ -10,8 +10,11 @@ allowed_approvals_reviewers = ["user"]
 allow_managed_hooks_only = true
 
 # The PermissionRequest hook in config.toml refuses requests to leave Codex's sandbox: keep hooks on.
+# A shell snapshot runs the agent's login shell outside Codex's sandbox at each session start, and so
+# ~/.bash_profile or ~/.profile, which a repository's setup command can write: keep snapshots off.
 [features]
 codex_hooks = true
+shell_snapshot = false
 
 # An empty allowlist: Codex starts no MCP server from any config layer. It would run outside the sandbox.
 [mcp_servers]

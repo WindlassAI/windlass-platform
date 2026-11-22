@@ -1,6 +1,6 @@
 // One prompt through wlp-codex-acp in mode WLP_MODE, for codex-sandbox-escape-check.mjs. Prints one JSON
-// line: the permission requests Codex sent (each answered allow_once, the most a user could do) and the
-// prompt's outcome.
+// line: the permission requests Codex sent (each answered allow_once, the most a user could do), the mode
+// the session opened in and the prompt's outcome.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 const child = spawn('wlp-codex-acp', [], {
@@ -34,9 +34,11 @@ let outcome;
 try {
 	await request('initialize', { protocolVersion: 1, clientCapabilities: { auth: { _meta: { gateway: true } }, fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'check', version: '0' } });
 	await request('providers/set', { providerId: 'openai', apiType: 'openai', baseUrl: 'http://127.0.0.1:17892/codex/v1', headers: {} });
-	const { sessionId } = await request('session/new', { cwd: '/workspace', mcpServers: [] });
-	await request('session/set_config_option', { sessionId, configId: 'mode', value: process.env.WLP_MODE });
-	outcome = { stopReason: (await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'go' }] })).stopReason };
+	const { sessionId, modes, configOptions } = await request('session/new', { cwd: '/workspace', mcpServers: [] });
+	const opened = configOptions?.find((o) => o.category === 'mode')?.currentValue ?? modes?.currentModeId;
+	// An empty WLP_MODE keeps the mode the session opened in.
+	if (process.env.WLP_MODE) await request('session/set_config_option', { sessionId, configId: 'mode', value: process.env.WLP_MODE });
+	outcome = { opened, stopReason: (await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'go' }] })).stopReason };
 } catch (error) {
 	outcome = { error: JSON.stringify(error) };
 }
