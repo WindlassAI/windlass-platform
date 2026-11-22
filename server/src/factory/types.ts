@@ -25,7 +25,7 @@ export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, Questio
 // The item
 // ---------------------------------------------------------------------------------------------
 
-export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "conflict" | "review";
+export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "conflict" | "review" | "review_fix";
 
 /** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
@@ -71,7 +71,43 @@ export interface Run extends ItemRun {
 	/** The turn that produced the work about to be published, including across publish retries. */
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
-	review: { verdictId: string; head: string; refiles: number; prReads?: number } | null;
+	review: RunReview | null;
+}
+
+/** A blocking finding of a review, as the next round's reviewer must answer it (`earlier` blocks). */
+export interface EarlierFinding {
+	id: string;
+	/** The finding it continues, through every round: what "the same changes again" compares. */
+	root: string;
+	title: string;
+	text: string;
+	/** Carried by a review that said it is not fixed, without filing it again: that review's "earlier" text. */
+	notFixed?: string | null;
+}
+
+/**
+ * The second review of the run's pushed head (R4). Fields after `prReads` are absent on rows stored before
+ * reviews could send the builder back: read them as round 1, with nothing earlier.
+ */
+export interface RunReview {
+	verdictId: string;
+	head: string;
+	refiles: number;
+	prReads?: number;
+	/** 1 for the run's first review; one more after each round of fixes. */
+	round?: number;
+	/** The head the round before reviewed. */
+	previousHead?: string | null;
+	/** The round before's blocking findings, which this round answers. */
+	earlier?: EarlierFinding[];
+	/** This round's blocking findings, once filed: the next round's `earlier`. */
+	open?: EarlierFinding[];
+	/** The fingerprint of the blocking roots a fix was last started for. */
+	lastOpen?: string | null;
+	/** This round's filing, once filed: what "Hand it over as it is" keeps. */
+	filed?: { id: string } & CheckReview;
+	/** The run's last filing before this round, which this round's head has none of until it files. */
+	before?: { id: string } & CheckReview;
 }
 
 /** The work as the item was given it (`ItemTask`). */
@@ -165,7 +201,7 @@ export interface FactoryItem {
 		lastIds: string[];
 	};
 	/** Checks opened by this run, including a handed head reopened for rework. */
-	pendingChecks?: { sha: string; existingOnly: boolean; feedback?: boolean }[];
+	pendingChecks?: { sha: string; existingOnly: boolean; feedback?: boolean; /** Reviewed in this round, which asked for changes: completed by the head a later round hands over. */ reviewRound?: number }[];
 	lastReverifyAt?: number;
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
@@ -213,7 +249,7 @@ export interface FactoryItem {
 // ---------------------------------------------------------------------------------------------
 
 /** What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. */
-export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "interruptions" | keyof ItemBudget;
+export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | keyof ItemBudget;
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {
@@ -224,7 +260,7 @@ export interface Question extends ItemQuestion {
 
 /** base is the target branch. The actor supplies its pinned SHA to reviewerTask. */
 export type ReviewCheckout = { head: string; base: string; pr: number };
-export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "earlier"> & { verdictId: string };
+export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings"> & { verdictId: string; earlier: EarlierFinding[] };
 export type CheckReview = { recommendation: ReviewRecommendation; blocking: number };
 export type HandoffReview = { review: string; reviewNone: null; assessment?: CheckReview } | { review: null; reviewNone: string };
 
@@ -240,7 +276,7 @@ export interface TurnPlan {
 	/** False: another attempt of the current step (after an interruption). */
 	newStep: boolean;
 	/** The round counter the turn uses (§2.4); "interruptions": the step's cut-off turns, counted when they end. */
-	charge: "plan" | "gate" | "ci" | "conflict" | "interruptions" | null;
+	charge: "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | null;
 	/** For a fix turn: the failure it is for (§2.1 step 5). */
 	fingerprint: string | null;
 	/** For a conflict turn: the base branch to fetch into the workspace first. */
@@ -400,7 +436,9 @@ export type Effect =
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
 	/** Record the verdict, request a review from the item's person, and put the verdict line on the pull request. */
-	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true } & HandoffReview);
+	| ({ kind: "handoff"; key: string; verdict: Verdict; words: string; continuedIn?: number; reviewDone?: true;
+		/** The run's last review asked for changes (or for the person), and no review was filed for the head handed over. */
+		unfinished?: true } & HandoffReview);
 
 /** A transaction-only effect, consumed before the actor performs any deliveries. */
 export interface VerdictEffect {
@@ -413,6 +451,8 @@ export interface Outcome {
 	feedback?: FeedbackDecision[];
 	/** The same object as given when the fact changed nothing. */
 	item: FactoryItem;
+	/** The id of the review filing this fact's review turn filed and the blueprint took (any round, handed over or not): the actor keeps it with the item. */
+	tookReview?: string;
 	/** Store beside the item before performing the outbox. This effect never goes to GitHub. */
 	storeVerdict?: VerdictEffect;
 	effects: Effect[];

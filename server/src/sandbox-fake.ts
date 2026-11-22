@@ -1149,8 +1149,21 @@ class FakeWindlass implements Windlass {
 							emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
 						}
 						const excerpts = text.includes("(review-files)") ? ["README.md", "notes.txt"].map(path => ({ kind: "excerpt", at: { path, side: "base", lines: { start: 1, end: 1 } } })) : [];
-						const answer = await ask({ recommendation: "approve", blocks: [...blocks, ...excerpts, ...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : [])] });
-						emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
+						if (text.includes("(review-loop)")) {
+							// R4: the first round asks for changes; the next tries to approve without answering it, then answers it.
+							if (text.includes("this is round 1:")) {
+								const answer = await ask({ recommendation: "changes_requested", blocks: [...blocks, { kind: "finding", severity: "blocking", title: "No check for the empty page", text: "Add a check that the empty page renders." }] });
+								emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
+							} else {
+								const refusal = await ask({ recommendation: "approve", blocks });
+								emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
+								const answer = await ask({ recommendation: "approve", blocks: [...blocks, { kind: "earlier", finding: "r1.f1", status: "fixed", text: "The check is there now." }] });
+								emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
+							}
+						} else {
+							const answer = await ask({ recommendation: "approve", blocks: [...blocks, ...excerpts, ...(picture ? [{ kind: "screenshot", file, caption: "Reviewed home page" }] : [])] });
+							emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
+						}
 					}
 					for (const [word, name, run] of [
 						["(fetch)", "fetch_base", input.onFetchBase],

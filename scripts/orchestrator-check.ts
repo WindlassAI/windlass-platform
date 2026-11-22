@@ -448,6 +448,31 @@ test("a withdrawn feature turn settles its late usage receipt exactly once", () 
 	assert.equal(advance(settled.item,ended).item,settled.item);
 });
 
+test("a feature's second review stays advisory: changes requested hands over the feature PR", () => {
+	let item = approved();
+	item = advance(item, {kind:"feature_ready", key:currentKey(item)!, head, pr, at:5}).item;
+	for (const jobKey of ["index","page"]) {
+		item = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs!.at(-1)!.id, state:"done", head, report:jobKey+" evidence", spent:zero, at:6}).item;
+	}
+	item = advance(item, {kind:"turn_ended",key:currentKey(item)!,at:7,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},report:"Summary",changes:false,verified:null,flags:[]}).item;
+	item = advance(item, {kind:"published",key:currentKey(item)!,at:8,head,pr,openItems:1,webhooks:false}).item;
+	const reading = {kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:null,summary:null}],logs:[],truncated:false};
+	const ci = (at: number, at_ = item) => ({kind:"ci_read" as const,key:currentKey(at_)!, at, head, reading, prHead:head, mergeable:true, openItems:1, webhooks:false});
+	item = advance(item, ci(9) as never).item;
+	assert.equal(item.run!.step.kind, "review");
+	const key = currentKey(item)!;
+	const review = { id: key, run: item.run!.n, round: 1, head, base: "b".repeat(40), verdictId: item.run!.review!.verdictId, by: { sessionId: "second", model: "test" }, at: 10, state: "filed" as const, said: null,
+		recommendation: "changes_requested" as const, records: [], notes: [], screenshots: [],
+		blocks: [{ kind: "summary" as const, text: "Reviewed." }, { kind: "finding" as const, id: "r1.f1", root: "r1.f1", severity: "blocking" as const, title: "Missing index", text: "The page never indexes.", at: [], refs: [] }] };
+	const ended = advance(item, { kind: "review_ended", key, at: 10, outcome: "succeeded", review, said: null, spend: { tokens: 1, hostedSeconds: 0 } });
+	assert.equal(ended.item.run!.step.kind, "handoff");
+	assert.ok(!ended.effects.some(e => e.kind === "deliver") && ended.item.question === null && !ended.item.run!.rounds.review);
+	const hand = advance(ended.item, ci(11, ended.item) as never);
+	const handed = hand.effects.find(e => e.kind === "handoff");
+	assert.ok(handed?.kind === "handoff" && handed.review === key && handed.assessment?.recommendation === "changes_requested");
+	assert.equal(hand.item.state, "review");
+});
+
 test("a disabled GitHub orchestration request is refused before claiming the issue", () => {
 	const ordinary = intake.issueMode("", [], false);
 	assert.equal(ordinary.mode, "single");

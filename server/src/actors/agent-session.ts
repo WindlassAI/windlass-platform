@@ -214,7 +214,7 @@ import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
-import { fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
+import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
@@ -3728,7 +3728,7 @@ fi`, { signal, timeoutMs: 5000 });
 						const owner = { by: "reviewer" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
 						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
 						const files = openFiles();
-						const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: [], round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, files.read,
+						const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: earlierContext(checkout.earlier), round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, files.read,
 							store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null, browser ? undefined : unavailable).finally(files.close);
 						if (result.retryFree) calls--;
 						if (!open || withdrawn.aborted) return "The review call ended.";

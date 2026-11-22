@@ -645,6 +645,27 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(ledger.length === 2 && ledger.every(row => row.seconds > 0) && view.spent.hostedSeconds === ledger.reduce((n, row) => n + row.seconds, 0), `item ${view.spent.hostedSeconds}s; ledger ${JSON.stringify(ledger)}`);
 			return `file_review alone; one verdict, one review, a verified PNG and ${view.spent.hostedSeconds}s across two sessions`;
 		});
+		await check("reviewer: changes requested sends the builder back once, and the next round answers it and approves", async () => {
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review loop", body: "Change the homepage. (review-loop)", start: true });
+			const view = await untilItem(user, item.id, "the second round's handoff", v => v.state === "review" && v.reviews.length === 2 && v.verifiedCheck?.state === "completed", 2 * CI_WAIT_MS).catch(async (error) => {
+				const now = await user.item(item.id);
+				const replies = now.reviewerSessionId ? (await client.agentSession.get([auth.profile.uid, now.reviewerSessionId], { params: { token: auth.token } }).snapshot()).timeline
+					.flatMap(e => e.kind === "windlass" && e.event.type === "fake.review_reply" ? [JSON.stringify(e.event.data).slice(0, 300)] : e.kind === "user" ? [`prompt: ${e.text.slice(0, 120)}`] : []) : [];
+				throw new Error(`${error instanceof Error ? error.message : String(error)}: ${stateOf(now)}, step ${now.run?.step.kind}, ${now.reviews.length} reviews; ${said(now).slice(-6).join(" | ")}; reviewer: ${replies.join(" | ")}`);
+			});
+			const [first, second] = view.reviews;
+			assert(first.recommendation === "changes_requested" && first.round === 1 && first.blocks.some(b => b.kind === "finding" && b.id === "r1.f1" && b.severity === "blocking"), `round 1: ${first.recommendation} ${first.round}`);
+			assert(second.recommendation === "approve" && second.round === 2 && second.blocks.some(b => b.kind === "earlier" && b.finding === "r1.f1" && b.status === "fixed"), `round 2: ${second.recommendation} ${second.round}`);
+			assert(view.run?.rounds.review === 1 && view.run.caps.review === 2, `rounds ${JSON.stringify(view.run?.rounds)}`);
+			const fixes = new Set(view.events.filter(e => e.step?.kind === "review_fix").map(e => e.step!.n));
+			assert(fixes.size === 1, `review_fix steps ${[...fixes].join()}`);
+			assert(view.review?.state === "filed" && view.review.recommendation === "approve" && view.verifiedCheck?.conclusion === "success", `handed ${JSON.stringify(view.review)} ${view.verifiedCheck?.conclusion}`);
+			const timeline = JSON.stringify((await client.agentSession.get([auth.profile.uid, view.reviewerSessionId!], { params: { token: auth.token } }).snapshot()).timeline);
+			assert(timeline.includes('r1.f1 is blocking and has no \\"earlier\\" block'), "round 2's reviewer was not held to its earlier finding");
+			const builder = JSON.stringify((await client.agentSession.get([auth.profile.uid, view.sessionId], { params: { token: auth.token } }).snapshot()).timeline);
+			assert(builder.includes("asks for changes before the work is handed over") && builder.includes("No check for the empty page"), "the builder's fix turn lacks the finding");
+			return `2 reviews, 1 fix turn, round 2 answered r1.f1; check ${view.verifiedCheck?.conclusion}`;
+		});
 		await check("reviewer: networked commands hand over with the profile reason", async () => {
 			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
 			const view = await untilItem(user, item.id, "the handoff without a reviewer", v => v.state === "review", CI_WAIT_MS);

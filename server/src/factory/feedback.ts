@@ -102,6 +102,7 @@ export const feedbackWords = {
 	taken: (run: number, feature = false) => feature ? `Sent to the planner in run ${run}.` : `Sent to the agent in run ${run}.`,
 	takenLog: (who: string, run: number, feature = false) => `The feedback from ${who} on GitHub was sent to the ${feature ? "planner" : "agent"} in run ${run}.`,
 	afterCi: (head: string, who: string) => `CI has finished on ${head}. The feedback from ${who} goes first, so this commit is not handed over.`,
+	afterReview: (head: string, who: string) => `The second review of ${head} asks for more work, and feedback from ${who} arrived while it ran. The feedback goes first, with the reviewer's points beside it.`,
 	approved: (who: string) => `Approved by @${who} on GitHub.`,
 	working: (who: string, run: number) => `Changes asked for by ${who} are being worked on in run ${run}.`,
 };

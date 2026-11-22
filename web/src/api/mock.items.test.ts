@@ -29,6 +29,21 @@ function gateOf(seed: SeedVerdict): GateEvidence | null {
 }
 
 describe("the mock's work items", () => {
+	it("gives no review round cap to an item without a reviewer that can send its builder back", async () => {
+		const views = async (reviewer: boolean) => {
+			const mock = createMockClient({ pace: 0, reviewer });
+			const user = mock.user(auth);
+			return Promise.all((await user.listItems()).map((item) => user.item(item.id)));
+		};
+		const off = (await views(false)).filter((view) => view.run);
+		expect(off.length).toBeGreaterThan(0);
+		expect(off.every((view) => view.run!.caps.review === undefined)).toBe(true);
+		const on = (await views(true)).filter((view) => view.run);
+		expect(on.some((view) => view.run!.caps.review === 2)).toBe(true);
+		expect(on.filter((view) => view.place.kind === "machine").every((view) => view.run!.caps.review === undefined)).toBe(true);
+		expect(on.some((view) => view.place.kind === "machine")).toBe(true);
+	});
+
 	it("says in platform info whether the second review is on, and without it gives no item one", async () => {
 		const off = createMockClient({ pace: 0, reviewer: false });
 		expect((await off.info()).items).toEqual({ reviewer: false, orchestrate: true });
@@ -57,7 +72,7 @@ describe("the mock's work items", () => {
 		for (const item of list) expect(item.wait !== null).toBe(item.state === "waiting");
 		// A question is always a wait for the person, with the question's text.
 		for (const item of list.filter((one) => one.question)) expect(item.wait).toMatchObject({ reason: item.question?.kind === "budget" ? "budget" : "person", sentence: item.question?.text, retryAt: null });
-		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more"]));
+		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more", "review_question"]));
 		expect(new Set(list.flatMap((item) => (item.verdict ? [item.verdict.result] : [])))).toEqual(new Set(["pass", "fail", "incomplete", "unverified"]));
 		mock.dispose();
 	});
@@ -144,7 +159,9 @@ describe("the mock's work items", () => {
 		const user = mock.user(auth);
 		const views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
 		for (const view of views) {
-			if (view.run) expect(view.run.caps).toEqual({ plan: 3, gate: 2, ci: 2, conflict: 1 });
+			// The second review's cap only where the item's reviewer can send its builder back, as the server's `reviewSendsBack`.
+			const reviewer = view.mode !== "orchestrate" && !view.parent && view.place.kind === "hosted" && view.review?.state !== "off";
+			if (view.run) expect(view.run.caps).toEqual({ plan: 3, gate: 2, ci: 2, conflict: 1, ...(reviewer && { review: 2 }) });
 			// One is stored before verdicts carried their sentences, and has none.
 			for (const verdict of view.verdicts) if ((verdict as Partial<Verdict>).said) expect(verdict.said.flags).toHaveLength(verdict.flags.length);
 		}
