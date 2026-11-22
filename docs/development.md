@@ -13,7 +13,7 @@ For real containers, install Docker as well. The Windlass the platform runs is t
 build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
 SHA-256 of each executable, and a file that does not match is not installed).
 
-The server and Docker image build require Windlass 0.4.0 or later. Each turn checks for host tools in its engine’s `initialize` response before opening the session. Keep the Docker image and E2B template at 0.5.0 or later when rolling back: 0.4.0 cannot read a session that 0.5.0 gave a generated title.
+The server and Docker image build require Windlass 0.4.0 or later. Each turn checks for host tools in its engine’s `initialize` response before opening the session. Keep the Docker image and E2B template at 0.6.0 or later when rolling back: 0.5.0 cannot open a session that 0.6.0 recorded, and 0.4.0 cannot read one that 0.5.0 gave a generated title.
 
 ```sh
 pnpm install
