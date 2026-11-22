@@ -1676,7 +1676,7 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	// The session refused the issue's first turn there: the person can run that very turn anyway.
 	const hardRetry = { text: "The task, as delivered.", fetchBase: null, untrusted: [ISSUE] };
 	const stopped = walk(fromIssue(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "On Docker, hardened, no.", untrustedRefusal: { sources: [ISSUE], retry: hardRetry } }]);
-	expect("hardened refusal: the person is asked, with Run it anyway and no Try again", stopped.item.question?.kind === "turn_refused" && stopped.item.question.choices.map(o => o.id).join() === "run_anyway,give_up" && stopped.item.question.choices[0]!.label === "Run it anyway", JSON.stringify(stopped.item.question?.choices));
+	expect("hardened refusal: the person is asked, with Give up first, Run it anyway last and no Try again", stopped.item.question?.kind === "turn_refused" && stopped.item.question.choices.map(o => o.id).join() === "give_up,run_anyway" && stopped.item.question.choices[1]!.label === "Run it anyway", JSON.stringify(stopped.item.question?.choices));
 	const anyway = walk(stopped.item, [{ kind: "answer", choice: "run_anyway", note: "Fine." }]);
 	const ran = effect(anyway.last, "deliver");
 	expect("Run it anyway: the same turn again, with its sources, let through", ran?.text === "The task, as delivered.\n\nThe person adds: Fine." && same(anyway.last, [ISSUE]) && ran?.unsandboxed === true && stopOf(anyway.last).length === 0 && isDeepStrictEqual(anyway.item.unsandboxed, [ISSUE]), JSON.stringify(ran));

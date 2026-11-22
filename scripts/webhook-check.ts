@@ -1071,7 +1071,7 @@ async function run() {
 				const source = "issue #92 by @g3-reader";
 				assert.equal(refused.question?.kind, "turn_refused", JSON.stringify(refused.question));
 				assert.ok(refused.question.text.includes("“Docker, hardened”") && refused.question.text.includes(source), refused.question.text);
-				assert.deepEqual(refused.question.choices.map(o => o.id), ["run_anyway", "give_up"]);
+				assert.deepEqual(refused.question.choices.map(o => o.id), ["give_up", "run_anyway"]);
 				// Refused before the sandbox opened: the timeline has the turn's prompt, and nothing of Windlass.
 				const before = await timeline(draft.sessionId);
 				assert.ok(before.some(e => e.kind === "user") && !before.some(e => e.kind === "windlass"), "the refused turn reached Windlass");
