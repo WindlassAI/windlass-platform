@@ -899,6 +899,8 @@ const NOTICE_TITLES: Record<string, string> = {
 	// The project's checks, and with required checks the user's too: the message says which.
 	checks_not_run: "Checks were not run",
 	no_closing_answer: "The model ended without a closing answer",
+	// Windlass 0.6.0 and later: a command changed the repository's Git pointers (undone) or added a nested repository or gitlink.
+	git_metadata: "Review the workspace's Git metadata",
 };
 
 const PROVIDER_ERROR_TITLES: Record<string, string> = {
