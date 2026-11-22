@@ -118,10 +118,12 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  * frame with a key they do not know. A name this runner does not know is ignored, so a later
  * server can name more without a new gate.
  *
- *   git-mirrors     the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
- *   egress-domains  the report's `egressDomains`
+ *   git-mirrors      the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
+ *   egress-domains   the report's `egressDomains`
+ *   session-volumes  the report's `sessionVolumes` and a connect's `ownData`; without it, a runner
+ *                    gives no hardened sandbox a data volume of its own
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -243,6 +245,8 @@ const report = object({
 	/** The runner was started with --screenshots and has a pinned screenshots image. */
 	screenshots: optional(boolean),
 	gitMirrors: optional(boolean),
+	/** A Windlass session in a new hardened sandbox gets a data volume of its own (SESSION_VOLUME_PROFILES). */
+	sessionVolumes: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
@@ -256,10 +260,11 @@ export type Report = Of<typeof report>;
 
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
-	const rest = { ...report };
-	if (!named?.includes("git-mirrors" satisfies Capability)) delete rest.gitMirrors;
-	if (!named?.includes("egress-domains" satisfies Capability)) delete rest.egressDomains;
-	return rest;
+	const fields: Record<Capability, keyof Report> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes" };
+	const kept: Report = { ...report };
+	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
+		if (!named?.includes(capability)) delete kept[field];
+	return kept as R;
 }
 export type RunnerFrame = Of<typeof runnerFrame>;
 

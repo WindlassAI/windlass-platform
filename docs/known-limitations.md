@@ -106,8 +106,9 @@ details.
 - **A user's own MCP server runs unasked, with the network and the session's access token.** Windlass
   asks before it starts a project's server and not before one of its user's own configuration, and
   such a server is a process outside Windlass's sandbox around commands in every profile. The settings
-  page says so before one is saved; nothing asks again in a session. On Docker, Windlass's data is
-  the user's volume, with the records of the user's other sessions in it.
+  page says so before one is saved; nothing asks again in a session. On Docker with the Windlass
+  sandbox profile, Windlass's data is the user's volume, with the records of the user's other sessions
+  in it. A `docker-hardened` sandbox has a data volume of its own.
 - **An account's secret reaches no MCP server where commands are not sandboxed.** In `docker-hardened`,
   `e2b-open` and E2B before its check, a server of the user's own that reads a secret does not start
   ([Account settings](github-and-repositories.md#account-settings)), for the reason a repository's secret for MCP servers is not handed over there.

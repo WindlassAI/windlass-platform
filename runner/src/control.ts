@@ -7,7 +7,7 @@ import {
 	MAX_CONTROL_FRAME_BYTES, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, PAIRING_POLL_MS, PAIRING_TTL_MS, REFUSED_RETRY_MS, REPORT_MS,
 	RUNNER_CONNECTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, connectionProof, controlProof, sessionProof,
 	parseConnection, parseConnectionRefusal, parsePairStarted, parsePairStatus, parseServerFrame, refuse, reportFor,
-	type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame, type ServerFrame,
+	type Capability, type ConnectionRequest, type PairRequest, type PairPoll, type Refusal, type RunnerFrame, type ServerFrame,
 } from "../../server/src/runner/control.js";
 import type { MachineProfile } from "../../server/src/runner/protocol.js";
 import { audit, safeSentence } from "./audit.js";
@@ -273,6 +273,8 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							if ("refusal" in f && f.refusal) { refusal = f.refusal; mayMaintain = false; discarding = stopSessions(); disconnect(); return; }
 						}
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000; named = f.capabilities;
+						// Sandboxes of their own data only for a server that knows they are (Executor.sessionVolumes).
+						owner.sessionVolumes = named?.includes("session-volumes" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);
 						mayMaintain = true;
 						status("Online");

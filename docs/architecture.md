@@ -38,9 +38,11 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                                                ▼
                                    Docker container  wlp-session-<id>
                                      /workspace                        the agent's files
-                                     ~/.local/share/windlass           volume wlp-user-<uid>: Windlass's own
-                                                                       session logs and memory, and the turn's
-                                                                       access token file. No sign-in
+                                     ~/.local/share/windlass           volume wlp-user-<uid> (docker-hardened:
+                                                                       wlp-session-data-<uid>-<id>, the
+                                                                       sandbox's own):
+                                                                       Windlass's own session logs and memory.
+                                                                       No sign-in
                                      windlass acp                      one process per turn
 ```
 

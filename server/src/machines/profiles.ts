@@ -24,8 +24,8 @@ export function machineProfiles(name: string | null | undefined, report: Report 
 			approval: "auto", commandNetwork: false, commandsCanReadAccessToken: false, available: sandbox === null,
 			...(sandbox !== null && { unavailableReason: sandbox }) },
 		{ id: "docker-hardened", name: `Hardened Docker on ${machine}`,
-			summary: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn. With this network policy, ${commandNetworkText}. ${trust}`,
-			layers, approval: "full", ...(report?.claudeRelay && { claudeRelay: true }), commandNetworkText, commandNetwork: mode !== "none", commandsCanReadAccessToken: true, available: docker === null,
+			summary: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn.${report?.sessionVolumes ? " The session has a data directory of its own, so they cannot read your other sessions' conversations." : ""} With this network policy, ${commandNetworkText}. ${trust}`,
+			layers: report?.sessionVolumes ? [layers[0]!, layers[1]!.replace(/\)$/, ", a data directory of the session's own)")] : layers, approval: "full", ...(report?.claudeRelay && { claudeRelay: true }), commandNetworkText, commandNetwork: mode !== "none", commandsCanReadAccessToken: true, available: docker === null,
 			...(docker !== null && { unavailableReason: docker }) },
 	];
 }

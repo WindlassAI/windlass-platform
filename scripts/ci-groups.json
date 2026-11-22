@@ -208,7 +208,7 @@
         "mcp": { "only": ["mcp"] }
       },
       "checks": {
-        "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,protocol client,seccomp,reviewer commands' tsx ../scripts/sandbox-check.ts",
+        "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,session data volumes,protocol client,seccomp,reviewer commands,profile docker-' tsx ../scripts/sandbox-check.ts",
         "sandbox-2": "WLP_CHECK_SECTIONS='failures,sign-in,token source,session token isolation,hand-off,valid-for' tsx ../scripts/sandbox-check.ts",
         "mcp": "tsx ../scripts/mcp-check.ts",
         "github-docker": "tsx ../scripts/github-check.ts --docker",

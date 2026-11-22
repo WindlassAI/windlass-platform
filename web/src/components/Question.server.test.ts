@@ -201,6 +201,11 @@ describe("the question's words", () => {
 		expect(serverForgottenNote({ name: "harbor" }, { dataInSandbox: false })).toBe('Forgot your approval of the MCP server "harbor" for this project. Windlass\'s own record, which all your sessions share here, still starts it until 30 days after it was last approved.');
 		expect(forgettingWords({ dataInSandbox: true })).toBe("Forgetting holds for the next session or sandbox. Where the server already started, Windlass's own record still starts it, and a running one is not stopped.");
 		expect(forgettingWords({ dataInSandbox: false })).toBe("Forgetting holds once Windlass's own record has run out, 30 days after the server was last approved: all your sessions share that record here. A running server is not stopped.");
+		// A repository's settings, where hardened Docker sandboxes keep Windlass data of their own and the Windlass sandbox profile shares it.
+		const mixed = forgettingWords({ dataInSandbox: false, hardenedOwnData: true });
+		expect(mixed).toContain("With the Docker + Windlass sandbox profile, forgetting holds once Windlass's own record has run out");
+		expect(mixed).toContain("A hardened Docker sandbox has Windlass data of its own, so there it holds for the next session or sandbox.");
+		expect(forgettingWords({ dataInSandbox: true, hardenedOwnData: true })).toBe(forgettingWords({ dataInSandbox: true }));
 	});
 
 	it("has the mock say what a secret reaches word for word as the server does, for every kind of sandbox", () => {
