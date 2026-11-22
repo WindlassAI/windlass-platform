@@ -280,6 +280,19 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	return ingress;
 };
 
+/**
+ * The runner stops a relay that refreshes with SIGTERM before removing it (logout, re-pair, update):
+ * a refresh already sent spends the old refresh token, so its reply must reach the volume first.
+ */
+exports.stopOnSignal = function stopOnSignal(server, provider) {
+	process.once('SIGTERM', async () => {
+		server.close();
+		try { await provider.drain?.(); }
+		finally { process.exit(0); }
+	});
+	return server;
+};
+
 if (process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY) {
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';

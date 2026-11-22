@@ -57,7 +57,17 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 // Call under the login lock, including logout from a standalone runner command.
 export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude") {
 	const box = await ownedRelay(m, harness);
-	if (box) await docker(["rm", "-f", box.Id], { check: true });
+	if (box) await retireRelay(box.Id, harness);
+}
+/**
+ * A relay that refreshes a login saves a refresh already sent before it exits on SIGTERM, since that
+ * refresh spent the old refresh token (sandbox/relay/server.cjs stopOnSignal). Its token request
+ * times out after 20 s, so give it that and the write before Docker kills it.
+ */
+export const RELAY_STOP_SECONDS = 30;
+async function retireRelay(id: string, harness: MachineHarness) {
+	if (harness !== "claude") await docker(["stop", "-t", String(RELAY_STOP_SECONDS), id], { timeoutMs: (RELAY_STOP_SECONDS + 15) * 1000 });
+	await docker(["rm", "-f", id], { check: true });
 }
 // The old image gave every session a volume reference. Preserve its workspace, but stop
 // the process before replacing the token. Docker cannot detach a container's volume.
@@ -86,7 +96,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	let box = await ownedRelay(m, harness);
 	if (box && (box.Config.Labels[role + ".version"] !== version || box.Config.Image !== image ||
 		!box.Config.Env.includes(prefix + "PUBLIC_KEY=" + publicKey))) {
-		await docker(["rm", "-f", box.Id], { check: true }); box = undefined;
+		await retireRelay(box.Id, harness); box = undefined;
 	}
 	if (!box) {
 		await docker(["create", "--pull", "never", "--name", relayName(m, harness), ...flags(m), "--label", role + ".version=" + version,

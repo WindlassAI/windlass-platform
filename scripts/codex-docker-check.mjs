@@ -277,7 +277,10 @@ try {
 	await cmd(['exec', upstream, 'touch', '/tmp/hold']);
 	const turn = channelTurn(runner, 'second', boxes[1], undefined, undefined, { observe, signedOut: true });
 	await until(() => real('logs', upstream).split('\n').includes('holding'));
+	const loggingOut = Date.now();
 	observe(execFileSync(process.execPath, [join(dir, 'runner.cjs'), 'logout', 'codex'], { encoding: 'utf8' }));
+	// The relay exits on SIGTERM once no refresh is in flight, well before Docker's stop timeout.
+	assert.ok(Date.now() - loggingOut < 20_000, 'the relay ignored SIGTERM during logout');
 	assert.equal(await runner.ownedVolume(false, runner.codexVolume), false);
 	assert.equal(await cmd(['exec', first, 'node', '-e', probe]), '401');
 	await writeFile(join(dir, 'continue-probe'), '');

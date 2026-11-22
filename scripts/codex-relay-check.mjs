@@ -171,3 +171,44 @@ test('a refresh reply without a refresh token keeps the current one', async () =
 	assert.equal(record.refresh, 'kept');
 	assert.equal(record.access, 'new-access');
 });
+test('SIGTERM during a refresh exits only after the rotated token is saved', async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), 'codex-stop-'));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const path = join(dir, 'login.json');
+	await writeFile(path, JSON.stringify({ generation: 'g', provider: 'chatgpt', access: 'expired', refresh: 'spent', expires: 1 }), { mode: 0o400 });
+	const script = `const relay = require(process.argv[1]), { stopOnSignal } = require(process.argv[2]), fs = require('node:fs/promises');
+	const path = process.argv[3];
+	const provider = relay.codexProvider('chatgpt', 'g', {
+		load: async () => JSON.parse(await fs.readFile(path, 'utf8')),
+		persist: (record) => relay.persist(record, path),
+		exchange: async () => { process.send('exchanging'); await new Promise((r) => setTimeout(r, 500));
+			return { ok: true, json: async () => ({ access_token: 'rotated-access', refresh_token: 'rotated', expires_in: 300 }) }; },
+	});
+	stopOnSignal(require('node:net').createServer().listen(0), provider);
+	provider.target('/codex/v1/responses', {});`;
+	const child = spawn(
+		process.execPath,
+		['-e', script, new URL('../sandbox/relay/codex.cjs', import.meta.url).pathname, new URL('../sandbox/relay/server.cjs', import.meta.url).pathname, path],
+		{ stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+	);
+	t.after(() => child.kill('SIGKILL'));
+	const exit = once(child, 'exit');
+	await once(child, 'message');
+	child.kill('SIGTERM');
+	assert.deepEqual(await exit, [0, null]);
+	assert.equal(JSON.parse(await readFile(path, 'utf8')).refresh, 'rotated');
+});
+test('a stopping relay starts no new refresh', async () => {
+	let calls = 0;
+	const auth = codexProvider('chatgpt', 'g', {
+		load: async () => ({ generation: 'g', provider: 'chatgpt', access: 'expired', refresh: 'old', expires: 1 }),
+		persist: async () => {},
+		exchange: async () => {
+			calls++;
+			return { ok: true, json: async () => ({ access_token: 'a', refresh_token: 'b', expires_in: 300 }) };
+		},
+	});
+	await auth.drain();
+	assert.equal(await auth.target('/codex/v1/responses', {}), undefined);
+	assert.equal(calls, 0);
+});
