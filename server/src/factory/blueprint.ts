@@ -615,6 +615,7 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false) {
 			// summary and filed reviewer receipts. Exclude those known turns from planning.
 			item.closingSpend = { ...emptyBudget(), turns: 1 + Number(!!c.run.ci.secondReview?.review) };
 		}
+		item.planningBase = plannerSpent(item, item.spent);
 		item.replans = (item.replans ?? 0) + 1;
 		item.feedbackReplans = (item.feedbackReplans ?? 0) + 1;
 		item.featurePlan!.status = "superseded";
@@ -640,13 +641,26 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false) {
 	if (reopened) reopened.feedback = true;
 }
 
-/** Child receipts and closing work stay on the feature ledger, outside its planning allowance. */
-function planningStop(item: FactoryItem, spent: ItemBudget) {
+/** What the planner has spent: the feature's ledger without child receipts and closing work. */
+function plannerSpent(item: FactoryItem, spent: ItemBudget): ItemBudget {
 	const planner = { ...spent };
-	const allowance = emptyBudget();
 	for (const d of dimensions) {
 		planner[d] -= item.closingSpend?.[d] ?? 0;
 		for (const job of item.jobs ?? []) planner[d] -= job.spent[d];
+	}
+	return planner;
+}
+
+/**
+ * Child receipts and closing work stay on the feature ledger, outside its planning allowance. A feedback
+ * re-plan counts from where it began (`planningBase`): planning before it cannot leave it stopped with
+ * nothing but "Give up".
+ */
+function planningStop(item: FactoryItem, spent: ItemBudget) {
+	const planner = plannerSpent(item, spent);
+	const allowance = emptyBudget();
+	for (const d of dimensions) {
+		planner[d] -= item.planningBase?.[d] ?? 0;
 		allowance[d] = Math.max(1, Math.floor(item.singleBudget![d] * RULES.planningShare));
 	}
 	return budgetStop(allowance, planner, item.place);

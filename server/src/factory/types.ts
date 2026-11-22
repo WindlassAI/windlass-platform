@@ -112,6 +112,12 @@ export interface FeedbackDecision {
 
 export interface FactoryItem {
 	feedbackReplans?: number;
+	/**
+	 * What the planner had spent, closing work and subtasks left out, when the latest feedback re-plan began.
+	 * Planning counts its share from here, so each feedback re-plan gets a share of its own; the feature budget
+	 * and its closing reserve still bound it.
+	 */
+	planningBase?: ItemBudget;
 	/** Closing work is charged to the feature, outside its planner allowance. */
 	beforeClosing?: ItemBudget;
 	closingSpend?: ItemBudget;

@@ -921,6 +921,10 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const gated: Row = { ...askMore, fact:feedback("2",true), also:o => holds(o.item.question?.kind === "feedback_feature" && o.item.question.choices.map(c => c.label).join() === "Plan a fix,Leave it", "missing feature question") };
 	drive("G4 feature writer asks before any planning", feature, [gated, {fact:answer("leave"), state:"review", effects:[], also:o => holds(!o.item.replans && o.feedback?.[0].state === "declined","should stay in review") }]);
 	drive("G4 feature writer approved by owner", feature, [gated, {...replan,fact:answer("send")}]);
+	// Earlier planning used up the planner's share (a quarter of a Quick item's 40 turns); a feedback re-plan still plans, and a stop of its own leaves a way back to review.
+	const planned = { ...structuredClone(feature), spent: { ...zero, turns: 12 } };
+	drive("G4 feedback re-plan after the planning share is used", planned, [replan]);
+	drive("G4 writer's feedback re-plan after the planning share is used", planned, [gated, { ...replan, fact: answer("send") }]);
 	drive("G4 exhausted feature only offers Leave it", {...feature, spent:allowance}, [{...gated, fact:feedback(), also:o => holds(o.item.question?.choices.map(c=>c.id).join() === "leave","missing budget gate") }]);
 	const six = ["a","b","c","d","e","f"].map(k => ({...feature.jobs![0],task:task(k)}));
 	drive("G4 six distinct subtasks decline feedback", {...feature,jobs:six}, [{fact:feedback(), state:"review", effects:[], also:o => holds(o.feedback?.[0].reason.includes("six subtasks") === true,"missing six-subtask explanation")}]);
