@@ -270,7 +270,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
-			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
@@ -335,6 +335,14 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.repository===harbor.id && p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
 			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
 			assert(!(await user.listItems()).some(i => i.parent), "A child leaked into the root list.");
+			const owner = standin.users.get("ada")!;
+			const { review } = standin.submitReview(harbor, ready, owner, "changes_requested", "Please add a regression check.");
+			const delivery = await standin.deliver(API + "/github/webhook", "pull_request_review", { installation: { id: installation.id }, repository: { id: harbor.id },
+				action: "submitted", sender: review.user, pull_request: { number: ready.number }, review }, { secret: server.secret });
+			assert((await delivery.json()).taken, "The feature review was dropped.");
+			const replanning = await untilItem(user, feature.id, "the feedback planner", v => v.run?.n === 2 && v.run.step.kind === "refine");
+			assert(replanning.feedback.batches.some(b => b.run === 2 && b.state === "taken"), "The owner’s review did not start the feature planner.");
+			await waitFor("the reopened feature check", () => standin.checks.find(r => r.external_id === "pending:" + feature.id + ":2" && r.status === "in_progress"), 12_000);
 			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});
 			const proposal = await untilItem(user,second.id,"a second plan",v=>v.plan?.status==="proposed" && !!v.question);
 			await user.actOnItem({id:second.id,action:{kind:"approve_plan",version:proposal.plan!.version}});
@@ -551,7 +559,7 @@ async function drained(jobs: Promise<unknown>[]): Promise<void> {
 async function memoryChecks(): Promise<void> {
 	process.env.WLP_SECRET ??= randomBytes(24).toString("hex");
 	process.env.WLP_SANDBOX = "fake";
-	const { workItem, REPORTS_TABLE, REVIEWS_TABLE, CHECKS_TABLE } = await import("../server/src/actors/work-item.js");
+	const { workItem, REPORTS_TABLE, REVIEWS_TABLE, CHECKS_TABLE, FEEDBACK_TABLE } = await import("../server/src/actors/work-item.js");
 	const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
@@ -611,6 +619,9 @@ async function memoryChecks(): Promise<void> {
 		await db.execute(CHECKS_TABLE);
 		await db.execute(REPORTS_TABLE);
 		await db.execute(REVIEWS_TABLE);
+		await db.execute(FEEDBACK_TABLE);
+		await db.execute("CREATE TABLE issue_actions(subject TEXT PRIMARY KEY)");
+		await db.execute("CREATE TABLE feedback_cursor(id INTEGER PRIMARY KEY,since INTEGER)");
 		const meta = { uid: "u", sessionId: "s", reviewerSessionId: answers.freeReviewer ? "review-session" : null, reviewBase: null, handoffReview: null, repository: { id: 1 }, source: "web", createdAt: T, updatedAt: T, verdict: null, ledger: { seconds: 0, holds: [] } };
 		await db.execute("INSERT INTO item VALUES (1, ?, ?, NULL)", item.revision, JSON.stringify({ item, meta }));
 		const jobs: Promise<unknown>[] = [];

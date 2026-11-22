@@ -672,7 +672,61 @@ export class GithubApp {
 		const { body } = await this.call({ path: `${base}/comments/${id}`, auth: { bearer: token }, what: "read the addressed issue comment" });
 		const row = record(body), author = githubPerson(row.user);
 		if (!author || decimalId(row.id) !== id || row.issue_url !== `${this.settings.apiUrl}${base}/${number}`) return null;
-		return { id: "comment:" + id, author, body: text(row.body), at: Date.parse(text(row.created_at)) };
+		return { id: "comment:" + id, author, body: text(row.body), association: text(row.author_association), at: Date.parse(text(row.created_at)) };
+	}
+
+	private feedbackSubject(repo: Repository, pr: number, raw: unknown, kind: "review" | "line") {
+		const row = record(raw), author = githubPerson(row.user), id = decimalId(row.id);
+		const pull = this.settings.apiUrl + `/repos/${repo.owner}/${repo.name}/pulls/${pr}`;
+		const parent = row.pull_request_url ?? record(record(row._links).pull_request).href;
+		if (!author || !id || parent !== pull) return null;
+		const commit = text(kind === "line" && row.line === null ? row.original_commit_id ?? row.commit_id : row.commit_id);
+		if (!/^[a-f0-9]{40}$/i.test(commit)) return null;
+		return { id, author, association: text(row.author_association), body: text(row.body), commit,
+			path: kind === "line" ? text(row.path) : null, line: whole(row.line ?? row.original_line) || null,
+			at: Date.parse(text(kind === "review" ? row.submitted_at : row.created_at)), state: text(row.state).toLowerCase(),
+			url: this.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + (kind === "review" ? "#pullrequestreview-" : "#discussion_r") + id };
+	}
+
+	async review(token: string, repo: Repository, pr: number, id: string) {
+		if (decimalId(id) !== id) return null;
+		const { body } = await this.call({ path: `/repos/${repo.owner}/${repo.name}/pulls/${pr}/reviews/${id}`, auth: { bearer: token }, what: "read the review" });
+		const review = this.feedbackSubject(repo, pr, body, "review");
+		return review?.id === id ? review : null;
+	}
+
+	async reviews(token: string, repo: Repository, pr: number) {
+		const call = { path: `/repos/${repo.owner}/${repo.name}/pulls/${pr}/reviews`, auth: { bearer: token }, what: "list pull request reviews" };
+		let page = await this.call({ ...call, query: { per_page: 100 } });
+		// GitHub lists oldest first. Follow only the page number, never a supplied URL with the token.
+		const last = /[?&]page=(\d+)[^>]*>; rel="last"/.exec(page.link);
+		if (last) page = await this.call({ ...call, query: { per_page: 100, page: Number(last[1]) } });
+		if (!Array.isArray(page.body)) throw new Error("GitHub returned no reviews list");
+		return page.body.map(r => this.feedbackSubject(repo, pr, r, "review")).filter(r => r !== null);
+	}
+
+	async reviewComments(token: string, repo: Repository, pr: number, id: string) {
+		if (decimalId(id) !== id) return [];
+		const { items, truncated } = await this.pages({ path: `/repos/${repo.owner}/${repo.name}/pulls/${pr}/reviews/${id}/comments`, auth: { bearer: token }, what: "read the review’s line comments" }, raw => {
+			if (!Array.isArray(raw)) throw new Error("GitHub returned no review comments list");
+			return raw.filter(r => decimalId(record(r).pull_request_review_id) === id)
+				.map(r => this.feedbackSubject(repo, pr, r, "line")).filter(r => r !== null);
+		});
+		if (truncated) throw new Error("The review comments list is incomplete.");
+		return items;
+	}
+
+	async reviewComment(token: string, repo: Repository, pr: number, id: string) {
+		if (decimalId(id) !== id) return null;
+		const { body } = await this.call({ path: `/repos/${repo.owner}/${repo.name}/pulls/comments/${id}`, auth: { bearer: token }, what: "read the line comment" });
+		const line = this.feedbackSubject(repo, pr, body, "line");
+		return line?.id === id ? line : null;
+	}
+
+	async react(token: string, repo: Pick<Repository, "owner" | "name">, comment: { kind: "issue_comment" | "review_comment"; id: string }, content: "eyes") {
+		if (decimalId(comment.id) !== comment.id) throw new Error("Invalid comment id.");
+		const resource = comment.kind === "issue_comment" ? "issues" : "pulls";
+		await this.call({ method: "POST", path: `/repos/${repo.owner}/${repo.name}/${resource}/comments/${comment.id}/reactions`, auth: { bearer: token }, body: { content }, what: "acknowledge a taken comment" });
 	}
 
 	// Issue webhooks carry no labeler's event ID. Use the latest relevant transition in the issue's own history.
@@ -691,12 +745,12 @@ export class GithubApp {
 		return id && author ? { id: "event:" + id, author, at: Date.parse(text(last.created_at)) } : null;
 	}
 
-	async issueComments(token: string, owner: string, name: string, number: number, requireComplete = false) {
-		const { items, truncated } = await this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, auth: { bearer: token }, what: "list the issue or pull request comments" }, body => {
+	async issueComments(token: string, owner: string, name: string, number: number, requireComplete = false, since?: number) {
+		const { items, truncated } = await this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, query: since === undefined ? undefined : { since: new Date(since).toISOString() }, auth: { bearer: token }, what: "list the issue or pull request comments" }, body => {
 			if (!Array.isArray(body)) throw new Error("GitHub returned no comment list");
 			return body.map(entry => {
 				const fields = record(entry);
-				return { id: decimalId(fields.id), body: text(fields.body), author: text(record(fields.user).login) };
+				return { id: decimalId(fields.id), body: text(fields.body), author: text(record(fields.user).login), person: githubPerson(fields.user), association: text(fields.author_association) };
 			});
 		});
 		if (requireComplete && truncated) throw new Error("GitHub returned more issue comments than could be checked for the marker");

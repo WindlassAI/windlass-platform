@@ -1267,7 +1267,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1279,7 +1279,7 @@ export type QuestionKind = "placement_refused" | "single_suggested" | "replan_ap
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  */
-export type ChoiceId = "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1293,6 +1293,8 @@ export interface ItemQuestion {
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */
 export interface ItemEvent {
+	/** Why a run ended before its normal handoff. */
+	stopReason?: "feedback";
 	at: number;
 	/** "person:<uid>" or "platform". */
 	by: string;
@@ -1560,7 +1562,30 @@ export interface ItemSummary {
 /** An item's page. */
 export type CheckConclusion = "success" | "action_required" | "failure" | "cancelled";
 
+export interface FeedbackEntry {
+	id: string;
+	author: string;
+	access: "owner" | "write";
+	kind: "changes_requested" | "commented" | "issue_comment" | "review_comment";
+	body: string;
+	path: string | null;
+	line: number | null;
+	commit: string | null;
+	url: string;
+	at: number;
+}
+
+export interface FeedbackBatch {
+	savedPlan?: { goal: string; subtasks: string[] };
+	entries: FeedbackEntry[];
+	state: "pending" | "held" | "question" | "taken" | "declined";
+	reason: string;
+	run: number | null;
+	plan: number | null;
+}
+
 export interface ItemView extends ItemSummary {
+	feedback: { batches: FeedbackBatch[]; notTaken: number };
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;

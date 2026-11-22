@@ -132,8 +132,18 @@ The choices depend on the item. A subtask can only integrate after its checks an
 
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks.
-- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. A review you leave on the pull request at GitHub is not read, so say what the agent should know in the note.
+- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also request changes on the pull request.
 - **Cancel…** an item.
+
+### Feedback from GitHub
+
+Choose **Request changes** on the pull request to send the review and its line comments together. To send a conversation comment, line comment or comment-only review, start it with the App’s mention or `/windlass`. An approval adds a log entry.
+
+Windlass takes feedback from the item’s linked owner and repository writers. Comments collect for two quiet minutes, up to ten minutes from the first. Each batch holds up to 20 entries and 8,000 characters. Extra entries wait for another run. **From GitHub** shows what was taken, held or left. People without write access get no reply.
+
+On a single item, feedback starts another implementer run. Feedback received during work waits until handoff. After three runs requested by other writers, you decide whether to send each further batch. On a feature, your feedback starts a re-plan. For another writer’s feedback, choose **Plan a fix** or **Leave it**. You approve the revised subtasks before they run. Completed subtasks stay in the plan, the feature keeps its six-subtask limit, and the fix uses its remaining budget.
+
+A taken comment gets an 👀 reaction. At the next handoff, Windlass requests review again from writers whose change requests it took.
 
 ## Orchestrate a feature
 

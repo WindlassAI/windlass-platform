@@ -125,6 +125,7 @@ const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
 const CHOICES: Record<ChoiceId, string> = {
+	send: "Send it to the agent", leave: "Leave it",
 	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
@@ -962,6 +963,12 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		head,
 		events,
 		verdicts,
+		feedback: seed.n === 24 ? { notTaken: 1, batches: (["taken", "declined", "pending", "held", "question"] as const).map((state, i) => ({
+			state, reason: ["Sent in run 2.", "Left by the owner.", "Waiting for the batch.", "Waiting for the current run.", "Waiting for your answer."][i]!,
+			run: state === "taken" ? 2 : null, plan: null,
+			entries: [{ id: "issue_comment:" + i, at: ago(100 - i), author: "alex", access: "write", kind: "issue_comment",
+				body: "Please cover the empty upload in a test.", url: repository.url + "/pull/" + seed.pr + "#issuecomment-" + i, path: null, line: null, commit: null }],
+		})) } : { batches: [], notTaken: 0 },
 		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
@@ -1254,7 +1261,7 @@ function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
 }
 
-const summaryOf = ({ plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
+const summaryOf = ({ feedback: _feedback, plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -1640,6 +1647,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const at = deps.now();
 				const id = `it_${fresh(12)}`;
 				const item: ItemView = {
+					feedback: { batches: [], notTaken: 0 },
 					id,
 					mode: input.mode ?? "orchestrate", parent: null, plan: null, children: [],
 					title,
