@@ -31,7 +31,7 @@ import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
-import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
+import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
 import { ALIAS } from "../factory/feature-plan.js";
@@ -337,10 +337,13 @@ async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBr
 	if (!app || !connection) throw new UserError("Connect GitHub to file a feature over two repositories.", { code: "github_not_connected" });
 	const bound: FeatureRepository[] = [];
 	for (const [i, entry] of list.entries()) {
-		const { installation, repository } = await resolveRepository(app, connection, entry.id, "write").catch((error: unknown) => {
+		const named = (error: unknown): never => {
 			if (error instanceof GithubProblem) throw new UserError(`${entry.alias}: ${error.message}`, { code: error.code });
 			throw error;
-		});
+		};
+		const found = await resolveRepository(app, connection, entry.id, "write").catch(named);
+		// Read again by id through that installation: the listing may be minutes old, and an archive since then refuses the binding.
+		const { installation, repository } = await resolveBoundRepository(app, connection, entry.id, found.installation.id, "write").catch(named);
 		const baseRef = (i === 0 ? primaryBranch : entry.branch) ?? repository.defaultBranch;
 		const planningBaseSha = await app.withToken(installation.id, { repositoryId: entry.id, permissions: { metadata: "read", contents: "read" } }, token => refHead(app, token, repository.owner, repository.name, baseRef));
 		bound.push({ alias: entry.alias, repositoryId: entry.id, installationId: installation.id, owner: repository.owner, name: repository.name, url: app.repositoryUrl(repository.owner, repository.name), private: repository.private, baseRef, planningBaseSha });
