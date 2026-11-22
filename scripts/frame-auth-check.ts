@@ -339,17 +339,19 @@ try {
 	});
 	await check(11, "directional keys, strict schemas, catalog/report/host and counter gaps", () => {
 		const ctx = { uid: who.uid, machineId: who.machineId, challenge: randomBytes(32).toString("base64url") };
-		const runner = runnerHandshake(ctx, { kind: "hello", epoch: "fixture-epoch" }, machine.privateKey);
+		const slots = { max: 3, unit: { cpus: 2, memoryBytes: 8 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: 4 * 2 ** 30 } };
+		const runner = runnerHandshake(ctx, { kind: "hello", epoch: "fixture-epoch", slots, runnerVersion: "0.2.0", time: Date.now() }, machine.privateKey);
+		assert.deepEqual(parseRunnerFrame(JSON.stringify(runner.hello)), runner.hello);
 		const server = platformWelcome(ctx, runner.hello, { kind: "welcome", idleSuspendMs: 60_000 }, identity);
 		assert.throws(() => runner.finish({ ...server.welcome, ...{ idleSuspendMs: 0 } }, trust(), endpoint), /signature/);
 		const rx = runner.finish(server.welcome, trust(), endpoint);
 		const options = { models: [{ id: "one", name: "One", efforts: [] }], modes: [], defaultModel: "one", checkedAt: 1 };
 		for (const frame of [{ kind: "catalog", id: "opencode", options }, { kind: "host", host: null },
-			{ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
+			{ kind: "report", slots, docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 0 }]) {
 			const text = rx.seal(frame);
 			const fields = JSON.parse(text);
 			assert.throws(() => server.auth.open(JSON.stringify({ ...fields, unknown: "fixture" }), 131072), /mac/);
-			assert.equal(parseRunnerFrame(server.auth.open(text, 131072))?.kind, frame.kind);
+			assert.deepEqual(parseRunnerFrame(server.auth.open(text, 131072)), frame);
 		}
 		const text = server.auth.seal({ kind: "heartbeat" });
 		const peer = runner.finish(server.welcome, trust(), endpoint);

@@ -347,6 +347,8 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 }
 
 export interface CreateSessionInput {
+	/** Machine sandbox size in slots. A personal session defaults to one. */
+	size?: 1 | 2 | 4;
 	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
 	mode?: string;
 	harness?: HarnessId;
@@ -1043,6 +1045,7 @@ export type MachineWarning =
 
 /** An agent's sandbox on a machine, as its runner last reported it. */
 export interface MachineSandbox {
+	resizePending?: true;
 	sessionId: string;
 	/** Null when that agent was deleted and its sandbox is still there. */
 	title: string | null;
@@ -1074,10 +1077,21 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 /** Latest host sample for an already listed machine. */
 export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
 export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
+export interface MachineSlotCapacity {
+	max: number;
+	unit: { cpus: number; memoryBytes: number; pids: number };
+	reserve: { cpus: number; memoryBytes: number };
+}
+
+/** Large sandboxes use two or four slots, limited by the machine's configured capacity. */
+export function sandboxSlots(requested: number, max: number) {
+	return Math.min(max, requested > 2 ? 4 : requested > 1 ? 2 : 1);
+}
+
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
 	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
-	slots?: { max: number; busy: number; queued: number; unit: { cpus: number; memoryBytes: number; pids: number } };
+	slots?: Pick<MachineSlotCapacity, "max" | "unit"> & { reserve?: MachineSlotCapacity["reserve"]; busy: number; queued: number };
 	personalRunning?: number;
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };

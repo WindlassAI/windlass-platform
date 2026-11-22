@@ -32,11 +32,22 @@ test("agent containers get low CPU shares and the machine's CPU cap", async () =
 				const flags = readFileSync(join(dir, "docker.args"), "utf8").trim().split("\n");
 				const value = (flag: string) => flags.includes(flag) ? flags[flags.indexOf(flag) + 1] : undefined;
 				assert.equal(value("--cpu-shares"), "256");
-				assert.equal(value("--cpus"), override ?? String(Math.max(0.5, availableParallelism() / 2)));
+				assert.equal(value("--cpus"), override ?? String(availableParallelism() <= 2 ? Math.max(0.5, availableParallelism() / 2) : 2));
 				assert.equal(flags.filter(f => f === "--cpus").length, 1);
 				assert.equal(value("--cap-drop"), "ALL");
 			}
 		}
+		const { sizeMachine } = await import("../runner/src/sizing.js");
+		const owner = new Executor(identity, { slots: sizeMachine({ cores: 8, memoryBytes: 32 * 2 ** 30 }) });
+		owner.network.attach = async () => {};
+		owner.network.prepare = async () => {};
+		owner.disk = async () => 10_000_000_000;
+		owner.existing = async () => undefined;
+		owner.ownedVolume = async () => true;
+		await owner.create("s_large", "docker-hardened", false, undefined, 2);
+		const args = readFileSync(join(dir, "docker.args"), "utf8").trim().split("\n");
+		for (const [flag, value] of [["--cpus", "4"], ["--memory", "16384m"], ["--memory-swap", "16384m"], ["--pids-limit", "2048"]])
+			assert.equal(args[args.indexOf(flag) + 1], value);
 		process.env.WLP_RUNNER_CPUS = "1 --privileged";
 		assert.throws(() => new Executor(identity, {}), /WLP_RUNNER_CPUS/);
 	} finally {
@@ -53,21 +64,43 @@ test("a resumed sandbox adopts this runner's CPU policy", async () => {
 		writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s " "$@" >> "$0.args"\nprintf "\\n" >> "$0.args"\nif [ "$1" = container ]; then echo "exited|1|m_fixture|docker-hardened|u_fixture"; fi\n', { mode: 0o755 });
 		process.env.PATH = dir + ":" + path;
 		const { DockerSandboxes } = await import("../server/src/sandbox/sandboxes.js");
-		const options = { machine: identity.machineId, dataVolume: async () => "fixture", cpus: 0.75 };
+		const options = { machine: identity.machineId, dataVolume: async () => "fixture", slots: { max: 2, unit: { cpus: 0.75, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } } };
 		assert.ok(await new DockerSandboxes(options).connect("0123456789ab"));
-		assert.match(readFileSync(join(dir, "docker.args"), "utf8"), /update --cpu-shares 256 --cpus 0.75 wlp-session-0123456789ab .*\nstart/);
+		assert.match(readFileSync(join(dir, "docker.args"), "utf8"), /update --memory 1536m --memory-swap 1536m --cpu-shares 256 --cpus 0.75 --pids-limit 512 wlp-session-0123456789ab .*\nstart/);
 	} finally {
 		process.env.PATH = path;
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
-test("runner advertises two turn slots by default, and accepts a positive whole-number override", async () => {
+test("a daemon refusal to lower memory leaves the running session usable", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "wlp-resize-"));
+	const path = process.env.PATH!;
+	try {
+		writeFileSync(join(dir, "docker"), `#!/bin/sh
+case "$1" in
+	container) echo 'running|1|m_fixture|docker-hardened|u_fixture|256|1000000000|1610612736|1610612736|512|1' ;;
+	system) cat >/dev/null; printf 'HTTP/1.0 200 OK\\r\\n\\r\\n{"memory_stats":{"usage":4096}}' ;;
+	update) echo 'memory limit is below current usage' >&2; exit 1 ;;
+	unpause) touch "$0.resumed" ;;
+esac
+`, { mode: 0o755 });
+		process.env.PATH = dir + ":" + path;
+		const { DockerSandboxes } = await import("../server/src/sandbox/sandboxes.js");
+		const provider = new DockerSandboxes({ machine: identity.machineId, dataVolume: async () => "fixture",
+			slots: { max: 2, unit: { cpus: 1, memoryBytes: 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } } });
+		assert.equal((await provider.connect("0123456789ab"))?.resizePending, true);
+		assert.equal(readFileSync(join(dir, "docker.resumed"), "utf8"), "");
+	} finally { process.env.PATH = path; rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("runner advertises machine-sized slots by default, and accepts a positive whole-number override", async () => {
 	const { Executor } = await import("../runner/src/docker-executor.js");
+	const { localSizing } = await import("../runner/src/sizing.js");
 	const { parseRunnerFrame } = await import("../server/src/runner/control.js");
 	const hello = { kind: "hello", runnerVersion: "1.0.0", epoch: "e0123456789", time: Date.now(), signature: "A".repeat(86) };
 	const parse = (extra: object) => parseRunnerFrame(JSON.stringify({ ...hello, ...extra }));
-	assert.equal(new Executor(identity, {}).maxTurns, 2);
+	assert.equal(new Executor(identity, {}).maxTurns, localSizing().max);
 	assert.equal(new Executor(identity, { maxTurns: 3 }).maxTurns, 3);
 	assert.ok(parse({ maxTurns: 2 }));
 	assert.ok(parse({}));

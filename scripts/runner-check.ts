@@ -2,6 +2,7 @@
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
  * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
  */
+import { writeProofDocker } from "./runner-proof-docker.js";
 import { imageId } from "./check-image.js";
 import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
@@ -212,6 +213,60 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	let hosted = false;
 	try {
 		await mkdir(state, { mode: 0o700 });
+		if (process.argv.includes("--sizing-only")) {
+			for (const command of ["run", "setup"]) {
+				for (const [flag, value] of [["--slots", "65"], ["--slot-cpus", "999999"], ["--slot-memory", "512m"], ["--sandbox-memory", "1g"]]) {
+					await assert.rejects(exec(process.execPath, [bundle, command, flag, value], { env: env(state) }),
+						(e: { stderr?: string }) => !!e.stderr?.includes(flag));
+				}
+			}
+			const bin = join(tmp, "bin");
+			await mkdir(bin);
+			const prefix = "sizing-" + machineId + "-";
+			await writeProofDocker(bin, prefix, (await exec("which", ["docker"])).stdout.trim(), undefined,
+				["wlp-egress-", "wlp-claude-relay-", "wlp-opencode-relay-", "wlp-harness-opencode-"]);
+			const host = join(tmp, "two-cores.cjs");
+			await writeFile(host, 'const os = require("node:os"); os.availableParallelism = () => 2; os.totalmem = () => 12 * 2**30;');
+			const start = (flags: string[]) => run(state, host, bundle, { PATH: bin + ":" + process.env.PATH }, { flags });
+			const limitsOf = async (id: string) => {
+				const [box] = JSON.parse((await docker(["inspect", prefix + "agent-" + id.slice(-12)], { check: true })).stdout);
+				return [box.HostConfig.NanoCpus, box.HostConfig.Memory, box.HostConfig.MemorySwap, box.HostConfig.PidsLimit, box.HostConfig.CpuShares, box.Config.Labels["dev.windlass-platform.slots"]];
+			};
+			let service = start([]);
+			try {
+				await until(() => !!srv.state.report?.slots, "Missing default sizing report");
+				await srv.attach(srv.other);
+				const kept = await srv.channel(srv.other).request("create", { profile: "docker-hardened" });
+				assert.deepEqual(await limitsOf(kept), [1e9, 1.5 * 2 ** 30, 1.5 * 2 ** 30, 512, 256, "1"]);
+				srv.reset(srv.other);
+				await stop(service.child);
+				await until(() => !srv.online(), "Runner did not disconnect.");
+				service = start(["--max-turns", "3", "--slot-cpus", "0.75", "--slot-memory", "2g"]);
+				await until(() => srv.state.report?.slots?.max === 3, "Missing authenticated sizing report");
+				const slots = srv.state.report!.slots!;
+				assert.equal(slots.max, 3);
+				assert.deepEqual(slots.unit, { cpus: 0.75, memoryBytes: 2 ** 31, pids: 512 });
+				assert.deepEqual(srv.state.helloSlots, slots);
+				await srv.attach(srv.other);
+				await srv.channel(srv.other).request("connect", { id: kept });
+				assert.deepEqual(await limitsOf(kept), [0.75e9, 2 ** 31, 2 ** 31, 512, 256, "1"]);
+				await srv.attach();
+				const { weightedFifo } = await import("./machine-fairness-check.js");
+				const created: string[] = [];
+				await weightedFifo(slots, async (turn, size) => {
+					const channel = srv.channel(turn === "large" ? sessionId : srv.other);
+					const id = await channel.request("create", { profile: "docker-hardened", size });
+					if (turn === "large") {
+						created.push(id);
+						assert.deepEqual(await limitsOf(id), [1.5e9, 2 ** 32, 2 ** 32, 1024, 256, "2"]);
+					} else assert.equal(id, kept);
+				});
+				assert.equal(created.length, 2);
+				assert.equal(created[0], created[1]);
+				ok("Authenticated hello and inventory carry the same slots. Retried size-two create has one labelled container with twice the advertised limits.");
+			} finally { await stop(service.child); }
+			return;
+		}
 		if (process.argv.includes("--profiles-only")) {
 			const windlass = "docker-windlass-sandbox", hardened = "docker-hardened";
 			const policyFlag = "--allow-profile";
@@ -1131,7 +1186,7 @@ const privateHarnessTag = "chk-" + randomUUID();
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (process.argv.includes("--profiles-only")) {
+	if (process.argv.includes("--profiles-only") || process.argv.includes("--sizing-only")) {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
 		await check(image);
 	} else if (process.argv.includes("--harness-only")) {
