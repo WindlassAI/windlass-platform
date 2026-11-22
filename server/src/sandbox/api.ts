@@ -555,6 +555,8 @@ export interface RunTurnInput {
 	/** Resume an item's conversation as a builder after it ran with the planner agent. */
 	clearPlanner?: boolean;
 	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
+	/** A work item's builder asks its person a question (`ask_person`); returns what the agent is told, at once. Given only with `onReport`. */
+	onAsk?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	onReview?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	reportScreenshots?: boolean;
 	/** The agent pushes the session's branch (`push`). Given with `onFetchBase`. */

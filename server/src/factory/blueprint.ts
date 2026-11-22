@@ -38,6 +38,7 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
+import { ASK_LIMITS } from "../agent-publish.js";
 import { MAX_ITEM_BODY_CHARS, type FeatureRepository, type HarnessId, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
@@ -79,7 +80,12 @@ export const RULES = {
 	publishRetryMs: 30_000,
 	/** §2.2's fallback: while a turn runs, the session is asked this often whether it still does. */
 	turnCheckMs: 5 * 60_000,
+	/** Questions a run's builder may ask its person (`ask_person`); at most one per turn, which the session holds to. */
+	asks: ASK_LIMITS.perRun,
 } as const;
+
+/** The builder's turns, which are offered `ask_person`: not the planner's, the summary's or the reviewer's. */
+const ASKING: ReadonlySet<TurnStepKind> = new Set(["implement", "ci_fix", "conflict", "review_fix"]);
 
 const ROUND_CAPS = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds, review: RULES.reviewRounds } as const;
 const FINAL: ReadonlySet<ItemState> = new Set(["done", "cancelled"]);
@@ -782,7 +788,8 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
 		c.effects.push({ ...delivery, to: "review", checkout: plan.checkout, reviewerInput: reviewerInput(c, run.ci, plan.checkout.pr), agent: null, maxSteps: RULES.reviewMaxSteps });
 	} else {
-		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps });
+		const asking = ASKING.has(plan.kind) ? { asksLeft: Math.max(0, RULES.asks - (run.asks ?? 0)) } : {};
+		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);
@@ -843,6 +850,13 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		// Two sentences: the session's own may be several, and starts with a capital.
 		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("again"), ...handOver(item), choice("give_up")], null, resume);
 	}
+	// The builder asked its person (`ask_person`) and was told the question is recorded: it is asked, even of a turn cut short.
+	// Nothing of the turn is judged: the workspace and any pushed head stay as they are, and the answer resumes this step.
+	if (fact.asked && ASKING.has(kind) && (run.asks ?? 0) < RULES.asks) {
+		run.asks = (run.asks ?? 0) + 1;
+		const resume: TurnPlan = { ...IMPLEMENT, kind, newStep: false };
+		return ask(c, "agent_ask", AGENT_ASKS, [choice("reply"), ...handOver(item), choice("give_up")], null, resume, AGENT_ASKS, { text: fact.asked.text, options: [...fact.asked.options] });
+	}
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
 		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}; the step is tried again.`);
@@ -890,6 +904,12 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	c.say(said);
 	publish(c);
 }
+
+/** The platform's sentence of an `agent_ask` question. The agent's own words are beside it (`Question.asked`), never in it. */
+const AGENT_ASKS = "The agent stopped to ask you a question before it goes on.";
+
+/** The next turn's message after the person answered the agent's question: their own words, trusted as a note is. */
+const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;
 
 function failingNames(verified: Verified): string {
 	return (verified.run?.checks ?? [])
@@ -1609,6 +1629,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	hand_over: "Hand it over as it is",
 	give_up: "Give up",
 	fix: "Have the agent change it",
+	reply: "Answer the agent",
 };
 const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
 /**
@@ -1636,10 +1657,10 @@ function askRemoved(c: Change): void {
 	ask(c, "machine_removed", "Your machine was removed. This item can no longer work on it.", [...handOver(c.item), choice("give_up")], null, null);
 }
 
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text): void {
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, asked?: Question["asked"]): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
-	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume };
+	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...(asked && { asked }) };
 	item.question = question;
 	c.state("waiting", { reason: kind === "budget" ? "budget" : "person", sentence, retryAt: null });
 	c.say(`Asked: ${text}`);
@@ -1753,6 +1774,11 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 		case "fix":
 			if (question.kind !== "review_question" || resume === null) return false;
 			fixAfterReview(c, { ...resume, text: withNote(resume.text, note) });
+			break;
+		case "reply":
+			// An answer needs words: the page does not send one without them.
+			if (question.kind !== "agent_ask" || resume === null || note === null) return false;
+			nextTurn(c, { ...resume, text: answeredText(note) });
 			break;
 	}
 	return true;

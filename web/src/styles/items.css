@@ -416,6 +416,42 @@
 .item-note {
 	min-height: 64px;
 }
+/* The agent's own question: a quotation, set apart from the platform's sentence by a rule and a caption that says whose it is. */
+.item-asked {
+	display: grid;
+	gap: 8px;
+	margin: 0;
+	padding: 10px 0 10px 14px;
+	border-left: 2px solid var(--line-strong);
+}
+.item-asked-who {
+	font-size: 12.5px;
+	color: var(--ink-faint);
+}
+.item-asked-text {
+	margin: 0;
+	max-width: 74ch;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	line-height: 1.5;
+}
+.item-asked-options {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.item-asked-options-label {
+	font-size: 12.5px;
+	color: var(--ink-faint);
+	margin-right: 4px;
+}
+.item-asked-option {
+	max-width: 100%;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	text-align: left;
+}
 .item-choices {
 	display: flex;
 	flex-wrap: wrap;

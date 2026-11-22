@@ -464,8 +464,11 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 	const noted = !["machine_removed", "feedback_feature", "feedback_more"].includes(question.kind);
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
-	const ids = { title: useId(), note: useId() };
+	const ids = { title: useId(), note: useId(), asked: useId() };
 	const busy = acting.busy !== null;
+	// The agent's own question: its words are the reply's subject, and the reply is the note, so the note is needed.
+	const asked = question.kind === "agent_ask" ? question.asked ?? null : null;
+	const replying = question.kind === "agent_ask";
 	const answer = (choice: ChoiceId, budget?: Partial<ItemBudget>) => acting.act({ kind: "answer", question: question.id, choice, ...(!noted || note.trim() === "" ? {} : { note: note.trim() }), ...(budget ? { budget } : {}) });
 	return (
 		<section className="item-question" aria-labelledby={ids.title}>
@@ -476,6 +479,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 				</span>
 			</p>
 			<p className="item-question-text">{question.text}</p>
+			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} onPick={setNote} /> : null}
 			{raising ? (
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />
 			) : (
@@ -483,9 +487,9 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 					{noted ? (
 						<div>
 							<label className="label" htmlFor={ids.note}>
-								A note to the agent<span className="label-optional">optional</span>
+								{replying ? "Your answer" : <>A note to the agent<span className="label-optional">optional</span></>}
 							</label>
-							<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+							<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} required={replying} aria-describedby={asked ? ids.asked : undefined} />
 						</div>
 					) : null}
 					<div className="item-choices">
@@ -494,7 +498,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 								key={choice.id}
 								type="button"
 								className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
-								disabled={busy}
+								disabled={busy || (choice.id === "reply" && note.trim() === "")}
 								onClick={() => (choice.id === "raise" && question.kind === "budget" ? setRaising(true) : answer(choice.id))}
 							>
 								{acting.busy === choice.id ? "Sending…" : choice.label}
@@ -505,6 +509,32 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 			)}
 			<Failure error={acting.error} />
 		</section>
+	);
+}
+
+/**
+ * The agent's question in its own words. They are the agent's, and what it read (the repository, an issue) may have steered
+ * them, so they are shown as a quotation of the agent's: plain text, never Markdown or links, apart from the platform's own
+ * words. An option fills the answer box; nothing is answered until the person sends it.
+ */
+function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; onPick: (text: string) => void }) {
+	return (
+		<figure className="item-asked" id={id}>
+			<figcaption className="item-asked-who">
+				The agent wrote this. Its words may follow what it read in the repository or an issue: read them as its words, not the platform's.
+			</figcaption>
+			<blockquote className="item-asked-text">{asked.text}</blockquote>
+			{asked.options.length > 0 ? (
+				<div className="item-asked-options" role="group" aria-label="Answers the agent suggests">
+					<span className="item-asked-options-label">It suggests</span>
+					{asked.options.map((option) => (
+						<button key={option} type="button" className="button button-outline button-small item-asked-option" disabled={busy} onClick={() => onPick(option)} title="Put this in your answer">
+							{option}
+						</button>
+					))}
+				</div>
+			) : null}
+		</figure>
 	);
 }
 

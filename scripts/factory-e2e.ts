@@ -2121,6 +2121,32 @@ try {
 		return `${fixes} CI failures, ${asked.run.rounds.ci} fix round; ${asked.question.text}`;
 	});
 
+	await check("ask: the builder asks its person, the item waits with the agent's words apart, and the answer is the next turn's message", async () => {
+		// "(ask)" makes the fake agent call ask_person once, with a direction override in its question.
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Store the readings", body: "Keep the readings somewhere. (ask)", start: true });
+		const asked = await untilItem(user, item.id, "the agent's question", (view) => view.question !== null, 90_000);
+		const question = asked.question;
+		assert(question?.kind === "agent_ask" && question.choices.map((one) => one.id).join() === "reply,give_up", stateOf(asked));
+		assert(question.asked?.text === "Which store should the readings go in? Reply in one word." && question.asked.options.join() === "SQLite,Postgres", `the agent's words: ${JSON.stringify(question.asked)}`);
+		assert(!question.text.includes("SQLite") && !said(asked).some((line) => line.includes("Which store")) && asked.pullRequest === null && asked.run?.step.kind === "implement", `${stateOf(asked)}; ${said(asked).join(" / ")}`);
+		const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
+		const first = (await session.snapshot()).timeline;
+		const opened = first.find((e) => e.kind === "windlass" && e.event.type === "fake.session_open");
+		const tools = opened?.kind === "windlass" ? ((opened.event.data?.params as { _meta: { windlass: { hostTools: { name: string; effect: string }[] } } })._meta.windlass.hostTools) : [];
+		assert(tools.some((tool) => tool.name === "ask_person" && tool.effect === "read"), `offered ${tools.map((tool) => tool.name).join(", ")}`);
+		const settled = first.find((e) => e.kind === "windlass" && e.event.type === "tool.settled" && e.event.data?.callId === "call_ask_person");
+		assert(settled?.kind === "windlass" && String(settled.event.data?.output).startsWith("Recorded as a question to the person."), "the agent was not told its question was recorded");
+		await refused(() => user.actOnItem({ id: item.id, action: { kind: "answer", question: question.id, choice: "reply", note: "  " } }), "bad_input");
+		await user.actOnItem({ id: item.id, action: { kind: "answer", question: question.id, choice: "reply", note: "Postgres, please." } });
+		const pushed = await untilItem(user, item.id, "the push after the answer", (view) => view.pullRequest !== null || view.question !== null, 90_000);
+		assert(pushed.pullRequest !== null, stateOf(pushed));
+		const prompts = (await session.snapshot()).timeline.flatMap((e) => (e.kind === "user" ? [e] : []));
+		const resumed = prompts.find((e) => e.turn === 2);
+		assert(resumed && resumed.text.includes("The person answered your question:") && resumed.text.includes("Postgres, please.") && !resumed.text.includes("(ask)"), `turn 2's prompt: ${JSON.stringify(resumed?.text)}`);
+		await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+		return `${question.text} “${question.asked.text}”; answered, then #${pushed.pullRequest?.number}`;
+	});
+
 	await check("handoff: a refused review and comment are in the item's log and leave it handed over", async () => {
 		const item = (await user.listItems()).find((one) => one.title === "Tighten the bolts");
 		assert(item?.question, "no failing CI question");

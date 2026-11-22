@@ -71,7 +71,7 @@ What changes with Claude Code or OpenCode:
 
 - **Where.** Only on your machine, in **Hardened Docker on your machine "…"**. Hosted items run Windlass.
 - **How it runs.** A Quick item runs Claude Code or OpenCode directly. A **Plan first** feature's planner runs with Windlass, because it files the plan with a Windlass tool, but each of its subtasks can run Claude Code or OpenCode: see [Each subtask's agent](#each-subtasks-agent).
-- **Asking.** An item has nobody watching it, so the agent works without asking. Claude Code runs in **Bypass permissions**. OpenCode runs in **Build**, and the platform allows once each edit or command it asks about, as Windlass runs commands in that container. The turn does not start if the agent does not offer that mode.
+- **Asking.** An item has nobody watching it, so the agent works without asking. Claude Code and OpenCode can't ask you a question mid-turn either: only a Windlass builder can (see [When the agent asks you](#when-the-agent-asks-you)). They decide for themselves. Claude Code runs in **Bypass permissions**. OpenCode runs in **Build**, and the platform allows once each edit or command it asks about, as Windlass runs commands in that container. The turn does not start if the agent does not offer that mode.
 - **Checks.** These agents do not run your repository's checks. CI decides the verdict, and the check on GitHub says "The turn left no record of its checks; CI decides."
 - **Review.** Items on a machine have no second reviewer, whatever the agent.
 - **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
@@ -167,6 +167,17 @@ An item also stops and asks you when it keeps failing:
 - it reached its own budget.
 
 The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently.
+
+### When the agent asks you
+
+A Windlass builder can stop and ask you a question when it can't go on without your decision, for example which of two approaches the task means. It is told to ask only about what it can't settle from the repository, the task and its acceptance criteria. Otherwise it decides and says what it decided in its report.
+
+- **Where.** The item waits under **Needs you**: "The agent stopped to ask you a question before it goes on." Below that, the page shows the agent's own question, marked as the agent's and quoted as plain text, with up to 4 answers it suggests.
+- **Answering.** Write your answer under **Your answer** and choose **Answer the agent**. A suggested answer only fills the box, so you can change it before you send it. The agent gets your answer as its next message, in the same conversation and the same step, and goes on from where it stopped. Its work stays as it was while it waits. You can also **Hand it over as it is**, when the run has pushed something, or **Give up**.
+- **How often.** At most 1 question per turn and 3 per run. After that, the agent is told to decide for itself.
+- **How long.** The question waits until you answer, for days if need be. If the item's budget has run out by the time you answer, an item that is not a subtask asks you to raise the limit first, and keeps your answer for the turn it resumes. A subtask can't raise its own limit: it stops, and starting it again begins a new run without your answer.
+- **Read it as the agent's.** The agent may have read issue text or repository files written by someone else, and those can steer what it asks. Its question is never written for it by the platform, never answered for you, and never posted to GitHub. Check what it asks before you agree to anything. A question over 1,000 characters is refused, and the agent is told to shorten it. Control, invisible and other hidden characters are taken out before you see it, and a suggested answer can't carry hidden text into your reply.
+- **Who can ask.** Only a Windlass builder: the turns that implement, fix checks or CI, merge the base, or answer a review. The planner files its questions with its plan, the second reviewer asks through its review, and Claude Code and OpenCode can't ask mid-turn.
 
 ### What you can do with an item
 

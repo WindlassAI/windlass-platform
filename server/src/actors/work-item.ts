@@ -28,6 +28,7 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
 import { batchText, feedbackWords, fingerprint, fits, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
@@ -194,7 +195,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.asked && { asked: item.question.asked }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -1329,7 +1330,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places })
 					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
 			}
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key) });
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
 			return true;
 		}
 		case "release_review":
@@ -1454,7 +1455,12 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 				if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > most) throw bad(`A budget's ${name} is a number above 0 and at most ${most}.`);
 				budget[name] = value;
 			}
-			return { kind: "answer", at, by, question: action.question, choice: action.choice, note: note(action.note, false), budget, ...agentsOf(action.agents) };
+			// An answer to the agent's question is the note: without words there is nothing to send it.
+			// A note that answers the agent goes to it as the person's words: nothing hidden in it may ride along.
+			const replyNote = action.choice === "reply" && typeof action.note === "string" ? action.note.replace(HIDDEN, "") : action.note;
+			const answerNote = action.choice === "reply" && typeof replyNote === "string" && replyNote.trim() === "" ? undefined : replyNote;
+			if (action.choice === "reply" && answerNote === undefined) throw bad("Write your answer to the agent.");
+			return { kind: "answer", at, by, question: action.question, choice: action.choice, note: note(answerNote, false), budget, ...agentsOf(action.agents) };
 		}
 		default:
 			throw bad("Say what to do with the item.");

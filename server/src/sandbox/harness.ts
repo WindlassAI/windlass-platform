@@ -1,5 +1,5 @@
 /** A session chooses its harness once. Its capabilities govern turn inputs, sign-in and storage. */
-import { FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL } from "../agent-publish.js";
+import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL } from "../factory/reviewer-task.js";
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, Windlass } from "./api.js";
 import type { HarnessId } from "../contract.js";
@@ -9,7 +9,7 @@ import { machineHarnesses } from "./harnesses.js";
 export type { HarnessId } from "../contract.js";
 
 /** One of the platform's tools (agent-publish.ts, and the reviewer's `file_review`). */
-export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL;
+export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL;
 
 export interface HarnessCapabilities {
 	/** What the timeline stores for its turns. */
@@ -63,7 +63,7 @@ const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	steer: true,
 	cancelCall: true,
 	questions: true,
-	platformTools: Object.freeze([PUBLISH_TOOL, REPORT_TOOL, PUSH_TOOL, FETCH_BASE_TOOL, REVIEW_TOOL] as const),
+	platformTools: Object.freeze([PUBLISH_TOOL, REPORT_TOOL, ASK_TOOL, PUSH_TOOL, FETCH_BASE_TOOL, REVIEW_TOOL] as const),
 	restrictedReview: true,
 	userServers: "config-file",
 	projectServerApproval: true,
