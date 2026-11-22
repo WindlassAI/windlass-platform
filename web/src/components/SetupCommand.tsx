@@ -21,8 +21,8 @@ function clean(text: string): string {
 }
 
 /** When and how it runs, in one sentence: the same wherever the command is shown. */
-function howItRuns(when: string, limitMs: number | null, egress?: EgressMode, hosted = false): string {
-	return `Runs once ${when}, before the agent starts, outside the agent's command sandbox${limitMs === null ? "" : `, for at most ${spelledDuration(limitMs)}`}. ${workspaceNetwork(egress, hosted)}`;
+function howItRuns(when: string, limitMs: number | null, egress?: EgressMode, hosted = false, domains?: number): string {
+	return `Runs once ${when}, before the agent starts, outside the agent's command sandbox${limitMs === null ? "" : `, for at most ${spelledDuration(limitMs)}`}. ${workspaceNetwork(egress, hosted, domains)}`;
 }
 
 interface Draft {
@@ -80,7 +80,7 @@ export function useSetupDraft(repositoryId: GithubId | null): SetupDraft {
 }
 
 /** The start composer's field. `repository` is the chosen one, in words. */
-export function SetupField({ setup, repository, disabled, egress, hosted }: { egress?: EgressMode; hosted?: boolean; setup: SetupDraft; repository: string; disabled: boolean }) {
+export function SetupField({ setup, repository, disabled, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; setup: SetupDraft; repository: string; disabled: boolean }) {
 	const ids = { input: useId(), note: useId() };
 	const { draft } = setup;
 	const reading = draft.saved === null && draft.error === null;
@@ -106,7 +106,7 @@ export function SetupField({ setup, repository, disabled, egress, hosted }: { eg
 				aria-describedby={ids.note}
 			/>
 			<p className="field-note" id={ids.note}>
-				{howItRuns("when the workspace is created", draft.limitMs, egress, hosted)} Saved for {repository}, and run for every agent you launch on it.
+				{howItRuns("when the workspace is created", draft.limitMs, egress, hosted, domains)} Saved for {repository}, and run for every agent you launch on it.
 			</p>
 			{draft.error ? (
 				<p className="field-note tone-warn" role="status">
@@ -122,7 +122,7 @@ export function SetupField({ setup, repository, disabled, egress, hosted }: { eg
  * does. `labelledBy` is the heading it stands under; `applies` says what a change means where it is
  * shown; `onSaved` hears of a save.
  */
-export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, egress, hosted }: { egress?: EgressMode; hosted?: boolean; repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
+export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { input: useId(), note: useId() };
@@ -214,7 +214,7 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 						) : null}
 					</p>
 					<p className="panel-empty setup-note" id={ids.note}>
-						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs, egress, hosted)} {applies}
+						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs, egress, hosted, domains)} {applies}
 					</p>
 				</>
 			)}
@@ -228,7 +228,7 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 }
 
 /** The side panel's section, for a session on a repository of the GitHub connection. */
-export function SetupSection({ summary, egress, hosted }: { egress?: EgressMode; hosted?: boolean; summary: SessionSummary }) {
+export function SetupSection({ summary, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; summary: SessionSummary }) {
 	const title = useId();
 	const repository = summary.repository ?? null;
 	if (!repository) return null;
@@ -239,6 +239,7 @@ export function SetupSection({ summary, egress, hosted }: { egress?: EgressMode;
 			</h2>
 			<SetupEditor
 				egress={egress}
+				domains={domains}
 				hosted={hosted}
 				repositoryId={repository.id}
 				name={`${repository.owner}/${repository.name}`}

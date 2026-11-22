@@ -229,10 +229,13 @@
         "server/src/sandbox/**",
         "server/src/factory/attachments.ts",
         "scripts/check-image.ts",
-        "scripts/{shot,attachments}-check.ts"
+        "scripts/{shot,attachments}-check.ts",
+        "scripts/browser-hello-check.ts",
+        "runner/src/egress-proxy.mjs"
       ],
       "checks": {
         "shot-docker": "WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots tsx ../scripts/shot-check.ts --docker",
+        "browser-hello-docker": "WLP_SANDBOX_IMAGE=windlass-platform-sandbox:shots tsx ../scripts/browser-hello-check.ts --docker",
         "attachments-docker": "tsx ../scripts/attachments-check.ts --docker"
       }
     },

@@ -14,6 +14,7 @@ export function machineProfiles(name: string | null | undefined, report: Report 
 	const mode = report?.egress ?? "open";
 	const commandNetworkText = !report?.docker.ok ? "the runner has not verified command network access"
 		: mode === "none" ? "commands have no network"
+		: mode === "restricted" && report.egressDomains ? `commands can reach only the ${report.egressDomains} public ${report.egressDomains === 1 ? "host" : "hosts"} the owner allows, through the web proxy`
 		: mode === "restricted" ? "commands can reach public sites and hosts allowed by the owner through the web proxy"
 		: "commands can reach the internet and the local network";
 	return [
