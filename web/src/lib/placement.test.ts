@@ -29,8 +29,8 @@ const onNas = { kind: "machine" as const, machineId: "m_nas" };
 describe("placement words", () => {
 	it("says what a subtask needs in short words", () => {
 		expect(needsWords(undefined)).toEqual([]);
-		expect(needsWords({ cpus: 4, memoryGiB: 6, screenshots: true, harness: "claude", egress: "open", tags: ["gpu"] })).toEqual(["4 CPUs", "6 GiB memory", "screenshots", "Claude Code", "open egress", "tag gpu"]);
-		expect(needsWords({ cpus: 1, harness: "windlass" })).toEqual(["1 CPU"]);
+		expect(needsWords({ cpus: 4, memoryGiB: 6, screenshots: true, egress: "open", tags: ["gpu"] })).toEqual(["4 CPUs", "6 GiB memory", "screenshots", "open egress", "tag gpu"]);
+		expect(needsWords({ cpus: 1 })).toEqual(["1 CPU"]);
 	});
 
 	it("names a machine's policy only when it is not the default", () => {

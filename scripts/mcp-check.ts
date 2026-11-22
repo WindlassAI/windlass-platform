@@ -712,7 +712,7 @@ async function checkOtherServers(): Promise<void> {
 		// "starting" on a loaded host, then running by the layer's later word (`onServers`).
 		const ranLater = found.servers.some((list) => list.some((server) => server.name === "harbor" && server.state === "running"));
 		expect("the question is put before the prompt here too, and approving starts the server", found.asked.length === 1 && asked?.holdsTurn === true && (found.outcomes[0]?.outcome.state === "running" || (found.outcomes[0]?.outcome.state === "starting" && ranLater)), JSON.stringify(found.outcomes[0]?.outcome));
-		if (asked) for (const detail of serverQuestionWords(asked, { profile: layer.sandboxes.profile("docker-hardened"), demo: true, dataInSandbox: false, project: projectOf({ sessionId: "mcp-hardened", repoUrl: null }) }).details) info(`  ${detail}`);
+		if (asked) for (const detail of serverQuestionWords(asked, { profile: layer.sandboxes.profile("docker-hardened"), demo: true, dataInSandbox: true, project: projectOf({ sessionId: "mcp-hardened", repoUrl: null }) }).details) info(`  ${detail}`);
 		expect("Windlass runs the first MCP call without asking in this profile", found.toolQuestions.every((question) => question.callId !== "h1") && mcpOutcome(found, "h1") === "result");
 		// What the server returned is content Windlass does not control: from there on it asks before a command it cannot sandbox, in this profile too.
 		const afterwards = found.toolQuestions.find((question) => question.callId === "h2");

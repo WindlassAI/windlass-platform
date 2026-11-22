@@ -1,6 +1,6 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
-import type { FeaturePlan, FeaturePlanEdit, ItemBudget, PlanSubtask } from "../contract.js";
-import { harnessName, knownHarness } from "../sandbox/harnesses.js";
+import type { FeaturePlan, FeaturePlanEdit, ItemBudget, PlanSubtask, SubtaskAgent } from "../contract.js";
+import { harnessName, itemHarnessProblem, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
@@ -23,12 +23,26 @@ export function closingReserve(single: ItemBudget): ItemBudget {
 	return { tokens: Math.ceil(single.tokens / 6), turns: 4, activeSeconds: Math.ceil(single.activeSeconds / 6), hostedSeconds: Math.ceil(single.hostedSeconds / 6) };
 }
 
+/** A subtask's agent in words: "Claude Code (sonnet, high effort), works without asking"; "Windlass on the feature's model". */
+export function agentWords(agent: SubtaskAgent | undefined): string {
+	if (!agent) return "Windlass on the feature's model";
+	const choice = [agent.model ?? (agent.harness === "windlass" ? "the feature's model" : "its default model"), ...(agent.effort ? [agent.effort + " effort"] : [])].join(", ");
+	return `${harnessName(agent.harness)} (${choice})` + (worksWithoutAsking(agent.harness) ? ", works without asking" : "");
+}
+
+/** The keys of the subtasks still to run whose agent works without asking: approval needs the person's confirmation of each. */
+export function unattendedKeys(plan: Pick<FeaturePlanEdit, "subtasks">, completed: ReadonlySet<string> = new Set()): string[] {
+	return plan.subtasks.filter(s => !completed.has(s.key) && worksWithoutAsking(s.agent?.harness)).map(s => s.key);
+}
+
 export function approvalText(plan: FeaturePlan): string {
 	const words = (b: ItemBudget) => [
 		b.tokens.toLocaleString("en-US") + " tokens", b.turns + " turns",
 		b.activeSeconds + " active seconds", b.hostedSeconds + " hosted seconds",
 	].join(", ");
-	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "")),
+	const unattended = unattendedKeys(plan);
+	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.agent)),
+		...(unattended.length ? [`${unattended.join(", ")} would run an agent that works without asking: it runs every command and edit in its sandbox without asking you. The planner proposed it from the item's text; approve only after confirming each one.`] : []),
 		"Sizing beyond one slot is not supported by current runners.",
 		"Reserved for summary and review — " + words(closingReserve(plan.compare.singleBudget)), "Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
@@ -96,8 +110,39 @@ export function ownsPath(owns: string[], path: string): boolean {
 	return owns.some(pattern => overlaps(pattern, path, true));
 }
 
-function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" | "needs"> {
-	const result: Pick<PlanSubtask, "place" | "needs"> = {};
+/** The longest model id a subtask may name; an effort is at most 64 characters, as a Quick item's. */
+const MAX_AGENT_ID = 200;
+
+/**
+ * A subtask's agent, checked as far as a plan can be: an agent work items run (not Codex), a model and an
+ * effort of plain id text. Whether its place offers them is placement's (`placement.ts`, `agentFit`).
+ * Windlass with nothing chosen is no choice: the subtask inherits the feature's model.
+ */
+function agentOf(value: unknown): SubtaskAgent | undefined {
+	const a = record(value);
+	for (const key of Object.keys(a)) requirePlan(["harness", "model", "effort"].includes(key), "Unknown agent field: " + key);
+	const harness = a.harness === undefined ? "windlass" : knownHarness(a.harness);
+	requirePlan(harness !== null, "Choose a supported agent: windlass, claude or opencode.");
+	const problem = itemHarnessProblem(harness);
+	requirePlan(problem === null, problem!);
+	const id = (v: unknown, what: string, max: number) => {
+		requirePlan(typeof v === "string" && v.length > 0 && v.length <= max && /^[\w.:/@+\[\]-]+$/.test(v), `Name the ${what} by its id.`);
+		return v;
+	};
+	const model = a.model === undefined || a.model === null || a.model === "" ? undefined : id(a.model, "model", MAX_AGENT_ID);
+	const effort = a.effort === undefined || a.effort === null || a.effort === "" ? undefined : id(a.effort, "effort", 64);
+	if (harness === "windlass" && model === undefined && effort === undefined) return undefined;
+	return { harness, ...(model !== undefined && { model }), ...(effort !== undefined && { effort }) };
+}
+
+/** Why a subtask's profile need refuses its agent: a machine harness runs only in the docker-hardened profile. */
+export function agentProfileProblem(task: Pick<PlanSubtask, "agent" | "needs">): string | null {
+	const agent = task.agent, profile = task.needs?.profile;
+	return agent && worksWithoutAsking(agent.harness) && profile !== undefined && profile !== "docker-hardened" ? `${harnessName(agent.harness)} runs only in the docker-hardened profile.` : null;
+}
+
+function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" | "needs" | "agent"> {
+	const result: Pick<PlanSubtask, "place" | "needs" | "agent"> = {};
 	if (s.place !== undefined) {
 		const p = record(s.place);
 		const allow = p.allow === undefined ? undefined : lines(p.allow, 0, 12).map(n => text(n, 200));
@@ -121,13 +166,8 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 			requirePlan(n.profile === "docker-hardened" || n.profile === "docker-windlass-sandbox", "Choose a supported Docker profile.");
 			needs.profile = n.profile;
 		}
-		if (n.harness !== undefined) {
-			const harness = knownHarness(n.harness);
-			requirePlan(harness !== null, "Choose a supported harness.");
-			// A child is made with the feature's Windlass model, and its approval does not say it would run an agent that never asks.
-			requirePlan(harness === "windlass", `A Plan-first subtask runs only with Windlass, not ${harnessName(harness!)}. File a Quick item to use ${harnessName(harness!)}.`);
-			needs.harness = harness!;
-		}
+		// Before subtasks named their agent, a need named its harness: read as the agent.
+		if (n.harness !== undefined) result.agent = agentOf({ harness: n.harness });
 		for (const key of ["cpus", "memoryGiB"] as const) if (n[key] !== undefined) {
 			const value = n[key];
 			requirePlan(typeof value === "number" && Number.isFinite(value) && value > 0, key + " must be a positive finite number.");
@@ -135,6 +175,13 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 		}
 		result.needs = needs;
 	}
+	if (s.agent !== undefined && s.agent !== null) {
+		const agent = agentOf(s.agent);
+		requirePlan(!result.agent || result.agent.harness === (agent?.harness ?? "windlass"), "Name the subtask's agent once, in agent.");
+		if (agent) result.agent = agent; else delete result.agent;
+	}
+	const profile = agentProfileProblem(result);
+	requirePlan(profile === null, profile!);
 	return result;
 }
 

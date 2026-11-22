@@ -7,8 +7,7 @@
  */
 import type { ChildPlacement, FeaturePlan, ItemSummary, ItemView, MachineDetails, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace } from "@contract";
 import { plannerMachines } from "../../../server/src/machines/details.js";
-import { bindRoute, choosePlacement } from "../../../server/src/factory/placement.js";
-import { HARNESS_NAMES } from "./acp";
+import { bindRoute, choosePlacement, type AgentModels } from "../../../server/src/factory/placement.js";
 import { machineLabel } from "./machines";
 
 export type Orchestrator = NonNullable<MachineDetails["orchestrator"]>;
@@ -48,7 +47,6 @@ export function needsWords(needs: PlacementNeeds | undefined): string[] {
 	if (needs.cpus) words.push(`${needs.cpus} CPU${needs.cpus === 1 ? "" : "s"}`);
 	if (needs.memoryGiB) words.push(`${needs.memoryGiB} GiB memory`);
 	if (needs.screenshots) words.push("screenshots");
-	if (needs.harness && needs.harness !== "windlass") words.push(HARNESS_NAMES[needs.harness]);
 	if (needs.egress) words.push(`${needs.egress} egress`);
 	if (needs.profile) words.push(needs.profile);
 	for (const tag of needs.tags ?? []) words.push(`tag ${tag}`);
@@ -85,7 +83,7 @@ export const placeChanged = (task: PlanSubtask, draft: PlaceDraft) => JSON.strin
  * waits, or asks once it gets there. Null: a place can take it now. Not judged where the route includes
  * this platform: the page does not know the deployment's hosted profiles.
  */
-export function placementFit(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): { refused: string } | { wait: string } | null {
+export function placementFit(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[], models?: AgentModels): { refused: string } | { wait: string } | null {
 	const inventory = plannerMachines(machines);
 	let route;
 	try {
@@ -94,21 +92,21 @@ export function placementFit(task: PlanSubtask, parent: SandboxPlace, overflow: 
 		return { refused: (error as Error).message };
 	}
 	if ([route.preferred, ...route.alternatives].some((place) => place.kind === "hosted")) return null;
-	const fit = choosePlacement(task, route, { machines: inventory, hostedProfiles: [] });
+	const fit = choosePlacement(task, route, { machines: inventory, hostedProfiles: [], models });
 	if (fit.decision) return null;
 	if (fit.wait !== undefined) return { wait: fit.wait };
 	return fit.permanent ? { refused: fit.refused } : { wait: `${fit.refused} It asks you when it gets there.` };
 }
 
 /** Why the server would refuse this subtask's place at approval, in its words; null when a place can take it now or later. */
-export function placementProblem(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): string | null {
-	const fit = placementFit(task, parent, overflow, machines);
+export function placementProblem(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[], models?: AgentModels): string | null {
+	const fit = placementFit(task, parent, overflow, machines, models);
 	return fit && "refused" in fit ? fit.refused : null;
 }
 
 /** What the subtask would wait for if the plan were approved now; null when it would start, or cannot be placed. */
-export function placementWait(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[]): string | null {
-	const fit = placementFit(task, parent, overflow, machines);
+export function placementWait(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[], models?: AgentModels): string | null {
+	const fit = placementFit(task, parent, overflow, machines, models);
 	return fit && "wait" in fit ? fit.wait : null;
 }
 

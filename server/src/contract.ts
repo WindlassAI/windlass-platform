@@ -1785,6 +1785,13 @@ export interface ItemView extends ItemSummary {
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
+	/**
+	 * With a plan: the keys of its subtasks still to run whose agent works without asking, as approval counts
+	 * them (`unattendedKeys`, past the integrated subtasks); approving needs the person's confirmation of each.
+	 */
+	unattended?: string[];
+	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
+	completedSubtasks?: string[];
 	children?: ItemSummary[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
@@ -1812,9 +1819,23 @@ export interface PlacementNeeds {
 	screenshots?: boolean;
 	egress?: "open" | "restricted";
 	profile?: "docker-hardened" | "docker-windlass-sandbox";
-	harness?: HarnessId;
 	cpus?: number;
 	memoryGiB?: number;
+}
+
+/**
+ * The agent a Plan-first subtask's item runs, as the planner proposed it or the person chose it on the
+ * approval card. Absent: Windlass on the feature's model and effort. A machine harness (Claude Code,
+ * OpenCode) works without asking and runs only on a machine signed into it, in its hardened container;
+ * approving a plan that names one needs the person's confirmation of each such subtask (`approve_plan`'s
+ * `agents`). Codex is not offered for work items.
+ */
+export interface SubtaskAgent {
+	harness: HarnessId;
+	/** One the place offers for this agent. Left out: the feature's model for Windlass, the agent's own default otherwise. */
+	model?: string;
+	/** One the place offers for the model. Left out: the feature's effort for Windlass on its model, the agent's default otherwise. */
+	effort?: string;
 }
 
 export interface ChildPlacement {
@@ -1832,6 +1853,8 @@ export interface PlanSubtask {
 	/** Older plans inherit the feature's place. */
 	place?: { prefer: string; reason: string; allow?: string[] };
 	needs?: PlacementNeeds;
+	/** Absent: Windlass on the feature's model. */
+	agent?: SubtaskAgent;
 	key: string;
 	title: string;
 	brief: string;
@@ -1896,7 +1919,11 @@ export interface CreateItemInput {
 export type ItemAction =
 	| { kind: "cancel_subtask"; key: string }
 	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
-	| { kind: "approve_plan"; version: number }
+	/**
+	 * `agents`: the keys of the subtasks still to run whose agent works without asking (`SubtaskAgent`), each
+	 * one confirmed by the person. Approval is refused (`bad_input`) unless it lists every one of them.
+	 */
+	| { kind: "approve_plan"; version: number; agents?: string[] }
 	| { kind: "run_single" }
 	/** A draft: start it. */
 	| { kind: "start" }
@@ -1906,7 +1933,7 @@ export type ItemAction =
 	/** An item in review: a new run, with the person's note to the agent. */
 	| { kind: "send_back"; note: string }
 	/** The open question: one of its choices, with a note to the agent, and for "raise" on a budget question the new budget. */
-	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget> };
+	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] };
 
 /** What an API token may do. */
 export type ApiTokenScope = "items:create" | "items:read";

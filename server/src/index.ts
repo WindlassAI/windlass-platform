@@ -76,6 +76,12 @@ if (layer.sandboxes.sweepSnapshots) {
 	void sweep();
 	setInterval(sweep, 60 * 60_000).unref();
 }
+if (layer.sandboxes.sweepDataVolumes) {
+	// Own data volumes a create or a removal cut off with the server left without their container.
+	const sweep = () => layer.sandboxes.sweepDataVolumes!().catch(() => console.warn("[wlp] data volume sweep deferred"));
+	void sweep();
+	setInterval(sweep, 30 * 60_000).unref();
+}
 const signIns = await getSignIns();
 console.log(`[wlp] sign-in commands run in ${signIns.describe}`);
 const windlassProblem = (await layer.windlass.problem()) ?? (await signIns.check());

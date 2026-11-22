@@ -16,6 +16,8 @@ export const shotsImage = SHOTS_IMAGE_PIN;
 export const image = SANDBOX_IMAGE;
 export const imagePins = () => ({ sandbox: image, "sandbox-shots": shotsImage, ...HARNESS_IMAGES });
 export const bubblewrap = "docker-windlass-sandbox";
+/** On a volume that is one sandbox's own data volume: its raw id. */
+export const SANDBOX_LABEL = LABEL + ".sandbox";
 export type Profile = Args<"create">["profile"];
 
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
@@ -104,20 +106,28 @@ export class MachineDocker {
 		this.claudeVolume = "wlp-harness-claude-" + identity.machineId;
 		this.volume = "wlp-machine-" + identity.machineId;
 	}
-	async ownedVolume(create: boolean, name = this.volume) {
+	/** A hardened Windlass session's own data volume (SESSION_VOLUME_PROFILES), by its raw sandbox id. */
+	sessionVolume(raw: string) {
+		if (!/^[a-f0-9]{12}$/.test(raw)) throw new Refusal("This sandbox id does not belong to this machine.");
+		return `${this.volume}-${raw}`;
+	}
+	/** `sandbox` (a raw id) labels the volume as that sandbox's own, and is required of one that exists. */
+	async ownedVolume(create: boolean, name = this.volume, sandbox?: string) {
+		const labels = sandbox === undefined ? this.labels : { ...this.labels, [SANDBOX_LABEL]: sandbox };
 		const volumes = await docker(["volume", "ls", "-q", "--filter", "name=" + name], { check: true });
 		if (!volumes.stdout.trim().split("\n").includes(name)) {
 			if (!create) return false;
-			await createVolume(name, this.labels);
+			await createVolume(name, labels);
 		}
 		const [v] = JSON.parse((await docker(["volume", "inspect", name], { check: true })).stdout);
 		if (v.Driver !== "local" || Object.keys(v.Options ?? {}).length || v.Labels?.[LABEL] !== "1" ||
-			Object.entries(this.labels).some(([k, value]) => v.Labels[k] !== value))
+			Object.entries(labels).some(([k, value]) => v.Labels[k] !== value))
 			throw new Refusal("The data volume must be a plain local volume owned by this machine.");
 		return true;
 	}
-	async dropVolume(name = this.volume) {
-		if (await this.ownedVolume(false, name)) await removeVolume(name);
+	/** `sandbox`: the volume must be that sandbox's own (`ownedVolume`). */
+	async dropVolume(name = this.volume, sandbox?: string) {
+		if (await this.ownedVolume(false, name, sandbox)) await removeVolume(name);
 	}
 	get pairingLabelFlags() {
 		return Object.entries(this.labels).flatMap(([k, v]) => ["--label", k + "=" + v]);

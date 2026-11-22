@@ -272,8 +272,8 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 		{
 			id: "docker-hardened",
 			name: `Hardened Docker on ${machine}`,
-			summary: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn. ${workspaceNetwork(egress)} ${trust}`,
-			layers,
+			summary: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. ${workspaceNetwork(egress)} ${trust}`,
+			layers: [layers[0]!, layers[1]!.replace(/\)$/, ", a data directory of the session's own)")],
 			approval: "full",
 			commandNetwork: egress !== "none",
 			commandNetworkText: workspaceNetwork(egress),
@@ -389,8 +389,8 @@ export const MOCK_PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-hardened",
 		name: "Docker, hardened",
-		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
-		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits)"],
+		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
+		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits, a data directory of the session's own)"],
 		approval: "full",
 		commandNetwork: true,
 		commandsCanReadAccessToken: true,

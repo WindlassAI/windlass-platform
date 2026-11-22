@@ -38,7 +38,7 @@ import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
 import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
-import { findProfile } from "./profiles.js";
+import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
 
@@ -455,6 +455,8 @@ class RunnerHandle implements TurnSandbox {
 		readonly cwd: string,
 		readonly runnerScreenshots: boolean,
 		readonly snapshot?: SnapshotSource,
+		/** As the runner's connect said (`SandboxHandle.ownData`): false from a runner that does not say. */
+		readonly ownData = false,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
@@ -537,6 +539,17 @@ class RunnerSandboxes implements Sandboxes {
 
 	constructor(private readonly link: RunnerLink) {}
 
+	/**
+	 * Except in a hardened sandbox, where a runner that reports `sessionVolumes` gives each its own. Only a
+	 * guess, for words (`Sandboxes.privateSessionData`): the runner may be another by the time a sandbox is
+	 * made, and what that one has is what its connect says (`RunnerHandle.ownData`).
+	 */
+	async privateSessionData(profile: SandboxProfileId): Promise<boolean> {
+		if (!SESSION_VOLUME_PROFILES.includes(profile)) return false;
+		const facts = this.link.known ?? await this.link.facts().catch(() => null);
+		return facts?.report?.sessionVolumes === true;
+	}
+
 	price(): null {
 		return null;
 	}
@@ -599,7 +612,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

@@ -190,7 +190,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
 	if (offer.plan) return [tool("file_plan",
-		"Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, harness?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. Work items run Windlass. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.",
+		"Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: windlass, claude or opencode, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). Claude Code and OpenCode run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.",
 		{ type: "object", required: ["spec", "questions", "subtasks"], properties: {
 			overflow: { type: "boolean" }, spec: { type: "object" }, questions: { type: "array", items: { type: "object" } },
 			subtasks: { type: "array", items: { type: "object", required: ["place"], properties: {
@@ -200,7 +200,10 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 				needs: { type: "object", additionalProperties: false, properties: {
 					tags: { type: "array", items: { type: "string" } }, screenshots: { type: "boolean" },
 					egress: { enum: ["open", "restricted"] }, profile: { enum: ["docker-hardened", "docker-windlass-sandbox"] },
-					harness: { enum: ["windlass", "claude"] }, cpus: { type: "number", exclusiveMinimum: 0 }, memoryGiB: { type: "number", exclusiveMinimum: 0 },
+					cpus: { type: "number", exclusiveMinimum: 0 }, memoryGiB: { type: "number", exclusiveMinimum: 0 },
+				} },
+				agent: { type: "object", additionalProperties: false, required: ["harness"], properties: {
+					harness: { enum: ["windlass", "claude", "opencode"] }, model: { type: "string", maxLength: 200 }, effort: { type: "string", maxLength: 64 },
 				} },
 			} } }, singleSuggested: { type: ["string", "null"] },
 		} })];

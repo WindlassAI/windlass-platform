@@ -98,7 +98,7 @@ esac
 
 test("a resumed sandbox adopts this runner's CPU policy", async t => {
 	const docker = mockInspect(t, "exited", "update|start|exec) exit 0 ;;");
-	const options = { machine: identity.machineId, dataVolume: async () => "fixture", slots: { max: 2, unit: { cpus: 0.75, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } } };
+	const options = { machine: identity.machineId, dataVolume: async () => "fixture", dropDataVolume: async () => {}, slots: { max: 2, unit: { cpus: 0.75, memoryBytes: 1.5 * 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } } };
 	assert.ok(await new DockerSandboxes(options).connect(sandboxId));
 	assert.deepEqual(docker.calls(), [
 		`update --memory 1536m --memory-swap 1536m --cpu-shares 256 --cpus 0.75 --pids-limit 512 ${sandboxName}`,
@@ -113,7 +113,7 @@ test("a daemon refusal to lower memory leaves the running session usable", async
 		system) cat >/dev/null; printf 'HTTP/1.0 200 OK\\r\\n\\r\\n{"memory_stats":{"usage":4096}}' ;;
 		update) echo 'memory limit is below current usage' >&2; exit 1 ;;
 	`);
-	const provider = new DockerSandboxes({ machine: identity.machineId, dataVolume: async () => "fixture",
+	const provider = new DockerSandboxes({ machine: identity.machineId, dataVolume: async () => "fixture", dropDataVolume: async () => {},
 		slots: { max: 2, unit: { cpus: 1, memoryBytes: 2 ** 30, pids: 512 }, reserve: { cpus: 0, memoryBytes: 0 } } });
 	assert.equal((await provider.connect(sandboxId))?.resizePending, true);
 	assert.deepEqual(docker.calls(), [
@@ -126,7 +126,7 @@ test("a daemon refusal to lower memory leaves the running session usable", async
 
 test("an empty or truncated inspect response identifies the sandbox", async t => {
 	const docker = mockInspect(t, "exited");
-	const provider = new DockerSandboxes({ machine: identity.machineId, dataVolume: async () => "fixture" });
+	const provider = new DockerSandboxes({ machine: identity.machineId, dataVolume: async () => "fixture", dropDataVolume: async () => {} });
 	const truncated = readFileSync(docker.output, "utf8").trimEnd().slice(0, -1);
 	for (const output of ["", truncated]) {
 		writeFileSync(docker.output, output);

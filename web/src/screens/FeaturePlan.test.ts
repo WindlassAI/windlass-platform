@@ -632,3 +632,100 @@ describe("a turn's token counts", () => {
 		expect(end.textContent).not.toContain(" cached (");
 	});
 });
+
+describe("agents in a feature's plan", () => {
+	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === key) as HTMLElement;
+	const fact = (key: string, term: string) => [...row(key).querySelectorAll(".plan-task-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent ?? null;
+	const pill = (label: string, within: ParentNode = host) => [...within.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === label) as HTMLButtonElement;
+	const menuRow = (name: string) => [...document.querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.textContent?.startsWith(name)) as HTMLElement | undefined;
+	const confirmBoxes = () => [...host.querySelectorAll(".plan-unattended-confirm input[type=checkbox]")] as HTMLInputElement[];
+
+	it("names each subtask's agent, model and effort, marks one that works without asking, and holds approval until the owner confirms it", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await show(`/items/${feature.id}`);
+		// On the plan: the planner's proposal, the model by the name its machine reported.
+		expect(pill("Agent: Claude Code", row("templates"))).toBeTruthy();
+		expect(pill("Model: Opus", row("templates"))).toBeTruthy();
+		expect(pill("Effort: high", row("templates"))).toBeTruthy();
+		expect(fact("templates", "agent")).toContain("works without asking");
+		expect(pill("Agent: Windlass", row("sender"))).toBeTruthy();
+		expect(pill("Model: the feature's model", row("sender"))).toBeTruthy();
+		expect(fact("sender", "agent")).not.toContain("works without asking");
+		// On the approval card: each subtask's agent, and the confirmation it needs.
+		const card = host.querySelector(".plan-question") as HTMLElement;
+		expect([...card.querySelectorAll(".plan-route-agent")].map((line) => line.textContent)).toEqual(["Claude Code · Opus · high effort works without asking", "Windlass · the feature's model"]);
+		expect(card.querySelector(".plan-unattended-note")?.textContent).toContain("It runs every command and edit in its sandbox without asking you. The planner proposed this one from the item's text, which may come from an issue anyone could file.");
+		expect(card.querySelector(".plan-unattended-row")?.textContent).toBe("Run Write the alert email templates on Claude Code, which works without asking");
+		const approve = button("Approve version 1")!;
+		expect(approve.disabled).toBe(true);
+		expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toBe("Confirm the agent that works without asking first.");
+		// The server refuses an approval that does not name it, from wherever it comes.
+		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: 1 })).rejects.toThrow("Write the alert email templates: confirm that it runs Claude Code, which works without asking.");
+		act(() => confirmBoxes()[0]!.click());
+		await settle(2);
+		expect(button("Approve version 1")?.disabled).toBe(false);
+		await act(async () => button("Approve version 1")?.click());
+		await settle();
+		const after = await api().item(feature.id);
+		expect(after.plan?.status).toBe("approved");
+		// The first child runs Claude Code on its own model, never the feature's Windlass model.
+		expect(after.children?.[0]?.agent).toMatchObject({ harness: "claude", model: "opus", effort: "high" });
+		expect(after.children?.[0]?.placement?.harness).toBe("claude");
+	});
+
+	it("changes a subtask's agent among what its place offers, saves it, and asks to confirm the new one", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await show(`/items/${feature.id}`);
+		act(() => pill("Agent: Windlass", row("sender")).click());
+		// "nas" reports Claude Code only, signed in: Windlass and Claude Code are offered, nothing else.
+		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.textContent?.split(/In its|On the/)[0])).toEqual(["Windlass", "Claude Code"]);
+		act(() => menuRow("Claude Code")!.click());
+		await settle(2);
+		expect(fact("sender", "agent")).toContain("works without asking");
+		await act(async () => button("Save as version 2")?.click());
+		await settle();
+		expect((await api().item(feature.id)).plan?.subtasks[1]?.agent).toEqual({ harness: "claude" });
+		expect(confirmBoxes()).toHaveLength(2);
+		expect(document.getElementById(button("Approve version 2")!.getAttribute("aria-describedby")!)?.textContent).toBe("Confirm the 2 agents that work without asking first.");
+		// Back to Windlass for the templates: nothing of it is left to confirm.
+		act(() => pill("Agent: Claude Code", row("templates")).click());
+		act(() => menuRow("Windlass")!.click());
+		await act(async () => button("Save as version 3")?.click());
+		await settle();
+		expect((await api().item(feature.id)).plan?.subtasks[0]?.agent).toBeUndefined();
+		expect(confirmBoxes()).toHaveLength(1);
+	});
+
+	it("asks to confirm the subtasks the server counts as still to run, not the ones its children look done", async () => {
+		// A child that finished but whose work the feature has not integrated: the server still asks for it.
+		const finished = (item: ItemView): ItemView => (item.plan ? { ...item, children: [...(item.children ?? []), { ...item, id: "it_finished", mode: "single", state: "done", parent: { itemId: item.id, key: "templates", title: "Write the alert email templates" }, plan: null, children: [] } as ItemView] } : item);
+		make({ items: "features" }, finished);
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		expect(feature.unattended).toEqual(["templates"]);
+		await show(`/items/${feature.id}`);
+		expect(confirmBoxes()).toHaveLength(1);
+		expect(button("Approve version 1")?.disabled).toBe(true);
+	});
+
+	it("approves without a confirmation when the server counts nothing left to confirm", async () => {
+		make({ items: "features" }, (item) => (item.plan ? { ...item, unattended: [] } : item));
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await show(`/items/${feature.id}`);
+		expect(confirmBoxes()).toHaveLength(0);
+		expect(button("Approve version 1")?.disabled).toBe(false);
+	});
+
+	it("can't place an agent the place does not offer, and says why before approval", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		const plan = feature.plan!;
+		await api().actOnItem(feature.id, { kind: "edit_plan", version: plan.version, plan: { ...plan, subtasks: [{ ...plan.subtasks[0]!, agent: { harness: "opencode" } }, plan.subtasks[1]!] } });
+		await show(`/items/${feature.id}`);
+		expect(fact("templates", "can't place")).toBe("‘nas’: it does not offer OpenCode.");
+		const card = host.querySelector(".plan-question") as HTMLElement;
+		expect(card.querySelector(".plan-route-problem")?.textContent).toBe("Can't be placed: ‘nas’: it does not offer OpenCode.");
+		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: 2, agents: ["templates"] })).rejects.toThrow("Write the alert email templates: ‘nas’: it does not offer OpenCode.");
+	});
+});

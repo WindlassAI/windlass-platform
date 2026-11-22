@@ -42,6 +42,15 @@ export const commonRunFlags = (cpus: number, network = "bridge", memoryBytes?: n
 
 export const COMMON_RUN_FLAGS = commonRunFlags(1);
 
+/**
+ * The profiles whose Windlass sessions get a data volume of their own, made with the container and
+ * removed with it, so that one session's commands cannot read or change another's transcripts and
+ * state. Commands run directly in such a container, so whatever the data directory holds is theirs.
+ * Where Windlass's bubblewrap sandbox runs each command, it hides the data directory from them, and
+ * the user's sessions keep sharing one volume and with it Windlass's project-wide MCP approvals.
+ */
+export const SESSION_VOLUME_PROFILES: readonly SandboxProfileId[] = ["docker-hardened"];
+
 export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
@@ -59,8 +68,8 @@ export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-hardened",
 		name: "Docker, hardened",
-		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
-		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits)"],
+		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
+		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits, a data directory of the session's own)"],
 		approval: "full",
 		commandNetwork: true,
 		commandsCanReadAccessToken: true,
