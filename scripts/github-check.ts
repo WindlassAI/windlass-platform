@@ -352,7 +352,7 @@ await section("connect: a user with an installation", async () => {
 	expect("connect exchanges the code, reads identity and installations, and revokes the token",
 		calls[0] === "POST /login/oauth/access_token as none" && calls.includes("GET /api/v3/user as user") &&
 		calls.includes("GET /api/v3/user/installations as user") && calls[3] === `DELETE /api/v3/applications/${standin.clientId}/token as basic` && calls.length === 4);
-	expect("the ticket carries only connection metadata", Object.keys(back.ticket ?? {}).sort().join(",") === "exp,installations,k,nonce,uid,user");
+	expect("the ticket carries only connection metadata", Object.keys(back.ticket ?? {}).sort().join(",") === "exp,installations,k,nonce,readAt,uid,user");
 	const userTokens = [...standin.tokens.values()].filter((token) => token.kind === "user");
 	expect("no user access token is left alive: the platform keeps no credential of the user's", userTokens.length > 0 && userTokens.every((token) => !standin.alive(token.value)));
 	const forged = state.verifyTicket(`${back.location.slice(back.location.indexOf("=") + 1, -4)}AAAA`);
