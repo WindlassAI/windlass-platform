@@ -108,6 +108,7 @@
 import { machineHarnesses } from "./sandbox/harnesses.js";
 import { hostToolsMeta, sessionOpenParams, turnAgentMeta, turnHostTools } from "./sandbox/turn.js";
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
+import { untrustedSource } from "./factory/untrusted.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -224,6 +225,8 @@ interface FakeSession {
 	turns: number;
 	/** Bytes the session's data is larger by than the few it really has: "(big-memory)". */
 	padding: number;
+	/** The source that tainted it, as Windlass 0.6.0 records an untrusted prompt's: once, before the step it starts. */
+	tainted?: string;
 	/** The run of checks that last passed, as Windlass names it where a later run says what it rests on (`since.run`); absent until one has. */
 	passed?: { seq: number; run: number };
 }
@@ -749,6 +752,8 @@ class FakeWindlass implements Windlass {
 		let platformCalled = false;
 		let ended = false;
 		let promptSeen = false;
+		/** The prompt's untrusted source once its first step started: "" for none. */
+		let untrustedAt: string | null = null;
 		let executionId: string | null = null;
 		let currentStep: string | null = null;
 		let outcome: string | null = null;
@@ -1085,6 +1090,18 @@ class FakeWindlass implements Windlass {
 
 				// A steered message reaches the model at the next step, or just before the turn would end.
 				if (recorded.type === "step.started" || TERMINAL.has(recorded.type)) deliverSteers();
+				// A prompt marked as outside text (`_meta["windlass/untrusted"]`): Windlass taints the session before the step it starts, once.
+				// `fake.prompt_untrusted` is the fake's own record of each turn's marker, for the checks.
+				if (recorded.type === "step.started" && untrustedAt === null) {
+					untrustedAt = untrustedSource(input.untrusted) ?? "";
+					if (untrustedAt) {
+						emit({ type: "fake.prompt_untrusted", data: { source: untrustedAt }, seq: 0 });
+						if (!session.tainted) {
+							session.tainted = untrustedAt;
+							emit({ type: "taint.noticed", data: { source: { kind: "client-input", tool: untrustedAt }, text: `Content from ${untrustedAt} is in the conversation.` }, seq: 0 });
+						}
+					}
+				}
 
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
 				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {

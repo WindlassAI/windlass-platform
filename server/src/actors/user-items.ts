@@ -73,6 +73,7 @@ import {
 	type Wait,
 } from "../contract.js";
 import { createItem } from "../factory/blueprint.js";
+import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { reviewerAllowed } from "../factory/review.js";
@@ -376,7 +377,7 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	// A GitHub issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (github && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
@@ -417,6 +418,11 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
 		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort } });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
+		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
+		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : []);
+		if (outside.length) item.untrusted = outside;
+		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
+		if (allowed.length) item.unsandboxed = allowed;
 		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
@@ -897,7 +903,7 @@ export const itemActions = {
 				if ((input.cancel || request.job.cancelRequested) && !c.vars.sessions.has(itemSessionId(input.child))) return null;
 				const session = c.vars.sessions.get(request.sessionId);
 				if (!session) throw new Error("The feature session is unavailable.");
-				const { job, feature, context } = request;
+				const { job, feature, context, untrusted, unsandboxed } = request;
 				// A cross-repo feature's child is on its subtask's repository; any other on the feature's.
 				const target = request.repository ?? { id: feature.repository.id, base: feature.repository.branch };
 				const route = job.route ?? { preferred: feature.place, alternatives: [] };
@@ -918,7 +924,7 @@ export const itemActions = {
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key } });
+						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.

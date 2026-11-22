@@ -1507,6 +1507,8 @@ test("cross-repo: the planner is told where the sibling is, and the reserve hold
 	const { featureReserve, closingReserve, integrationReserve } = await plans();
 	const start = advance(crossItem(), { kind: "start", at: 1, by: "person" });
 	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /cli \(ada\/cli, base main\) is read-only at \.windlass-inputs\/cli/);
+	// The sibling's tree is a repository the person bound with write access, trusted as the primary's files are: nothing is marked.
+	assert.equal((start.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, undefined);
 	assert.equal(integrationReserve(crossProposal()).activeSeconds, 3600);
 	assert.equal(featureReserve(crossSingle, crossProposal()).hostedSeconds, closingReserve(crossSingle).hostedSeconds + 3600);
 	assert.equal(featureReserve(crossSingle, proposal()).hostedSeconds, closingReserve(crossSingle).hostedSeconds);
@@ -1592,15 +1594,21 @@ test("cross-repo: a failed run asks, a cancelled one is retried once at the same
 	assert.equal(second.spent.activeSeconds, spent + 10);
 	const failed = step(step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "79", url: null }).item, { kind: "integration_read", attempt: 1, state: "failed", url: null, said: "models-check failed" }).item;
 	assert.ok(failed.question!.choices.some(c => c.id === "revise"));
-	const replan = advance(failed, { kind: "answer", question: failed.question!.id, choice: "revise", by: "person", at: 50 }).item;
+	const replanned = advance(failed, { kind: "answer", question: failed.question!.id, choice: "revise", by: "person", at: 50 });
+	const replan = replanned.item;
 	assert.equal(replan.run!.step.kind, "refine");
+	// The repair re-plan quotes the combined run's result: marked as such for Windlass.
+	assert.deepEqual((replanned.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, ["the combined run's result"]);
 	assert.equal(replan.replans, 1);
 });
 
 test("cross-repo: a pass leads to the summary, both descriptions, and a hand-over whose merges are recorded in order", () => {
 	let item = step(crossIntegrating(), { kind: "integration_started", attempt: 1, runId: "77", url: null }).item;
-	item = step(item, { kind: "integration_read", attempt: 1, state: "passed", url: "https://github.com/ada/platform/actions/runs/77", said: null, seconds: 600 }).item;
+	const passed = step(item, { kind: "integration_read", attempt: 1, state: "passed", url: "https://github.com/ada/platform/actions/runs/77", said: null, seconds: 600 });
+	item = passed.item;
 	assert.equal(item.run!.step.kind, "summary");
+	// The summary quotes the subtasks' reports and the combined run's result: both marked.
+	assert.deepEqual((passed.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, ["reports of the feature's subtasks", "the combined run's result"]);
 	const report = { title: "Feature", description: "Done", look_at: "", concerns: "", screenshots: [] };
 	const described = step(step(item, { kind: "turn_started" }).item, { kind: "turn_ended", outcome: "succeeded", verified: null, flags: [], changes: false, report, spend: { tokens: 1, hostedSeconds: 1 } });
 	assert.ok(described.effects.some(e => e.kind === "describe_feature"));

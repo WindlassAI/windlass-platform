@@ -1451,7 +1451,7 @@ export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" 
  *   give_up     the item fails
  *   reply       "Answer the agent" (an `agent_ask` question): the note is the answer, and is needed
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {

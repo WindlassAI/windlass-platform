@@ -1039,6 +1039,54 @@ async function run() {
 			await change(issue, "closed", reader); assert.equal((await g2User.item(item.id)).state, "draft");
 			await change(issue, "reopened"); await change(issue, "unlabeled"); assert.equal((await g2User.item(item.id)).state, "cancelled");
 		});
+		await check("G3 a stranger's issue, started by its owner, reaches Windlass marked as the issue's; the owner's own does not", async () => {
+			// The fake Windlass records each prompt's `_meta["windlass/untrusted"]` (`fake.prompt_untrusted`) and taints its session once, as 0.6.0 does.
+			const marks = async (sessionId: string) => (await client.agentSession.get([uid, sessionId], { params: { token: ownerToken } }).snapshot()).timeline
+				.flatMap(e => e.kind === "windlass" && (e.event.type === "fake.prompt_untrusted" || e.event.type === "taint.noticed") ? [{ type: e.event.type, data: e.event.data }] : []);
+			const stranger = make(90, reader); await change(stranger, "labeled");
+			const [draft] = await items(stranger); assert.ok(draft); assert.equal(draft.state, "draft");
+			await g2User.actOnItem({ id: draft.id, action: { kind: "start" } });
+			const started = await until("the stranger's issue's first turn", async () => {
+				const m = await marks(draft.sessionId);
+				return m.some(x => x.type === "fake.prompt_untrusted") ? m : null;
+			}, 60_000);
+			const source = "issue #90 by @g3-reader";
+			assert.deepEqual(started.find(x => x.type === "fake.prompt_untrusted")?.data, { source }, JSON.stringify(started));
+			assert.deepEqual(started.find(x => x.type === "taint.noticed")?.data?.source, { kind: "client-input", tool: source }, JSON.stringify(started));
+			const own = make(91); await change(own, "labeled");
+			const [mine] = await items(own); assert.ok(mine); assert.notEqual(mine.state, "draft");
+			await until("the owner's issue's first turn", async () => (await client.agentSession.get([uid, mine.sessionId], { params: { token: ownerToken } }).snapshot()).timeline.some(e => e.kind === "user"), 60_000);
+			assert.deepEqual(await marks(mine.sessionId), []);
+			await g2User.actOnItem({ id: draft.id, action: { kind: "cancel" } });
+			await g2User.actOnItem({ id: mine.id, action: { kind: "cancel" } });
+		});
+		await check("G3 a stranger's issue on Docker, hardened, does not start until its owner runs it anyway, and then goes unmarked", async () => {
+			const timeline = async (sessionId: string) => (await client.agentSession.get([uid, sessionId], { params: { token: ownerToken } }).snapshot()).timeline;
+			await g2User.saveRepositoryDefaults({ repositoryId: projectG2.id, profile: "docker-hardened" });
+			try {
+				const stranger = make(92, reader); await change(stranger, "labeled");
+				const [draft] = await items(stranger); assert.ok(draft); assert.equal(draft.state, "draft");
+				await g2User.actOnItem({ id: draft.id, action: { kind: "start" } });
+				const refused = await until("the refusal", async () => { const v = await g2User.item(draft.id); return v.question ? v : null; }, 60_000);
+				const source = "issue #92 by @g3-reader";
+				assert.equal(refused.question?.kind, "turn_refused", JSON.stringify(refused.question));
+				assert.ok(refused.question.text.includes("“Docker, hardened”") && refused.question.text.includes(source), refused.question.text);
+				assert.deepEqual(refused.question.choices.map(o => o.id), ["give_up", "run_anyway"]);
+				// Refused before the sandbox opened: the timeline has the turn's prompt, and nothing of Windlass.
+				const before = await timeline(draft.sessionId);
+				assert.ok(before.some(e => e.kind === "user") && !before.some(e => e.kind === "windlass"), "the refused turn reached Windlass");
+				await g2User.actOnItem({ id: draft.id, action: { kind: "answer", question: refused.question.id, choice: "run_anyway" } });
+				const ran = await until("the turn run anyway", async () => { const t = await timeline(draft.sessionId); return t.some(e => e.kind === "windlass" && e.event.type === "step.started") ? t : null; }, 60_000);
+				assert.ok(!ran.some(e => e.kind === "windlass" && (e.event.type === "fake.prompt_untrusted" || e.event.type === "taint.noticed")), "the turn run anyway was marked");
+				const { hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
+				assert.ok(ran.some(e => e.kind === "platform" && e.text === hardenedUnmarkedNote([source])), "the timeline does not say the text went labelled only");
+				const view = await g2User.item(draft.id);
+				assert.ok(view.events.some(e => e.said.includes("without Windlass's sandbox")), JSON.stringify(view.events.map(e => e.said)));
+				await g2User.actOnItem({ id: draft.id, action: { kind: "cancel" } });
+			} finally {
+				await g2User.saveRepositoryDefaults({ repositoryId: projectG2.id, profile: null });
+			}
+		});
 		await check("G3 read-only command stops after permission, including a payload claiming OWNER", async () => {
 			// Fresh principal, so an uncached request shows the entire GitHub cost.
 			const other = standin.addUser("g3-comment-reader"); projectG2.access.set(other.login, "read");

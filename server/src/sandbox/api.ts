@@ -437,6 +437,22 @@ export interface RunTurnInput {
 	 */
 	unattended?: boolean;
 	prompt: string;
+	/**
+	 * Where outside text in `prompt` came from, each source in the person's words (factory/untrusted.ts).
+	 * Windlass 0.6.0 and later take them with the prompt (`_meta["windlass/untrusted"]`, joined and cut to
+	 * 200 characters): the session is tainted before the turn's first step. A Windlass that does not list
+	 * the marker gets the prompt as before, and `onUntrustedUnmarked` is told. Absent or empty: the prompt is
+	 * the person's and the platform's own.
+	 */
+	untrusted?: string[];
+	onUntrustedUnmarked?: () => void;
+	/**
+	 * The layer stops answering for `TurnPersonalServer.unasked` once the engine reports the session
+	 * tainted (`taint.noticed`), also part way through the turn: from then on such a call's question goes
+	 * to `onQuestion` like any other. For a turn nobody watches, where Windlass's asking again after taint
+	 * is the only stop on a call that sends out what came in.
+	 */
+	unaskedUntilTainted?: boolean;
 	/** Windlass's own session to continue (`session/resume`); omitted for the first turn. */
 	windlassSessionId?: string;
 	model?: string;
