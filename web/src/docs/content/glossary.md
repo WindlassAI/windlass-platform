@@ -2,7 +2,7 @@
 Lines a work item's agent is given, which the verdict lists for you to check. No machine checks them.
 
 ### Access token
-The short-lived ChatGPT token a Windlass turn gets. It lasts about an hour and cannot be renewed. It is not your sign-in.
+The short-lived ChatGPT token a Windlass turn gets. Each token lasts about an hour from issue. The platform replaces it during a long turn. The sign-in stays on the platform.
 
 ### Agent
 A coding agent working on one task, with its own conversation and sandbox. Each has its own page, at `/agents/<id>`. Also called a session.
@@ -17,7 +17,7 @@ Anthropic's coding agent. On Windlass it runs only on your own machines, with yo
 The container on your machine that holds an agent's login and forwards the agent's model requests with it, so the login is never inside the agent's container.
 
 ### Docker + Windlass sandbox
-A Docker profile in which Windlass sandboxes every command again: no network, and the access token out of reach. Its ID is `docker-windlass-sandbox`.
+A Docker profile in which Windlass sandboxes every command again: the agent's commands have no network and cannot read the access token. Setup ends before handoff. Approved local MCP servers can read the token. Its ID is `docker-windlass-sandbox`.
 
 ### Docker, hardened
 A Docker profile in which commands run directly in the container, with network, under Docker's default seccomp and AppArmor profiles. Its ID is `docker-hardened`.

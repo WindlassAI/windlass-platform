@@ -644,7 +644,7 @@ function WhereItRuns() {
 						<div className="lp-profiles">
 							<div className="lp-profile">
 								<p className="lp-profile-name">Docker + Windlass sandbox</p>
-								<SandboxLine facts={[{ text: "commands sandboxed" }, { text: "no network" }, { text: "token sealed" }]} />
+								<SandboxLine facts={[{ text: "commands sandboxed" }, { text: "no network" }, { text: "token hidden from commands" }]} />
 							</div>
 							<div className="lp-profile">
 								<p className="lp-profile-name">Hardened Docker</p>

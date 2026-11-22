@@ -151,7 +151,7 @@ It is in the user's actor and nowhere else, and that actor is the one place
 that asks Windlass for an access token: `windlass login token --json --valid-for 20m` prints a token of the
 user's that is good for at least twenty minutes more, and refreshes the sign-in first when the saved token
 has less left. A turn is handed that token in a file in its sandbox
-(`~/.local/share/windlass/access-token-<sandbox id>.json`, one per session, readable by its owner only), and
+(`access-token-<sandbox id>.json`, mode 0600, in Docker's private `/dev/shm` tmpfs or the E2B guest's Windlass data directory), and
 Windlass is started with `WINDLASS_ACCESS_TOKEN_FILE` naming it. The file is removed when the turn ends. Demo
 turns are handed nothing. When the sign-in is gone, has expired or its token is rejected, the turn ends by
 asking the user to sign in with ChatGPT again; when the platform could not get or replace the token for
@@ -214,7 +214,7 @@ what each would need (`server/src/sandbox/profiles.ts`).
 | Docker, hardened | container under Docker's default seccomp and AppArmor | none | `--approval full` | network, can read the turn's access token |
 
 In neither profile can a command read the ChatGPT sign-in: it is not in the container. The access token a command
-can read in the hardened profile lasts about an hour, and whoever reads it cannot renew it. When such a command
+can read in the hardened profile expires about an hour after issue. During a turn, an unsandboxed command or an approved local MCP server can also read replacements. When such a command
 prints the token as it is, the platform takes it out of the turn's events, so it does not reach the timeline.
 
 The Windlass profile ships Docker 29.1.3’s default seccomp filter (moby/profiles
@@ -334,13 +334,10 @@ case: what Windlass had saved is still read back and stored.
 and a `windlass login token` that is running for the old one is stopped rather than waited for: once `adopt`
 or `logout` has returned, no token of the old sign-in is handed out. `user.forgetChatgpt()` forgets the
 caller's sign-in; the web app has no button for it yet. Forgetting also has the sandbox provider remove the
-token files of the user's running turns. On Docker that is done in the user's data volume, on the machine that
-has it. A provider whose sandboxes are elsewhere has to do the same for its own: on E2B, remove
-`access-token-*.json` from Windlass's data directory in each of the user's running sandboxes (they are listed
-by the metadata `wlp_uid`). Until it does, a turn that is running on E2B goes on with the token it has
-until that token expires, within the hour, and then ends asking for a sign-in; it is given no new one. On
-a user's own machine its runner removes them, when it is connected at that moment ("Machines of your
-own" says what holds for one that is not).
+token files of the user's running turns. Docker removes each private file in its session container and clears
+legacy copies on the data volume. E2B lists the user's running sandboxes by the metadata `wlp_uid` and removes
+the file from each guest's Windlass data directory. A connected machine runner removes the files from its
+own sessions. A copy already taken remains usable until its expiry.
 
 The variables of the sign-in runners (`WLP_SIGNIN_KEY`, `WLP_WINDLASS_BIN`, `WLP_SIGNIN_RUNNER`,
 `WLP_SIGNIN_TMPDIR`) are in [configuration.md](configuration.md#sign-ins).

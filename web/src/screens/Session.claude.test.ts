@@ -231,7 +231,10 @@ describe("an agent's mode on its page", () => {
 		await act(async () => picker()?.click());
 		expect([...document.querySelectorAll('.ui-pop [role="menuitemradio"] .ui-item-label')].map((name) => name.textContent)).toEqual(["Ask", "Auto"]);
 		expect(panelMode()).toBe("Auto");
-		expect(host.querySelector("#panel-sandbox")?.closest("section")?.textContent).toContain("your ChatGPT sign-in is never in the sandbox");
+		const facts = host.querySelector("#panel-sandbox")?.closest("section")?.textContent;
+		expect(facts).toContain("your ChatGPT sign-in is never in the sandbox");
+		expect(facts).toContain("The agent's commands cannot read the session's access token.");
+		expect(facts).toContain("Approved local MCP servers can read each token.");
 	});
 
 	it("draws no picker for a work item's agent, and says its profile's mode in the panel", async () => {

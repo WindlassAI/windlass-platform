@@ -362,11 +362,8 @@ in place, and its own commands stay sandboxed.
 - **No credential of the platform's is handed to it.** What it is handed is what the user saved for the
   repository as secrets ([A repository's secrets](#a-repositorys-secrets)). The token a clone used was given to that one `git clone` on its
   standard input and revoked when it ended, before the setup starts. A turn's ChatGPT access token file is
-  written when a turn starts Windlass, which is after the setup, and removed when that turn ends; a new
-  sandbox has had no turn. What the command can read is what the sandbox's user can: on E2B Windlass's data
-  directory is the sandbox's own and holds no token then. On Docker that directory is the user's volume,
-  shared by the user's sessions, so while another session of the same user runs a turn, its token file is
-  there, as a command in the hardened profile can read it.
+  written after setup finishes, in Docker's per-container tmpfs or the E2B session's private disk.
+  After setup and before the next handoff the platform kills processes the setup left running.
 - **It is not a place for a secret.** The command is shown in the timeline and, when it fails, given to the
   agent with its output. A value the command needs is saved as a secret of the repository and read from its
   variable (`$NPM_TOKEN`); what the command prints of it is shown without it.
@@ -719,13 +716,12 @@ the same place as a tool call's question, with the same control.
   again afterwards with its whole time to be answered in.
 - **What the question says.** Windlass's own explanation is that the server "runs outside the sandbox, with
   your permissions". Here that means: it is a process in the session's sandbox machine that Windlass's sandbox
-  around commands never holds, so it has the network and can read Windlass's data directory, where the turn's
-  access token file is. The question says so for the profile the session runs in
+  around commands never holds, so it has the network and can read Windlass's data directory and the session's private access token file. The question says so for the profile the session runs in
   (`server/src/server-question.ts`):
 
   | Profile | The question's first sentence |
   |---|---|
-  | commands sandboxed by Windlass | "It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token, which lasts about an hour and cannot be renewed." |
+  | commands sandboxed by Windlass | "It runs in this session's container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue." |
   | Docker, hardened | "It runs in this session's container, as the agent's commands do here: like them, it has the network and can read Windlass's own data, including ..." |
   | E2B before its check has passed | "It runs in this session's microVM and is never inside Windlass's sandbox around commands, whether or not that sandbox works here: it has the network and can read Windlass's own data, including ..." |
 
@@ -977,8 +973,7 @@ own servers are the ones in its `.windlass/config.json` ([A project's MCP server
   the first sentence of the question about a project's server (`personalServerReach`,
   `server/src/server-question.ts`), for each sandbox the deployment can run: "It runs in a session's
   container, but outside Windlass's sandbox around commands: unlike the agent's commands, it has the
-  network and can read Windlass's own data, including the session's access token, which lasts about
-  an hour and cannot be renewed."
+  network and can read Windlass's own data, including the session's access token and any replacement during the turn. Each token lasts about an hour from issue."
 - **Its tools, with or without a question.** Calling a server's tools is another matter than
   starting it. Where Windlass sandboxes commands it asks before each call of an MCP tool, through
   the question the platform already puts; and in every profile it asks once content it does not

@@ -5,7 +5,7 @@
  *
  *   WINDLASS_WAKE=off WINDLASS_ACP_LOG=warn
  *   WINDLASS_ACP_SCRIPT=/tmp/.wlp-script-<random>.json                                        a scripted (demo) turn
- *   WINDLASS_ACCESS_TOKEN_FILE=/home/agent/.local/share/windlass/access-token-<id>.json       any other turn
+ *   WINDLASS_ACCESS_TOKEN_FILE=<session-private path>/access-token-<id>.json       any other turn
  *   wlp-run exec <tag> windlass acp
  *
  * (windlass.ts shows the `docker exec` this is on Docker, e2b/sandboxes.ts the command it is on E2B.)
@@ -115,7 +115,7 @@ import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, Scripted
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, handedInFailure, handedInProblem, tokenRanOut, tokenSourceFailure } from "./handoff.js";
-import { type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
+import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
 export function turnHostTools(input: RunTurnInput) {
@@ -653,8 +653,17 @@ class Turn {
 	private async prepare(scriptPath: string | null, agentFile: string | null): Promise<boolean> {
 		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
 		// client went away, and it would hold the session ("in use by another windlass process").
-		const [leftovers, script, agent, token] = await Promise.allSettled([
-			this.sandbox.stopLeftovers("windlass"),
+		try {
+			const leftovers = await this.sandbox.stopLeftovers("windlass");
+			if (leftovers > 0) this.notes.push(`[platform] stopped ${leftovers} Windlass run(s) left over in this sandbox before starting the turn`);
+			// Complete the sweep before any write. A live turn can rotate its token without killing its own engine or MCP servers.
+			if (this.tokenFile !== null) await sweepSessionProcesses(this.sandbox, this.tokenFile.path);
+			if (this.abortRequested) return false;
+		} catch (error) {
+			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
+			return false;
+		}
+		const [script, agent, token] = await Promise.allSettled([
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
 				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
@@ -664,13 +673,12 @@ class Turn {
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
 		]);
 		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
-		const setupError = [leftovers, script, agent].find(result => result.status === "rejected");
+		const setupError = [script, agent].find(result => result.status === "rejected");
 		const broken = setupError?.status === "rejected" ? setupError.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
 		if (broken !== null) {
 			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };
 			return false;
 		}
-		if (leftovers.status === "fulfilled" && leftovers.value > 0) this.notes.push(`[platform] stopped ${leftovers.value} Windlass run(s) left over in this sandbox before starting the turn`);
 		if (token.status === "rejected") {
 			// No sign-in, one that is no longer accepted, or a token that could not be had this time.
 			this.failure = tokenSourceFailure(token.reason);

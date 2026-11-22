@@ -8,7 +8,7 @@ Yes, on one of your own machines. Start its runner with `--harness claude`, run 
 
 ## Does the agent get my ChatGPT password or sign-in?
 
-No. Your ChatGPT sign-in is never in a sandbox. Each turn gets a short-lived access token, which lasts about an hour and cannot be renewed. In some sandboxes the agent's commands can read that token. See [Sandboxes and security](/docs/security).
+No. Your ChatGPT sign-in is never in a sandbox. A Windlass turn using your ChatGPT plan gets an access token after setup. Each token lasts about an hour from issue. Unsandboxed commands and approved local MCP servers can read it, including replacements during that turn. Windlass hides the file from sandboxed commands. See [Sandboxes and security](/docs/security).
 
 ## Does the agent get my GitHub access?
 

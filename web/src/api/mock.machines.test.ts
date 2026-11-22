@@ -477,7 +477,9 @@ describe("the start composer's agent picker", () => {
 	it("says Claude Code's mode and its Claude login in the sandbox's facts, and Windlass's as before", async () => {
 		await open();
 		expect(sandboxLine()).toContain("runs what the sandbox contains, refuses the rest");
-		expect(sandboxLine()).toContain("commands cannot read the session's access token");
+		expect(sandboxLine()).toContain("token hidden from commands");
+		expect(sandboxLine()).toContain("The agent's commands cannot read the session's access token.");
+		expect(sandboxLine()).toContain("Approved local MCP servers can read each token.");
 		place("m_nas");
 		await settle();
 		agents();
