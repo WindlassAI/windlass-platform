@@ -653,17 +653,23 @@ class Turn {
 	private async prepare(scriptPath: string | null, agentFile: string | null): Promise<boolean> {
 		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
 		// client went away, and it would hold the session ("in use by another windlass process").
-		try {
-			const leftovers = await this.sandbox.stopLeftovers("windlass");
-			if (leftovers > 0) this.notes.push(`[platform] stopped ${leftovers} Windlass run(s) left over in this sandbox before starting the turn`);
-			// Complete the sweep before any write. A live turn can rotate its token without killing its own engine or MCP servers.
-			if (this.tokenFile !== null) await sweepSessionProcesses(this.sandbox, this.tokenFile.path);
-			if (this.abortRequested) return false;
-		} catch (error) {
-			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
-			return false;
+		const stopping = this.sandbox.stopLeftovers("windlass").then(count => {
+			if (count > 0) this.notes.push(`[platform] stopped ${count} Windlass run(s) left over in this sandbox before starting the turn`);
+		});
+		if (this.tokenFile !== null) {
+			// Finish both cleanup steps before starting any file writer or requesting a token.
+			try {
+				await stopping;
+				await sweepSessionProcesses(this.sandbox, this.tokenFile.path);
+				if (this.abortRequested) return false;
+			} catch (error) {
+				this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
+				return false;
+			}
 		}
-		const [script, agent, token] = await Promise.allSettled([
+		// A scripted turn can prepare its files while the previous Windlass is stopping.
+		const [stopped, script, agent, token] = await Promise.allSettled([
+			stopping,
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
 				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
@@ -673,7 +679,7 @@ class Turn {
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
 		]);
 		// The sandbox itself does not work (it is not running, a file cannot be written): that is not about anyone's sign-in.
-		const setupError = [script, agent].find(result => result.status === "rejected");
+		const setupError = [stopped, script, agent].find(result => result.status === "rejected");
 		const broken = setupError?.status === "rejected" ? setupError.reason : token.status === "rejected" && token.reason instanceof TokenFileError ? token.reason : null;
 		if (broken !== null) {
 			this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${broken instanceof Error ? broken.message : String(broken)}` };

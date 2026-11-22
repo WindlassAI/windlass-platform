@@ -1753,6 +1753,23 @@ PYTHON`);
 	await section("session token isolation", async () => {
 		const first = await offlineSandbox(uidH, "docker-hardened", "isolation-first");
 		if (!first) throw new Error("Could not isolate the first test container");
+		// Both operations do Docker I/O. Observe their order without imposing a time limit.
+		const scripted = new (class extends DockerSandboxHandle {
+			writingScript = false;
+			overlapped = false;
+			override async writeTextFile(path: string, content: string) {
+				if (path.startsWith("/tmp/.wlp-script-")) this.writingScript = true;
+				await super.writeTextFile(path, content);
+			}
+			override async stopLeftovers(program: string) {
+				const count = await super.stopLeftovers(program);
+				this.overlapped = this.writingScript;
+				return count;
+			}
+		})(first.id, first.profile, first.uid);
+		const demo = await turn(scripted, "Check scripted startup", plainScript);
+		expect("a scripted turn writes its script while checking for leftover engines", scripted.overlapped && outcomeOf(demo) === "succeeded");
+
 		const legacyPath = `${DATA_DIR}/access-token-old-check.json`;
 		await first.writeSecretFile(legacyPath, "{}");
 		const second = await offlineSandbox(uidH, "docker-windlass-sandbox", "isolation-second");
