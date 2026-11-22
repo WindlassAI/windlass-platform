@@ -82,7 +82,7 @@ describe("an item from a GitHub issue", () => {
 		await render(itemPage(() => fromIssue(false)));
 		const draft = fromIssue(false);
 		expect(draft.origin).toMatchObject({ issue: { number: 42, author: "harbor-user" }, sender: "ada" });
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("work item · from GitHub");
+		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from GitHub");
 		const line = host.querySelector(".item-origin") as HTMLElement;
 		expect(line.textContent).toBe("From issue #42, written by @harbor-user and filed by @ada.");
 		const link = line.querySelector("a") as HTMLAnchorElement;
@@ -100,7 +100,7 @@ describe("an item from a GitHub issue", () => {
 		root = createRoot(host);
 		await render(itemPage(() => items.find((item) => item.source === "web") as ItemSummary));
 		expect(host.querySelector(".item-origin")).toBeNull();
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("work item · from the web");
+		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from the web");
 	});
 
 	it("links to its issue from its row in the work list, and a row from the web has no such link", async () => {

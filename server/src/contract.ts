@@ -1052,9 +1052,12 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 
 /** Latest host sample for an already listed machine. */
 export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
-export interface MachineDetails { whenToUse: string; tags: string[] }
+export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
 /** One of the user's machines, as the Machines page lists it. */
 export interface MachineSummary extends Partial<MachineDetails> {
+	/** Additive runner sizing report. Older runners report turn counts and sandbox CPU instead. */
+	slots?: { max: number; busy: number; queued: number; unit: { cpus: number; memoryBytes: number; pids: number } };
+	personalRunning?: number;
 	turns?: { running: number; max: number | null; queued: number };
 	host?: { cpus: number; sandboxCpus: number; memoryBytes: number; memoryFreeBytes: number; load1: number | null };
 	screenshots?: boolean;
@@ -1205,7 +1208,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
+export type QuestionKind = "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1463,6 +1466,7 @@ export interface RoundCaps {
 
 /** An item as the user's index lists it. */
 export interface ItemSummary {
+	placement?: ChildPlacement;
 	mode?: ItemMode;
 	parent?: { itemId: string; key: string; title: string } | null;
 	id: string;
@@ -1496,8 +1500,11 @@ export interface ItemSummary {
 
 /** An item's page. */
 export interface ItemView extends ItemSummary {
+	canRetry?: boolean;
 	plan?: FeaturePlan | null;
 	children?: ItemSummary[];
+	/** Current owner policy for the places named in the proposed plan. */
+	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */
@@ -1517,7 +1524,29 @@ export interface ItemView extends ItemSummary {
 
 export type ItemMode = "single" | "orchestrate";
 
+export interface PlacementNeeds {
+	tags?: string[];
+	screenshots?: boolean;
+	egress?: "open" | "restricted";
+	profile?: "docker-hardened" | "docker-windlass-sandbox";
+	harness?: HarnessId;
+	cpus?: number;
+	memoryGiB?: number;
+}
+
+export interface ChildPlacement {
+	place: SandboxPlace;
+	name: string;
+	reason: string;
+	units: number;
+	sendSecrets: boolean;
+	profile?: SandboxProfileId;
+}
+
 export interface PlanSubtask {
+	/** Older plans inherit the feature's place. */
+	place?: { prefer: string; reason: string; allow?: string[] };
+	needs?: PlacementNeeds;
 	key: string;
 	title: string;
 	brief: string;
@@ -1528,6 +1557,7 @@ export interface PlanSubtask {
 }
 
 export interface FeaturePlanEdit {
+	overflow?: boolean;
 	questions: { id: string; text: string; options?: string[]; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
@@ -1774,7 +1804,7 @@ export interface UserActions {
 	 */
 	removeMachine(input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]>;
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
-	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[] }): Promise<MachineSummary[]>;
+	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	listItems(): Promise<ItemSummary[]>;

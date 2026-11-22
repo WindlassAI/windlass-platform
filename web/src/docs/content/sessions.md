@@ -26,7 +26,7 @@ Tool calls that finished one after another are folded into one line that says wh
 
 Above the field, a status line says what is happening, for example **running `bun test` · step 3**, with a timer. If you scroll up, **Jump to latest** takes you back to the end. When you hide the side panel, the timeline stays in the middle of the page.
 
-At the end of each turn, a summary line gives the outcome, the number of steps, the time it took, the files it changed and the tokens it used. For Claude Code it gives how full the context is and the cost so far.
+At the end of each turn, a summary line gives the outcome, the number of steps, the time it took and the files it changed. The tokens it used are folded behind **tokens** at the end of that line: choose it, or hover it, to see them. For Claude Code the line gives how full the context is and the cost so far instead. The session panel shows the tokens too.
 
 You can copy a prompt, an answer (as Markdown) or a code block with the copy button beside it.
 

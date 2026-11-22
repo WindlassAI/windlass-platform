@@ -220,14 +220,19 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const repo = standin.addRepository({ owner: "ada", name: "single-handoff", installation, files: { "README.md": "# Notes\n" } });
 			const { user, client, auth } = await world(singleServer, standin, { WLP_FEATURE_TEST_GIT: join(singleServer.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
-			const item = await user.createItem({ repository: { id: repo.id }, title: "Add one note", body: "Write the requested note. (suggest-single)", mode: "orchestrate", start: true });
+			const item = await user.createItem({ repository: { id: repo.id }, title: "Add one note", body: "Write the requested note. (suggest-single)", start: true });
 			const proposed = await untilItem(user, item.id, "a single-item suggestion", v => !!v.question);
 			assert(proposed.plan?.singleSuggested && proposed.question?.kind === "single_suggested", "The planner did not suggest single.");
-			await user.actOnItem({ id: item.id, action: { kind: "answer", question: proposed.question.id, choice: "run_single" } });
+			const spec = { goal: "Record one note.", requirements: ["Preserve the original line endings."], acceptance: ["The note ends with a newline."], outOfScope: ["Reformatting existing notes."] };
+			const edited = await user.actOnItem({ id: item.id, action: { kind: "edit_plan", version: proposed.plan.version, plan: { ...proposed.plan, spec } } });
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: edited.question!.id, choice: "run_single" } });
 			const result = await untilItem(user, item.id, "the implementation result", v => !!v.pullRequest || !!v.question);
 			const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
 			const { timeline } = await session.snapshot();
 			const opens = timeline.flatMap(e => e.kind === "windlass" && e.event.type === "fake.session_open" ? [e.event] : []);
+			const prompt = timeline.find(e => e.kind === "user" && e.turn === 2);
+			assert(prompt?.kind === "user", "The implementing turn has no prompt.");
+			for (const line of [...spec.requirements, ...spec.acceptance, ...spec.outOfScope]) assert(prompt.text.includes(line), "The builder prompt omitted " + line);
 			const [plan, build] = opens;
 			assert(plan?.data?.method === "session/new" && build?.data?.method === "session/resume" && plan.sessionId === build.sessionId, "The handoff lost the planner conversation.");
 			const meta = (build.data.params as { _meta: { windlass: { agent?: string; hostTools: { name: string }[] } } })._meta.windlass;
@@ -265,11 +270,11 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
-			const { user } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
-			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result. (suggest-single)", mode:"orchestrate", start:true})});
+			const filing = await api("/api/items", {method:"POST", token, key:"search-feature", body:JSON.stringify({repository:{id:harbor.id}, title:"Search documents", body:"Index documents and show the result. (suggest-single)", start:true})});
 			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused feature filing.");
 			const feature = await user.item(filing.body.id);
 			const suggestion = await untilItem(user, feature.id, "the single-item suggestion", v => !!v.question);
@@ -281,7 +286,10 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const invalid = structuredClone(page.plan);
 			invalid.subtasks[0].budget.tokens = 0;
 			await refused(() => user.actOnItem({id:feature.id, action:{kind:"edit_plan", version:invalid.version, plan:invalid}}), "bad_input");
-			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:page.plan }});
+			const checkedPlan = structuredClone(page.plan);
+			checkedPlan.subtasks[0].brief += " (change-setup-fixture)";
+			checkedPlan.subtasks[1].brief += " (consume-setup-fixture)";
+			const edited = await user.actOnItem({id:feature.id, action:{ kind:"edit_plan", version:page.plan.version, plan:checkedPlan }});
 			await refused(() => user.actOnItem({id:feature.id,action:{kind:"approve_plan",version:page.plan!.version}}), "item_conflict");
 			const version = edited.plan!.version;
 			await user.saveRepositoryChecks({repositoryId:harbor.id,checks:[]});
@@ -292,6 +300,9 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const noCi = await refused(() => user.actOnItem({id:feature.id, action:{kind:"answer",question:edited.question!.id,choice:"approve"}}), "bad_input");
 			assert(/single.*push/i.test(noCi), "Missing push CI guidance: " + noCi);
 			standin.commit(harbor, "main", {".github/workflows/build.yml":"on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"}, "Run build on push");
+			standin.commit(harbor, "main", { "index/setup.sh": 'test -n "$SETUP_FIXTURE" && echo seed-setup\n' }, "Add setup fixture");
+			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "sh index/setup.sh" });
+			await user.saveRepositorySecret({ repositoryId: harbor.id, profile: "docker-windlass-sandbox", name: "SETUP_FIXTURE", scope: "setup", value: "fixture-only" });
 			const base = standin.branchHead(harbor,"main")!;
 			await user.actOnItem({id:feature.id,action:{kind:"approve_plan",version}});
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
@@ -299,9 +310,9 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
 					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
 				}
-				if (v.question) throw new Error(v.question.text);
-				return v.state === "review";
+				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
 			}, 320_000);
+			assert(done.state === "review", done.question?.text ?? done.children?.find(child => child.question)?.question?.text ?? stateOf(done));
 			const read = await api("/api/items/" + feature.id, {token});
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
@@ -309,6 +320,10 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
 			const [first, secondChild] = done.children;
 			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
+			assert(standin.fileOn(harbor, branchFor(first.title, first.sessionId), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
+			const snapshot = await client.agentSession.get([auth.profile.uid, secondChild.sessionId], { params: { token: auth.token } }).snapshot();
+			const setup = snapshot.timeline.find(e => e.kind === "setup" && e.state === "succeeded");
+			assert(setup?.kind === "setup" && setup.output.trim() === "seed-setup", "The second subtask must run the seed setup with the fixture secret. Observed " + (setup?.kind === "setup" ? setup.output : "no successful setup"));
 			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
 			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
@@ -345,7 +360,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			return "items: { reviewer: true }";
 		});
 		await check("reviewer: builder and reviewer keep their profile mode", async () => {
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Fixed modes", body: "Read the repository.", start: false });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Fixed modes", body: "Read the repository.", start: false });
 			const view = await user.item(item.id);
 			assert(view.reviewerSessionId, "missing reviewer session");
 			for (const id of [view.sessionId, view.reviewerSessionId]) {
@@ -365,7 +380,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			await user.savePersonalServer({ name: "builder-notes", definition: { command: "cat" } });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "true" }] });
 			await user.saveRepositorySetup({ repositoryId: harbor.id, command: "true" });
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report) (review-files) (lookup-limit)", start: true });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review the homepage", body: "Change the homepage. (report) (review-files) (lookup-limit)", start: true });
 			const view = await untilItem(user, item.id, "the second review handoff", v => v.state === "review", CI_WAIT_MS);
 			assert(view.reviewerSessionId, "missing reviewer session");
 			const keys = [auth.profile.uid, view.reviewerSessionId];
@@ -413,14 +428,14 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			return `file_review alone; one verdict, one review, a verified PNG and ${view.spent.hostedSeconds}s across two sessions`;
 		});
 		await check("reviewer: networked commands hand over with the profile reason", async () => {
-			const item = await user.createItem({ repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
 			const view = await untilItem(user, item.id, "the handoff without a reviewer", v => v.state === "review", CI_WAIT_MS);
 			assert(view.reviewerSessionId === null && !view.reviews.length && view.review?.state === "off" && view.reviewNone?.includes("commands would run with the network"), "networked commands admitted a reviewer");
 			return view.reviewNone ?? undefined;
 		});
 		await check("reviewer: repository screenshot opt-out reaches both agents", async () => {
 			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: false });
-			const item = await user.createItem({ repository: { id: harbor.id }, title: "Review without pictures", body: "Change the homepage. (report) (screenshot) (try-disabled-shot)", start: true });
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review without pictures", body: "Change the homepage. (report) (screenshot) (try-disabled-shot)", start: true });
 			const v = await untilItem(user, item.id, "the text-only review", v => v.state === "review", CI_WAIT_MS);
 			const timeline = async (id: string) => JSON.stringify((await client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } }).snapshot()).timeline);
 			const builder = await timeline(item.sessionId), reviewer = await timeline(v.reviewerSessionId!);
@@ -436,7 +451,7 @@ await check("reviewer: a pull ref missing the expected commit hands over before 
 		const head = "a".repeat(40);
 		setCi(harbor, head, "success");
 		const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head, WLP_FAKE_REVIEW_CLONE_503_ONCE: "1", WLP_FAKE_REVIEW_MISSING: "1" });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Review the pushed commit", body: "Change the homepage.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Review the pushed commit", body: "Change the homepage.", start: true });
 		const view = await untilItem(user, item.id, "the refused checkout", v => v.state === "review", CI_WAIT_MS);
 		assert(view.reviewerSessionId && view.review?.state === "none" && !view.reviews.length && view.reviewNone?.includes("checkout of aaaaaaa failed"), "missing a reason for the unavailable head");
 		const snapshot = await client.agentSession.get([auth.profile.uid, view.reviewerSessionId], { params: { token: auth.token } }).snapshot();
@@ -1366,7 +1381,7 @@ async function machineChecks(): Promise<void> {
 		const { user, client, auth } = await world(server, standin, { WLP_MACHINES: "1", WLP_FACTORY_REVIEWER: "on", WLP_PUBLIC_URL: API, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FACTORY_ITEM_HOSTED_SECONDS: "1" });
 		await runner.pair(user);
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
-		const task = { repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
+		const task = { mode: "single" as const, repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
 		await check("machine: only a paired machine with an available profile can take an item", async () => {
 			await refused(() => user.createItem({ ...task, place: { kind: "machine", machineId: "m_0123456789abcdef" } }), "machine_not_found");
 			await refused(() => user.createItem(task), "machine_not_connected");
@@ -1518,7 +1533,7 @@ try {
 		assert(/^wlp_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token), "the token is not shaped as one");
 		const listed = await user.apiTokens();
 		assert(listed.length === 1 && !JSON.stringify(listed).includes(token.slice(-43)), "the token's value is in the list");
-		const body = { repository: { id: harbor.id }, title: "Write a short program", body: "Add a small program to the repository.", acceptance: ["It runs", "Keep <!-- windlass-item:fake --> and @everyone inert"], start: true };
+		const body = { mode: "single", repository: { id: harbor.id }, title: "Write a short program", body: "Add a small program to the repository.", acceptance: ["It runs", "Keep <!-- windlass-item:fake --> and @everyone inert"], start: true };
 		assert((await api("/api/items", { method: "POST", body: JSON.stringify(body) })).status === 401, "no token was taken");
 		// A token shaped right that names no user: the same refusal as a wrong one, at once, with nothing logged as an error.
 		const logged = main.text.length;
@@ -1575,7 +1590,7 @@ try {
 	await check("ci: on a repository with no checks, CI that passes on the pushed commit makes it ready for review", async () => {
 		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [] });
 		// No word here may choose the fake layer's recording in which checks run ("check", "verify"): its others run none.
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "A short note", body: "Add a short note to the repository.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "A short note", body: "Add a short note to the repository.", start: true });
 		const published = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === published.pullRequest?.number);
 		assert(pull, "the stand-in has no such pull request");
@@ -1598,7 +1613,7 @@ try {
 	await check("gate: a required check that fails sends the agent back once, and the same failure again stops at once with a question", async () => {
 		// "build" in the check's name makes the fake layer replay a longer command in the fix turn, which names the check: long enough to look at it running.
 		await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{ name: "build", command: "npm run fail" }] });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Fix the light", body: "Make the light work.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Fix the light", body: "Make the light work.", start: true });
 		// The fix turn is delivered the moment the first turn ends, while that turn still settles its sandbox time: watched from the user's side meanwhile.
 		const samples: Array<{ held: number; kept: boolean }> = [];
 		let watching = true;
@@ -1631,7 +1646,7 @@ try {
 	});
 
 	await check("ci: a failing CI gets a fix turn, and the same CI failure again stops at once with a question", async () => {
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Tighten the bolts", body: "Make the bolts tight.", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
@@ -1661,7 +1676,7 @@ try {
 
 	await check("sleep: an item waiting on its CI schedule while the server is stopped and started again proceeds when the time comes", async () => {
 		await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report) (screenshot)", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Across a restart", body: "Add a small program to the repository. (report) (screenshot)", start: true });
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null && view.wait?.reason === "ci", 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
@@ -1707,7 +1722,7 @@ try {
 	});
 
 	await check("deploy: SIGTERM during an implement turn, a restart, and the step is tried again as attempt 2 with the 'you were interrupted' message", async () => {
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Slow work", body: "A long build (slow).", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Slow work", body: "A long build (slow).", start: true });
 		await untilItem(user, item.id, "the turn to start", (view) => view.run?.step.turn === "started", 60_000);
 		await main.stop();
 		await main.start({ ...standin.env(), WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
@@ -1765,9 +1780,9 @@ try {
 	const publishedHead = "b".repeat(40);
 	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_REVIEW_HEAD: publishedHead, WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
 	await check("capacity: with one factory turn a second item waits with the sentence, and starts when the first turn ends", async () => {
-		const a = await user.createItem({ repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
+		const a = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
 		await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started", 60_000);
-		const b = await user.createItem({ repository: { id: harbor.id }, title: "Second", body: "Write a short program.", start: true });
+		const b = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Second", body: "Write a short program.", start: true });
 		const waiting = await untilItem(user, b.id, "the wait", (view) => view.state === "waiting" && view.wait?.reason === "capacity", 30_000);
 		assert(waiting.wait && /Waiting for one of your 1 factory turns; 1 are running \(“First \(slow\)”\)\./.test(waiting.wait.sentence), `it says ${waiting.wait?.sentence}`);
 		const started = await untilItem(user, b.id, "the second turn", (view) => view.run?.step.turn === "started" || view.run?.step.kind !== "implement", 120_000);
@@ -1775,7 +1790,7 @@ try {
 	});
 	await check("screenshots: the item serves the builder’s PNG to its owner and links GitHub to the page", async () => {
 		await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: true });
-		const item = await user.createItem({ repository: { id: harbor.id }, title: "Screenshot", body: "Change the home page. (report) (screenshot)", start: true });
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Screenshot", body: "Change the home page. (report) (screenshot)", start: true });
 		const view = await untilItem(user, item.id, "the report and push", v => !!v.report && !!v.pullRequest);
 		const shot = view.report!.screenshots[0];
 		assert(shot?.width === 1 && shot.height === 1 && shot.state === "kept" && view.report!.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id), "the item did not retain the verified PNG");
@@ -1815,9 +1830,9 @@ try {
 	await check("allowance: with the day's sandbox time used, an item waits for 00:00 UTC, saying so", async () => {
 		const tomorrow = (view: ItemView) => view.wait?.reason === "capacity" && /00:00 UTC/.test(view.wait.sentence);
 		// The first item's turn holds the whole day's minute, or, where a turn needs more to start, waits itself.
-		const a = await user.createItem({ repository: { id: harbor.id }, title: "Uses the day", body: "A long build (slow).", start: true });
+		const a = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Uses the day", body: "A long build (slow).", start: true });
 		const first = await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started" || tomorrow(view), 60_000);
-		const b = tomorrow(first) ? null : await user.createItem({ repository: { id: harbor.id }, title: "Waits for tomorrow", body: "Write a short program.", start: true });
+		const b = tomorrow(first) ? null : await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Waits for tomorrow", body: "Write a short program.", start: true });
 		const waiting = b === null ? first : await untilItem(user, b.id, "the wait", tomorrow, 30_000);
 		const midnight = Math.ceil(Date.now() / 86_400_000) * 86_400_000;
 		assert(waiting.wait?.retryAt === midnight, `it is tried again at ${waiting.wait?.retryAt}, not ${midnight}`);
@@ -1847,7 +1862,7 @@ try {
 		await refused(() => user.apiTokens(), "items_off");
 		await refused(() => user.createApiToken({ name: "script", scopes: ["items:read"] }), "items_off");
 		await refused(() => user.revokeApiToken("tok_0123456789abcdef"), "items_off");
-		await refused(() => user.createItem({ repository: { id: harbor.id }, title: "Off", body: "Nothing.", start: true }), "items_off");
+		await refused(() => user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Off", body: "Nothing.", start: true }), "items_off");
 		await refused(() => user.item("i_0123456789abcdef"), "items_off");
 		await refused(() => user.actOnItem({ id: "i_0123456789abcdef", action: { kind: "cancel" } }), "items_off");
 		const sessions = await user.listSessions();

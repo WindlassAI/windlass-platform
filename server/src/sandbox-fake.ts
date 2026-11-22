@@ -1185,6 +1185,8 @@ class FakeWindlass implements Windlass {
 			const files = session.agent === "planner" ? undefined : this.sandboxes.all.get(sandbox.id)?.files;
 			files?.set(`notes/turn-${turn}.md`, `# Turn ${turn}\n\n${input.prompt.slice(0, 200)}\n`);
 			if (turn === 1) files?.set("made.txt", "hello\n");
+			if (text.includes("(change-setup-fixture)")) files?.set("index/setup.sh", "echo child-setup\n");
+			if (text.includes("(consume-setup-fixture)")) files?.set("search/result.txt", "second subtask\n");
 			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
 
 			let failure: RunTurnResult["failure"] = null;

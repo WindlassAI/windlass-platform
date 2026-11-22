@@ -59,7 +59,7 @@ const startOptions = { cwd: optional(string), env: optional(env), secretEnv: opt
  * `profiles`, `list`, `price` and the other facts come from the machine's report, not from here.
  */
 const operations = {
-	create: [object({ profile: machineProfile, harness, screenshots: optional(boolean) }), id],
+	create: [object({ profile: machineProfile, size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean) }), id],
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, screenshots: optional(boolean) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],

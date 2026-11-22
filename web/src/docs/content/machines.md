@@ -152,6 +152,16 @@ You can tell the planner of an orchestrated work item what each machine is for. 
 
 Choose **Save**. The planner reads this, with the machine's OS, capacity and what it can run, when it splits a feature into subtasks. Nothing else reads it. See [Orchestrate](/docs/factory#orchestrate-a-feature).
 
+### Let features use it
+
+Under **Details**, **Subtasks of features** says whether a feature's subtasks may run on the machine:
+
+- **Any feature** (the default): features may place subtasks here.
+- **When named**: only when a plan names this machine for the subtask.
+- **Never**: features never place subtasks here.
+
+The choice is saved at once. A machine that is not on **Any feature** says so on its card, for example "features: when named". A subtask that only inherits the feature's place counts as not named, so a feature filed on a **When named** machine must name it in each subtask. A plan that needs a **Never** machine cannot be approved: the plan says why under the subtask. See [Placement](/docs/factory#placement).
+
 ## Claude Code on your machine
 
 Claude Code runs only on a machine whose runner was started with `--harness claude`, and only in the hardened profile, **Hardened Docker on your machine "…"**. The runner must be a build that includes the Claude Code image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image."
