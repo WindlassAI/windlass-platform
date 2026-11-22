@@ -48,6 +48,8 @@ import {
 	type ReviewRecord,
 	type RoundCaps,
 	type ItemSummary,
+	type FeedbackBatch,
+	type FeedbackEntry,
 	type ItemView,
 	type GithubId,
 	type FeaturePlan,
@@ -230,6 +232,12 @@ export const REMOVED_MACHINE_ID = "m_removed";
 
 /** The seeded set for a state, relative to `at`, with items on `machines` (null where the deployment offers none). */
 function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | null): Seed[] {
+	// The verdicts of the feedback items (`seededFeedback`): each run handed over before GitHub feedback started the next.
+	const fed: Record<"first" | "second" | "fourth", SeedVerdict> = {
+		first: { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 179 },
+		second: { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 2, ago: 59 },
+		fourth: { result: "pass", gate: passingGate, ci: ci.passed(4), flags: [], mergeable: true, run: 4, ago: 9 },
+	};
 	const all: Seed[] = [
 		{
 			n: 1, title: "Add a --dry-run flag to the release script", on: HARBOR, source: "github", state: "draft", filed: 40,
@@ -454,6 +462,62 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		review(47, "Quote the artefact names in the upload log", HARBOR, 70, { body: "Put each artefact's name in quotes in the upload log, so that a name with spaces reads as one.", acceptance: [] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 21 }),
 		review(48, "Mention the docs site in the README", DOCS, 17, { body: "Link the docs site from the README's first paragraph.", acceptance: [] }, { result: "pass", gate: noChecks, ci: ci.passed(1), flags: [], mergeable: true, run: 1, ago: 44 }),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
+		// Feedback from GitHub (G4): a run started by the PR's feedback, with more held while CI runs; and a fourth batch from others that asks first (`seededFeedback`).
+		{
+			n: 55,
+			title: "Stream large artefacts instead of buffering them",
+			body: "The upload reads each artefact into memory before sending it. Stream it from disk, so that a 2 GB artefact does not need 2 GB of memory.",
+			acceptance: ["An artefact is sent without being read into memory whole.", "A failed stream names the artefact."],
+			on: HARBOR,
+			state: "waiting",
+			filed: 260,
+			pr: 76,
+			wait: { reason: "ci", sentence: `Waiting for CI on ${short(hex(55))}: 1 of 3 checks finished.`, since: 6, retryAt: at + 60_000 },
+			run: { n: 3, started: 24, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 4, kind: "ci", attempt: 6, started: 6 } },
+			events: [
+				[260, "Started.", undefined, true],
+				[259, "The turn started.", [1, 1, "implement"]],
+				[200, "The checks passed.", [1, 2, "gate"]],
+				[199, `Pushed ${short(hex(551))} to pull request #76.`, [1, 3, "publish"]],
+				[180, "CI passed.", [1, 4, "ci", 4]],
+				[179, verdictSaid(fed.first), [1, 5, "handoff"]],
+				[121, "The feedback from @ada on GitHub was sent to the agent in run 2.", undefined],
+				[120, "The turn started.", [2, 1, "implement"]],
+				[80, "The checks passed.", [2, 2, "gate"]],
+				[79, `Pushed ${short(hex(552))} to pull request #76.`, [2, 3, "publish"]],
+				[60, "CI passed.", [2, 4, "ci", 4]],
+				[59, verdictSaid(fed.second), [2, 5, "handoff"]],
+				[25, "The feedback from @mira on GitHub was sent to the agent in run 3.", undefined],
+				[24, "The turn started.", [3, 1, "implement"]],
+				[8, "The checks passed.", [3, 2, "gate"]],
+				[7, `Pushed ${short(hex(55))} to pull request #76.`, [3, 3, "publish"]],
+				[3, "Feedback from GitHub arrived while the item works. It is held until CI has finished.", [3, 4, "ci"]],
+			],
+			verdicts: [fed.first, fed.second],
+			spent: { tokens: 3_100_000, turns: 3, activeSeconds: 110 * 60, hostedSeconds: 104 * 60 },
+		},
+		{
+			n: 56,
+			title: "Show the tide station's local time",
+			body: "Show each station's times in its own timezone, with the zone's name.",
+			acceptance: ["A station page shows its times in the station's timezone and names it."],
+			on: TIDES,
+			state: "waiting",
+			filed: 9 * 60,
+			pr: 77,
+			question: { kind: "feedback_more", text: "@mira asked for changes. This item has already run three times for feedback from other people on GitHub. Send this feedback to the agent too?", choices: choices("send", "leave"), asked: 4 },
+			run: { n: 4, started: 70, ended: 9, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 5, kind: "handoff", started: 9 } },
+			events: [
+				[9 * 60, "Started.", undefined, true],
+				[5 * 60, "The feedback from @lee on GitHub was sent to the agent in run 2.", undefined],
+				[3 * 60, "The feedback from @mira on GitHub was sent to the agent in run 3.", undefined],
+				[70, "The feedback from @jonas on GitHub was sent to the agent in run 4.", undefined],
+				[9, verdictSaid(fed.fourth), [4, 5, "handoff"]],
+				[4, "Asked: @mira asked for changes. This item has already run three times for feedback from other people on GitHub. Send this feedback to the agent too?", undefined],
+			],
+			verdicts: [fed.fourth],
+			spent: { tokens: 3_800_000, turns: 4, activeSeconds: 150 * 60, hostedSeconds: 140 * 60 },
+		},
 		// At the second review: a second agent reads the change, waits for a sandbox, and was cut off once and is tried again.
 		reviewing(44, "Paginate the artefact list", HARBOR, 71, "running", { turn: "started", interruptions: 0 }),
 		reviewing(45, "Sort the station list by name", HARBOR, 72, "waiting", { turn: "delivered", interruptions: 0 }, `Waiting for one of the 20 sandboxes you may keep to review ${short(hex(45))}: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.`),
@@ -902,6 +966,60 @@ function nextMidnight(at: number): number {
 	return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
 }
 
+/**
+ * The seeded "From GitHub" sections (G4), one item per state: held while CI runs (13), collecting and
+ * one too long (24), taken into runs with more held and a repeat (55), and a fourth batch from others
+ * that asks first (56). People without write access show only as a count.
+ */
+function seededFeedback(seed: Seed, repo: string, ago: (minutes: number) => number, head: string | null): ItemView["feedback"] {
+	const pr = `${repo}/pull/${seed.pr}`;
+	let next = 0;
+	const entry = (author: string, kind: FeedbackEntry["kind"], minutes: number, body: string, where?: { path?: string; line?: number; commit?: string | null }): FeedbackEntry => {
+		const id = 4_100_000 + seed.n * 100 + next++;
+		const anchor = kind === "issue_comment" ? `issuecomment-${id}` : kind === "review_comment" ? `discussion_r${id}` : `pullrequestreview-${id}`;
+		const review = kind === "issue_comment" ? "issue_comment" : kind === "review_comment" ? "review_comment" : "review";
+		return { id: `${review}:${id}`, author, access: author === "ada" ? "owner" : "write", kind, body, at: ago(minutes), url: `${pr}#${anchor}`, path: where?.path ?? null, line: where?.line ?? null, commit: where?.commit === undefined ? (kind === "issue_comment" ? null : head) : where.commit };
+	};
+	const batch = (state: FeedbackBatch["state"], reason: string, entries: FeedbackEntry[], run: number | null = null): FeedbackBatch => ({ state, reason, entries, run, plan: null });
+	const held = "Sent once this run's CI has finished, before the handoff.";
+	switch (seed.n) {
+		case 13:
+			return { notTaken: 0, batches: [batch("held", held, [
+				entry("ada", "changes_requested", 5, "Drop the cache when the station file changes on disk. A long import otherwise reads stale stations."),
+				entry("ada", "review_comment", 5, "Key the cache by the file's modified time and size as well as its path.", { path: "src/stations/cache.ts", line: 18 }),
+				entry("ada", "review_comment", 5, "Add a case where the file changes between two lookups.", { path: "test/stations.test.ts", line: 44 }),
+			])] };
+		case 24:
+			return { notTaken: 2, batches: [
+				batch("pending", "Collecting the comments into one batch.", [entry("mira", "issue_comment", 1, "Also print the algorithm, so the line reads `sha256:<hash>` rather than a bare hash.")]),
+				batch("declined", "Longer than 8,000 characters, the most one batch carries. Shorten it or split it into several comments.", [entry("jonas", "issue_comment", 40,
+					"The upload log from last night's release, in case it helps:\n\n```\n" + Array.from({ length: 120 }, (_, i) => `2026-11-21T23:${String(10 + (i >> 2)).padStart(2, "0")}:${String((i * 7) % 60).padStart(2, "0")}Z upload harbor-2.4.${i % 9}-linux-x64.tar.gz part ${i + 1}/120 sent 8388608 bytes`).join("\n") + "\n```")]),
+			] };
+		case 55:
+			return { notTaken: 1, batches: [
+				batch("taken", "Sent to the agent in run 2.", [entry("ada", "issue_comment", 122, "Keep the old buffered path behind `--buffer` for one release, and say in the help that it goes in 3.0.")], 2),
+				batch("declined", "The same feedback was taken in run 2.", [entry("ada", "issue_comment", 118, "Keep the old buffered path behind `--buffer` for one release, and say in the help that it goes in 3.0.")]),
+				batch("taken", "Sent to the agent in run 3.", [
+					entry("mira", "changes_requested", 26, "Streaming works, but the progress bar now jumps from 0 to 100. Report progress per chunk."),
+					entry("mira", "review_comment", 26, "Use the bytes written so far, not the file's size.", { path: "src/upload/progress.ts", line: 23, commit: hex(552) }),
+				], 3),
+				batch("held", held, [entry("jonas", "review_comment", 3, "This leaves the file handle open when the stream errors. Close it in a `finally`.", { path: "src/upload/stream.ts", line: 57 })]),
+			] };
+		case 56:
+			return { notTaken: 0, batches: [
+				batch("taken", "Sent to the agent in run 2.", [entry("lee", "issue_comment", 5 * 60, "Show the zone's name next to the first time on the page, not on every row.")], 2),
+				batch("taken", "Sent to the agent in run 3.", [entry("mira", "review_comment", 3 * 60, "Daylight saving: the test only covers January. Add a July case.", { path: "test/time.test.ts", line: 12, commit: hex(561) })], 3),
+				batch("taken", "Sent to the agent in run 4.", [entry("jonas", "issue_comment", 71, "The station list still shows UTC. Use the same helper there.")], 4),
+				batch("question", "@mira asked for changes. This item has already run three times for feedback from other people on GitHub. Send this feedback to the agent too?", [
+					entry("mira", "changes_requested", 5, "Use the IANA zone name, not the abbreviation: abbreviations like CST are ambiguous."),
+					entry("mira", "review_comment", 5, "`Intl.DateTimeFormat` gives the full name with `timeZoneName: \"longGeneric\"`.", { path: "src/station/time.ts", line: 31 }),
+				]),
+			] };
+		default:
+			return { batches: [], notTaken: 0 };
+	}
+}
+
 function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const id = `it_${hex(seed.n, 12)}`;
 	const ago = (minutes: number) => at - minutes * MINUTE;
@@ -963,12 +1081,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		head,
 		events,
 		verdicts,
-		feedback: seed.n === 24 ? { notTaken: 1, batches: (["taken", "declined", "pending", "held", "question"] as const).map((state, i) => ({
-			state, reason: ["Sent in run 2.", "Left by the owner.", "Waiting for the batch.", "Waiting for the current run.", "Waiting for your answer."][i]!,
-			run: state === "taken" ? 2 : null, plan: null,
-			entries: [{ id: "issue_comment:" + i, at: ago(100 - i), author: "alex", access: "write", kind: "issue_comment",
-				body: "Please cover the empty upload in a test.", url: repository.url + "/pull/" + seed.pr + "#issuecomment-" + i, path: null, line: null, commit: null }],
-		})) } : { batches: [], notTaken: 0 },
+		feedback: seededFeedback(seed, repository.url, ago, head),
 		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
@@ -1550,6 +1663,16 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (action.choice === "hand_over") {
 					const verdict = item.verdicts[item.verdicts.length - 1];
 					return change(auth, item, { state: "review", wait: null, question: null, run: run ? { ...run, endedAt: deps.now() } : null, verdict: verdict ? { result: verdict.result, flags: verdict.flags, ci: verdict.ci.state } : { result: "unverified", flags: [], ci: "unread" } }, [said], "person");
+				}
+				// Feedback from GitHub (blueprint.ts, `answer` "send" and "leave"): the asking batch is taken into a new run, or marked not taken.
+				if (action.choice === "send" || action.choice === "leave") {
+					const next = (run?.n ?? 0) + 1;
+					const taken = action.choice === "send";
+					const feedback = { ...item.feedback, batches: item.feedback.batches.map((one) => (one.state === "question" ? { ...one, state: taken ? ("taken" as const) : ("declined" as const), reason: taken ? `Sent to the agent in run ${next}.` : "You chose Leave it.", run: taken ? next : null } : one)) };
+					if (!taken) return change(auth, item, { state: "review", wait: null, question: null, feedback }, [said], "person");
+					item.feedback = feedback;
+					item.question = null;
+					return beginRun(auth, item, said);
 				}
 				if (action.choice === "wait") return change(auth, item, { state: "waiting", question: null, wait: { reason: "ci", sentence: `Waiting for CI on ${short(item.head ?? "")}, as you asked.`, retryAt: deps.now() + 60_000, since: deps.now() } }, [said], "person");
 				const budget = action.choice === "raise" && action.budget ? { ...item.budget, ...Object.fromEntries(Object.entries(action.budget).filter(([, value]) => typeof value === "number" && value > 0)) } : item.budget;

@@ -1056,7 +1056,7 @@ export function Item({ page }: { page: ItemPage }) {
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />
-			<GithubFeedback view={view} />
+			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
 			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
 			<Cost view={view} />
