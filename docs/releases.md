@@ -15,7 +15,7 @@ A runner release contains five Linux image indexes in GHCR. Each index contains 
 Choose the published runner tag on the [release page](https://github.com/WindlassAI/windlass-platform/releases). Use cosign v3 and set `tag` to that exact tag. Both commands check the same GitHub Actions workflow identity and issuer.
 
 ```sh
-tag=runner-v0.1.0  # replace with the chosen release
+tag=runner-v0.2.0  # replace with the chosen release
 repo=WindlassAI/windlass-platform
 gh release download "$tag" --repo "$repo" -p release.json -p release.json.sigstore.json
 signer="https://github.com/$repo/.github/workflows/release-images.yml@refs/tags/$tag"
@@ -34,11 +34,11 @@ Compare the full reference printed above with the runner digest in the Machines 
 ## Cut a release
 
 1. Push the branch with `git push git@github.com:WindlassAI/windlass-platform.git release-images`, open a PR into `main`, and merge it after review and CI. GitHub requires the workflow file on the default branch before accepting its first manual dispatch. [GitHub workflow dispatch requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
-2. Dispatch a build from `main`. Choose an unused Docker-compatible semantic version. The examples use `0.1.0`.
+2. Dispatch a build from `main`. Choose an unused Docker-compatible semantic version. The current runner reports `0.2.0`.
 
    ```sh
    repo=WindlassAI/windlass-platform
-   version=0.1.0
+   version=0.2.0
    tag=runner-v$version
    gh workflow run release-images.yml --repo "$repo" --ref main -f version="$version" -f push=false
    ```
@@ -68,7 +68,7 @@ Compare the full reference printed above with the runner digest in the Machines 
 )
 ```
 
-Publish the reviewed draft in GitHub Releases. For deployment, update all server nodes to the compatible version first. Read `capabilities` from the verified runner, then advertise `WLP_RUNNER_IMAGE` and `WLP_RUNNER_CAPABILITIES` together so Machines offers the correct harnesses. [Self-hosted deployment order and commands](../deploy/selfhost/runner-release.md)
+Publish the reviewed draft in GitHub Releases. For deployment, upgrade all server nodes first, leaving their existing runner settings in place. The 0.2.0 runner uses protocol 2. At cutover, install the certified online platform key, set `WLP_REQUIRE_SIGNED_RUNNER=1` on every server, and advertise the verified `WLP_RUNNER_IMAGE` together with the `WLP_RUNNER_CAPABILITIES` read from that image. Recreate the servers, check health, and re-pair each machine. Compare the root fingerprint printed during pairing with the owner's offline copy. [Self-hosted cutover commands](../deploy/selfhost/README.md#enable-signed-runner-connections)
 
 ## Developer checks
 
@@ -87,6 +87,6 @@ docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock \
   --harness claude --harness opencode --egress restricted
 ```
 
-Approve pairing, sign in, and start the printed service command. Record the pulls, service restart policy, internal session network, egress helpers and relay socket volumes. Check that neither relay publishes a host port. Complete a Claude turn and an OpenCode public-model turn. From a restricted Claude session, check that unlisted public sites, the host, LAN gateway and cloud metadata addresses are refused. Confirm the session sees only the relay placeholder and record the Machines page's command-sandbox probe on LinuxKit.
+Approve pairing, compare the displayed platform fingerprint with the offline copy, sign in, and start the printed service command. Record the pulls, service restart policy, internal session network, egress helpers and relay socket volumes. Check that neither relay publishes a host port. Complete a Claude turn and an OpenCode public-model turn. From a restricted Claude session, check that unlisted public sites, the host, LAN gateway and cloud metadata addresses are refused. Confirm the session sees only the relay placeholder and record the Machines page's command-sandbox probe on LinuxKit.
 
 Restart Docker Desktop, then test sleep and wake with an idle session. Confirm reconnection and that logging Claude out makes the next Claude turn report signed out. Record the results in the Mac runner check and integration checklist.

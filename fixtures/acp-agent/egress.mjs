@@ -6,8 +6,8 @@ import { FixturePeer } from "./agent.mjs";
 const peer = new FixturePeer(line => process.stdout.write(line), {
 	*plain() {
 		const output = execFileSync("bash", ["/proof/egress.sh"], { encoding: "utf8" });
-		const relay = execFileSync("curl", ["-sS", "--max-time", "5", process.env.ANTHROPIC_BASE_URL + "/"], { encoding: "utf8" });
-		if (JSON.parse(relay).error.message !== "Claude credential relay refused the request.") throw Error("Unexpected relay response");
+		const status = execFileSync("curl", ["-sS", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", process.env.ANTHROPIC_BASE_URL + "/"], { encoding: "utf8" });
+		if (status !== "401" && status !== "403") throw Error("The relay did not refuse the unauthenticated probe.");
 		writeFileSync("/tmp/proof-output", output);
 		yield { sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } };
 	},

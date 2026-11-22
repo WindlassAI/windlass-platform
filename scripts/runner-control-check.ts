@@ -29,6 +29,9 @@ const never = (parse: (data: unknown) => unknown, inputs: unknown[]) => inputs.e
 	try { return parse(input) === null; } catch { return false; }
 });
 
+// Legacy runners may display a future refusal sentence. An authenticated socket rejects extra fields.
+const extendedRefusal = JSON.stringify({ kind: "refused", reason: "unknown", message: "Fixture", extra: true });
+expect("signed control refuses unknown fields even in refusal frames", parseServerFrame(extendedRefusal, true) === null && parseServerFrame(extendedRefusal)?.kind === "refused");
 const signature = "A".repeat(86);
 const hello = { kind: "hello", runnerVersion: "0.1.0", epoch: "e0123456789", time: Date.now(), signature };
 const junk: unknown[] = [
@@ -173,7 +176,7 @@ async function withControl(answers: Response[], exercise: (runner: {
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
-	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host");
+	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host", null);
 	try {
 		const test = exercise({ status, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
 			async online(socketIndex = 0) {

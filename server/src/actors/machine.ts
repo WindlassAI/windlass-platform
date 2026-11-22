@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { authFailure, FrameAuthError, machineStatement, platformWelcome, type FrameAuth } from "../runner/frame-auth.js";
+import { OLD_RUNNER } from "../runner/protocol.js";
 import { compactReport, optionsDigest, type CatalogFrame, type CatalogId } from "../runner/catalog.js";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -7,9 +9,10 @@ import { config } from "../config.js";
 import { isMachineIdName, machineLabel, MACHINE_EXPIRY_MS, type HarnessOptions, type MachineClaim, type MachineStatus, type MachineWarning } from "../contract.js";
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
-import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
+import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MAX_REPORT_BYTES, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
 import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
 
+const minimum = () => config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
 const SEEN_INTERVAL = 3 * 60_000;
 // A refused copy has no open socket. Give it time to retry before retiring the warning.
 const KEY_WARNING_MS = REFUSED_RETRY_MS + CONTROL_DEAD_MS;
@@ -29,7 +32,7 @@ interface Ctx {
 	client(): any;
 }
 interface Input { grant: string; details: MachineClaim; publicKey: string; expires: number }
-type Row = { name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null; host: string | null };
+type Row = { protocol: number; name: string; version: string; public_key: string; created: number; seen: number | null; removed_at: number | null; remove_sandboxes: number; offset: number; duplicate: number | null; report: string | null; host: string | null };
 export interface MachineUpdate { host?: Report["host"]; name?: string; turns?: { running: number; max: number | null; queued: number }; status: MachineStatus; since: number; runnerVersion: string; warnings: MachineWarning[]; report: Report | null }
 /** `publicKey` is the machine's Ed25519 key, SPKI in base64; it never changes (pairing again makes a new machine). */
 export interface MachineFacts { status: MachineStatus | "removed"; name: string; publicKey: string; report: Report | null }
@@ -92,7 +95,8 @@ const user = (c: Pick<Ctx, "key" | "client">) => c.client().user.get([c.key[0]],
 function update(c: Ctx, row: Row): MachineUpdate {
 	const report: Report | null = row.report ? JSON.parse(row.report) : null;
 	const warnings: MachineWarning[] = [];
-	if (!versionAtLeast(row.version, MIN_RUNNER_VERSION)) warnings.push({ kind: "outdated" });
+	if (!config.machines?.identity && row.protocol === 2) warnings.push({ kind: "signing-disabled" });
+	if ((config.machines?.identity && row.protocol === 1) || !versionAtLeast(row.version, minimum())) warnings.push({ kind: "outdated" });
 	if (report && !report.docker.ok) warnings.push({ kind: "docker", reason: report.docker.reason });
 	if (Math.abs(row.offset) > CLOCK_TOLERANCE_MS) warnings.push({ kind: "clock", offsetSeconds: Math.round(row.offset / 1000) });
 	if (row.duplicate !== null && Date.now() < row.duplicate + KEY_WARNING_MS) warnings.push({ kind: "key", at: row.duplicate });
@@ -193,7 +197,9 @@ export async function machineTables(db: RawAccess) {
 	await db.execute(`CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
 		public_key TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER, removed_at INTEGER, remove_sandboxes INTEGER NOT NULL DEFAULT 0, offset INTEGER NOT NULL DEFAULT 0, duplicate INTEGER, report TEXT)`);
 	await db.execute("CREATE TABLE IF NOT EXISTS catalogs (id TEXT PRIMARY KEY, digest TEXT NOT NULL, options TEXT NOT NULL)");
-	if (!(await db.execute<{ name: string }>("PRAGMA table_info(machine)")).some(column => column.name === "host")) {
+	const columns = await db.execute<{ name: string }>("PRAGMA table_info(machine)");
+	if (!columns.some(column => column.name === "protocol")) await db.execute("ALTER TABLE machine ADD COLUMN protocol INTEGER NOT NULL DEFAULT 0");
+	if (!columns.some(column => column.name === "host")) {
 		await db.execute("ALTER TABLE machine ADD COLUMN host TEXT");
 	}
 	// A report stored by an older runner (with inline catalogs or host figures) is dropped, not converted:
@@ -240,6 +246,9 @@ export const machine = actor({
 		if (!controlPath(c.request)) { raw.close(1008, "Unknown path"); return; }
 		const [uid, id] = c.key;
 		const nonce = randomBytes(32).toString("base64url");
+		const identity = config.machines?.identity;
+		const context = { uid: uid!, machineId: id!, challenge: nonce };
+		let auth: FrameAuth | undefined;
 		let hello = false;
 		let closed = false;
 		const queue = new ControlQueue();
@@ -256,7 +265,7 @@ export const machine = actor({
 		const ws: Socket = {
 			send(frame) {
 				if (!closed && raw.readyState === raw.OPEN) {
-					try { raw.send(JSON.stringify(frame)); return true; }
+					try { raw.send(auth ? auth.seal(frame) : JSON.stringify(frame)); return true; }
 					catch (error) { machineError("send control frame", error); }
 				}
 				ws.close(1011, "Control socket failed");
@@ -281,8 +290,19 @@ export const machine = actor({
 		raw.addEventListener("message", ({ data }) => {
 			if (closed) return;
 			const bytes = typeof data === "string" ? Buffer.byteLength(data) : Infinity;
-			if (!queue.reserve(bytes)) { reject(ws, refuse("bad-frame")); return; }
-			const frame = parseRunnerFrame(data, c.vars.live?.ws === ws);
+			if (!queue.reserve(bytes)) {
+				if (auth) { console.warn("frame_auth_failed size"); ws.close(1008, "frame_auth_failed"); }
+				else reject(ws, refuse("bad-frame"));
+				return;
+			}
+			let frame;
+			try {
+				if (identity && hello && !auth) throw new FrameAuthError("handshake");
+				frame = parseRunnerFrame(auth ? auth.open(data, MAX_REPORT_BYTES) : data, c.vars.live?.ws === ws);
+				if (auth && (!frame || frame.kind === "hello")) throw new FrameAuthError("schema");
+			} catch (error) {
+				console.warn(authFailure(error)); ws.close(1008, "frame_auth_failed"); return;
+			}
 			if (!frame || (!hello && frame.kind !== "hello") || (hello && frame.kind === "hello")) {
 				reject(ws, refuse("bad-frame")); return;
 			}
@@ -299,26 +319,43 @@ export const machine = actor({
 				if (closed) return;
 				if (frame.kind === "hello") {
 					const r = await record(c);
-					if (!r || !signed(r.public_key, controlProof(uid!, id!, nonce), frame.signature)) { reject(ws, refuse("unknown")); return; }
-					if (r.removed_at !== null) { reject(ws, refuse("removed", { removeSandboxes: !!r.remove_sandboxes })); return; }
-					if (!versionAtLeast(frame.runnerVersion, MIN_RUNNER_VERSION)) {
-						const [changed] = await c.db.execute<Row>("UPDATE machine SET version = ? WHERE removed_at IS NULL RETURNING *", frame.runnerVersion);
-						reject(ws, refuse("outdated", frame));
+					const statement = frame.protocol === 2 ? machineStatement(context, frame) : controlProof(uid!, id!, nonce);
+					if (!r || !signed(r.public_key, statement, frame.signature)) { reject(ws, refuse("unknown")); return; }
+					const base = { kind: "welcome" as const, idleSuspendMs: config.idleSuspendMs };
+					const greeting = (refusal?: Refusal) => identity && frame.protocol === 2
+						? platformWelcome(context, frame, { ...base, refusal }, identity) : undefined;
+					const decline = (refusal: Refusal) => {
+						const reply = greeting(refusal);
+						if (!reply) return reject(ws, refusal);
+						ws.send(reply.welcome);
+						ws.close(1008, refusal.reason);
+					};
+					if (r.removed_at !== null && (!identity || frame.protocol === 2)) {
+						decline(refuse("removed", { removeSandboxes: !!r.remove_sandboxes })); return;
+					}
+					const foreign = (frame.protocol === 2) !== !!identity;
+					if (foreign || !versionAtLeast(frame.runnerVersion, minimum())) {
+						const [changed] = await c.db.execute<Row>("UPDATE machine SET version = ?, protocol = ? WHERE removed_at IS NULL RETURNING *", frame.runnerVersion, frame.protocol ?? 1);
+						if (identity) decline({ kind: "refused", reason: "outdated", minimum: MIN_RUNNER_VERSION, message: OLD_RUNNER });
+						else if (foreign) decline({ kind: "refused", reason: "signing-disabled", message: "This platform has signed runner connections disabled." });
+						else decline(refuse("outdated", { ...frame, minimum: minimum() }));
 						await tell(c, changed);
 						return;
 					}
 					const old = c.vars.live;
 					if (secondHello(old, frame, now) === "refuse") {
 						const [changed] = await c.db.execute<Row>("UPDATE machine SET duplicate = ? WHERE removed_at IS NULL RETURNING *", now);
-						reject(ws, refuse("key-in-use"));
+						decline(refuse("key-in-use"));
 						await tell(c, changed);
 						return;
 					}
-					const [changed] = await c.db.execute<Row>("UPDATE machine SET seen = ?, version = ?, offset = ? WHERE removed_at IS NULL RETURNING *", now, frame.runnerVersion, frame.time - now);
+					const accepted = greeting();
+					const [changed] = await c.db.execute<Row>("UPDATE machine SET seen = ?, version = ?, offset = ?, protocol = ? WHERE removed_at IS NULL RETURNING *", now, frame.runnerVersion, frame.time - now, frame.protocol ?? 1);
 					if (!changed || closed) return;
 					c.vars.live = { ws, maxTurns: frame.maxTurns, offset: frame.time - now, epoch: frame.epoch, heardAt: now, connected: now, savedAt: now };
 					old?.ws.close(1001, "Reconnected");
-					ws.send({ kind: "welcome", idleSuspendMs: config.idleSuspendMs });
+					if (!ws.send(accepted?.welcome ?? base)) return;
+					auth = accepted?.auth;
 					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) ws.send({ kind: "remove", sandbox });
 					await tell(c, changed);
 				} else {
