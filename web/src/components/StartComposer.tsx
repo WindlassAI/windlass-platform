@@ -712,7 +712,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					{
 						id: "machines",
 						label: "Your machines",
-						note: item ? "costs no hosted time" : "the platform's limits do not apply",
+						note: "costs no hosted time",
 						items: mine.map((machine) => {
 							const unusable = why(machine);
 							const isChosen = chosenMachine?.machineId === machine.machineId;

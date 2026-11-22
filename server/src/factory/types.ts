@@ -198,7 +198,7 @@ export type Fact =
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
 	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
-	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean }
 	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }

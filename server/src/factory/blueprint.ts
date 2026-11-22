@@ -34,7 +34,7 @@
 
 import { MAX_ITEM_BODY_CHARS, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
-import { spellSeconds } from "../usage.js";
+import { nextUtcDay, spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, type PlacementInventory } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { emptyBudget, closingReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText } from "./feature-plan.js";
@@ -83,6 +83,7 @@ export interface NewItem {
 	reviewer: NonNullable<FactoryItem["reviewer"]>;
 	place: FactoryItem["place"];
 	budget: ItemBudget;
+	featureMultiplier?: number;
 }
 
 /** A new item, in "draft": a `start` fact queues it. */
@@ -99,7 +100,7 @@ export function createItem(input: NewItem): FactoryItem {
 		place: input.place,
 		machineRemoved: false,
 		singleBudget: input.budget,
-		budget: input.mode === "orchestrate" ? featureCap(input.budget) : input.budget,
+		budget: input.mode === "orchestrate" ? featureCap(input.budget, input.featureMultiplier) : input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 		workingSince: null,
 		run: null,
@@ -339,6 +340,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 			const job = c.item.jobs?.at(-1);
 			if (fact.key !== key || step.kind !== "subtasks" || c.item.question || !job || job.cancelRequested || job.state !== "draft") return false;
 			let sentence: string;
+			let dailyCap: boolean | undefined;
 			if (fact.kind === "place_child") {
 				if (!job.route || job.placement) return false;
 				const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm);
@@ -349,13 +351,16 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "reverify" | "cancel_su
 				}
 				if (fit.refused !== undefined) return askPlacement(c, fit.refused);
 				sentence = fit.wait;
+				dailyCap = fit.dailyCap;
 			} else {
 				if (job.id !== fact.child) return false;
 				if (fact.refused) return askPlacement(c, fact.sentence);
 				sentence = fact.sentence;
+				dailyCap = fact.dailyCap;
 			}
-			const retry = retryAt(c.at, 0);
-			c.state("waiting", { reason: "machine", sentence, retryAt: retry });
+			// Recheck policy changes and align the final placement retry with UTC rollover.
+			const retry = Math.min(retryAt(c.at, 0), dailyCap ? nextUtcDay(c.at) : Infinity);
+			c.state("waiting", { reason: dailyCap ? "capacity" : "machine", sentence, retryAt: retry });
 			dispatchAgain(c, retry);
 			return true;
 		}

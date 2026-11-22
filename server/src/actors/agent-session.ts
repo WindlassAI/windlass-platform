@@ -198,7 +198,8 @@ import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf 
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
-import { type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { turnTokens } from "../factory/budget.js";
+import { reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
@@ -217,7 +218,7 @@ import { machineHarnesses, initialHarnessModels, machineLoginMessage } from "../
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
-import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -745,8 +746,8 @@ function serial<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	return run;
 }
 
-async function insertItems(c: Ctx, batch: TimelineItem[]): Promise<void> {
-	await c.db.execute(
+async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]): Promise<void> {
+	await db.execute(
 		`INSERT OR REPLACE INTO timeline (seq, turn, kind, at, item) VALUES ${batch.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
 		...batch.flatMap(item => [item.seq, item.turn, item.kind, item.at, JSON.stringify(item)]),
 	);
@@ -757,7 +758,21 @@ async function writeItems(c: Ctx): Promise<void> {
 	const waiting = c.vars.unwritten;
 	while (waiting.length > 0) {
 		const batch = waiting.slice(0, WRITE_BATCH);
-		await insertItems(c, batch);
+		const meta = c.vars.meta;
+		const receipts = meta && usesPlatformModel(meta.place, meta.harness) ? batch.flatMap(item => {
+			if (item.kind !== "windlass") return [];
+			const tokens = turnTokens(reportedModelUsage(item.event));
+			return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
+		}) : [];
+		if (receipts.length) {
+			// These are the model requests summed by the turn summary. Keep their original UTC day
+			// and sequence number, including when a turn is interrupted or a delivery is retried.
+			await c.db.transaction(async tx => {
+				await insertItems(tx, batch);
+				for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
+			}, { name: "timeline.usage" });
+			if (!c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
+		} else await insertItems(c.db, batch);
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
 	}
@@ -775,7 +790,7 @@ function persist(c: Ctx): Promise<void> {
 		// sequence number without closing it to live clients. Its next real item replaces
 		// this row; on wake MAX(seq) includes it as the final text before interruption.
 		const partial = c.vars.turn?.stopping && c.vars.turn.openAcp?.();
-		if (partial) await insertItems(c, [numberItem(c, partial)]);
+		if (partial) await insertItems(c.db, [numberItem(c, partial)]);
 		if (c.vars.meta) await c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(c.vars.meta));
 	}).catch((error) => {
 		// The items stay in `unwritten`, so the next write tries again and snapshots still show them.
@@ -3645,6 +3660,12 @@ fi`, { signal, timeoutMs: 5000 });
 	try {
 		const caps = capabilitiesOf(meta.harness);
 		const summary = result?.summary ?? null;
+		const usage = usageOf(summary?.usage);
+		// Settle all reported requests before this turn's completion can admit more work.
+		if (usesPlatformModel(meta.place, meta.harness)) {
+			await serial(c, () => writeItems(c));
+			await sendOutbox(c, meta.uid);
+		}
 		let outcome: TurnOutcome;
 		let message: string | null = null;
 		if (caps.events === "acp") {
@@ -3748,7 +3769,7 @@ fi`, { signal, timeoutMs: 5000 });
 			exitCode: result?.exitCode ?? null,
 			steps: typeof summary?.steps === "number" ? summary.steps : null,
 			durationMs: typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
-			usage: usageOf(summary?.usage),
+			usage,
 			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
 			message,
@@ -3783,7 +3804,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
-		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage: usageOf(summary?.usage), checks: active.secrets?.checks ?? [] });
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [] });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -3890,6 +3911,10 @@ function machineAway(c: Ctx, meta: SessionMeta): boolean {
  * running slot and no title, and it is stored only once Windlass has admitted it.
  */
 async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string, submission: Submission | null): Promise<PromptAnswer> {
+	if (usesPlatformModel(meta.place, meta.harness)) {
+		const wait = await userActor(c, meta.uid).internalDailyTokenWait();
+		if (wait) throw new UserError(wait, { code: "daily_token_cap" });
+	}
 	const control = active?.control;
 	const next = (turn: number) => {
 		note(c, turn, "info", "Sent when this turn ends.");
@@ -3996,9 +4021,15 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
 			throw error;
 		}) : null;
+		if (usesPlatformModel(meta.place, meta.harness)) {
+			await settleTokenReceipts(c, meta.uid).catch(() => {
+				throw new UserError("Your previous turn’s model usage could not be settled. Try again in a moment.", { code: "usage_unavailable" });
+			});
+		}
 		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
+			if (claim.dailyTokenWait) throw new UserError(claim.dailyTokenWait, { code: "daily_token_cap" });
 			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
@@ -5082,6 +5113,8 @@ export const agentSession = actor({
 				// Done here as well as in `onDestroy`, so that the caller can retry if the machine could not record the removals.
 				await stopTurn(c);
 				try {
+					await serial(c, () => writeItems(c));
+					await settleTokenReceipts(c, meta.uid);
 					await destroySessionSandboxes(c, meta);
 				} catch (error) {
 					c.log.error({ msg: "could not record the session's sandbox removals", session: meta.sessionId, error: describeError(error) });
@@ -5089,7 +5122,7 @@ export const agentSession = actor({
 					await persist(c);
 					// What a turn stopped above could not set while the session was being destroyed.
 					void armIdle(c, meta);
-					throw new UserError("The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment.", { code: "machine_unreachable" });
+					throw new UserError("The agent could not finish settling its usage or removing its sandbox. Try again in a moment.", { code: "machine_unreachable" });
 				}
 				// What its sandbox ran is reported, and its place among the user's sandboxes given back.
 				await leaveUsage(c, meta);

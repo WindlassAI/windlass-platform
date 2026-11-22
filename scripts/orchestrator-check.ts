@@ -664,6 +664,20 @@ test("placement preserves the editable proposal and bounds its reason, needs and
 		assert.throws(() => proposed({ ...p, subtasks: [{ ...p.subtasks[0], ...invalid }, p.subtasks[1]] } as FeaturePlanEdit));
 	assert.throws(() => proposed({ ...p, overflow: "yes" } as never));
 });
+test("a daily token cap waits on hosted and machine routes, including approved overflow", () => {
+	const machines = [machineReport()];
+	for (const [prefer, allow] of [["hosted", ["Mac"]], ["Mac", ["hosted"]]] as const) {
+		const item = placementFeature(machines, {}, [...allow], true, prefer);
+		const wait = "Your daily model token cap has been reached until 00:00 UTC.";
+		const waiting = advance(item, { kind: "place_child", at: 6, key: currentKey(item)!,
+			inventory: { machines: plannerMachines(machines), hostedProfiles: ["docker-hardened"], dailyTokenWait: wait } }).item;
+		assert.equal(waiting.wait?.reason, "capacity");
+		assert.equal(waiting.wait?.sentence, wait);
+		assert.equal(waiting.question, null);
+		assert.equal(waiting.jobs!.at(-1)!.placement, undefined);
+		assert.ok(dispatch(waiting, machines).jobs!.at(-1)!.placement);
+	}
+});
 test("placement 1 binds the approved Mac by id and keeps the reason after a rename", () => {
 	const mac = machineReport();
 	const item = placementFeature([mac]);
@@ -825,7 +839,7 @@ async function childCreation(t: import("node:test").TestContext) {
 	const parent = { internalChildRequest: async () => request, internalFact: async (fact: typeof facts[number]) => facts.push(fact) };
 	const childActor = { internalSummary: async () => ({ ...child, title: "Child", createdAt: 1, sessionId: "s_child" }), internalView: async () => child, internalAct: async () => child };
 	const ctx = { key: [owner], conn: { params: serviceParams() }, broadcast() {}, log: { error() {}, warn() {} },
-		vars: { items: { items: itemIndex }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
+		vars: { usage: { modelTokens: () => 0 }, items: { items: itemIndex, limits: { id: 0, overrides: {} } }, profile: { uid: owner }, sessions: new Map([[sessionId, { profile: "docker-hardened", place: { kind: "hosted" } }]]), machines },
 		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
 		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
 			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };

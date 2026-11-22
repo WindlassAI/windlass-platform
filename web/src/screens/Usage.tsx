@@ -261,6 +261,11 @@ export function Usage() {
 				</p>
 			) : null}
 
+			<section className="usage-section" aria-labelledby="usage-tokens">
+				<h2 className="usage-title" id="usage-tokens">Model tokens today</h2>
+				<p className="usage-figure"><strong>{count(view.usedModelTokens)}</strong> {view.factoryLimits.dailyTokens === null ? "used · no daily cap" : `of ${count(view.factoryLimits.dailyTokens)} used`}</p>
+				<p>Counts input and output reported by model requests using the platform’s model sign-in. The day resets at 00:00 UTC.</p>
+			</section>
 			<section className="usage-section" aria-labelledby="usage-today">
 				<h2 className="usage-title" id="usage-today">
 					Sandbox time today
@@ -455,7 +460,7 @@ export function Usage() {
 
 			<MachineUsage />
 
-			<FactoryUsage />
+			<FactoryUsage value={view.factoryLimits} />
 
 			<section className="usage-section" aria-labelledby="usage-history">
 				<h2 className="usage-title" id="usage-history">

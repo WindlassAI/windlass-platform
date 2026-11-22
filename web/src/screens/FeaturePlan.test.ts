@@ -116,7 +116,7 @@ describe("the Factory composer's mode choice", () => {
 		make({});
 		await show("/factory");
 		expect(group()?.textContent).toBe("Plan firstQuick");
-		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Adds a planning turn you approve; may spend up to 3× a Quick item.");
+		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Adds a planning turn you approve and may spend up to 3× a Quick item’s budget.");
 		expect(option("orchestrate")?.checked).toBe(true);
 		await file("Search the docs");
 		expect(filed[0]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
