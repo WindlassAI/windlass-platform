@@ -1598,10 +1598,12 @@ await section("mirror: Docker scope, authenticated clone, fallback and eviction"
 				parent = git(["commit-tree", tree, "-p", parent, "-m", "Version " + i]);
 			}
 			git(["update-ref", "refs/heads/main", parent]);
-			const bench = await box(uid, await mount(uid));
-			const baseline = await clone(bench), fill = await clone(bench, uid);
-			const trials = [await clone(bench, uid), await clone(bench), await clone(bench, uid)];
-			assert.ok(trials[0]!.hit && trials[2]!.hit);
+			const benchUid = "benchmark";
+			const bench = await box(benchUid, await mount(benchUid));
+			const baseline = await clone(bench), fill = await clone(bench, benchUid);
+			const trials = [await clone(bench, benchUid), await clone(bench), await clone(bench, benchUid)];
+			assert.ok(!fill.hit && fill.tokens === 1, "expected a cold mirror");
+			assert.ok(trials[0]!.hit && trials[2]!.hit && trials[0]!.bytes < baseline.bytes / 100);
 			console.log("48 MiB fixture clone (ms and HTTP Git bytes)", JSON.stringify({ baseline, fill, warm1: trials[0], plain2: trials[1], warm2: trials[2] }));
 			console.log("Mirror slot allocation (ms)", JSON.stringify(allocations));
 		}
