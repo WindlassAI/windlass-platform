@@ -11,7 +11,8 @@ import { useId } from "react";
 import { acpHarnessName, sessionModelWords } from "../lib/acp";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { asking } from "../screens/Items";
+import { asking, questionLine } from "../screens/Items";
+import { LongText } from "./Fold";
 import { ChevronRightIcon } from "./Icons";
 import { AgentGlyph } from "./ui/Pill";
 
@@ -56,8 +57,18 @@ function AgentNeed({ session, now }: { session: SessionSummary; now: number }) {
 	);
 }
 
+/**
+ * What an item asks, in a line: the agent's own first line for its question, else the Factory list's
+ * line (`questionLine`), so a plan to approve says so rather than printing its figures.
+ */
+export function needLine(item: ItemSummary): string | null {
+	const asked = item.question?.kind === "agent_ask" ? item.question.asked?.text.trim().split("\n")[0]?.trim() : undefined;
+	return asked || questionLine(item);
+}
+
 function ItemNeed({ item, now }: { item: ItemSummary; now: number }) {
 	const question = item.question;
+	const line = needLine(item);
 	return (
 		<li className="needs-row">
 			<Lamp />
@@ -68,7 +79,11 @@ function ItemNeed({ item, now }: { item: ItemSummary; now: number }) {
 					</a>
 					<span className="needs-tag">work item</span>
 				</p>
-				{question ? <p className="needs-what">{question.text}</p> : null}
+				{line ? (
+					<LongText lines={2} className="needs-what">
+						{line}
+					</LongText>
+				) : null}
 				<p className="needs-meta">
 					<span>
 						{item.repository.owner}/{item.repository.name}

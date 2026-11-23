@@ -31,6 +31,7 @@ import { createPortal } from "react-dom";
 import { absoluteTime, day } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
+import { LongText } from "./Fold";
 import { WarnIcon } from "./Icons";
 import { Check } from "./ui/Check";
 
@@ -480,10 +481,10 @@ function Server({ server, onChange }: { server: PersonalServer; onChange(): void
 				<span className="server-name">{server.name}</span>
 				<span className={`server-state${server.enabled ? "" : " server-state-off"}`}>{server.enabled ? (server.remote ? "reached at an address" : "started by a command") : "switched off in its definition"}</span>
 			</p>
-			<p className="server-subject server-subject-short">
+			<LongText lines={3} className="server-subject">
 				<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
 				{server.subject}
-			</p>
+			</LongText>
 			{server.unasked ? <p className="server-reason">Its tools run without asking: the platform allows each call for you.</p> : null}
 			{set.length > 0 ? <p className="server-reason">Reads {list(set)} from your account's secrets.</p> : null}
 			{unset.length > 0 ? (
