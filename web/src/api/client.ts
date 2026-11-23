@@ -136,6 +136,7 @@ export interface UserFeed {
 export interface SessionFeed {
 	/** The whole session: once when the feed opens and again after every reconnect. Rebuild from it. */
 	onSnapshot(snapshot: SessionSnapshot): void;
+	/** A stored timeline entry, and a newer revision of a `network.blocked` row (the `networkBlocked` event), which keeps its `seq`. */
 	onItem(item: TimelineItem): void;
 	onDelta(delta: LiveDelta): void;
 	onSummary(summary: SessionSummary): void;

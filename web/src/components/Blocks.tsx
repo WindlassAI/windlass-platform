@@ -4,12 +4,11 @@ import { createContext, memo, useCallback, useContext, useEffect, useId, useLayo
 import { FOLD_WORDS, FoldToggle, LongText } from "./Fold";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
-import { linkProps } from "../lib/router";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/markdown";
 import { contextWords, costWords } from "../lib/acp";
-import { asksAbout, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
+import { asksAbout, shownBlocks, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type NetworkBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { summarizeWork, turnRows, type WorkBlock } from "../lib/workGroups";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
@@ -18,6 +17,7 @@ import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
 import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, RefusedIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
 import { AnswerLine, AskedLine, InlineQuestion, useInteractive } from "./Question";
+import { AllowHost, BlockedList, blockedHeadline } from "./BlockedNetwork";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
 
 // ---------------------------------------------------------------------------------------------
@@ -844,49 +844,45 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 }
 
 /**
- * Under a line about a host a command could not reach: "Allow for this repository", which adds it to
- * the network list of the session's repository and lets the sandbox reach it at once while a turn runs
- * in it (from the next turn otherwise), and the
- * way to the list itself. Nothing is allowed without the click.
+ * Under a line about a host a command could not reach (an older server's, or a turn whose
+ * `network.blocked` row does not list it): "Allow for this repository" and the way to the list.
  */
 function BlockedHost({ host, repository }: { host: string; repository: boolean }) {
 	const interactive = useInteractive();
-	const [state, setState] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; text: string } | { kind: "failed"; text: string }>({ kind: "idle" });
-	const allow = interactive?.allowHost ?? null;
 	const repositoryId = interactive?.repositoryId ?? null;
 	if (!repository || repositoryId === null) return null;
-	const go = async () => {
-		if (!allow || state.kind === "busy") return;
-		setState({ kind: "busy" });
-		try {
-			const answer = await allow(host);
-			setState({ kind: "done", text: answer.applied ? `${host} is allowed. This sandbox reaches it now.` : `${host} is allowed. It applies from the next turn.` });
-		} catch (failure) {
-			setState({ kind: "failed", text: failure instanceof Error ? failure.message : String(failure) });
-		}
-	};
 	return (
 		<p className="system-actions">
-			{state.kind === "done" ? (
-				<span className="system-done tone-good" role="status">
-					<CheckIcon size={13} /> {state.text}
-				</span>
-			) : (
-				<button type="button" className="button button-outline button-small" onClick={() => void go()} disabled={!allow || state.kind === "busy"} aria-label={`Allow ${host} for this repository`}>
-					{state.kind === "busy" ? "Allowing…" : "Allow for this repository"}
-				</button>
-			)}
-			<a className="link" {...linkProps({ name: "repository", id: repositoryId, view: "settings", section: "network" })}>
-				Network list
-			</a>
-			{state.kind === "failed" ? (
-				<span className="system-failed tone-bad" role="alert">
-					<WarnIcon size={13} /> {state.text}
-				</span>
-			) : null}
+			<AllowHost host={host} context={{ allow: interactive?.allowHost ?? null, repositoryId }} listLink />
 		</p>
 	);
 }
+
+/** "16:15", the time of day a destination was last refused. */
+const lastSeen = (at: number) => `last ${new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+
+/**
+ * A turn's blocked network requests (`network.blocked`): one quiet line that counts them, then each
+ * destination with what can be done about it, folded after three. Live while the turn runs: a newer
+ * revision replaces it in place. Its id is what the side panel links to.
+ */
+const NetworkRow = memo(function NetworkRow({ block }: { block: NetworkBlock }) {
+	const interactive = useInteractive();
+	const repositoryId = interactive?.repositoryId ?? null;
+	const context = interactive ? { allow: interactive.allowHost ?? null, repositoryId } : null;
+	return (
+		<section className="blocked" id={`network-${block.seq}`} aria-label="Blocked network requests">
+			<p className="system tone-dim">
+				<span className="system-rule" aria-hidden="true" />
+				<span className="system-source">network</span>
+				<span className="system-text">
+					Blocked network requests: {blockedHeadline(block)}
+				</span>
+			</p>
+			<BlockedList hosts={block.hosts} overflow={block.overflow} context={context} when={lastSeen} label="Blocked destinations" />
+		</section>
+	);
+});
 
 // ---------------------------------------------------------------------------------------------
 // A turn
@@ -1063,6 +1059,8 @@ function renderBlock(block: Block, nested = false, first = false): ReactNode {
 		case "platform":
 		case "note":
 			return <SystemLine block={block} />;
+		case "network":
+			return <NetworkRow block={block} />;
 	}
 }
 
@@ -1108,7 +1106,7 @@ export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	const question = interactive?.flow.question ?? null;
 	// A question about a call this timeline does not show (a subagent's own call) goes at the end of its turn.
 	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && asksAbout(block, question)) ? question : null;
-	const rows = useMemo(() => turnRows(turn.blocks, question ? (block) => asksAbout(block, question) : null), [turn.blocks, question]);
+	const rows = useMemo(() => turnRows(shownBlocks(turn.blocks), question ? (block) => asksAbout(block, question) : null), [turn.blocks, question]);
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
 			{rows.map((row) =>
