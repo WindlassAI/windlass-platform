@@ -14,6 +14,7 @@ import "./styles/usage.css";
 import "./styles/repository.css";
 import "./styles/machines.css";
 import "./styles/items.css";
+import "./styles/workspace.css";
 import "./styles/landing.css";
 import "./styles/docs.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";

@@ -13,7 +13,9 @@ import { createMockClient, type MockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
 import { Item, useItem } from "./Item";
-import { Repository, useRepository } from "./Repository";
+import { RepositoryPane, useRepository } from "./Repository";
+import { useItems } from "./Items";
+import { NO_FILTERS } from "../lib/workspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -104,7 +106,7 @@ describe("an item from a GitHub issue", () => {
 	});
 
 	it("links to its issue from its row in the work list, and a row from the web has no such link", async () => {
-		await render(() => createElement(Repository, { page: useRepository(7101), view: "work" }));
+		await render(() => createElement(RepositoryPane, { page: useRepository(7101), view: "items", items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] }));
 		const section = host.querySelector("section[aria-labelledby='repo-items']") as HTMLElement;
 		const rowOf = (item: ItemSummary) => [...section.querySelectorAll("li.item-row")].find((row) => row.querySelector(".agent-title")?.textContent?.startsWith(item.title)) as HTMLElement;
 		for (const item of [fromIssue(false), fromIssue(true)]) {

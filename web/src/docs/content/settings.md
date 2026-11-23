@@ -1,6 +1,6 @@
 ## Account settings
 
-Open the account menu and choose **Settings**. What you save here holds for every agent of yours, whatever the repository. What you save for one repository is on that repository's page.
+Open the account menu and choose **Settings**. What you save here holds for every agent of yours, whatever the repository. What you save for one repository is under **Saved settings** when you choose it in **Agents**.
 
 ### Defaults for new agents
 
@@ -36,7 +36,7 @@ A token works until you revoke it. Choose **Revoke token** to stop it at once. W
 
 ## Repository settings
 
-Open a repository's page and choose **Settings**. Each section has its own address, for example `/repositories/<id>/settings#checks`.
+Choose a repository in the rail of **Agents**, then **Saved settings**. Each section has its own address, for example `/repositories/<id>/settings#checks`.
 
 ### Defaults for new agents
 

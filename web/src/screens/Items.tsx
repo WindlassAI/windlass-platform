@@ -578,16 +578,18 @@ function Group({ name, items, now, count: said, filed = false, children }: { nam
  * work can be filed on it now. The open items come from the live feed; the ended ones are folded, said
  * by the feed's counts, and read from the server a page at a time once unfolded, newest filed first.
  */
-export function RepositoryItems({ repositoryId, name, base, launchable, now }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number }) {
+export function RepositoryItems({ repositoryId, name, base, launchable, now, filter }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number; filter?: (item: ItemSummary) => boolean }) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
 	const items = useItems(offered);
 	const [filing, setFiling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const ended = useId();
+	// `filter`: the Agents home's filters, which narrow the open items and the ended ones read so far; the counts stay the feed's.
 	const onIt = (item: ItemSummary) => !item.parent && String(item.repository.id) === String(repositoryId);
+	const shown = (item: ItemSummary) => filter?.(item) ?? true;
 	const live = items.list?.filter(onIt) ?? null;
-	const mine = items.feed?.open.filter(onIt) ?? null;
+	const mine = items.feed?.open.filter((item) => onIt(item) && shown(item)) ?? null;
 	const counts = feedCounts(items.feed, { repository: repositoryId });
 	const pages = useEndedPages(open, { repository: repositoryId }, live);
 	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
@@ -643,7 +645,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 							</p>
 							<div id={ended} hidden={!open}>
 								{open ? (
-									<Group name="Ended" items={pages.items} now={now} filed count={pages.items.length < counts.ended ? `${count(pages.items.length)} of ${count(counts.ended)}` : undefined}>
+									<Group name="Ended" items={filter ? pages.items.filter(shown) : pages.items} now={now} filed count={pages.items.length < counts.ended ? `${count(pages.items.length)} of ${count(counts.ended)}` : undefined}>
 										<EndedFoot pages={pages} />
 									</Group>
 								) : null}

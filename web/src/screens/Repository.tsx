@@ -1,15 +1,16 @@
 /**
- * A repository's page: what the user's actor keeps for one repository of their GitHub connection,
- * gathered in one place, and the agents on it.
+ * A repository chosen in the Agents home (screens/Workspace.tsx): the right side of the home, beside
+ * the rail, for one repository of the user's GitHub connection. It took the place of the repository's
+ * own page, at the same addresses.
  *
- * The page is addressed by GitHub's id for the repository, which a rename does not change. Under one
- * head it has two views, each with its own address, and tabs between them. Its work, the first: the
- * agents launched on it, its work items, and the pull requests its agents opened that are still open,
- * the agents and the pull requests from the summaries the list of agents already has, each pull
- * request with what its description says was verified. A work item's session is not among the agents:
- * it is part of its item, and is opened from the item's row, and a pull request it opened is named
- * after its item. Its settings (`/settings`, in
- * RepositorySettings.tsx): what is kept for it, set once and seldom visited.
+ * It is addressed by GitHub's id for the repository, which a rename does not change. Its head says
+ * what is on it and leads to its open pull requests and its saved settings; under it, a composer that
+ * launches on it, and three tabs, each at its own address: the overview (its agents, and its work items
+ * as a table), all of its agents, and all of its work items with the way to file one. The agents and
+ * the pull requests come from the summaries the list of agents already has, each pull request with what
+ * its description says was verified. A work item's session is not among the agents: it is part of its
+ * item, and is opened from the item's row, and a pull request it opened is named after its item. Its
+ * settings (`/settings`, in RepositorySettings.tsx): what is kept for it, set once and seldom visited.
  *
  * Two things are asked, apart from each other. What is saved (`repository`) is the user's actor's
  * own and is there at once. Whether the repository can still be launched on (`githubRepository`) is
@@ -17,21 +18,25 @@
  * GitHub no longer shows to this user keeps its page, with what is saved for it and the way to
  * delete that, and with a plain sentence that no new agent can be launched on it.
  */
-import type { GithubId, GithubRepository, RepositoryView, SessionSummary } from "@contract";
+import type { GithubId, GithubRepository, MachineSummary, RepositoryView, SessionSummary } from "@contract";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hasReason } from "../api/client";
 import { AgentList } from "../components/Agents";
-import { ArrowLeftIcon, AskIcon, ExternalIcon, LockIcon, PlusIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, BranchIcon, ExternalIcon, LockIcon, PullRequestIcon, RepoIcon, RingIcon, SlidersIcon, WarnIcon } from "../components/Icons";
+import { ItemTable, itemsByUrgency } from "../components/ItemTable";
 import { PullState } from "../components/PullRequest";
+import { StartComposer } from "../components/StartComposer";
 import { TabPanel, Tabs } from "../components/Tabs";
+import { FilterBar, ListHeader } from "../components/WorkspaceFilters";
 import type { ConnectionState } from "../api/client";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
-import { LONE_GROUP_SHOWN, openPulls, ownAgents, repositoryName, sessionsOn } from "../lib/repositories";
-import { linkProps, navigate } from "../lib/router";
+import { LONE_GROUP_SHOWN, feedCounts, openPulls, ownAgents, repositoryName, sessionsOn } from "../lib/repositories";
+import { linkProps, type RepositoryPaneView } from "../lib/router";
+import { filterCount, itemStatus, matchesItem, matchesSession, sessionStatus, type Filters } from "../lib/workspace";
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
 import { useNow, useSessions } from "../state/hooks";
-import { RepositoryItems, useItems } from "./Items";
+import { RepositoryItems, type ItemsState } from "./Items";
 import { RepositorySettings } from "./RepositorySettings";
 
 /** Whether new agents can be launched on the repository, as GitHub says now. */
@@ -148,24 +153,6 @@ export function useRepository(id: GithubId): RepositoryPage {
 		setAsked((count) => count + 1);
 	}, [connectionError, reloadGithub]);
 	return { id, name, view, error, access, sessions: mine, connection, reload, replace: setView, recheck };
-}
-
-/** What the top bar shows on this page: the way back and which repository it is. */
-export function RepositoryCrumb({ name }: { name: string | null }) {
-	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps({ name: "home" })}>
-				<ArrowLeftIcon size={14} />
-				<span>Agents</span>
-			</a>
-			<span className="crumb-sep" aria-hidden="true">
-				/
-			</span>
-			<span className="crumb-title" aria-current="page">
-				{name ?? "Repository"}
-			</span>
-		</nav>
-	);
 }
 
 /** What GitHub says of the repository, in the page's head: where it is, and what can be done there. */
@@ -287,15 +274,183 @@ function Pulls({ page, now }: { page: RepositoryPage; now: number }) {
 	);
 }
 
-/** The page's first view: the agents on the repository, its work items and its open pull requests. */
-function Work({ page }: { page: RepositoryPage }) {
+/** The agents on the repository the filters leave, under the list's header: all of them, or on the overview its first few. */
+function AgentsSection({ page, filters, limit, overview }: { page: RepositoryPage; filters: Filters; limit: number; overview: boolean }) {
 	const now = useNow(15_000);
+	const all = page.sessions === null ? null : ownAgents(page.sessions);
+	const sessions = all === null ? null : all.filter((session) => matchesSession(session, filters));
+	const name = page.name ?? `Repository ${page.id}`;
+	const launchable = page.access.state !== "unusable";
+	const filtering = filterCount(filters) > 0;
+	return (
+		<section className="usage-section ws-section" aria-labelledby="repo-agents">
+			<ListHeader id="repo-agents" title="Agents" count={sessions && sessions.length > 0 ? sessions.length : null} />
+			{sessions === null ? (
+				page.connection === "failed" ? (
+					<p className="usage-empty tone-bad">The list of agents could not be loaded.</p>
+				) : (
+					<ul className="agents agents-loading repo-agents" aria-busy="true" aria-label="Reading your agents">
+						{[0, 1].map((row) => (
+							<li key={row} className="agent-row agent-row-skeleton">
+								<span className="skeleton skeleton-dot" />
+								<div className="agent-main">
+									<span className="skeleton skeleton-title" style={{ width: `${46 - row * 9}%` }} />
+									<span className="skeleton skeleton-meta" style={{ width: `${62 - row * 8}%` }} />
+								</div>
+							</li>
+						))}
+					</ul>
+				)
+			) : sessions.length === 0 ? (
+				<p className="usage-empty">{filtering && (all?.length ?? 0) > 0 ? "None of its agents matches the filters." : `No agent of yours is on this repository.${launchable ? " Launch one with the field above." : ""}`}</p>
+			) : (
+				<div className="repo-agents">
+					<AgentList sessions={sessions} limit={limit} foldKey={`repository:${page.id}${overview ? ":overview" : ""}`} label={`Your agents on ${name}, the most recently used first`} grouped now={now} />
+				</div>
+			)}
+		</section>
+	);
+}
+
+/** The overview's work items: those the filters leave, what asks first, as a table, with the way to all of them. */
+function ItemsOverview({ page, items, filters }: { page: RepositoryPage; items: ItemsState; filters: Filters }) {
+	const { platform } = useApp();
+	const now = useNow(15_000);
+	if (!platform.info?.items) return null;
+	const mine = items.list === null ? null : items.list.filter((item) => !item.parent && String(item.repository.id) === String(page.id));
+	const shown = mine === null ? null : itemsByUrgency(mine.filter((item) => matchesItem(item, filters)));
+	const total = feedCounts(items.feed, { repository: page.id }).total;
+	const SHOWN = 8;
+	return (
+		<section className="usage-section ws-section" aria-labelledby="repo-items-overview">
+			<ListHeader id="repo-items-overview" title="Work items" count={total > 0 ? total : null} />
+			{shown === null ? (
+				items.error ? (
+					<p className="usage-empty tone-bad">The work items could not be loaded: {items.error}</p>
+				) : (
+					<div className="usage-loading" aria-busy="true" aria-label="Loading the work items">
+						<span className="skeleton skeleton-meta" style={{ width: "100%" }} />
+						<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
+					</div>
+				)
+			) : shown.length === 0 ? (
+				<p className="usage-empty">{filterCount(filters) > 0 && (mine?.length ?? 0) > 0 ? "None of its work items matches the filters." : "No work item on this repository yet."}</p>
+			) : (
+				<ItemTable items={shown.slice(0, SHOWN)} now={now} label={`Work items on ${page.name ?? "this repository"}, what asks you first`} />
+			)}
+			{total > Math.min(SHOWN, shown?.length ?? 0) ? (
+				<p className="agents-fold">
+					<a className="link" {...linkProps({ name: "repository", id: page.id, view: "items" })}>
+						All {plural(total, "work item")}, the ended ones too
+					</a>
+				</p>
+			) : null}
+		</section>
+	);
+}
+
+/** What the filters of the home take, as each list of the repository's side has them. */
+interface PaneFilters {
+	filters: Filters;
+	onFilters(filters: Filters): void;
+	machines: readonly MachineSummary[];
+}
+
+/** A word for the default branch and the head's facts: how many agents and items, how many at work, how many ask. */
+function StatusLine({ page, items }: { page: RepositoryPage; items: ItemsState }) {
+	const agents = page.sessions === null ? null : ownAgents(page.sessions);
+	const mine = (items.list ?? []).filter((item) => !item.parent && String(item.repository.id) === String(page.id));
+	const total = Math.max(feedCounts(items.feed, { repository: page.id }).total, mine.length);
+	const running = (agents ?? []).filter((session) => sessionStatus(session) === "running").length + mine.filter((item) => itemStatus(item) === "running").length;
+	const needs = (agents ?? []).filter((session) => session.status === "waiting").length + mine.filter((item) => item.question !== null).length;
+	const branch = page.access.state === "usable" ? page.access.repository.defaultBranch : null;
+	return (
+		<p className="ws-status">
+			{running > 0 ? (
+				<span className="ws-status-running">
+					<RingIcon size={12} className="ws-ring" />
+					{running} running
+				</span>
+			) : null}
+			{needs > 0 ? (
+				<span className="ws-status-needs">
+					<span className="ws-lamp" aria-hidden="true" />
+					{needs} {needs === 1 ? "needs" : "need"} you
+				</span>
+			) : null}
+			<span>
+				{agents === null ? "–" : plural(agents.length, "agent")}
+				{items.feed !== null || mine.length > 0 ? ` · ${plural(total, "work item")}` : ""}
+			</span>
+			{branch ? (
+				<span className="ws-status-branch" title="Its default branch">
+					<BranchIcon size={12} />
+					{branch}
+				</span>
+			) : null}
+		</p>
+	);
+}
+
+export interface RepositoryPaneProps extends PaneFilters {
+	page: RepositoryPage;
+	/** The view shown under the head: undefined for the overview. */
+	view?: RepositoryPaneView;
+	/** Opened at the address that launched a new agent on it: the composer takes the focus. */
+	launching?: boolean;
+	items: ItemsState;
+}
+
+/** The chosen repository: its head, its composer and its views. */
+export function RepositoryPane({ page, view, launching = false, items, filters, onFilters, machines }: RepositoryPaneProps) {
+	const github = useGithub();
+	const { platform } = useApp();
 	const { access } = page;
-	const sessions = page.sessions === null ? null : ownAgents(page.sessions);
 	const name = page.name ?? `Repository ${page.id}`;
 	const launchable = access.state !== "unusable";
+	const pulls = page.sessions === null ? null : openPulls(page.sessions, page.id);
+	const offersItems = Boolean(platform.info?.items);
+	const tab = view === "agents" || view === "items" ? view : "overview";
+	const aside = view === "pulls" || view === "settings" ? view : null;
+	const slash = page.name?.indexOf("/") ?? -1;
+	const owner = page.name !== null && slash > 0 ? page.name.slice(0, slash) : null;
+	const short = page.name !== null && slash > 0 ? page.name.slice(slash + 1) : name;
+	const now = useNow(15_000);
+
+	useEffect(() => {
+		document.title = `${page.name ?? "Repository"}${view === "settings" ? " · Settings" : view === "pulls" ? " · Pull requests" : ""} · Windlass`;
+	}, [page.name, view]);
+
 	return (
-		<>
+		<main className="home usage repo ws-pane">
+			<header className="ws-head">
+				<div className="ws-head-main">
+					{owner ? (
+						<p className="ws-owner">
+							<RepoIcon size={13} />
+							{owner}
+						</p>
+					) : null}
+					<h1 className="ws-title">{short}</h1>
+					{page.name === null && page.view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
+					<StatusLine page={page} items={items} />
+					<AccessLine page={page} github={github} />
+				</div>
+				<div className="ws-head-actions">
+					<a className={`button button-outline button-small${view === "pulls" ? " ws-head-current" : ""}`} aria-current={view === "pulls" ? "page" : undefined} {...linkProps({ name: "repository", id: page.id, view: "pulls" })}>
+						<PullRequestIcon size={13} />
+						Pull requests
+						{pulls && pulls.length > 0 ? <span className="ws-head-count">{pulls.length}</span> : null}
+					</a>
+					<a className={`button button-outline button-small${view === "settings" ? " ws-head-current" : ""}`} aria-current={view === "settings" ? "page" : undefined} {...linkProps({ name: "repository", id: page.id, view: "settings" })}>
+						<SlidersIcon size={13} />
+						Saved settings
+					</a>
+				</div>
+			</header>
+
+			<AccessNotice page={page} github={github} />
+
 			{page.connection === "reconnecting" ? (
 				<p className="callout callout-warn" role="status">
 					<WarnIcon />
@@ -303,116 +458,64 @@ function Work({ page }: { page: RepositoryPage }) {
 				</p>
 			) : null}
 
-			<section className="usage-section" aria-labelledby="repo-agents">
-				<h2 className="usage-title" id="repo-agents">
-					Agents
-					{sessions && sessions.length > 0 ? <span className="usage-count">{sessions.length}</span> : null}
-				</h2>
-				{sessions === null ? (
-					page.connection === "failed" ? (
-						<p className="usage-empty tone-bad">The list of agents could not be loaded.</p>
-					) : (
-						<ul className="agents agents-loading repo-agents" aria-busy="true" aria-label="Reading your agents">
-							{[0, 1].map((row) => (
-								<li key={row} className="agent-row agent-row-skeleton">
-									<span className="skeleton skeleton-dot" />
-									<div className="agent-main">
-										<span className="skeleton skeleton-title" style={{ width: `${46 - row * 9}%` }} />
-										<span className="skeleton skeleton-meta" style={{ width: `${62 - row * 8}%` }} />
-									</div>
-								</li>
-							))}
-						</ul>
-					)
-				) : sessions.length === 0 ? (
-					<p className="usage-empty">No agent of yours is on this repository.{launchable ? " Launch one with New agent." : ""}</p>
-				) : (
-					<div className="repo-agents">
-						<AgentList sessions={sessions} limit={LONE_GROUP_SHOWN} foldKey={`repository:${page.id}`} label={`Your agents on ${name}, the most recently used first`} grouped now={now} />
+			{aside !== null ? (
+				<>
+					<p className="ws-back">
+						<a className="link" {...linkProps({ name: "repository", id: page.id })}>
+							<ArrowLeftIcon size={12} />
+							Back to the overview
+						</a>
+					</p>
+					{aside === "settings" ? <RepositorySettings page={page} /> : <Pulls page={page} now={now} />}
+				</>
+			) : (
+				<>
+					{launchable ? (
+						<section className="home-start ws-start" aria-label={`Launch an agent on ${name}`}>
+							<StartComposer key={page.id} sessions={page.sessions} repositoryId={page.id} autoFocus={launching} />
+						</section>
+					) : null}
+					<div className="ws-tabs-row">
+						<Tabs
+							id="repo-views"
+							label={name}
+							selected={tab}
+							tabs={[
+								{ key: "overview", label: "Overview", route: { name: "repository", id: page.id } },
+								{ key: "agents", label: <TabCount word="Agents" count={page.sessions === null ? null : ownAgents(page.sessions).length} />, route: { name: "repository", id: page.id, view: "agents" } },
+								...(offersItems ? [{ key: "items", label: <TabCount word="Work items" count={feedCounts(items.feed, { repository: page.id }).total} />, route: { name: "repository", id: page.id, view: "items" } as const }] : []),
+							]}
+						/>
+						<FilterBar filters={filters} onChange={onFilters} machines={machines} />
 					</div>
-				)}
-			</section>
-
-			<RepositoryItems repositoryId={page.id} name={name} base={access.state === "usable" ? access.repository.defaultBranch : null} launchable={launchable} now={now} />
-
-			<Pulls page={page} now={now} />
-		</>
+					<TabPanel id="repo-views" selected={tab}>
+						{tab === "overview" ? (
+							<>
+								<AgentsSection page={page} filters={filters} limit={OVERVIEW_AGENTS} overview />
+								<ItemsOverview page={page} items={items} filters={filters} />
+							</>
+						) : tab === "agents" ? (
+							<AgentsSection page={page} filters={filters} limit={LONE_GROUP_SHOWN} overview={false} />
+						) : (
+							<>
+								<RepositoryItems repositoryId={page.id} name={name} base={access.state === "usable" ? access.repository.defaultBranch : null} launchable={launchable} now={now} filter={(item) => matchesItem(item, filters)} />
+							</>
+						)}
+					</TabPanel>
+				</>
+			)}
+		</main>
 	);
 }
 
-/**
- * The Work tab's name while Settings is shown, with the mark a row has when it waits for its person's
- * answer, when an agent on the repository or one of its work items does.
- */
-function WorkLabel({ repositoryId, sessions }: { repositoryId: GithubId; sessions: SessionSummary[] | null }) {
-	const { platform } = useApp();
-	const items = useItems(Boolean(platform.info?.items));
-	const asks = ownAgents(sessions ?? []).some((session) => session.status === "waiting") || (items.list ?? []).some((item) => item.repository.id === repositoryId && item.question !== null);
+/** How many agents the overview shows before the rest is folded away. */
+const OVERVIEW_AGENTS = 5;
+
+function TabCount({ word, count }: { word: string; count: number | null }) {
 	return (
 		<>
-			Work
-			{asks ? (
-				<>
-					<AskIcon size={14} className="status-glyph status-waiting" />
-					<span className="visually-hidden"> (something here waits for your answer)</span>
-				</>
-			) : null}
+			{word}
+			{count !== null && count > 0 ? <span className="ws-tab-count">{count}</span> : null}
 		</>
-	);
-}
-
-/** The two views of a repository's page: its work, and what is kept for it. */
-export type RepositoryTab = "work" | "settings";
-
-export function Repository({ page, view: tab }: { page: RepositoryPage; view: RepositoryTab }) {
-	const github = useGithub();
-	const { access } = page;
-	const sessions = page.sessions === null ? null : ownAgents(page.sessions);
-	const name = page.name ?? `Repository ${page.id}`;
-	const launchable = access.state !== "unusable";
-	const working = sessions?.filter((session) => session.status !== "idle").length ?? 0;
-
-	return (
-		<main className="home usage repo">
-			<header className="home-head">
-				<div className="repo-head">
-					<p className="eyebrow">
-						repository
-						{sessions === null ? "" : ` · ${plural(sessions.length, "agent")}${working > 0 ? ` · ${working} working` : ""}`}
-					</p>
-					<h1 className="display display-small repo-name">
-						{page.name !== null && page.name.includes("/") ? (
-							<>
-								<span className="repo-name-owner">{page.name.slice(0, page.name.indexOf("/") + 1)}</span>
-								{page.name.slice(page.name.indexOf("/") + 1)}
-							</>
-						) : (
-							name
-						)}
-					</h1>
-					{page.name === null && page.view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
-					<AccessLine page={page} github={github} />
-				</div>
-				<button type="button" className="button button-primary button-large" onClick={() => navigate({ name: "new", repository: page.id, ...(tab === "settings" ? { over: "settings" as const } : {}) })} disabled={!launchable} title={launchable ? undefined : "No agent can be launched on this repository now"}>
-					<PlusIcon />
-					New agent
-				</button>
-			</header>
-
-			<Tabs
-				id="repo-views"
-				label={name}
-				selected={tab}
-				tabs={[
-					{ key: "work", label: tab === "settings" ? <WorkLabel repositoryId={page.id} sessions={page.sessions} /> : "Work", route: { name: "repository", id: page.id } },
-					{ key: "settings", label: "Settings", route: { name: "repository", id: page.id, view: "settings" } },
-				]}
-			/>
-
-			<AccessNotice page={page} github={github} />
-			<TabPanel id="repo-views" selected={tab}>
-				{tab === "settings" ? <RepositorySettings page={page} /> : <Work page={page} />}
-			</TabPanel>
-		</main>
 	);
 }

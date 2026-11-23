@@ -24,9 +24,9 @@ A work item runs in one of two ways:
 
 To file it without starting it, choose **File as a draft**, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page.
 
-### From a repository's page
+### From a repository
 
-Choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. On a machine signed into Claude Code or OpenCode, choose the **Agent** under the machine. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
+Choose the repository in the rail of **Agents**, open **Work items** and choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. On a machine signed into Claude Code or OpenCode, choose the **Agent** under the machine. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
 
 ### From a GitHub issue
 
@@ -423,7 +423,7 @@ The Factory page lists your items by what you must do:
 - **Drafts**.
 - **Ended**: done, failed or cancelled, folded away. Unfolded, they show 25 at a time, the newest filed first, each with the day it was filed and the day it ended (an item's page says both too). Items that ended before the platform kept that day show only when they were filed. Choose **Show 25 more** for the next ones.
 
-A repository's page shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
+A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
 Filter it with **repo** and **from**: filed from the web, the API or a GitHub issue. The filters are kept in the address, as `?repository=` and `?from=`.
 
