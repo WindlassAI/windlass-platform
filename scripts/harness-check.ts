@@ -166,6 +166,56 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	console.log("ok  ask_person: builders only, declared read, one per turn, three per run, cleaned and capped");
 }
 
+// Every tool schema the platform declares, as a Windlass host tool or over MCP, uses only what Windlass 0.6.0's tool-schema
+// compiler takes (its packages/core/src/tool/schema.ts, KEYWORDS and TYPES): it refuses the whole session for any other
+// keyword, as it refused every planner turn for file_plan's `exclusiveMinimum`. The sets are copied from that file.
+{
+	const { platformTools } = await import("../server/src/agent-publish.js");
+	const { platformToolDeclarations, turnPlatformTools } = await import("../server/src/platform-tools.js");
+	const KEYWORDS = new Set(["type", "properties", "required", "additionalProperties", "enum", "items", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "description", "default", "title"]);
+	const TYPES = new Set(["string", "number", "integer", "boolean", "object", "array", "null"]);
+	const NUMBERS = ["minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"];
+	const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+	/** What Windlass would refuse in a schema, by where: empty when it compiles. */
+	const problems = (schema: unknown, at = ""): string[] => {
+		if (schema === true) return [];
+		if (!isObject(schema)) return [`${at || "schema"}: not an object`];
+		const found: string[] = [];
+		for (const key of Object.keys(schema)) if (!KEYWORDS.has(key)) found.push(`${at || "schema"}: unsupported keyword "${key}"`);
+		if (schema.type !== undefined && !(Array.isArray(schema.type) ? schema.type : [schema.type]).every(t => typeof t === "string" && TYPES.has(t))) found.push(`${at}: type ${JSON.stringify(schema.type)}`);
+		if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0)) found.push(`${at}: enum must be a non-empty array`);
+		for (const key of NUMBERS) if (schema[key] !== undefined && typeof schema[key] !== "number") found.push(`${at}: ${key} is not a number`);
+		if (schema.required !== undefined && !(Array.isArray(schema.required) && schema.required.every(r => typeof r === "string"))) found.push(`${at}: required is not a list of names`);
+		if (schema.properties !== undefined) {
+			if (!isObject(schema.properties)) found.push(`${at}: properties is not an object`);
+			else for (const [name, child] of Object.entries(schema.properties)) found.push(...problems(child, `${at}.properties.${name}`));
+		}
+		if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") found.push(...problems(schema.additionalProperties, `${at}.additionalProperties`));
+		if (schema.items !== undefined) found.push(...problems(schema.items, `${at}.items`));
+		return found;
+	};
+	// The check itself sees what Windlass refused.
+	assert.deepEqual(problems({ type: "object", properties: { needs: { type: "object", properties: { cpus: { type: "number", exclusiveMinimum: 0 } } } } }), ['.properties.needs.properties.cpus: unsupported keyword "exclusiveMinimum"']);
+	assert.equal(problems({ type: "object", properties: { a: { anyOf: [{ type: "string" }] }, b: { const: 1 } } }).length, 2, "anyOf and const are not Windlass's");
+	// Every offer a turn can make: the planner's (one repository and cross-repo), the reviewer's, and every builder's and person's set.
+	const offers: Array<Parameters<typeof platformTools>[0]> = [{ plan: true, publish: false, report: false, push: false }, { plan: true, crossRepo: true, publish: false, report: false, push: false }, { review: true, publish: false, report: false, push: false }];
+	for (let bits = 0; bits < 64; bits++) {
+		const on = (n: number) => (bits & (1 << n)) !== 0;
+		offers.push({ publish: on(0), report: on(1), push: on(2), ask: on(3), screenshots: on(4), ...(on(5) && { mcp: { pushes: 5, fetches: 3 } }) });
+	}
+	const declared = new Map<string, unknown>();
+	for (const offer of offers) for (const tool of platformTools(offer, 60_000)) declared.set(`${tool.name} ${JSON.stringify(offer)}`, tool.inputSchema);
+	// What a turn's tools declare over MCP is the same declarations, filtered (platform-tools.ts).
+	const all = turnPlatformTools({ onReport: () => "", onAsk: () => "", onPush: () => "", onFetchBase: () => "", onPublish: () => "" } as never);
+	for (const tool of platformToolDeclarations(all, { mcp: true })) declared.set(`${tool.name} over MCP`, tool.inputSchema);
+	for (const name of ["file_plan", "file_review", "report", "ask_person", "push", "fetch_base", "publish"]) assert.ok([...declared.keys()].some(key => key.startsWith(name + " ")), `${name} is among the declarations checked`);
+	for (const [where, schema] of declared) {
+		assert.ok(isObject(schema) && schema.type === "object", `${where}: Windlass takes only an input schema of type "object"`);
+		assert.deepEqual(problems(schema), [], `${where}: a schema Windlass 0.6.0 refuses`);
+	}
+	console.log(`ok  every declared tool schema (${declared.size} declarations) uses only Windlass 0.6.0's schema keywords`);
+}
+
 // Claude Code's task tools keep their list in the adapter's process, which lives one turn: a task finished
 // in a later turn never reached the plan. Its TodoWrite list sends the whole list with every change.
 const claudeWrapper = readFileSync(new URL("../sandbox/harness/claude/wlp-claude-acp", import.meta.url), "utf8");
