@@ -125,7 +125,7 @@ const repository = (id: number, owner: string, name: string, isPrivate: boolean)
 /** Repositories of the mock's GitHub connection (mock.ts). Each item has an agent session of its own, made with the seeded items (`seededSession`). */
 const HARBOR = { repository: repository(7101, "acme", "harbor", true) };
 const TIDES = { repository: repository(7102, "ada", "tide-tables", false) };
-const ENVIRONMENT_QUESTION = "The check “typecheck” (corepack pnpm -s typecheck) could not run in the sandbox: its package manager refused to run. It printed “ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0”. That says nothing about the agent's code, so the agent was not sent back. Fix the environment, then run the step again.";
+const ENVIRONMENT_QUESTION = "The check “typecheck” could not run in the sandbox: its package manager refused to run. This is not a code problem, so the agent was not sent back. Fix the environment, then run the step again.";
 const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */

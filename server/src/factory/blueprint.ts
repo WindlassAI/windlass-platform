@@ -991,15 +991,15 @@ const ENVIRONMENT_WORDS: Record<EnvironmentFailure["kind"], string> = {
 };
 
 /**
- * The question of a gate whose only failing checks could not run in the sandbox: names the first one's command and the
- * line that shows why. "Run the step again" resumes this step in the same session and sandbox once the person fixed it;
+ * The question of a gate whose only failing checks could not run in the sandbox: names the first one and why;
+ * "Run the step again" resumes this step in the same session and sandbox once the person fixed it;
  * no round is charged, and nothing loops: each such failure asks again.
  */
 export function environmentQuestion(failed: ReadonlyArray<{ check: Pick<VerifiedCheck, "name" | "command">; failure: EnvironmentFailure }>): string {
 	const [{ check, failure }] = failed;
 	const others = failed.length > 1 ? ` ${failed.length - 1 === 1 ? "One more check" : `${failed.length - 1} more checks`} failed the same way.` : "";
-	const line = failure.line ? ` It printed “${failure.line}”.` : "";
-	return `The check “${check.name}” (${check.command}) could not run in the sandbox: ${ENVIRONMENT_WORDS[failure.kind]}.${line}${others} That says nothing about the agent's code, so the agent was not sent back. Fix the environment, then run the step again.`;
+	// The command and its output stand under the question on the item page: the sentence stays short.
+	return `The check “${check.name}” could not run in the sandbox: ${ENVIRONMENT_WORDS[failure.kind]}.${others} This is not a code problem, so the agent was not sent back. Fix the environment, then run the step again.`;
 }
 
 function askEnvironment(c: Change, kind: TurnStepKind, failed: Array<{ check: VerifiedCheck; failure: EnvironmentFailure }>): void {

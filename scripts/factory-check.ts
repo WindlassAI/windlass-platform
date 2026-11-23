@@ -313,7 +313,7 @@ expect("environment: the excerpt is the end of the output", outputExcerpt(Array.
 const ENVIRONMENT = verified("unresolved", [failedWith(BAD_PM), check("lint", "passed")], { unresolved: { reason: "environment", said: null } });
 const question = environmentQuestion([{ check: { name: "typecheck", command: "corepack pnpm -s typecheck" }, failure: environmentFailure(failedWith(BAD_PM))! }]);
 expect("environment: the question names the command and the first error line",
-	question === "The check “typecheck” (corepack pnpm -s typecheck) could not run in the sandbox: its package manager refused to run. It printed “ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0”. That says nothing about the agent's code, so the agent was not sent back. Fix the environment, then run the step again.", question);
+	question === "The check “typecheck” could not run in the sandbox: its package manager refused to run. This is not a code problem, so the agent was not sent back. Fix the environment, then run the step again.", question);
 drive("a check the sandbox could not run asks the person, and runs the step again in the same session", newItem(), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
