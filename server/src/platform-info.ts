@@ -21,6 +21,8 @@ import { config, engineAdminToken, githubConfig } from "./config.js";
 import { ConnectionTokens } from "./connection-tokens.js";
 import { type GithubInfo, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH, type PlatformConnection, type PlatformInfo } from "./contract.js";
 import { getLayer } from "./layer.js";
+import { billing } from "./billing/config.js";
+import { PLAN_LIST } from "./billing/plans.js";
 import { LEGACY_MIN_RUNNER_VERSION, MIN_RUNNER_VERSION } from "./runner/control.js";
 
 const FRESH_MS = 5 * 60 * 1000;
@@ -85,6 +87,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	const app = githubInfo();
 	if (app) info.github = app;
 	if (config.machines) info.machines = { minRunnerVersion: config.machines.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION, platformFingerprint: config.machines.identity && fingerprint(config.machines.identity.root), runnerImage: config.machines.runnerImage, runnerHarnesses: config.machines.runnerHarnesses, platformUrl: config.machines.publicUrl };
+	if (billing()) info.billing = { plans: PLAN_LIST };
 	if (config.items) info.items = { reviewer: config.factory.reviewer, orchestrate: process.env.WLP_FACTORY_ORCHESTRATE !== "0", screenshots: config.factory.screenshots };
 	return info;
 }

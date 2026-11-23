@@ -49,8 +49,9 @@
  */
 
 import type { RawAccess } from "rivetkit/db";
-import type { HarnessId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import type { HarnessId, HostedMonth, PlanId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
+import { monthOfDay, nextMonthStart } from "./billing/meter.js";
 
 /**
  * Whether the platform's own limits hold a session at this place: its sandbox time, its place among the
@@ -167,6 +168,15 @@ export interface UsageLimits {
 	dailySeconds: number | null;
 	maxKept: number | null;
 	holdSeconds: number;
+	/**
+	 * Hosted seconds a UTC calendar month may use, weighted by size (billing/meter.ts): a plan's included minutes and
+	 * what its spend cap pays for, or the operator's `hostedMinutes`. Absent or null: no monthly allowance, as before plans.
+	 */
+	monthlySeconds?: number | null;
+	/** Of `monthlySeconds`, what the plan includes: past it is overage. */
+	includedSeconds?: number | null;
+	/** The plan the monthly allowance is of, where billing set it; for the words of a refusal. */
+	plan?: PlanId | null;
 }
 
 /** A second or more of sandbox time that was counted. */
@@ -261,6 +271,8 @@ export class UsageBook {
  * counts as one place (its reviewer's sandbox is released after each review). Set by whoever knows the sessions.
  */
 sharing: (session: string) => string | undefined = () => undefined;
+/** What a second of a session's sandbox counts as of the monthly allowance: its size's weight (billing/meter.ts). */
+weightOf: (session: string) => number = () => 1;
 
 	constructor(
 		readonly limits: UsageLimits,
@@ -297,6 +309,20 @@ sharing: (session: string) => string | undefined = () => undefined;
 	/** The same sum, added up again from the entries: what `usedOn` must equal. */
 	recount(day: number): number {
 		return this.entries.reduce((sum, entry) => (entry.day === day ? sum + entry.seconds : sum), 0);
+	}
+
+	/** The weighted seconds counted in a month ("2026-11"): what the monthly allowance and overage are counted in. */
+	usedInMonth(month: string): number {
+		let sum = 0;
+		for (const entry of this.entries) if (monthOfDay(entry.day) === month) sum += entry.seconds * this.weightOf(entry.session);
+		return sum;
+	}
+
+	/** The weighted seconds open holds have reserved of a month, without `except`'s. */
+	heldInMonth(month: string, except?: string): number {
+		let sum = 0;
+		for (const hold of this.holds.values()) if (monthOfDay(hold.day) === month && hold.session !== except) sum += hold.seconds * this.weightOf(hold.session);
+		return sum;
 	}
 
 	/** The seconds open holds have reserved of a day, without `except`'s. */
@@ -407,6 +433,16 @@ sharing: (session: string) => string | undefined = () => undefined;
 			if (left < (input.fresh === true ? this.startSeconds : 1)) return { ok: false, reason: "allowance", change };
 			grant = Math.min(grant, left);
 		}
+		// The month's hosted minutes, weighted by the session's size: the same rule as the day's, in weighted seconds.
+		const monthly = this.limits.monthlySeconds ?? null;
+		if (monthly !== null) {
+			const month = monthOfDay(day);
+			const weight = this.weightOf(input.session);
+			const closingWeighted = closing !== null && monthOfDay(closing.day) === month ? closing.seconds * this.weightOf(closing.session) : 0;
+			const left = monthly - this.usedInMonth(month) - this.heldInMonth(month, input.session) - closingWeighted;
+			if (left < (input.fresh === true ? this.startSeconds : 1) * weight) return { ok: false, reason: "allowance", change };
+			grant = Math.min(grant, Math.floor(left / weight));
+		}
 		// Asked after the allowance: someone told to free a sandbox must not then be told the day is used up.
 		if (input.keep === true && this.atCap(input.session)) return { ok: false, reason: "sandboxes", change };
 
@@ -515,6 +551,22 @@ sharing: (session: string) => string | undefined = () => undefined;
 			leftSeconds: allowance === null ? null : Math.max(0, allowance - usedSeconds - heldSeconds),
 			startSeconds: this.startSeconds,
 			sandboxes: { kept: this.places(), limit: this.limits.maxKept },
+			...(this.limits.monthlySeconds != null && { hosted: this.month(now) }),
+		};
+	}
+
+	/** The month's hosted minutes, in weighted seconds; only where there is a monthly allowance. */
+	month(now: number): HostedMonth {
+		const month = monthOfDay(dayOf(now));
+		const limitSeconds = this.limits.monthlySeconds ?? 0;
+		const usedSeconds = this.usedInMonth(month);
+		const heldSeconds = this.heldInMonth(month);
+		return {
+			month, resetsAt: nextMonthStart(now),
+			includedSeconds: Math.min(limitSeconds, this.limits.includedSeconds ?? limitSeconds),
+			limitSeconds, usedSeconds, heldSeconds,
+			leftSeconds: Math.max(0, limitSeconds - usedSeconds - heldSeconds),
+			...(this.limits.plan && { plan: this.limits.plan }),
 		};
 	}
 
@@ -657,8 +709,42 @@ function resetWords(numbers: Pick<UsageNumbers, "resetsAt" | "at">): string {
 	return `The allowance is whole again at 00:00 UTC, in ${spellSeconds(Math.max(60, Math.ceil((numbers.resetsAt - numbers.at) / 60_000) * 60))}.`;
 }
 
+/** Whole hosted minutes, for a sentence: "87", "1,800". Used minutes are rounded down, so that "N of M" never says more than was used. */
+export function spellMinutes(weightedSeconds: number): string {
+	return Math.floor(Math.max(0, weightedSeconds) / 60).toLocaleString("en-US");
+}
+
+/** Whether what stops a start is the month's hosted minutes rather than the day's allowance. */
+export function monthIsShort(numbers: UsageNumbers): boolean {
+	const month = numbers.hosted;
+	if (!month) return false;
+	return numbers.leftSeconds === null || month.leftSeconds < numbers.leftSeconds || month.leftSeconds < numbers.startSeconds;
+}
+
+/** "1 December": the day the month's minutes start again, in UTC. */
+function monthResetWords(month: HostedMonth): string {
+	const date = new Date(month.resetsAt);
+	return `${date.getUTCDate()} ${date.toLocaleString("en-US", { month: "long", timeZone: "UTC" })}`;
+}
+
+/**
+ * What a user reads when the month's hosted minutes stop something: what was used of how many, and the way on. A plan
+ * with overage that reached its spend cap says so; one without says Pro. Their own machines are never counted.
+ */
+export function monthRefusal(month: HostedMonth): string {
+	const capped = month.limitSeconds > month.includedSeconds;
+	const used = `You have used ${spellMinutes(month.usedSeconds + month.heldSeconds)} of your ${spellMinutes(month.limitSeconds)} hosted minutes this month${capped ? ", up to your overage spend cap" : ""}`;
+	const way = month.plan === "free"
+		? "Run the agent on one of your own machines, which are never counted, or move to Pro for 1,800 hosted minutes a month."
+		: month.plan === "pro"
+			? `${capped ? "Raise the spend cap in Settings, or run" : "Run"} the agent on one of your own machines, which are never counted.`
+			: "Run the agent on one of your own machines, which are never counted.";
+	return `${used}, so nothing more can run hosted. ${way} The minutes start again on ${monthResetWords(month)} (00:00 UTC).`;
+}
+
 /** What a user reads when something that needs sandbox time is refused for the day's allowance: what was used, what the allowance is, and when it is whole again. */
 export function allowanceRefusal(numbers: UsageNumbers): string {
+	if (monthIsShort(numbers)) return monthRefusal(numbers.hosted!);
 	const allowance = spellSeconds(numbers.allowanceSeconds ?? 0);
 	const used = spellSeconds(numbers.usedSeconds);
 	const held = numbers.heldSeconds > 0 ? spellSeconds(numbers.heldSeconds) : null;
@@ -694,6 +780,7 @@ export const USAGE_UNAVAILABLE = "Your sandbox time could not be checked just no
 
 /** The timeline's line when a running turn is stopped because the day's allowance is used up. */
 export function turnStoppedNote(numbers: UsageNumbers): string {
+	if (monthIsShort(numbers)) return `This turn was stopped at the end of the time it held. ${monthRefusal(numbers.hosted!)} The sandbox is suspended with its files as they are, and the conversation is kept.`;
 	return `Today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up, so this turn was stopped at the end of the time it held. The sandbox is suspended with its files as they are, and the conversation is kept. ${resetWords(numbers)} A prompt after that goes on from here.`;
 }
 
@@ -703,6 +790,7 @@ export const UNCHECKED_IDLE_NOTE = "Suspended the sandbox: your sandbox time cou
 
 /** The timeline's line when a sandbox that runs with no turn in it is suspended for the same reason. */
 export function idleSuspendedNote(numbers: UsageNumbers): string {
+	if (monthIsShort(numbers)) return `Suspended the sandbox: this month's hosted minutes are used up. Its files are kept. ${monthRefusal(numbers.hosted!)}`;
 	return `Suspended the sandbox: today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up. Its files are kept. ${resetWords(numbers)}`;
 }
 

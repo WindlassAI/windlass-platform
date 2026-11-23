@@ -3,7 +3,7 @@ import { contentDigest, readIssue, subjectRead } from "../github/issues.js";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { serviceParams } from "../auth.js";
-import { effectiveUserLimits } from "../user-limits.js";
+import { accountLimits } from "../user-limits.js";
 import { config } from "../config.js";
 import type { ItemSummary, UserProfile } from "../contract.js";
 import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
@@ -43,7 +43,7 @@ async function existingItem(c: ItemsCtx, uid: string, id: string) {
 async function quotaRefusal(c: ItemsCtx, resuming?: string) {
 	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github" && !i.parent);
 	const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
-	const { githubItemsPerDay } = effectiveUserLimits(c.vars.items.limits.overrides).factory;
+	const { githubItemsPerDay } = accountLimits(c.vars.items.limits).factory;
 	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";
 	const [pending] = await c.db.execute<{ count: number; reserved: number }>(
 		`SELECT count(*) AS count, count(CASE WHEN id=? THEN 1 END) AS reserved ${unindexed} AND created_at >= ? AND created_at < ?`,
