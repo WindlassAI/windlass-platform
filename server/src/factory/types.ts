@@ -15,7 +15,7 @@ import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
-import type { ReviewerTaskInput } from "./reviewer-task.js";
+import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
 import type { CiReading, CiState } from "../github/ci.js";
 
 // What the web sees of these is in the contract; they are named here as the factory's modules use them.
@@ -181,6 +181,12 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/**
+	 * The person's own words to the work since it was filed, oldest first, the newest kept (`RULES.personDecisions`): their
+	 * send-back notes, their answers' notes and their own feedback on GitHub. The second reviewer is given them as the person's
+	 * decisions (reviewer-task.ts), so that it does not ask for one to be undone.
+	 */
+	decisions?: PersonDecision[];
 	/** A cross-repo feature's repositories, the primary first. Absent: the one repository of `task`. */
 	repos?: FeatureRepoState[];
 	integration?: IntegrationRun;
@@ -279,7 +285,7 @@ export interface Question extends ItemQuestion {
 
 /** base is the target branch. The actor supplies its pinned SHA to reviewerTask. */
 export type ReviewCheckout = { head: string; base: string; pr: number };
-export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings"> & { verdictId: string; earlier: EarlierFinding[] };
+export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "head" | "previousHead" | "verdictWords" | "records" | "filings" | "decisions"> & { verdictId: string; earlier: EarlierFinding[] };
 export type CheckReview = { recommendation: ReviewRecommendation; blocking: number };
 export type HandoffReview = { review: string; reviewNone: null; assessment?: CheckReview } | { review: null; reviewNone: string };
 

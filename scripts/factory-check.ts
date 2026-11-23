@@ -719,6 +719,32 @@ print("\n== R4: the second review sends the builder back");
 		{ fact: answer("reply", { note: "Keep the end out of the range." }), state: "working", effects: ["deliver", "check_turn"], also: o =>
 			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 1 && deliverIs(o, t => t.includes("Keep the end out of the range.")) && effect(o, "deliver")?.asksLeft === 2, "the answer did not resume the same fix without a round") },
 	]);
+
+	// The person's words reach the second reviewer as their decisions: a send-back note (2.13: "rename sum to add" was undone by a
+	// review that judged against the task alone) and an answer to the agent's question (2.11: the reviewer asked for it again).
+	const decisionsAre = (o: Outcome, want: Array<[string, string, string?]>) => {
+		const input = effect(o, "deliver")?.reviewerInput;
+		const got = (input?.decisions ?? []).map(d => [d.kind, d.text, ...(d.asked ? [d.asked] : [])]);
+		return holds(effect(o, "deliver")?.to === "review" && isDeepStrictEqual(got, want), `the reviewer was given ${JSON.stringify(got)}`);
+	};
+	drive("decisions: the person's send-back note is given to the next run's reviewer", reviewerOn(), [...reviewing,
+		refresh(filedAt("approve", 1, reviewHead)),
+		{ fact: ci(reviewHead, ciPassed), state: "review", effects: ["handoff", "verified_check", "poll_pr"] },
+		{ fact: () => ({ kind: "send_back", by: "person:u1", note: "Please rename sum to add everywhere." }), state: "queued", effects: ["verified_check", "deliver", "check_turn"], also: o =>
+			holds(o.item.decisions?.length === 1 && o.item.decisions[0].kind === "send_back" && o.item.decisions[0].run === 2, `decisions ${JSON.stringify(o.item.decisions)}`) },
+		...fixed(H3),
+		{ fact: ci(H3, ciPassed), state: "working", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"], also: o => decisionsAre(o, [["send_back", "Please rename sum to add everywhere."]]) },
+	]);
+	drive("decisions: the person's answer to the agent's question is given to the reviewer, with the agent's question", reviewerOn(), [...begun.slice(0, 2),
+		{ fact: askedEnd("succeeded", PASSED), state: "waiting", wait: "person", effects: ["ask"] },
+		{ fact: answer("reply", { note: "Use Postgres." }), state: "working", effects: ["deliver", "check_turn"] },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+		{ fact: published(reviewHead), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+		{ fact: ci(reviewHead, ciPassed), after: MINUTE, state: "working", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"], also: o =>
+			decisionsAre(o, [["answer", "Use Postgres.", "Which store should the readings go in? With SQLite I add a migration."]]) },
+	]);
+	drive("decisions: an item the person said nothing to gives its reviewer none", reviewerOn(), [...toCi, { ...reviewStarts(ciPassed), also: o => reviewStarts(ciPassed).also!(o) ?? decisionsAre(o, []) }]);
 }
 
 print("\n== ask_person: the builder asks its person");
@@ -1692,8 +1718,10 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	const feedback = (others: boolean, writers: string[]) => walk(reviewed, [{ kind: "github_feedback", by: "github:" + writers[0], ids: ["review:1"], text: "Cover the empty result.", fingerprint: "digest1", others, writers }]);
 	const own = feedback(false, ["owner"]);
 	expect("the item's person's own feedback on GitHub carries no source", !!effect(own.last, "deliver") && sourcesOf(own.last).length === 0);
+	expect("the item's person's own feedback is kept as their decision, for the reviewer", isDeepStrictEqual(own.item.decisions, [{ kind: "feedback", run: 2, text: "Cover the empty result." }]), JSON.stringify(own.item.decisions));
 	const others = feedback(true, ["owner", "alex"]);
 	expect("feedback with anyone else's words names the writers", same(others.last, ["GitHub feedback from @owner, @alex"]), JSON.stringify(sourcesOf(others.last)));
+	expect("feedback with anyone else's words is no decision of the person's", others.item.decisions === undefined, JSON.stringify(others.item.decisions));
 
 	const asked = walk(fromIssue(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", PASSED), asked: { text: "Which store?", options: ["SQLite", "Postgres"] } }]);
 	const answered = walk(asked.item, [{ kind: "answer", choice: "reply", note: "Use Postgres" }]);

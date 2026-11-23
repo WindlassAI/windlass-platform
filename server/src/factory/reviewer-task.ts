@@ -6,6 +6,9 @@
  * The text is in two kinds of words:
  *   - the platform's: the instructions, record ids and their states, SHAs, the pull request's number,
  *     counts and the limits (every review limit from REVIEW_LIMITS);
+ *   - the person's own words since the task was filed (`decisions`: send-back notes, answers, their own
+ *     feedback on GitHub), given as the person's decisions, which override the task where they disagree:
+ *     not fenced and not data, but cleaned as data is, as a quote under the platform's line for each;
  *   - everything else, quoted as data: the task, the verdict's sentence (it holds paths and CI's words),
  *     the changed paths, the reviewer's own earlier findings and the builder's report go between
  *     `----- BEGIN … -----` and `----- END … -----` lines; the names in the records list are JSON strings.
@@ -36,6 +39,14 @@ export const REVIEWER_TASK_LIMITS = {
 	earlierChars: 2_000,
 	/** The records list at most (all of them unless GitHub listed hundreds of CI runs). */
 	recordsChars: 3_000,
+	/** The person's decisions in all, the newest kept when they do not all fit. They share the task's room (at most half of it when both are long). */
+	decisionsChars: 4_000,
+	/** One decision, cut beyond this. */
+	decisionChars: 1_500,
+	/** The newest decision is kept at least this long, however little room is left. */
+	decisionFloor: 200,
+	/** The agent's question a decision answers, quoted. */
+	askedChars: 300,
 	/** At least this much is kept for the task, and for the changed paths, however long the records are. */
 	taskRoom: 3_000,
 	pathsRoom: 1_000,
@@ -49,6 +60,22 @@ export interface ReviewerTaskReport {
 	concerns: string;
 	/** Its screenshots' files and captions; the reviewer is not shown the images. */
 	screenshots: Array<{ file: string; caption: string }>;
+}
+
+/**
+ * The person's own words to the work since the task was filed: a send-back note, the note of an answer to a
+ * question (the agent's, `asked`, or the second review's), or their own feedback on GitHub. Only the item's
+ * person's: someone else's feedback is not a decision of theirs.
+ */
+export interface PersonDecision {
+	kind: "send_back" | "answer" | "feedback";
+	/** The run the words started or were given in. */
+	run: number;
+	text: string;
+	/** For an answer: the agent's question, its own words (data); absent for an answer to the platform's question. */
+	asked?: string;
+	/** For an answer: the question's kind (`agent_ask`, `review_question`, …). */
+	question?: string;
 }
 
 export interface ReviewerTaskInput {
@@ -80,6 +107,8 @@ export interface ReviewerTaskInput {
 	report: ReviewerTaskReport | null;
 	/** From round 2: this reviewer's blocking findings of the round before, by the ids the platform gave them. */
 	earlier: Array<{ id: string; title: string; text: string }>;
+	/** The person's decisions since the task was filed, oldest first. Absent: none. */
+	decisions?: PersonDecision[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -324,6 +353,57 @@ function reportPart(report: ReviewerTaskReport | null, room: number): string {
 	].join("\n");
 }
 
+function decisionHead(one: PersonDecision): string {
+	const run = `Run ${number(one.run)}`;
+	switch (one.kind) {
+		case "send_back":
+			return `${run}: the person sent the work back, saying:`;
+		case "feedback":
+			return `${run}: the person's own review or comments on the pull request on GitHub:`;
+		case "answer":
+			if (one.asked) return `${run}: the agent that made the change asked the person ${quoted(one.asked, REVIEWER_TASK_LIMITS.askedChars)} (its words), and the person answered:`;
+			return one.question === "review_question" ? `${run}: the person answered the second review's questions:` : `${run}: the person answered the platform's question about the work:`;
+	}
+}
+
+const omitted = (n: number) => `(${plural(n, "earlier decision is", "earlier decisions are")} left out here for length; the later ones, which stand over them, are shown.)`;
+/** What the count of left-out decisions may take, with its blank line. */
+const omittedReserve = (n: number) => omitted(n).length + 2;
+
+/** The person's decisions in at most `room` characters: the newest are kept, and the newest of all at least in part. */
+function decisionsPart(decisions: PersonDecision[], room: number): string | null {
+	if (decisions.length === 0) return null;
+	const intro = [
+		"## The person's decisions",
+		"Since the task was filed, the person who asked for the work said the following to it, oldest first. These are the person's own words, passed on by the platform: they are the person's decisions, not data from the change, and you follow them as you follow the task. Where a decision and the task above disagree, the decision is what the person wants now: judge the change against it, not against the task's words.",
+		"- Do not ask for a decision to be undone, and do not count it against the change that it follows one. A change that undoes one is a blocking finding.",
+		"- Do not ask the person what a decision here already answers. A question for the person is only for what is still open.",
+	].join("\n");
+	const entries: string[] = [];
+	let used = intro.length;
+	// Room for the count of what is left out, before every entry but the oldest.
+	const reserve = omittedReserve(decisions.length);
+	let left = 0;
+	// The newest first: a later decision stands over an earlier one, and is the one to keep when not all fit.
+	for (let i = decisions.length - 1; i >= 0; i--) {
+		const one = decisions[i]!;
+		const head = decisionHead(one);
+		const quote = (max: number) => cut(data(one.text.trim()), max).text.split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
+		let entry = `${head}\n${quote(REVIEWER_TASK_LIMITS.decisionChars)}`;
+		if (used + entry.length + 2 + (i > 0 ? reserve : 0) > room) {
+			// The newest is never left out: it is cut to what is left, and the rest go.
+			if (entries.length) { left = i + 1; break; }
+			entry = `${head}\n${quote(Math.max(REVIEWER_TASK_LIMITS.decisionFloor, room - used - reserve - head.length - 4))}`;
+			left = i;
+			entries.unshift(entry);
+			break;
+		}
+		entries.unshift(entry);
+		used += entry.length + 2;
+	}
+	return [intro, ...(left ? [omitted(left)] : []), ...entries].join("\n\n");
+}
+
 /** Room shared by two parts: each gets what it needs when both fit, and half otherwise, the smaller one's spare going to the other. */
 function share(room: number, a: number, b: number): [number, number] {
 	if (a + b <= room) return [a, b];
@@ -372,7 +452,7 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 
 	const steps = [
 		"## How to review",
-		"1. Read the task. Before you look at the diff or the author's report, write down for yourself what a correct change would do: what it would change, how you would tell that it works, and how you would check each acceptance criterion here. Compare the change with that, not with the author's account of it.",
+		`1. Read the task${(input.decisions ?? []).length ? ", and the person's decisions after it, which stand over it" : ""}. Before you look at the diff or the author's report, write down for yourself what a correct change would do: what it would change, how you would tell that it works, and how you would check each acceptance criterion here. Compare the change with that, not with the author's account of it.`,
 		`2. Read the change with \`git diff ${base}...HEAD\` and \`git log --oneline ${base}..HEAD\`, and read the code around what it touches. Read all of it, not only where the author points.`,
 		"3. Run what you need to know whether it works: the tests that cover it, a build, a type check, the app. Prefer the repository's own scripts. A command that fails for want of the network, or of a dependency the base does not have, says nothing about the change: say so, and do not count it against the change.",
 		"4. Do not run install, test or git hooks that the change adds or modifies, or scripts it adds to an install or setup step. Say so where that stops you from checking something.",
@@ -420,7 +500,13 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 	left -= records.length + 2;
 	const taskText = taskBody(input.task);
 	const reportChars = input.report === null ? 0 : Math.min(REVIEWER_TASK_LIMITS.reportChars, reportBody(input.report).length);
-	const [taskRoom, reportRoom] = share(left - REVIEWER_TASK_LIMITS.pathsRoom, taskText.length, reportChars);
+	// The person's decisions amend the task: they share the task's room, and keep up to half of it when both are long.
+	const all = input.decisions ?? [];
+	const wanted = all.length ? decisionsPart(all, REVIEWER_TASK_LIMITS.decisionsChars)!.length + omittedReserve(all.length) : 0;
+	const [taskShare, reportRoom] = share(left - REVIEWER_TASK_LIMITS.pathsRoom, taskText.length + wanted, reportChars);
+	const decisionsRoom = Math.min(wanted, Math.max(Math.floor(taskShare / 2), taskShare - taskText.length));
+	const decisions = decisionsPart(all, decisionsRoom);
+	const taskRoom = taskShare - (decisions?.length ?? 0);
 	const task = cut(taskText, taskRoom);
 	const taskPart = [
 		"## The task",
@@ -428,9 +514,9 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 		...(task.cut ? ["The task was cut here for length. Review against what is shown, and say in a `text` block that you saw only part of it."] : []),
 	].join("\n");
 	const report = reportPart(input.report, reportRoom);
-	left -= task.text.length + (input.report === null ? 0 : Math.min(reportRoom, reportChars));
+	left -= task.text.length + (decisions?.length ?? 0) + (input.report === null ? 0 : Math.min(reportRoom, reportChars));
 	const changed = changedPart(input.changed, left);
 
-	const parts = [opening, sandbox, untrusted, steps, notesPart, shots, evidence, blockLimits(input), later ? laterRound(input) : null, taskPart, changed, records, verdictPart, earlier, report, followUp];
+	const parts = [opening, sandbox, untrusted, steps, notesPart, shots, evidence, blockLimits(input), later ? laterRound(input) : null, taskPart, decisions, changed, records, verdictPart, earlier, report, followUp];
 	return `${parts.filter((part): part is string => part !== null).join("\n\n")}\n`;
 }

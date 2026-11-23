@@ -53,7 +53,7 @@ import { refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
-import { REVIEW_TOOL } from "./reviewer-task.js";
+import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
 import { harnessName } from "../sandbox/harnesses.js";
@@ -83,7 +83,16 @@ export const RULES = {
 	turnCheckMs: 5 * 60_000,
 	/** Questions a run's builder may ask its person (`ask_person`); at most one per turn, which the session holds to. */
 	asks: ASK_LIMITS.perRun,
+	/** The person's decisions an item keeps for its reviewer (`FactoryItem.decisions`): the newest. */
+	personDecisions: 12,
 } as const;
+
+/** Keeps the person's own words to the work, for the second reviewer: they are the person's decisions, which stand over the task. */
+function decided(item: FactoryItem, decision: PersonDecision): void {
+	const text = decision.text.trim();
+	if (!text) return;
+	item.decisions = [...(item.decisions ?? []), { ...decision, text: text.slice(0, 4_000) }].slice(-RULES.personDecisions);
+}
 
 /** The builder's turns, which are offered `ask_person`: not the planner's, the summary's or the reviewer's. */
 const ASKING: ReadonlySet<TurnStepKind> = new Set(["implement", "ci_fix", "conflict", "review_fix"]);
@@ -356,6 +365,7 @@ function apply(c: Change, fact: Fact): boolean {
 			if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
 			c.say(`Sent back: ${fact.note}`);
 			beginRun(c, { ...IMPLEMENT, text: `The person sent your work back: ${fact.note}` });
+			decided(item, { kind: "send_back", run: c.run.n, text: fact.note });
 			return true;
 		case "cancel":
 			// The durable fast-forward may already be at GitHub. Settle it before reporting a terminal child state.
@@ -726,6 +736,8 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false, also?: 
 	if (also && !feature) text += "\n\n" + also.text;
 	const run = c.run.n + 1;
 	if (batch.others) f.othersRuns++;
+	// Only the person's own words are their decisions; a batch with anyone else's is not.
+	else decided(item, { kind: "feedback", run, text: batch.text });
 	f.taken.push(...batch.ids);
 	f.runs[batch.fingerprint] = run;
 	c.feedback.push({ ids: batch.ids, state: "taken", reason: feedbackWords.taken(run, feature), run });
@@ -1265,7 +1277,7 @@ function reviewerInput(c: Change, ci: CiProgress, pr: number): ReviewerInput {
 		spec: plan.spec, subtasks: plan.subtasks, reports: c.item.jobs?.map(j => ({ key: j.task.key, state: j.state, head: j.head, report: j.report })),
 	}) } : c.item.task;
 	const review = c.run.review;
-	return { round: review?.round ?? 1, task, pr, head: ci.head, previousHead: review?.previousHead ?? null, verdictId: verdict.id, verdictWords: words, records, filings: RULES.reviewFilings, earlier: review?.earlier ?? [] };
+	return { round: review?.round ?? 1, task, pr, head: ci.head, previousHead: review?.previousHead ?? null, verdictId: verdict.id, verdictWords: words, records, filings: RULES.reviewFilings, earlier: review?.earlier ?? [], decisions: c.item.decisions ?? [] };
 }
 
 function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): void {
@@ -1706,6 +1718,8 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const note = fact.note?.trim() || null;
 	item.question = null;
 	c.say(`Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`);
+	// The person's note is theirs whatever they chose, but for giving up: a later review of the work is held to it.
+	if (note !== null && fact.choice !== "give_up" && item.run) decided(item, { kind: "answer", run: item.run.n, text: note, question: question.kind, ...(question.kind === "agent_ask" && question.asked?.text && { asked: question.asked.text }) });
 	if ((item.approvedPlan || item.jobs?.length) && fact.choice === "retry") return false;
 	if (item.parent && fact.choice === "raise" && question.kind === "budget") return false;
 	if (item.parent && fact.choice === "hand_over") return false;
