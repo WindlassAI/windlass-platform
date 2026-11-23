@@ -173,6 +173,8 @@ jobs:
         env:
           DIGEST: ${{ needs.sandbox-index.outputs.sandbox }}
         run: |
+          # Every harness image copies the shared ACP bridge from the `shared` context (sandbox/harness/build.sh).
+          contexts="shared=sandbox/harness/shared"
           if [[ -n "$DIGEST" ]]; then
             echo "ref=$REGISTRY/windlass-platform-sandbox@$DIGEST" >> "$GITHUB_OUTPUT"
           else
@@ -180,8 +182,9 @@ jobs:
             tar -xf "$RUNNER_TEMP/native.tar" -C "$RUNNER_TEMP/base"
             rm "$RUNNER_TEMP/native.tar"
             echo "ref=dry-base" >> "$GITHUB_OUTPUT"
-            echo "context=dry-base=oci-layout://$RUNNER_TEMP/base" >> "$GITHUB_OUTPUT"
+            contexts="$contexts"$'\n'"dry-base=oci-layout://$RUNNER_TEMP/base"
           fi
+          { echo "context<<CONTEXTS"; echo "$contexts"; echo "CONTEXTS"; } >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
