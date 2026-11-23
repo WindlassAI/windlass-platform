@@ -14,6 +14,7 @@ import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
 import { MergedIcon, PencilIcon, PullRequestIcon, RingIcon, TrashIcon, WarnIcon } from "./Icons";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph, STATUS_WORD, StatusGlyph } from "./Status";
+import { AgentGlyph } from "./ui/Pill";
 
 function repoName(url: string): string {
 	return url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -116,6 +117,7 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 				)}
 				<p className="agent-meta">
 					<span className="agent-harness" title={profileName}>
+						<AgentGlyph harness={session.harness ?? "windlass"} size={11} inline />
 						{acpHarnessName(session) ?? "Windlass"}
 						<span className="agent-model"> · {sessionModelWords(session)}</span>
 					</span>

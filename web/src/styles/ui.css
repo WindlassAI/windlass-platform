@@ -675,6 +675,14 @@
 	font-size: 10px;
 	font-weight: var(--weight-medium);
 }
+/* Before an agent's name in a line of text: on the text's baseline, a little apart from the name. */
+.ui-glyph-inline {
+	display: inline-grid;
+	width: 16px;
+	height: 16px;
+	margin-right: 5px;
+	vertical-align: -3px;
+}
 .ui-glyph-accent {
 	color: var(--accent-text);
 }

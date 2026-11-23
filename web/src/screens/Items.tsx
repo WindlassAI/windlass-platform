@@ -38,6 +38,7 @@ import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
 
 export interface ItemsState {
 	/** What the feed holds, open items first: every open item and the newest ended ones. Null until it was read, and when it could not be. */
@@ -397,7 +398,12 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
-					{item.agent && item.agent.harness !== "windlass" ? <span>{HARNESS_NAMES[item.agent.harness]}</span> : null}
+					{item.agent && item.agent.harness !== "windlass" ? (
+						<span>
+							<AgentGlyph harness={item.agent.harness} size={11} inline />
+							{HARNESS_NAMES[item.agent.harness]}
+						</span>
+					) : null}
 					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
 					{item.state === "draft" ? null : (
 						<span>

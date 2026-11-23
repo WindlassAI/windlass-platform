@@ -49,10 +49,10 @@ export function agentId(harness: string): HarnessId {
  * An agent's badge: its own logo in a small square (components/AgentLogos.tsx; Windlass's is the app's
  * mark). Every agent badge is this one. Takes the harness's id ("claude") or its name.
  */
-export function AgentGlyph({ harness, accent = false, size = 13 }: { harness: string; accent?: boolean; size?: number }) {
+export function AgentGlyph({ harness, accent = false, size = 13, inline = false }: { harness: string; accent?: boolean; size?: number; /** In a line of text, before the agent's name. */ inline?: boolean }) {
 	const id = agentId(harness);
 	return (
-		<span className={`ui-glyph ui-glyph-logo${accent ? " ui-glyph-accent" : ""}`} aria-hidden="true" data-agent={id}>
+		<span className={`ui-glyph ui-glyph-logo${accent ? " ui-glyph-accent" : ""}${inline ? " ui-glyph-inline" : ""}`} aria-hidden="true" data-agent={id}>
 			<AgentLogo id={id} size={size} />
 		</span>
 	);

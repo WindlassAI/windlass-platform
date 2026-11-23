@@ -46,6 +46,7 @@ import { useNow } from "../state/hooks";
 import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
+import { AgentGlyph } from "../components/ui/Pill";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -784,7 +785,10 @@ function Cost({ view }: { view: ItemView }) {
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
-			<p className="usage-note">Built by {agentLine(view.agent)}.</p>
+			<p className="usage-note">
+				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
+				{agentLine(view.agent)}.
+			</p>
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
 			{agentFacts(view.agent).length > 0 ? (
 				<dl className="usage-facts item-facts">

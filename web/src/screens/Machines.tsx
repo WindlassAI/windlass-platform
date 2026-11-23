@@ -30,6 +30,7 @@ import { useNow } from "../state/hooks";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -366,7 +367,10 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 				const command = loginCommand(harness);
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
-						<span className="machine-agent-name">{HARNESS_NAMES[harness.id]}</span>
+						<span className="machine-agent-name">
+							<AgentGlyph harness={harness.id} size={11} inline />
+							{HARNESS_NAMES[harness.id]}
+						</span>
 						{harness.signIn === "token" ? (
 							<span className="machine-agent-state">
 								{" "}

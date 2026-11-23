@@ -29,7 +29,7 @@ import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } fro
 import { currentMode, sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
 import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
-import { Popover, Tooltip } from "../components/ui";
+import { AgentGlyph, Popover, Tooltip } from "../components/ui";
 import { clockDuration, localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
@@ -198,7 +198,17 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 			</nav>
 			<div className="crumb-end">
 				<p className="crumb-facts">
-					{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : summary ? <span>{harnessName ?? "Windlass"}</span> : null}
+					{place?.kind === "machine" ? (
+						<span className="chip crumb-place">
+							{harnessName ? <AgentGlyph harness={harness ?? "windlass"} size={11} inline /> : null}
+							{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}
+						</span>
+					) : summary ? (
+						<span>
+							<AgentGlyph harness={harness ?? "windlass"} size={11} inline />
+							{harnessName ?? "Windlass"}
+						</span>
+					) : null}
 					{summary ? <CrumbModel summary={summary} /> : null}
 				</p>
 				{summary ? <BarPublish summary={summary} /> : null}

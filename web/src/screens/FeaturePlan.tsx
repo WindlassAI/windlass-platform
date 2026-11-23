@@ -33,7 +33,7 @@ import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js
 import { ChevronIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
-import { Pill } from "../components/ui/Pill";
+import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placementWait, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { plural } from "../lib/format";
@@ -1075,6 +1075,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 			<div className="plan-agent">
 				<dt>agent</dt>
 				<dd>
+					<AgentGlyph harness={child.agent.harness} size={11} inline />
 					<strong className="plan-agent-name">{words.name}</strong>
 					<span className="tone-dim"> · {child.agent.model}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
 					{words.unattended ? <UnattendedTag /> : null}
@@ -1093,13 +1094,14 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 			<dd>
 				{editing ? (
 					<span className="plan-place-picks">
-						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
+						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" icon={<AgentGlyph harness={harness} size={11} />} aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
 						<Menu spec={modelMenu(row, harness)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Model: ${parts.model}`}>{parts.model}</Pill>} />
 						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</span>
 				) : (
 					<>
+						<AgentGlyph harness={harness} size={11} inline />
 						<strong className="plan-agent-name">{parts.name}</strong>
 						<span className="tone-dim"> · {parts.model}{parts.effort ? ` · ${parts.effort} effort` : ""}</span>
 						{parts.unattended ? <UnattendedTag /> : null}
@@ -1203,6 +1205,7 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 							<div className="plan-route-main">
 								<p className="plan-route-title">{task.title}</p>
 								<p className="plan-route-agent">
+									<AgentGlyph harness={harness} size={11} inline />
 									<span className="plan-agent-name">{agent.name}</span>
 									<span className="tone-dim"> · {agent.model}{agent.effort ? ` · ${agent.effort} effort` : ""}</span>
 									{agent.unattended ? <UnattendedTag /> : null}
