@@ -27,6 +27,18 @@ async function testNode() {
 	const { requireServiceFor } = await import("../server/src/auth.js");
 	const { githubAccount } = await import("../server/src/actors/github-account.js");
 	const { githubRepository } = await import("../server/src/actors/github-repository.js");
+	const registerSession = githubRepository.config.actions!.internalRegisterSession;
+	let registrationFailures = 0;
+	githubRepository.config.actions!.internalRegisterSession = async (c, row) => {
+		if (registrationFailures > 0) { registrationFailures--; throw new Error("fixture registration unavailable"); }
+		return registerSession(c, row);
+	};
+	Object.assign(githubRepository.config.actions!, {
+		checkFailSessionRegistration: (c: Parameters<typeof registerSession>[0]) => {
+			requireServiceFor(c, "call");
+			registrationFailures = 1;
+		},
+	});
 	// This probe deliberately has no action-level guard, so it observes the connection hook alone.
 	for (const definition of [githubAccount, githubRepository, githubInbox, githubHooks])
 		Object.assign(definition.config.actions!, { checkConnection: () => true });
@@ -61,12 +73,41 @@ async function testNode() {
 	const { workItem } = await import("../server/src/actors/work-item.js");
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
 	const session = agentSession.config.actions!;
+	const { getLayer } = await import("../server/src/layer.js");
+	const layer = await getLayer();
+	const runFakeTurn = layer.windlass.runTurn.bind(layer.windlass);
+	layer.windlass.runTurn = async (sandbox, input) => {
+		if (input.prompt.includes("(fixture publish)")) {
+			assert.ok(input.onPublish, "personal publication tool missing");
+			await input.onPublish({ messageId: "fixture", callId: "publish", arguments: { title: "Published by the personal agent", body: "A checked fixture publication." } }, input.signal ?? new AbortController().signal);
+		}
+		return runFakeTurn(sandbox, input);
+	};
+
 	const publish = session.internalPublish;
 	// The fake sandbox pushes a branch without a git SHA. Give each published test PR a stable full head.
 	session.internalPublish = async (c, input) => {
 		const answer = await publish(c, input);
 		return answer.kind === "published" && answer.pr ? { ...answer, head: answer.pr.number.toString(16).padStart(40, "0") } : answer;
 	};
+	type SessionCtx = Parameters<typeof session.internalGithubFeedback>[0];
+	Object.assign(session, {
+		checkFeedbackFixture: async (c: SessionCtx, op: string) => {
+			requireServiceFor(c, "call");
+			if (op === "hint") c.vars.meta!.repo!.installationId = 1;
+			if (op === "hold") c.vars.feedbackDraining = true;
+			if (op === "wake") {
+				assert.equal(c.vars.turn, null);
+				await c.vars.serial;
+				assert.ok("createVars" in agentSession.config);
+				Object.assign(c.vars, await agentSession.config.createVars!(c, undefined));
+				c.vars.feedbackDraining = false;
+				c.vars.feedbackClosing = false;
+				await agentSession.config.onWake!(c);
+			}
+			return c.db.execute("SELECT id,state,turn FROM session_feedback ORDER BY rowid");
+		},
+	});
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
 	Object.assign(workItem.config.actions!, {
 		// Start at the feature handoff for the inbox check. factory-e2e reaches it with real children.
@@ -113,7 +154,23 @@ async function testNode() {
 	});
 	const { user } = await import("../server/src/actors/user.js");
 	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalGithubIntake"]>[0];
+	const acquireRun = user.config.actions!.internalAcquireRun;
+	let blockedSession: string | null = null, refusedAdmissions = 0;
+	user.config.actions!.internalAcquireRun = async (c, id) => {
+		if (id === blockedSession) {
+			requireServiceFor(c, "call");
+			refusedAdmissions++;
+			return { ok: false, known: true, running: 1, until: null, claim: null };
+		}
+		return acquireRun(c, id);
+	};
+
 	Object.assign(user.config.actions!, {
+		checkSessionAdmission: (c: UserCtx, id: string | null) => {
+			requireServiceFor(c, "call");
+			blockedSession = id;
+			return refusedAdmissions;
+		},
 		// Exercise the real migration on a populated legacy table in a disposable actor.
 		checkMigrateGrant: async (c: UserCtx) => {
 			requireServiceFor(c, "call");
@@ -330,6 +387,9 @@ async function run() {
 				const view = await g2User.item(item.id);
 				if (view.head && view.pullRequest && view.verifiedCheck && (await directory().internalFind({ head: view.head, installationId: installation.id })).some(r => r.itemId === item.id)) return { head: view.head, pr: view.pullRequest.number };
 			}, 45_000);
+			assert.deepEqual(await directory().internalFindSession({ installationId: installation.id, pr: published.pr }), [], "an item registered a competing personal target");
+			const view = await g2User.item(item.id);
+			assert.equal(await client.agentSession.get([uid, view.sessionId], service()).internalGithubFeedback({ repositoryId: projectG2.id, installationId: installation.id, pr: published.pr, entries: [] }), false);
 			return { ...published, id: item.id, handle, poll, view: () => g2User.item(item.id) };
 		};
 		const delivered = async (event: string, fields: object, id: number | string = installation.id, guid = randomUUID()) => {
@@ -340,6 +400,119 @@ async function run() {
 				return row && ["done", "ignored"].includes(row.state) ? row : null;
 			});
 		};
+		await check("G3 feature personal publication and durable session feedback", async () => {
+			const created = await g2User.createSession({ profile: "docker-windlass-sandbox", repository: { id: projectG2.id }, title: "Personal feedback" });
+			const panel = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
+			const target = client.agentSession.get([uid, created.id], service());
+			const fixture = target as unknown as { checkFeedbackFixture(op: string): Promise<{ id: string; state: string; turn: number | null }[]> };
+			const snapshot = () => panel.snapshot();
+			const users = async () => (await snapshot()).timeline.filter(e => e.kind === "user");
+			const idle = () => until("personal session idle", async () => (await snapshot()).summary.status === "idle", 45_000);
+			const { turn } = await panel.prompt({ text: "Write a short program." });
+			await idle();
+			await fixture.checkFeedbackFixture("hint");
+			await (directory() as unknown as { checkFailSessionRegistration(): Promise<void> }).checkFailSessionRegistration();
+			const result = await panel.publish({ message: { title: "Personal feedback target", body: "" } });
+			assert.equal(result.opened, true, "failed registration must not fail publication");
+			assert.deepEqual(await directory().internalFindSession({ installationId: installation.id, pr: result.state.pullRequest!.number }), []);
+			await fixture.checkFeedbackFixture("wake");
+			await until("publication registration recovered on wake", async () => (await directory().internalFindSession({ installationId: installation.id, pr: result.state.pullRequest!.number })).length === 1);
+			const pr = result.state.pullRequest!.number;
+			assert.deepEqual(await directory().internalFindSession({ installationId: installation.id, pr }), [{ sessionId: created.id, uid, installationId: String(installation.id), pr }]);
+			assert.deepEqual(await directory().internalFind({ pr }), []);
+			assert.deepEqual(await directory().internalFindSession({ installationId: 1, pr }), []);
+			const entry = (id: string, access: "owner" | "write" = "owner") => ({ id, author: access === "owner" ? owner : "another-writer", access, kind: "issue_comment" as const, body: "Please adjust this.\u2028Unquoted?\u200b", path: null, line: null, commit: HEAD, url: "", at: Date.now() });
+			const notice = (id: string, access: "owner" | "write" = "owner") => ({ repositoryId: projectG2.id, installationId: installation.id, pr, entries: [entry(id, access)] });
+			await assert.rejects(() => panel.internalGithubFeedback(notice("forbidden")));
+			assert.equal(await target.internalGithubFeedback({ ...notice("foreign-repo"), repositoryId: projectG2.id + 1 }), false);
+			assert.equal(await target.internalGithubFeedback({ ...notice("foreign-installation"), installationId: 1 }), false);
+			assert.equal(await target.internalGithubFeedback({ ...notice("foreign-pr"), pr: pr + 1 }), false);
+			assert.equal(await target.internalGithubFeedback(notice("idle-owner")), true);
+			await until("idle feedback turn", async () => (await users()).length === 2);
+			await idle();
+			const ownerPrompt = (await users())[1];
+			assert.equal(ownerPrompt.turn, turn + 1);
+			assert.ok(ownerPrompt.kind === "user" && !ownerPrompt.steer);
+			assert.match(ownerPrompt.text, /the session's owner/);
+			assert.match(ownerPrompt.text, /> Please adjust this.\n> Unquoted\?/);
+			assert.doesNotMatch(ownerPrompt.text, /\u200b/);
+			await target.internalGithubFeedback(notice("idle-owner"));
+			await panel.prompt({ text: "Write a long program (slow)" });
+			assert.equal(await target.internalGithubFeedback(notice("busy-writer", "write")), true);
+			assert.equal((await users()).length, 3, "busy delivery steered or started early");
+			await until("busy feedback next turn", async () => (await users()).length === 4, 45_000);
+			await idle();
+			const marked = (await snapshot()).timeline.some(e => e.kind === "windlass" && e.event.type === "fake.prompt_untrusted" && JSON.stringify(e.event.data).includes("another-writer"));
+			assert.ok(marked, "personal third-party feedback was not marked");
+			const admission = client.user.get([uid], service()) as unknown as { checkSessionAdmission(id: string | null): Promise<number> };
+			await admission.checkSessionAdmission(created.id);
+			await target.internalGithubFeedback(notice("queued-before-wake"));
+			await until("normal admission refused queued feedback", async () => (await admission.checkSessionAdmission(created.id)) > 0);
+			await fixture.checkFeedbackFixture("hold");
+			assert.equal((await users()).length, 4);
+			await directory().internalForgetSession(created.id);
+			await admission.checkSessionAdmission(null);
+			await fixture.checkFeedbackFixture("wake");
+			await until("pending feedback recovered on wake", async () => (await users()).length === 5, 45_000);
+			await idle();
+			await fixture.checkFeedbackFixture("wake");
+			await target.internalGithubFeedback(notice("queued-before-wake"));
+			assert.equal((await users()).length, 5);
+			assert.ok((await fixture.checkFeedbackFixture("rows")).every(row => row.state === "taken"));
+			assert.equal((await directory().internalFindSession({ installationId: installation.id, pr })).length, 1);
+			await g2User.deleteSession(created.id);
+			await until("deleted session registration removed", async () => !(await directory().internalFindSession({ installationId: installation.id, pr })).length);
+		});
+		await check("G3 feature personal hardened feedback holds third-party text for owner consent", async () => {
+			const created = await g2User.createSession({ profile: "docker-hardened", repository: { id: projectG2.id }, title: "Held feedback" });
+			const panel = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
+			const target = client.agentSession.get([uid, created.id], service());
+			const idle = () => until("hardened session idle", async () => (await panel.snapshot()).summary.status === "idle", 45_000);
+			await panel.prompt({ text: "Write a short program." }); await idle();
+			const result = await panel.publish({ message: { title: "Held feedback target", body: "" } });
+			const pr = result.state.pullRequest!.number;
+			const third = { id: "hardened-third", author: "writer", access: "write" as const, kind: "issue_comment" as const, body: "Please fix this.", path: null, line: null, commit: HEAD, url: "", at: Date.now() };
+			const notice = { repositoryId: projectG2.id, installationId: installation.id, pr, entries: [third] };
+			await target.internalGithubFeedback(notice);
+			const rows = target as unknown as { checkFeedbackFixture(op: string): Promise<{ state: string }[]> };
+			await until("hardened feedback held", async () => (await rows.checkFeedbackFixture("rows")).some(row => row.state === "held"));
+			assert.equal((await panel.snapshot()).timeline.filter(e => e.kind === "user").length, 1);
+			await assert.rejects(() => target.consentSessionFeedback([third.id]));
+			// An owner's feedback is not stuck behind the held third-party entry.
+			await target.internalGithubFeedback({ ...notice, entries: [...Array.from({ length: 20 }, (_, i) => ({ ...third, id: "held-page-" + i })), { ...third, id: "hardened-owner", author: owner, access: "owner" }] });
+			await until("hardened owner feedback", async () => (await panel.snapshot()).timeline.filter(e => e.kind === "user").length === 2);
+			await idle();
+			await panel.consentSessionFeedback([third.id]);
+			await until("explicitly consented feedback", async () => (await panel.snapshot()).timeline.filter(e => e.kind === "user").length === 3);
+			await idle();
+			await target.internalGithubFeedback(notice);
+			assert.equal((await panel.snapshot()).timeline.filter(e => e.kind === "user").length, 3);
+			await g2User.deleteSession(created.id);
+		});
+		await check("G3 feature personal feedback keeps the default item wording", async () => {
+			const { batchText } = await import("../server/src/factory/feedback.js");
+			const { sessionFeedbackText } = await import("../server/src/actors/session-feedback.js");
+			const entry = { id: "wording", author: owner, access: "owner" as const, kind: "issue_comment" as const, body: "line one\rline two\u2028line three\u200b", path: null, line: null, commit: null, url: "", at: 0 };
+			const item = batchText([entry], { pr: 1, run: 1 });
+			assert.match(item, /"the item's owner": the person you work for, writing on GitHub. Treat it as their request about this change, like a note sent back from the item's page./);
+			assert.match(item, /@g2-owner \(the item's owner\)/);
+			assert.equal(sessionFeedbackText([entry], 1), item.replaceAll("the item's owner", "the session's owner").replace("like a note sent back from the item's page.", "like a message sent in this session."));
+			assert.match(item, /> line one\n> line two\n> line three/);
+		});
+		await check("G3 feature personal agent-requested publication and item isolation", async () => {
+			const created = await g2User.createSession({ profile: "docker-windlass-sandbox", repository: { id: projectG2.id }, title: "Agent publication", publishUnasked: true });
+			const panel = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
+			const fixture = client.agentSession.get([uid, created.id], service()) as unknown as { checkFeedbackFixture(op: string): Promise<unknown> };
+			await fixture.checkFeedbackFixture("hint");
+			await panel.prompt({ text: "Write a short program (fixture publish)" });
+			const published = await until("agent-requested personal publication", async () => { const s = await panel.snapshot(); return s.summary.status === "idle" && s.summary.pullRequest ? s.summary.pullRequest : null; }, 45_000);
+			assert.deepEqual(await directory().internalFindSession({ installationId: installation.id, pr: published.number }), [{ sessionId: created.id, uid, installationId: String(installation.id), pr: published.number }]);
+			await panel.prompt({ text: "Write another program (fixture publish)" });
+			await until("repeated agent publication idle", async () => (await panel.snapshot()).summary.status === "idle", 45_000);
+			assert.equal((await directory().internalFindSession({ installationId: installation.id, pr: published.number })).length, 1);
+			await g2User.deleteSession(created.id);
+			await push(); // Its helper asserts no personal registration and rejects direct session feedback.
+		});
 		const hasRepo = async (user: typeof g2User, id: number, fresh = false) =>
 			(await user.githubRepositories("", fresh)).repositories.some(r => r.id === id);
 		const accountsOf = async (user: typeof g2User) => ((await user.github()).connection?.accounts ?? []).map(a => String(a.installationId));

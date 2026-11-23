@@ -10,6 +10,7 @@ import { internalConnection, requireServiceFor } from "../auth.js";
 import { githubApp } from "../github/app.js";
 
 type Item = { itemId: string; uid: string; installationId?: GithubId; issue?: number; generation?: number; pr?: number; head?: string; moved?: string | null; live?: boolean };
+export type SessionPull = { sessionId: string; uid: string; installationId: GithubId; pr: number };
 type Match = { itemId: string; uid: string; issue: number | null; generation: number | null; pr: number | null; head: string | null };
 const TTL = 10 * 60_000;
 
@@ -30,8 +31,21 @@ export const githubRepository = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))");
 		await db.execute("DROP TABLE IF EXISTS access");
+		await db.execute("CREATE TABLE IF NOT EXISTS session_pulls (sessionId TEXT PRIMARY KEY, uid TEXT NOT NULL, installation TEXT NOT NULL, pr INTEGER NOT NULL)");
 	} }),
 	actions: {
+		internalRegisterSession: async (c, row: SessionPull) => {
+			requireServiceFor(c, "call");
+			await c.db.execute("INSERT OR REPLACE INTO session_pulls VALUES(?,?,?,?)", row.sessionId, row.uid, String(row.installationId), row.pr);
+		},
+		internalForgetSession: async (c, sessionId: string) => {
+			requireServiceFor(c, "call");
+			await c.db.execute("DELETE FROM session_pulls WHERE sessionId=?", sessionId);
+		},
+		internalFindSession: async (c, key: { installationId: GithubId; pr: number }): Promise<SessionPull[]> => {
+			requireServiceFor(c, "call");
+			return c.db.execute<SessionPull>("SELECT sessionId, uid, installation AS installationId, pr FROM session_pulls WHERE installation=? AND pr=? ORDER BY sessionId", String(key.installationId), key.pr);
+		},
 		internalIssuePermission: async (c, installation: GithubId, user: GithubUser): Promise<"write" | "read" | "none"> => {
 			requireServiceFor(c, "call");
 			const now = Date.now();

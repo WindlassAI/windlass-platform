@@ -129,7 +129,7 @@ import {
 	pushedForAgent,
 } from "../agent-publish.js";
 import { db, type RawAccess } from "rivetkit/db";
-import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, checkGeneration, disconnectRevoked, requireService, requireServiceFor } from "../auth.js";
+import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, checkGeneration, disconnectRevoked, requireService, requireServiceFor, serviceParams } from "../auth.js";
 import { config, snapshotsFor } from "../config.js";
 import {
 	generatedSessionTitle,
@@ -306,7 +306,15 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 // State
 // ---------------------------------------------------------------------------------------------
 
+import type { FeedbackNotice } from "./github-inbox.js";
+import type { GithubId } from "../contract.js";
+import { fits } from "../factory/feedback.js";
+import { type SessionFeedback, sessionFeedbackText, sessionFeedbackSources, sessionFeedbackTarget, SESSION_FEEDBACK_RETRY } from "./session-feedback.js";
+
 interface SessionMeta {
+	/** The installation actually used by publication, not the repository's launch-time hint. */
+	pullInstallation?: GithubId;
+	pullRegistrationPending?: boolean;
 	size?: number;
 	uid: string;
 	sessionId: string;
@@ -543,6 +551,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
+	feedback?: { untrusted: string[]; consent?: boolean };
 	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string };
 }
 
@@ -636,6 +645,8 @@ interface SessionVars {
 	arming: Promise<void>;
 	/** True while the platform commits and pushes the workspace: no turn starts under it, and no second push. */
 	publishing: boolean;
+	feedbackDraining?: boolean;
+	feedbackClosing?: boolean;
 	/** The key of the delivery `takeDelivered` is taking, while it does: the same delivery sent again meanwhile leaves its slot alone. */
 	delivering?: string | null;
 	/** When GitHub was last asked about the session's pull request. */
@@ -2170,6 +2181,7 @@ async function checkPull(c: Ctx, meta: SessionMeta): Promise<void> {
 	const current = await refreshPull(app, await githubConnection(c, meta), repo, pull);
 	if (meta.pull !== pull || (current.state === pull.state && current.title === pull.title)) return;
 	meta.pull = current;
+	if (!meta.origin && !["open", "draft"].includes(current.state)) await repairSessionPull(c, meta);
 	publish(c);
 	void persist(c);
 }
@@ -2235,6 +2247,10 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
+		meta.pullInstallation = published.installationId;
+		meta.pullRegistrationPending = !meta.origin;
+		await persist(c);
+		await repairSessionPull(c, meta);
 		meta.updatedAt = Date.now();
 		c.vars.pullCheckedAt = Date.now();
 		// Nothing pushed is the item's step after its agent pushed everything itself: the pull request was only described again.
@@ -2756,6 +2772,10 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 			const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, message: checked.message, retitle: true, evidence: await evidenceOf(c, meta, turn) });
 			if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 			meta.pull = published.pull;
+			meta.pullInstallation = published.installationId;
+			meta.pullRegistrationPending = !meta.origin;
+			await persist(c);
+			await repairSessionPull(c, meta);
 			meta.updatedAt = Date.now();
 			c.vars.pullCheckedAt = Date.now();
 			// What went out had not been through this turn's checks: the description is written again when the turn has ended.
@@ -3523,8 +3543,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
-	const untrusted = active.item?.row.untrusted ?? [];
-	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+	const untrusted = active.item?.row.untrusted ?? active.feedback?.untrusted ?? [];
+	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed ?? active.feedback?.consent });
 	const unmarked = (text: string) => {
 		if (meta.untrustedUnmarkedNoted) return;
 		meta.untrustedUnmarkedNoted = true;
@@ -3617,6 +3637,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
 		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
+		if (!active.item && handling.kind === "stop") throw new TurnProblem(handling.reason);
 		if (active.item && handling.kind === "stop") {
 			const { reason, sources: outside } = handling;
 			const { text: retryText, fetchBase } = active.item.row;
@@ -3830,7 +3851,7 @@ fi`, { signal, timeoutMs: 5000 });
 				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
 				// In an item's turn nobody watches, a tainted session's calls of the user's servers are Windlass's to refuse: none is answered unasked.
-				servers: planner || reviewer ? [] : item && (untrusted.length || meta.tainted) ? held.servers.map(server => ({ ...server, unasked: false })) : held.servers,
+				servers: planner || reviewer ? [] : (item || active.feedback) && (untrusted.length || meta.tainted) ? held.servers.map(server => ({ ...server, unasked: false })) : held.servers,
 				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
 				checks: planner || reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
@@ -4110,6 +4131,7 @@ fi`, { signal, timeoutMs: 5000 });
 		meta.turnStartedAt = null;
 		// In the step that lets the next prompt in: what this turn leaves to settle is the hold it has now.
 		meterUse = useOf(meta);
+		c.vars.feedbackClosing = true;
 		c.vars.closingItem = active.item?.row.key;
 		c.vars.turn = null;
 		publish(c);
@@ -4140,6 +4162,8 @@ fi`, { signal, timeoutMs: 5000 });
 	await meterAfterTurn(c, meta, active, meterUse);
 	// The idle times count from here.
 	await armIdle(c, meta);
+	c.vars.feedbackClosing = false;
+	void c.keepAwake(drainSessionFeedback(c, meta));
 }
 
 /**
@@ -4280,7 +4304,80 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 	return startPrompt(c, meta, input, text, submission);
 }
 
-async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
+function sessionPullDirectory(c: Ctx, meta: SessionMeta) {
+	return c.client().githubRepository.getOrCreate([String(meta.repo!.id)], { params: serviceParams() });
+}
+
+async function retrySessionFeedback(c: Ctx): Promise<void> {
+	if (!c.vars.destroying && !c.vars.stopping) await c.schedule.at(Date.now() + 30_000, SESSION_FEEDBACK_RETRY);
+}
+
+/** Registration failures never turn a successful GitHub publication into a failed publication. */
+async function repairSessionPull(c: Ctx, meta: SessionMeta): Promise<void> {
+	if (!meta.repo || meta.origin || c.vars.destroying) return;
+	try {
+		if (!meta.pull || !["open", "draft"].includes(meta.pull.state)) {
+			await sessionPullDirectory(c, meta).internalForgetSession(meta.sessionId);
+			await c.db.execute("UPDATE session_feedback SET state='invalidated' WHERE state IN ('pending','held')");
+			meta.pullRegistrationPending = false;
+			return;
+		}
+		if (meta.pullInstallation === undefined) {
+			const app = githubApp();
+			if (!app) throw new Error("The GitHub App is unavailable.");
+			const connection = await githubConnection(c, meta);
+			if (!connection) throw new Error("The GitHub connection is unavailable.");
+			meta.pullInstallation = (await sessionRepository(app, connection, meta.repo, "write")).installation.id;
+		}
+		await c.db.execute("UPDATE session_feedback SET state='invalidated' WHERE state IN ('pending','held') AND target<>?", sessionFeedbackTarget(meta.pullInstallation, meta.pull.number));
+		meta.pullRegistrationPending = true;
+		await persist(c);
+		await sessionPullDirectory(c, meta).internalRegisterSession({ sessionId: meta.sessionId, uid: meta.uid, installationId: meta.pullInstallation, pr: meta.pull.number });
+		meta.pullRegistrationPending = false;
+		await persist(c);
+	} catch (error) {
+		meta.pullRegistrationPending = true;
+		await persist(c);
+		c.log.warn({ msg: "could not register the session pull request; will retry", error: describeError(error) });
+		await retrySessionFeedback(c);
+	}
+}
+
+async function drainSessionFeedback(c: Ctx, meta: SessionMeta): Promise<void> {
+	if (!meta.pull || meta.pullInstallation === undefined || !["open", "draft"].includes(meta.pull.state) || meta.origin || c.vars.feedbackDraining || c.vars.feedbackClosing || c.vars.turn || c.vars.accepting || c.vars.publishing || c.vars.destroying || c.vars.stopping) return;
+	c.vars.feedbackDraining = true;
+	try {
+		const target = sessionFeedbackTarget(meta.pullInstallation, meta.pull.number);
+		const eligible: { data: string; consent: number }[] = [];
+		// Holding a page must not strand an owner's entry behind it, even if the busy-turn
+		// retry already fired. Scan through held pages until something eligible remains.
+		while (!eligible.length) {
+			const rows = await c.db.execute<{ data: string; consent: number }>("SELECT data,consent FROM session_feedback WHERE state='pending' AND target=? ORDER BY rowid LIMIT 20", target);
+			if (!rows.length) return;
+			for (const row of rows) {
+				const entry = JSON.parse(row.data) as FeedbackNotice["entries"][number];
+				const handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted: sessionFeedbackSources([entry]), unsandboxed: !!row.consent });
+				if (handling.kind === "stop") {
+					await c.db.execute("UPDATE session_feedback SET state='held' WHERE id=? AND state='pending'", entry.id);
+					note(c, meta.turns, "warn", "GitHub feedback is held: " + handling.reason + " To consent, use consentSessionFeedback with subject ID " + entry.id);
+				} else eligible.push(row);
+			}
+		}
+		const entries = fits(eligible.map(row => JSON.parse(row.data) as FeedbackNotice["entries"][number])).taken;
+		if (!entries.length) return;
+		const consent = entries.filter(e => e.access !== "owner").every(e => eligible.some(row => !!row.consent && (JSON.parse(row.data) as { id: string }).id === e.id));
+		// No steering, and all the ordinary personal-session admission checks still apply.
+		if (c.vars.turn || c.vars.accepting || c.vars.publishing || c.vars.destroying) return;
+		await startPrompt(c, meta, { text: "" }, sessionFeedbackText(entries, meta.pull.number), null, { entries, consent, target });
+	} catch (error) {
+		c.log.warn({ msg: "session feedback remains queued", error: describeError(error) });
+		await retrySessionFeedback(c);
+	} finally {
+		c.vars.feedbackDraining = false;
+	}
+}
+
+async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null, feedback?: SessionFeedback): Promise<PromptAnswer> {
 	// The platform is committing and pushing the workspace: the agent does not start under it.
 	if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
 
@@ -4368,11 +4465,36 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
-		append(c, { turn, kind: "user", text: shown, model, effort });
-		publish(c);
+		const userItem = feedback
+			? numberItem(c, { turn, kind: "user", text: shown, model, effort })
+			: append(c, { turn, kind: "user", text: shown, model, effort });
+		if (feedback) c.vars.nextSeq++;
+		else publish(c);
 
 		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, planMode: capabilitiesOf(meta.harness).planMode && input.planMode === true, secrets: held, checks: new VerificationLog(), publishes: new Set() };
 		c.vars.turn = active;
+		if (feedback) {
+			active.feedback = { untrusted: sessionFeedbackSources(feedback.entries), consent: feedback.consent };
+			// The receipt and user row commit together. A crash after this write cannot retake a subject,
+			// even if the normal timeline flush ran first or the caller never got its answer.
+			try {
+				await serial(c, () => c.db.transaction(async tx => {
+					if (!meta.pull || meta.pullInstallation === undefined || !["open", "draft"].includes(meta.pull.state) || sessionFeedbackTarget(meta.pullInstallation, meta.pull.number) !== feedback.target || c.vars.destroying) throw new Error("The session feedback target is no longer live.");
+					for (const entry of feedback.entries) {
+						const claimed = await tx.execute("UPDATE session_feedback SET state='taken', turn=? WHERE id=? AND state='pending' AND target=? RETURNING id", turn, entry.id, feedback.target);
+						if (!claimed.length) throw new Error("The session feedback subject is no longer pending.");
+					}
+					await insertItems(tx, [userItem]);
+					await tx.execute("UPDATE meta SET data=? WHERE id=1", JSON.stringify(meta));
+				}));
+			} catch (error) {
+				c.vars.turn = null;
+				meta.turns--;
+				throw error;
+			}
+			c.broadcast("item", userItem);
+			publish(c);
+		}
 		// The turn's first step writes the session, and the key with it.
 		const answer = remember(meta, submission, { turn, steered: false });
 		active.done = c.keepAwake(runTurn(c, meta, active, text, release));
@@ -4698,6 +4820,9 @@ export const agentSession = actor({
 			// Rows from before the marker carry no sources: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "untrusted")) await db.execute("ALTER TABLE inbox ADD COLUMN untrusted TEXT NOT NULL DEFAULT '[]'");
 			if (!inboxColumns.some(col => col.name === "unsandboxed")) await db.execute("ALTER TABLE inbox ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0");
+			await db.execute("CREATE TABLE IF NOT EXISTS session_feedback (id TEXT PRIMARY KEY, data TEXT NOT NULL, state TEXT NOT NULL, consent INTEGER NOT NULL DEFAULT 0, turn INTEGER, target TEXT NOT NULL)");
+			const feedbackColumns = await db.execute<{ name: string }>("PRAGMA table_info(session_feedback)");
+			if (!feedbackColumns.some(col => col.name === "target")) await db.execute("ALTER TABLE session_feedback ADD COLUMN target TEXT NOT NULL DEFAULT ''");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 		},
 	}),
@@ -4864,6 +4989,7 @@ export const agentSession = actor({
 			publish(c);
 		}
 		meta.setupRunning = null;
+		void c.keepAwake(checkPull(c, meta).then(() => repairSessionPull(c, meta)).then(() => drainSessionFeedback(c, meta)));
 		// What the item or the turn queue was not told yet before the server stopped is sent now.
 		void c.keepAwake(sendOutbox(c, meta.uid));
 		// A grant lost with a server leaves a delivery waiting with nothing to move it: each waiting one is asked for again (the queue answers a key it granted with the same slot).
@@ -4936,6 +5062,7 @@ export const agentSession = actor({
 			const meta = c.vars.meta;
 			if (!meta) return;
 			await stopTurn(c);
+			if (meta.repo && !meta.origin) await sessionPullDirectory(c, meta).internalForgetSession(meta.sessionId);
 			if (c.vars.flushTimer) clearTimeout(c.vars.flushTimer);
 			if (meta.place.kind === "hosted" || !alreadyDeleting) {
 				await destroySessionSandboxes(c, meta).catch(error => c.log.error({ msg: "could not remove the session's sandboxes", error: describeError(error) }));
@@ -4978,6 +5105,35 @@ export const agentSession = actor({
 	},
 
 	actions: {
+		internalGithubFeedback: async (c, input: FeedbackNotice): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			const meta = c.vars.meta;
+			if (!meta || meta.origin || c.vars.destroying || !meta.repo || !meta.pull || !["open", "draft"].includes(meta.pull.state) || String(meta.repo.id) !== String(input.repositoryId) || String(meta.pullInstallation) !== String(input.installationId) || meta.pull.number !== input.pr) return false;
+			if (input.denied || input.approval) return false;
+			await c.db.transaction(async tx => {
+				for (const entry of input.entries) await tx.execute("INSERT OR IGNORE INTO session_feedback(id,data,state,target) VALUES(?,?,?,?)", entry.id, JSON.stringify(entry), entry.body.length > 8000 ? "declined" : "pending", sessionFeedbackTarget(input.installationId, input.pr));
+			});
+			// Accepted durably before delivery is acknowledged. Running turns are never awaited.
+			await retrySessionFeedback(c);
+			void c.keepAwake(drainSessionFeedback(c, meta));
+			return true;
+		},
+		consentSessionFeedback: async (c, ids: string[]): Promise<void> => {
+			await requireSessionUser(c);
+			const meta = liveMeta(c);
+			if (meta.origin || !Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new UserError("Choose held session feedback.", { code: "bad_input" });
+			for (const id of ids) await c.db.execute("UPDATE session_feedback SET state='pending',consent=1 WHERE id=? AND state='held'", id);
+			await retrySessionFeedback(c);
+			void c.keepAwake(drainSessionFeedback(c, meta));
+		},
+		internalSessionFeedbackRetry: async c => {
+			if (!c.scheduledFire) throw new UserError("Not a scheduled call.", { code: "forbidden" });
+			const meta = c.vars.meta;
+			if (!meta) return;
+			if (meta.pullRegistrationPending) await repairSessionPull(c, meta);
+			await drainSessionFeedback(c, meta);
+		},
+
 		internalDisconnectRevoked: async (c, generation: number): Promise<void> => {
 			requireServiceFor(c, "call");
 			await disconnectRevoked(c.conns, generation);
@@ -5201,6 +5357,10 @@ export const agentSession = actor({
 				try {
 					const pull = await c.keepAwake(openFromPushed({ app, connection: await githubConnection(c, meta), repository: repo, branch: meta.publishBranch, message, evidence: await evidenceOf(c, meta, c.vars.turn?.number ?? null) }));
 					meta.pull = pull;
+					meta.pullInstallation = pull.installationId;
+					meta.pullRegistrationPending = !meta.origin;
+					await persist(c);
+					await repairSessionPull(c, meta);
 					c.vars.pullCheckedAt = Date.now();
 					note(c, meta.turns, "info", `Opened pull request #${pull.number} in ${repo.owner}/${repo.name} from ${pull.branch}, from what the agent had pushed; the turn goes on.${verifiedLine(pull)}`);
 					console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${pull.number} opened=true from=pushed`);

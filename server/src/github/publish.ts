@@ -276,6 +276,7 @@ export interface PublishInput extends PushInput {
 }
 
 export interface Published {
+	installationId: GithubId;
 	pull: PullRequestInfo;
 	/** True when this run opened the pull request. */
 	opened: boolean;
@@ -469,20 +470,20 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 					const titled = input.keepTitle ? current.title : title;
 					if (input.retitle && (current.title !== titled || current.body.trim() !== body)) {
 						const updated = await app.updatePull(token, owner, repo, current.number, { title: titled, body });
-						return { pull: infoOf(updated, at, said.words), opened: false, pushed, retitled: true, head, committedFiles };
+						return { installationId: installation.id, pull: infoOf(updated, at, said.words), opened: false, pushed, retitled: true, head, committedFiles };
 					}
 					if (!pushed && !input.shownIsEnough) throw nothingToPush();
 					// A push from the panel leaves the description as it is at GitHub, where its user may have edited it, but for the section.
 					const described = pullBody(repository, current.body, said.section);
 					const kept = input.retitle || current.body.trim() === described ? current : await app.updatePull(token, owner, repo, current.number, { title: current.title, body: described });
-					return { pull: infoOf(kept, at, said.words), opened: false, pushed, retitled: false, head, committedFiles };
+					return { installationId: installation.id, pull: infoOf(kept, at, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 				}
 				// Nothing was pushed, and the pull request it was for is no longer open: refused, as without the agent.
 				if (!pushed) throw nothingToPush();
 			}
 			try {
 				const created = await app.createPull(token, owner, repo, { title, body, head: branch, base: repository.branch });
-				return { pull: infoOf(created, now, said.words), opened: true, pushed, retitled: false, head, committedFiles };
+				return { installationId: installation.id, pull: infoOf(created, now, said.words), opened: true, pushed, retitled: false, head, committedFiles };
 			} catch (error) {
 				// One pull request per pair of branches: one that is open already is the session's.
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
@@ -490,7 +491,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 					if (existing) {
 						const described = input.shownIsEnough && input.retitle ? { title: input.keepTitle ? existing.title : title, body } : { title: existing.title, body: pullBody(repository, existing.body, said.section) };
 						const kept = existing.title === described.title && existing.body.trim() === described.body ? existing : await app.updatePull(token, owner, repo, existing.number, described);
-						return { pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
+						return { installationId: installation.id, pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 					}
 				}
 				if (error instanceof GithubError && error.status === 422 && /no commits between/i.test(error.said)) {
@@ -517,7 +518,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
  * The section says what the work rested on, without reading the changes (the workspace is the agent's
  * then). A pull request that is open for the branch already is taken up. Throws GithubProblem.
  */
-export async function openFromPushed(input: { app: GithubApp; connection: StoredConnection | null; repository: StoredRepository; branch: string; message: PublishMessage; evidence: PublishEvidence }): Promise<PullRequestInfo> {
+export async function openFromPushed(input: { app: GithubApp; connection: StoredConnection | null; repository: StoredRepository; branch: string; message: PublishMessage; evidence: PublishEvidence }): Promise<PullRequestInfo & { installationId: GithubId }> {
 	const { app, connection, repository, branch } = input;
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
 	const resolved = await sessionRepository(app, connection, repository, "write");
@@ -529,11 +530,11 @@ export async function openFromPushed(input: { app: GithubApp; connection: Stored
 		return await app.withToken(resolved.installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token) => {
 			const { owner, name: repo } = resolved.repository;
 			try {
-				return infoOf(await app.createPull(token, owner, repo, { title: input.message.title.trim(), body, head: branch, base: repository.branch }), Date.now(), said.words);
+				return { ...infoOf(await app.createPull(token, owner, repo, { title: input.message.title.trim(), body, head: branch, base: repository.branch }), Date.now(), said.words), installationId: resolved.installation.id };
 			} catch (error) {
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
 					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
-					if (existing) return infoOf(existing, Date.now(), said.words);
+					if (existing) return { ...infoOf(existing, Date.now(), said.words), installationId: resolved.installation.id };
 				}
 				throw error;
 			}
