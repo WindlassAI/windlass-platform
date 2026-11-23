@@ -205,7 +205,7 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 
 			{empty ? null : (
 				<section className="home-start" aria-label="Launch an agent">
-					<StartComposer sessions={sessions} />
+					<StartComposer sessions={sessions} hostedNotice />
 				</section>
 			)}
 
@@ -242,7 +242,7 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 					<Mark size={56} />
 					<h2>No agents yet</h2>
 					<p>Say what it should do and press Enter. Where it runs and the repository are under the field.</p>
-					<StartComposer sessions={sessions} autoFocus />
+					<StartComposer sessions={sessions} autoFocus hostedNotice />
 				</div>
 			) : (
 				<div className="home-feed">

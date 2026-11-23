@@ -120,13 +120,13 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 }
 
 /** What launching runs into now, before anything is sent: `warn` when the agent could not start at all. */
-function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolean } | null {
+function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text: string; warn: boolean } | null {
 	if (numbers === null) return null;
 	const left = allowanceState(numbers, USAGE_LOW_SHARE);
 	const resets = localTime(numbers.resetsAt);
 	// The month's hosted minutes, where a plan sets them: one on the user's own machine is never counted.
-	// Near the limit the page's own notice says so (components/Plan.tsx); at it, what launching here does.
-	if (numbers.hosted && monthState(numbers) === "used") return { warn: true, text: `This month's hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
+	// Near the limit the page's own notice says so (components/Plan.tsx); at it, what launching here does, unless that notice is on the page too.
+	if (numbers.hosted && monthState(numbers) === "used") return hostedNotice ? null : { warn: true, text: `This month's hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
 	if (left === "used") return { warn: true, text: `Today's sandbox time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
 	const { kept, limit } = numbers.sandboxes;
 	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} hosted sandboxes, the most an account may have. An agent launched here now is created, and cannot start working until you free one. One on your own machine is not counted.` };
@@ -230,6 +230,8 @@ export interface StartComposerProps {
 	kind?: StartKind;
 	/** The user's work items, live, where the page has them: a work item starts on the newest one's repository. Null until they arrive. */
 	items?: readonly ItemSummary[] | null;
+	/** The page shows the month's hosted minutes in its own notice (components/Plan.tsx, `HostedNotice`): not said again here. */
+	hostedNotice?: boolean;
 }
 
 export type StartKind = "agent" | "item";
@@ -237,13 +239,13 @@ export type StartKind = "agent" | "item";
 /** The refusals of a machine that the list of machines may be behind on: it is read again. */
 const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"] as const;
 
-export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: kindChoice = "agent", items }: StartComposerProps) {
+export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: kindChoice = "agent", items, hostedNotice = false }: StartComposerProps) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;
 	const github = useGithub();
 	const allowance = useAllowance();
-	const limit = launchLimit(allowance);
+	const limit = launchLimit(allowance, hostedNotice);
 	// Where the deployment has plans, the sizes the account's plan offers (Free has no large).
 	const planSizes = allowance?.hosted?.plan ? (info?.billing?.plans.find((plan) => plan.id === allowance.hosted!.plan)?.sizes ?? null) : null;
 	const surface = useSurface();
