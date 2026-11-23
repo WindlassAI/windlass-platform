@@ -1,0 +1,12 @@
+{
+  "disableBundledSkills": true,
+  "enableWorkflows": false,
+  "syncClaudeAiSkills": false,
+  "syncClaudeAiPlugins": false,
+  "enabledPlugins": {
+    "cc-plugin-plugin-authoring@builtin": false
+  },
+  "permissions": {
+    "deny": ["ReportFindings", "ScheduleWakeup"]
+  }
+}

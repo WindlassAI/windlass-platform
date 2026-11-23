@@ -49,13 +49,20 @@ async function status(name, bearer, host = '127.0.0.1:17892') {
 }
 const isolation = name => checkIsolation(name, cmd, token, 'claude-agent-sdk-linux-', '/run/wlp-harness/claude/token');
 let adapter;
-async function turn(first, proxyEnv, scan, text = 'Say relay check passed.') {
+async function turn(first, proxyEnv, checkFirstTurn, text = 'Say relay check passed.') {
 	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
+	const commands = new Set();
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
 		async request() { throw Error('No client tools in fixture'); },
-		notification(method, params) { if (method === 'session/update' && params.update.sessionUpdate === 'agent_message_chunk') reply += params.update.content.text; },
+		notification(method, params) {
+			if (method !== 'session/update') return;
+			const update = params.update;
+			if (update.sessionUpdate === 'agent_message_chunk') reply += update.content.text;
+			if (update.sessionUpdate === 'available_commands_update')
+				for (const command of update.availableCommands) commands.add(command.name);
+		},
 	}, '');
 	const lines = new LineSplitter(line => rpc.receive(line));
 	child.stdout.setEncoding('utf8').on('data', s => lines.push(s));
@@ -64,9 +71,15 @@ async function turn(first, proxyEnv, scan, text = 'Say relay check passed.') {
 	await call('initialize', {protocolVersion:1,clientCapabilities:{}});
 	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[]});
 	await call('session/set_mode',{sessionId:opened.sessionId,modeId:opened.modes.currentModeId});
+	if (checkFirstTurn) await call('session/set_config_option',{sessionId:opened.sessionId,configId:'model',value:'sonnet'});
 	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text}]});
 	assert.equal(result.stopReason,'end_turn'); assert.equal(reply,'relay check passed');
-	if (scan) await isolation(first);
+	if (checkFirstTurn) {
+		assert.ok(commands.has('repo-fixture'), 'the repository slash command was missing from ACP');
+		for (const name of ['deep-research', 'simplify', 'loop', 'workflow-authoring', 'plugin-authoring', 'doctor'])
+			assert.ok(!commands.has(name), 'ACP advertised the bundled command ' + name);
+		await isolation(first);
+	}
 	child.stdin.end();
 }
 // A builder's turn with the platform's tools over MCP (platform-tools.ts): the pinned adapter and CLI reach them under
@@ -230,7 +243,17 @@ try {
 	assert.equal(await status(second, one.placeholder), '401');
 	assert.equal(await status(first, one.placeholder, 'foreign.invalid'), '403');
 	ok('Both real session containers have zero mounts. Own bearer accepted, cross-session bearer and foreign Host refused.');
-	await turn(first, [], true);
+	// The fake provider sees the actual model input. Its usage counters are scripted.
+	await cmd(['exec',first,'node','-e',`const fs = require('node:fs');
+		fs.mkdirSync('/workspace/.claude/commands', { recursive: true });
+		fs.writeFileSync('/workspace/CLAUDE.md', 'Use the repository sentinel plum-quartz.');
+		fs.writeFileSync('/workspace/.claude/commands/repo-fixture.md', 'Repository fixture command.');
+		fs.writeFileSync('/workspace/.claude/settings.json', JSON.stringify({ language: 'Icelandic' }));`]);
+	await turn(first, [], true, 'Hello');
+	const input = (await cmd(['logs',upstream])).match(/^first-turn input bytes=(\d+) instructions=true language=true repoCommand=true extras=false$/m);
+	assert.ok(input, 'expected repository instructions, language and command in the first model request without bundled extras');
+	assert.ok(Number(input[1]) < 33_000, 'first-turn input grew to ' + input[1] + ' bytes');
+	ok('One-word Sonnet turn sent ' + input[1] + ' bytes of model input including repository instructions and settings.');
 	await toolsTurn(first);
 	ok('A builder turn on the pinned CLI reached report and ask_person over MCP under the managed policy; a process without the token was refused.');
 	await pushTurn(first);
