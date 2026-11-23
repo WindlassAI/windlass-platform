@@ -316,7 +316,7 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				await until(() => !!srv.state.report?.slots, "Missing default sizing report");
 				await srv.attach(srv.other);
 				const kept = await srv.channel(srv.other).request("create", { profile: "docker-hardened" });
-				assert.deepEqual(await limitsOf(prefix + "agent-" + kept.slice(-12)), [1e9, 1.5 * 2 ** 30, 1.5 * 2 ** 30, 512, 256, "1"]);
+				assert.deepEqual(await limitsOf(prefix + "agent-" + kept.slice(-12)), [2e9, 4 * 2 ** 30, 4 * 2 ** 30, 1024, 256, "1"]);
 				srv.reset(srv.other);
 				await stop(service.child);
 				await until(() => !srv.online(), "Runner did not disconnect.");
@@ -1120,7 +1120,6 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		assert.equal(inspection.Config.Labels["dev.windlass-platform.uid"], uid);
 		assert.equal(inspection.Config.Labels["dev.windlass-platform.session"], sessionId);
 		assert.equal(inspection.Config.Image, image); assert.equal(inspection.Config.User, "agent");
-		// A slot's size follows this host's cores and memory (runner/src/sizing.ts): 1.5 GiB and 512 processes on two cores or fewer.
 		const slot = localSizing().unit;
 		assert.equal(inspection.HostConfig.Privileged, false); assert.equal(inspection.HostConfig.Memory, slot.memoryBytes);
 		assert.deepEqual(inspection.HostConfig.CapDrop, ["ALL"]); assert.equal(inspection.HostConfig.PidsLimit, slot.pids);

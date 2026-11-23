@@ -237,8 +237,8 @@ it, and removes it when asked. It runs the base sandbox image and can optionally
 `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
 volume is on Docker. A Windlass session in a new `docker-hardened` sandbox gets a volume of its own
 instead, `wlp-machine-<machine id>-<raw id>` (see [Per-session data volumes](#per-session-data-volumes)). Each agent container gets 256 CPU shares. The runner scales CPU, memory and process limits
-by its slot count. On a machine with one or two CPUs, one slot defaults to half the CPUs, 1536 MiB
-and 512 processes. Larger machines reserve resources for the host before sizing their slots.
+by its slot count. By default, the runner fits up to 16 slots of 2 CPUs and 4–8 GiB each after reserving resources for the host.
+If none fits, it uses one slot with all cores and up to 4 GiB, leaving at least 1 GiB or 25% of memory for the host, whichever is greater.
 The runner applies these limits on creation and reconnect. A limit below current memory usage waits until the sandbox restarts. Creation requires 5 GB of free disk. It stops a
 sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
 a command runs in it or the session's socket is connected, and it removes one by itself in one case
