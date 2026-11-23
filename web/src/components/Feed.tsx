@@ -13,6 +13,7 @@ import { feedKey, type FeedEntry } from "../lib/feed";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { linkProps, type Route } from "../lib/router";
 import { STATE_WORD } from "../screens/Items";
+import { LongText } from "./Fold";
 import { ChevronRightIcon, CrossIcon, Mark, MergedIcon, PullRequestIcon } from "./Icons";
 import { RepoTile } from "./RepoTile";
 import { AgentGlyph } from "./ui/Pill";
@@ -39,7 +40,10 @@ interface Row {
 	item: boolean;
 	harness: string;
 	agentWords: string;
+	/** A few words on where it stands, on the agent's line. */
 	line: ReactNode;
+	/** What it asks or reports, which may run long: under the agent's line, clamped to two lines. */
+	long: string | null;
 	repository: { owner: string; name: string; id: GithubId } | null;
 	at: number;
 	failed: boolean;
@@ -64,6 +68,7 @@ function agentRow(session: SessionSummary, tone: Tone): Row {
 		harness: session.harness ?? "windlass",
 		agentWords: `${acpHarnessName(session) ?? "Windlass"} · ${sessionModelWords(session)}`,
 		line,
+		long: null,
 		repository: session.repository ? { owner: session.repository.owner, name: session.repository.name, id: session.repository.id } : null,
 		at: session.updatedAt,
 		failed: session.lastOutcome === "failed" || session.lastOutcome === "error",
@@ -76,7 +81,7 @@ function itemRow(item: ItemSummary, tone: Tone, at: number): Row {
 	const harness = item.agent?.harness ?? "windlass";
 	const model = item.agent?.model;
 	const how = ITEM_MODE_WORDS[item.mode ?? "single"].name;
-	const line = item.question ? item.question.text : `${how} · ${STATE_WORD[item.state]}`;
+	const line = item.question ? null : `${how} · ${STATE_WORD[item.state]}`;
 	return {
 		key: `i:${item.id}`,
 		route: { name: "item", id: item.id },
@@ -85,6 +90,7 @@ function itemRow(item: ItemSummary, tone: Tone, at: number): Row {
 		harness,
 		agentWords: `${HARNESS_NAMES[harness]}${model ? ` · ${model}` : ""}`,
 		line,
+		long: item.question?.text ?? null,
 		repository: { owner: item.repository.owner, name: item.repository.name, id: item.repository.id },
 		at,
 		failed: item.state === "failed",
@@ -111,13 +117,18 @@ function FeedRow({ row, tone, now }: { row: Row; tone: Tone; now: number }) {
 					</a>
 					{row.item ? <span className="feed-tag">work item</span> : null}
 				</p>
-				<p className="feed-line">
+				<p className={`feed-line${row.line ? "" : " feed-line-agent"}`}>
 					<span className="feed-agent">
 						<AgentGlyph harness={row.harness} size={11} inline />
 						<span className="feed-agent-words">{row.agentWords}</span>
 					</span>
-					<span className="feed-state">{row.line}</span>
+					{row.line ? <span className="feed-state">{row.line}</span> : null}
 				</p>
+				{row.long ? (
+					<LongText lines={2} className="feed-long">
+						{row.long}
+					</LongText>
+				) : null}
 			</div>
 			{row.repository && repoName ? (
 				<a className="feed-repo" {...linkProps({ name: "repository", id: row.repository.id })} title={repoName}>

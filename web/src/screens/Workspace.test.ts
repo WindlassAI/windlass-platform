@@ -192,6 +192,10 @@ describe("Everything", () => {
 		expect(needs.querySelectorAll(".feed-row").length).toBeGreaterThan(0);
 		const itemRow = needs.querySelector('.feed-row[data-kind="item"]') as HTMLElement;
 		expect(itemRow.querySelector(".feed-repo .repo-tile")).not.toBeNull();
+		// What it asks is the shared long-text clamp, at two lines, under the agent's line.
+		const asked = itemRow.querySelector(".feed-main .long-text-body") as HTMLElement;
+		expect(asked.dataset.clamped).toBe("true");
+		expect(asked.style.getPropertyValue("--lines")).toBe("2");
 		expect(itemRow.querySelector(".feed-repo")?.getAttribute("href")).toMatch(/^\/repositories\/\d+$/);
 		// The filter sits on Recent's heading.
 		expect(pane.querySelector(".feed-recent .ws-filter-button")).not.toBeNull();

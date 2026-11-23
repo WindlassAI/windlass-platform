@@ -198,6 +198,23 @@
 	margin-right: 6px;
 	color: var(--ink-faint);
 }
+/* What an item asks, under the agent's line: the shared clamp (components/Fold.tsx), two lines; only its "Show all" stands over the row's link. */
+.feed-main .long-text {
+	margin-top: 3px;
+	max-width: none;
+}
+.feed-long {
+	margin: 0;
+	font-size: var(--text-12);
+	line-height: 1.45;
+	color: var(--ink-faint);
+}
+.feed-main .fold-toggle {
+	position: relative;
+	z-index: 1;
+	margin-top: 2px;
+	font-size: var(--text-12);
+}
 .feed-repo {
 	grid-area: repo;
 	position: relative;
@@ -308,7 +325,8 @@
 		align-self: start;
 		padding-top: 3px;
 	}
-	.feed-agent-words {
+	/* The state line keeps the logo alone; a line with only the agent keeps its name. */
+	.feed-line:not(.feed-line-agent) .feed-agent-words {
 		display: none;
 	}
 	.feed-state::before {
