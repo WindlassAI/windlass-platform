@@ -349,7 +349,8 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 					</span>
 				</p>
 			) : null}
-			{!single && <p className="field-note">Sizing beyond one slot is not supported by current runners.</p>}
+			{/* Said only of a plan that sizes a subtask: a runner that reports no slots cannot give it more than one. */}
+			{!single && plan.subtasks.some((task) => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) ? <p className="field-note">Sizing beyond one slot is not supported by current runners.</p> : null}
 		</section>
 	);
 }
