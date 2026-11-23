@@ -15,8 +15,8 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { applyBillingEvent, billingTables, readBilling, reportOverage, setCapCents, overageMinutes } from "../server/src/billing/account.js";
 import { readBillingConfig } from "../server/src/billing/config.js";
 import { DodoProvider, type DodoSettings } from "../server/src/billing/dodo.js";
-import { monthOf, nextMonthStart, previousMonth, SIZE_WEIGHT } from "../server/src/billing/meter.js";
-import { capMinutes, DEFAULT_CAP_CENTS, effectivePlan, NO_SUBSCRIPTION, PLANS, type BillingState } from "../server/src/billing/plans.js";
+import { monthOf, nextMonthStart, previousMonth, sessionWeight, SIZE_WEIGHT } from "../server/src/billing/meter.js";
+import { capMinutes, DEFAULT_CAP_CENTS, effectivePlan, NO_SUBSCRIPTION, planAllowsSize, PLANS, type BillingState } from "../server/src/billing/plans.js";
 import type { BillingEvent } from "../server/src/billing/provider.js";
 import { verify } from "../server/src/billing/standard-webhooks.js";
 import { config } from "../server/src/config.js";
@@ -95,6 +95,8 @@ const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRI
 // --- Metering by size, and the month --------------------------------------------------------------------------------
 {
 	expect("weights: small 0.5, standard 1, large 2", SIZE_WEIGHT.small === 0.5 && SIZE_WEIGHT.standard === 1 && SIZE_WEIGHT.large === 2);
+	expect("a session is weighted by its hosted size; one from before sizes as small", sessionWeight({ hostedSize: "large" }) === 2 && sessionWeight({ hostedSize: "standard" }) === 1 && sessionWeight({}) === 0.5 && sessionWeight(undefined) === 0.5);
+	expect("Free has no large; Pro has all three; no billing allows any", !planAllowsSize(PLANS.free, "large") && planAllowsSize(PLANS.free, "standard") && planAllowsSize(PLANS.pro, "large") && planAllowsSize(null, "large"));
 	const limits = { ...effectiveUserLimits({}, NO_SUBSCRIPTION, NOW).usage, holdSeconds: 900 };
 	const book = new UsageBook(limits);
 	const sizes: Record<string, number> = { s: SIZE_WEIGHT.small, m: SIZE_WEIGHT.standard, l: SIZE_WEIGHT.large };

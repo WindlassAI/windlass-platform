@@ -242,7 +242,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const auth = useAuth();
 	const info = platform.info;
 	const github = useGithub();
-	const limit = launchLimit(useAllowance());
+	const allowance = useAllowance();
+	const limit = launchLimit(allowance);
+	// Where the deployment has plans, the sizes the account's plan offers (Free has no large).
+	const planSizes = allowance?.hosted?.plan ? (info?.billing?.plans.find((plan) => plan.id === allowance.hosted!.plan)?.sizes ?? null) : null;
 	const surface = useSurface();
 	const phone = surface === "sheet";
 	const ids = { text: useId(), hint: useId(), keys: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), criteria: useId(), criteriaNote: useId() };
@@ -397,7 +400,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
 	// ---- the hosted size: where the deployment offers more than one, for a hosted sandbox -----------------
-	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []) : [];
+	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id)) : [];
 	const savedSize = saved.defaults?.hostedSize ?? null;
 	const defaultSize = sizes.length > 1 ? startingSize(sizes, savedSize, item) : null;
 	const hostedSize = defaultSize === null ? null : sizeChoice !== null && sizes.some((size) => size.id === sizeChoice) ? sizeChoice : defaultSize;
