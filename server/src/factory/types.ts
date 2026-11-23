@@ -468,6 +468,7 @@ export type Fact =
 	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
+	| { kind: "sandbox_resize_refused"; at: number; key: string; plan: TurnPlan; size: HostedSize }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */

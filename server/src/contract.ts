@@ -1522,8 +1522,8 @@ export function hostedSizeFor(needs: { cpus?: number; memoryGiB?: number }): Hos
 }
 
 /** The next size up, or null for the largest. */
-export function largerHostedSize(size: HostedSize): HostedSize | null {
-	return HOSTED_SIZES[HOSTED_SIZES.indexOf(size) + 1] ?? null;
+export function largerHostedSize(size: HostedSize, offered: readonly HostedSize[] = HOSTED_SIZES): HostedSize | null {
+	return HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(size) + 1).find(next => offered.includes(next)) ?? null;
 }
 
 /**
@@ -1533,7 +1533,7 @@ export function largerHostedSize(size: HostedSize): HostedSize | null {
 export function outOfMemoryWords(memory: { usedMiB: number; totalMiB: number; size?: HostedSize }, offered: readonly HostedSize[] = HOSTED_SIZES): string {
 	const said = `The sandbox ran out of memory (${memory.usedMiB.toLocaleString("en-US")} of ${memory.totalMiB.toLocaleString("en-US")} MiB).`;
 	const from = memory.size ?? HOSTED_SIZES.find((size) => HOSTED_SIZE_SPECS[size].memoryMiB >= memory.totalMiB) ?? "large";
-	const larger = HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(from) + 1).find((size) => offered.includes(size));
+	const larger = largerHostedSize(from, offered);
 	if (larger) return `${said} A larger size has more room: ${hostedSizeWords(larger)}.`;
 	return `${said} ${memory.size ? "This is the largest size this deployment has" : "No larger size is offered here"}: have the agent's commands use less memory at once (fewer tests or workers in parallel).`;
 }

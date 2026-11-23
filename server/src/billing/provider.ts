@@ -60,7 +60,7 @@ export interface UsageReport {
 
 export interface BillingProvider {
 	readonly name: string;
-	createCheckout(input: CheckoutInput): Promise<{ url: string }>;
+	createCheckout(input: CheckoutInput): Promise<{ id: string; url: string }>;
 	portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
 	/** Null for a signature that does not verify, or a delivery too old. An empty list for events billing does not use. */
 	parseWebhook(headers: Headers, body: string, now: number): BillingEvent[] | null;

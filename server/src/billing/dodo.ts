@@ -108,16 +108,18 @@ export class DodoProvider implements BillingProvider {
 		return (raw === "" ? {} : JSON.parse(raw)) as T;
 	}
 
-	async createCheckout(input: CheckoutInput): Promise<{ url: string }> {
+	async createCheckout(input: CheckoutInput): Promise<{ id: string; url: string }> {
 		const answer = await this.call<{ session_id?: string; checkout_url?: string | null }>("POST", "/checkouts", {
 			product_cart: [{ product_id: this.settings.products[input.period], quantity: 1 }],
 			...(input.customerId && { customer: { customer_id: input.customerId } }),
 			return_url: input.returnUrl,
 			metadata: { [UID_KEY]: input.uid },
 		});
+		const id = text(answer.session_id);
+		if (!id) throw new BillingProviderError(502, "no_checkout_id");
 		const url = text(answer.checkout_url);
 		if (!url || !url.startsWith("https://")) throw new BillingProviderError(502, "no_checkout_url");
-		return { url };
+		return { id, url };
 	}
 
 	async portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }> {

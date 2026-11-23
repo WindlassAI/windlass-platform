@@ -82,6 +82,7 @@ import { getLayer } from "../layer.js";
 import { reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
+import { hostedSizesForPlan } from "../billing/plans.js";
 import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
 import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
@@ -883,7 +884,8 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
 	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
 	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...((sandboxes.sizes?.().length ?? 0) > 1 && { hostedSizes: sandboxes.sizes!().map(size => size.id) }),
+	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
 		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;

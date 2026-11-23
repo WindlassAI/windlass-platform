@@ -176,10 +176,10 @@ import { readE2bSettings } from "../sandbox/e2b/config.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildResult } from "./internal.js";
-import { applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
+import { AccountCheckout, CheckoutBlocked, applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
 import { billing } from "../billing/config.js";
 import { monthStartDay, nextMonthStart, sessionWeight } from "../billing/meter.js";
-import { effectivePlan, planAllowsSize } from "../billing/plans.js";
+import { effectivePlan, hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 import type { BillingEvent } from "../billing/provider.js";
 import type { BillingPeriod, BillingView } from "../contract.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
@@ -244,6 +244,7 @@ interface UserVars {
 	usage: UsageBook;
 	/** The overage report under way (billing/account.ts `reportOverage`): one at a time. */
 	overageReport: Promise<void>;
+	checkout: AccountCheckout;
 	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
 	listed: { at: number; sandboxes: ListedSandbox[] } | null;
 	/** The user's work items, the turn queue and its slots (user-items.ts), as the tables have them. */
@@ -808,8 +809,8 @@ interface UsageCtx extends UserCtx {
 	keepAwake?<T>(promise: Promise<T>): Promise<T>;
 }
 
-type UsageEntryRow = { day: number; session: string; hold: string; kind: string; seconds: number; at: number; note: string | null };
-type UsageHoldRow = { id: string; session: string; day: number; seconds: number; started_at: number; expires_at: number };
+type UsageEntryRow = { day: number; session: string; hold: string; kind: string; seconds: number; weight: number | null; at: number; note: string | null };
+type UsageHoldRow = { id: string; session: string; day: number; seconds: number; weight: number | null; started_at: number; expires_at: number };
 
 /** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
 /** A work item's reviewer shares its builder's place among the kept sandboxes (`UsageBook.sharing`): an item counts as one. */
@@ -830,12 +831,12 @@ async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyM
 	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
 	// The days the usage page shows, and last month and this one whole, for the monthly hosted minutes (billing/meter.ts).
 	const since = Math.min(today - USAGE_HISTORY_DAYS, monthStartDay(nextMonthStart(Date.now()) - 40 * DAY_MS) - 1);
-	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, at, note FROM usage_entry WHERE day > ? ORDER BY id", since);
-	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, started_at, expires_at FROM usage_hold");
+	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, weight, at, note FROM usage_entry WHERE day > ? ORDER BY id", since);
+	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, weight, started_at, expires_at FROM usage_hold");
 	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
 	const book = new UsageBook(limits, {
-		entries: entries.map((row) => ({ day: row.day, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, at: row.at, note: row.note })),
-		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, startedAt: row.started_at, expiresAt: row.expires_at })),
+		entries: entries.map((row) => ({ day: row.day, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, weight: row.weight, at: row.at, note: row.note })),
+		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, weight: row.weight, startedAt: row.started_at, expiresAt: row.expires_at })),
 		kept,
 	});
 	book.sharing = itemSharing(sessions);
@@ -886,11 +887,11 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 	if (isEmptyChange(change)) return done;
 	try {
 		for (const entry of change.entries) {
-			await c.db.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, at, note) VALUES (?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.at, entry.note);
+			await c.db.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, weight, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.weight!, entry.at, entry.note);
 		}
 		for (const id of change.closed) await c.db.execute("DELETE FROM usage_hold WHERE id = ?", id);
 		for (const hold of change.opened) {
-			await c.db.execute("INSERT OR REPLACE INTO usage_hold (session, id, day, seconds, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)", hold.session, hold.id, hold.day, hold.seconds, hold.startedAt, hold.expiresAt);
+			await c.db.execute("INSERT OR REPLACE INTO usage_hold (session, id, day, seconds, weight, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", hold.session, hold.id, hold.day, hold.seconds, hold.weight!, hold.startedAt, hold.expiresAt);
 		}
 		for (const session of change.released) await c.db.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
 		for (const claim of change.kept) await c.db.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
@@ -1045,7 +1046,7 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 		days: book.days(now),
 		kept,
 		price: layer.sandboxes.price(),
-		...((() => { const sizes = sizesOf(layer); return sizes ? { hostedSizes: sizes } : {}; })()),
+		...((() => { const sizes = sizesOf(c, layer); return sizes.length > 1 ? { hostedSizes: sizes } : {}; })()),
 		// Where Windlass's data is on the sandbox's own disk, the agent's memory goes with it unless a copy is kept in a bucket.
 		memory: layer.sandboxes.sessionsLiveInSandbox ? (layer.backups ? "copied" : "lost") : "kept",
 	};
@@ -1093,10 +1094,9 @@ const KEYED = "agent";
  * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
-/** The hosted sizes the layer offers, with their prices; null where it has one size. */
-function sizesOf(layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[] | null {
-	const sizes = layer.sandboxes.sizes?.() ?? [];
-	return sizes.length > 1 ? sizes : null;
+/** The hosted sizes offered to this account, with their prices. */
+function sizesOf(c: UserCtx, layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[] {
+	return hostedSizesForPlan(layer.sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
 }
 
 /**
@@ -1105,14 +1105,15 @@ function sizesOf(layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[
  * offers below it. Undefined where the layer has one size.
  */
 async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: Parameters<MakeSession>[4] | undefined): Promise<HostedSize | undefined> {
-	const listed = sizesOf(await getLayer())?.map((size) => size.id);
+	const layer = await getLayer();
 	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.join(", ")}.`, { code: "bad_input" });
-	if (!listed) return undefined;
 	// Where the deployment has billing, the plan's sizes only (billing/plans.ts): Free has no large.
 	const plan = accountLimits(c.vars.items.limits).plan;
-	const offered = plan ? listed.filter((size) => planAllowsSize(plan, size)) : listed;
 	if (plan && isHostedSize(asked) && !planAllowsSize(plan, asked)) throw new UserError(`${asked.charAt(0).toUpperCase()}${asked.slice(1)} sandboxes are on Pro. Choose a smaller size, or upgrade in Settings.`, { code: "bad_input" });
-	if (offered.length === 0) return listed[0];
+	const listed = layer.sandboxes.sizes?.() ?? [];
+	const offered = hostedSizesForPlan(listed, plan).map(size => size.id);
+	if (listed.length > 0 && offered.length === 0) throw new UserError("No hosted sandbox size is available on your plan.", { code: "bad_input" });
+	if (listed.length <= 1) return undefined;
 	const wanted = (asked as HostedSize | undefined) ?? item?.hostedSize ?? (project ? (await readDefaults(c.db, project)).hostedSize : null) ?? (item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
 	return [...offered].reverse().find((size) => HOSTED_SIZES.indexOf(size) <= HOSTED_SIZES.indexOf(wanted)) ?? offered[0];
 }
@@ -1632,6 +1633,11 @@ export const user = actor({
 					expires_at INTEGER NOT NULL
 				)
 			`);
+			// Null on holds and entries written before the monthly meter recorded weights.
+			for (const table of ["usage_entry", "usage_hold"]) {
+				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
+				if (!columns.some(column => column.name === "weight")) await db.execute(`ALTER TABLE ${table} ADD COLUMN weight REAL`);
+			}
 			// The sessions that have a place among the sandboxes the user keeps.
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
@@ -1665,7 +1671,7 @@ export const user = actor({
 		const items = await loadItems(c.db);
 		// Where the deployment has billing, the account's subscription sets its plan's limits (billing/plans.ts).
 		items.limits.billing = billing() ? await readBilling(c.db) : null;
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), checkout: new AccountCheckout(), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
 	events: {
@@ -1748,6 +1754,10 @@ export const user = actor({
 				queueChanged(c);
 			}
 			return accountLimits(c.vars.items.limits);
+		},
+		internalHostedSizes: async (c): Promise<HostedSize[]> => {
+			requireService(c);
+			return sizesOf(c, await getLayer()).map(size => size.id);
 		},
 		internalDailyTokenWait: (c) => { requireServiceFor(c, "call"); return accountTokenWait(c); },
 		internalRecordTurnTokens: async (c, input: { sessionId: string; receipt: TokenReceipt }) => {
@@ -1961,15 +1971,12 @@ export const user = actor({
 			const settings = billingOn();
 			if (input?.period !== "month" && input?.period !== "year") throw new UserError("Choose monthly or yearly.", { code: "bad_input" });
 			const origin = billingOrigin(input?.origin);
-			const state = c.vars.items.limits.billing!;
-			if (effectivePlan(state, Date.now()) !== "free") throw new UserError("You already have Pro. Manage it from Settings.", { code: "already_subscribed" });
 			if (profile.demo) throw new UserError("The demo account cannot subscribe.", { code: "billing_off" });
 			try {
-				const { url } = await settings.provider.createCheckout({ uid: c.key[0]!, period: input.period, customerId: state.customerId, returnUrl: `${origin}/settings?billing=checkout#plan` });
-				console.log(`[wlp] billing.checkout uid=${c.key[0]} period=${input.period} customer=${state.customerId ?? "-"}`);
-				return { url };
+				return await c.vars.checkout.open(c.db, settings.provider, { uid: c.key[0]!, period: input.period, returnUrl: `${origin}/settings?billing=checkout#plan` }, Date.now());
 			} catch (error) {
-				console.warn(`[wlp] billing.checkout_failed uid=${c.key[0]}: ${error instanceof Error ? error.message : "unknown error"}`);
+				if (error instanceof CheckoutBlocked) throw new UserError(error.message, { code: "already_subscribed" });
+				console.warn(`[wlp] billing.checkout_failed uid=${c.key[0]}`);
 				throw new UserError("The checkout could not be opened. Try again in a moment.", { code: "billing_unavailable" });
 			}
 		},
@@ -2530,8 +2537,8 @@ export const user = actor({
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;
 			try {
-				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo), sandboxes.sizes?.().map((size) => size.id) ?? []);
+				const layer = await getLayer();
+				change = cleanDefaults(input, layer.sandboxes.profiles(), await modelsOf(c, profile.demo), sizesOf(c, layer).map(size => size.id));
 				if (change.screenshots === true && !config.factory.screenshots) throw new DefaultsProblem("bad_input", "Screenshots are turned off for this whole deployment, so they cannot be turned on for a repository.");
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
@@ -3030,7 +3037,7 @@ export const user = actor({
 			if (keep) await reconcileKept(c, c.vars.usage.atCap(session));
 
 			const now = Date.now();
-			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, fresh: input.fresh === true, settle }));
+			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, weight: isHostedSize(input.hostedSize) ? sessionWeight(input) : undefined, fresh: input.fresh === true, settle }));
 			const numbers = c.vars.usage.numbers(now);
 			const lose = reserveFault === null ? null : input.fresh === true ? "fresh" : renewal ? "renewal" : null;
 			if (reserveFault && lose && reserveFault[lose] > 0) {

@@ -13,7 +13,7 @@
  * only a set of limits plus a price, and the subscription that pays for it says which one applies.
  */
 
-import type { BillingPeriod, PlanId, PlanInfo } from "../contract.js";
+import type { BillingPeriod, HostedSizeOption, PlanId, PlanInfo } from "../contract.js";
 
 /** The weights a sandbox size counts with (billing/meter.ts). */
 export type SandboxSize = "small" | "standard" | "large";
@@ -84,6 +84,11 @@ export function effectivePlan(state: BillingState, now: number): PlanId {
 /** Whether a sandbox of this size may be started on the plan. The sizes work fills in where a size is chosen. */
 export function planAllowsSize(plan: PlanInfo | null, size: SandboxSize): boolean {
 	return plan === null || plan.sizes.includes(size);
+}
+
+/** Sizes that both the deployment and this account offer. */
+export function hostedSizesForPlan(listed: HostedSizeOption[], plan: PlanInfo | null): HostedSizeOption[] {
+	return listed.filter(size => planAllowsSize(plan, size.id));
 }
 
 /**

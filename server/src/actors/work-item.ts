@@ -1428,11 +1428,17 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "release_review":
 			await session.internalFreeSandbox(effect.run).catch(onGone);
 			return true;
-		case "fresh_sandbox":
+		case "fresh_sandbox": {
 			// The person chose a new sandbox for a step whose sandbox could not be prepared: the session's is removed, as "Free" does.
-			if (await session.internalFreeSandbox(undefined, effect.hostedSize).catch(onGone) === gone) return true;
+			const result = await session.internalFreeSandbox(undefined, effect.hostedSize).catch(onGone);
+			if (result === gone) return true;
+			if (result.sizeUnavailable) {
+				await take(c, { kind: "sandbox_resize_refused", key: effect.key, at: Date.now(), plan: effect.plan, size: result.sizeUnavailable });
+				return true;
+			}
 			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan });
 			return true;
+		}
 		case "withdraw":
 			await session.internalWithdraw(effect.key).catch(onGone);
 			return true;

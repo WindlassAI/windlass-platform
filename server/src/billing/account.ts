@@ -19,13 +19,15 @@ import type { RawAccess } from "rivetkit/db";
 import type { BillingView, HostedMonth } from "../contract.js";
 import { monthOf, previousMonth } from "./meter.js";
 import { capMinutes, effectivePlan, MAX_CAP_CENTS, NO_SUBSCRIPTION, PLAN_LIST, PLANS, type BillingState } from "./plans.js";
-import type { BillingEvent, BillingProvider } from "./provider.js";
+import type { BillingEvent, BillingProvider, CheckoutInput } from "./provider.js";
 
 export type BillingDb = Pick<RawAccess, "execute">;
 type TxDb = BillingDb & Pick<RawAccess, "transaction">;
 
 export const BILLING_TABLES = [
 	`CREATE TABLE IF NOT EXISTS billing (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)`,
+	// One checkout link per account until the subscription settles or its reuse window ends.
+	`CREATE TABLE IF NOT EXISTS billing_checkout (id INTEGER PRIMARY KEY CHECK (id = 1), session TEXT NOT NULL, url TEXT NOT NULL, opened_at INTEGER NOT NULL)`,
 	// The deliveries applied, by the provider's id. Kept for 90 days, longer than any provider retries one.
 	`CREATE TABLE IF NOT EXISTS billing_event (id TEXT PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, outcome TEXT NOT NULL)`,
 	// Per UTC month: the overage minutes the provider has taken, and the report under way, if any.
@@ -53,25 +55,29 @@ export type ApplyOutcome = "applied" | "duplicate" | "stale" | "other_customer" 
 export function nextBillingState(state: BillingState, event: BillingEvent, now: number, graceMs: number): { state: BillingState; outcome: ApplyOutcome } {
 	const same = (outcome: ApplyOutcome) => ({ state, outcome });
 	if (event.customerId !== null && state.customerId !== null && event.customerId !== state.customerId) return same("other_customer");
-	const running = effectivePlan(state, now) !== "free";
+	if (event.occurredAt < state.eventAt) return same("stale");
+	// A subscription webhook identifies the Pro product even if its first payment never succeeded.
+	const providerHold = event.kind === "payment_failed" && event.period !== null && event.subscriptionId !== null;
 	const replacing = event.subscriptionId !== null && state.subscriptionId !== null && event.subscriptionId !== state.subscriptionId;
 	if (replacing) {
 		// A new subscription takes the place of one that no longer runs; while one runs, another is somebody's mistake.
-		if (event.kind !== "active" || running) return same("other_subscription");
-	} else if (event.occurredAt < state.eventAt) {
-		return same("stale");
+		const newSubscription = event.kind === "active" || (providerHold && state.status === "ended");
+		if (!newSubscription || effectivePlan(state, now) !== "free") return same("other_subscription");
 	}
 	const ids = {
 		customerId: event.customerId ?? state.customerId,
 		subscriptionId: event.subscriptionId ?? state.subscriptionId,
-		eventAt: replacing ? event.occurredAt : Math.max(event.occurredAt, state.eventAt),
+		eventAt: event.occurredAt,
 	};
 	switch (event.kind) {
 		case "active":
 		case "changed":
 			return { outcome: "applied", state: { ...state, ...ids, plan: "pro", status: "active", period: event.period ?? state.period, periodEnd: event.periodEnd ?? state.periodEnd, cancelAtPeriodEnd: event.cancelAtPeriodEnd, graceUntil: null } };
 		case "payment_failed":
-			if (state.plan !== "pro" || state.status === "ended") return same("no_subscription");
+			if (state.plan !== "pro" || state.status === "ended") {
+				if (!providerHold || (state.status === "ended" && !replacing)) return same("no_subscription");
+				return { outcome: "applied", state: { ...state, ...ids, plan: "free", status: "past_due", period: event.period, graceUntil: null } };
+			}
 			// The grace period starts at the first failure and is not moved by the next.
 			return { outcome: "applied", state: { ...state, ...ids, status: "past_due", graceUntil: state.graceUntil ?? now + graceMs } };
 		case "ended":
@@ -88,17 +94,64 @@ export async function applyBillingEvent(db: TxDb, event: BillingEvent, now: numb
 		if (seen.length === 0) return { outcome: "duplicate" as const, state: before };
 		const done = nextBillingState(before, event, now, graceMs);
 		await tx.execute("UPDATE billing_event SET outcome = ? WHERE id = ?", done.outcome, event.id);
-		if (done.outcome === "applied") await writeBilling(tx, done.state);
+		if (done.outcome === "applied") {
+			await writeBilling(tx, done.state);
+			// A repeated cancellation for the previous subscription cannot settle a new checkout.
+			if (done.state.status !== "ended" || before.status !== "ended" || before.subscriptionId !== done.state.subscriptionId) {
+				await tx.execute("DELETE FROM billing_checkout WHERE id = 1");
+			}
+		}
 		await tx.execute("DELETE FROM billing_event WHERE at < ?", now - EVENT_KEPT_MS);
 		return done;
 	}, { name: "billing.event" });
 }
 
-export async function setCapCents(db: BillingDb, cents: unknown): Promise<BillingState> {
+export async function setCapCents(db: TxDb, cents: unknown): Promise<BillingState> {
 	if (typeof cents !== "number" || !Number.isSafeInteger(cents) || cents < 0 || cents > MAX_CAP_CENTS) throw new RangeError(`Set the cap in whole cents from 0 to ${MAX_CAP_CENTS}.`);
-	const state = { ...(await readBilling(db)), capCents: cents };
-	await writeBilling(db, state);
+	return db.transaction(async tx => {
+		const state = { ...(await readBilling(tx)), capCents: cents };
+		await writeBilling(tx, state);
+		return state;
+	}, { name: "billing.cap" });
+}
+
+const CHECKOUT_WINDOW_MS = 30 * 60_000;
+
+export class CheckoutBlocked extends Error {}
+
+async function checkoutState(db: BillingDb): Promise<BillingState> {
+	const state = await readBilling(db);
+	if (state.status === "past_due") throw new CheckoutBlocked("Your subscription has a payment on hold. Open Manage billing in Settings.");
+	if (state.status === "active") throw new CheckoutBlocked("You already have Pro. Open Manage billing in Settings.");
 	return state;
+}
+
+/** One per user actor. Concurrent requests share the provider call, and retries after a restart use the stored link. */
+export class AccountCheckout {
+	private opening?: Promise<{ url: string }>;
+
+	open(db: TxDb, provider: BillingProvider, input: Omit<CheckoutInput, "customerId">, now: number): Promise<{ url: string }> {
+		this.opening ??= this.openOrReuse(db, provider, input, now).finally(() => { this.opening = undefined; });
+		return this.opening;
+	}
+
+	private async openOrReuse(db: TxDb, provider: BillingProvider, input: Omit<CheckoutInput, "customerId">, now: number): Promise<{ url: string }> {
+		const { state, saved } = await db.transaction(async tx => {
+			const state = await checkoutState(tx);
+			const [saved] = await tx.execute<{ url: string }>("SELECT url FROM billing_checkout WHERE id = 1 AND opened_at > ?", now - CHECKOUT_WINDOW_MS);
+			return { state, saved };
+		}, { name: "billing.checkout.read" });
+		if (saved) return { url: saved.url };
+
+		const checkout = await provider.createCheckout({ ...input, customerId: state.customerId });
+		return db.transaction(async tx => {
+			// A webhook may have arrived while the provider was opening the checkout.
+			const current = await checkoutState(tx);
+			if (current.eventAt !== state.eventAt) throw new CheckoutBlocked("Your subscription changed. Check billing in Settings and try again.");
+			await tx.execute("INSERT OR REPLACE INTO billing_checkout (id, session, url, opened_at) VALUES (1, ?, ?, ?)", checkout.id, checkout.url, now);
+			return { url: checkout.url };
+		}, { name: "billing.checkout" });
+	}
 }
 
 /** Whole overage minutes of a month: past the included ones, rounded down, and never past what the cap pays for. */

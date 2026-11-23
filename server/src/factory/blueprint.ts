@@ -547,6 +547,10 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 			if (fact.key !== key || c.item.wait?.reason !== "provider" || (!fact.loginChanged && fact.at < (c.item.wait.retryAt ?? Infinity))) return false;
 			nextTurn(c, fact.plan);
 			return true;
+		case "sandbox_resize_refused":
+			if (fact.key !== key || c.item.question || step.turn !== null) return false;
+			ask(c, "turn_refused", `A ${fact.size} sandbox is no longer available to this account. Try again in the current sandbox, or give it up.`, [choice("again"), ...handOverAny(c.item), choice("give_up")], null, fact.plan);
+			return true;
 		case "sandbox_freed":
 			if (fact.key !== key || c.item.question || step.turn !== null) return false;
 			nextTurn(c, fact.plan);

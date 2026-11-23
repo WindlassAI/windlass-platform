@@ -71,6 +71,8 @@ export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "s
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
 export interface ReserveRequest {
+	/** From the session itself, whose newest size may not have reached its user's index yet. */
+	hostedSize?: HostedSize;
 	/** The new hold's id, made by the session: the same request sent twice is one hold. */
 	id: string;
 	sessionId: string;
@@ -90,6 +92,7 @@ export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; n
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;
 	internalTokenGeneration(): Promise<number>;
@@ -199,7 +202,7 @@ export interface SessionInternal {
 	/** Destroys the sandbox, then the actor. */
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */
-	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean }>;
+	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
 	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
 	internalDeliver(input: Delivery): Promise<void>;
 	/** The user's turn queue gives the delivery of `key` its slot. */

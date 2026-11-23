@@ -194,6 +194,8 @@ export interface UsageEntry {
 	 */
 	kind: "used" | "unreported" | "corrected";
 	seconds: number;
+	/** Monthly weight locked in when the hold opened. Older rows have no weight. */
+	weight?: number | null;
 	/** When it was counted, ms since the epoch. */
 	at: number;
 	/** Set where the count is not simply what was reported: why. */
@@ -207,6 +209,8 @@ export interface UsageHold {
 	session: string;
 	day: number;
 	seconds: number;
+	/** Monthly weight locked in when the hold opened. Older rows have no weight. */
+	weight?: number | null;
 	startedAt: number;
 	/** When it is counted in full unless it was settled. */
 	expiresAt: number;
@@ -246,6 +250,8 @@ export type ReserveRefusal =
 export type ReserveResult = { ok: true; hold: UsageHold; change: UsageChange } | { ok: false; reason: ReserveRefusal; change: UsageChange };
 
 export interface ReserveInput {
+	/** The session's own sandbox weight, when supplied by the session opening this hold. */
+	weight?: number;
 	/** The new hold's id, made by the session. */
 	id: string;
 	session: string;
@@ -311,17 +317,21 @@ weightOf: (session: string) => number = () => 1;
 		return this.entries.reduce((sum, entry) => (entry.day === day ? sum + entry.seconds : sum), 0);
 	}
 
+	private storedWeight(row: UsageEntry | UsageHold): number {
+		return row.weight ?? this.weightOf(row.session);
+	}
+
 	/** The weighted seconds counted in a month ("2026-11"): what the monthly allowance and overage are counted in. */
 	usedInMonth(month: string): number {
 		let sum = 0;
-		for (const entry of this.entries) if (monthOfDay(entry.day) === month) sum += entry.seconds * this.weightOf(entry.session);
+		for (const entry of this.entries) if (monthOfDay(entry.day) === month) sum += entry.seconds * this.storedWeight(entry);
 		return sum;
 	}
 
 	/** The weighted seconds open holds have reserved of a month, without `except`'s. */
 	heldInMonth(month: string, except?: string): number {
 		let sum = 0;
-		for (const hold of this.holds.values()) if (monthOfDay(hold.day) === month && hold.session !== except) sum += hold.seconds * this.weightOf(hold.session);
+		for (const hold of this.holds.values()) if (monthOfDay(hold.day) === month && hold.session !== except) sum += hold.seconds * this.storedWeight(hold);
 		return sum;
 	}
 
@@ -389,11 +399,11 @@ weightOf: (session: string) => number = () => 1;
 			}
 		}
 		if (seconds > hold.seconds) notes.push(`${seconds - hold.seconds} s over its hold of ${hold.seconds} s`);
-		return { day: hold.day, session: hold.session, hold: hold.id, kind: "used", seconds, at: now, note: notes.length === 0 ? null : notes.join("; ") };
+		return { day: hold.day, session: hold.session, hold: hold.id, weight: this.storedWeight(hold), kind: "used", seconds, at: now, note: notes.length === 0 ? null : notes.join("; ") };
 	}
 
 	private unreported(hold: UsageHold, at: number, why: string): UsageEntry {
-		return { day: hold.day, session: hold.session, hold: hold.id, kind: "unreported", seconds: hold.seconds, at, note: why };
+		return { day: hold.day, session: hold.session, hold: hold.id, weight: this.storedWeight(hold), kind: "unreported", seconds: hold.seconds, at, note: why };
 	}
 
 	/** Counts in full every hold that ran out without being settled. Every other step begins with this. */
@@ -434,11 +444,11 @@ weightOf: (session: string) => number = () => 1;
 			grant = Math.min(grant, left);
 		}
 		// The month's hosted minutes, weighted by the session's size: the same rule as the day's, in weighted seconds.
+		const weight = input.weight ?? this.weightOf(input.session);
 		const monthly = this.limits.monthlySeconds ?? null;
 		if (monthly !== null) {
 			const month = monthOfDay(day);
-			const weight = this.weightOf(input.session);
-			const closingWeighted = closing !== null && monthOfDay(closing.day) === month ? closing.seconds * this.weightOf(closing.session) : 0;
+			const closingWeighted = closing !== null && monthOfDay(closing.day) === month ? closing.seconds * this.storedWeight(closing) : 0;
 			const left = monthly - this.usedInMonth(month) - this.heldInMonth(month, input.session) - closingWeighted;
 			if (left < (input.fresh === true ? this.startSeconds : 1) * weight) return { ok: false, reason: "allowance", change };
 			grant = Math.min(grant, Math.floor(left / weight));
@@ -455,7 +465,7 @@ weightOf: (session: string) => number = () => 1;
 			change.closed.push(own.id);
 		}
 		if (input.keep === true) change.kept.push(...this.claim(now, input.session).change.kept);
-		const hold: UsageHold = { id: input.id, session: input.session, day, seconds: grant, startedAt: now, expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000 };
+		const hold: UsageHold = { id: input.id, session: input.session, day, seconds: grant, weight, startedAt: now, expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000 };
 		this.holds.set(input.session, hold);
 		change.opened.push(hold);
 		return { ok: true, hold, change };
@@ -474,7 +484,7 @@ weightOf: (session: string) => number = () => 1;
 			if (full === undefined || this.entries.some((entry) => entry.hold === `${input.hold}${LATE}`)) return { known: false, entry: null, change };
 			// Never more than was counted, and never less than nothing: a late report only ever gives back.
 			const ran = Number.isFinite(input.seconds) ? Math.min(full.seconds, Math.max(0, Math.round(input.seconds))) : full.seconds;
-			const entry: UsageEntry = { day: full.day, session: full.session, hold: `${full.hold}${LATE}`, kind: "corrected", seconds: ran - full.seconds, at: now, note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full` };
+			const entry: UsageEntry = { day: full.day, session: full.session, hold: `${full.hold}${LATE}`, weight: this.storedWeight(full), kind: "corrected", seconds: ran - full.seconds, at: now, note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full` };
 			this.add(entry);
 			change.entries.push(entry);
 			return { known: true, entry, change };

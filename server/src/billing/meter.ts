@@ -3,8 +3,8 @@
  *
  * One hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB). A small sandbox counts half, a large one
  * twice. They are counted from the ledger of sandbox time (usage.ts), whose entries say which session's sandbox ran how
- * many seconds on which UTC day: a month's hosted seconds are the sum of its days' entries, each times its session's
- * weight. Runs on the user's own machines never reach that ledger, so they are never metered.
+ * many seconds on which UTC day: a month's hosted seconds are the sum of its days' entries, each times the weight when its hold
+ * opened. Runs on the user's own machines never reach that ledger, so they are never metered.
  *
  * Months are UTC calendar months. A hold never reaches past midnight UTC (usage.ts), so none reaches past the end of a
  * month either, and the first hold of a month is the new month's.

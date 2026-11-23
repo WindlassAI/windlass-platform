@@ -169,12 +169,13 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 	WIDE_HOSTS,
-	HOSTED_SIZES,
+	largerHostedSize,
 	type HostedSize,
 	isHostedSize,
 	outOfMemoryWords,
 } from "../contract.js";
 import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../blocked-network.js";
+import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
@@ -3267,7 +3268,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
+			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, hostedSize: meta.hostedSize ?? "small", keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
@@ -3800,11 +3801,13 @@ function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | nu
 	});
 }
 
-/** The memory figures with the next size the layer offers above the one that ran out, if any. */
-function withLarger(layer: SandboxLayer, memory: OutOfMemory): OutOfMemory {
-	const offered = layer.sandboxes.sizes?.().map((size) => size.id) ?? [];
-	const larger = HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(memory.size ?? "large") + 1).find((size) => offered.includes(size));
-	return larger ? { ...memory, larger } : memory;
+async function resizeOptions(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<HostedSize[]> {
+	if (meta.place.kind === "hosted" && billing()) return userActor(c, meta.uid).internalHostedSizes();
+	return layer.sandboxes.sizes?.().map(size => size.id) ?? [];
+}
+
+function withLarger(memory: OutOfMemory, offered: HostedSize[]): OutOfMemory {
+	return { ...memory, larger: largerHostedSize(memory.size ?? "large", offered) ?? undefined };
 }
 
 /**
@@ -3822,11 +3825,11 @@ async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTurn, san
 		if (peak === null && !end) return;
 		const memory: OutOfMemory = peak ?? { usedMiB: end!.totalMiB, totalMiB: end!.totalMiB, ...(meta.hostedSize && { size: meta.hostedSize }) };
 		const layer = await layerOf(c, meta);
-		const offered = layer.sandboxes.sizes?.().map((size) => size.id);
+		const offered = await resizeOptions(c, meta, layer);
 		const what = end ? ` Its kernel stopped ${killed === 1 ? "a program" : `${killed} programs`} to free memory during this turn: a command that ended with "Killed" or exit code 137 was one of them.` : " It stopped answering commands.";
 		note(c, turn, "warn", `${outOfMemoryWords(memory, offered)}${what}`);
 		console.log(`[wlp] sandbox.out_of_memory session=${meta.sessionId} turn=${turn} size=${meta.hostedSize ?? "small"} used=${memory.usedMiB} total=${memory.totalMiB} killed=${killed}`);
-		if (active.item) active.item.outOfMemory = withLarger(layer, memory);
+		if (active.item) active.item.outOfMemory = withLarger(memory, offered);
 		// Its next connect finds it silent and restarts it: the item has been told of this sandbox's memory already.
 		meta.memoryNoted = sandbox.id;
 	} catch (error) {
@@ -3998,7 +4001,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (sandbox.outOfMemory && active.item && meta.memoryNoted !== sandbox.id) {
 			// It had run out of memory before this turn, and was restarted: in the same size the same commands run it out again,
 			// so a work item asks its person first, where a larger size is offered. A person's own agent goes on: they read the note.
-			active.item.outOfMemory = withLarger(layer, sandbox.outOfMemory);
+			active.item.outOfMemory = withLarger(sandbox.outOfMemory, await resizeOptions(c, meta, layer));
 			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
 		}
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
@@ -6476,11 +6479,15 @@ export const agentSession = actor({
 		 * that was not used for long is, the timeline says who did it and what became of the agent's
 		 * memory, and the next prompt starts a new sandbox. Refused while the session works.
 		 */
-		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean }> => {
+		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
+			// A stored OOM choice can outlive Pro. Check again before touching the old sandbox.
+			if (meta.place.kind === "hosted" && hostedSize && billing() && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
+				return { freed: false, sizeUnavailable: hostedSize };
+			}
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });
 			if (busy(c)) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
 			const id = meta.sandboxId;
