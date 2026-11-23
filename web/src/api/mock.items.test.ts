@@ -399,7 +399,7 @@ describe("the agent's report on an item's page", () => {
 		for (const kind of kinds) expect(html).toContain(`review-block-${kind}`);
 		// A screenshot block is no row of its own: they are gathered under the blocks (Screenshots.test.ts), and without their records nothing is shown.
 		const shot = renderToStaticMarkup(createElement(ReviewBlocks, { blocks: [{ kind: "screenshot", attachment: "a_1" }], records: [], verdict: null, author: "The agent" }));
-		expect(shot).toBe('<dl class="usage-facts item-facts review-blocks"></dl>');
+		expect(shot).toMatch(/^<dl id="[^"]+" class="usage-facts item-facts review-blocks"><\/dl>$/);
 		for (const out of [html, shot]) {
 			expect(out).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em/);
 			expect(out.toLowerCase()).not.toContain("reviewer");
@@ -412,7 +412,7 @@ describe("the agent's report on an item's page", () => {
 	});
 
 	it("keeps hostile agent text as typed: no link, image, markup or heading, and a long fence cut at 60 lines", async () => {
-		const { html } = await rendered("Cache the station list");
+		const { view, html } = await rendered("Cache the station list");
 		expect(html).toContain("[link](https://e.example)");
 		expect(html).toContain("![](https://e.example/a.png)");
 		expect(html).toContain("@octocat");
@@ -424,12 +424,18 @@ describe("the agent's report on an item's page", () => {
 		expect(html).toContain("src/&lt;b&gt;stations&lt;/b&gt;.ts:3");
 		expect(html).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em|<b>/);
 		expect(html).not.toMatch(/<[^>]*\shref=/);
-		// The 40-line fence whole; the 70-line one shows 60 lines, then "…".
-		const fences = [...html.matchAll(/<pre[^>]*><code>([\s\S]*?)<\/code><\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
-		expect(fences.map((lines) => lines.length)).toEqual([40, 61]);
-		expect(fences[1]?.at(-2)).toContain("line 60");
-		expect(fences[1]?.at(-1)).toBe("…");
-		expect(html).not.toContain("line 61");
+		// Each fence shows its first 12 lines, then "Show N more lines": the 40-line one whole behind it, the 70-line one cut at 60 lines and "…".
+		const fences = [...html.matchAll(/<pre[^>]*class="output-text"[^>]*>([\s\S]*?)<\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
+		expect(fences.map((lines) => lines.length)).toEqual([12, 12]);
+		expect(html).toContain("Show 28 more lines");
+		expect(html).toContain("Show 49 more lines");
+		const text = (view.report?.blocks ?? []).map((block) => ("text" in block ? block.text : "")).join("\n\n");
+		const plain = renderToStaticMarkup(createElement(ReviewText, { text, plain: true }));
+		const whole = [...plain.matchAll(/<pre[^>]*><code>([\s\S]*?)<\/code><\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
+		expect(whole.map((lines) => lines.length)).toEqual([40, 61]);
+		expect(whole[1]?.at(-2)).toContain("line 60");
+		expect(whole[1]?.at(-1)).toBe("…");
+		expect(plain).not.toContain("line 61");
 	});
 
 	it("shows the platform's record beside the agent's claim, and marks the claims it does not bear out", async () => {
@@ -465,8 +471,11 @@ describe("the agent's report on an item's page", () => {
 			{ kind: "pre", lines: ["x()"], cut: 0 },
 			{ kind: "p", text: "# not a heading" },
 		]);
-		const html = renderToStaticMarkup(createElement(ReviewText, { text: "Use `a<b>` here; *not* [this](https://e.example)." }));
-		expect(html).toBe('<div class="review-text"><p>Use <code>a&lt;b&gt;</code> here; *not* [this](https://e.example).</p></div>');
+		const text = "Use `a<b>` here; *not* [this](https://e.example).";
+		expect(renderToStaticMarkup(createElement(ReviewText, { text, plain: true }))).toBe('<div class="review-text"><p>Use <code>a&lt;b&gt;</code> here; *not* [this](https://e.example).</p></div>');
+		// Unfolded only where asked: a paragraph is otherwise clamped to six lines.
+		const folded = renderToStaticMarkup(createElement(ReviewText, { text }));
+		expect(folded).toMatch(/^<div class="review-text"><div class="long-text"><p id="[^"]+" class="long-text-body" data-clamped="true" style="--lines:6">Use <code>a&lt;b&gt;<\/code> here; \*not\* \[this\]\(https:\/\/e\.example\)\.<\/p><\/div><\/div>$/);
 	});
 
 	it("seeds a report of an earlier run, and items in review without one", async () => {

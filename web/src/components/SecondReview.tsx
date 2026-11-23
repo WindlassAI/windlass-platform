@@ -14,9 +14,8 @@
 import type { ItemAttachment, ItemReview, ItemSummary, ItemView, ReviewBlock, ReviewLocation, ReviewRecommendation, Verdict } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { linkProps } from "../lib/router";
-import { plural } from "../lib/format";
-import { ChevronIcon } from "./Icons";
-import { Block, blobLink, ReviewText, type LinkTo } from "./ReviewBlocks";
+import { FOLD_WORDS, FoldToggle } from "./Fold";
+import { BlockRows, blobLink, ReviewText, type LinkTo } from "./ReviewBlocks";
 import { Screenshots, type ScreenshotLinks } from "./Screenshots";
 
 export type ReviewState = NonNullable<ItemSummary["review"]>["state"];
@@ -170,19 +169,11 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 				</div>
 			) : null}
 			{lead.length > 0 ? (
-				<dl className="usage-facts item-facts review-blocks">
-					{lead.map((block, index) => (
-						<Block key={index} block={block} records={review.records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
-					))}
-				</dl>
+				<BlockRows blocks={lead} records={review.records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
 			) : null}
 			{shown[0] ? <Screenshots by="reviewer" head={shown[0].head} shots={shown} links={links} /> : null}
 			{rest.length > 0 ? (
-				<dl className="usage-facts item-facts review-blocks">
-					{rest.map((block, index) => (
-						<Block key={index} block={block} records={review.records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
-					))}
-				</dl>
+				<BlockRows blocks={rest} records={review.records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
 			) : null}
 		</article>
 	);
@@ -242,10 +233,7 @@ export function SecondReview({ view, links, when }: { view: ItemView; links: Scr
 			{before.length > 0 ? (
 				<>
 					<p className="agents-fold items-fold">
-						<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={folded} onClick={() => setOpen((value) => !value)}>
-							<ChevronIcon size={11} className="machine-chevron" />
-							{open ? "Hide the earlier reviews" : `Show ${plural(before.length, "earlier review")}`}
-						</button>
+						<FoldToggle open={open} controls={folded} label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")} onToggle={() => setOpen((value) => !value)} />
 					</p>
 					<div id={folded} hidden={!open}>
 						{before.map((one) => (

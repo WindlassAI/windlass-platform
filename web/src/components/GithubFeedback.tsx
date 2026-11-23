@@ -10,7 +10,8 @@
 import type { FeedbackBatch, FeedbackEntry, ItemView } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { plural } from "../lib/format";
-import { ChevronIcon, ExternalIcon } from "./Icons";
+import { FOLD_WORDS, FoldToggle, LongText } from "./Fold";
+import { ExternalIcon } from "./Icons";
 import { ReviewText } from "./ReviewBlocks";
 
 /** The batch's state as one word: the reason after it says the rest. */
@@ -24,24 +25,15 @@ const OPEN = new Set<FeedbackBatch["state"]>(["question", "pending", "held"]);
 /** How many settled batches show before the fold. */
 const SHOWN = 2;
 
-/** A body longer than this shows its start, with a button for the rest. */
-const LONG = 700;
-
 const githubUrl = (url: string) => (/^https:\/\/[^\s/]+\//.test(url) ? url : null);
 
+/** A body, clamped to six lines as a whole, with "Show all" when it is cut. */
 function Body({ text }: { text: string }) {
-	const [open, setOpen] = useState(false);
 	if (!text.trim()) return <p className="gh-empty">No text.</p>;
-	const long = text.length > LONG;
 	return (
-		<>
-			<ReviewText text={long && !open ? text.slice(0, LONG - 100).trimEnd() + "…" : text} />
-			{long ? (
-				<button type="button" className="link gh-more" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-					{open ? "Show less" : "Show all of it"}
-				</button>
-			) : null}
-		</>
+		<LongText lines={6} as="div">
+			<ReviewText text={text} plain />
+		</LongText>
 	);
 }
 
@@ -147,10 +139,7 @@ export function GithubFeedback({ view, when }: { view: ItemView; when(at: number
 			{rest.length > 0 ? (
 				<>
 					<p className="agents-fold items-fold">
-						<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={folded} onClick={() => setOpen((value) => !value)}>
-							<ChevronIcon size={11} className="machine-chevron" />
-							{open ? "Hide the earlier batches" : `Show ${plural(rest.length, "earlier batch", "earlier batches")}`}
-						</button>
+						<FoldToggle open={open} controls={folded} label={FOLD_WORDS.more(rest.length, rest.length === 1 ? "earlier batch" : "earlier batches")} onToggle={() => setOpen((value) => !value)} />
 					</p>
 					<ol className="gh-batches" id={folded} hidden={!open}>
 						{rest.map((batch) => (
