@@ -648,6 +648,9 @@
 	gap: 6px;
 	margin: 2px 18px 4px;
 }
+.start-criteria-inline .item-criteria {
+	min-height: 72px;
+}
 .start-criteria-done {
 	justify-self: end;
 }

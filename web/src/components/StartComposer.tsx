@@ -987,7 +987,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const criteriaField = (
 		<div className="start-criteria">
 			<label className="label" htmlFor={ids.criteria}>
-				Acceptance criteria<span className="label-optional">optional</span>
+				Done when<span className="label-optional">optional</span>
 			</label>
 			<textarea id={ids.criteria} className={`input textarea item-criteria${criteriaWrong ? " input-invalid" : ""}`} value={criteria} onChange={(event) => setCriteria(event.target.value)} readOnly={busy !== null} aria-describedby={ids.criteriaNote} aria-invalid={criteriaWrong !== null || undefined} data-autofocus />
 			<p className={`field-note${criteriaWrong ? " tone-bad" : ""}`} id={ids.criteriaNote}>
