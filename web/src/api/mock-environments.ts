@@ -28,7 +28,8 @@ function seed(repositoryId: GithubId, now: number): RepositoryEnvironments {
 	return {
 		available: true, unavailableReason: null, schedule: 24, scheduleChosen: false,
 		environments: [
-			{ place: "hosted", placeName: "This platform", state: "ready", ready: build(now - 9 * HOUR), attempt: null, note: null, nextAt: now + 14 * HOUR },
+			// Main is red: "lint" fails on its code, which does not keep the environment from being promoted.
+			{ place: "hosted", placeName: "This platform", state: "ready", ready: build(now - 9 * HOUR, { checks: [passed("test", 41_000), passed("types", 63_000), { name: "lint", status: "failed", exitCode: 1, durationMs: 8_000, environment: null }], codeFailures: ["lint"] }), attempt: null, note: null, nextAt: now + 14 * HOUR },
 			{ place: "m_nas", placeName: "‘nas’", state: "failed", ready: null, attempt: failed, note: null, nextAt: now + 14 * HOUR },
 		],
 		places: [{ place: "m_build", placeName: "‘build-box’" }],

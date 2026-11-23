@@ -2171,7 +2171,7 @@ async function buildEnvironment(c: Ctx, meta: SessionMeta, turn: number, sandbox
 	const ran = await new PlatformChecks(sandbox, checks, () => undefined, { agent: "the build", redactor: secrets?.redactor, signal }).runAll();
 	const judged = judgeChecks(ran);
 	for (const r of judged.checks) note(c, turn, r.status === "passed" ? "info" : "warn", `${r.name}: ${r.status.replace("_", " ")}${r.environment ? ` (the sandbox could not run it: ${r.environment.replace("_", " ")})` : ""}.`);
-	const done = { ...base, checks: judged.checks };
+	const done = { ...base, checks: judged.checks, ...(judged.codeFailures.length && { codeFailures: judged.codeFailures }) };
 	if (signal.aborted) return { ...done, finishedAt: Date.now(), failure: { kind: "setup", check: null, line: "The build was stopped.", excerpt: "" } };
 	if (judged.failure) return { ...done, finishedAt: Date.now(), failure: judged.failure };
 	if (clean) await sandbox.run("git reset -q --hard HEAD && git clean -fdq", { cwd: sandbox.cwd, timeoutMs: 120_000, signal }).catch(() => undefined);
@@ -2195,7 +2195,7 @@ async function buildEnvironment(c: Ctx, meta: SessionMeta, turn: number, sandbox
 		inputs = digest([revision.dependencies, setup.command]);
 	}
 	const began = Date.now();
-	note(c, turn, "info", "Every check passed. Saving the prepared sandbox.");
+	note(c, turn, "info", judged.codeFailures.length ? `The sandbox ran every check; ${judged.codeFailures.join(", ")} failed on the base commit's code. Saving the prepared sandbox.` : "Every check passed. Saving the prepared sandbox.");
 	const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: setup.original, created: began }).catch(() => false);
 	if (!saved) return saveFailed("The prepared sandbox could not be saved here: the place's storage limits, or its free disk, left no room.");
 	await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt, meta.place.kind === "hosted" ? "hosted" : meta.place.machineId).catch(() => undefined);

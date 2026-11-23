@@ -57,7 +57,10 @@ expect("checks are classified: the pnpm mismatch is the environment's, the test 
 	judged.checks[1].environment === "package_manager" && judged.checks[2].environment === null, judged.checks);
 expect("the first check that did not pass is the failure, with its line and the end of its output",
 	judged.failure?.kind === "package_manager" && judged.failure.check === "types" && judged.failure.line.includes("ERR_PNPM_BAD_PM_VERSION") && judged.failure.excerpt.includes("pnpm"), judged.failure);
-expect("a code failure is called the code's", judgeChecks([{ name: "test", status: "failed", exitCode: 1, durationMs: 1, output: "boom", startError: "" }]).failure?.kind === "code");
+expect("a check that failed on the base commit's code is listed apart", judged.codeFailures.length === 1 && judged.codeFailures[0] === "test");
+const red = judgeChecks([{ name: "test", status: "failed", exitCode: 1, durationMs: 1, output: "boom", startError: "" }, { name: "slow", status: "timed_out", exitCode: null, durationMs: 1, output: "", startError: "" }]);
+expect("failures of the code alone (main is red) do not keep it from being promoted", red.failure === null && red.codeFailures.join() === "test,slow", red);
+expect("a check that could not start is the sandbox's", judgeChecks([{ name: "test", status: "could_not_start", exitCode: null, durationMs: 0, output: "", startError: "no sandbox" }]).failure?.kind === "setup");
 expect("all passing is no failure", judgeChecks([{ name: "test", status: "passed", exitCode: 0, durationMs: 1, output: "", startError: "" }]).failure === null);
 
 // Debounce: 10 minutes after the last push, never later than 60 after the first.
@@ -84,13 +87,14 @@ expect("off schedules nothing", nextScheduled(0, 0, "x", 2000) === null);
 // Places: where the repository's work ran lately, allowed, at most three.
 const now = 100 * 86_400_000;
 const places = environmentPlaces([
-	{ place: HOSTED, name: "here", snapshots: true, online: true, featuresNever: false, lastUsed: now - 1000 },
-	{ place: "m1", name: "m1", snapshots: true, online: true, featuresNever: true, lastUsed: now - 10 },
-	{ place: "m2", name: "m2", snapshots: true, online: false, featuresNever: false, lastUsed: now - 20 },
-	{ place: "m3", name: "m3", snapshots: true, online: true, featuresNever: false, lastUsed: now - 30 * 86_400_000 },
-	{ place: "m4", name: "m4", snapshots: false, online: true, featuresNever: false, lastUsed: now - 5 },
+	{ place: HOSTED, name: "here", snapshots: true, online: true, featuresLimited: false, lastUsed: now - 1000 },
+	{ place: "m1", name: "m1", snapshots: true, online: true, featuresLimited: true, lastUsed: now - 10 },
+	{ place: "m2", name: "m2", snapshots: true, online: false, featuresLimited: false, lastUsed: now - 20 },
+	{ place: "m3", name: "m3", snapshots: true, online: true, featuresLimited: false, lastUsed: now - 30 * 86_400_000 },
+	{ place: "m4", name: "m4", snapshots: false, online: true, featuresLimited: false, lastUsed: now - 5 },
+	{ place: "m5", name: "m5 (When named)", snapshots: true, online: true, featuresLimited: true, lastUsed: now - 6 },
 ], now);
-expect("only places used lately, that keep snapshots and are not Never", JSON.stringify(places.map(p => p.place)) === JSON.stringify(["m2", HOSTED]), places.map(p => p.place));
+expect("only places used lately, that keep snapshots and that features may use freely (not When named or Never)", JSON.stringify(places.map(p => p.place)) === JSON.stringify(["m2", HOSTED]), places.map(p => p.place));
 
 // One build at a time; Rebuild before other asked-for builds, those before the schedule.
 const running = row({ place: "m1", session: "s_1", attempt: build({ finishedAt: null, startedAt: now - 1000 }) });
@@ -190,6 +194,22 @@ async function run(): Promise<void> {
 		const changed = (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === HOSTED)!;
 		expect("and builds again after the debounce", changed.dueTrigger === "change" && changed.dueAt === s.clock.now + CHANGE_DEBOUNCE_MS);
 		expect("the view says why it is stale", (await environmentsView(s.host, PROJECT)).environments.find(e => e.place === HOSTED)?.note?.includes("setup command") === true);
+	}
+
+	// A red main: promoted, with the checks that failed on its code.
+	{
+		const s = stand();
+		await rebuild(s.host, PROJECT, HOSTED);
+		await buildResult(s.host, "s_env_1", { ...passed(), codeFailures: ["test"] });
+		const view = (await environmentsView(s.host, PROJECT)).environments.find(e => e.place === HOSTED)!;
+		expect("checks failing on main's code still promote it, and the record names them", view.state === "ready" && view.ready?.codeFailures?.[0] === "test" && (await sessionEnvironment(s.host, PROJECT, HOSTED, "npm ci", CHECKS))?.usable === true, view);
+	}
+	{
+		const s = stand();
+		s.machines = [{ ...s.machines[0], orchestrator: "named" } as unknown as MachineSummary];
+		let refused = "";
+		await rebuild(s.host, PROJECT, "m_box").catch((e: Error) => { refused = e.message; });
+		expect("a machine on When named gets no environment", refused !== "" && !(await environmentsView(s.host, PROJECT)).places.some(p => p.place === "m_box"));
 	}
 
 	// A missed image (the place's image changed, or the store evicted it) makes it stale and builds again.

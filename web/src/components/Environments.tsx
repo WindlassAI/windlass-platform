@@ -56,7 +56,10 @@ function Row({ env, now, busy, onRebuild }: { env: RepositoryEnvironment; now: n
 			<div className="env-head">
 				<span className={`ui-dot ui-dot-${DOT[env.state]}`} aria-hidden="true" />
 				<span className="env-place">{env.placeName}</span>
-				<span className={`env-state env-state-${env.state}`}>{STATE_WORDS[env.state]}</span>
+				<span className={`env-state env-state-${env.state}`}>
+					{STATE_WORDS[env.state]}
+					{env.state === "ready" && ready?.codeFailures?.length ? <span className="env-red"> · main's checks fail: {ready.codeFailures.join(", ")}</span> : null}
+				</span>
 				<Button size="sm" className="env-rebuild" disabled={busy || env.state === "building"} onClick={onRebuild}>
 					Rebuild
 				</Button>

@@ -54,8 +54,8 @@ export async function placeFacts(host: EnvironmentHost, project: string): Promis
 	}
 	const machines = await host.machines();
 	return [
-		{ place: HOSTED, name: "This platform", snapshots: host.snapshots.hosted, online: true, featuresNever: false, lastUsed: used.get(HOSTED) ?? 0 },
-		...machines.map(m => ({ place: m.machineId, name: `‘${m.name}’`, snapshots: host.snapshots.machines, online: m.status === "online", featuresNever: m.orchestrator === "never", lastUsed: used.get(m.machineId) ?? 0 })),
+		{ place: HOSTED, name: "This platform", snapshots: host.snapshots.hosted, online: true, featuresLimited: false, lastUsed: used.get(HOSTED) ?? 0 },
+		...machines.map(m => ({ place: m.machineId, name: `‘${m.name}’`, snapshots: host.snapshots.machines, online: m.status === "online", featuresLimited: (m.orchestrator ?? "yes") !== "yes", lastUsed: used.get(m.machineId) ?? 0 })),
 	];
 }
 
@@ -219,7 +219,7 @@ export async function rebuild(host: EnvironmentHost, project: string, place?: En
 	const kept = await readEnvironments(host.db, project);
 	const facts = await placeFacts(host, project);
 	const places = place !== undefined ? [place] : [...new Set([...kept.map(r => r.place), ...environmentPlaces(facts, host.now()).map(p => p.place)])];
-	if (place !== undefined && !facts.some(p => p.place === place && p.snapshots && !p.featuresNever)) throw new Error("An environment cannot be built there.");
+	if (place !== undefined && !facts.some(p => p.place === place && p.snapshots && !p.featuresLimited)) throw new Error("An environment cannot be built there.");
 	if (!places.length) throw new Error("Run an agent on this repository first, so the platform knows where to build its environment.");
 	for (const p of places) {
 		const row = kept.find(r => r.place === p) ?? emptyRow(project, p);
@@ -269,7 +269,7 @@ export async function environmentsView(host: EnvironmentHost, project: string): 
 		const next = nextScheduled(hours, r.attempt?.startedAt ?? 0, host.uid + ":" + project, host.now());
 		return environmentView(r, inputs, name(r.place), none ? null : next);
 	});
-	const places = facts.filter(f => f.snapshots && !f.featuresNever && !environments.some(e => e.place === f.place)).map(f => ({ place: f.place, placeName: f.name }));
+	const places = facts.filter(f => f.snapshots && !f.featuresLimited && !environments.some(e => e.place === f.place)).map(f => ({ place: f.place, placeName: f.name }));
 	return { available: none === null, unavailableReason: none, schedule: hours, scheduleChosen: chosen, environments, places: none ? [] : places };
 }
 

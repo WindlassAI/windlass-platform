@@ -139,8 +139,8 @@ export interface PlaceFacts {
 	snapshots: boolean;
 	/** A machine: its runner is connected on the signed protocol. */
 	online: boolean;
-	/** A machine whose owner chose Never under "Let features use it". */
-	featuresNever: boolean;
+	/** A machine whose owner chose When named or Never under "Let features use it": only machines features may use freely get environments. */
+	featuresLimited: boolean;
 	/** When the repository's sessions or items last ran here; 0 for never. */
 	lastUsed: number;
 }
@@ -148,7 +148,7 @@ export interface PlaceFacts {
 /** The places a repository gets environments: where its work ran lately, that allow them, most recent first. */
 export function environmentPlaces(places: readonly PlaceFacts[], now: number, existing: readonly EnvironmentPlace[] = []): PlaceFacts[] {
 	return places
-		.filter(p => p.snapshots && !p.featuresNever && (now - p.lastUsed < RECENT_USE_MS || existing.includes(p.place)))
+		.filter(p => p.snapshots && !p.featuresLimited && (now - p.lastUsed < RECENT_USE_MS || existing.includes(p.place)))
 		.sort((a, b) => b.lastUsed - a.lastUsed || (a.place < b.place ? -1 : 1))
 		.slice(0, MAX_PLACES);
 }
@@ -156,7 +156,7 @@ export function environmentPlaces(places: readonly PlaceFacts[], now: number, ex
 /** Why a build may not start at a place now (a limit, the machine away); null when it may. */
 export function placeRefusal(place: PlaceFacts, hosted: { userEnvironments: number; userMax: number | null }, project: string, hostedProjects: readonly string[]): string | null {
 	if (!place.snapshots) return "This deployment keeps no prepared sandboxes here.";
-	if (place.featuresNever) return `The owner of ${place.name} chose Never under "Let features use it".`;
+	if (place.featuresLimited) return `The owner of ${place.name} chose When named or Never under "Let features use it".`;
 	if (place.place !== HOSTED && !place.online) return `Waiting for ${place.name} to connect.`;
 	// E2B keeps a few snapshots per user and evicts the oldest past them: one more repository would evict another's.
 	if (place.place === HOSTED && hosted.userMax !== null && !hostedProjects.includes(project) && hosted.userEnvironments >= hosted.userMax)
@@ -191,21 +191,26 @@ export function nextWake(rows: readonly EnvironmentRow[], scheduledAt: readonly 
 export interface RanCheck { name: string; status: CheckStatus; exitCode: number | null; durationMs: number; output: string; startError: string }
 
 /**
- * What a build's checks say: each with its classification, and the first that did not pass as the failure, an
- * environment problem when check-environment.ts says so, else the base commit's code. Null failure: all passed.
+ * What a build's checks say: each with its classification. Only the sandbox's own problems keep it from being
+ * promoted: a check check-environment.ts says the sandbox could not run, or one that could not start. The first such
+ * is the failure. A check that ran and failed on the base commit's code (main is red) is in `codeFailures`: the
+ * environment is still promoted, and says so. Null failure: promotable.
  */
-export function judgeChecks(ran: readonly RanCheck[]): { checks: EnvironmentCheckResult[]; failure: EnvironmentBuild["failure"] } {
+export function judgeChecks(ran: readonly RanCheck[]): { checks: EnvironmentCheckResult[]; failure: EnvironmentBuild["failure"]; codeFailures: string[] } {
 	let failure: EnvironmentBuild["failure"] = null;
+	const codeFailures: string[] = [];
 	const checks = ran.map(r => {
 		const env = r.status === "passed" ? null : environmentFailure({ status: r.status, exitCode: r.exitCode, output: r.output, ...(r.startError ? { startError: r.startError } : {}) });
-		if (!failure && r.status !== "passed") {
-			const kind: EnvironmentFailureKind = env?.kind ?? (r.startError ? "setup" : "code");
-			const line = env?.line ?? (r.startError || (r.status === "timed_out" ? "It ran out of time." : r.exitCode === null ? "" : `It exited with ${r.exitCode}.`));
+		const sandbox = env !== null || r.startError !== "" || r.status === "could_not_start" || r.status === "interrupted";
+		if (r.status !== "passed" && !sandbox) codeFailures.push(r.name);
+		if (!failure && r.status !== "passed" && sandbox) {
+			const kind: EnvironmentFailureKind = env?.kind ?? "setup";
+			const line = env?.line ?? (r.startError || "It could not be run.");
 			failure = { kind, check: r.name, line, excerpt: outputExcerpt(r.output) };
 		}
 		return { name: r.name, status: r.status, exitCode: r.exitCode, durationMs: r.durationMs, environment: env?.kind ?? null };
 	});
-	return { checks, failure };
+	return { checks, failure, codeFailures };
 }
 
 /** The record after a build ended: promoted when it passed, else only the attempt changes. */

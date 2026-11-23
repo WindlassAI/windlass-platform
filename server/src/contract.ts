@@ -717,6 +717,11 @@ export interface EnvironmentBuild {
 	failure: { kind: EnvironmentFailureKind; check: string | null; line: string; excerpt: string } | null;
 	/** A prepared image was saved. A passing setup under the minimum time keeps none: sessions then start cold, quickly. */
 	snapshot: boolean;
+	/**
+	 * Checks that ran and failed on the base commit's code (main is red), not for the sandbox: they do not keep the
+	 * environment from being promoted, and are shown with it. Absent or empty when none did.
+	 */
+	codeFailures?: string[];
 }
 
 /** One place's environment of a repository. */

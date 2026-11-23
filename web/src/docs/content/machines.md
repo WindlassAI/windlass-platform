@@ -261,7 +261,7 @@ Under **Details**, **Subtasks of features** says whether a feature's subtasks ma
 - **When named**: only when a plan names this machine for the subtask.
 - **Never**: features never place subtasks here.
 
-A machine on **Never** also builds no [prepared environment](/docs/settings#environment) of a repository.
+A machine on **When named** or **Never** also builds no [prepared environment](/docs/settings#environment) of a repository.
 
 The choice is saved at once. A machine that is not on **Any feature** says so on its card, for example "features: when named". A subtask that only inherits the feature's place counts as not named, so a feature filed on a **When named** machine must name it in each subtask. A plan that needs a **Never** machine cannot be approved: the plan says why under the subtask. See [Placement](/docs/factory#placement).
 

@@ -584,14 +584,26 @@ time; the rest wait in order.
 **Places.** A repository gets an environment where its own sessions and work items ran in the last 14 days, at
 most three places, and only where prepared sandboxes are on: hosted when the deployment has `WLP_SNAPSHOTS` or
 `WLP_E2B_SNAPSHOTS` on; a machine when its runner is connected on the signed protocol, offers the profile, and
-its owner has not chosen **Never** under "Let features use it". A machine that is away is skipped until it is
+its owner left "Let features use it" on **Any feature** (not **When named** or **Never**). A machine that is away is skipped until it is
 back. Rebuild can name any such place. A repository with secrets never uses a prepared sandbox (unchanged), so
 it gets no environment.
 
-**A failed validation** is an environment problem when the classification says so ("the sandbox could not run
-`typecheck`: the image's pnpm is not the one the repository pins"); otherwise the check failed on the base
-commit's code. Both keep the environment from being promoted. The Settings section shows the failing check, its
-classification and the end of its output.
+**A failed validation** is one the sandbox caused: setup failed, a check could not start, or check-environment.ts
+classifies the failure ("the sandbox could not run `typecheck`: the image's pnpm is not the one the repository
+pins"). Only that keeps the environment from being promoted, and the Settings section shows the failing check, its
+classification and the end of its output. A check that ran and failed on the base commit's code (main is red) says
+nothing about the sandbox: the environment is promoted anyway, and its record lists those checks
+(`codeFailures`, "Ready · main's checks fail: lint").
+
+**Snapshot keys.** The image is the snapshot store's, under its existing key (deployment, place, user, repository,
+settings generation, dependency inputs, base image, profile, screenshots variant, network). A build asks for its
+sandbox like any session (`sessionSandboxInput`), so a new part of the key, such as a sandbox size, reaches builds
+by adding it to that input and to the record's sandbox fields beside `profile`; the record itself is keyed by repository and
+place only.
+
+**Follow-up, not promised.** Sessions of Claude Code, OpenCode and Codex start cold: reusing a snapshot is
+Windlass-only (`canReuseSnapshot`). The builds themselves run no agent, so extending reuse to the other agents is a
+change to that rule, not to builds.
 
 **What a runner needs.** Builds use only what runners already do. A runner that names the `environment-image`
 capability also says in a connect which image the sandbox was made from (`image`), which the record then shows

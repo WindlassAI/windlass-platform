@@ -789,3 +789,6 @@ a.agent-group-name:hover .agent-group-owner {
 	margin-top: 6px;
 	max-height: 240px;
 }
+.env-red {
+	color: var(--warn-text, var(--warn));
+}

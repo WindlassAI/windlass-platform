@@ -4564,14 +4564,15 @@ async function preparedSessions(server: Server) {
 			assert(!unbuilt, "An ordinary session saved a prepared image");
 			// The build uses the repository's default sandbox; a check validates what setup made.
 			await user.saveRepositoryDefaults({ repositoryId: repo.id, profile: "docker-hardened" });
-			// The check fails once main's base.txt says "broken": the base commit's code, not the sandbox.
-			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "built", command: "test -f node_modules/built-at && ! grep -q broken base.txt" }] });
+			// Once main's base.txt says "broken", the check calls a tool the sandbox does not have (exit 127): the
+			// sandbox's problem, which keeps a build from being promoted. A failure of the code alone would not.
+			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "built", command: "test -f node_modules/built-at && if grep -q broken base.txt; then wlp-no-such-tool; fi" }] });
 			const ready = await build();
 			assert(ready.state === "ready" && ready.ready?.snapshot === true && ready.ready.commit === base && ready.ready.checks.every(c => c.status === "passed"), "The environment was not promoted: " + plain(ready));
 			pass("A build runs setup and the saved checks, and is promoted when they pass");
 			github.commit(repo, "main", { "base.txt": "broken" }, "Break the check");
 			const failed = await build();
-			assert(failed.state === "failed" && failed.attempt?.failure?.kind === "code" && failed.attempt.failure.check === "built" && failed.ready?.commit === base && failed.ready.snapshot, "A failed build was not recorded as one, or replaced the ready one: " + plain(failed));
+			assert(failed.state === "failed" && failed.attempt?.failure?.kind === "not_found" && failed.attempt.failure.check === "built" && failed.ready?.commit === base && failed.ready.snapshot, "A failed build was not recorded as one, or replaced the ready one: " + plain(failed));
 			pass("A failed build is reported with its check and keeps the last ready image");
 			github.commit(repo,"main",{"base.txt":"next", "quick":""},"Source-only change");
 			github.commit(repo, "feature", {"feature.txt": "from feature"}, "Feature source", "main");
