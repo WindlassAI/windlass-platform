@@ -313,6 +313,45 @@ try {
 	};
 	for (const [name, attempt] of Object.entries(attempts))
 		await checkControl(name, () => assert.rejects(attempt, error => error instanceof Refusal && error.message.includes("--allow-profile " + profile)));
+	await checkControl("spares match the complete create, expire, yield to turns and are consumed exactly once", async () => {
+		const { WarmSpares, validSpec, SPARE_TTL } = await import("../runner/src/warm-spares.js");
+		const base = { context: "pairing, image and egress", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		assert.ok(validSpec(base));
+		for (const args of [{ harness: "claude", screenshots: true }, { profile: "docker-windlass-sandbox" }, { spare: { url: "https://secret@example.org/r" } },
+			{ spare: { ...base.args.spare, prompt: "anything" } }]) assert.equal(validSpec({ ...base, args: { ...base.args, ...args } }), false);
+		let now = 0;
+		const removed = new Set<string>();
+		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
+		const fill = async () => { pool.fill(base, 1); await until(() => pool.ready === 1); return pool.raws[0]!; };
+		for (const other of [{ ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
+			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
+			const raw = await fill();
+			assert.equal(await pool.take(other, async () => true), undefined);
+			assert.ok(removed.has(raw));
+		}
+		const old = await fill();
+		now += SPARE_TTL;
+		assert.equal(await pool.take(base, async () => true), undefined);
+		assert.ok(removed.has(old));
+		const dirty = await fill();
+		assert.equal(await pool.take(base, async () => false), undefined);
+		assert.ok(removed.has(dirty));
+		const hit = await fill();
+		assert.equal(await pool.take(base, async () => true), hit);
+		assert.equal(await pool.take(base, async () => true), undefined);
+		assert.ok(!removed.has(hit));
+		const waiting = await fill();
+		pool.trim(0);
+		assert.ok(removed.has(waiting));
+		let cancelled = false;
+		const building = new WarmSpares(async (_raw, _spec, signal) => new Promise(resolve =>
+			signal.addEventListener("abort", () => { cancelled = true; resolve(); }, { once: true })), async () => {});
+		building.fill(base, 1);
+		building.trim(0);
+		assert.ok(cancelled);
+		assert.equal(building.ready, 0);
+	});
+
 	await checkControl("an idle stop reports the paused sandbox immediately", async () => {
 		const machineId = "m_0123456789abcdef";
 		Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
@@ -606,6 +645,40 @@ try {
 			});
 		}
 	});
+	await checkControl("the executor admits on free disk, claims once, binds the new session and falls back cold under pressure", async () => {
+		const owner = new LocalExecutor({ uid: "u_fixture", machineId: "m_0123456789abcdef" }, { maxTurns: 1 });
+		const built: string[] = [], removed: string[] = [];
+		const recipe = { url: "https://example.org/fixture.git" };
+		let cold = 0, disk = 100e9;
+		Object.assign(owner, { warmSpares: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true }, disk: async () => disk,
+			buildSpare: async (raw: string) => { built.push(raw); }, dropSpare: async (raw: string) => { removed.push(raw); } });
+		owner.network.prepare = owner.network.attach = async () => {};
+		owner.provider.create = async () => (++cold).toString(16).padStart(12, "0");
+		owner.provider.connect = async () => ({ uid: "u_fixture", profile: "docker-hardened", ownData: true, cwd: "/workspace",
+			run: async () => ({ exitCode: 0 }) }) as unknown as DockerSandboxHandle;
+		owner.modelRelay.endSandbox = owner.provider.destroy = async () => {};
+		const first = await owner.create("s_first", "docker-hardened", false, undefined, 1, undefined, undefined, recipe);
+		owner.boxes.get(first)!.state = "paused";
+		await owner.lifecycle("destroy", first, "s_first");
+		await owner.maintainSpares();
+		await until(() => owner.report().warmSpares?.ready === 1);
+		assert.equal(owner.report().sandboxes.length, 0);
+		const second = await owner.create("s_second", "docker-hardened", false, undefined, 1, undefined, undefined, recipe);
+		assert.ok(second.endsWith(built[0]!));
+		assert.equal(cold, 1);
+		assert.throws(() => owner.running(second, "s_first"));
+		assert.ok(owner.running(second, "s_second").claim);
+		owner.boxes.get(second)!.state = "paused";
+		await owner.lifecycle("destroy", second, "s_second");
+		await owner.maintainSpares();
+		await until(() => owner.report().warmSpares?.ready === 1);
+		disk = 6e9;
+		const third = await owner.create("s_third", "docker-hardened", false, undefined, 1, undefined, undefined, recipe);
+		assert.equal(cold, 2);
+		assert.equal(owner.boxes.get(third)?.claim, undefined);
+		assert.deepEqual(removed, [built[1]]);
+	});
+
 } finally {
 	for (const file of readdirSync(dir)) unlinkSync(join(dir, file));
 	rmdirSync(dir);

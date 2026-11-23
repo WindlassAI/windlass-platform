@@ -88,6 +88,7 @@ export interface ExecResult {
  */
 /** A runner's own measure of making a sandbox, in milliseconds (protocol.ts `connect`). */
 export interface RunnerStartTimes {
+	spare?: true;
 	/** Checking the images, and pulling one when `pulled`. */
 	image: number;
 	pulled?: true;
@@ -148,6 +149,8 @@ export interface SandboxHandle {
 	 * named `start-times` (StartTimes.image, pulled, runnerCreate). Absent elsewhere.
 	 */
 	readonly runnerStart?: RunnerStartTimes;
+	/** Recipe this workspace was prepared for, until the session records its clone. */
+	readonly readyKey?: string;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
@@ -180,6 +183,8 @@ export interface ConnectOptions {
 }
 
 export interface CreateSandboxInput {
+	/** Evaluated only for a machine advertising ready sandboxes. */
+	spareRecipe?: () => Promise<import("../runner/protocol.js").SpareRecipe | undefined>;
 	/** As `ConnectOptions.network`, from the first command in the sandbox. */
 	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */

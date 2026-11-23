@@ -105,10 +105,10 @@ export class EgressNetwork {
 		catch (err) { await checked(["rm", "-fv", id]); throw err; }
 		return id;
 	}
-	async attach(raw: string, container: string) {
+	async attach(raw: string, container: string, relay = true) {
 		const proxyEnabled = this.policy.mode === "restricted";
 		const harness = raw.startsWith("claude-") ? "claude" : raw.startsWith("opencode-") ? "opencode" : raw.startsWith("codex-") ? "codex" : undefined;
-		if (!proxyEnabled && !harness) return;
+		if (!proxyEnabled && !(harness && relay)) return;
 		const source = typeof EGRESS_SOURCE === "string" ? EGRESS_SOURCE : readFileSync(join(import.meta.dirname, "egress-proxy.mjs"), "utf8");
 		const denied = !proxyEnabled ? [] : harness === "codex" ? ["api.openai.com", "auth.openai.com", "chatgpt.com"] : harness === "opencode" ? providerHosts : [];
 		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy, this.domains() ?? null, denied])).digest("hex");
@@ -125,15 +125,15 @@ export class EgressNetwork {
 		// Including StartedAt ties this helper to this incarnation of the network namespace.
 		const started = await checked(["inspect", "-f", `{{.Id}}|{{.State.StartedAt}}|{{with index .Config.Labels "${LABEL}.relay-session"}}{{.}}{{end}}`, container]);
 		const [id, since, nonce] = started.stdout.trim().split("|");
-		if (harness) {
+		if (harness && relay) {
 			if (!/^[0-9a-f]{32}$/.test(nonce)) throw new Refusal("This session needs a new relay endpoint.");
 			const volume = relaySocketVolume(this.machine, harness);
 			if (!await this.machine.ownedVolume(false, volume)) throw new Refusal("The session relay socket volume is missing.");
 			mounts.push(`type=volume,src=${volume},dst=/run/wlp-relay,readonly,volume-nocopy`);
 			probes.push("17892");
 		}
-		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, nonce, brokerId].join("-"), "container:" + container,
-			source, mounts, [this.policy.mode, ...(harness ? [nonce] : []), ...(harness === "codex" ? ["codex"] : [])], probes, brokerId);
+		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, relay ? nonce : "", brokerId].join("-"), "container:" + container,
+			source, mounts, [this.policy.mode, ...(harness && relay ? [nonce] : []), ...(harness === "codex" && relay ? ["codex"] : [])], probes, brokerId);
 	}
 	/** Read in the broker's namespace. Nothing in the agent can issue observation requests. */
 	async blocked(raw: string, turn: number, retained: Args<"blockedNetwork">["retained"]): Promise<Value<"blockedNetwork">> {

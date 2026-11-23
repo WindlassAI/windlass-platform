@@ -84,6 +84,7 @@ export class StartClock {
 		put("waited", this.waited !== null && this.waited >= 1000 ? this.waited : undefined);
 		if (this.runner && this.isNew) {
 			put("image", this.runner.image);
+			if (this.runner.spare) times.spare = true;
 			if (this.runner.pulled) times.pulled = true;
 			put("runnerCreate", this.runner.create);
 		}
@@ -108,5 +109,5 @@ export function keepStartTimes(kept: readonly StartTimes[] | undefined, times: S
 export function startTimesLog(sessionId: string, times: StartTimes): string {
 	const fields: (keyof StartTimes)[] = ["waited", "image", "sandbox", "runnerCreate", "setup", "prepare", "relay", "agent", "session", "firstOutput", "total"];
 	const ms = fields.filter((key) => typeof times[key] === "number").map((key) => `${key}_ms=${times[key]}`);
-	return `[wlp] session.start_times session=${sessionId} turn=${times.turn} harness=${times.harness} place=${times.place} new=${times.newSandbox}${times.pulled ? " pulled=true" : ""} ${ms.join(" ")}`.trimEnd();
+	return `[wlp] session.start_times session=${sessionId} turn=${times.turn} harness=${times.harness} place=${times.place} new=${times.newSandbox}${times.spare ? " spare=true" : ""}${times.pulled ? " pulled=true" : ""} ${ms.join(" ")}`.trimEnd();
 }

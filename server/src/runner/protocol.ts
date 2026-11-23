@@ -70,11 +70,26 @@ const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v
 const destination = nullable(is<string>(v => typeof v === "string" && v.length <= 253 && !v.includes("%") && (!!isIP(v) || v.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))));
 const endpoint = { host: destination, port: nullable(is<number>(v => count(v) && v <= 65535)) };
 const refusalEntry = object({ ...endpoint, reason: oneOf("machine_policy", "private", "provider", "malformed"), firstAt: count, lastAt: count, count: positiveLimit });
+// A spare recipe carries only the repository and its setup. Connected repositories also
+// have an independently observed GitHub head. URLs with embedded credentials are ineligible.
+const spareUrl = is<string>(v => {
+	if (typeof v !== "string" || v.length > 2048) return false;
+	try {
+		const u = new URL(v);
+		return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash
+			&& /^\/[a-zA-Z0-9._~/-]+$/.test(u.pathname) && u.href === v;
+	} catch { return false; }
+});
+export const spareRecipe = object({ url: spareUrl, connected: optional(object({
+	repo: snapshotKey.repo, branch: text(250), commit: is<string>(v => typeof v === "string" && /^[0-9a-f]{40}$/.test(v)),
+	command: is<string>(v => typeof v === "string" && v.length <= 65536), timeoutMs: duration, generation: fingerprint,
+})) });
+export type SpareRecipe = Of<typeof spareRecipe>;
 const operations = {
 	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
 	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
-	create: [object({ profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	create: [object({ spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
 	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
 	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
@@ -85,7 +100,8 @@ const operations = {
 		blockedNetwork: optional(oneOf(true)),
 		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })),
+		readyKey: optional(fingerprint),
+		startTimes: optional(object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count })),
 		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
 		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],

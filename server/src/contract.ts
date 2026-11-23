@@ -371,6 +371,7 @@ export interface StartTimes {
 	sandbox?: number;
 	/** The part of `sandbox` the runner spent creating the container itself. */
 	runnerCreate?: number;
+	spare?: true;
 	/** Cloning, the repository's setup command, a restored memory or prepared image. */
 	setup?: number;
 	/** The platform's own work between the sandbox being ready and the agent's process starting: leftover processes, the token file. */
@@ -1595,6 +1596,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	 * running at once (`--max-running`) and kept at once (`--max-sandboxes`). Absent where none is set, and
 	 * before its runner first reported. The platform's own limits do not apply to a machine.
 	 */
+	readySandboxes?: number;
 	maxRunning?: number;
 	maxSandboxes?: number;
 	/**

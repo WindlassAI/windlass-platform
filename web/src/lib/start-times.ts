@@ -20,7 +20,7 @@ export function startRows(times: StartTimes): StartRow[] {
 	};
 	add(times.waited, "slot wait", "Waiting for a free slot on the machine, before the start.");
 	add(times.image, "image", "The runner checking its images, and pulling one when it says so.", times.pulled ? ", pulled" : "");
-	add(times.sandbox, times.newSandbox ? "new sandbox" : "sandbox", times.newSandbox ? "Making and starting the container." : "Connecting to the sandbox, or resuming it.",
+	add(times.sandbox, times.spare ? "started from a ready sandbox" : times.newSandbox ? "new sandbox" : "sandbox", times.newSandbox ? "Making and starting the container." : "Connecting to the sandbox, or resuming it.",
 		typeof times.runnerCreate === "number" ? ` (${duration(times.runnerCreate)} on the runner)` : "");
 	add(times.setup, "setup", "Cloning, the repository's setup command, or a restored memory.");
 	add(times.prepare, "platform", "Clearing leftovers and handing over the sign-in, before the agent starts.",

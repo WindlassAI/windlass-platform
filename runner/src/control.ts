@@ -154,6 +154,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				if (Date.now() - lastRefresh >= REPORT_MS) { await owner.refresh(); lastRefresh = Date.now(); }
 				if (mayMaintain && idle !== undefined) await owner.idle(idle, id => sessions.get(id)?.channel.connected === true);
 			});
+			if (mayMaintain && owner.warmSpares) await owner.maintainSpares();
 			if (Date.now() - lastSent >= REPORT_MS) owner.publishReport?.();
 			if (mayMaintain) await maintainSnapshots(Date.now() + offset);
 		} catch (error) { audit(null, null, "maintenance", category(error)); }
@@ -280,6 +281,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
 						owner.blockedNetwork = named?.includes("blocked-network" satisfies Capability) === true;
 						owner.memoryEvents = named?.includes("memory-events" satisfies Capability) === true;
+						owner.warmSpares = !!trust && named?.includes("warm-spares" satisfies Capability) === true;
 						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
 						owner.environmentImage = named?.includes("environment-image" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);
@@ -354,7 +356,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
-			finally { attempt.abort(); owner.publishReport = undefined; }
+			finally { attempt.abort(); owner.publishReport = undefined; if (owner.warmSpares) owner.stopSpares(); owner.warmSpares = false; }
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;

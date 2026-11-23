@@ -1,3 +1,5 @@
+import { cloneReadyBase } from "../server/src/github/git.js";
+import { runSetupCommand } from "../server/src/sandbox/setup.js";
 import { MIRROR_ROOT, mirrorOwner } from "../server/src/sandbox/git-mirrors.js";
 import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
@@ -19,7 +21,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { AcpConnection, LineSplitter } from "../server/src/sandbox/acp.js";
 import { DATA_DIR, docker, LABEL_ARG, MACHINE_LABEL, SHOTS_IMAGE } from "../server/src/sandbox/docker.js";
-import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
+import { containerName, DockerSandboxes, DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { COMMON_RUN_FLAGS, commonRunFlags } from "../server/src/sandbox/profiles.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { PAIRING_TTL_MS, REFUSED_RETRY_MS, refuse, type Refusal } from "../server/src/runner/control.js";
@@ -225,7 +227,7 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 	try {
 		await mkdir(state, { mode: 0o700 });
 		if (process.argv.includes("--snapshots-only")) {
-			const service = run(state, undefined, bundle, {}, { flags: ["--slots", "3", "--slot-cpus", "0.5", "--slot-memory", "1g"] });
+			const service = run(state, undefined, bundle, {}, { flags: ["--slots", "3", "--slot-cpus", "0.5", "--slot-memory", "1g", "--keep-free", "0GB"] });
 			try {
 				await until(() => !!srv.state.report?.slots, "Runner did not report");
 				const key = { writer: true, attempt: randomBytes(16).toString("hex"), repo: "123", inputs: "a".repeat(64), generation: "c".repeat(64) };
@@ -289,6 +291,30 @@ AbortSignal.timeout = ms => timeout(ms === ${PAIRING_TTL_MS} ? 6500 : ms);\n`);
 				await a.channel.request("destroy", {id: cold});
 				ok("A runner refuses to save a sandbox after a command received secret environment variables.");
 				ok("An authenticated machine save and private reviewer restore preserve only pre-turn files.");
+				// Same two authenticated session sockets, same repository, no network dependency.
+				const spare = { url: "https://fixture.invalid/owner/repo.git", connected: { repo: key.repo, branch: "main", commit: proof,
+					command: "sleep 4 && touch ready-output", timeoutMs: 30_000, generation: key.generation } };
+				const args = { profile, mirrorRepo: key.repo, spare };
+				const beforeCold = Date.now();
+				const first = await a.channel.request("create", args);
+				assert.equal((await a.channel.request("connect", { id: first }))?.startTimes?.spare, undefined);
+				const coldBox = new DockerSandboxHandle(first.slice(-12), profile, uid);
+				assert.ok(await cloneReadyBase(coldBox, spare.url, "main", proof, mirrorOwner(uid, key.repo), new AbortController().signal));
+				assert.equal((await runSetupCommand(coldBox, { ...spare.connected, cwd: coldBox.cwd })).state, "succeeded");
+				assert.equal((await a.channel.request("run", { id: first, command: "test -e ready-output && touch first-session-only" })).exitCode, 0);
+				const coldMs = Date.now() - beforeCold;
+				await a.channel.request("destroy", { id: first });
+				await until(() => srv.state.report?.warmSpares?.ready === 1, "Runner did not prepare the cloned workspace");
+				const beforeWarm = Date.now();
+				const second = await b.channel.request("create", args);
+				assert.notEqual(second, first);
+				assert.equal((await b.channel.request("connect", { id: second }))?.startTimes?.spare, true);
+				assert.equal((await b.channel.request("run", { id: second, command: "test -e ready-output && test ! -e first-session-only && git rev-parse HEAD" })).stdout.trim(), proof);
+				const warmMs = Date.now() - beforeWarm;
+				await assert.rejects(a.channel.request("run", { id: second, command: "pwd" }));
+				assert.ok(warmMs < coldMs, `cold ${coldMs}ms, ready ${warmMs}ms`);
+				ok(`Ready sandbox reached its first command in ${warmMs}ms vs ${coldMs}ms cold (4s setup fixture).`);
+				await b.channel.request("destroy", { id: second });
 			} finally {
 				await stop(service.child);
 				await new DockerSnapshots(machineId, image).drop(uid);

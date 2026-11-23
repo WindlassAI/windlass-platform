@@ -547,6 +547,7 @@ class RunnerHandle implements TurnSandbox {
 	readonly snapshot?: SnapshotSource;
 	readonly ownData: boolean;
 	readonly runnerStart?: RunnerStartTimes;
+	readonly readyKey?: string;
 	readonly image?: string;
 	readonly memoryEvents?: TurnSandbox["memoryEvents"];
 
@@ -557,6 +558,7 @@ class RunnerHandle implements TurnSandbox {
 		this.snapshot = found.snapshot;
 		this.ownData = found.ownData === true;
 		this.runnerStart = found.startTimes;
+		this.readyKey = found.readyKey;
 		this.image = found.image;
 		this.approval = findProfile(found.profile).approval;
 		markTurnSandbox(this);
@@ -716,13 +718,14 @@ class RunnerSandboxes implements Sandboxes {
 		// Request the screenshots image only when this runner offers it.
 		const agent = input.harness ? machineHarness(input.harness) : null;
 		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.join(" or ")} profile.`);
-		const report = input.profile === "docker-windlass-sandbox" || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
+		const report = input.profile === "docker-windlass-sandbox" || input.spareRecipe || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
 		if ((input.size ?? 1) > 1 && !report?.slots) throw new SandboxUserError("This runner does not support sizing beyond one slot.");
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
-		const args = { profile: input.profile, ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe().catch(() => undefined) : undefined;
+		const args = { profile: input.profile, ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();
 			if (link.channel.authenticated) {

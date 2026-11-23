@@ -28,7 +28,7 @@ export interface SetupChoices {
 }
 
 /** The options setup passes on to `run` without asking about them. */
-export const PASSED_ON = ["slot-cpus", "slot-memory", "sandbox-memory", "max-running", "max-sandboxes", "snapshot-user"] as const;
+export const PASSED_ON = ["spares", "slot-cpus", "slot-memory", "sandbox-memory", "max-running", "max-sandboxes", "snapshot-user"] as const;
 
 const strings = (v: unknown, max: number): v is string[] => Array.isArray(v) && v.length <= max && v.every(s => typeof s === "string" && s.length > 0 && s.length <= 255);
 const size = (v: unknown) => v === undefined || (typeof v === "string" && parseStoreSize(v) !== null);
