@@ -80,11 +80,11 @@
 										},
 										"cpus": {
 											"type": "number",
-											"exclusiveMinimum": 0
+											"description": "More than 0."
 										},
 										"memoryGiB": {
 											"type": "number",
-											"exclusiveMinimum": 0
+											"description": "More than 0."
 										}
 									}
 								},
