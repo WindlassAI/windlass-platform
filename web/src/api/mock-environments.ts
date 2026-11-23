@@ -1,5 +1,5 @@
 /**
- * The mock's prepared environments (server/src/environments.ts): acme/harbor is ready here and failed on the
+ * The mock's prepared environments (server/src/environments.ts): acme/signal-flags is ready here and failed on the
  * machine "nas", where the image's pnpm is not the one the repository pins. Rebuild runs for a few seconds and
  * passes. Kept per repository for as long as the page is open.
  */
@@ -15,7 +15,7 @@ function build(at: number, over: Partial<EnvironmentBuild> = {}): EnvironmentBui
 }
 
 function seed(repositoryId: GithubId, now: number): RepositoryEnvironments {
-	if (String(repositoryId) !== "7101") {
+	if (String(repositoryId) !== "7106") {
 		return { available: true, unavailableReason: null, schedule: 24, scheduleChosen: false, environments: [], places: [{ place: "hosted", placeName: "This platform" }] };
 	}
 	const failed = build(now - 2 * HOUR, {
@@ -37,13 +37,16 @@ function seed(repositoryId: GithubId, now: number): RepositoryEnvironments {
 
 const kept = new Map<string, RepositoryEnvironments>();
 
-export function mockEnvironments(repositoryId: GithubId, now: number): RepositoryEnvironments {
+/** `unavailable`: why the repository can have none (no setup command, saved secrets); null when it can. */
+export function mockEnvironments(repositoryId: GithubId, now: number, unavailable: string | null = null): RepositoryEnvironments {
+	if (unavailable) return { available: false, unavailableReason: unavailable, schedule: 0, scheduleChosen: false, environments: [], places: [] };
 	const key = String(repositoryId);
 	if (!kept.has(key)) kept.set(key, seed(repositoryId, now));
 	return structuredClone(kept.get(key)!);
 }
 
-export function mockSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule, now: number): RepositoryEnvironments {
+export function mockSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule, now: number, unavailable: string | null = null): RepositoryEnvironments {
+	if (unavailable) return mockEnvironments(repositoryId, now, unavailable);
 	const view = mockEnvironments(repositoryId, now);
 	kept.set(String(repositoryId), { ...view, schedule, scheduleChosen: true, environments: view.environments.map(e => ({ ...e, nextAt: schedule === 0 ? null : now + schedule * HOUR })) });
 	return mockEnvironments(repositoryId, now);
