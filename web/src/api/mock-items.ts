@@ -92,6 +92,8 @@ export interface MockItemsDeps {
 	long?: boolean;
 	/** False plays a deployment without the second review: no item gets one, as WLP_FACTORY_REVIEWER unset leaves them. Default true. */
 	reviewer?: boolean;
+	/** True gives the item that has a report the network requests its sessions' sandboxes refused (`?blocked=1`). */
+	blocked?: boolean;
 	now(): number;
 	/** Waits as long as the mock's answers take. */
 	latency(ms?: number): Promise<void>;
@@ -1623,7 +1625,21 @@ function withoutReviewer(view: ItemView): ItemView {
 }
 
 /** An item's summary, as the server's index keeps it: its page's own fields, and the step its run is at while it goes on (`ItemSummary.step`). */
-const summaryOf = ({ feedback: _feedback, plan: _plan, children: _children, task: _task, run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => {
+/** `?blocked=1`: an item's roll-up over its builder's and reviewer's turns, every kind of refusal, and requests past the 50 kept. */
+function seededBlocked(at: number): NonNullable<ItemView["blockedNetwork"]> {
+	return {
+		overflow: 5,
+		hosts: [
+			{ host: "registry.yarnpkg.com", port: null, reason: "unlisted", allow: "repository", firstAt: at - 3 * 3_600_000, lastAt: at - 50 * 60_000, count: 14 },
+			{ host: "api.segment.io", port: 443, reason: "machine_policy", allow: "machine", machineNames: ["studio-mac"], firstAt: at - 3 * 3_600_000, lastAt: at - 70 * 60_000, count: 9 },
+			{ host: "169.254.169.254", port: 80, reason: "private", allow: "never", firstAt: at - 2 * 3_600_000, lastAt: at - 2 * 3_600_000, count: 2 },
+			{ host: "smtp.mailgun.org", port: 25, reason: "provider", allow: "never", firstAt: at - 2 * 3_600_000, lastAt: at - 100 * 60_000, count: 1 },
+			{ host: "fonts.gstatic.com", port: null, reason: "unlisted", allow: "deployment", firstAt: at - 2 * 3_600_000, lastAt: at - 90 * 60_000, count: 1 },
+		],
+	};
+}
+
+const summaryOf = ({ blockedNetwork: _blocked, feedback: _feedback, plan: _plan, children: _children, task: _task, run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => {
 	if (!run || run.endedAt !== null || ["done", "failed", "cancelled"].includes(summary.state)) return summary;
 	return { ...summary, step: { kind: run.step.kind, startedAt: run.step.startedAt, turn: run.step.turn, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } } };
 };
@@ -1659,6 +1675,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
 				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.map((view) => (deps.reviewer === false ? withoutReviewer(view) : view))
+				.map((view) => (deps.blocked && view.report ? { ...view, blockedNetwork: seededBlocked(at) } : view))
 				.concat(state === "features" ? seededFeatures(at, auth.profile.uid, deps.long === true) : [])
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };

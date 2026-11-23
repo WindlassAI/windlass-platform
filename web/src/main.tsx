@@ -75,6 +75,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
 			items: MOCK_ITEMS_STATES.find((state) => state === items),
 			long: params.get("long") === "1",
+			blocked: params.get("blocked") === "1",
 			reviewer: params.get("reviewer") !== "off",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),
