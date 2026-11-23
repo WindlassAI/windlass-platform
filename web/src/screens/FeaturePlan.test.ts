@@ -49,6 +49,12 @@ afterEach(() => {
 	saveAuth("mock", null);
 });
 
+/** An approved plan of a running feature folds under its subtasks: open it, to read its rows. */
+function openPlan(): void {
+	const toggle = host.querySelector(".plan-folded .fold-toggle") as HTMLButtonElement | null;
+	if (toggle) act(() => toggle.click());
+}
+
 async function settle(steps = 14): Promise<void> {
 	for (let step = 0; step < steps; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
 }
@@ -176,6 +182,10 @@ describe("a feature's plan on its page", () => {
 		expect(after.plan?.questions[0]?.answer).toBe("No, 2.0 and later");
 		expect(after.plan?.status).toBe("approved");
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v3 · approved");
+		// Approved and running: the subtasks block shows where each one is, and the plan folds under it.
+		expect(host.querySelector(".subtasks-block")).not.toBeNull();
+		expect(host.querySelector(".plan-task")).toBeNull();
+		openPlan();
 		expect(host.querySelector(".plan-task:first-child .plan-task-title")?.tagName).toBe("A");
 	});
 
@@ -312,6 +322,11 @@ describe("a feature's plan on its page", () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Export the release manifest as CSV");
 		await show(`/items/${feature.id}`);
+		// The subtasks block says what each is doing now; the plan is folded under it.
+		expect([...host.querySelectorAll(".subtask-run .subtask-run-word")].map((word) => word.textContent)).toEqual(["merged", "implementing", "waits"]);
+		expect(host.querySelector(".subtasks-head .subtask-tally")?.textContent).toBe("1 running1 of 3 done");
+		expect(host.querySelector(".plan-task")).toBeNull();
+		openPlan();
 		const states = [...host.querySelectorAll(".plan-task")].map((row) => row.querySelector(".item-track-word, .plan-task-word")?.textContent);
 		expect(states).toEqual(["done", "building", "not started"]);
 		expect(host.querySelector(".plan-total-head")?.textContent).toBe("Allotted to subtasks");
@@ -345,13 +360,13 @@ describe("a plan that was set aside", () => {
 		const requirements = host.querySelector(".plan-spec-requirements") as HTMLElement;
 		expect(requirements.querySelector("dt")?.textContent).toBe("Requirements6");
 		expect(requirements.querySelectorAll("li")).toHaveLength(3);
-		const more = requirements.querySelector(".plan-spec-more") as HTMLButtonElement;
+		const more = requirements.querySelector(".fold-list-toggle") as HTMLButtonElement;
 		expect(more.textContent).toBe("Show 3 more");
 		act(() => more.click());
 		expect(requirements.querySelectorAll("li")).toHaveLength(6);
 		expect(more.textContent).toBe("Hide");
 		// Three lines are shown whole: nothing to fold.
-		expect(host.querySelector(".plan-spec-acceptance .plan-spec-more")).toBeNull();
+		expect(host.querySelector(".plan-spec-acceptance .fold-list-toggle")).toBeNull();
 		expect(host.querySelector(".plan-spec-acceptance .plan-code")?.textContent).toBe("harbor upload");
 		// Its subtasks never ran.
 		expect(host.querySelector(".plan-card")).toBeNull();
@@ -438,6 +453,7 @@ describe("placement in a feature's plan", () => {
 		const after = await api().item(feature.id);
 		expect(after.plan?.status).toBe("approved");
 		expect(after.children?.[0]?.placement).toMatchObject({ name: "nas", units: 2, reason: "Big builds, and both its slots are free." });
+		openPlan();
 		expect(fact("fixtures", "runs on")).toBe("nas · 2 slots secrets sent");
 		expect(why("fixtures")).toBe("Big builds, and both its slots are free.");
 	});
@@ -491,6 +507,7 @@ describe("placement in a feature's plan", () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Nightly tide table as a PDF");
 		await show(`/items/${feature.id}`);
+		openPlan();
 		expect(fact("query", "ran on")).toBe("nas secrets were sent");
 		expect(why("query")).toBe("Same place as the feature");
 		expect(why("render")).toBe("Approved overflow from ‘studio’");
