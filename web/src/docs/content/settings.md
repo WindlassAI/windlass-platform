@@ -157,7 +157,7 @@ The platform limits only what costs its owner money or could be abused. Your own
 | Model tokens | Unlimited |
 | Prompt length | 20,000 characters |
 | Turn length | 45 minutes |
-| Time to answer a question during a turn | 10 minutes |
+| Time to answer a question during a turn | 10 minutes; 5 minutes for an approval in a hosted sandbox |
 | Note with an answer | 2,000 characters |
 | Clone of a repository | 3 minutes |
 | Setup command | 10 minutes |
@@ -169,6 +169,6 @@ The platform limits only what costs its owner money or could be abused. Your own
 | Secrets per repository | 50 |
 | API tokens | 20 |
 
-A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. A work item never asks this way: its questions end the turn and wait for days if need be.
+A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. In a hosted sandbox an unanswered approval ends the turn after 5 minutes instead, and the sandbox pauses until you send a prompt. A work item never asks this way: its questions end the turn and wait for days if need be.
 
 Work items have their own budgets and one limit on items filed from GitHub. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).
