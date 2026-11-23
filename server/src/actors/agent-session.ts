@@ -1,4 +1,4 @@
-import { spareRecipe, type SpareRecipe } from "../runner/protocol.js";
+import { spareRecipe, type SpareRecipe } from "../runner/spare-recipe.js";
 import { refHead } from "../github/feature.js";
 /**
  * `agentSession`, key [uid, sessionId]: one agent, its sandbox, its timeline and its turns.

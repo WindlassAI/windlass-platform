@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
 import { cloneCommand, cloneReadyBase, refreshReadyClone, WORKSPACE_HEAD_COMMAND } from "../../server/src/github/git.js";
 import { runSetupCommand } from "../../server/src/sandbox/setup.js";
-import { type SpareRecipe } from "../../server/src/runner/protocol.js";
+import type { SpareRecipe } from "../../server/src/runner/spare-recipe.js";
 import { dropPreviousSnapshots } from "./snapshot-retention.js";
 import { digest, type SnapshotSelection, type SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
@@ -118,6 +118,7 @@ export class Executor extends MachineDocker {
 	private async buildSpare(raw: string, spec: SpareSpec, signal: AbortSignal) {
 		const { spare, profile, harness, prepared, screenshots, size, mirrorRepo } = spec.args;
 		const { uid } = this.identity;
+		if (read(this.claimFile(raw)) !== undefined || await this.disk() <= Math.max(5e9, this.storeLimits().free)) throw new Error("Spare admission refused");
 		signal.throwIfAborted();
 		if (harness) this.requireHarness(profile, harness);
 		this.requireProfile(profile);

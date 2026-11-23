@@ -714,6 +714,8 @@ export class DockerSandboxes implements Sandboxes {
 			{ timeoutMs: 120_000 },
 		);
 		if (result.code !== 0) {
+			// A conflict belongs to the container that already held the name.
+			if (/container name .*already in use/i.test(result.stderr)) throw new Error("The sandbox name was already in use.");
 			await docker(["rm", "-f", name]);
 			// The error said below is the one that matters: a volume left behind goes with the next sweep.
 			if (own) await this.dropOwnVolume(input.uid, id).catch(() => {});

@@ -11,6 +11,7 @@
  * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
+import { spareRecipe } from "./spare-recipe.js";
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
@@ -70,21 +71,6 @@ const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v
 const destination = nullable(is<string>(v => typeof v === "string" && v.length <= 253 && !v.includes("%") && (!!isIP(v) || v.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))));
 const endpoint = { host: destination, port: nullable(is<number>(v => count(v) && v <= 65535)) };
 const refusalEntry = object({ ...endpoint, reason: oneOf("machine_policy", "private", "provider", "malformed"), firstAt: count, lastAt: count, count: positiveLimit });
-// A spare recipe carries only the repository and its setup. Connected repositories also
-// have an independently observed GitHub head. URLs with embedded credentials are ineligible.
-const spareUrl = is<string>(v => {
-	if (typeof v !== "string" || v.length > 2048) return false;
-	try {
-		const u = new URL(v);
-		return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash
-			&& /^\/[a-zA-Z0-9._~/-]+$/.test(u.pathname) && u.href === v;
-	} catch { return false; }
-});
-export const spareRecipe = object({ url: spareUrl, connected: optional(object({
-	repo: snapshotKey.repo, branch: text(250), commit: is<string>(v => typeof v === "string" && /^[0-9a-f]{40}$/.test(v)),
-	command: is<string>(v => typeof v === "string" && v.length <= 65536), timeoutMs: duration, generation: fingerprint,
-})) });
-export type SpareRecipe = Of<typeof spareRecipe>;
 const operations = {
 	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */

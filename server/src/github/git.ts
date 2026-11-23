@@ -876,10 +876,10 @@ export async function cloneReadyBase(sandbox: SandboxHandle, url: string, branch
 /** Only for a freshly cloned workspace which has never run setup. A changed default
  * branch, force push, dirty checkout or unavailable remote is a cold miss. */
 export function refreshReadyClone(url: string, branch?: string, commit?: string) {
-	return [CLONE_GIT_START, 'set -eu', 'tree=$(pwd -P)', 'branch=$(git -C "$tree" symbolic-ref --short HEAD)',
+	return ['set -eu', CLONE_GIT_START, 'tree=$(pwd -P)', 'branch=$(git -C "$tree" symbolic-ref --short HEAD)',
 		branch ? `test "$branch" = ${shellQuote(branch)}` :
 			`test "$(git ls-remote --symref -- ${shellQuote(url)} HEAD | head -1 | cut -f1)" = "ref: refs/heads/$branch"`,
-		'test -z "$(git -C "$tree" status --porcelain)"',
+		'status=$(git -C "$tree" status --porcelain)', 'test -z "$status"',
 		`git -C "$tree" fetch --quiet -- ${shellQuote(url)} "+refs/heads/$branch:refs/remotes/origin/$branch"`,
 		'git -C "$tree" merge --quiet --ff-only "refs/remotes/origin/$branch"',
 		`test "$(git -C "$tree" rev-parse HEAD)" = "${commit || '$(git -C "$tree" rev-parse "refs/remotes/origin/$branch")'}"`].join("\n");

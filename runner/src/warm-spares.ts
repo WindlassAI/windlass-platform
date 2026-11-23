@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { digest } from "../../server/src/sandbox/snapshot-key.js";
-import { spareRecipe, validArgs, type Args, type SpareRecipe } from "../../server/src/runner/protocol.js";
+import { validArgs, type Args } from "../../server/src/runner/protocol.js";
+import { spareRecipe, type SpareRecipe } from "../../server/src/runner/spare-recipe.js";
 
 export const SPARE_SESSION = "@ready"; // Outside the session id grammar, including on older runners.
 export const SPARE_TTL = 6 * 60 * 60_000;
@@ -65,7 +66,7 @@ export class WarmSpares {
 		if (!e) return;
 		this.entries.delete(e); // A claim consumes the sandbox even when verification fails.
 		if (await verify(e.raw, e.spec).catch(() => false)) return e.raw;
-		await this.drop(e.raw).catch(() => {});
+		void this.drop(e.raw).catch(() => {});
 	}
 	fill(spec: SpareSpec, limit: number) {
 		this.trim(limit, spec);

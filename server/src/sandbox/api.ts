@@ -184,7 +184,7 @@ export interface ConnectOptions {
 
 export interface CreateSandboxInput {
 	/** Evaluated only for a machine advertising ready sandboxes. */
-	spareRecipe?: () => Promise<import("../runner/protocol.js").SpareRecipe | undefined>;
+	spareRecipe?: () => Promise<import("../runner/spare-recipe.js").SpareRecipe | undefined>;
 	/** As `ConnectOptions.network`, from the first command in the sandbox. */
 	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
