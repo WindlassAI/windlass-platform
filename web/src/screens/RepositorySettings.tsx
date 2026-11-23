@@ -20,6 +20,7 @@ import { sectionOf, useHash, type RepositorySection } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels, useNow } from "../state/hooks";
 import type { RepositoryPage } from "./Repository";
+import { Check } from "../components/ui/Check";
 
 /** The id of a section's heading: where a link to it lands. */
 export const sectionHeading = (section: RepositorySection) => `repo-${section}`;
@@ -57,20 +58,16 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 			</h2>
 			<p className="usage-lede">Let builders and reviewers attach pictures of the app to their work item reports. Screenshots are off by default.</p>
 			<div className="usage-card repo-form">
-				<label className={`check${on ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={on} disabled={busy || (deploymentOff && !on)} onChange={(event) => set(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Take screenshots for work items</span>
-						<span className="check-means">
-							{deploymentOff
-								? "Screenshots are turned off for this whole deployment, so no work item takes them, whatever is chosen here."
-								: on
-								? "New work item sandboxes include a browser where available. Turning this off stops screenshot filing from the next turn."
-								: "Turning this on gives new work item sandboxes a browser where available. An existing builder keeps its sandbox."}
-						</span>
+				<Check checked={on} disabled={busy || (deploymentOff && !on)} onChange={(on) => set(on)}>
+					<span className="check-name">Take screenshots for work items</span>
+					<span className="check-means">
+						{deploymentOff
+							? "Screenshots are turned off for this whole deployment, so no work item takes them, whatever is chosen here."
+							: on
+							? "New work item sandboxes include a browser where available. Turning this off stops screenshot filing from the next turn."
+							: "Turning this on gives new work item sandboxes a browser where available. An existing builder keeps its sandbox."}
 					</span>
-				</label>
+				</Check>
 				{said ? (
 					<p className={`field-note tone-${said.tone}`} role={said.tone === "bad" ? "alert" : "status"}>
 						{said.text}

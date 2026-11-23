@@ -12,6 +12,7 @@ import { type GithubId, MAX_CHECKS_PER_REPOSITORY, MAX_CHECK_NAME_CHARS, MAX_CHE
 import { useEffect, useId, useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PlusIcon, TrashIcon, WarnIcon } from "./Icons";
+import { Check } from "./ui/Check";
 
 /** A check as its row holds it: every field is text until it is saved. */
 export interface CheckDraft {
@@ -202,11 +203,9 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 									disabled={saving}
 								/>
 							</label>
-							<label className={`check verify-shows${draft.showOutput ? " check-on" : ""}`}>
-								<input className="check-input" type="checkbox" checked={draft.showOutput} disabled={saving} onChange={(event) => change(draft.key, { showOutput: event.target.checked })} />
-								<span className="check-box" aria-hidden="true" />
+							<Check className="verify-shows" checked={draft.showOutput} disabled={saving} onChange={(on) => change(draft.key, { showOutput: on })}>
 								<span className="check-means">show its output in a pull request also when it passes</span>
-							</label>
+							</Check>
 						</div>
 					</li>
 				))}

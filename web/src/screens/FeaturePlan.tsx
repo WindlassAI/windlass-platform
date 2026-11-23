@@ -45,6 +45,7 @@ import { useMachines } from "./Machines";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
+import { Check } from "../components/ui/Check";
 
 /** The page's actions on the item (Item.tsx, `useActing`), with how the last one failed. */
 export interface PlanActing {
@@ -1048,12 +1049,17 @@ function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; revi
 					const name = agentParts(task.agent, null).name;
 					return (
 						<li key={task.key}>
-							<label className="plan-unattended-row">
-								<input type="checkbox" checked={review.confirmed.includes(task.key)} disabled={disabled} onChange={(event) => review.setConfirmed(task.key, event.target.checked)} />
-								<span>
-									Run <strong>{task.title}</strong> on {name}, which {UNATTENDED_WORDS}
-								</span>
-							</label>
+							<Check
+								className="plan-unattended-row"
+								checked={review.confirmed.includes(task.key)}
+								disabled={disabled}
+								onChange={(on) => review.setConfirmed(task.key, on)}
+								label={
+									<>
+										Run <strong>{task.title}</strong> on {name}, which {UNATTENDED_WORDS}
+									</>
+								}
+							/>
 						</li>
 					);
 				})}

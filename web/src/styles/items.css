@@ -1801,19 +1801,10 @@ a.plan-task-title:hover {
 	margin: 8px 0 0;
 }
 .plan-unattended-row {
-	display: flex;
-	align-items: baseline;
-	gap: 8px;
 	padding: 4px 0;
-	font-size: var(--text-13);
-	line-height: 1.5;
-	color: var(--ink);
-	cursor: pointer;
 }
-.plan-unattended-row input {
-	flex: none;
-	transform: translateY(2px);
-	accent-color: var(--ink);
+.plan-unattended-row .check-label {
+	font-size: var(--text-13);
 }
 .plan-unattended-row strong {
 	font-weight: var(--weight-medium);

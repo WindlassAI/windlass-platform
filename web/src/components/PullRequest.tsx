@@ -26,6 +26,7 @@ import { useNow } from "../state/hooks";
 import { usePublishRequests } from "../state/sessionChrome";
 import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
+import { Check } from "./ui/Check";
 
 /** What letting the agent publish without asking means, in one sentence, as the panel says it. */
 export const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
@@ -69,15 +70,11 @@ export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agen
 		);
 	}
 	return (
-		<label className={`check${checked ? " check-on" : ""}`}>
-			<input className="check-input" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-			<span className="check-box" aria-hidden="true" />
-			<span className="check-text">
-				<span className="check-name">Let the agent publish without asking</span>
-				<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
-				<span className="check-means">{AGENT_PUSH_MEANS}</span>
-			</span>
-		</label>
+		<Check checked={checked} disabled={disabled} onChange={(on) => onChange(on)}>
+			<span className="check-name">Let the agent publish without asking</span>
+			<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
+			<span className="check-means">{AGENT_PUSH_MEANS}</span>
+		</Check>
 	);
 }
 

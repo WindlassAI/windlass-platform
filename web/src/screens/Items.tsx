@@ -37,6 +37,7 @@ import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
+import { Check } from "../components/ui/Check";
 
 export interface ItemsState {
 	/** What the feed holds, open items first: every open item and the newest ended ones. Null until it was read, and when it could not be. */
@@ -852,20 +853,16 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						</p>
 					</div>
 				) : null}
-				<label className={`check${start ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={start} disabled={busy} onChange={(event) => setStart(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Start now</span>
-						<span className="check-means">
-							{start
-								? chosenMachine
-									? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
-									: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
-								: "It is kept as a draft until you start it from its page."}
-						</span>
+				<Check checked={start} disabled={busy} onChange={(on) => setStart(on)}>
+					<span className="check-name">Start now</span>
+					<span className="check-means">
+						{start
+							? chosenMachine
+								? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
+								: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
+							: "It is kept as a draft until you start it from its page."}
 					</span>
-				</label>
+				</Check>
 				{error ? (
 					<p className="callout callout-bad" role="alert">
 						<WarnIcon />
