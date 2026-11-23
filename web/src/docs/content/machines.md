@@ -6,13 +6,13 @@ The runner connects out to the platform. Nothing needs to reach your machine fro
 
 ## What you need
 
-- Linux with Docker, or macOS or Windows with Docker Desktop or OrbStack. On a Mac or Windows, sessions run in Docker's Linux VM, with the arm64 or x86-64 images that match it.
+- Linux with Docker, or macOS or Windows with Docker Desktop or OrbStack. On Windows, run the install in a WSL terminal. On a Mac or Windows, sessions run in Docker's Linux VM, with the arm64 or x86-64 images that match it.
 - At least 5 GB of free disk for each new sandbox, inside Docker's VM where it has one.
 - A clock set from the network. The platform warns you when the machine's clock is more than a minute off.
 
 **Name the machine.** The runner names the machine after the host it sees. Under Docker Desktop that is Docker's VM, so every such machine is called `docker-desktop`. Give it a name of your own with `--name`, for example `--name "my-mac"`, in the setup command.
 
-**Allow Windlass's command sandbox.** A new machine offers only **Hardened Docker on your machine**: the agent's commands run directly in the session's container, with the container's network. Add `--allow-profile docker-windlass-sandbox` to also offer **Docker + Windlass sandbox on your machine**, which puts a second wall around each command: Windlass (or Codex, with its own sandbox) runs every command in a sandbox without network that cannot read the session's token file. To let that sandbox run, the session's container is started with AppArmor and system paths unconfined, and with user namespaces and mounts allowed; the command sandbox inside is the boundary. It is recommended for Windlass and Codex, which use it. Claude Code and OpenCode run only on the hardened profile. See [Allowed profiles](/docs/runner#allowed-profiles).
+**Allow Windlass's command sandbox.** A new machine offers only **Hardened Docker on your machine**: the agent's commands run directly in the session's container, with the container's network. Setup allows it unless you choose otherwise at its **Profile** step; with the Docker commands, add `--allow-profile docker-windlass-sandbox` to also offer **Docker + Windlass sandbox on your machine**, which puts a second wall around each command: Windlass (or Codex, with its own sandbox) runs every command in a sandbox without network that cannot read the session's token file. To let that sandbox run, the session's container is started with AppArmor and system paths unconfined, and with user namespaces and mounts allowed; the command sandbox inside is the boundary. It is recommended for Windlass and Codex, which use it. Claude Code and OpenCode run only on the hardened profile. See [Allowed profiles](/docs/runner#allowed-profiles).
 
 An account can connect up to 3 machines.
 
@@ -22,22 +22,58 @@ Open the account menu and choose **Machines**, then **Add a machine**.
 
 ### 1. Start the runner
 
-The dialog offers two commands. The image and the address in them come from the platform.
+The dialog shows one line first. Copy it and run it in a terminal on the computer:
 
-**Set it up** is the setup command. Tick **Enable Claude Code** or **Enable OpenCode** for the agents the machine should offer, then copy the command and run it in a terminal on your machine. With both ticked it reads:
+```sh
+curl -fsSL <platform address>/install.sh | sh
+```
+
+It checks that Docker is installed and running, and says what to do if it is not. Then it fetches the runner image and starts the runner's setup in your terminal, in a container that goes away when setup ends. It installs nothing else, needs no `sudo` and writes no file outside Docker. To read the script first, open its address in your browser, or choose **Read the script** in the dialog.
+
+Setup asks one thing at a time. Use the arrow keys and Enter; Space ticks an agent. **←** goes back a step (Shift+Tab in a text field), and Escape cancels.
+
+1. **Welcome.** It shows the platform's address. Check that it is yours.
+2. **Pair.** It shows the code, the address to enter it at and the **machine key**. Enter the code as in [step 2](#2-enter-the-code) and check the key as in [step 3](#3-connect-it). Setup waits until you choose **Connect**. A code lasts ten minutes; if it runs out, setup offers a new one.
+3. **Machine name.** It suggests the name Docker gives the computer. Docker Desktop calls every computer `docker-desktop`, so give it a name you will know it by. See [Name it](#name-it).
+4. **Agents.** Tick the agents the machine should offer. Windlass is always offered. For each one ticked, setup offers to [sign it in](#sign-agents-in) now. If a sign-in fails or you skip it, setup says so and carries on: sign it in later.
+5. **Profile.** Whether agents may also use **Docker + Windlass sandbox** besides hardened Docker. Setup recommends it and has it chosen, and says what it loosens. See [Allowed profiles](/docs/runner#allowed-profiles).
+6. **Network.** **Restricted**, the recommended mode, **Only some public hosts**, or **Open**. See [Network access](#network-access).
+7. **Limits.** The turn slots, the disk for setup snapshots and the free disk to keep, with defaults sized for the computer. See [Run options](/docs/runner#run-options).
+8. **Summary.** Everything you chose, and the command setup is about to run.
+9. **Start.** Setup starts the runner in the background, in the `windlass-runner` container, and waits until it says **Online**. If a `windlass-runner` container is already there, setup asks before it replaces it. The volume stays, so the machine stays paired.
+
+The runner keeps its key and its state in the `windlass-runner` volume. Keep that volume: it is what keeps the machine paired. Setup keeps your answers there too.
+
+#### Run setup again
+
+Run the line again to change something. Setup shows your answers as the defaults, and offers to keep the pairing. You can also run one part of it, in the setup container:
+
+```sh
+docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner <runner image> setup network
+```
+
+The parts are `name`, `agents`, `claude`, `codex`, `opencode`, `profile`, `network` and `limits`. `setup --quick` asks only what is missing, such as an agent that is not signed in. Each ends by offering to replace the running runner with the new settings.
+
+#### Other ways
+
+Under **Other ways** the dialog has the Docker commands themselves. Use them where you cannot run the script, in PowerShell for example, or to choose the options yourself.
+
+**Set it up with Docker** is the setup command. With no agent ticked it opens the same setup as the one-line install. Tick **Enable Claude Code**, **Enable Codex** or **Enable OpenCode** for the agents the machine should offer, and setup asks in the terminal line by line instead. With Claude Code and OpenCode ticked, and the sandbox allowed, it reads:
 
 ```sh
 docker run -it --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v windlass-runner:/var/lib/windlass-runner \
-  <runner image> setup --platform <platform address> --harness claude --harness opencode
+  <runner image> setup --platform <platform address> --harness claude --harness opencode \
+  --allow-profile docker-windlass-sandbox
 ```
 
 It pairs the machine and signs its agents in, asking in the terminal as it goes. First it prints the pairing code: enter it as in steps 2 and 3. Then it asks to [sign each agent in](#sign-agents-in). Last, it prints `Start the runner on this machine:` and the command that starts the runner in the background, with the same options. Run that command.
 
-A box is shown only for an agent the platform's runner image includes. **Allow Windlass's command sandbox** is ticked unless you untick it: both commands then end with `--allow-profile docker-windlass-sandbox` (see [What you need](#what-you-need)). Add `--name` and a name of your own to the setup command on a Mac or Windows PC.
+A box is shown only for an agent the platform's runner image includes. **Allow Windlass's command sandbox** is ticked unless you untick it: both commands then end with `--allow-profile docker-windlass-sandbox` (see [What you need](#what-you-need)). Unticked, they end with `--allow-profile docker-hardened`, and setup starts with the sandbox turned off at its **Profile** step. Add `--name` and a name of your own to the setup command on a Mac or Windows PC.
 
-**Or start the runner in the background** is the install command. It starts the runner at once, and you read the pairing code from its log:
+**Or start the runner in the background** starts the runner at once, and you read the pairing code from its log:
 
 ```sh
 docker run -d --name windlass-runner --restart unless-stopped \
@@ -47,15 +83,13 @@ docker run -d --name windlass-runner --restart unless-stopped \
   <runner image> --platform <platform address>
 ```
 
-The runner keeps its key and its state in the `windlass-runner` volume. Keep that volume: it is what keeps the machine paired.
-
-Setup pairs the machine again each time you run it. It refuses while the runner is running with the same volume: "The runner is already using this state. Use login <agent> in the running runner." To sign an agent in on a running machine, use `login`.
+Setup pairs the machine again unless you keep the pairing. To pair again it stops a running runner first, and starts it again if you cancel. The line-by-line setup refuses while the runner is running with the same volume: "The runner is already using this state. Use login <agent> in the running runner." To sign an agent in on a running machine, use `login`.
 
 > **Tip** Where rootless Docker works, use it: the runner then gets less of your machine. Mount `$XDG_RUNTIME_DIR/docker.sock` in place of `/var/run/docker.sock`.
 
 ### 2. Enter the code
 
-When it starts, the runner prints a pairing code like `XXXX-XXXX`, and the address to enter it at. Setup prints it in your terminal. The background runner prints it in its log:
+When it starts, the runner prints a pairing code like `XXXX-XXXX`, and the address to enter it at. Setup shows it in your terminal. The background runner prints it in its log:
 
 ```sh
 docker logs windlass-runner
@@ -83,7 +117,7 @@ The machine is named after its Docker daemon, or its hostname if Docker gives no
 
 A name has 1 to 64 printable characters. The runner saves it and uses it again when it restarts without `--name`.
 
-> **Note** If the code expired, the runner says so. Restart the container, or run `windlass-runner pair`, to get a new code. With setup, run the setup command again.
+> **Note** If the code expired, the runner says so. Restart the container, or run `windlass-runner pair`, to get a new code. Setup offers a new code itself; the line-by-line setup asks you to run it again.
 
 ## What the machine receives
 
@@ -266,7 +300,7 @@ docker exec -it windlass-runner windlass-runner login opencode
 
 The machine must be paired first, or the runner says "Pair this machine before signing in to Claude Code." or "Pair this machine before signing in to OpenCode." When it is done, it says "Claude Code: signed in." or "OpenCode: signed in.", and the Machines page shows the new state.
 
-[Setup](#1-start-the-runner) asks to sign each agent in as it goes: "Claude Code: sign in now? [Y/n] " and "OpenCode: sign in now? [Y/n] ". Answer `n` to skip one and sign it in later with `login`.
+[Setup](#1-start-the-runner) offers to sign each agent in as it goes: **Sign in now** or **Skip for now**. A failed sign-in is shown, and setup carries on. Sign it in later with `login`, or with `setup claude`, `setup codex` or `setup opencode`. The line-by-line setup asks "Claude Code: sign in now? [Y/n] ": answer `n` to skip one.
 
 ### Claude Code
 
@@ -421,7 +455,7 @@ When the platform needs a newer runner, the machine shows **Needs an update**. R
 docker rm -f windlass-runner
 ```
 
-Then run the command from the Machines page, with the same options as before, `--harness` included. The volume keeps the key, so the machine stays paired. If the Machines page says to pair again, run `windlass-runner pair` after the update, so the runner gets the platform's key.
+Then run the command from the Machines page, with the same options as before, `--harness` included. The volume keeps the key, so the machine stays paired. If you set it up with the one-line install, run that line again instead: it fetches the new runner, keeps your answers and the pairing, and replaces the container. If the Machines page says to pair again, run `windlass-runner pair` after the update, so the runner gets the platform's key.
 
 ## Remove a machine
 

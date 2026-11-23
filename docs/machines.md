@@ -7,12 +7,14 @@ and cannot do. Users' instructions are in the in-app docs ([Use your own machine
 ## How it works
 
 With `WLP_MACHINES=1` a user can pair a machine of their own that has Docker, and launch agents on it: Linux with
-Docker, or macOS or Windows with Docker Desktop or OrbStack, where the runner and the sessions run in Docker's Linux
-VM with the images of its architecture (a Mac with Apple silicon takes the arm64 images; Windlass and Claude Code
-turns have passed on Docker Desktop, runner 0.3.3). The runner's default name is the host name it sees, which under
-Docker Desktop is the VM's, `docker-desktop`: users are told to pass `--name`. A new pairing allows only
-`docker-hardened`; `--allow-profile docker-windlass-sandbox` adds the two-wall profile, recommended for Windlass and
-Codex ([runner reference](../web/src/docs/content/runner.md#allowed-profiles)).
+Docker, or macOS or Windows (in a WSL terminal) with Docker Desktop or OrbStack, where the runner and the sessions run
+in Docker's Linux VM with the images of its architecture (a Mac with Apple silicon takes the arm64 images; Windlass and
+Claude Code turns have passed on Docker Desktop, runner 0.3.3). The runner's default name is the host name it sees,
+which under Docker Desktop is the VM's, `docker-desktop`: setup asks for a name and says so, and the Docker commands
+tell users to pass `--name`. A pairing made with `pair` or a bare `run` allows only `docker-hardened`;
+`--allow-profile docker-windlass-sandbox` adds the two-wall profile, recommended for Windlass and Codex
+([runner reference](../web/src/docs/content/runner.md#allowed-profiles)). Setup and the dialog's commands allow it by
+default.
 A small program on that machine, the runner, connects out to the platform, and makes and runs the
 sessions' containers on the machine's own Docker. Everything else stays with the platform: the session's
 actor, the turn's conversation with Windlass, questions, secrets, the GitHub App, the checks' record and the
@@ -34,6 +36,39 @@ in-app docs ([Use your own machine](../web/src/docs/content/machines.md#add-a-ma
 - A name given with `--name` is kept in the state volume. A paired runner restarted with a new name updates
   the listing on its next report.
 - The Machines page names the image in `WLP_RUNNER_IMAGE` and the address in `WLP_PUBLIC_URL`.
+
+### The one-line install and the setup wizard
+
+The Machines page shows `curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` first, and the Docker commands under
+**Other ways**. `GET /install.sh` ([install-script.ts](../server/src/install-script.ts)) answers with a short POSIX
+sh script, as `text/plain` with `cache-control: no-store`, with the platform's address and the pinned
+`WLP_RUNNER_IMAGE` written in. While no image is published the script says so and exits 1; with
+`WLP_MACHINES` off the path is a 404. The script:
+
+1. checks that `docker` exists and answers `docker info`, with a message for each case: Docker Desktop or
+   OrbStack on a Mac, Docker Engine on Linux, the WSL integration of Docker Desktop on Windows, a stopped
+   daemon, and a user outside the `docker` group;
+2. pulls the image;
+3. runs `docker run -it --rm --log-driver none -v /var/run/docker.sock:/var/run/docker.sock -v
+   windlass-runner:/var/lib/windlass-runner <image> setup --platform <address> </dev/tty`. Under `curl | sh`
+   standard input is the script, so setup reads the terminal. Without one (`/dev/tty` cannot be opened) it
+   prints that command instead.
+
+It runs nothing with sudo and writes no file on the host: everything it leaves is in Docker, the image and
+the `windlass-runner` volume.
+
+`windlass-runner setup` without `--harness` is a wizard ([setup-wizard.ts](../runner/src/setup-wizard.ts)): full-screen
+prompts ([@clack/prompts](https://github.com/bombshell-dev/clack)) on a terminal, numbered lines with `--no-tui` or
+without one. It pairs (or keeps the pairing), asks the machine's name, the agents to offer and signs each in
+through the same code as `login`, then the profiles, the network mode and the limits. A failed or skipped
+sign-in is shown and setup carries on. At the end it starts the service itself through the Docker socket
+it was given, with the same `docker run -d --name windlass-runner --restart unless-stopped …` as the
+setup container's own image and mounts, replacing an existing `windlass-runner` container when the user
+agrees (the volume stays). It lets go of the state lock first, then waits until the service writes
+`Online` to `status.json`. Its answers are kept in `setup.json` in the state volume and are the defaults
+the next time; `setup --quick` asks only what is missing and `setup <section>` one part (`name`, `agents`,
+`claude`, `codex`, `opencode`, `profile`, `network`, `limits`). With `--harness`, setup is the earlier flow:
+it signs the given agents in and prints the start command.
 
 ### Signed runner connections
 

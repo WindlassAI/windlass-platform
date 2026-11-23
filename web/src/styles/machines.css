@@ -478,6 +478,15 @@
 	font-weight: var(--weight-medium);
 	color: var(--ink);
 }
+/* The commands from before the one-line install, folded under it. */
+.machine-other-ways {
+	margin-top: 0;
+}
+.machine-other-ways-body {
+	display: grid;
+	gap: 16px;
+	padding-top: 4px;
+}
 
 /* When to use the machine, for a feature's planner: one quiet line in its card, its tags as hairline chips. */
 .machine-use {
