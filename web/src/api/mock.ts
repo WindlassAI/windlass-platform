@@ -3904,11 +3904,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					setSummary(world, session, { updatedAt: now() });
 					return take({ turn, steered: true });
 				}
-				// The ceiling on working agents is the deployment's (`FactoryLimits.runningTurns`) and the platform's sandboxes': one on the user's machine is neither counted nor refused.
+				// The ceiling is on hosted sandboxes (`FactoryLimits.hostedRunning`): the person's own and their items' on the platform's sandboxes; nothing on the user's machines is counted or refused.
 				const hosted = session.summary.place.kind === "hosted";
-				// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
-				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && (other.summary.item !== undefined || other.summary.place.kind === "hosted")).length;
-				if (hosted && running >= MOCK_FACTORY_LIMITS.runningTurns) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working, which is your limit. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
+				const running = [...world.sessions.values()].filter((other) => other.summary.status !== "idle" && other.summary.place.kind === "hosted").length;
+				if (hosted && running >= MOCK_FACTORY_LIMITS.hostedRunning) throw new PlatformError("user", `You already have ${running} ${running === 1 ? "agent" : "agents"} working on this platform, the most it runs for you at once. Agents on your machines don't count. Wait for one to finish, or stop one.`, { reason: "too_many_running" });
 				// A Claude Code agent's turn: the models are the ones it listed, and the machine's report says whether it is signed in.
 				const harness = session.summary.harness;
 				if (harness && harness !== "windlass") {

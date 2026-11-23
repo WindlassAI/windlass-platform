@@ -1,11 +1,18 @@
-import type { ItemAgent, ItemBudget } from "@contract";
-import type { PlanField } from "../lib/feature";
+import type { ItemAgent, ItemBudget, ItemSpend as Spend } from "@contract";
+import { compact } from "../lib/format";
 import { agentTokens } from "../lib/item-agent";
 
+/** A budget figure as a row: its name, and how a figure of it is said. */
+export interface SpendField {
+	key: keyof ItemBudget;
+	label: string;
+	spelled(value: number): string;
+}
+
 interface Props {
-	spent: ItemBudget;
+	spent: Spend;
 	budget: ItemBudget;
-	fields: Pick<PlanField, "key" | "label" | "spelled">[];
+	fields: SpendField[];
 	/** The item's agent: where its tokens are not counted, the tokens row says what it reported instead of a meter. */
 	agent?: ItemAgent;
 }
@@ -28,7 +35,11 @@ export function ItemSpend({ spent, budget, fields, agent }: Props) {
 				const reached = used >= cap;
 				return (
 					<div key={field.key}>
-						<dt>{field.label}</dt>
+						<dt>
+							{field.label}
+							{/* Tokens count cost-weighted: what the agent reported is under them. */}
+							{field.key === "tokens" ? <span className="tone-faint item-cost-raw">{compact(spent.rawTokens ?? spent.tokens)} as reported</span> : null}
+						</dt>
 						<dd className="usage-number">
 							{field.spelled(used)} <span className="tone-faint">of {field.spelled(cap)}</span>
 						</dd>

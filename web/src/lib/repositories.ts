@@ -32,11 +32,12 @@ export function workingCounts(sessions: readonly SessionSummary[]): { ceilinged:
 	let onMachines = 0;
 	for (const session of sessions) {
 		if (session.status === "idle" && (!session.item?.reviewer || session.item.reviewer.status === "idle")) continue;
-		if (session.item !== undefined) {
+		// The ceiling is on hosted sandboxes only: whatever runs on the user's machines, item or not, is theirs to bound.
+		if (session.place.kind === "machine") onMachines += 1;
+		else {
 			ceilinged += 1;
-			items += 1;
-		} else if (session.place.kind === "machine") onMachines += 1;
-		else ceilinged += 1;
+			if (session.item !== undefined) items += 1;
+		}
 	}
 	return { ceilinged, items, onMachines };
 }

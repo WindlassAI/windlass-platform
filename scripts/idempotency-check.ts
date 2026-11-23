@@ -45,7 +45,7 @@ const { engine: ENGINE_PORT, http: [HTTP_PORT] } = await localListeners();
 const ENDPOINT = `http://127.0.0.1:${ENGINE_PORT}`;
 const API = `http://127.0.0.1:${HTTP_PORT}`;
 const PROFILE = "docker-windlass-sandbox" as const;
-/** The ceiling on a person's agents working at once that this check's cases assume: its server is started with it (WLP_FACTORY_RUNNING_TURNS). */
+/** The ceiling on a person's hosted agents working at once that this check's cases assume: its server is started with it (WLP_FACTORY_HOSTED_RUNNING). */
 const RUNNING_CEILING = 3;
 /** A prompt whose turn runs one command for a while: long enough to send a second message into. */
 const LONG = "Run the long build and report its progress (slow)";
@@ -99,8 +99,8 @@ async function startServer(): Promise<void> {
 		WLP_HTTP_PORT: String(HTTP_PORT),
 		WLP_FAKE_DELAY_MS: "15",
 		WLP_DAILY_SANDBOX_SECONDS: "unlimited",
-		// The refusal at RUNNING_CEILING busy sessions is checked: a person's ceiling, WLP_FACTORY_RUNNING_TURNS, is set to it here.
-		WLP_FACTORY_RUNNING_TURNS: String(RUNNING_CEILING),
+		// The refusal at RUNNING_CEILING busy sessions is checked: a person's ceiling, WLP_FACTORY_HOSTED_RUNNING, is set to it here.
+		WLP_FACTORY_HOSTED_RUNNING: String(RUNNING_CEILING),
 		WLP_MAX_KEPT_SANDBOXES: "unlimited",
 	};
 	// The local engine asks for no token; one in the shell this is run from is some other engine's.

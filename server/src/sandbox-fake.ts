@@ -1135,7 +1135,7 @@ class FakeWindlass implements Windlass {
 								questions: [], singleSuggested: null, repos: JSON.parse(repos),
 								subtasks: [[sibling, "index", []], [primary, "search", ["index"]]].map(([repo, key, dependsOn]) => ({
 									key, repo, title: key, brief: "Implement " + key + ". (report)", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn,
-									budget: { tokens: 600000, turns: 3, activeSeconds: 1440, hostedSeconds: 1200 },
+									budget: { tokens: 600000 },
 								})),
 								mergeOrder: [
 									{ repo: sibling, prerequisite: [], intermediate: "The released consumer ignores it", evidence: "The old reader passes", fallback: "Leave it unused" },
@@ -1150,7 +1150,7 @@ class FakeWindlass implements Windlass {
 							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
 							questions: [], singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
 								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
-								budget:{tokens:600000,turns:3,activeSeconds:1440,hostedSeconds:1200},
+								budget:{tokens:600000},
 							})),
 						} }, signal ?? new AbortController().signal);
 						emit({type:"fake.plan_reply",data:{reply},seq:0});

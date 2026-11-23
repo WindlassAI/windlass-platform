@@ -256,7 +256,7 @@ if (!only.length || only.some(name => name.startsWith("user-limits"))) {
 				await refused(() => admin.internalSetLimit({ ...change, value: 1.5 }), "bad_input");
 				await admin.internalSetLimit(change);
 				await admin.internalSetLimit(change); // Retry after a lost reply.
-				await admin.internalSetLimit({ ...change, key: "featureMultiplier", value: 2 });
+				await admin.internalSetLimit({ ...change, key: "hostedRunning", value: 2 });
 				await admin.internalSetLimit({ ...change, key: "item.tokens", value: 123456 });
 				const history = await admin.internalLimitHistory(operator);
 				assert(history.length === 3 && history[2].operator === operator && history[2].old_value === 9000000 && history[2].new_value === 1 && history[2].at > 0, "wrong audit trail");
@@ -272,7 +272,8 @@ if (!only.length || only.some(name => name.startsWith("user-limits"))) {
 				assert((await user.usage()).usedModelTokens === 0, "another user's turn spent this user's tokens");
 				const filing = { repository: { id: harbor.id }, title: "Write notes", body: "Run two parallel tool calls." };
 				const feature = await user.createItem({ ...filing, mode: "orchestrate", start: false });
-				assert(feature.budget.tokens === 246912, "new feature did not receive the effective item budget and multiplier");
+				// A feature starts with one item's budget of its own: its plan adds its subtasks'.
+				assert(feature.budget.tokens === 123456, "new feature did not receive the effective item budget");
 				const item = await user.createItem({ ...filing, mode: "single", start: true });
 				const session = client.agentSession.get([uid, item.sessionId], { params: { token: auth.token } });
 				const finished = await waitFor("the admitted Factory step to finish", async () =>
@@ -687,7 +688,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			const [first, second] = view.reviews;
 			assert(first.recommendation === "changes_requested" && first.round === 1 && first.blocks.some(b => b.kind === "finding" && b.id === "r1.f1" && b.severity === "blocking"), `round 1: ${first.recommendation} ${first.round}`);
 			assert(second.recommendation === "approve" && second.round === 2 && second.blocks.some(b => b.kind === "earlier" && b.finding === "r1.f1" && b.status === "fixed"), `round 2: ${second.recommendation} ${second.round}`);
-			assert(view.run?.rounds.review === 1 && view.run.caps.review === 2, `rounds ${JSON.stringify(view.run?.rounds)}`);
+			assert(view.run?.rounds.review === 1, `rounds ${JSON.stringify(view.run?.rounds)}`);
 			const fixes = new Set(view.events.filter(e => e.step?.kind === "review_fix").map(e => e.step!.n));
 			assert(fixes.size === 1, `review_fix steps ${[...fixes].join()}`);
 			assert(view.review?.state === "filed" && view.review.recommendation === "approve" && view.verifiedCheck?.conclusion === "success", `handed ${JSON.stringify(view.review)} ${view.verifiedCheck?.conclusion}`);
@@ -1483,7 +1484,7 @@ async function memoryChecks(): Promise<void> {
 		} finally { Date.now = clock; }
 	});
 	await check("memory: a waiting turn that is given the freed slot survives a stop between the two writes, and its grant is sent on wake", async () => {
-		const q = await queue({ factoryTurns: 1 });
+		const q = await queue({ hostedRunning: 1 });
 		try {
 			const a = await q.request("a");
 			const b = await q.request("b");
@@ -1500,7 +1501,7 @@ async function memoryChecks(): Promise<void> {
 	});
 
 	await check("memory: a grant whose reply is lost keeps its slot, and is told again rather than given to another", async () => {
-		const q = await queue({ factoryTurns: 1 });
+		const q = await queue({ hostedRunning: 1 });
 		try {
 			const a = await q.request("a");
 			const b = await q.request("b");
@@ -1567,7 +1568,7 @@ async function memoryChecks(): Promise<void> {
 	});
 
 	await check("memory: two admissions in a row grant no more new hosted sandboxes than the person's limit", async () => {
-		const q = await queue({ factoryTurns: 5, runningTurns: 6, hostedRunning: 1 });
+		const q = await queue({ hostedRunning: 1 });
 		try {
 			const a = await q.request("a");
 			const b = await q.request("b");
@@ -1578,8 +1579,8 @@ async function memoryChecks(): Promise<void> {
 		}
 	});
 
-	await check("memory: machine items share the person's turn ceiling even while hosted capacity is full", async () => {
-		const q = await queue({ factoryTurns: 4, runningTurns: 3, hostedRunning: 1 });
+	await check("memory: machine items never wait for the hosted ceiling, even while it is full", async () => {
+		const q = await queue({ hostedRunning: 1 });
 		try {
 			q.c.vars.machines.set("m", { name: "Test machine", since: 0, status: "online", sandboxes: [] });
 			Object.assign(q.c.vars.sessions.get("a")!, { place: { kind: "machine", machineId: "m" } });
@@ -1590,8 +1591,8 @@ async function memoryChecks(): Promise<void> {
 			Object.assign(q.c.vars.sessions.get("b")!, { place: { kind: "machine", machineId: "m" } });
 			const second = await q.request("b");
 			const reason = [...q.c.vars.items.requests.values()][0]?.wait?.sentence;
-			assert(!second.granted && reason?.includes("3 running turns; 3 are running"), `unexpected admission: ${reason}`);
-			return reason;
+			assert(second.granted, `a second machine turn waited: ${reason}`);
+			return "both machine turns started beside two hosted agents at a hosted ceiling of 1";
 		} finally {
 			q.close();
 		}
@@ -2358,7 +2359,7 @@ try {
 		await watcher;
 		const sentBack = said(asked).filter((line) => line.startsWith("The checks failed")).length;
 		assert(asked.question?.kind === "rounds" && /same failure/.test(asked.question.text) && sentBack === 2, `${stateOf(asked)}; ${said(asked).join(" / ")}`);
-		assert(asked.run?.rounds.gate === 1 && asked.run.caps.gate === 2, `gate rounds: ${asked.run?.rounds.gate} of ${asked.run?.caps.gate}`);
+		assert(asked.run?.rounds.gate === 1, `gate rounds: ${asked.run?.rounds.gate}`);
 		// The next turn's hold and place survive the end of the turn before it, and its time is counted.
 		assert(samples.length > 0, "the fix turn was never seen running");
 		assert(samples.every((sample) => sample.held > 0 && sample.kept), `while the fix turn ran: ${JSON.stringify(samples.slice(0, 5))}`);
@@ -2550,7 +2551,7 @@ try {
 	main.remove();
 }
 
-// With one factory turn: the second item waits with the sentence, and starts when the first's turn ends.
+// With one hosted sandbox at once: the second item waits with the sentence, and starts when the first's turn ends.
 const narrow = new Server();
 try {
 	const dir = join(narrow.storage, "fake-bucket");
@@ -2558,13 +2559,13 @@ try {
 	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 	// The fake checkout starts at aaaaaaa; the later publish receipt names this commit.
 	const publishedHead = "b".repeat(40);
-	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_REVIEW_HEAD: publishedHead, WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_TURNS: "1", WLP_FACTORY_RUNNING_TURNS: "2", WLP_FAKE_DELAY_MS: "50" });
-	await check("capacity: with one factory turn a second item waits with the sentence, and starts when the first turn ends", async () => {
+	const { user, client, auth } = await world(narrow, standin, { WLP_FAKE_REVIEW_HEAD: publishedHead, WLP_FAKE_BACKUP_DIR: dir, WLP_FAKE_BUCKET_SIGNING_SECRET: signing.toString("hex"), WLP_FAKE_ATTACHMENT_PNG: png, WLP_FACTORY_HOSTED_RUNNING: "1", WLP_FAKE_DELAY_MS: "50" });
+	await check("capacity: with one hosted sandbox at once a second item waits with the sentence, and starts when the first turn ends", async () => {
 		const a = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "First (slow)", body: "A long build (slow).", start: true });
 		await untilItem(user, a.id, "the first turn", (view) => view.run?.step.turn === "started", 60_000);
 		const b = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Second", body: "Write a short program.", start: true });
 		const waiting = await untilItem(user, b.id, "the wait", (view) => view.state === "waiting" && view.wait?.reason === "capacity", 30_000);
-		assert(waiting.wait && /Waiting for one of your 1 factory turns; 1 are running \(“First \(slow\)”\)\./.test(waiting.wait.sentence), `it says ${waiting.wait?.sentence}`);
+		assert(waiting.wait && /Waiting for one of your 1 hosted sandbox that run at once: 1 running now\./.test(waiting.wait.sentence), `it says ${waiting.wait?.sentence}`);
 		const started = await untilItem(user, b.id, "the second turn", (view) => view.run?.step.turn === "started" || view.run?.step.kind !== "implement", 120_000);
 		return `${waiting.wait.sentence} → ${started.state}`;
 	});
@@ -2636,9 +2637,9 @@ try {
 		const get = await api("/api/items/i_0123456789abcdef", { token: shaped });
 		assert(post.status === 404 && post.body.code === "not_found" && get.status === 404 && get.body.code === "not_found", `the routes answered ${post.status} ${JSON.stringify(post.body)} and ${get.status} ${JSON.stringify(get.body)}`);
 		const said = await refused(() => user.listItems(), "items_off");
-		// The limits are still answered: the ceiling on running agents holds for a person's own agents too.
+		// The limits are still answered: the ceiling on hosted sandboxes holds for a person's own agents too.
 		const limits = await user.factoryLimits();
-		assert(typeof limits.runningTurns === "number" && limits.runningTurns > 0, `the limits answered ${JSON.stringify(limits)}`);
+		assert(typeof limits.hostedRunning === "number" && limits.hostedRunning > 0, `the limits answered ${JSON.stringify(limits)}`);
 		await refused(() => user.apiTokens(), "items_off");
 		await refused(() => user.createApiToken({ name: "script", scopes: ["items:read"] }), "items_off");
 		await refused(() => user.revokeApiToken("tok_0123456789abcdef"), "items_off");

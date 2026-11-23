@@ -58,8 +58,8 @@ The cap is for the platform's own sandboxes only. Free one on **Usage**, under *
 **"This machine has reached its own limit on kept sandboxes, set by --max-sandboxes."**\
 The machine's owner capped how many sandboxes it keeps. Free one of its sandboxes on **Machines**, or raise the cap with `--max-sandboxes` (`windlass-runner status` shows it).
 
-**"You already have 6 agents working, which is your limit. Wait for one to finish, or stop one."**\
-Wait, or stop an agent.
+**"You already have 3 agents working on this platform, the most it runs for you at once. Agents on your machines don't count. Wait for one to finish, or stop one."**\
+Wait, or stop an agent. Work items on this platform count too. An agent on one of your machines is never held back by this.
 
 **"The prompt is … characters long; the limit is 20000."**\
 Shorten the prompt. Put long material in a file in the repository and point the agent at it.
@@ -77,7 +77,7 @@ Every request the agent made to its model failed, so the turn is shown as failed
 The provider refused the agent's model request, or did not answer it. A work item asks you what to do, with **Try again** and the agents it can hand over to.
 
 **"Nobody answered "…" within 10 minutes, so it was declined."**\
-The agent asked a question and nobody answered. It was told, and went on. Send a prompt to tell it what you want.
+The agent asked a question during its turn and nobody answered. It was told, and went on. Send a prompt to tell it what you want. A work item's questions never time out: they wait until you answer.
 
 **"Nobody answered "…" within 5 minutes, so the turn was ended and its sandbox paused. Send a prompt to go on."**\
 In a hosted sandbox an approval waits 5 minutes, so that a sandbox nobody watches does not run on. Send a prompt to go on; the sandbox resumes.
@@ -198,11 +198,14 @@ The App's comment on your issue. Only people with write access can file a work i
 **"Not taken: you have filed … work items from GitHub today, this deployment's limit. It starts again at 00:00 UTC."**\
 Wait for the next day, or file the item on the Factory page.
 
-**"Not taken: … of your work items from GitHub are drafts waiting to be started. Start or cancel some on Windlass first."**\
-Start or cancel drafts on the Factory page.
+**"Waiting for one of your … hosted sandboxes that run at once: … running now. Your machines don't count toward this."**\
+Not an error. The item waits for a free place on this platform and starts by itself. Items on your machines never wait for it.
 
-**"Waiting for one of your … factory turns; … are running …"**\
-Not an error. The item waits for a free place and starts by itself.
+**"This item has used … of its … tokens (cost-weighted, …)."**\
+The item paused at its budget. Its work is kept. Choose **Give it … more tokens** to go on in the same sandbox, **Hand it over as it is**, or **Give up**. See [When the budget is used](/docs/factory#when-the-budget-is-used).
+
+**"The same failure came back after a fix, so the factory stopped instead of trying it again."**\
+The item is stuck on one failure. Read its log, then choose **Try it once more**, perhaps with a note to the agent, **Hand it over as it is**, or **Give up**.
 
 **"No checks are saved for this repository, so a plan cannot be approved. File it as single, or save checks first."**\
 Shown before you file a feature. Save [checks](/docs/settings#checks) for the repository, or choose **Single**.
@@ -214,9 +217,6 @@ A feature's plan needs saved checks and CI that runs on pushes. See [What you ne
 **"The plan changed while you read it, here or in another tab: version … is shown now. Check it, then approve again."**\
 Someone saved a new version of the plan. Read the version shown, then approve it.
 
-**"Subtasks exceed the remaining … budget after the summary and review reserve."**\
-The subtasks' budgets add up to more than the feature may share. Lower some of them. See [Budgets](/docs/factory#budgets).
-
 **"Subtask … must be a whole number between … and …."**\
 A subtask's budget is below the least a subtask needs, or above what one item may spend.
 
@@ -226,8 +226,9 @@ CI did not report on a subtask's branch. Check that your CI runs on pushes to `w
 **"Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up."**\
 A subtask could not join the feature. The pull request holds the subtasks that did. Hand it over as it is, or give up.
 
-**"The remaining feature budget cannot cover …"**\
-The next subtask needs more than the feature has left. Choose **Revise the plan**, or **Give up**.
+**"… stopped a second time. Inspect the feature before continuing."**\
+**"Two subtasks stopped with the same failure. Inspect the feature before continuing."**\
+Read the subtasks' pages. Choose **Revise the plan** to have the planner try another way, or **Give up**.
 
 **"No passing CI reported on the complete feature. Wait for a check or hand over the PR."**\
 No CI passed on the whole feature within 10 minutes. Check CI on the pull request at GitHub.

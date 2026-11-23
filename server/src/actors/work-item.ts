@@ -59,8 +59,8 @@ import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
-import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type RoundCaps, type SessionRepository, type Verdict } from "../contract.js";
-import { RULES, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, reviewSendsBack } from "../factory/blueprint.js";
+import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
+import { advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -68,15 +68,6 @@ import { readCi } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { grantIsValid, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
-
-/** The rounds a run allows, as the blueprint stops on them (`RULES`), for the item's page. */
-const ROUND_CAPS: RoundCaps = { plan: RULES.planRounds, gate: RULES.gateRounds, ci: RULES.ciRounds, conflict: RULES.conflictRounds, review: RULES.reviewRounds };
-/** The rounds the item's runs allow: the second review's only where it can send the builder back. */
-const capsOf = (item: FactoryItem): RoundCaps => {
-	if (reviewSendsBack(item)) return ROUND_CAPS;
-	const { review: _, ...caps } = ROUND_CAPS;
-	return caps;
-};
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
@@ -164,7 +155,7 @@ type EffectRow = { id: string; effect: string; due_at: number; attempts: number 
 
 const rowId = (effect: Effect) => `${effect.kind}:${effect.kind === "ask" ? effect.question.id : effect.key}`;
 
-/** Whether the turn of a `deliver` key is the first of its run (`<item>:<run>:<step>:<attempt>`, blueprint.ts `stepKey`): the review cap holds back only those. */
+/** Whether the turn of a `deliver` key is the first of its run (`<item>:<run>:<step>:<attempt>`, blueprint.ts `stepKey`). */
 function startsRun(key: string): boolean {
 	const [, , step, attempt] = key.split(":");
 	return step === "1" && attempt === "1";
@@ -291,7 +282,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
-		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: { ...run.rounds, review: run.rounds.review ?? 0 }, caps: capsOf(stored.item) },
+		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } },
 		head: stored.item.head,
 		report: run ? await latestReport(c.db, run.n) : null,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
@@ -338,7 +329,7 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 		const hostedSeconds = stored.item.place.kind === "hosted"
 			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta))) + childSeconds(stored.item)
 			: 0;
-		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, hostedSeconds, ...(fact.spend?.agent && { agent: fact.spend.agent }) } });
+		await take(c, { ...fact, spend: { tokens: fact.spend?.tokens ?? 0, ...(fact.spend?.rawTokens !== undefined && { rawTokens: fact.spend.rawTokens }), hostedSeconds, ...(fact.spend?.agent && { agent: fact.spend.agent }) } });
 	} else {
 		await take(c, fact);
 	}
@@ -1255,7 +1246,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await postVerifiedCheck(c, meta, item.id, effect);
 			return true;
 		case "notify_integrated":
-			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, state:"done", integratedHead:effect.head });
+			await itemActor(c, meta.uid, item.parent!.itemId).internalChildNotice({ id:item.id, spent:item.spent, budget:item.budget, state:"done", integratedHead:effect.head });
 			return true;
 		case "cancel_children":
 			for (const child of effect.ids) {
@@ -1313,7 +1304,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					return true;
 				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, placement: v.placement, head: v.head, spent: v.spent, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, placement: v.placement, head: v.head, spent: v.spent, budget: v.budget, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				if (!changed && live(c.vars.stored!.item, effect)) {
 					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
 					await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
@@ -1403,8 +1394,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
-				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places })
-					+ "\nSingle-item ceiling per subtask: " + JSON.stringify(item.singleBudget) + "\nFeature cap: " + JSON.stringify(item.budget) + "\nSpent: " + JSON.stringify(item.spent);
+				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
 			return true;
@@ -1487,7 +1478,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 // A person's actions
 // ---------------------------------------------------------------------------------------------
 
-const MAX_RAISE = { tokens: 1_000_000_000, turns: 1_000, activeSeconds: 7 * 86_400, hostedSeconds: 7 * 86_400 } as const;
+const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400 } as const;
 
 /** The fact of a person's action, checked; throws a UserError for one that cannot be taken. */
 function factOf(action: ItemAction, by: string, at: number): Fact {
@@ -1643,9 +1634,9 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
-		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state"> & { integratedHead?: string }) => {
+		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }) => {
 			requireServiceFor(c, "call");
-			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, state: child.state, integratedHead: child.integratedHead});
+			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, ...(child.budget && { budget: child.budget }), state: child.state, integratedHead: child.integratedHead});
 		},
 		// The seed belongs to the parent. Looking it up on clone also covers previously created child sessions.
 		// A cross-repo feature's child asks for the seed of its own repository (`repositoryId`).

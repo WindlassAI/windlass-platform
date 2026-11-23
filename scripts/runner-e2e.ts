@@ -40,7 +40,7 @@ const { engine: PORT, http: [HTTP] } = process.argv[2] === "node"
 const ENDPOINT = `http://127.0.0.1:${PORT}`;
 const ORIGIN = `http://127.0.0.1:${HTTP}`;
 const SERVER_DIR = fileURLToPath(new URL("../server/", import.meta.url));
-/** The person's ceiling on agents working at once (WLP_FACTORY_RUNNING_TURNS): one, so that a second hosted turn is refused. */
+/** The person's ceiling on agents working at once (WLP_FACTORY_HOSTED_RUNNING): one, so that a second hosted turn is refused. */
 const CEILING = 1;
 /** The design's numbers (Plans/2026-11-19, section 1.4): how long a session waits for its runner's socket. */
 const OFFLINE_WAIT_MS = 15_000;
@@ -83,7 +83,7 @@ class Server {
 		const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "node"], {
 			cwd: SERVER_DIR,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...env, ...extra, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_RUNNING_TURNS: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
+			env: { ...env, ...extra, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_HOSTED_RUNNING: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
 		});
 		child.stdout?.pipe(log);
 		child.stderr?.pipe(log);

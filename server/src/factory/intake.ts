@@ -34,7 +34,6 @@ export const refusals = {
 	read: "Not taken: Windlass needs write access to this repository for you, and GitHub says you have read access.",
 	archived: "Not taken: this repository is archived.",
 	daily: (n: number) => `Not taken: you have filed ${n} work items from GitHub today, this deployment's limit. It starts again at 00:00 UTC.`,
-	drafts: (n: number) => `Not taken: ${n} of your work items from GitHub are drafts waiting to be started. Start or cancel some on Windlass first.`,
 	other: "Not taken: this issue already has a work item of another Windlass user.",
 };
 

@@ -145,17 +145,14 @@ The runner's own variables (`WLP_RUNNER_CPUS`, `WLP_RUNNER_STATE_DIR`) are in th
 
 ## Work items
 
-Operators can set [per-user limits](#per-user-limits), including a daily token cap and the feature budget multiplier.
+Operators can set [per-user limits](#per-user-limits), including a daily token cap. Only what costs the operator or invites abuse is capped: a user's own machines have no platform limit, and an item's budget pauses and asks its person instead of stopping work.
 
 | Variable | Effect |
 |---|---|
-| `WLP_ITEMS` | `1`: every user of the deployment may file work items ([work-items.md](work-items.md#turning-work-items-on)); default off. The `WLP_FACTORY_RUNNING_TURNS` ceiling holds either way |
-| `WLP_FACTORY_RUNNING_TURNS` | how many turns a user may have running at once, their own and their work items' together (default 6, from 1 to 100): also the ceiling on the user's own running agents |
-| `WLP_FACTORY_TURNS` | how many of those a user's work items may take (default 5, from 1 to 100); held to one less than `WLP_FACTORY_RUNNING_TURNS`, and to 0 when only one running turn is allowed |
-| `WLP_FACTORY_HOSTED_RUNNING` | how many of a user's hosted sandboxes may run at once for a work item's turn to start beside them (default 3) |
-| `WLP_FACTORY_REVIEW_CAP` | how many of a user's work items may be in review before new ones wait (default 6) |
-| `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: tokens, turns, seconds of working time and seconds of hosted sandbox time (defaults 6,000,000, 14, 14400 and 7200) |
-| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY`, `WLP_FACTORY_GITHUB_DRAFTS` | how many items a user may have filed from GitHub issues in a day, and how many such drafts may wait (defaults 20 and 20) |
+| `WLP_ITEMS` | `1`: every user of the deployment may file work items ([work-items.md](work-items.md#turning-work-items-on)); default off. The `WLP_FACTORY_HOSTED_RUNNING` ceiling holds either way |
+| `WLP_FACTORY_HOSTED_RUNNING` | how many hosted sandboxes a user may have at work at once, their own agents and their work items' together (default 3, from 1 to 100). A work item's turn past it waits; a prompt of the user's own is refused with the reason. Sandboxes on the user's machines never count |
+| `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: cost-weighted tokens, cached input counted at a tenth (default 2,000,000), and seconds of hosted sandbox time (default 7200). A feature's budget is its approved subtasks' and one item's for its own turns |
+| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | how many items a user may file from GitHub issues in a UTC day, drafts among them (default 20) |
 | `WLP_FACTORY_ORCHESTRATE` | `0`: hide the Orchestrate control and refuse new orchestrated filings (default on) |
 | `WLP_FACTORY_REVIEWER` | `on`: give new items on a hosted profile that isolates commands a second review (default off) |
 | `WLP_FACTORY_SCREENSHOTS` | `off`: no work item of the deployment takes screenshots, whatever its repository's setting says. Sessions get the base image or template, never the screenshots one (also a builder that reconnects to a sandbox made before), agents are not offered screenshots in their reports, plans see no machine with screenshots, and a repository's setting cannot be turned on (one saved on can still be turned off). `on` or unset: each repository's setting decides (default on) |
@@ -229,14 +226,16 @@ To measure startup on a development host, run `WLP_SANDBOX=docker pnpm --filter 
 
 `WLP_DAILY_TOKENS` sets the model token cap per user per UTC day. Its default is `unlimited`. A positive integer applies to hosted sessions and Windlass on paired machines, which receive the platform’s model credential. Machine-local Claude Code and OpenCode use the machine owner’s subscription. Input and output are counted as the model reports them, including compaction. Cached input and reasoning are already included. Recording starts when this version is installed.
 
-`WLP_FACTORY_FEATURE_MULTIPLIER` sets the starting feature budget as a multiple of a Quick item’s budget (1–100, default 3). Per-item budgets and this multiplier take effect when an item is created. An existing item keeps its budget and any increases approved for that item. The daily model cap applies across items regardless of their individual budgets.
+Per-item budgets take effect when an item is created. An existing item keeps its budget and any increases its person gave it. The daily model cap applies across items regardless of their individual budgets, and counts tokens as reported, not weighted.
+
+These are gone, and are ignored if still set: `WLP_FACTORY_RUNNING_TURNS`, `WLP_FACTORY_TURNS`, `WLP_FACTORY_REVIEW_CAP`, `WLP_FACTORY_FEATURE_MULTIPLIER`, `WLP_FACTORY_GITHUB_DRAFTS`, `WLP_FACTORY_ITEM_TURNS` and `WLP_FACTORY_ITEM_ACTIVE_SECONDS`. Stored overrides of `runningTurns`, `factoryTurns`, `reviewCap`, `featureMultiplier`, `githubDrafts`, `item.turns` and `item.activeSeconds` are read past.
 
 Run the command from `server/` in the operator environment with the normal service signing key.
 
 ```sh
 node --import tsx src/set-user-limit.ts u_example dailyTokens 18000000
-node --import tsx src/set-user-limit.ts u_example item.turns 20
-node --import tsx src/set-user-limit.ts u_example item.turns default
+node --import tsx src/set-user-limit.ts u_example item.tokens 4000000
+node --import tsx src/set-user-limit.ts u_example item.tokens default
 node --import tsx src/set-user-limit.ts u_example --history
 ```
 
@@ -244,11 +243,10 @@ Use `default` to remove an override and inherit the deployment setting. Each cha
 
 | Setting | Accepted values |
 | --- | --- |
-| `runningTurns`, `factoryTurns`, `hostedRunning`, `featureMultiplier` | 1–100. The effective Factory share leaves one turn for personal prompts. |
-| `reviewCap`, `item.turns` | 1–1,000 |
-| `item.tokens` | 1–1,000,000,000 |
-| `item.activeSeconds`, `item.hostedSeconds` | 1–604,800 |
-| `githubItemsPerDay`, `githubDrafts`, `attachments.perItem` | 1–1,000,000 |
+| `hostedRunning` | 1–100 |
+| `item.tokens` | 1–1,000,000,000, cost-weighted |
+| `item.hostedSeconds` | 1–604,800 |
+| `githubItemsPerDay`, `attachments.perItem` | 1–1,000,000 |
 | `attachments.bytes`, `attachments.days` | 1–2,097,152 bytes per screenshot and 1–36,500 days of retention |
 | `attachments.accountBytes`, `dailyTokens` | Positive safe integer. `dailyTokens` also accepts `unlimited`. |
 | `dailySeconds`, `maxKept` | 60–86,400 hosted sandbox seconds and 1–1,000 kept hosted sandboxes. Both accept `unlimited`. |

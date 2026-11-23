@@ -6,11 +6,9 @@ import type { FactoryLimits } from "./contract.js";
 import { ATTACHMENT_LIMITS } from "./factory/attachments.js";
 
 const ranges = {
-	runningTurns: [1, 100], factoryTurns: [1, 100], hostedRunning: [1, 100], reviewCap: [1, 1000],
-	featureMultiplier: [1, 100], dailyTokens: [1, Number.MAX_SAFE_INTEGER],
-	githubItemsPerDay: [1, 1_000_000], githubDrafts: [1, 1_000_000],
-	"item.tokens": [1, 1_000_000_000], "item.turns": [1, 1000],
-	"item.activeSeconds": [1, 7 * 86400], "item.hostedSeconds": [1, 7 * 86400],
+	hostedRunning: [1, 100], dailyTokens: [1, Number.MAX_SAFE_INTEGER],
+	githubItemsPerDay: [1, 1_000_000],
+	"item.tokens": [1, 1_000_000_000], "item.hostedSeconds": [1, 7 * 86400],
 	"attachments.bytes": [1, ATTACHMENT_LIMITS.bytes], "attachments.perItem": [1, 1_000_000],
 	"attachments.accountBytes": [1, Number.MAX_SAFE_INTEGER], "attachments.days": [1, 36500],
 	dailySeconds: [60, 86400], maxKept: [1, 1000],
@@ -28,12 +26,12 @@ export function effectiveUserLimits(overrides: Overrides) {
 	const item = { ...defaults.item }, attachments = { ...defaults.attachments };
 	for (const key of Object.keys(item) as (keyof typeof item)[]) item[key] = value(`item.${key}`, item[key]);
 	for (const key of Object.keys(attachments) as (keyof typeof attachments)[]) attachments[key] = value(`attachments.${key}`, attachments[key]);
-	const runningTurns = value("runningTurns", defaults.runningTurns);
+	// Overrides of limits that are gone (the turn caps, the review cap, the feature multiplier, GitHub drafts, the item's
+	// turns and working time) may still be stored: they are read past. Only the figures below are kept.
 	const factory: FactoryLimits = {
-		runningTurns, factoryTurns: Math.min(value("factoryTurns", defaults.factoryTurns), runningTurns - 1),
-		hostedRunning: value("hostedRunning", defaults.hostedRunning), reviewCap: value("reviewCap", defaults.reviewCap),
-		featureMultiplier: value("featureMultiplier", defaults.featureMultiplier), dailyTokens: overrides.dailyTokens === undefined ? defaults.dailyTokens : overrides.dailyTokens,
-		githubItemsPerDay: value("githubItemsPerDay", defaults.githubItemsPerDay), githubDrafts: value("githubDrafts", defaults.githubDrafts),
+		hostedRunning: value("hostedRunning", defaults.hostedRunning),
+		dailyTokens: overrides.dailyTokens === undefined ? defaults.dailyTokens : overrides.dailyTokens,
+		githubItemsPerDay: value("githubItemsPerDay", defaults.githubItemsPerDay),
 		item, attachments,
 	};
 	const usage = { ...config.usage };

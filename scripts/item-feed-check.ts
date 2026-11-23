@@ -63,7 +63,7 @@ function item(n: number, state: ItemSummary["state"], repository = n % 2 === 0 ?
 		pullRequest: null,
 		verdict: null,
 		review: null,
-		budget: { tokens: 1, turns: 1, activeSeconds: 1, hostedSeconds: 1 },
+		budget: { tokens: 1, hostedSeconds: 1 },
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 		sessionId: `s_${n}`,
 		createdAt,

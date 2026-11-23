@@ -196,8 +196,8 @@ export function Home({ state, items, saved: savedAll, usage, scope = "all", filt
 	const now = useNow(15_000);
 	const filtering = filterCount(filters) > 0;
 	const agents = sessions === null ? null : ownAgents(sessions);
-	// The ceiling on running turns is the deployment's: the user's agents on the platform's sandboxes and every work item's turn count against it.
-	const ceiling = useFactoryLimits().value?.runningTurns ?? null;
+	// The ceiling is the deployment's, on hosted sandboxes: the user's agents and work items on the platform's sandboxes count against it, never a machine's.
+	const ceiling = useFactoryLimits().value?.hostedRunning ?? null;
 	const counts = workingCounts(sessions ?? []);
 
 	// With a filter on, a work item's session is not counted under its repository: its item is listed below instead.

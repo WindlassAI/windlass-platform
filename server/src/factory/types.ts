@@ -14,12 +14,12 @@ import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
-import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
+import type { ChoiceId, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
 import type { CiReading, CiState } from "../github/ci.js";
 
 // What the web sees of these is in the contract; they are named here as the factory's modules use them.
-export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
+export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
 
 // ---------------------------------------------------------------------------------------------
 // The item
@@ -68,11 +68,18 @@ export interface CiProgress {
 export interface Run extends ItemRun {
 	/** The fingerprint of the last failure a fix turn was started for. */
 	lastFailure: string | null;
+	/**
+	 * Every failure a fix turn was started for in this run, by fingerprint (the stuck detector, blueprint.ts
+	 * `nextTurn`): the same one again stops the run and asks. Absent on runs stored before: `lastFailure` only.
+	 */
+	failures?: string[];
+	/** Set while the workspace is pushed for "Hand it over as it is" (blueprint.ts `answer`): it is handed over once pushed. */
+	handOver?: true;
 	/** The turn that produced the work about to be published, including across publish retries. */
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: RunReview | null;
-	/** Questions the builder asked the person in this run (`ask_person`, at most `RULES.asks`). Absent on runs stored before the tool: none. */
+	/** Questions the builder asked the person in this run (`ask_person`), shown in its log. Absent on runs stored before the tool: none. */
 	asks?: number;
 }
 
@@ -158,7 +165,9 @@ export interface FeatureJob {
 	id: string;
 	task: import("../contract.js").PlanSubtask;
 	state: import("../contract.js").ItemState;
-	spent: ItemBudget;
+	spent: ItemSpend;
+	/** The subtask's budget as its item last said it: its plan's, and what the person gave it since. Absent until it said. */
+	budget?: ItemBudget;
 	head: string | null;
 	report: string;
 }
@@ -192,14 +201,14 @@ export interface FactoryItem {
 	integration?: IntegrationRun;
 	feedbackReplans?: number;
 	/**
-	 * What the planner had spent, closing work and subtasks left out, when the latest feedback re-plan began.
-	 * Planning counts its share from here, so each feedback re-plan gets a share of its own; the feature budget
-	 * and its closing reserve still bound it.
+	 * A feature's own token allowance: what its planner, its summary and its review may spend, apart from its
+	 * subtasks. It starts at one item's budget (`singleBudget`) and grows by what the person gives it. The
+	 * feature's budget is this and its subtasks' budgets together (blueprint.ts `featureTotal`). Absent on a
+	 * feature stored before it was kept: `singleBudget.tokens`.
 	 */
-	planningBase?: ItemBudget;
-	/** Closing work is charged to the feature, outside its planner allowance. */
-	beforeClosing?: ItemBudget;
-	closingSpend?: ItemBudget;
+	ownTokens?: number;
+	/** Turns counted toward the backstop from here (`RULES.turnBackstop`): set when the person lets the item go on past it. */
+	backstopFrom?: number;
 	feedback?: {
 		held: string[] | null;
 		heldText: string;
@@ -223,7 +232,6 @@ export interface FactoryItem {
 	childBase?: string;
 	cancelAfterIntegration?: boolean;
 	approvedPlan?: import("../contract.js").FeaturePlan;
-	approvedAllocation?: ItemBudget;
 	mode?: import("../contract.js").ItemMode;
 	singleBudget?: ItemBudget;
 	filedTurn?: string;
@@ -255,7 +263,7 @@ export interface FactoryItem {
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;
-	spent: ItemBudget;
+	spent: ItemSpend;
 	/** Absent for items filed before agents could be chosen: Windlass. */
 	agent?: import("../contract.js").ItemAgent;
 	/** Since when the item is "working": active time (§2.4) is the sum of such stretches. */
@@ -273,8 +281,12 @@ export interface FactoryItem {
 // Questions (§9)
 // ---------------------------------------------------------------------------------------------
 
-/** What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. */
-export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | "sandboxes" | keyof ItemBudget;
+/**
+ * What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. "repeated": the same
+ * failure twice (the stuck detector); "turns": the backstop on an item's turns; "interruptions": a step cut
+ * off again and again by deploys or restarts. The others of older stored questions are answered as "repeated".
+ */
+export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate" | "ci" | "conflict" | "review" | "sandboxes" | keyof ItemBudget;
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {
@@ -300,7 +312,7 @@ export interface TurnPlan {
 	feedbackQuote?: { head: string | null; start: number; length: number };
 	/** False: another attempt of the current step (after an interruption). */
 	newStep: boolean;
-	/** The round counter the turn uses (§2.4); "interruptions": the step's cut-off turns, counted when they end. */
+	/** The round the turn counts in (`Run.rounds`, shown and never capped); "interruptions": the step's cut-off turns, counted when they end. */
 	charge: "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | null;
 	/** For a fix turn: the failure it is for (§2.1 step 5). */
 	fingerprint: string | null;
@@ -336,8 +348,10 @@ export type Cause = string;
 
 /** What the agent's turn used: tokens of this turn (`turnTokens`), and the sandbox seconds the ledger holds for the item's session so far (`ledgerSeconds`). */
 export interface TurnSpend {
-	/** Counted against the item's token budget: none where the agent's tokens are not (budget.ts, `agentTurn`). */
+	/** Counted against the item's token budget, cost-weighted (budget.ts `weightedTokens`): none where the agent's tokens are not (budget.ts, `agentTurn`). */
 	tokens: number;
+	/** The same tokens as reported, cached input at full count. Absent where none are counted, and on outbox rows stored before: `tokens`. */
+	rawTokens?: number;
 	hostedSeconds: number;
 	/** What a machine harness reported of the turn. Absent for Windlass. */
 	agent?: AgentTurn;
@@ -370,10 +384,10 @@ export type Fact =
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
-	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
+	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
 	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
 	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
-	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
+	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }

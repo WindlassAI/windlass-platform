@@ -817,6 +817,12 @@
 .item-cost .usage-number {
 	text-align: left;
 }
+.item-cost-raw {
+	display: block;
+	margin-top: 2px;
+	font-size: 12px;
+	font-weight: 400;
+}
 .item-cost-meter {
 	display: flex;
 	align-items: center;

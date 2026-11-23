@@ -202,7 +202,7 @@ durable schedule (`c.schedule`) does it, so it happens while the actor sleeps an
 engine wakes the actor when the time comes. A turn that runs, or waits on the user's answer, is never cut off;
 the check is set again when it ends. The next prompt resumes a suspended sandbox, or makes a new one after a
 removal. Reading the workspace's changes starts a suspended sandbox too and counts as use. A suspended
-session counts as idle: it is not among the user's turns running at once (`WLP_FACTORY_RUNNING_TURNS`,
+session counts as idle: it is not among the user's hosted sandboxes at work (`WLP_FACTORY_HOSTED_RUNNING`,
 [Usage and limits](#usage-and-limits)).
 
 ### Sign-in
@@ -541,18 +541,17 @@ stand (`server/src/usage.ts` has the rules, with no actor in it):
 
 Either takes `unlimited`. The time is counted and shown with or without a limit.
 
-A user may also have at most `WLP_FACTORY_RUNNING_TURNS` turns running at once (default 6), their own and
-their work items' together ([Work items](work-items.md)), and the ceiling holds for their own agents where work items are
-off too; the work items take at most `WLP_FACTORY_TURNS` of them
-(default 5), so one is always free for the person's own prompt. A prompt beyond the ceiling is refused before
-anything starts (`too_many_running`: "You already have 6 agents working, which is your limit. Wait for one
+A user may also have at most `WLP_FACTORY_HOSTED_RUNNING` hosted sandboxes at work at once (default 3), their own
+agents and their work items' together ([Work items](work-items.md)), and the ceiling holds for their own agents where work
+items are off too. A prompt beyond the ceiling is refused before anything starts (`too_many_running`: "You already have
+3 agents working on this platform, the most it runs for you at once. Agents on your machines don't count. Wait for one
 to finish, or stop one."); a work item's turn waits instead.
 
 Only hosted sandboxes, the layer `WLP_SANDBOX` chooses, are counted. A session says where it runs
 (`place` in `createSession`): hosted when left out,
 or one of its user's machines ([Machines of your own](machines.md)). The platform's limits do not hold a machine's
 sessions (`hostedLimitsApply`): their sandboxes take no sandbox time and no kept place and have no price,
-and their turns do not count towards the hosted limit on agents working at once. Each runner has its own
+and their turns, work items' included, do not count towards the hosted limit on sandboxes at work. Each runner has its own
 machine-sized slot limit (`--slots`, also accepted as `--max-turns`). Its owner can also cap running and kept containers with `--max-running`
 and `--max-sandboxes`. The usage page lists a machine's sandboxes apart, under "On your machines": "Not counted
 against your daily sandbox time, running agents or kept sandboxes."

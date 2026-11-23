@@ -76,7 +76,7 @@ What changes with Claude Code or OpenCode:
 - **Step limit.** A turn may make 60 tool calls (40 for a reviewer). The platform counts them: when the agent starts one more, the platform stops the turn, notes it on the timeline, and the turn ends unresolved.
 - **Review.** Items on a machine have no second reviewer, whatever the agent.
 - **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
-- **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. The item's turns and working time bound it. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
+- **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. Its turns are bounded only by the factory's backstop on an item's turns. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
 
 From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`, and `"effort"`, for example `"high"`. The machine's model list is on the **Machines** page. Issues filed from GitHub run Windlass.
 
@@ -86,7 +86,7 @@ A Codex item runs the way a Claude Code or OpenCode item does above, with these 
 
 - **Where.** In one of two sandboxes on your machine. **Docker + Windlass sandbox** is the default: Codex runs every command in its own sandbox without network, and may change files only in the workspace (not `.git`, `.agents`, `.codex` or `.aws`) and the temporary directories. The machine offers it once its runner's check of Codex's sandbox passed. **Docker, hardened** runs only when you choose it: commands run in the container without asking, with the machine's network, as Claude Code's do.
 - **Leaving the sandbox.** On **Docker + Windlass sandbox**, Codex asks before a command outside its sandbox or an edit outside the paths it may write, and every such request is refused. Most are refused inside Codex, which is told and goes on. One that reaches the platform ends the step: the timeline notes the request, and the item asks you to file the work again on **Docker, hardened**, or to give up. Work that needs the network in its commands, such as adding a package or running tests against a service, suits **Docker, hardened** better. The repository's setup command runs before the turns, with network, so dependencies it installs are there.
-- **Tokens.** Codex items run only with a ChatGPT sign-in for now. A ChatGPT plan is a subscription, so the tokens Codex reports are shown, not counted, and the item's turns and working time bound it. The sign-in method is kept with the item. If the machine's Codex later signs in another way, the next turn does not start and the item asks you to file the work again. A machine signed in with an API key can't take Codex items yet.
+- **Tokens.** Codex items run only with a ChatGPT sign-in for now. A ChatGPT plan is a subscription, so the tokens Codex reports are shown, not counted. The sign-in method is kept with the item. If the machine's Codex later signs in another way, the next turn does not start and the item asks you to file the work again. A machine signed in with an API key can't take Codex items yet.
 - **Checks.** On **Docker, hardened** the platform runs your repository's checks for Codex as for the other agents. On **Docker + Windlass sandbox** it runs none: a check would run what Codex changed outside Codex's sandbox, with the network Codex has no access to there. Each check that applies is recorded as not started, with that reason, and CI decides.
 - **Asking and reporting.** Codex gets `report`, `ask_person`, `push` and `fetch_base` like the other agents (see [When the agent asks you](#when-the-agent-asks-you)), and calls them without asking on both profiles.
 
@@ -126,10 +126,10 @@ It is also given what you said to the work since you filed it, as your decisions
 What happens next depends on its recommendation:
 
 - **Approves**: the item is handed to you.
-- **Asks for changes**: the agent that made the change gets the blocking findings and works on them, on the same branch. It is told to leave a finding it disagrees with and say why in its report. It is also told that no finding justifies removing or skipping tests or checks, changing CI or deploy configuration, adding network calls, or touching credentials: it leaves such a finding and names it in its report. The new commit goes through your checks and CI, and the second agent reviews it again. It says for each earlier blocking finding whether it is fixed, not fixed, or withdrawn. A finding it says is not fixed stays open for the next round, whether or not it files it again, and it cannot approve while one is open. If the agent changes nothing, because it disagrees with every finding, the second agent reviews the same commit again, with the agent's report. A run allows 2 rounds of fixes.
+- **Asks for changes**: the agent that made the change gets the blocking findings and works on them, on the same branch. It is told to leave a finding it disagrees with and say why in its report. It is also told that no finding justifies removing or skipping tests or checks, changing CI or deploy configuration, adding network calls, or touching credentials: it leaves such a finding and names it in its report. The new commit goes through your checks and CI, and the second agent reviews it again. It says for each earlier blocking finding whether it is fixed, not fixed, or withdrawn. A finding it says is not fixed stays open for the next round, whether or not it files it again, and it cannot approve while one is open. If the agent changes nothing, because it disagrees with every finding, the second agent reviews the same commit again, with the agent's report. Rounds of fixes are not capped: the item stops when the second agent asks for the same changes again, or when its budget is used.
 - **Needs you**: the item asks you, with the reviewer's questions in its review. **Have the agent change it** sends its agent back with the questions and your note. **Hand it over as it is** hands it to you with the review. Or **Give up**.
 
-The item stops and asks you when the second agent still asks for changes after 2 rounds of fixes, or asks again for the same changes after a round of fixes. **Raise the limit and go on** runs one more round of fixes: if the second agent still asks for changes after it, the item stops and asks you again. **Hand it over as it is** keeps the review filed for the commit it hands over: it shows on the item's page, the pull request comment and the check on GitHub.
+The item stops and asks you when the second agent asks again for the same changes after a round of fixes. **Try it once more** runs one more round of fixes: if the second agent asks for the same changes after it, the item stops and asks you again. **Hand it over as it is** keeps the review filed for the commit it hands over: it shows on the item's page, the pull request comment and the check on GitHub.
 
 Sometimes the commit handed over has no review of its own after a review asked for changes: you chose **Hand it over as it is** on a budget or CI question after the agent pushed its fixes, or the next review was refused or filed nothing the platform could read. Then the pull request comment says there was no second review of that commit, every review of the run stays on the item's page, and the check on GitHub says **Second review did not finish after it asked for changes**, with Action required.
 
@@ -170,18 +170,32 @@ To require the check, add **windlass/verified** to the required status checks fo
 
 ## When an item needs you
 
-An item waits under **Needs you** when it asks you something, under **It asks you** on its page. For example, when its turn could not start, when GitHub refused the push, when CI has not finished, or when it reached a limit. Choose one of the answers it offers, such as **Try again**, **Keep waiting**, **Raise the limit and go on**, **Hand it over as it is** or **Give up**. An item's question waits until you answer.
+An item waits under **Needs you** when it asks you something, under **It asks you** on its page. For example, when its turn could not start, when GitHub refused the push, when CI has not finished, or when it reached a limit. Choose one of the answers it offers, such as **Try again**, **Keep waiting**, **Give it 2M more tokens**, **Hand it over as it is** or **Give up**. An item's question waits until you answer.
 
-An item also stops and asks you when it keeps failing:
+An item also stops and asks you when it is stuck. There is no cap on rounds of fixing; instead it stops when the same failure comes back:
 
-- the checks still fail after 2 more turns of fixing;
-- CI failed again after 2 rounds of fixes;
-- the pull request still conflicts with its base after a round of merging it;
-- the same failure came back after a fix;
-- the second reviewer still asks for changes after 2 rounds of fixes, or asks again for the same changes;
-- it reached its own budget.
+- the checks fail the same way again after a fix;
+- CI fails the same way again after a fix;
+- the pull request conflicts with its base again after a round of merging it;
+- the second reviewer asks again for the same changes;
+- a step was cut off 3 times by deploys or restarts;
+- the item took 60 turns, a backstop for work that goes round without repeating a failure.
 
-The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently.
+**Try it once more** goes on in the same run. Choose **Hand it over as it is** to take the work as it is, or **Give up**.
+
+The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently, and no choice throws away the sandbox's work.
+
+### When the budget is used
+
+An item's budget is one token figure, 2,000,000 by default, and on this platform 2 hours of hosted sandbox time. Tokens count cost-weighted: an input token read from the prompt cache counts as a tenth, as providers bill it, so an agent that rereads a long context is not counted as if it read it afresh. The item's page shows both the weighted tokens and the tokens as the agent reported them.
+
+When the budget is used, the item pauses and asks, for example "This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are."
+
+- **Give it 2M more tokens** goes on in the same session and sandbox, with the work as it is. The amount is what the item started with. **Another amount…** sets a figure of your own.
+- **Hand it over as it is** pushes what the sandbox holds, when nothing of the run is pushed yet, and hands it over once CI has been read.
+- **Give up** ends the item.
+
+A subtask asks the same way, without **Hand it over as it is**. What you give it adds to its feature's budget.
 
 **When every hosted sandbox you may keep is in use.** A hosted item's next turn may need a sandbox of its own, for instance its second reviewer's. When all the places are taken, the item asks you once in that step, and names what holds them: your agents by their titles, an item's builder or reviewer by its item. Free one on **Usage** and the turn starts by itself, choose **Keep waiting**, or **Give up**. An item counts as one place: its reviewer shares the place of its builder's sandbox, and the reviewer's sandbox is removed after each review. Sandboxes on your own machines are not counted.
 
@@ -207,8 +221,8 @@ A builder can stop and ask you a question when it can't go on without your decis
 
 - **Where.** The item waits under **Needs you**: "The agent stopped to ask you a question before it goes on." Below that, the page shows the agent's own question, marked as the agent's and quoted as plain text, with up to 4 answers it suggests.
 - **Answering.** Write your answer under **Your answer** and choose **Answer the agent**. A suggested answer only fills the box, so you can change it before you send it. The agent gets your answer as its next message, in the same conversation and the same step, and goes on from where it stopped. Its work stays as it was while it waits. You can also **Hand it over as it is**, when the run has pushed something, or **Give up**. Once answered, **What happened** keeps the agent's question, quoted as its words, and your answer.
-- **How often.** At most 1 question per turn and 3 per run. After that, the agent is told to decide for itself.
-- **How long.** The question waits until you answer, for days if need be. If the item's budget has run out by the time you answer, an item that is not a subtask asks you to raise the limit first, and keeps your answer for the turn it resumes. A subtask can't raise its own limit: it stops, and starting it again begins a new run without your answer.
+- **How often.** At most 1 question per turn. A run has no cap of its own: each question ends a turn and waits for you, and the item's budget and turns bound the run.
+- **How long.** The question waits until you answer, for days if need be. If the item's budget has run out by the time you answer, the item asks you for more first, and keeps your answer for the turn it resumes. A subtask does the same.
 - **Read it as the agent's.** The agent may have read issue text or repository files written by someone else, and those can steer what it asks. Its question is never written for it by the platform, never answered for you, and never posted to GitHub. Check what it asks before you agree to anything. A question over 1,000 characters is refused, and the agent is told to shorten it. Control, invisible and other hidden characters are taken out before you see it, and a suggested answer can't carry hidden text into your reply.
 - **Who can ask.** A builder, whether it runs Windlass, Claude Code, OpenCode or Codex: the turns that implement, fix checks or CI, merge the base, or answer a review. The planner files its questions with its plan, and the second reviewer asks through its review.
 - **What another program can do with these tools.** Claude Code, OpenCode and Codex reach the platform's tools through a connection inside the sandbox, which another program running there could also use. The worst it could do is file a wrong report, which is never the verdict (checks and CI decide that), ask you one question within the same limits, or push what is in the workspace to the item's own branch, at most 5 times a turn. A push never goes to another branch and never replaces someone else's commit, and nothing there gets a credential. The timeline says of each push that another program may have made it.
@@ -216,7 +230,7 @@ A builder can stop and ask you a question when it can't go on without your decis
 ### What you can do with an item
 
 - **Start** a draft.
-- **Retry** a failed top-level item if it has not started dispatching subtasks.
+- **Retry** a failed top-level item if it has not started dispatching subtasks. A retry starts a new run.
 - **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
 - **Cancel…** an item.
 
@@ -234,7 +248,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **On a single item**, a batch starts a new run on the same branch, as **Send back…** does. Feedback that arrives while the item works is held. Once CI has finished, it goes before the second review, and that commit is not handed over. Feedback that arrives while the second agent reviews goes first too, when the review asks for changes or has questions: the new run gets the feedback, and the reviewer's points after it. Its questions that only you could answer go to the agent as points too: you are not asked them. The new run's second review starts afresh, without the earlier findings. When the review approves, the commit is handed over first. After three runs started by other writers' feedback, the item asks you before each further batch: **Send it to the agent** or **Leave it**. Your own feedback is never capped. The item's budget still applies.
 
-**On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs. A feedback re-plan does not use up your own revisions of the plan. The fix may use the budget the feature has left. If that cannot cover another subtask, the question offers only **Leave it**. A feature that already has six subtasks does not take feedback. In both cases, file the fix as a new item.
+**On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs, and its budgets with it. A feature that already has six subtasks does not take feedback. In both cases, file the fix as a new item.
 
 **Not taken.** Feedback is not taken on a failed, done or cancelled item, on a subtask's own work, or after its machine was removed.
 
@@ -286,7 +300,7 @@ A sandbox whose Windlass is older than 0.6.0 also gets labelled text only, and i
 Plan first starts with a plan whether the feature needs one implementer or several.
 
 1. **Planning**. A read-only planner examines the task, repository and available machines, then files a FeaturePlan with requirements, done-when checks and work that is out of scope.
-2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. Planning spend stays visible. The implementer gets one Quick allowance within the feature cap.
+2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. Planning spend stays visible. The implementer gets one Quick item's budget on top of what planning spent.
 3. If the planner proposes a split, review the subtask budgets and approve the plan. The Factory runs the subtasks in dependency order.
 4. **Feature summary**: once every subtask is done, an agent writes the pull request's summary.
 5. CI runs on the whole feature, a second review reads it, and the feature is handed to you as one pull request.
@@ -302,7 +316,7 @@ If these checks are missing, you can still run the plan with one implementer. Th
 
 ### The plan
 
-The plan says what the feature is for, what it must do, what is left out of it and when it is done. A split plan also lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget. Subtasks that do not wait for each other may not own the same paths.
+The plan says what the feature is for, what it must do, what is left out of it and when it is done. A split plan also lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget: one token figure. Subtasks that do not wait for each other may not own the same paths.
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
@@ -317,7 +331,7 @@ The planner reads what you wrote about your machines under [Say when to use it](
 When the plan is ready, the item waits under **Needs you**: "Its plan waits for your approval." Its page shows **It asks you**, "Review the plan: N subtasks, X tokens of the Y the feature may spend", and the plan below it.
 
 - Answer the plan's questions, if it has any. Each is one short question with its choices, or a box for your answer; **Why it asks** opens the planner's background.
-- Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. You can also change where it runs, see [Placement](#placement), and which agent, model and effort it runs, see [Each subtask's agent](#each-subtasks-agent). **Allotted to subtasks** shows the proposed total against what the subtasks may share. Once children exist, it also shows their actual spend.
+- Change a subtask's token budget. You can also change where it runs, see [Placement](#placement), and which agent, model and effort it runs, see [Each subtask's agent](#each-subtasks-agent). **Allotted to subtasks** shows their total against what the feature may spend in all. Once children exist, it also shows their actual spend.
 - Choose **Save as version N** to keep changes to budgets, places or agents, or **Discard changes**. Answers alone need no saving.
 - Tick each subtask listed under **Agents that work without asking**, if there are any.
 - Choose **Approve version N** to start the subtasks. With answers typed and nothing else changed, the button is **Approve**: it saves your answers as the next version and approves that version in one press.
@@ -351,7 +365,7 @@ A subtask on Claude Code or OpenCode runs in the machine's hardened container, o
 
 **Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. So its choice of such an agent never runs on approval alone: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
 
-**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted, and the subtask's turns and working time bound it. Only counted tokens reach the feature's budget.
+**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted. Only counted tokens reach the feature's budget.
 
 **Usage limits.** A subtask waits only for its own agent's usage limits. When Claude Code is at its limit on the preferred machine and overflow is allowed, the subtask can run on an approved alternative whose Claude Code account is not.
 
@@ -359,9 +373,9 @@ A subtask on Claude Code or OpenCode runs in the machine's hardened container, o
 
 ### Budgets
 
-By default a feature may spend three times what one item may, giving it 18,000,000 tokens, 42 turns, 12 hours of working time and 6 hours of hosted sandbox time. Before each planning turn, the factory checks a planning allowance of 25% of a Quick item across all planning turns. Part of the feature budget, 1,000,000 tokens and 4 turns by default, is kept for the summary and the review. A subtask gets at most what one item may, and at least 2 turns and a tenth of one item's tokens and times.
+A feature's budget is its subtasks' budgets together, and one item's budget of its own for its planning, its summary and its review: 2,000,000 tokens by default. Before a plan, it has its own only. When you approve a plan, the feature may spend what that plan's subtasks are given. A subtask gets at most what one item may, and at least a tenth of it.
 
-When a feature reaches its budget, it stops and asks you. **Raise the limit and go on** may raise each figure by at most one item's allowance at a time.
+When the feature's own turns use its own budget, for example a long planning, it asks you for more, as an item does. When a subtask uses its budget, the subtask asks you, and what you give it adds to the feature's.
 
 ### Subtasks
 
@@ -371,7 +385,7 @@ A subtask opens no pull request of its own. It pushes its branch, and joins the 
 
 Subtasks are not listed on the Factory page unless they ask you something.
 
-If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again. A feature can be revised this way twice.
+If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again, and its budgets with it. When the same subtask stops a second time, or two subtasks stop with the same failure, the feature asks you instead: **Revise the plan** or **Give up**.
 
 ### The pull request
 
@@ -384,9 +398,7 @@ A feature gets no turns of its own to fix CI or merge its base. If CI fails on t
 These stop the feature and ask you:
 
 - a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
-- two subtasks stopped with the same failure;
-- both revisions of the plan have been used;
-- the budget left cannot cover the next subtask: "The remaining feature budget cannot cover …";
+- two subtasks stopped with the same failure, or one subtask stopped a second time;
 - no CI passed on the whole feature within 10 minutes: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
 
 Cancelling a feature cancels its subtasks too.
@@ -411,7 +423,7 @@ A GitHub issue files a feature in its own repository only. A second repository n
 - `releaseGate`: `request` for now. The feature ends at a tested pair of pull requests and a release request. Waiting for your release is not offered yet.
 - `finalIntegration`: the combined run, `{runFrom, command, inputs, profile: "actions", timeoutSeconds, requiredCases, artifactOutputs}`. `inputs` covers every repository. `earlyChecks` are kept with the plan but not run yet.
 
-Changing any of these after approval counts as a change of scope. The feature keeps 3,600 working and hosted seconds for the combined run, on top of the summary and review reserve.
+Changing any of these after approval counts as a change of scope. The combined run runs on GitHub Actions: its time counts as the feature's working time, not its hosted time.
 
 **Approval** checks each repository through its own installation before any branch is made, and names every problem at once. Each needs saved checks and CI on pushes to its `windlass/**` branches; the Windlass CLI's CI on `main` and pull requests only is refused. The repository the combined run starts from needs `.github/workflows/windlass-integration.yml`, enabled, on its base (this repository has one). That workflow must run on `workflow_dispatch` only (no `pull_request_target`, push or other trigger), set top-level permissions of at most `contents: read`, give no job more, and reference no secret. Approval names the rule it breaks. The other repository must be public, as GitHub says it at approval, since the run checks it out without a token. If a base moved since the planner read it, approval names the move. Revise the plan, or approve with `bases: {"<alias>": "<new commit>"}` to reconfirm it. Approval takes that commit only if it is where the base is when approval reads it.
 
@@ -447,22 +459,17 @@ Filter it with **repo** and **from**: filed from the web, the API or a GitHub is
 
 ## Limits
 
-When a Factory turn reaches a capacity limit, the item waits and shows the reason. GitHub intake checks its filing limits before it creates an item. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
+When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Your own machines have no platform limit: their runners' slots bound them, and the runner queues turns past them. GitHub intake checks its filing limit before it creates an item. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
-| Daily model tokens across items and interactive sessions | Unlimited |
-| Feature budget | 3× the per-item budget |
-| Factory turns at once | 5, out of 6 agents working at once |
-| Hosted sandboxes at once | 3 |
-| Items in review before new ones wait | 6 |
-| Tokens per item | 6,000,000 |
-| Turns per item | 14 |
-| Working time per item | 4 hours |
+| Hosted sandboxes running at once, items and your own agents together | 3 |
+| Tokens per item, cost-weighted | 2,000,000 |
 | Hosted sandbox time per item | 2 hours |
-| Items filed from GitHub per day | 20 |
-| Drafts from GitHub waiting | 20 |
+| A feature | its subtasks' budgets and one item's for itself |
+| Items filed from GitHub per day, drafts among them | 20 |
+| Daily model tokens across items and interactive sessions | Unlimited |
 
-When an item reaches its own budget of tokens, turns, working time or hosted sandbox time, it stops and asks you, for example "This item has used 6M of its 6M tokens." The operator’s item budget and feature multiplier apply to newly created items. See [Budgets](#budgets).
+When an item reaches its own budget, it pauses and asks you for more: see [When the budget is used](#when-the-budget-is-used). The operator's item budget applies to newly created items.
 
 When you reach your daily model token cap, admitted turns finish their current Factory step. The next turn waits until 00:00 UTC. This also applies to Windlass on paired machines because it uses the same model sign-in. See [Daily model tokens](/docs/settings#daily-model-tokens).

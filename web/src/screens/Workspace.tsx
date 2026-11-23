@@ -62,7 +62,7 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 	const counts = workingCounts(sessions ?? []);
 	// Asked again when a session starts or stops working, and when one is added or deleted.
 	const usage = useAllowance(`${counts.ceilinged + counts.onMachines}:${sessions?.length ?? 0}`);
-	const ceiling = useFactoryLimits().value?.runningTurns ?? null;
+	const ceiling = useFactoryLimits().value?.hostedRunning ?? null;
 	const chosen = selection.kind === "repository" ? selection.id : null;
 	const rail = railOf({ sessions, items: items.list, feed: items.feed, saved, filters, keep: chosen });
 	const [sheet, setSheet] = useState(false);

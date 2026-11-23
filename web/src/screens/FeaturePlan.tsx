@@ -27,7 +27,7 @@
  * card holds approval back until the owner confirms each such subtask: the planner reads text an issue's
  * author may have written, so its choice of such an agent is never approved by default.
  */
-import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemAction, type ItemBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
+import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemAction, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
@@ -43,7 +43,8 @@ import { effortChoices, effortsOf, modelLabel, type ReportedOptions } from "../l
 import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { useMachines } from "./Machines";
-import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
+import { budgetProblems, featureTotal, PLAN_FIELDS, subtaskFloor, sumBudgets, type PlanField } from "../lib/feature";
+import { compact } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
 import { Check } from "../components/ui/Check";
@@ -64,7 +65,7 @@ export function planOpen(view: ItemView): boolean {
 	return view.mode === "orchestrate" && view.plan?.status === "proposed" && PLAN_QUESTIONS.has(view.question?.kind ?? "");
 }
 
-type Drafts = Record<string, Record<keyof ItemBudget, string>>;
+type Drafts = Record<string, Record<keyof SubtaskBudget, string>>;
 
 const placesOf = (plan: FeaturePlan): Record<string, PlaceDraft> => Object.fromEntries(plan.subtasks.map((task) => [task.key, placeDraftOf(task)]));
 
@@ -101,7 +102,7 @@ function useCatalogs(machines: MachineSummary[] | null): Catalogs {
 	return out;
 }
 
-const draftsOf = (plan: FeaturePlan): Drafts => Object.fromEntries(plan.subtasks.map((task) => [task.key, Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, field.toInput(task.budget[field.key])])) as Record<keyof ItemBudget, string>]));
+const draftsOf = (plan: FeaturePlan): Drafts => Object.fromEntries(plan.subtasks.map((task) => [task.key, Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, field.toInput(task.budget[field.key])])) as Record<keyof SubtaskBudget, string>]));
 
 /** The plan's budgets, questions and the actions on them, kept together so that its question card and its section agree. */
 export function usePlanReview(view: ItemView | null, acting: PlanActing) {
@@ -136,17 +137,17 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	}, [view?.id, version]);
 
 	const parsed = useMemo(() => {
-		const out: Record<string, ItemBudget> = {};
+		const out: Record<string, SubtaskBudget> = {};
 		for (const task of plan?.subtasks ?? []) {
 			const draft = drafts[task.key];
-			out[task.key] = Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, draft ? field.fromInput(draft[field.key]) : task.budget[field.key]])) as unknown as ItemBudget;
+			out[task.key] = Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, draft ? field.fromInput(draft[field.key]) : task.budget[field.key]])) as unknown as SubtaskBudget;
 		}
 		return out;
 	}, [plan, drafts]);
 
-	const doneBudgets = (view?.children ?? []).filter((child) => child.state === "done").map((child) => child.budget);
-	const pool = plan && view ? subtaskPool(plan, view.spent, doneBudgets) : null;
-	const problems = plan && pool ? budgetProblems(plan.compare.singleBudget, pool, parsed) : { fields: {}, total: [], any: false };
+	// What the feature may spend with these budgets: its own allowance and its subtasks' together.
+	const pool = plan && view ? featureTotal(plan, parsed) : null;
+	const problems = plan && pool ? budgetProblems(plan.compare.singleBudget, parsed) : { fields: {}, total: [], any: false };
 	const budgetsChanged = plan ? plan.subtasks.some((task) => PLAN_FIELDS.some((field) => parsed[task.key]?.[field.key] !== task.budget[field.key])) : false;
 	const answered = Object.entries(answers).filter(([, text]) => text.trim() !== "");
 	const placesDirty = plan ? plan.subtasks.some((task) => places[task.key] !== undefined && placeChanged(task, places[task.key]!)) || overflow !== (plan.overflow ?? false) : false;
@@ -200,7 +201,7 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		plan,
 		open,
 		drafts,
-		setDraft: (key: string, field: keyof ItemBudget, text: string) => setDrafts((now) => ({ ...now, [key]: { ...now[key]!, [field]: text } })),
+		setDraft: (key: string, field: keyof SubtaskBudget, text: string) => setDrafts((now) => ({ ...now, [key]: { ...now[key]!, [field]: text } })),
 		answers,
 		setAnswer: (id: string, text: string) => setAnswers((now) => ({ ...now, [id]: text })),
 		machines,
@@ -454,7 +455,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const singleSpend = view.mode === "single" || plan.subtasks.length === 0 ? (
 		<>
 			<p className="plan-single">Runs as one item after this plan</p>
-			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent, view.budget)} fields={PLAN_FIELDS.filter(field => field.key !== "hostedSeconds")} />
+			<ItemSpend spent={view.spent} budget={view.mode === "single" ? view.budget : singleAfterPlanning(plan.compare.singleBudget, view.spent)} fields={PLAN_FIELDS} />
 		</>
 	) : null;
 	if (plan.status === "superseded") {
@@ -494,17 +495,15 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	);
 }
 
-function PlanBody({ view, review, acting, pool }: { view: ItemView; review: PlanReview; acting: PlanActing; pool: ItemBudget }) {
+function PlanBody({ view, review, acting, pool }: { view: ItemView; review: PlanReview; acting: PlanActing; pool: SubtaskBudget }) {
 	const plan = review.plan!;
-	const hosted = view.place.kind === "hosted";
-	const fields = PLAN_FIELDS.filter((field) => hosted || field.key !== "hostedSeconds");
+	const fields = PLAN_FIELDS;
 	const editing = review.open;
 	const children = new Map((view.children ?? []).filter((child) => child.parent).map((child) => [child.parent!.key, child]));
 	const single = plan.compare.singleBudget;
 	const floor = subtaskFloor(single);
-	const reserve = closingReserve(single);
 	const total = sumBudgets(Object.values(review.parsed));
-	const spent = view.children?.length ? sumBudgets(view.children.map(child => child.spent)) : null;
+	const spent = view.children?.length ? { ...sumBudgets(view.children.map(child => child.spent)), raw: view.children.reduce((sum, child) => sum + (child.spent.rawTokens ?? child.spent.tokens), 0) } : null;
 	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
 	const setAside = plan.status === "superseded";
 	const machines = review.machines;
@@ -573,29 +572,25 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 						<p className="plan-total-head">Allotted to subtasks</p>
 						<dl className="plan-total-figures">
 							{fields.map((field) => {
-								const over = review.problems.total.includes(field.key);
-								const share = Math.min(100, (total[field.key] / Math.max(1, plan.budget[field.key])) * 100);
-								const kept = Math.min(100 - share, (reserve[field.key] / Math.max(1, plan.budget[field.key])) * 100);
+								const share = Math.min(100, (total[field.key] / Math.max(1, pool[field.key])) * 100);
 								return (
-									<div key={field.key} className={over ? "plan-total-over" : undefined}>
+									<div key={field.key}>
 										<dt>{field.label}</dt>
 										<dd className="plan-total-number">
 											{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])}</span>
 										</dd>
 										<dd>
 											<span className="usage-meter plan-meter" aria-hidden="true">
-												<span className={`usage-meter-used${over ? " item-meter-reached" : ""}`} style={{ width: `${share}%` }} />
-												<span className="plan-meter-kept" style={{ width: `${kept}%` }} />
+												<span className="usage-meter-used" style={{ width: `${share}%` }} />
 											</span>
 										</dd>
-										{spent && <dd className="tone-dim">Spent by subtasks: {field.spelled(spent[field.key])}</dd>}
-										{over ? <dd className="plan-total-why tone-bad">over what the subtasks may share</dd> : null}
+										{spent && <dd className="tone-dim">Spent by subtasks: {field.spelled(spent[field.key])} <span className="tone-faint">({compact(spent.raw)} as reported)</span></dd>}
 									</div>
 								);
 							})}
 						</dl>
 						<p className="usage-note plan-total-note">
-							The feature budget is {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} tokens and {plan.budget.turns} turns. The hatched part of each bar reserves {PLAN_FIELDS[0]!.spelled(reserve.tokens)} tokens and {reserve.turns} turns for the summary and review. A subtask gets at most one single item ({PLAN_FIELDS[0]!.spelled(single.tokens)} tokens, {single.turns} turns).
+							The feature may spend {PLAN_FIELDS[0]!.spelled(pool.tokens)} in all: its subtasks' budgets, and the rest for planning, the summary and the review. One token figure per subtask, cost-weighted: cached input counts at a tenth. A subtask gets at most {PLAN_FIELDS[0]!.spelled(single.tokens)}. One that uses its budget asks you for more, and what you give it adds to the feature's.
 						</p>
 					</div>
 				</div>
@@ -659,7 +654,7 @@ export function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof ItemBudget, string> | undefined; problems: Partial<Record<keyof ItemBudget, string>>; floor: ItemBudget; single: ItemBudget; disabled: boolean; onChange(field: keyof ItemBudget, text: string): void }) {
+function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof SubtaskBudget, string> | undefined; problems: Partial<Record<keyof SubtaskBudget, string>>; floor: SubtaskBudget; single: Pick<ItemBudget, "tokens">; disabled: boolean; onChange(field: keyof SubtaskBudget, text: string): void }) {
 	const base = useId();
 	return (
 		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}`}>

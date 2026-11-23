@@ -1,14 +1,12 @@
 import type { ItemMode } from "@contract";
 import { useId } from "react";
-import { useFactoryLimits } from "../state/hooks";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 
 /** What the chosen mode costs, in one quiet line under the picker. */
 export function ItemModeCost({ id, mode }: { id: string; mode: ItemMode }) {
-	const limits = useFactoryLimits(mode === "orchestrate").value;
 	return (
 		<p className="field-note item-mode-cost" id={id}>
-			{mode === "orchestrate" ? (limits ? `Adds a planning turn you approve and may spend up to ${limits.featureMultiplier}× a Quick item’s budget.` : "Adds a planning turn you approve.") : "Starts one implementer at once, with no plan to approve."}
+			{mode === "orchestrate" ? "Adds a planning turn you approve. The feature may spend what you approve for its subtasks, and one Quick item's budget for its planning and review." : "Starts one implementer at once, with no plan to approve."}
 		</p>
 	);
 }

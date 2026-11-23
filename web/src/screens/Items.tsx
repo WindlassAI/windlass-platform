@@ -201,7 +201,7 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider limit", children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget", integration: "testing together", sandboxes: "for a sandbox" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider limit", children: "subtasks", capacity: "for a turn", machine: "for its machine", ci: "CI", person: "for you", budget: "budget", integration: "testing together", sandboxes: "for a sandbox" };
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
@@ -866,8 +866,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 					<span className="check-means">
 						{start
 							? chosenMachine
-								? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
-								: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
+								? `It starts as soon as “${machineLabel(chosenMachine)}” is online and has a free slot; until then it waits, and says for what.`
+								: "It starts as soon as one of your hosted sandboxes is free; until then it waits, and says for what."
 							: "It is kept as a draft until you start it from its page."}
 					</span>
 				</Check>
