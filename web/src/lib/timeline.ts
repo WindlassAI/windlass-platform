@@ -103,6 +103,8 @@ export interface PlatformBlock extends BlockBase {
 	blocked?: { host: string; repository: boolean };
 	/** The turn paused (its server restarted, or its machine went away), or resumed after it (`code` "turn_paused", "turn_resumed"). */
 	resume?: "paused" | "resumed";
+	/** The line of the agent's `request_secret`: the name it asks for and its reason, the agent's own words. */
+	secret?: { id: string; name: string; why: string };
 }
 
 export interface ReasoningBlock extends BlockBase {
@@ -356,7 +358,7 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 			// The platform answering a call's question itself is told once, with the call's answer. Its
 			// line carries a code and names the call, so nothing rests on its wording.
 			if ((item.code === "question_expired" || item.code === "question_allowed") && item.call) draft.patchTurn(item.turn, { platformAnswer: { key: callKey(item.call), text: item.text } });
-			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text, ...(item.code === "host_blocked" && item.host ? { blocked: { host: item.host, repository: item.repository === true } } : {}), ...(item.code === "turn_paused" ? { resume: "paused" as const } : item.code === "turn_resumed" ? { resume: "resumed" as const } : {}) });
+			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text, ...(item.code === "host_blocked" && item.host ? { blocked: { host: item.host, repository: item.repository === true } } : {}), ...(item.code === "turn_paused" ? { resume: "paused" as const } : item.code === "turn_resumed" ? { resume: "resumed" as const } : {}), ...(item.secretRequest ? { secret: { id: item.secretRequest.id, name: item.secretRequest.name, why: item.secretRequest.why } } : {}) });
 			break;
 		}
 		case "windlass":

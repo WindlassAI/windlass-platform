@@ -24,7 +24,8 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, CheckIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { SecretAsk } from "../components/SecretAsk";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
@@ -339,7 +340,36 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 		[api, explain],
 	);
 	const repositoryId = state.summary?.repository?.id ?? null;
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId]);
+	// The agent's open request for a secret, answered above the field. Hidden once answered here, before the turn it starts closes it.
+	const [answeredSecret, setAnsweredSecret] = useState<string | null>(null);
+	const [savedSecret, setSavedSecret] = useState<{ name: string; turnsEnded: number } | null>(null);
+	const secretRequest = state.secretRequest && state.secretRequest.id !== answeredSecret ? state.secretRequest : null;
+	const secretRequestId = secretRequest?.id ?? null;
+	const itemId = state.summary?.item?.id ?? null;
+	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId, secretRequestId, itemId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId, secretRequestId, itemId]);
+	const addSecret = useCallback(
+		async (request: { id: string; name: string }, value: string) => {
+			try {
+				await api.setRequestedSecret({ requestId: request.id, name: request.name, value });
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+			setAnsweredSecret(request.id);
+			setSavedSecret({ name: request.name, turnsEnded: state.turnsEnded });
+		},
+		[api, explain, state.turnsEnded],
+	);
+	const continueWithout = useCallback(
+		async (request: { id: string; name: string }) => {
+			try {
+				await api.prompt({ text: `Continue without ${request.name}.` });
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+			setAnsweredSecret(request.id);
+		},
+		[api, explain],
+	);
 
 	if (state.phase === "missing") {
 		return (
@@ -438,6 +468,31 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
+				{secretRequest ? (
+					<div className="q-dock-wrap">
+						<div className="q-dock secret-dock">
+							<SecretAsk
+								key={secretRequest.id}
+								compact
+								request={secretRequest}
+								repository={summary.repository ? `${summary.repository.owner}/${summary.repository.name}` : null}
+								shared={summary.harness !== undefined && summary.harness !== null && summary.harness !== "windlass"}
+								offline={!online}
+								onAdd={(value) => addSecret(secretRequest, value)}
+								onWithout={() => continueWithout(secretRequest)}
+							/>
+						</div>
+					</div>
+				) : savedSecret && savedSecret.turnsEnded === state.turnsEnded ? (
+					<div className="q-dock-wrap">
+						<p className="callout secret-ask-saved" role="status">
+							<CheckIcon size={14} className="tone-good" />
+							<span>
+								<code className="secret-ask-name">{savedSecret.name}</code> saved; the agent continues.
+							</span>
+						</p>
+					</div>
+				) : null}
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
 				) : (

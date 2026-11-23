@@ -508,6 +508,28 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			],
 			spent: { tokens: 380_000, turns: 1, activeSeconds: 32 * 60, hostedSeconds: 32 * 60 },
 		},
+		// The builder asked for a secret it lacks (`request_secret`): the name, and its reason in its own words.
+		{
+			n: 83,
+			title: "Send the release notes by email",
+			body: "After a release is published, email its notes to the subscribers list.",
+			on: HARBOR,
+			state: "waiting",
+			filed: 34,
+			question: {
+				kind: "secret_needed",
+				text: "The agent needs RESEND_API_KEY in its environment.",
+				choices: choices("add_secret", "without_secret", "give_up"),
+				asked: 4,
+				secret: { name: "RESEND_API_KEY", why: "The release script sends the notes through Resend, and its integration test calls the API. Without the key the test is skipped, so the email step would ship unverified." },
+			},
+			run: { n: 1, started: 33, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 33 } },
+			events: [
+				[34, "Started.", undefined, true],
+				[4, "Asked: The agent needs RESEND_API_KEY in its environment.", [1, 1, "implement"]],
+			],
+			spent: { tokens: 290_000, turns: 1, activeSeconds: 29 * 60, hostedSeconds: 29 * 60 },
+		},
 		// In review: each verdict, and each state of CI.
 		review(24, "Show the upload's checksum in the log", HARBOR, 61, { body: "After each upload, log the artefact's SHA-256 next to its name.", acceptance: ["The log has each uploaded artefact's SHA-256, next to its name."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
 		review(25, "Make the station parser accept tabs", TIDES, 58, { body: "Some station files separate their columns with tabs. Accept tabs as well as spaces between columns.", acceptance: ["A station file with tabs between its columns reads the same as one with spaces.", "A file that mixes tabs and spaces is read too."] }, { result: "pass", gate: passingGate, ci: ci.passed(4), flags: [{ kind: "tests_skipped", where: ["src/parse.test.ts"] }], mergeable: true, run: 1, ago: 38 }),
@@ -1165,7 +1187,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		acceptance: seed.acceptance ?? [],
 	})) as Verdict[];
 	const last = verdicts[verdicts.length - 1];
-	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }), ...(seed.question.check && { check: seed.question.check }) } : null;
+	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }), ...(seed.question.check && { check: seed.question.check }), ...(seed.question.secret && { secret: seed.question.secret }) } : null;
 	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
 	const run: ItemView["run"] = seed.run
 		? {
@@ -2196,7 +2218,21 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	/** Seeds the user's items, and with them their sessions, before anything is asked of either. */
 	const prepare = (auth: AuthResult): void => void keptOf(auth);
-	return { calls, machinesChanged, prepare, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
+	/**
+	 * "Add and continue" on an item's `secret_needed` question, sent through its builder's session (`setRequestedSecret`), as
+	 * work-item.ts `internalSetRequestedSecret`: the secret is saved, and the question answered with `add_secret`. False when no
+	 * item of that session asks it. The value is not kept: the mock has nowhere it would be read.
+	 */
+	function setRequestedSecret(auth: AuthResult, sessionId: string, requestId: string, name: string): boolean {
+		const item = keptOf(auth).items.find((one) => one.sessionId === sessionId);
+		if (!item) return false;
+		const question = item.question;
+		if (question?.kind !== "secret_needed" || question.id !== requestId || question.secret?.name !== name) throw new PlatformError("user", "That secret request is no longer open.", { reason: "item_conflict" });
+		const picked = question.choices.find((choice) => choice.id === "add_secret") ?? { id: "add_secret" as const, label: "Add it and continue" };
+		change(auth, item, { state: "working", wait: null, question: null }, [answeredWords(picked, null), "The turn started."], "person");
+		return true;
+	}
+	return { calls, machinesChanged, prepare, setRequestedSecret, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
 }
 
 // ---- the agent's reports on the item's page (Reviewer slice R1-C) -----------------------------------

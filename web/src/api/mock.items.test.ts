@@ -69,8 +69,26 @@ describe("the mock's work items", () => {
 		for (const item of list) expect(item.wait !== null).toBe(item.state === "waiting");
 		// A question is always a wait for the person, with the question's text.
 		for (const item of list.filter((one) => one.question)) expect(item.wait).toMatchObject({ reason: item.question?.kind === "budget" ? "budget" : "person", sentence: item.question?.text, retryAt: null });
-		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more", "review_question", "agent_ask", "check_environment"]));
+		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more", "review_question", "agent_ask", "check_environment", "secret_needed"]));
 		expect(new Set(list.flatMap((item) => (item.verdict ? [item.verdict.result] : [])))).toEqual(new Set(["pass", "fail", "incomplete", "unverified"]));
+		mock.dispose();
+	});
+
+	it("answers a builder's request for a secret through its session, as the item's question", async () => {
+		const mock = make();
+		const user = mock.user(auth);
+		const listed = (await user.listItems()).find((item) => item.question?.kind === "secret_needed")!;
+		const view = await user.item(listed.id);
+		const question = view.question!;
+		expect(question.secret).toEqual({ name: "RESEND_API_KEY", why: expect.any(String) });
+		expect(question.choices.map((choice) => choice.id)).toEqual(["add_secret", "without_secret", "give_up"]);
+		const session = mock.session(auth, view.sessionId);
+		await expect(session.setRequestedSecret({ requestId: "another", name: "RESEND_API_KEY", value: "re_live_5f2c9a81" })).rejects.toMatchObject({ reason: "item_conflict" });
+		await session.setRequestedSecret({ requestId: question.id, name: "RESEND_API_KEY", value: "re_live_5f2c9a81" });
+		const after = await user.item(listed.id);
+		expect(after.question).toBeNull();
+		expect(after.state).toBe("working");
+		expect(JSON.stringify(after)).not.toContain("re_live_5f2c9a81");
 		mock.dispose();
 	});
 

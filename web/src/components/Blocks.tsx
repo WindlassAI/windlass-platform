@@ -13,6 +13,7 @@ import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { summarizeWork, turnRows, type WorkBlock } from "../lib/workGroups";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
+import { linkProps } from "../lib/router";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
 import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, PauseIcon, RefusedIcon, ResumeIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
@@ -853,12 +854,52 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 			<span className="system-text">{block.kind === "platform" ? withLinks(block.text) : block.text}</span>
 		</p>
 	);
+	if (block.kind === "platform" && block.secret) {
+		return (
+			<>
+				{line}
+				<SecretRequested secret={block.secret} />
+			</>
+		);
+	}
 	if (block.kind !== "platform" || !block.blocked) return line;
 	return (
 		<>
 			{line}
 			<BlockedHost host={block.blocked.host} repository={block.blocked.repository} />
 		</>
+	);
+}
+
+/**
+ * Under the line of the agent's `request_secret`: the name, and its reason quoted as the agent's own words, in plain text.
+ * The value is never asked for here: an open request is answered above the field, an item's on the item's page.
+ */
+function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret"]> }) {
+	const interactive = useInteractive();
+	const open = interactive?.secretRequestId === secret.id;
+	const itemId = interactive?.itemId ?? null;
+	return (
+		<section className="system-secret" aria-label={`The agent asks for the secret ${secret.name}`}>
+			<p className="system-secret-name">
+				The agent asks for a secret: <code className="secret-ask-name">{secret.name}</code>
+			</p>
+			<figure className="item-asked secret-ask-why">
+				<figcaption className="item-asked-who">Its reason, in the agent's own words.</figcaption>
+				<LongText lines={3} as="blockquote" className="item-asked-text">
+					{secret.why}
+				</LongText>
+			</figure>
+			{open ? (
+				<p className="system-secret-where">Add it or go on without it above the field below.</p>
+			) : itemId ? (
+				<p className="system-secret-where">
+					<a className="link" {...linkProps({ name: "item", id: itemId })}>
+						Answer on the item's page
+					</a>
+				</p>
+			) : null}
+		</section>
 	);
 }
 

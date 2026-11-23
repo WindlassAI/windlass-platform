@@ -103,6 +103,8 @@ A `request_secret` entry gives the variable name, the supplied reason, the conne
 
 The value is saved with agent scope for the connected repository, or for your account when there is no connected repository. Account scope applies across your agents, subject to each sandbox’s secret delivery settings. An existing name in either applicable store must be managed under **Secrets**. In a plain session, starting another turn without supplying the value skips that name for the rest of the session. A plain session can request at most three secrets, one per turn. Keep values out of prompts and notes.
 
+A card above the field asks for the value. It quotes the agent’s reason as its own words and shows the platform’s notice apart from it. **Add it and continue** saves the value, and the next turn receives it in its environment. **Continue without it** tells the agent to go on without it.
+
 ## Stop
 
 Choose **Stop**, beside the field, to stop the running turn. It shows **Stopping** while it works. The conversation and the files stay. Send a prompt to go on.

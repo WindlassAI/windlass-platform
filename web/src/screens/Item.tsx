@@ -35,12 +35,13 @@ import { agentFacts, agentLine } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
-import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { ItemNetwork } from "../components/ItemNetwork";
 import type { AllowHostContext } from "../components/BlockedNetwork";
 import { reviewShots } from "../components/SecondReview";
+import { SecretAsk } from "../components/SecretAsk";
 import { ItemChecks } from "./ItemChecks";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -555,6 +556,47 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 	);
 }
 
+/**
+ * The builder's request for a secret it lacks (`secret_needed`). "Add and continue" goes through its session
+ * (`setRequestedSecret`), which saves the value and answers the question; the other two are the question's answers,
+ * with no note, as the server takes them. `onSaved` is told the name once the value was taken.
+ */
+function SecretQuestion({ view, question, secret, acting, now, onSaved }: { view: ItemView; question: ItemQuestion; secret: NonNullable<ItemQuestion["secret"]>; acting: Acting; now: number; onSaved(name: string): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const offers = (choice: ChoiceId) => question.choices.some((one) => one.id === choice);
+	const answer = (choice: ChoiceId) => async () => {
+		await acting.act({ kind: "answer", question: question.id, choice });
+	};
+	return (
+		<SecretAsk
+			className="item-question"
+			head={
+				<p className="item-question-head">
+					It asks you
+					<span className="item-question-when">
+						<When at={question.askedAt} now={now} />
+					</span>
+				</p>
+			}
+			request={secret}
+			repository={`${view.repository.owner}/${view.repository.name}`}
+			shared={view.agent !== undefined && view.agent.harness !== "windlass"}
+			offline={acting.busy !== null}
+			onAdd={async (value) => {
+				try {
+					await client.session(auth, view.sessionId).setRequestedSecret({ requestId: question.id, name: secret.name, value });
+				} catch (failure) {
+					throw new Error(explain(failure));
+				}
+				onSaved(secret.name);
+			}}
+			onWithout={answer("without_secret")}
+			onGiveUp={offers("give_up") ? answer("give_up") : undefined}
+		/>
+	);
+}
+
 /** A check the sandbox could not run (`check_environment`): its command and the end of what it printed, as the session shows a check's result. */
 function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]> }) {
 	return (
@@ -888,6 +930,12 @@ export function Item({ page }: { page: ItemPage }) {
 	const { view } = page;
 	// A plan action refused because the plan moved on: the page reads the item again, and its card says so until the next action.
 	const [conflicted, setConflicted] = useState(false);
+	// The name of the secret just added for the builder's request, said until the item asks something else.
+	const [secretSaved, setSecretSaved] = useState<string | null>(null);
+	const asking = view?.question?.id ?? null;
+	useEffect(() => {
+		if (asking !== null) setSecretSaved(null);
+	}, [asking]);
 	const acting = useActing(
 		view?.id ?? "",
 		(next) => {
@@ -1040,11 +1088,24 @@ export function Item({ page }: { page: ItemPage }) {
 
 			<section className="usage-section item-where" aria-label="Where it is">
 				<ItemStages item={view} reviewer={reviewer} step={view.run?.step.kind ?? null} />
+				{secretSaved !== null && !view.question ? (
+					<p className="callout secret-ask-saved" role="status">
+						<CheckIcon size={14} className="tone-good" />
+						<span>
+							<code className="secret-ask-name">{secretSaved}</code> saved; the agent continues.
+						</span>
+					</p>
+				) : null}
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
 				{view.question && planOpen(view) ? (
 					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question?.kind === "placement_refused" && view.plan ? (
 					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />
+				) : view.question?.kind === "secret_needed" && view.question.secret ? (
+					<>
+						<SecretQuestion key={view.question.id} view={view} question={view.question} secret={view.question.secret} acting={acting} now={now} onSaved={(name) => { setSecretSaved(name); page.reload(); }} />
+						<Failure error={acting.error} />
+					</>
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
 				) : showsSubtasks(view) ? (

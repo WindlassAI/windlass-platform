@@ -498,6 +498,104 @@
 	flex-wrap: wrap;
 	gap: 8px;
 }
+/* The agent's request for a secret (`request_secret`): the question card's neutral look, the name in monospace, the
+   agent's reason quoted as its own, and a field for the value with its show and hide beside it. */
+.secret-ask {
+	display: grid;
+	gap: 12px;
+	min-width: 0;
+}
+.secret-ask-title {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	max-width: 74ch;
+	font-size: var(--text-16);
+	font-weight: var(--weight-medium);
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+.secret-ask-lock {
+	flex: none;
+	align-self: center;
+	color: var(--ink-faint);
+}
+.secret-ask-name {
+	font-family: var(--font-mono);
+	font-size: 0.9em;
+	font-weight: var(--weight-medium);
+	overflow-wrap: anywhere;
+}
+.secret-ask-why {
+	padding-top: 4px;
+	padding-bottom: 4px;
+}
+.secret-ask-form {
+	display: grid;
+	gap: 6px;
+	min-width: 0;
+}
+.secret-ask-field {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 520px;
+}
+.secret-ask-field .input {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.secret-ask-toggle {
+	flex: none;
+	min-width: 56px;
+}
+.secret-ask-where {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.secret-ask-choices {
+	margin-top: 6px;
+}
+.secret-ask-saved .secret-ask-name {
+	font-size: var(--size-mono-small);
+}
+/* Above a session's field: the dock's size, its parts closer together. */
+.secret-ask-compact {
+	gap: 8px;
+}
+.secret-ask-compact .secret-ask-title {
+	font-size: var(--size-small);
+}
+.secret-ask-compact .item-asked-text {
+	font-size: var(--size-small);
+}
+/* The field and the answers on one row, the note under them; stacked where the row has no room. */
+.secret-ask-compact .secret-ask-form {
+	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-areas: "field choices" "note note";
+	align-items: center;
+	gap: 6px 10px;
+}
+.secret-ask-compact .secret-ask-field {
+	grid-area: field;
+	max-width: none;
+}
+.secret-ask-compact .secret-ask-choices {
+	grid-area: choices;
+	margin-top: 0;
+}
+.secret-ask-compact .field-note {
+	grid-area: note;
+}
+@media (max-width: 720px) {
+	.secret-ask-compact .secret-ask-form {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-areas: "field" "note" "choices";
+	}
+}
+
 .item-raise {
 	display: grid;
 	gap: 12px;
