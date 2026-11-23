@@ -647,10 +647,10 @@ await section("the agent asks: what a request may hold, and what becomes of an o
 	);
 
 	// Windlass's configuration file in the sandbox: a server an older platform left there under its name goes, whether or not the platform's list names it (server/src/windlass-config.ts).
-	const { PLATFORM_WAKE, platformConfig } = await import("../server/src/windlass-config.js");
+	const { PLATFORM_WAKE, TURN_TIME_HOOK, platformConfig } = await import("../server/src/windlass-config.js");
 	const held = { approval: { untrustedPaths: ["**"] }, mcp: { servers: { tracker: { command: "tracker-mcp" } } } };
 	const left = JSON.stringify({ ...held, mcp: { servers: { ...held.mcp.servers, [asks.PUBLISH_SERVER]: { command: "python3" } } } });
-	expect("the server an older platform left under its own name goes from Windlass's configuration", JSON.stringify(JSON.parse(platformConfig(left, null, [])?.config as string)) === JSON.stringify({ ...held, wake: PLATFORM_WAKE }));
+	expect("the server an older platform left under its own name goes from Windlass's configuration", JSON.stringify(JSON.parse(platformConfig(left, null, [])?.config as string)) === JSON.stringify({ ...held, hooks: { beforeTool: [TURN_TIME_HOOK] }, wake: PLATFORM_WAKE }));
 
 	// What a request may hold.
 	const fine = asks.publishRequest({ title: "  Fix   the\tlight ", description: "It was off.\r\n\r\nNow it is on.\u001b[31m", commit_message: undefined }, where, NO_REDACTION);
