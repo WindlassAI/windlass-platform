@@ -2035,6 +2035,11 @@ async function machineChecks(): Promise<void> {
 			} finally {
 				runner.fake.report.harnesses = harnesses;
 				runner.report();
+				// Later session launches must see the restored machine report before choosing their model.
+				await waitFor("the machine's report without a model list", async () => {
+					const claude = (await user.machines())[0]?.harnesses?.find(h => h.id === "claude");
+					return claude?.signIn === "token" && !claude.optionsDigest;
+				}, 15_000);
 			}
 		});
 
@@ -2059,11 +2064,6 @@ async function machineChecks(): Promise<void> {
 				const timeline = (await client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } }).snapshot()).timeline;
 				return timeline.some(e => e.kind === "turn.ended") && timeline.flatMap(e => e.kind === "platform" ? [e.text] : []);
 			}, 60_000);
-			// The check before restores the report without a model list: the index has to have it before an item is filed.
-			await waitFor("the machine's report without a model list", async () => {
-				const claude = (await user.machines())[0]?.harnesses?.find(h => h.id === "claude");
-				return claude?.signIn === "token" && !claude.optionsDigest;
-			}, 15_000);
 			// "platformpush" (fixtures/acp-agent): six pushes, three naming another branch, then four fetches, then a publish.
 			const item = await user.createItem({ ...task, title: "Claude pushes as it goes", body: "Push as you go (platformpush).", harness: "claude", start: true });
 			const said = await lines(item.sessionId);
