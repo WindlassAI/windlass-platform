@@ -175,6 +175,14 @@ function updateStream(redactor: Redactor, emit: (update: AcpUpdate) => void) {
 	};
 }
 
+/**
+ * The agent process's environment for a turn. Codex resumes a session on the model its config names, not the
+ * session's (sandbox/harness/codex/wlp-codex-acp): the turn's model goes in before the process starts.
+ */
+export function turnEnv(profile: Pick<AcpProfile, "id">, input: Pick<RunTurnInput, "model">): Record<string, string> {
+	return profile.id === "codex" && input.model && input.model !== "default" ? { WLP_CODEX_MODEL: input.model } : {};
+}
+
 async function waitForExit(run: SandboxProcess, ms: number) {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try { return await Promise.race([run.ended, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), ms); })]); }
@@ -323,7 +331,7 @@ export class AcpHarness implements Harness {
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			const lines = new LineSplitter(line => rpc.receive(line));
 			mark("process");
-			run = handle.start(profile.command, { cwd: handle.cwd, env: {}, onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
+			run = handle.start(profile.command, { cwd: handle.cwd, env: turnEnv(profile, input), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
 				rpc.end(end.error?.message || `${profile.name} exited before answering (exit ${end.code ?? end.signal}).`);

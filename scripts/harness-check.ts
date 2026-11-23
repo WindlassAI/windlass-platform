@@ -839,6 +839,23 @@ async function clientCheck(state: string) {
 		assert.equal(asked, 1);
 	}
 	ok("Codex runs work items but not subtasks, counts tokens by its filed sign-in, and an item's allow-once answers it only where nothing refused first");
+	{
+		// Codex resumes on its config's model, not the session's: the turn's model is in its config before it starts.
+		const { turnEnv } = await import("../server/src/sandbox/acp-harness.js");
+		const { CODEX, CLAUDE } = await import("../server/src/sandbox/harnesses.js");
+		assert.deepEqual(turnEnv(CODEX, { model: "gpt-6-luna" }), { WLP_CODEX_MODEL: "gpt-6-luna" });
+		assert.deepEqual(turnEnv(CODEX, { model: "default" }), {});
+		assert.deepEqual(turnEnv(CODEX, {}), {});
+		assert.deepEqual(turnEnv(CLAUDE, { model: "sonnet" }), {});
+		const { codexEnv } = (await import("node:module")).createRequire(import.meta.url)("../sandbox/harness/codex/wlp-codex-acp") as { codexEnv(env: Record<string, string>): Record<string, string> };
+		const env = codexEnv({ WLP_CODEX_MODEL: "gpt-6-luna", WLP_SESSION_BEARER: "b" });
+		assert.deepEqual(JSON.parse(env.CODEX_CONFIG!), { model: "gpt-6-luna" });
+		assert.equal(env.WLP_CODEX_MODEL, undefined);
+		assert.equal(env.WLP_SESSION_BEARER, "b");
+		assert.equal(codexEnv({ WLP_CODEX_MODEL: "a model; rm" }).CODEX_CONFIG, undefined);
+		assert.deepEqual(JSON.parse(codexEnv({ CODEX_CONFIG: '{"x":1}', WLP_CODEX_MODEL: "m" }).CODEX_CONFIG!), { x: 1, model: "m" });
+		ok("a Codex turn starts Codex with the session's model in its config, so a resume keeps it");
+	}
 }
 
 /**
