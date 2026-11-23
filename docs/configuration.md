@@ -57,6 +57,8 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_SANDBOX_IMAGE` | base image for the Docker layer, or the private output tag for either variant of `sandbox/build.sh`. By default the build publishes `windlass-platform-sandbox:latest` for base or `windlass-platform-sandbox:shots` for shots |
 | `WLP_SANDBOX_SHOTS_IMAGE` | screenshots image for the Docker layer and local runner builds (default `windlass-platform-sandbox:shots`) |
 | `WLP_TURN_TIMEOUT_MS` | how long one turn may run (default 45 minutes). The durations that keep its access token fresh are constants and hold for a turn of any length |
+| `WLP_ACP_IDLE_MINUTES` | how long a Claude Code, OpenCode or Codex agent may send nothing, with no call of its own running and no question waiting for a person, before the platform ends its turn (default 10). The turn ends sooner, as a usage limit, when OpenCode logs that it gave up on the provider's rate limit |
+| `WLP_HOSTED_QUESTION_TIMEOUT_MS` | in a hosted sandbox, how long an approval waits before the platform ends the turn and pauses the sandbox at once (default 5 minutes; never more than `WLP_QUESTION_TIMEOUT_MS`). On a machine a question waits `WLP_QUESTION_TIMEOUT_MS`, is declined, and the turn goes on |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_SERVER_APPROVAL_TTL_MS` | how long an approval of a project's MCP server is remembered for its user (default and most: 30 days, which is how long Windlass keeps its own). A shorter time is for the checks |
 | `WLP_SNAPSHOTS` | `on` enables post-setup snapshots for Docker Windlass sessions. Defaults to `off`. |
@@ -78,7 +80,7 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | Variable | Effect |
 |---|---|
 | `WLP_DAILY_SANDBOX_SECONDS` | how many seconds a user's sandboxes may run in one UTC day, all of them together (default 7200, two hours; at least 60), or `unlimited` ([architecture.md, "Usage and limits"](architecture.md#usage-and-limits)) |
-| `WLP_MAX_KEPT_SANDBOXES` | how many sandboxes a user may keep at the same time, running or paused (default 5; at least 1), or `unlimited` |
+| `WLP_MAX_KEPT_SANDBOXES` | how many of the platform's own (hosted) sandboxes a user may keep at the same time, running or paused; sandboxes on the user's machines are not counted, and have only the limits their owners set on the runner (default 5; at least 1), or `unlimited` |
 | `WLP_USAGE_HOLD_SECONDS` | how much of the day's allowance a running sandbox reserves at a time, and so how often its session reports (default 300, from 5 to 3600). A shorter time is for the checks |
 
 ## E2B

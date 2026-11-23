@@ -83,6 +83,21 @@ if (layer.sandboxes.sweepDataVolumes) {
 	void sweep();
 	setInterval(sweep, 30 * 60_000).unref();
 }
+if (layer.sandboxes.owners) {
+	// Hosted sandboxes whose session is gone (deleted, or lost with an older deployment): each owner's actor removes its own.
+	let client: ReturnType<typeof createClient<Registry>> | undefined;
+	const sweep = async () => {
+		const owners = await layer.sandboxes.owners!();
+		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
+		for (const uid of owners) {
+			await client.user.get([uid], { params: serviceParams() }).internalSweepSandboxes()
+				.catch((error: unknown) => { if (!isActorGone(error)) console.warn(`[wlp] sandbox.orphan_sweep uid=${uid}: deferred`); });
+		}
+	};
+	const run = () => void sweep().catch(() => console.warn("[wlp] sandbox.orphan_sweep deferred"));
+	setTimeout(run, 60_000).unref();
+	setInterval(run, 30 * 60_000).unref();
+}
 const signIns = await getSignIns();
 console.log(`[wlp] sign-in commands run in ${signIns.describe}`);
 const windlassProblem = (await layer.windlass.problem()) ?? (await signIns.check());

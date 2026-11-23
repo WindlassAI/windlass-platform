@@ -204,6 +204,11 @@ export interface Sandboxes {
 	 */
 	list(uid: string): Promise<ListedSandbox[]>;
 	/**
+	 * The users that have sandboxes of this deployment at the provider: whose actors the server asks, every 30
+	 * minutes, to remove the ones whose session is gone (user.ts `reconcileKept`). Hosted layers only.
+	 */
+	owners?(): Promise<string[]>;
+	/**
 	 * Whether Windlass's data directory, and with it Windlass's own sessions, is on the sandbox's own disk
 	 * and goes when the sandbox does. False on Docker, where it is a volume of the user's that outlives
 	 * every sandbox. True on E2B: a sandbox made in place of one that is gone has no Windlass session to
@@ -627,6 +632,11 @@ export interface RunTurnInput {
 	 * For `steps: "platform"`, the most tool calls, counted by the platform (platform-steps.ts).
 	 */
 	maxSteps?: number;
+	/**
+	 * An ACP agent's turn ends when the agent sends nothing for this long while no call of its own is running and
+	 * nobody is being asked (acp-harness.ts). Left out: `ACP_IDLE_MS`.
+	 */
+	idleMs?: number;
 }
 
 /** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */

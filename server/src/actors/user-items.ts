@@ -82,7 +82,7 @@ import { reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { effectiveUserLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
-import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
+import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
 import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { launchPlace, launchMachineProfiles } from "./user-machines.js";
@@ -577,6 +577,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	const own = sessions.filter((session) => !session.item && session.status !== "idle" && hostedLimitsApply(session.place)).length;
 	const inReview = [...state.items.values()].filter((item) => item.state === "review").length;
 	const usage = c.vars.usage.numbers(now);
+// What holds the hosted places, in words, for an item told it waits for one (budget.ts `admit`).
+const holders = c.vars.usage.kept().filter((claim) => !c.vars.usage.shares(claim.session)).map((claim) => keptHolder(c.vars.sessions, claim.session));
 	const hostedRunning = new Set(sessions.filter((session) => session.place.kind === "hosted" && session.sandbox === "running").map((session) => session.id));
 	// A session given a slot runs a sandbox from then on, whether or not its summary has said so yet: counted across admissions, not only within one.
 	for (const slot of state.slots.values()) {
@@ -619,7 +621,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
 				max: machine.maxRunning ?? Infinity,
 				keptFull: machine.maxSandboxes !== undefined && machine.sandboxes.length >= machine.maxSandboxes && !machine.sandboxes.some(box => box.sessionId === session.id),
-			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none", deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
+			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id), holders, deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
 			attempt: request.attempt,
 		});
 		if (answer.ok) {

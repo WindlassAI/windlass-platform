@@ -164,6 +164,8 @@ export class StandInRunner {
 	leftovers = 0;
 	/** The machine is at its owner's cap (`--max-sandboxes`): a `create` is refused as the real runner refuses it. */
 	full = false;
+	/** Its owner's `--max-sandboxes`: a `create` for a new session past this many is refused, as `full` is. */
+	maxSandboxes: number | undefined = undefined;
 	/** How many create replies to lose by restarting before answering or reporting the container. */
 	loseCreates = 0;
 	creates = 0;
@@ -337,7 +339,7 @@ export class StandInRunner {
 				// As the runner does: a session's sandbox, once made, is the answer to its every `create`, also after a restart.
 				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
 				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
-				if (!had && this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
+				if (!had && (this.full || (this.maxSandboxes !== undefined && this.boxes.size >= this.maxSandboxes))) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
 				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, size: op.args.size, profile: op.args.profile, harness: op.args.harness, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
 				if (this.loseCreates > 0) {

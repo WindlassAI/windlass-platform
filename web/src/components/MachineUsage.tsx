@@ -1,13 +1,15 @@
 /**
  * Usage, "On your machines": the sandboxes of the user's agents on their own machines, each machine
  * with its own. They are outside the platform's limits: their time is not metered (no cost, no hours,
- * no allowance here), and they are not counted among the user's running agents or kept sandboxes. Shown only where the deployment offers machines and the user has one.
+ * no allowance here), and they are not counted among the user's running agents or hosted kept sandboxes.
+ * Each machine shows the only limits it has, the ones its owner set on its runner. Shown only where the
+ * deployment offers machines and the user has one.
  */
 import { useApp } from "../state/app";
 import { useNow } from "../state/hooks";
 import { linkProps } from "../lib/router";
 import { plural } from "../lib/format";
-import { MachineState, SandboxLine, useMachines } from "../screens/Machines";
+import { MachineState, SandboxLine, sandboxLimit, storeLimits, useMachines } from "../screens/Machines";
 import { machineLabel } from "../lib/machines";
 
 export function MachineUsage() {
@@ -25,7 +27,7 @@ export function MachineUsage() {
 				{list ? <span className="usage-count">{plural(sandboxes, "sandbox", "sandboxes")}</span> : null}
 			</h2>
 			<p className="usage-lede">
-				Not counted against your daily sandbox time, running agents or kept sandboxes.{" "}
+				Not counted against your daily sandbox time, running agents or hosted sandboxes. A machine has only the limits its owner set on its runner.{" "}
 				<a className="link" {...linkProps({ name: "machines" })}>
 					Machines
 				</a>
@@ -40,6 +42,10 @@ export function MachineUsage() {
 						<li key={machine.machineId} className="usage-kept-row machine-row">
 							<div className="usage-kept-main">
 								<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
+								<p className="agent-meta">
+									Sandboxes: {sandboxLimit(machine)}
+									{machine.storeLimits ? <>; snapshots and mirrors: {storeLimits(machine.storeLimits)}</> : null}
+								</p>
 								{machine.sandboxes.length === 0 ? (
 									<p className="agent-meta">no sandbox on it</p>
 								) : (

@@ -586,6 +586,18 @@ export class DockerSandboxes implements Sandboxes {
 		return listDockerSandboxes(uid, this.machine);
 	}
 
+	/** The users with hosted sandboxes on this Docker: a runner's, which carry a machine label, are not this layer's. */
+	async owners(): Promise<string[]> {
+		if (this.machine !== "") return [];
+		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--format", `{{.Names}}|{{.Label "${LABEL}.uid"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
+		const uids = new Set<string>();
+		for (const line of result.stdout.split("\n")) {
+			const [name = "", uid = "", machine = ""] = line.trim().split("|");
+			if (name.startsWith("wlp-session-") && machine === "" && NAME.test(uid)) uids.add(uid);
+		}
+		return [...uids];
+	}
+
 	profiles(): SandboxProfile[] {
 		return profilesFor("docker", undefined, this.relayOn === true);
 	}

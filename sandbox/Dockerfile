@@ -43,7 +43,8 @@ RUN set -eu; cd /tmp; \
     tar -xzf "${f}"; install -m 0755 "uv-${uv}-unknown-linux-gnu/uv" "uv-${uv}-unknown-linux-gnu/uvx" /usr/local/bin/; \
     npm install -g --no-fund --no-audit "pnpm@${PNPM_VERSION}"; \
     rm -rf /tmp/* /root/.npm; \
-    node --version; npm --version; pnpm --version; bun --version; uv --version
+    node --version; npm --version; pnpm --version; bun --version; uv --version; \
+    mv /usr/local/bin/pnpm /usr/local/bin/pnpm-image
 
 # A non-root user. The data directory exists in the image owned by `agent`, so an empty named volume
 # mounted there takes that ownership.
@@ -72,6 +73,11 @@ RUN version="$(windlass --version)" && \
     release="$(echo "$version" | awk '$1 == "Windlass" { sub(/\+.*/, "", $2); if ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print $2 }')" && \
     { dpkg --compare-versions "$release" ge 0.4.0 || { echo "Windlass 0.4.0 or later is required; found $version" >&2; exit 1; }; }
 COPY --chmod=0755 wlp-run /usr/local/bin/wlp-run
+# `pnpm` runs the image's pnpm, or the version a project pins where a setup command put it in corepack's cache:
+# Windlass's command sandbox has no network to fetch a pinned pnpm (wlp-pnpm says how it chooses).
+ENV WLP_IMAGE_PNPM_VERSION=${PNPM_VERSION}
+COPY --chmod=0755 wlp-pnpm /usr/local/bin/pnpm
+RUN test "$(pnpm --version)" = "${PNPM_VERSION}"
 
 USER agent
 ENV HOME=/home/agent \

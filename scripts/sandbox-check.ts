@@ -759,7 +759,36 @@ async function main(): Promise<void> {
 		await throwsAny("create() refuses an invalid uid", () => layer.sandboxes.create({ uid: "../etc", sessionId: "s", profile: "docker-hardened" }));
 	});
 
-	await section("provider", async () => {
+	// A project that pins pnpm (`packageManager`), another version or the image's own: after a setup with the network
+// (`corepack pnpm install`, as a repository's setup command runs it), pnpm works with none, as in Windlass's command
+// sandbox. corepack's cache is read-only then, as the sandbox shows an existing home (sandbox/wlp-pnpm).
+await section("pnpm pins", async () => {
+	const own = (await docker(["run", "--rm", "--pull", "never", "--network", "none", image, "printenv", "WLP_IMAGE_PNPM_VERSION"])).stdout.trim();
+	expect("the image names its own pnpm version", /^\d+\.\d+\.\d+$/.test(own), own);
+	for (const pin of ["11.25.0", own]) {
+		const tag = `wlp-chk-${run}-pnpm-${pin.replaceAll(".", "-")}`;
+		const volumes = ["ws", "cache", "home"].map((part) => `${tag}-${part}`);
+		const mounts = (homeReadOnly: boolean) => ["-v", `${volumes[0]}:/workspace`, "-v", `${volumes[1]}:/tmp/.cache`, "-v", `${volumes[2]}:/home/agent/.cache${homeReadOnly ? ":ro" : ""}`];
+		const pkg = JSON.stringify({ name: "pins", private: true, packageManager: `pnpm@${pin}`, dependencies: { "is-number": "7.0.0" }, scripts: { hello: "node -e \"console.log('is-number', require('is-number')(5))\"" } });
+		try {
+			for (const volume of volumes) await docker(["volume", "create", "--label", LABEL_ARG, volume], { check: true });
+			await docker(["run", "--rm", "--pull", "never", "--network", "none", "--user", "0", ...mounts(false), image, "chown", "agent:agent", "/workspace", "/tmp/.cache", "/home/agent/.cache"], { check: true });
+			const setup = await docker(["run", "--rm", "--pull", "never", "-e", `PKG=${pkg}`, ...mounts(false), image, "sh", "-c", 'cd /workspace && printf %s "$PKG" > package.json && corepack pnpm install'], { timeoutMs: 300_000 });
+			if (!expect(`pnpm@${pin}: the setup installs with the network`, setup.code === 0, setup.stderr.slice(-400))) continue;
+			// Each command bounded: a pnpm that looks for the network waits on it for minutes.
+			const offline = await docker(["run", "--rm", "--pull", "never", "--network", "none", ...mounts(true), image, "sh", "-c",
+				'cd /workspace; for c in "pnpm --version" "pnpm run hello" "rm -rf node_modules" "pnpm install --offline --frozen-lockfile" "pnpm run hello"; do echo "## $c"; timeout 60 $c 2>&1; echo "## exit $?"; done'], { timeoutMs: 400_000 });
+			const exits = [...offline.stdout.matchAll(/^## exit (\d+)$/gm)].map((m) => m[1]);
+			expect(`pnpm@${pin}: with no network, pnpm --version, run, install --offline and run again all work`, exits.join() === "0,0,0,0,0", offline.stdout.slice(-800));
+			expect(`pnpm@${pin}: it is the pinned version that runs`, offline.stdout.split("\n").includes(pin), offline.stdout.slice(0, 300));
+			expect(`pnpm@${pin}: the script runs against the installed dependency`, (offline.stdout.match(/is-number true/g) ?? []).length === 2, offline.stdout.slice(-400));
+		} finally {
+			for (const volume of volumes) await docker(["volume", "rm", "-f", volume]);
+		}
+	}
+});
+
+await section("provider", async () => {
 		// A runner's provider on the same daemon, for the same user: its containers and the hosted ones never meet.
 		const machine = `m_${randomId(8)}`;
 		const volume = `wlp-machine-chk-${run}`;

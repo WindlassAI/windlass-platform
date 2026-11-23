@@ -48,12 +48,19 @@ export interface SandboxProfile {
 	/** Runner-confirmed credential isolation for Claude sessions using this profile. */
 	claudeRelay?: true;
 	/**
-	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
-	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
-	 * cannot renew it. The sign-in itself, which is what renews tokens, is never in a sandbox: no
-	 * command can read it in any profile.
+	 * Whether commands the agent runs can read the turn's token file: the short-lived access token of the
+	 * user's ChatGPT sign-in that each turn is handed, or with the model relay (`modelRelay`) only a
+	 * placeholder for the turn, which still makes model requests through the relay while the turn runs. It
+	 * lasts about an hour, and whoever reads it cannot renew it. The sign-in itself, which is what renews
+	 * tokens, is never in a sandbox: no command can read it in any profile. Rules about what a command can do
+	 * in the agent's name read this; whether the access token itself is readable is `accessTokenReadable`.
 	 */
 	commandsCanReadAccessToken: boolean;
+	/**
+	 * Whether commands can read the access token itself: false with the model relay, where the token file
+	 * holds only a placeholder and the token never enters the sandbox. Absent: as `commandsCanReadAccessToken`.
+	 */
+	accessTokenReadable?: boolean;
 	/**
 	 * Windlass's turns in this sandbox send their model requests through the platform's model relay
 	 * (docs/model-relay.md): the token file holds a placeholder for the turn, and the access token never
@@ -1180,8 +1187,12 @@ export interface UsageDay {
 export interface KeptSandbox {
 	/** The agent it was made for: what `freeSandbox` takes. */
 	sessionId: string;
-	/** Null when that agent no longer exists and its sandbox was left behind. */
+	/** Null when that agent no longer exists and its sandbox was left behind. A work item's reviewer reads "Reviewer of “title”". */
 	title: string | null;
+	/** The work item whose builder or reviewer it is. */
+	item?: { id: string; role: "builder" | "reviewer" };
+	/** A reviewer's sandbox, which shares its item builder's place: it takes none of the cap of its own. */
+	sharesPlace?: true;
 	/** "starting": the agent was given the place and its sandbox is being made. */
 	state: "running" | "paused" | "starting";
 	/** When the agent was last prompted or its last turn ended, ms since the epoch; null without the agent. */
@@ -1308,7 +1319,8 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	/** `signInReason`: with `signIn` "unknown", why the runner could not check the sign-in (runner 0.3.4 and later). */
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1443,7 +1455,7 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration" | "sandboxes";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1484,6 +1496,8 @@ export interface ItemStep {
 	interruptions: number;
 	/** Consecutive automatic retries after a provider refusal on this step. */
 	providerRetries?: number;
+	/** The person was asked in this step about the hosted cap on kept sandboxes (question "sandboxes"): not asked again. */
+	capAsked?: true;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
@@ -1535,8 +1549,8 @@ export interface FactoryLimits {
 	item: ItemBudget;
 }
 
-/** "turn_refused": the session or provider refused the turn, in its words. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment";
+/** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment";
 
 /**
  *   approve     the plan is approved: implement it

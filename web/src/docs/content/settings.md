@@ -127,11 +127,11 @@ Sandbox time is the time your agents' sandboxes run: while an agent works, and f
 
 When less than a fifth of the day's time is left, the session and the composer warn you. When it is used up, a turn cannot start, and a running turn is stopped at the end of the time it held. Its sandbox is paused with its files as they are, and the conversation is kept.
 
-### Sandboxes you keep
+### Hosted sandboxes you keep
 
-You can keep 5 sandboxes at once, running or paused. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
+You can keep 5 of the platform's own sandboxes at once, running or paused. Sandboxes on your own machines are not counted: **On your machines** lists them, with the only limits a machine has, the ones its owner set on its runner (`--max-running`, `--max-sandboxes`, and the snapshot and mirror disk limits). With none set there is no cap; the machine's slots and free disk decide. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
 
-A sandbox left behind by an agent that no longer exists is listed too, and can be freed the same way.
+A hosted sandbox left behind by an agent that no longer exists takes no place, and the platform removes it within 30 minutes. A work item's second reviewer is listed as **Reviewer of “…”**, and shares its item's place.
 
 ### Estimated cost
 

@@ -48,7 +48,8 @@
         "scripts/e2b-snapshot-check.ts",
         "server/src/factory/placement.ts",
         "server/src/snapshot-places.ts",
-        "scripts/workflow-lint.ts"
+        "scripts/workflow-lint.ts",
+        "scripts/runner-signin-check.ts"
       ],
       "checks": {
         "access": "tsx ../scripts/access-check.ts",
@@ -64,6 +65,7 @@
         "reviewer-task": "tsx ../scripts/reviewer-task-check.ts",
         "runner-control": "tsx ../scripts/runner-control-check.ts",
         "runner-protocol": "tsx ../scripts/runner-protocol-check.ts",
+        "runner-signin": "tsx ../scripts/runner-signin-check.ts",
         "secrets": "tsx ../scripts/secrets-check.ts",
         "setup": "tsx ../scripts/setup-check.ts",
         "git-config": "tsx ../scripts/git-config-check.ts",
@@ -195,6 +197,7 @@
       "paths": [
         "sandbox/Dockerfile",
         "sandbox/wlp-run",
+        "sandbox/wlp-pnpm",
         "sandbox/seccomp-bwrap.json",
         "sandbox/build.sh",
         "sandbox/fetch-windlass.sh",
@@ -226,7 +229,7 @@
       },
       "checks": {
         "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,session data volumes,protocol client,seccomp,reviewer commands,profile docker-' tsx ../scripts/sandbox-check.ts",
-        "sandbox-2": "WLP_CHECK_SECTIONS='failures,sign-in,token source,session token isolation,hand-off,valid-for' tsx ../scripts/sandbox-check.ts",
+        "sandbox-2": "WLP_CHECK_SECTIONS='failures,sign-in,token source,session token isolation,hand-off,valid-for,pnpm pins' tsx ../scripts/sandbox-check.ts",
         "mcp": "tsx ../scripts/mcp-check.ts",
         "model-relay-docker": "tsx ../scripts/model-relay-docker-check.ts",
         "github-docker": "tsx ../scripts/github-check.ts --docker",

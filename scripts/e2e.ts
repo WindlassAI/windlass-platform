@@ -373,6 +373,7 @@ async function serviceUser(server: Server, uid: string) {
 		internalSessionChanged(summary: SessionSummary): Promise<void>;
 		internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 		internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
+		internalSweepSandboxes(): Promise<void>;
 	};
 }
 
@@ -1675,26 +1676,25 @@ async function main(server: Server | null): Promise<void> {
 	});
 
 	if (OWN_SERVER) {
-		await check("a question nobody answers is declined by the platform when its time is up", async () => {
+		await check("a question nobody answers in a hosted sandbox ends the turn when its time is up, and the sandbox pauses at once", async () => {
 			const asked = await ask();
-			const from = askWatch.summaries.length - 1;
-			await waitFor("the platform to decline the question", () => askWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
+			await waitFor("the platform to settle the question", () => askWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
 			const waited = Date.now() - asked.askedAt;
+			// WLP_HOSTED_QUESTION_TIMEOUT_MS is at most WLP_QUESTION_TIMEOUT_MS: the short time this server was started with.
 			assert(waited >= QUESTION_MS - 200 && waited < QUESTION_MS + 10_000, `the question was settled after ${waited} ms; its time was ${QUESTION_MS} ms`);
 			const ended = await askWatch.untilEnded(asked.turn);
-			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(ended.outcome !== "succeeded", `outcome is ${ended.outcome}: the turn went on without an answer`);
 			const said = askWatch.items.find((item) => item.kind === "platform" && item.turn === asked.turn && item.text.includes("Nobody answered"));
-			assert(said?.kind === "platform" && said.level === "warn", "no platform item says that nobody answered");
-			const [answered] = answeredOf(asked);
-			assert(answered && answered.event.data?.choice === "deny" && answered.event.data.approve === false && String(answered.event.data.note).includes("Nobody answered"), `approval.answered is ${plain(answered?.event.data)}`);
-			assert(answered.seq > said.seq, "the platform's item does not come before the answer it explains");
+			assert(said?.kind === "platform" && said.level === "warn" && /so the turn was ended and its sandbox paused\. Send a prompt to go on\.$/.test(said.text), `no platform item says that nobody answered: ${plain(said)}`);
 			assert(askWatch.ofCall(asked.turn, "tool.started", asked).length === 0, "the call was started although nobody allowed it");
-			assert(askWatch.statusesFrom(from) === "waiting > running > idle", `statuses from the question on were ${askWatch.statusesFrom(from)}`);
+			await waitFor("the sandbox to pause", () => askWatch.summaries.at(-1)?.sandbox === "paused", 20_000);
+			const paused = askWatch.items.find((item) => item.kind === "platform" && item.text.startsWith("Paused the sandbox: its turn ended on a question nobody answered."));
+			assert(paused, "no line says the sandbox was paused for it");
 			await refused(() => askWatch.conn.answer({ questionId: asked.id, choice: "once" }), "no_question");
-			return `declined after ${waited} ms: "${said.text}"; the model was told: "${String(answered.event.data.note)}"`;
+			return `ended after ${waited} ms (${ended.outcome}): "${said.text}"; then "${paused.kind === "platform" ? paused.text : ""}"`;
 		});
 	} else {
-		skip("a question nobody answers is declined by the platform when its time is up", "needs its own server, started with a short time for questions");
+		skip("a question nobody answers in a hosted sandbox ends the turn when its time is up, and the sandbox pauses at once", "needs its own server, started with a short time for questions");
 	}
 
 	await check("stop() during a question withdraws it and ends the turn as interrupted", async () => {
@@ -2527,6 +2527,7 @@ async function main(server: Server | null): Promise<void> {
 		"a sandbox found gone is replaced only with a place of its own: at the cap the replacement is refused",
 		"a free with a prompt sent at the same moment: the prompt's sandbox and its place survive",
 		"a prompt refused for a place gives its running slot back at once, and a late release leaves a newer claim",
+		"a sandbox that outlived its session's delete holds no place, and the sweep removes it",
 	];
 	if (server && FAKE) {
 		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
@@ -2571,7 +2572,7 @@ async function main(server: Server | null): Promise<void> {
 				assert((await turnOf(other.id, "Write a short program")).outcome === "succeeded", "the other session's turn failed");
 				const before = madeFor(gone.id).length;
 				const replaced = await turnOf(gone.id, "Write a short program");
-				assert(replaced.outcome === "error" && /^You keep 1 sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
+				assert(replaced.outcome === "error" && /^You keep 1 hosted sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
 				assert(madeFor(gone.id).length === before, "a sandbox was made for it past the cap");
 				const usage = await theirs.usage();
 				assert(usage.sandboxes.kept === 1 && usage.kept[0]?.sessionId === other.id, `kept: ${usage.sandboxes.kept}, ${plain(usage.kept.map((k) => k.sessionId))}`);
@@ -2667,6 +2668,28 @@ async function main(server: Server | null): Promise<void> {
 			} finally {
 				await theirs.deleteSession(holder.id).catch(() => undefined);
 				await theirs.deleteSession(refusedOne.id).catch(() => undefined);
+			}
+		});
+
+		await check(OWNER_CHECKS[4], async () => {
+			// Its removal at the delete is lost (the fake's "(outlive-delete)"), as an orphan's was: the session is gone, the sandbox is not.
+			const orphaned = await theirs.createSession({ profile: availableProfile as never, title: "Outlives its delete" });
+			assert((await turnOf(orphaned.id, "Write a short program (outlive-delete)")).outcome === "succeeded", "the turn failed");
+			await theirs.deleteSession(orphaned.id);
+			assert(lines(`\\[wlp\\] fake sandbox removal lost id=`).length >= 1, "the delete's removal was not lost");
+			// With the cap at 1, the orphan would hold the one place: another agent starts all the same.
+			const next = await theirs.createSession({ profile: availableProfile as never, title: "After the orphan" });
+			try {
+				const ended = await turnOf(next.id, "Write a short program");
+				assert(ended.outcome === "succeeded", `the next agent's turn ended ${ended.outcome}: ${ended.message}`);
+				await (await serviceUser(server, someone.profile.uid)).internalSweepSandboxes();
+				const removed = lines(`\\[wlp\\] sandbox\\.orphan_removed uid=\\S+ id=\\S+ session=${orphaned.id}`);
+				assert(removed.length === 1, `${removed.length} orphan removals logged`);
+				const usage = await theirs.usage();
+				assert(usage.sandboxes.kept === 1 && usage.kept.every((kept) => kept.sessionId !== orphaned.id), `kept: ${plain(usage.kept.map((k) => k.sessionId))}`);
+				return removed[0]!.replace(/^.*sandbox\.orphan_removed /, "");
+			} finally {
+				await theirs.deleteSession(next.id).catch(() => undefined);
 			}
 		});
 	} else {

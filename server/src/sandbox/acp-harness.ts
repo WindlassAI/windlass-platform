@@ -175,6 +175,35 @@ function updateStream(redactor: Redactor, emit: (update: AcpUpdate) => void) {
 	};
 }
 
+/**
+ * The agent process's environment for a turn. Codex resumes a session on the model its config names, not the
+ * session's (sandbox/harness/codex/wlp-codex-acp): the turn's model goes in before the process starts.
+ */
+export function turnEnv(profile: Pick<AcpProfile, "id">, input: Pick<RunTurnInput, "model">): Record<string, string> {
+	return profile.id === "codex" && input.model && input.model !== "default" ? { WLP_CODEX_MODEL: input.model } : {};
+}
+
+/** How long an ACP agent may send nothing, with no call of its own running and nobody asked, before its turn ends. */
+export const ACP_IDLE_MS = (Number(process.env.WLP_ACP_IDLE_MINUTES) > 0 ? Number(process.env.WLP_ACP_IDLE_MINUTES) : 10) * 60_000;
+/** The relay's own sentences (sandbox/relay/server.cjs `reject`) as an agent passes them on, by the refusal each is. */
+const RELAY_SENTENCES: Record<string, string> = {
+	"The provider rejected the request.": "provider_rejected",
+	"The provider failed or couldn't be reached.": "provider_unavailable",
+	"The provider's usage or rate limit was reached.": "usage_limit",
+};
+/**
+ * A Codex model error that ended its turn: codex-acp shows it only as the agent's text and answers the prompt
+ * with `end_turn`. Codex reports each try's error on `_meta.codex.error` and then the thread's `systemError`.
+ */
+function codexModelError(update: Fields): { status?: number; final: boolean } | null {
+	const codex = object(object(update._meta).codex);
+	if (object(codex.threadStatus).type === "systemError") return { final: true };
+	const error = object(codex.error);
+	if (typeof error.message !== "string") return null;
+	const status = Object.values(object(error.codexErrorInfo)).map(v => object(v).httpStatusCode).find(Number.isInteger) as number | undefined;
+	return { ...(status !== undefined && { status }), final: error.willRetry === false };
+}
+
 async function waitForExit(run: SandboxProcess, ms: number) {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try { return await Promise.race([run.ended, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), ms); })]); }
@@ -203,11 +232,26 @@ export class AcpHarness implements Harness {
 		const mcp = tools.size ? new PlatformMcpServer(tools, platformToolDeclarations(tools, { screenshots: false, mcp: true }), () => phase === "running", said => input.onAcpNote?.(said)) : null;
 		const stream = updateStream(redactor, update => input.onAcpUpdate?.(update));
 		const stderr = new RedactingStream(redactor);
-		const keepError = (piece: string) => { result.stderrTail = (result.stderrTail + piece).slice(-4096); };
+		let errorLines = "";
+		const keepError = (piece: string) => {
+			result.stderrTail = (result.stderrTail + piece).slice(-4096);
+			if (!profile.limitGiveUp || phase !== "running") return;
+			errorLines = (errorLines + piece).slice(-8192);
+			if (profile.limitGiveUp.test(errorLines)) endFor("usage_limit", "The provider's usage or rate limit was reached.");
+		};
 		const mark = (point: StartMark) => {
 			try { input.onStartMark?.(point); } catch { /* A listener's failure must not stop the turn. */ }
 		};
 		let outputSeen = false;
+		// Bounds of a turn whose agent went quiet: the last line it sent, its calls still running, the questions put to a person.
+		let lastHeard = Date.now();
+		const openCalls = new Set<string>();
+		let asking = 0;
+		// The turn was ended by the platform for the agent: its failure replaces whatever the agent's stop said.
+		let ended = null as { reason: string; message: string } | null;
+		// Codex: the model's errors in this prompt (`codexModelError`), and the agent's text since the last of them.
+		let modelError = null as { status?: number; final: boolean } | null;
+		let errorText = "";
 		let run: SandboxProcess | undefined;
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
 		// "checking": a prompt was answered with `end_turn` and the platform runs the repository's checks (platform-checks.ts), maybe to prompt again.
@@ -239,6 +283,19 @@ export class AcpHarness implements Harness {
 				if (phase === "ended" || phase === "checking" || method !== "session/update" || !result.windlassSessionId || params.sessionId !== result.windlassSessionId) return;
 				const update = object(params.update);
 				if (typeof update.sessionUpdate !== "string") return;
+				if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+					const id = text(update.toolCallId);
+					if (update.status === "completed" || update.status === "failed") openCalls.delete(id);
+					else if (update.sessionUpdate === "tool_call" || update.status === "in_progress" || update.status === "pending") openCalls.add(id);
+				}
+				if (profile.id === "codex" && phase === "running") {
+					const error = update.sessionUpdate === "session_info_update" ? codexModelError(update) : null;
+					if (error) {
+						if (modelError === null) errorText = "";
+						modelError = { status: error.status ?? modelError?.status, final: error.final || modelError?.final === true };
+					} else if (modelError && update.sessionUpdate === "agent_message_chunk") errorText = (errorText + text(object(update.content).text)).slice(-2000);
+					else if (update.sessionUpdate !== "session_info_update" && update.sessionUpdate !== "usage_update") modelError = null;
+				}
 				// The agent's first output after the prompt: text, thinking, or a tool call.
 				if (phase === "running" && !outputSeen && ["agent_message_chunk", "agent_thought_chunk", "tool_call"].includes(update.sessionUpdate)) {
 					outputSeen = true;
@@ -287,7 +344,9 @@ export class AcpHarness implements Harness {
 					if (input.unattended) endForEscape(note);
 					return refuse(params);
 				}
-				return permission(params, input, AbortSignal.any([questions.signal, withdrawn]), profile);
+				asking++;
+				try { return await permission(params, input, AbortSignal.any([questions.signal, withdrawn]), profile); }
+				finally { asking--; lastHeard = Date.now(); }
 			},
 		}, "", value => redactor.deep(value));
 		// Codex asked to leave its sandbox during a work item's turn (above): the turn is stopped, and fails with the platform's note.
@@ -307,6 +366,20 @@ export class AcpHarness implements Harness {
 			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
 			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
 		};
+		// The platform ends the turn for the agent (`ended`): it went quiet, or said it gave up on the provider.
+		const endFor = (reason: string, message: string) => {
+			if (ended !== null || escaped !== null || phase !== "running") return;
+			ended = { reason, message };
+			questions.abort();
+			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
+			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+		};
+		const idleMs = input.idleMs ?? ACP_IDLE_MS;
+		const idleMinutes = Math.round(idleMs / 60_000);
+		const idle = setInterval(() => {
+			if (phase === "running" && openCalls.size === 0 && asking === 0 && Date.now() - lastHeard >= idleMs)
+				endFor("agent_idle", `${profile.name} sent nothing for ${idleMinutes >= 1 ? `${idleMinutes} minute${idleMinutes === 1 ? "" : "s"}` : "a while"} with no call of its own running, so the platform ended the turn. Its provider may be refusing or not answering.`);
+		}, Math.min(30_000, Math.max(50, idleMs / 4)));
 		const cancel = () => {
 			questions.abort();
 			if (phase === "running") {
@@ -321,9 +394,9 @@ export class AcpHarness implements Harness {
 			input.signal?.addEventListener("abort", cancel, { once: true });
 			await handle.stopLeftovers(profile.leftovers);
 			if (input.signal?.aborted) return { ...result, aborted: true };
-			const lines = new LineSplitter(line => rpc.receive(line));
+			const lines = new LineSplitter(line => { lastHeard = Date.now(); rpc.receive(line); });
 			mark("process");
-			run = handle.start(profile.command, { cwd: handle.cwd, env: {}, onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
+			run = handle.start(profile.command, { cwd: handle.cwd, env: turnEnv(profile, input), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
 				rpc.end(end.error?.message || `${profile.name} exited before answering (exit ${end.code ?? end.signal}).`);
@@ -430,6 +503,7 @@ export class AcpHarness implements Harness {
 			// The state the turn's changes are measured from, for the repository's checks; nothing runs where there are none.
 			await gate.begin();
 			phase = "running";
+			lastHeard = Date.now();
 			mark("prompted");
 			const answer = rpc.request<Fields>("session/prompt", prompt(input.prompt), { onResult: () => { phase = "checking"; } });
 			input.onControl?.({
@@ -444,8 +518,19 @@ export class AcpHarness implements Harness {
 			for (;;) {
 				acp.stopReason = text(answered.stopReason) || null;
 				acp.tokens = addUsage(acp.tokens, promptUsage(answered.usage));
+				// Codex answered `end_turn` after its model's requests failed, having done nothing: the provider's failure is the turn's.
+				const failedModel = modelError?.final && steps.steps === 0 && !(acp.tokens && acp.tokens.inputTokens + acp.tokens.outputTokens > 0) ? modelError : null;
+				if (acp.stopReason === "end_turn" && failedModel) {
+					const said = redactor.text(errorText.trim()).slice(0, 500);
+					const status = failedModel.status;
+					const reason = status === 429 ? "usage_limit" : status === 401 ? "harness_signed_out" : status !== undefined && status >= 400 && status < 500 ? "provider_rejected" : "provider_unavailable";
+					result.failure = { reason, message: reason === "usage_limit" ? "The provider's usage or rate limit was reached."
+						: reason === "harness_signed_out" ? `${said || `${profile.name}'s sign-in was refused.`} ${machineLoginMessage(profile, this.machine)}`
+						: `${profile.name}'s model requests failed${status ? ` (HTTP ${status})` : ""}, so it did nothing this turn.${said ? ` It said: ${said}` : ""}` };
+					break;
+				}
 				// The agent called its work done: the platform runs the checks, and may send it back in this turn (platform-checks.ts).
-				if (acp.stopReason !== "end_turn" || steps.reached || escaped !== null || input.signal?.aborted) break;
+				if (acp.stopReason !== "end_turn" || steps.reached || escaped !== null || ended !== null || input.signal?.aborted) break;
 				const again = await gate.settle();
 				if (again === null || input.signal?.aborted) break;
 				phase = "running";
@@ -467,7 +552,9 @@ export class AcpHarness implements Harness {
 				const promptError = phase === "running" && error instanceof AcpError && error.code === -32603;
 				const usageLimit = status === 429 || info === "usageLimitExceeded" || promptError && said.replace(/^Internal error: /, "") === "The provider's usage or rate limit was reached.";
 				const limit = promptError ? error.limit : undefined;
-				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : limit?.reason ?? "engine";
+				// The relay's own refusal, passed on by the agent: the provider's, not the agent's or the platform's.
+				const relayed = promptError ? RELAY_SENTENCES[said.replace(/^Internal error: /, "")] : undefined;
+				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : limit?.reason ?? relayed ?? "engine";
 				result.failure = { ...limit, reason, message: limit ? "The provider's usage or rate limit was reached." : redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : message) };
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
@@ -476,7 +563,9 @@ export class AcpHarness implements Harness {
 			input.signal?.removeEventListener("abort", cancel);
 			phase = "ended";
 			acp.steps = steps.steps;
+			clearInterval(idle);
 			if (escaped !== null && !input.signal?.aborted) result.failure = { reason: SANDBOX_ESCAPE_REFUSED, message: escaped };
+			else if (ended !== null && !input.signal?.aborted) result.failure = ended;
 			questions.abort();
 			stream.flush();
 			if (run && isTurnSandbox(handle)) {

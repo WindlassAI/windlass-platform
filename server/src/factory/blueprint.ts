@@ -542,6 +542,16 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 			const wait = step.kind === "review" && run.review
 				? { ...fact.wait, sentence: `Second review of ${shortSha(run.review.head)}. ${fact.wait.sentence}` }
 				: fact.wait;
+			// The hosted cap on kept sandboxes: not a wait the item sits out unseen. The person is asked once in this step, with what
+			// holds the places; the turn stays queued meanwhile and starts as soon as one is freed.
+			if (wait.reason === "sandboxes") {
+				if (c.item.question?.kind === "sandboxes") return false;
+				if (!step.capAsked) {
+					step.capAsked = true;
+					ask(c, "sandboxes", wait.sentence, [choice("wait"), choice("give_up")], "sandboxes", null);
+					return true;
+				}
+			}
 			if (now !== null && now.reason === wait.reason && now.sentence === wait.sentence && now.retryAt === wait.retryAt) return false;
 			if (now?.reason !== wait.reason) c.say(wait.sentence);
 			c.state("waiting", wait);
@@ -550,6 +560,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 		case "turn_started":
 			if (fact.key !== key || step.turn !== "delivered") return false;
 			step.turn = "started";
+			// A place was freed and the turn has its sandbox: the question about the cap is answered by that.
+			if (c.item.question?.kind === "sandboxes") c.item.question = null;
 			c.state("working");
 			c.say("The turn started.");
 			checkTurn(c);
@@ -881,12 +893,14 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
 	spendTurn(c, fact.spend, fact.providerRefusal);
+	// The provider refused the turn: that is what the person is told, with its retry and hand-over choices, before anything
+	// about the turn's tokens. A refused turn reported none because the provider answered none; the next one is measured again.
+	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	// A turn whose tokens should count but were not reported stops the item: another turn would run unbounded by its token budget.
 	// One the session refused before the agent ran used none.
 	const unmeasured = fact.refused ? null : unmeasuredTurn(fact.spend, itemAgent(item));
 	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
-	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
 	// would most likely ask the same. The person files the work again where commands run unasked, or gives up.
 	if (fact.escaped) return ask(c, "turn_refused", sandboxEscapeQuestion(item, fact.escaped), [...handOver(item), choice("give_up")], null, null);
@@ -912,7 +926,8 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
-		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}; the step is tried again.`);
+		// The cut-off that reaches the limit is not tried again: the person is asked next (`nextTurn`, "interruptions").
+		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}${step.interruptions >= RULES.interruptions ? "." : "; the step is tried again."}`);
 		return nextTurn(c, { ...IMPLEMENT, kind, text: "You were interrupted. Continue from where you were.", newStep: false, charge: "interruptions" });
 	}
 	if (kind === "summary") {
@@ -1077,7 +1092,9 @@ function publishFailed(c: Change, fact: Extract<Fact, { kind: "publish_failed" }
 		c.effects.push({ kind: "publish", key: c.key, at: c.at + RULES.publishRetryMs * 2 ** (step.attempt - 2) });
 		return;
 	}
-	ask(c, "publish_refused", `GitHub refused the push: ${fact.said}`, [choice("again"), choice("give_up")], null, null);
+	// GitHub's own sentence may say so already (github/publish.ts): it is not said twice.
+const said = fact.said.replace(/^GitHub refused the push(?::\s*|\s+(?=because))/, "");
+ask(c, "publish_refused", `GitHub refused the push${/^because/.test(said) ? " " : ": "}${said}`, [choice("again"), choice("give_up")], null, null);
 }
 
 function pollCi(c: Change, openItems: number, notBefore: number | null, sentence: string): void {
@@ -1743,6 +1760,7 @@ const STOP_WORDS: Record<Exclude<StopCause, keyof ItemBudget>, (task: Task) => s
 	conflict: (task) => `The pull request still conflicts with ${task.base} after a round of merging it.`,
 	review: () => `The second agent still asks for changes after ${RULES.reviewRounds} rounds of fixes.`,
 	interruptions: () => `This step was cut off ${RULES.interruptions} times, by deploys or restarts.`,
+	sandboxes: () => "Every hosted sandbox the account may keep was in use.",
 };
 
 function stop(c: Change, cause: StopCause, sentence: string, resume: TurnPlan): void {
@@ -1787,6 +1805,8 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			item.run.stopReason = question.cause ?? question.kind;
 		}
 		stopPendingChecks(c);
+		// A turn still queued for its place (the hosted cap) goes back: nothing of it started.
+		if (item.run?.step.turn === "delivered") c.effects.push({ kind: "withdraw", key: c.key, ...(item.run.step.kind === "review" && { to: "review" }) });
 		c.state("failed");
 		return true;
 	}
@@ -1863,6 +1883,10 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			beginRun(c, firstPlan(item, note));
 			break;
 		case "wait":
+			if (question.kind === "sandboxes") {
+				c.state("waiting", { reason: "sandboxes", sentence: "Waiting for a hosted sandbox to be freed, as you asked.", retryAt: null });
+				break;
+			}
 			if (run.lastFailure === "integration/no-ci") run.lastFailure = null;
 			if (run.ci !== null) run.ci.since = c.at;
 			pollCi(c, 0, null, `Waiting for CI on ${shortSha(run.ci?.head ?? "")}, as you asked.`);

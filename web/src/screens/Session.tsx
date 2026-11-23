@@ -206,7 +206,7 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 	}
 	if (left === "low" && numbers.leftSeconds !== null) return `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped; the allowance is whole again at ${resets}.`;
 	const { kept, limit } = numbers.sandboxes;
-	if (summary.sandbox === "none" && limit !== null && kept >= limit) return `You keep ${limit} sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
+	if (summary.sandbox === "none" && limit !== null && kept >= limit) return `You keep ${limit} hosted sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
 	return null;
 }
 

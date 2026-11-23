@@ -6,7 +6,13 @@ and cannot do. Users' instructions are in the in-app docs ([Use your own machine
 
 ## How it works
 
-With `WLP_MACHINES=1` a user can pair a Linux machine of their own that has Docker, and launch agents on it.
+With `WLP_MACHINES=1` a user can pair a machine of their own that has Docker, and launch agents on it: Linux with
+Docker, or macOS or Windows with Docker Desktop or OrbStack, where the runner and the sessions run in Docker's Linux
+VM with the images of its architecture (a Mac with Apple silicon takes the arm64 images; Windlass and Claude Code
+turns have passed on Docker Desktop, runner 0.3.3). The runner's default name is the host name it sees, which under
+Docker Desktop is the VM's, `docker-desktop`: users are told to pass `--name`. A new pairing allows only
+`docker-hardened`; `--allow-profile docker-windlass-sandbox` adds the two-wall profile, recommended for Windlass and
+Codex ([runner reference](../web/src/docs/content/runner.md#allowed-profiles)).
 A small program on that machine, the runner, connects out to the platform, and makes and runs the
 sessions' containers on the machine's own Docker. Everything else stays with the platform: the session's
 actor, the turn's conversation with Windlass, questions, secrets, the GitHub App, the checks' record and the
@@ -252,6 +258,20 @@ Both relays answer a refusal or a provider error with a fixed message per status
 provider's own body on: 401 "Provider sign-in is missing or the session placeholder is no longer valid.",
 403 "This request is not allowed by the relay.", 429 "The provider's usage or rate limit was reached.",
 5xx "The provider failed or couldn't be reached." and any other status "The provider rejected the request."
+A successful answer passes only as an event stream or JSON. chatgpt.com answers a ChatGPT sign-in's stream
+with no content type or as text/plain, so on that route alone (Codex's `/codex/v1/responses`, OpenCode's
+ChatGPT `/openai/responses`) such an answer passes as an event stream; anywhere else it is refused with 502.
+
+Relay containers keep no Docker log. Each relay notes, without bodies, credentials or query strings, every
+answer it did not pass on as the provider gave it: an upstream error status, a refused or retyped 200, a
+provider it could not reach. It prints the note to its stderr and keeps the latest 20 in
+`/workspace/relay-notes.json` of its socket volume. `windlass-runner status` prints the latest three of each
+relay, for example `POST /codex/v1/responses  upstream 200, content-type text/html  answered 502`.
+
+An agent's turn ends as failed with the provider's words when the provider refused it: Codex's when every model
+request failed and it did nothing, OpenCode's on a relay refusal or when it logs that it gave up on a rate limit
+(a usage limit). A turn whose agent sends nothing for 10 minutes, with no call of its own running and nobody
+asked, is ended by the platform so it frees its slot (`WLP_ACP_IDLE_MINUTES`, [configuration.md](configuration.md)).
 
 The credential relay checks decoded JSON strings in successful responses. For Anthropic Messages
 streams it joins text deltas by content-block index and holds a possible credential prefix across

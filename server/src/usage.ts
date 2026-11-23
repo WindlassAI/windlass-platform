@@ -49,7 +49,7 @@
  */
 
 import type { RawAccess } from "rivetkit/db";
-import type { HarnessId, SandboxPlace, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import type { HarnessId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
 
 /**
@@ -229,6 +229,11 @@ export class UsageBook {
 	/** By session: a session has one sandbox, and so one open hold. */
 	private readonly holds = new Map<string, UsageHold>();
 	private readonly claims = new Map<string, KeptClaim>();
+/**
+ * The session whose place a session shares, if any: a work item's reviewer shares its builder's, so that an item
+ * counts as one place (its reviewer's sandbox is released after each review). Set by whoever knows the sessions.
+ */
+sharing: (session: string) => string | undefined = () => undefined;
 
 	constructor(
 		readonly limits: UsageLimits,
@@ -290,9 +295,22 @@ export class UsageBook {
 		return [...this.claims.values()];
 	}
 
+	/** The places the claims take: a claim that shares another one's place (`sharing`) takes none of its own. */
+	places(): number {
+		let count = 0;
+		for (const claim of this.claims.values()) if (!this.shares(claim.session)) count++;
+		return count;
+	}
+
+	/** Whether a session has a place to share now: the one it shares (`sharing`) holds a claim. */
+	shares(session: string): boolean {
+		const other = this.sharing(session);
+		return other !== undefined && other !== session && this.claims.has(other);
+	}
+
 	/** Whether a session without a place would be refused one now. */
 	atCap(session: string): boolean {
-		return !this.claims.has(session) && this.limits.maxKept !== null && this.claims.size >= this.limits.maxKept;
+		return !this.claims.has(session) && !this.shares(session) && this.limits.maxKept !== null && this.places() >= this.limits.maxKept;
 	}
 
 	/** The day a hold taken now counts against. */
@@ -469,7 +487,7 @@ export class UsageBook {
 			heldSeconds,
 			leftSeconds: allowance === null ? null : Math.max(0, allowance - usedSeconds - heldSeconds),
 			startSeconds: this.startSeconds,
-			sandboxes: { kept: this.claims.size, limit: this.limits.maxKept },
+			sandboxes: { kept: this.places(), limit: this.limits.maxKept },
 		};
 	}
 
@@ -631,10 +649,18 @@ export function allowanceRefusal(numbers: UsageNumbers): string {
 	return `${said} ${resetWords(numbers)}`;
 }
 
+/** Who holds a place among the kept sandboxes, in words: an agent by its title, a work item's builder or reviewer by its item's. */
+export function keptHolder(sessions: ReadonlyMap<string, Pick<SessionSummary, "title" | "item">>, session: string): string {
+	const held = sessions.get(session);
+	if (!held) return "a sandbox left behind by an agent that no longer exists";
+	if (held.item?.role === "reviewer") return `the reviewer of the item “${held.title}”`;
+	return held.item ? `the item “${held.title}”` : `“${held.title}”`;
+}
+
 /** What a user reads when an agent needs a sandbox and they keep as many as they may. */
 export function sandboxRefusal(numbers: UsageNumbers): string {
 	const limit = numbers.sandboxes.limit ?? numbers.sandboxes.kept;
-	return `You keep ${limit} ${limit === 1 ? "sandbox" : "sandboxes"}, the most an account may have, and this agent needs one of its own. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again.`;
+	return `You keep ${limit} hosted ${limit === 1 ? "sandbox" : "sandboxes"}, the most an account may have, and this agent needs one of its own. Sandboxes on your own machines are not counted. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again.`;
 }
 
 export const USAGE_UNAVAILABLE = "Your sandbox time could not be checked just now, so nothing was started. Try again in a moment.";

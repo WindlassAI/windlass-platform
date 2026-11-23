@@ -183,6 +183,8 @@ An item also stops and asks you when it keeps failing:
 
 The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently.
 
+**When every hosted sandbox you may keep is in use.** A hosted item's next turn may need a sandbox of its own, for instance its second reviewer's. When all the places are taken, the item asks you once in that step, and names what holds them: your agents by their titles, an item's builder or reviewer by its item. Free one on **Usage** and the turn starts by itself, choose **Keep waiting**, or **Give up**. An item counts as one place: its reviewer shares the place of its builder's sandbox, and the reviewer's sandbox is removed after each review. Sandboxes on your own machines are not counted.
+
 ### When a check can't run
 
 Sometimes a check fails because the sandbox can't run its command, not because of the agent's code. The item doesn't send the agent back for that, and doesn't try again on its own. It asks you, under **It asks you**, with the check's command, the first line that shows why, and the end of what the check printed.

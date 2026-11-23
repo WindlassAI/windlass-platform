@@ -274,7 +274,7 @@ export interface FactoryItem {
 // ---------------------------------------------------------------------------------------------
 
 /** What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. */
-export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | keyof ItemBudget;
+export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | "sandboxes" | keyof ItemBudget;
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {

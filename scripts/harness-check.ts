@@ -839,6 +839,23 @@ async function clientCheck(state: string) {
 		assert.equal(asked, 1);
 	}
 	ok("Codex runs work items but not subtasks, counts tokens by its filed sign-in, and an item's allow-once answers it only where nothing refused first");
+	{
+		// Codex resumes on its config's model, not the session's: the turn's model is in its config before it starts.
+		const { turnEnv } = await import("../server/src/sandbox/acp-harness.js");
+		const { CODEX, CLAUDE } = await import("../server/src/sandbox/harnesses.js");
+		assert.deepEqual(turnEnv(CODEX, { model: "gpt-6-luna" }), { WLP_CODEX_MODEL: "gpt-6-luna" });
+		assert.deepEqual(turnEnv(CODEX, { model: "default" }), {});
+		assert.deepEqual(turnEnv(CODEX, {}), {});
+		assert.deepEqual(turnEnv(CLAUDE, { model: "sonnet" }), {});
+		const { codexEnv } = (await import("node:module")).createRequire(import.meta.url)("../sandbox/harness/codex/wlp-codex-acp") as { codexEnv(env: Record<string, string>): Record<string, string> };
+		const env = codexEnv({ WLP_CODEX_MODEL: "gpt-6-luna", WLP_SESSION_BEARER: "b" });
+		assert.deepEqual(JSON.parse(env.CODEX_CONFIG!), { model: "gpt-6-luna" });
+		assert.equal(env.WLP_CODEX_MODEL, undefined);
+		assert.equal(env.WLP_SESSION_BEARER, "b");
+		assert.equal(codexEnv({ WLP_CODEX_MODEL: "a model; rm" }).CODEX_CONFIG, undefined);
+		assert.deepEqual(JSON.parse(codexEnv({ CODEX_CONFIG: '{"x":1}', WLP_CODEX_MODEL: "m" }).CODEX_CONFIG!), { x: 1, model: "m" });
+		ok("a Codex turn starts Codex with the session's model in its config, so a resume keeps it");
+	}
 }
 
 /**
@@ -1362,6 +1379,114 @@ lines.on("line", async line => {
 	ok("with WLP_ACP_MCP_PORT the bridge serves on that port only, says it is in front, and hands over no server where the port is held");
 }
 
+/**
+ * How an ACP turn ends when its agent cannot do the work (acp-harness.ts): Codex's model requests all failed though it
+ * answered `end_turn`, an agent that went quiet, OpenCode's log line that it gave up on a rate limit, and the relay's
+ * own refusals passed on by an agent. A scripted agent plays each; `prompt` answers the turn's prompt.
+ */
+async function turnBoundsCheck() {
+	const { AcpHarness } = await import("../server/src/sandbox/acp-harness.js");
+	const { CODEX, OPENCODE } = await import("../server/src/sandbox/harnesses.js");
+	type Send = (frame: unknown) => void;
+	const scripted = (profileId: "codex" | "opencode", prompt: (id: number, send: Send, stderr: (text: string) => void) => void) => {
+		const mode = profileId === "codex" ? "agent-full-access" : "build";
+		const sandbox = {
+			profile: "docker-hardened", cwd: "/workspace",
+			async stopLeftovers() { return 0; },
+			async sweep() { return 0; },
+			start(_argv: string[], opts: StartOptions) {
+				let finish!: (end: ProcessEnd) => void;
+				const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
+				const send: Send = frame => queueMicrotask(() => opts.onStdout!(JSON.stringify({ jsonrpc: "2.0", ...frame as object }) + "\n"));
+				let pending: number | null = null;
+				return {
+					tag: "fixture", ended, hasEnded: false,
+					write(line: string) {
+						const frame = JSON.parse(line);
+						const answer = (result: unknown) => send({ id: frame.id, result });
+						if (frame.method === "initialize") answer({ protocolVersion: 1, agentCapabilities: {} });
+						else if (frame.method === "session/new") answer({ sessionId: "acp-1", modes: { currentModeId: mode, availableModes: [{ id: mode, name: mode }] } });
+						else if (frame.method === "session/prompt") { pending = frame.id; prompt(frame.id, send, text => opts.onStderr!(text)); }
+						else if (frame.method === "session/cancel") { if (pending !== null) send({ id: pending, result: { stopReason: "cancelled" } }); }
+						else if (frame.id !== undefined && frame.method) answer({});
+						return true;
+					},
+					closeStdin() { finish({ code: 0, signal: null, error: null }); },
+					async signal() {}, killClient() {},
+				};
+			},
+		};
+		markTurnSandbox(sandbox);
+		return sandbox as unknown as SandboxHandle;
+	};
+	const update = (send: Send, value: object) => send({ method: "session/update", params: { sessionId: "acp-1", update: value } });
+	const codexError = (send: Send, error: object) => update(send, { sessionUpdate: "session_info_update", _meta: { codex: { error } } });
+	const said = "unexpected status 502 Bad Gateway: The provider failed or couldn't be reached., url: http://127.0.0.1:17892/codex/v1/responses";
+
+	// Codex: every try at the model answered 502 through the relay, and codex-acp ends the prompt with end_turn.
+	const failing = (status: number) => scripted("codex", (id, send) => {
+		for (let n = 1; n <= 5; n++) codexError(send, { message: `Reconnecting... ${n}/5`, codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: status } }, willRetry: true });
+		update(send, { sessionUpdate: "session_info_update", _meta: { codex: { threadStatus: { type: "systemError" } } } });
+		update(send, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: said } });
+		send({ id, result: { stopReason: "end_turn" } });
+	});
+	const codex = new AcpHarness(CODEX, "Bench");
+	const failed = await codex.runTurn(failing(502), { prompt: "hello" });
+	assert.equal(failed.failure?.reason, "provider_unavailable", JSON.stringify(failed.failure));
+	assert.match(failed.failure!.message, /^Codex's model requests failed \(HTTP 502\), so it did nothing this turn\. It said: unexpected status 502/);
+	const limited = await codex.runTurn(failing(429), { prompt: "hello" });
+	assert.equal(limited.failure?.reason, "usage_limit");
+	const { turnRefusal, refusalMessage } = await import("../server/src/provider-refusal.js");
+	const refusal = turnRefusal("error", failed, null);
+	assert.equal(refusal?.kind, "provider_unavailable");
+	assert.equal(refusalMessage(refusal!), failed.failure!.message, "the sentence is not prefixed with another");
+	// One try failed and the next answered: the turn did its work, whatever Codex said in between.
+	const recovered = await codex.runTurn(scripted("codex", (id, send) => {
+		codexError(send, { message: "Reconnecting... 1/5", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } }, willRetry: true });
+		update(send, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } });
+		send({ id, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 3 } } });
+	}), { prompt: "hello" });
+	assert.equal(recovered.failure, null, JSON.stringify(recovered.failure));
+	ok("a Codex turn whose model requests all failed ends failed with the provider's words; one that recovered succeeds");
+
+	// An agent that sends nothing more after the prompt, with no call of its own running: the turn ends.
+	const opencode = new AcpHarness(OPENCODE, "Bench");
+	const started = Date.now();
+	const quiet = await opencode.runTurn(scripted("opencode", () => {}), { prompt: "hello", idleMs: 200 });
+	assert.equal(quiet.failure?.reason, "agent_idle", JSON.stringify(quiet.failure));
+	assert.match(quiet.failure!.message, /^OpenCode sent nothing for a while with no call of its own running, so the platform ended the turn\./);
+	assert.ok(Date.now() - started < 5_000);
+	// A command of its own still running is not quiet: the turn waits for it.
+	const busy = await opencode.runTurn(scripted("opencode", (id, send) => {
+		update(send, { sessionUpdate: "tool_call", toolCallId: "t1", title: "npm test", status: "in_progress" });
+		setTimeout(() => {
+			update(send, { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
+			send({ id, result: { stopReason: "end_turn" } });
+		}, 600);
+	}), { prompt: "hello", idleMs: 200 });
+	assert.equal(busy.failure, null, JSON.stringify(busy.failure));
+	ok("an agent quiet past the bound, with no call of its own running, has its turn ended; a long call is waited for");
+
+	// OpenCode logs that it gave up on the provider's rate limit, and never answers the prompt.
+	const gaveUp = await opencode.runTurn(scripted("opencode", (_id, _send, stderr) => {
+		stderr('ERROR 2026-11-23T08:41:38 +2ms service=session error.error="AI_APICallError: The provider\'s usage or rate limit was reached."\n');
+		stderr('ERROR 2026-11-23T08:41:44 +5s service=session error.error="AI_RetryError: Failed after 3 attempts. Last error: The provider\'s usage or rate limit was reached."\n');
+	}), { prompt: "hello", idleMs: 600_000 });
+	assert.deepEqual(gaveUp.failure, { reason: "usage_limit", message: "The provider's usage or rate limit was reached." });
+	assert.equal(turnRefusal("error", gaveUp, null)?.kind, "usage_limit");
+	ok("OpenCode's log line that it gave up on a rate limit ends the turn at once as a usage limit");
+
+	// The relay's own refusals, as OpenCode passes them on: the provider's refusal, not the agent's failure.
+	for (const [sentence, kind] of [["The provider rejected the request.", "provider_rejected"], ["The provider failed or couldn't be reached.", "provider_unavailable"]]) {
+		const result = await opencode.runTurn(scripted("opencode", (id, send) => send({ id, error: { code: -32603, message: "Internal error: " + sentence } })), { prompt: "hello" });
+		assert.deepEqual(result.failure, { reason: kind, message: sentence });
+		const refused = turnRefusal("error", result, null);
+		assert.equal(refused?.kind, kind);
+		assert.equal(refusalMessage(refused!), sentence);
+	}
+	ok("the relay's refusals passed on by OpenCode are provider refusals, in the relay's words");
+}
+
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));
 try {
 	const id = await withProcess(state, async (client) => {
@@ -1398,6 +1523,7 @@ try {
 	await clientCheck(state);
 	await platformToolsCheck(state);
 	await platformChecksCheck(state);
+	await turnBoundsCheck();
 	await bridgeCheck();
 } finally {
 	rmSync(state, { recursive: true, force: true });

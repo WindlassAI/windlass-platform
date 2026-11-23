@@ -574,5 +574,11 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		act(() => checkbox("Import existing OpenCode API keys").click());
 		expect(command()).toContain('--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"');
 		expect(background()).not.toContain('/import/opencode');
+		// Windlass's command sandbox is allowed unless the person turns it off, in both commands.
+		expect(command()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
+		expect(background()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
+		act(() => checkbox("Allow Windlass's command sandbox").click());
+		expect(command()).not.toContain("--allow-profile");
+		expect(background()).not.toContain("--allow-profile");
 	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
 });

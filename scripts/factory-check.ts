@@ -517,6 +517,27 @@ drive("review: watchdog and cancellation reach the reviewer", reviewerOn(), [...
 	{ fact: k => ({ kind: "turn_running", key: k.check }), state: "working", effects: ["check_turn"], also: o => holds(effect(o, "check_turn")?.to === "review", "running reviewer turn checked on builder") },
 	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["verified_check", "withdraw"], also: o => holds(effect(o, "withdraw")?.to === "review", "cancel withdrew the builder") },
 ]);
+// The hosted cap on kept sandboxes refuses an item's turn: the item asks, once a step, and the queued turn starts when a place is freed.
+{
+	const capWait = { reason: "sandboxes" as const, sentence: "This item's next turn needs a hosted sandbox, and all 5 hosted sandboxes you may keep are in use: “A”, “B”. Free one on the Usage page and the turn starts, wait for one to be freed, or give up.", retryAt: T0 + 30_000 };
+	const capped: Row = { fact: k => ({ kind: "turn_waiting", key: k.key, wait: capWait }), state: "waiting", wait: "person", effects: ["ask"],
+		also: o => holds(o.item.question?.kind === "sandboxes" && o.item.question.text.endsWith(capWait.sentence) && o.item.question.choices.map(c => c.id).join() === "wait,give_up", JSON.stringify(o.item.question)) };
+	drive("hosted cap: the item asks with what holds the places, waits when told to, and its turn starts once one is freed", reviewerOn(), [...reviewing,
+		capped,
+		{ fact: k => ({ kind: "turn_waiting", key: k.key, wait: { ...capWait, retryAt: T0 + 60_000 } }), state: "waiting", wait: "person", effects: [], unchanged: true },
+		{ fact: answer("wait"), state: "waiting", wait: "sandboxes", effects: [] },
+		{ fact: k => ({ kind: "turn_waiting", key: k.key, wait: { ...capWait, retryAt: T0 + 90_000 } }), state: "waiting", wait: "sandboxes", effects: [], also: o => holds(o.item.question === null, "asked again in the same step") },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+	]);
+	drive("hosted cap: giving up fails the item and withdraws its queued turn", reviewerOn(), [...reviewing,
+		capped,
+		{ fact: answer("give_up"), state: "failed", effects: ["verified_check", "withdraw"], also: o => holds(effect(o, "withdraw")?.to === "review", "the reviewer's queued turn was not withdrawn") },
+	]);
+	drive("hosted cap: a place freed before the answer starts the turn and drops the question", reviewerOn(), [...reviewing,
+		capped,
+		{ fact: started(), state: "working", effects: ["check_turn"], also: o => holds(o.item.question === null, "the question stayed after the turn started") },
+	]);
+}
 drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
 	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
 	...personHandover(),
@@ -1001,7 +1022,7 @@ drive("a deploy in the middle of the implement step", newItem(), [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: interrupted, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "interruptions", "cut off three times: a person is asked") },
+	{ fact: interrupted, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "interruptions" && !o.events.some(e => /tried again/.test(e.said)), "cut off three times: a person is asked, and the log does not say it is tried again") },
 	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
@@ -1128,6 +1149,23 @@ drive("GitHub refuses the push: a question with GitHub's reason, then a push aga
 	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 ]);
 
+{
+	const { filedFromIssue } = await import("../server/src/factory/intake.js");
+	expect("an item filed from someone else's issue names its author, and apart who filed it",
+		filedFromIssue({ issue: { number: 101, author: "mallory" }, sender: "ada" }) === "Filed from GitHub issue #101, written by @mallory. Filed by @ada.");
+	expect("an issue its author filed says so once", filedFromIssue({ issue: { number: 7, author: "ada" }, sender: "ada" }) === "Filed from GitHub issue #7, written and filed by @ada.");
+}
+drive("GitHub's own sentence that it refused the push is not said twice", newItem(), [
+	...begun,
+	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GitHub refused the push: a rule of acme/quay protects branches named like windlass/x.", transient: false }), state: "waiting", wait: "person", effects: ["ask"],
+		also: (o) => holds(o.item.question?.text === "GitHub refused the push: a rule of acme/quay protects branches named like windlass/x.", o.item.question?.text ?? "no question") },
+]);
+drive("GitHub's sentence that starts with because reads as one", newItem(), [
+	...begun,
+	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GitHub refused the push because it changes a workflow file.", transient: false }), state: "waiting", wait: "person", effects: ["ask"],
+		also: (o) => holds(o.item.question?.text === "GitHub refused the push because it changes a workflow file.", o.item.question?.text ?? "no question") },
+]);
+
 drive("cancelling a running turn withdraws it", newItem(), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["withdraw"] },
@@ -1146,7 +1184,7 @@ const admissions: Array<[string, Parameters<typeof admit>[0], WaitReason | null,
 	["the factory's turns are full", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 5, factory: ["a", "b", "c", "d", "e"] }, startsRun: false, inReview: 0, place: hosted(3600), attempt: 0 }, "capacity", /one of your 5 factory turns; 5 are running \(“a”, “b”, “c”, …\)/, T0 + 30_000],
 	["the user's turns are full", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 6, factory: ["a", "b"] }, startsRun: false, inReview: 0, place: hosted(3600), attempt: 1 }, "capacity", /one of your 6 running turns; 6 are running, 4 of them your own/, T0 + 60_000],
 	["the day's hosted allowance is used", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: hosted(10), attempt: 0 }, "capacity", /Your 8 h of hosted sandbox time for today are used; it starts again at 00:00 UTC \(in 4 h\)/, MIDNIGHT],
-	["the kept sandboxes are all taken, for a session that needs one", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), usage: { ...usage(3600), sandboxes: { kept: 20, limit: 20 } }, needsSandbox: true }, attempt: 0 }, "capacity", /20 sandboxes you may keep/, T0 + 30_000],
+	["the kept sandboxes are all taken, for a session that needs one: what holds them is named", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), usage: { ...usage(3600), sandboxes: { kept: 20, limit: 20 } }, needsSandbox: true, holders: ["the item “Fix it”", "“Mine”"] }, attempt: 0 }, "sandboxes", /all 20 hosted sandboxes you may keep are in use: the item “Fix it”, “Mine”\. Free one on the Usage page/, T0 + 30_000],
 	["the user's hosted sandboxes are all running", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), running: 3 }, attempt: 0 }, "capacity", /one of your 3 hosted sandboxes: 3 running/, T0 + 30_000],
 	["the deployment is full: tried again, spaced up to 5 min", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: false, inReview: 0, place: { ...hosted(3600), deploymentFull: 10 }, attempt: 6 }, "capacity", /this deployment runs 10 at once and all are in use/, T0 + 5 * MINUTE],
 	["two-slot child waits with one slot free", { at: T0, limits: FACTORY_DEFAULTS, turns: { running: 0, factory: [] }, startsRun: true, inReview: 0, place: { ...machine(true, 0), slots: { free: 1, units: 2 } }, attempt: 0 }, "machine", /Waiting for 2 free slots on ‘nas’/, T0 + 30_000],
@@ -1249,6 +1287,19 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	expect("an OpenCode turn that reports no tokens stops the item with the reason, offering no way to go on unbounded",
 		silentOpenCode.state === "waiting" && silentOpenCode.question?.kind === "budget" && silentOpenCode.question.text === "OpenCode did not report token use, so the item's budget can't be enforced."
 		&& isDeepStrictEqual(silentOpenCode.question.choices.map(choice => choice.id), ["give_up"]) && silentOpenCode.agent?.tokens === "not_reported", JSON.stringify(silentOpenCode.question));
+	{
+		// The provider refused an OpenCode turn, which therefore reported no tokens: the refusal is what the person is asked
+		// about, with Try again and the hand-over choices, not the item's budget.
+		let o = advance(agentItem("opencode"), { kind: "start", at: T0, by: "person:u1" });
+		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });
+		const refused = advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key: currentKey(o.item)!, outcome: "error", verified: null, flags: [], changes: false, report: null,
+			spend: turnSpend(null, agentTurn("opencode", null, { cost: null })),
+			providerRefusal: { kind: "provider_rejected", message: "The provider rejected the request.", retry: { text: "Carry on.", fetchBase: null } } }).item;
+		const question = refused.question;
+		expect("an OpenCode turn the provider refused asks about the refusal, with retry and hand-over, before any budget question",
+			refused.state === "waiting" && question?.kind === "turn_refused" && question.text === "The provider rejected the request."
+			&& question.choices[0]?.id === "again" && question.choices.at(-1)?.id === "give_up" && question.choices.length >= 2, JSON.stringify(question));
+	}
 	const silentClaude = afterTurn(agentItem("claude"), turnSpend(null, agentTurn("claude", null, null)));
 	expect("a Claude Code turn that reports no tokens goes on: its tokens are not counted", silentClaude.question === null && silentClaude.agent?.tokens === "not_reported", JSON.stringify(silentClaude.question));
 	{

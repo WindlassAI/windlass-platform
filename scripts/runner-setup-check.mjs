@@ -9,8 +9,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-for (const mode of ['manual','import','decline']) test(mode === 'decline' ? 'declining every mounted credential falls through to regular login' : mode === 'import' ? 'setup imports two API keys, declines a foreign refresh token and drops the mount' : 'setup pairs, skips Claude, accepts a hidden OpenCode key and prints the runnable Docker command', async () => {
-	const importing = mode !== "manual", accept = mode === "import";
+for (const mode of ['manual','import','decline','failed']) test(mode === 'failed' ? 'a sign-in that fails does not stop setup: it says how to sign in later and prints the start command' : mode === 'decline' ? 'declining every mounted credential falls through to regular login' : mode === 'import' ? 'setup imports two API keys, declines a foreign refresh token and drops the mount' : 'setup pairs, skips Claude, accepts a hidden OpenCode key and prints the runnable Docker command', async () => {
+	const failing = mode === 'failed';
+	const importing = mode !== "manual" && !failing, accept = mode === "import";
 	const root = fileURLToPath(new URL('../', import.meta.url));
 	const dir = await mkdtemp(join(root, '.setup-check-'));
 	const pin = 'sha256:'+'1'.repeat(64), id = 'm_'+'a'.repeat(16);
@@ -75,13 +76,24 @@ else process.exitCode=2;
 `,{mode:0o755});
 		const env={...process.env,PATH:dir+':'+process.env.PATH,WLP_RUNNER_STATE_DIR:state};
 		const child=spawn('script',['-qef','-c',`"${process.execPath}" --require "${preload}" "${dir}/runner.cjs" setup --platform ${origin} ${importing ? '--screenshots ' : ''}--harness codex --harness claude --harness opencode`,'/dev/null'],{env,stdio:['pipe','pipe','pipe']});
-		const prompts=[['Codex: sign in now?','n'],['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',accept ? '' : 'n'],['(opencode) API key: import?',accept ? '' : 'n'],["can't be shared safely",'n']] : []),...(!accept ? [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']] : [])];
+		// A failing Codex sign-in: an answer that is no method. Its question may not come at all (the sign-in can fail before it).
+		const prompts=failing ? [['Codex: sign in now?','y'],['Choose a method','3',true],['Claude Code: sign in now?','n'],['OpenCode: sign in now?','n']] : [['Codex: sign in now?','n'],['Claude Code: sign in now?','n'],['OpenCode: sign in now?',''],...(importing ? [['(opencode-go) API key: import?',accept ? '' : 'n'],['(opencode) API key: import?',accept ? '' : 'n'],["can't be shared safely",'n']] : []),...(!accept ? [['OpenCode provider','openai'],['Enter the openai API key','setup-fixture-secret']] : [])];
 		let output='', step=0;
-		child.stdout.on('data',chunk=>{output+=chunk;if(step<prompts.length && output.includes(prompts[step][0])) child.stdin.write(prompts[step++][1]+'\n');});
+		child.stdout.on('data',chunk=>{output+=chunk;
+			// An optional question that was not asked is passed over once the next one is.
+			while(step<prompts.length && prompts[step][2] && !output.includes(prompts[step][0]) && prompts[step+1] && output.includes(prompts[step+1][0])) step++;
+			if(step<prompts.length && output.includes(prompts[step][0])) child.stdin.write(prompts[step++][1]+'\n');});
 		const timer=setTimeout(()=>child.kill('SIGTERM'),45000);
 		let code;try {code=await new Promise(done=>child.once('exit',done));}finally{clearTimeout(timer);child.stdin.destroy();}
 		assert.equal(code,0,output.replaceAll('setup-fixture-secret','[fixture]'));
 		assert.equal(step,prompts.length);
+		if (failing) {
+			assert.match(output,/Codex was not signed in: .+ Sign it in later with: docker exec -it windlass-runner windlass-runner login codex/);
+			assert.match(output,/Claude Code is not signed in\. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude/);
+			assert.match(output,/OpenCode is not signed in\. Sign it in later with: docker exec -it windlass-runner windlass-runner login opencode/);
+			assert.ok(output.includes(runner+' run --platform '+origin+' --harness codex --harness claude --harness opencode'), 'no start command: '+output.slice(-600));
+			return;
+		}
 		assert.ok(!output.includes('setup-fixture-secret'));
 		assert.match(output,/ABCD-EFGH/);
 		assert.deepEqual(asked,['/runner/pair','/runner/pair/poll']);

@@ -131,6 +131,11 @@ export interface AcpProfile {
 	capabilities: HarnessCapabilities;
 	/** Whose sign-in it runs with, in a sentence's words: "your Claude subscription". */
 	signedInWith: string;
+	/**
+	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
+	 * the agent then answers nothing more: the turn is ended at once as a usage limit (acp-harness.ts).
+	 */
+	limitGiveUp?: RegExp;
 }
 
 /** How a machine's Codex is signed in, as its runner reports it. */
@@ -154,6 +159,8 @@ export const OPENCODE: AcpProfile = {
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
 	signedInWith: "the provider sign-in kept on this machine",
+	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
+	limitGiveUp: /AI_RetryError: Failed after \d+ attempts\. Last error: The provider's usage or rate limit was reached\./,
 };
 
 export const CODEX: AcpProfile = {

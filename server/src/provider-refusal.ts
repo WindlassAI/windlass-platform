@@ -16,6 +16,8 @@ const REFUSALS = new Set([
 	"auth", "auth_required", "harness_signed_out", "permission_denied",
 	"usage_limit", "insufficient_quota", "quota_exhausted",
 	"model_not_found", "model_unavailable", "model_not_available", "content_policy", "context_overflow",
+	// The machine relay's own refusals as an agent passes them on (acp-harness.ts): the provider answered an error, or nothing.
+	"provider_rejected", "provider_unavailable",
 ]);
 
 /** Keep routing facts, including short scheduled retries, without retaining the provider's raw account data. */
@@ -93,5 +95,7 @@ export function limitObservation(refusal: ProviderRefusal | null, at: number): U
 
 export function refusalMessage(refusal: ProviderRefusal): string {
 	if (refusal.kind === PLATFORM_TOOLS) return `The turn did not run: Windlass could not use one of the tools the platform gives the agent. This is a fault in the platform, not a refusal by the provider, and trying again fails the same way until the platform is fixed. Windlass said: ${refusal.message}`;
-	return `The provider refused the request. ${refusal.message}` + (refusal.resetsAt !== undefined ? ` The limit resets at ${new Date(refusal.resetsAt).toISOString().slice(0, 10)} ${utcReset(refusal.resetsAt)}.` : "");
+	// A sentence that already says what the provider did is not prefixed again.
+	const said = refusal.kind === "provider_unavailable" || refusal.kind === "provider_rejected" ? refusal.message : `The provider refused the request. ${refusal.message}`;
+	return said + (refusal.resetsAt !== undefined ? ` The limit resets at ${new Date(refusal.resetsAt).toISOString().slice(0, 10)} ${utcReset(refusal.resetsAt)}.` : "");
 }

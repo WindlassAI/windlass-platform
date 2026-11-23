@@ -15,7 +15,7 @@ import { storeProvider, changeProviderLogin, currentProvider, installedProvider,
 import { changeCodexLogin, codexLogin } from "./codex-login.js";
 import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
-import { removeRelay } from "./claude-relay.js";
+import { relayNotes, removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
 import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
 import { localSizing, storeFlags } from "./sizing.js";
@@ -153,6 +153,11 @@ async function main() {
 					const signIn = await claudeSignIn(executor);
 					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
 				}
+				// What each relay refused or passed on differently, latest last (its container keeps no log).
+				for (const [relay, label] of [["codex", "Codex"], ["opencode", "OpenCode"], ["claude", "Claude Code"]] as const) {
+					const notes = await relayNotes(executor, relay).catch(() => []);
+					if (notes.length) console.log(`  ${label} relay, latest notes:\n${notes.map(line => "    " + line).join("\n")}`);
+				}
 				try {
 					await executor.discover();
 					for (const [id, b] of executor.boxes) console.log(`  ${id}  ${b.sessionId}  ${b.state}`);
@@ -217,7 +222,7 @@ async function main() {
 								if (launch?.importFile && await importOpenCode(launch.importFile, p => terminalQuestion(p, abort.signal),
 									(provider,key) => storeProvider(machine,{provider,key}), login)) return;
 								await login();
-							});
+							}, console.log, () => abort.signal.aborted);
 						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
 						if (values["slot-cpus"] === undefined && process.env.WLP_RUNNER_CPUS !== undefined) flags.push("--slot-cpus", String(slots!.unit.cpus));
 						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));

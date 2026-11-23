@@ -52,8 +52,11 @@ A saved secret's value is in the changes. Ask the agent to take it out, then pus
 **"Today's 2 h of sandbox time is used up, so nothing was started. The allowance is whole again at 00:00 UTC, in …"**\
 Wait until 00:00 UTC, or run the agent on one of your machines, where this limit does not apply.
 
-**"You keep 5 sandboxes, the most an account may have, and this agent needs one of its own. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again."**\
-Free a sandbox on **Usage**, under **Sandboxes you keep**, or delete an agent.
+**"You keep 5 hosted sandboxes, the most an account may have, and this agent needs one of its own. …"**\
+The cap is for the platform's own sandboxes only. Free one on **Usage**, under **Hosted sandboxes you keep**, or delete an agent. Sandboxes on your own machines are not counted: a machine has only the limits its owner set on its runner.
+
+**"This machine has reached its own limit on kept sandboxes, set by --max-sandboxes."**\
+The machine's owner capped how many sandboxes it keeps. Free one of its sandboxes on **Machines**, or raise the cap with `--max-sandboxes` (`windlass-runner status` shows it).
 
 **"You already have 6 agents working, which is your limit. Wait for one to finish, or stop one."**\
 Wait, or stop an agent.
@@ -64,8 +67,20 @@ Shorten the prompt. Put long material in a file in the repository and point the 
 **"This turn ran for …, which is the limit, so it was stopped."**\
 A turn can run for 45 minutes. Send a prompt to go on from where it stopped.
 
+**"OpenCode sent nothing for 10 minutes with no call of its own running, so the platform ended the turn. …"**\
+A Claude Code, OpenCode or Codex agent went quiet: no message, no call of its own running, nobody asked. Most often its provider stopped answering or kept refusing. The turn ends so that it no longer holds a slot on your machine. Send a prompt to try again, or choose another model.
+
+**"Codex's model requests failed (HTTP 502), so it did nothing this turn. …"**\
+Every request the agent made to its model failed, so the turn is shown as failed, with the provider's words. Check the provider's status and try again. On a machine, `windlass-runner status` lists the latest answers the credential relay refused.
+
+**"The provider rejected the request."** or **"The provider failed or couldn't be reached."**\
+The provider refused the agent's model request, or did not answer it. A work item asks you what to do, with **Try again** and the agents it can hand over to.
+
 **"Nobody answered "…" within 10 minutes, so it was declined."**\
 The agent asked a question and nobody answered. It was told, and went on. Send a prompt to tell it what you want.
+
+**"Nobody answered "…" within 5 minutes, so the turn was ended and its sandbox paused. Send a prompt to go on."**\
+In a hosted sandbox an approval waits 5 minutes, so that a sandbox nobody watches does not run on. Send a prompt to go on; the sandbox resumes.
 
 **"Your sandbox time could not be checked just now, so nothing was started. Try again in a moment."**\
 Try again in a moment.

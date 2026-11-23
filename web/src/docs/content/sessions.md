@@ -67,7 +67,7 @@ In some modes the agent asks before it acts. The question appears at the tool ca
 
 Choose one of the answers it offers. With Windlass, you can also decline with a note: choose **add a note**, then say why, or what to do instead.
 
-A question waits 10 minutes. A countdown shows **declines in** and the time left. If nobody answers in time, the platform declines for you, and the timeline says "Nobody answered … within 10 minutes, so it was declined." The agent is told, and goes on.
+A question waits 10 minutes. A countdown shows **declines in** and the time left. If nobody answers in time, the platform declines for you, and the timeline says "Nobody answered … within 10 minutes, so it was declined." The agent is told, and goes on. In one of the platform's own (hosted) sandboxes, which runs and is counted while it waits, an approval waits 5 minutes: then the turn ends, the timeline says "Nobody answered … within 5 minutes, so the turn was ended and its sandbox paused.", and the sandbox pauses at once. Send a prompt to go on.
 
 The agent asks one question at a time.
 
@@ -139,6 +139,8 @@ For a session on one of your machines, the section adds that the checks ran on t
 
 Where the repository has a [setup command](/docs/settings#setup-command), it normally runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.
 
+**A repository that pins pnpm.** The sandbox has its own pnpm. Where `package.json` pins another version (`"packageManager": "pnpm@…"`), install with `corepack pnpm install` in the setup command: corepack then keeps that version, and the agent's `pnpm` runs it even where its commands have no network, as in Windlass's command sandbox. Without that, `pnpm` runs the sandbox's own version with a warning and never downloads the pinned one.
+
 Hosted Docker and supported machine runners can reuse Git objects from your earlier clones of the same connected repository on that machine. GitHub still supplies the branch head at launch. Each session keeps its own complete clone, including after the machine evicts the mirror.
 
 On deployments with prepared Docker sandboxes enabled, a successful setup on the repository’s default branch can be saved before the first agent turn. Setup must take at least 30 seconds and receive no repository secrets. A later session on the same machine can reuse your snapshot when its dependency files, setup command, sandbox image, and platform match. Subtasks and reviewers can reuse a prepared sandbox. Only the original builder or a personal session can save one.
@@ -180,7 +182,7 @@ Where the platform keeps a copy of the agent's memory of the conversation, it re
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 
-On this platform you can keep up to 5 sandboxes at once. To free one, go to **Usage**, find it under **Sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
+On this platform you can keep up to 5 hosted sandboxes at once; those on your own machines are not counted. To free one, go to **Usage**, find it under **Hosted sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
 
 ## Rename or delete an agent
 

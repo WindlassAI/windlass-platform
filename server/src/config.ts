@@ -28,6 +28,9 @@
  *                              shortened by tests
  *   WLP_QUESTION_TIMEOUT_MS    how long a turn's question waits for an answer before the platform
  *                              declines it (default QUESTION_TIMEOUT_MS, ten minutes); shortened by tests
+ *   WLP_HOSTED_QUESTION_TIMEOUT_MS  in a hosted sandbox, how long an approval waits before the platform
+ *                              ends the turn so the sandbox can pause (default 5 minutes, at most
+ *                              WLP_QUESTION_TIMEOUT_MS)
  *   WLP_TURN_TIMEOUT_MS        how long one turn may run (default 45 minutes)
  *   WLP_SETUP_TIMEOUT_MS       how long a repository's setup command may run in a new sandbox before the
  *                              platform stops it (default 600000, ten minutes; at most the time a turn
@@ -322,6 +325,8 @@ export interface Config {
 	storagePath: string;
 	loginTtlMs: number;
 	questionTimeoutMs: number;
+	/** In a hosted sandbox: how long an approval waits before the turn is ended and the sandbox paused (never longer than `questionTimeoutMs`). */
+	hostedQuestionTimeoutMs: number;
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
 	/** Windlass's model relay (docs/model-relay.md): WLP_MODEL_RELAY, the hosted relay's ceiling, and WLP_MODEL_RELAY_URL (null when unset). */
@@ -815,6 +820,7 @@ export const config: Config = {
 	storagePath: readStoragePath(),
 	loginTtlMs: readLoginTtl(),
 	questionTimeoutMs: readQuestionTimeout(),
+hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTED_QUESTION_TIMEOUT_MS", 5 * 60 * 1000, 100)),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),

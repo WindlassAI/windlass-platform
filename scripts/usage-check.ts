@@ -163,7 +163,7 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	const three = book.reserve(at(0), { id: "c1", session: "c", keep: true, fresh: true });
 	expect("a place is counted and claimed with the hold: of three that ask with a cap of two, the third is refused", one.ok && two.ok && !three.ok && three.reason === "sandboxes" && book.kept().length === 2);
 	expect("the refusal took no hold either", book.holdOf("c") === null && book.numbers(at(0)).heldSeconds === 1200);
-	expect("the refusal says what to do", sandboxRefusal(book.numbers(at(0))).includes("You keep 2 sandboxes") && sandboxRefusal(book.numbers(at(0))).includes("Usage page"));
+	expect("the refusal says what to do", sandboxRefusal(book.numbers(at(0))).includes("You keep 2 hosted sandboxes") && sandboxRefusal(book.numbers(at(0))).includes("Usage page"));
 	expect("a session that has its place is not counted twice", book.reserve(at(10), { id: "a2", session: "a", keep: true, settle: { hold: "a1", seconds: 10 } }).ok && book.kept().length === 2);
 	expect("a session that needs no place is not held to the cap", book.reserve(at(10), { id: "d1", session: "d", fresh: true }).ok);
 	book.release("a");
@@ -203,6 +203,25 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	expect("a free place is taken in the same step", taken.ok && taken.change.kept.length === 1 && book.keeps("z") && book.atCap("w"));
 	book.reconcile(at(3), ["x"]);
 	expect("held against a list that does not have its sandbox yet, a place just claimed is kept", book.keeps("z") && book.kept().length === 2);
+}
+
+// A work item counts as one place: its reviewer shares its builder's (`UsageBook.sharing`, user.ts `itemSharing`).
+{
+	const book = new UsageBook(LIMITS);
+	book.sharing = (session) => (session === "reviewer" ? "builder" : undefined);
+	book.claim(at(0), "builder");
+	book.claim(at(0), "other");
+	expect("with the builder's place and another, the account is at its cap of 2", book.atCap("third") && book.numbers(at(0)).sandboxes.kept === 2);
+	expect("the item's reviewer is not: it shares its builder's place", !book.atCap("reviewer"));
+	const reviewer = book.reserve(at(1), { id: "r1", session: "reviewer", keep: true, fresh: true });
+	expect("the reviewer's sandbox is made, and the count stays 2 of 2", reviewer.ok && book.keeps("reviewer") && book.numbers(at(1)).sandboxes.kept === 2 && book.kept().length === 3);
+	book.release("builder");
+	expect("once its builder's place is freed, the reviewer's claim counts as its own", !book.shares("reviewer") && book.numbers(at(2)).sandboxes.kept === 2 && book.atCap("third"));
+	const lone = new UsageBook(LIMITS);
+	lone.sharing = (session) => (session === "reviewer" ? "builder" : undefined);
+	lone.claim(at(0), "a");
+	lone.claim(at(0), "b");
+	expect("a reviewer whose builder holds no place needs one of its own", lone.atCap("reviewer"));
 }
 
 // Until when a sandbox that is found stopped can have run, and how lengths of time are said.

@@ -480,6 +480,13 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 			</p>
 			<p className="item-question-text">{question.text}</p>
 			{question.check ? <EnvironmentCheck check={question.check} /> : null}
+			{question.kind === "sandboxes" ? (
+				<p className="item-question-text">
+					<a className="link" {...linkProps({ name: "usage" })}>
+						Free a sandbox on Usage
+					</a>
+				</p>
+			) : null}
 			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} onPick={setNote} /> : null}
 			{raising ? (
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />

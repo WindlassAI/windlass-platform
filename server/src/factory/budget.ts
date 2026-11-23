@@ -164,6 +164,8 @@ export type PlaceNow =
 			running: number;
 			/** True when the session has no sandbox and one must be made: it needs a place among the kept ones. */
 			needsSandbox: boolean;
+			/** Who holds the kept places now, in words (usage.ts `keptHolder`), for the question the item asks at the cap. */
+			holders?: string[];
 			/** Set when the sandbox layer refused at the last try because the deployment runs as many as it may (WLP_E2B_MAX_RUNNING): that number. */
 			deploymentFull: number | null;
 	  }
@@ -180,6 +182,12 @@ export type PlaceNow =
 			running: number;
 			max: number;
 	  };
+
+/** An item's turn needs a hosted sandbox and every place the account may keep is taken: by what, and what the person can do. */
+export function keptCapSentence(limit: number, holders: string[]): string {
+	const named = holders.length === 0 ? "" : `: ${holders.slice(0, 5).join(", ")}${holders.length > 5 ? `, and ${holders.length - 5} more` : ""}`;
+	return `This item's next turn needs a hosted sandbox, and all ${plural(limit, "hosted sandbox", "hosted sandboxes")} you may keep are in use${named}. Free one on the Usage page and the turn starts, wait for one to be freed, or give up. Sandboxes on your own machines are not counted.`;
+}
 
 export function slotWait(name: string, units: number, free: number): string {
 	return `Waiting for ${units} free slot${units === 1 ? "" : "s"} on ‘${name}’. ${free} free now.`;
@@ -254,7 +262,7 @@ export function admit(input: AdmissionInput): Admission {
 		return wait("capacity", `Your ${allowance} of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${until}). The allowance is this deployment's setting, which its owner can raise.`, usage.resetsAt);
 	}
 	if (place.needsSandbox && usage.sandboxes.limit !== null && usage.sandboxes.kept >= usage.sandboxes.limit) {
-		return wait("capacity", `Waiting for a place among the ${plural(usage.sandboxes.limit, "sandbox", "sandboxes")} you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.`);
+		return wait("sandboxes", keptCapSentence(usage.sandboxes.limit, place.holders ?? []));
 	}
 	if (place.running >= limits.hostedRunning) {
 		return wait("capacity", `Waiting for one of your ${plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")}: ${place.running} running now.`);
