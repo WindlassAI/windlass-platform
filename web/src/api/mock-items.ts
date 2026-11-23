@@ -4,6 +4,7 @@ import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses
 import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
+import { answeredWords } from "../../../server/src/factory/answered.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -191,7 +192,7 @@ interface Seed {
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"]; interruptions?: number } };
 	/** Where its second review is (`ItemSummary.review`); null when left out. */
 	review?: ItemSummary["review"];
-	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
+	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean, asked?: string]>;
 	/**
 	 * `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`);
 	 * none when left out.
@@ -229,6 +230,11 @@ function ciRuns(count: number, conclusion: string): VerdictRun[] {
 	return names.slice(0, count).map((name, index) => ({ name, app: "github-actions", conclusion, url: `https://github.com/acme/harbor/actions/runs/${9100 + index}` }));
 }
 
+/** The tide store's builder asked its person (`ask_person`): its own words, on the question and on its log entry. */
+const TIDE_STORE_ASKED: NonNullable<ItemQuestion["asked"]> = {
+	text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
+	options: ["SQLite", "Postgres", "One JSON file per station"],
+};
 const userChecks = (...statuses: Array<[name: string, status: Verdict["gate"]["required"][number]["status"], sentBack?: number]>): Verdict["gate"]["required"] => statuses.map(([name, status, sentBack]) => ({ name, status, sentBack: sentBack ?? 0 }));
 const passingGate: Verdict["gate"] = { state: "passed", required: userChecks(["unit tests", "passed"], ["lint", "passed"]) };
 
@@ -483,15 +489,12 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				text: "The agent stopped to ask you a question before it goes on.",
 				choices: choices("reply", "give_up"),
 				asked: 7,
-				asked_: {
-					text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
-					options: ["SQLite", "Postgres", "One JSON file per station"],
-				},
+				asked_: TIDE_STORE_ASKED,
 			},
 			run: { n: 1, started: 39, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 39 } },
 			events: [
 				[40, "Started.", undefined, true],
-				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"]],
+				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"], false, TIDE_STORE_ASKED.text],
 			],
 			spent: { tokens: 380_000, turns: 1, activeSeconds: 32 * 60, hostedSeconds: 32 * 60 },
 		},
@@ -1147,7 +1150,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 				caps: ROUND_CAPS,
 			}
 		: null;
-	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said }));
+	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person, asked]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said, ...(asked !== undefined && { asked }) }));
 	const updatedAt = events.length > 0 ? Math.max(...events.map((event) => event.at)) : ago(seed.filed);
 	return {
 		id,
@@ -1781,7 +1784,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!picked) throw conflict("That is not one of the question's answers.");
 				const note = action.note?.trim() || null;
 				if (action.choice === "reply" && note === null) throw new PlatformError("user", "Write your answer to the agent.", { reason: "bad_input" });
-				const said = `Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`;
+				const said = answeredWords(picked, note);
 				// A subtask that could not be placed (blueprint.ts, `askPlacement`): the planner files the rest again, the approved places are checked again, or the subtask is given up and the rest re-planned.
 				if (question.kind === "placement_refused" && plan) {
 					const sub = plan.subtasks.find((one) => question.text.startsWith(one.title + ": "));

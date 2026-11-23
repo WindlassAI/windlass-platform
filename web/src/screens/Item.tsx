@@ -839,6 +839,13 @@ function LogEntry({ event, now, uid }: { event: ItemEvent; now: number; uid: str
 				<InlineMarkdown text={event.said} />
 				{person ? <span className="tone-faint"> · {event.by === `person:${uid}` ? "you" : "a person"}</span> : null}
 			</p>
+			{/* The agent's own question, kept after it was answered: its words in plain text, as `AgentAsked` shows them. */}
+			{event.asked ? (
+				<figure className="item-event-asked">
+					<figcaption className="item-asked-who">The agent asked:</figcaption>
+					<blockquote className="item-asked-text">{event.asked}</blockquote>
+				</figure>
+			) : null}
 		</li>
 	);
 }

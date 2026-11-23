@@ -44,6 +44,7 @@ import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.j
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
+import { answeredWords } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
 import { subtaskMinimum, emptyBudget, featureReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem } from "./feature-plan.js";
@@ -204,9 +205,9 @@ class Change {
 		return stepKey(this.item.id, this.run.n, this.run.step.n, this.run.step.attempt);
 	}
 
-	say(said: string, stopReason?: ItemEvent["stopReason"]): void {
+	say(said: string, stopReason?: ItemEvent["stopReason"], asked?: string): void {
 		const run = this.item.run;
-		this.events.push({ at: this.at, by: this.by, step: run === null || run.step.n === 0 ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt }, said, ...(stopReason && { stopReason }) });
+		this.events.push({ at: this.at, by: this.by, step: run === null || run.step.n === 0 ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt }, said, ...(stopReason && { stopReason }), ...(asked !== undefined && { asked }) });
 	}
 
 	/**
@@ -1778,7 +1779,8 @@ function ask(c: Change, kind: QuestionKind, text: string, choices: Question["cho
 	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...(asked && { asked }), ...(check && { check }) };
 	item.question = question;
 	c.state("waiting", { reason: kind === "budget" ? "budget" : "person", sentence, retryAt: null });
-	c.say(`Asked: ${text}`);
+	// The agent's own words stay in the log beside the platform's sentence, once the question is answered too.
+	c.say(`Asked: ${text}`, undefined, asked?.text);
 	c.effects.push({ kind: "ask", question });
 }
 
@@ -1790,7 +1792,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	if (picked === undefined) return false;
 	const note = fact.note?.trim() || null;
 	item.question = null;
-	c.say(`Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`);
+	c.say(answeredWords(picked, note));
 	// The person's note is theirs whatever they chose, but for giving up: a later review of the work is held to it.
 	if (note !== null && fact.choice !== "give_up" && item.run) decided(item, { kind: "answer", run: item.run.n, text: note, question: question.kind, ...(question.kind === "agent_ask" && question.asked?.text && { asked: question.asked.text }) });
 	if ((item.approvedPlan || item.jobs?.length) && fact.choice === "retry") return false;

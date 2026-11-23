@@ -1597,6 +1597,11 @@ export interface ItemEvent {
 	/** The step it happened in; null outside a run. */
 	step: { run: number; n: number; kind: StepKind; attempt: number } | null;
 	said: string;
+	/**
+	 * On the entry of an `agent_ask` question: the agent's own words (`Question.asked.text`), kept after the
+	 * question is answered. Untrusted, as there: shown quoted, as the agent's, in plain text; never in `said`.
+	 */
+	asked?: string;
 }
 
 /** A check run or commit status of CI, as the verdict lists it. */
