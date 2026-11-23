@@ -143,8 +143,10 @@ export function inSecondReview(item: Pick<ItemSummary, "review">): boolean {
 /**
  * Where an item stands beside its row: the verdict's word once it is handed over, with the second
  * reviewer's recommendation; while the reviewer runs or waits to, a quiet working word in its place.
+ * A merged item has nothing left to review: its glyph and track say done, and no word stands there.
  */
-export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict">; reviewer?: boolean }) {
+export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict" | "state">; reviewer?: boolean }) {
+	if (item.state === "done") return null;
 	if (reviewer && inSecondReview(item)) return <ReviewWord item={item} />;
 	return (
 		<>
