@@ -481,7 +481,7 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 			</h2>
 			<p className={`checks-summary${summary.ready ? " checks-ready" : ""}`}>
 				<span className="checks-summary-main">
-					{summary.ready ? <CheckIcon size={15} className="checks-summary-mark tone-good" /> : summary.open.length > 0 ? <span className="checks-summary-mark checks-dot" aria-hidden="true" /> : null}
+					{summary.ready ? <CheckIcon size={15} className="checks-summary-mark tone-good" /> : summary.open.length > 0 ? <span className={`checks-summary-mark checks-dot${verdict?.result === "fail" || summary.open.some((one) => one.words.endsWith("blocking finding") || one.words.endsWith("blocking findings")) ? " checks-dot-bad" : ""}`} aria-hidden="true" /> : null}
 					<span>{summary.ready ? "Ready to merge" : summary.open.length > 0 ? openLine(summary.open) : verdict ? "Nothing open" : "No verdict yet: one is made when the work is handed over."}</span>
 				</span>
 				{summary.ready ? null : summary.reviewing ? <ReviewWord item={view} /> : verdict ? <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} /> : null}

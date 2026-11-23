@@ -2981,6 +2981,9 @@ a.subtask-chip:hover {
 	border-radius: 50%;
 	background: var(--warn);
 }
+.checks-dot.checks-dot-bad {
+	background: var(--bad);
+}
 .checks-groups dd > * + * {
 	margin-top: 4px;
 }
