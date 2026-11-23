@@ -17,6 +17,7 @@ import { isActorGone } from "./actors/internal.js";
 import { RETENTION_PATH } from "./runner/frame-auth.js";
 
 import { runnerResponse } from "./runner-routes.js";
+import { INSTALL_SCRIPT_PATH, installScriptResponse } from "./install-script.js";
 import { modelRelayRoute } from "./model-relay-route.js";
 import { apiRoute } from "./api-routes.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
@@ -143,6 +144,7 @@ async function route(request: Request): Promise<Response> {
 	if (relayRoute) return relayRoute;
 	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
+	if (pathname === INSTALL_SCRIPT_PATH) return installScriptResponse(request);
 	const api = await apiRoute(request);
 	if (api) return api;
 	if (pathname === PLATFORM_CONNECTION_PATH) return platformConnectionResponse(request);
