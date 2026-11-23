@@ -240,7 +240,24 @@ drive("the plain run: implement, checks pass, publish, CI passes, review, merged
 	{ fact: (k) => ({ kind: "turn_running", key: k.check }), after: 5 * MINUTE, state: "working", effects: ["check_turn"] },
 	...toReview,
 	{ fact: (k) => ({ kind: "pr_read", webhooks: false, prHead: null, key: k.key, state: "open" }), after: 10 * MINUTE, state: "review", effects: ["poll_pr"] },
-	{ fact: (k) => ({ kind: "pr_read", webhooks: false, prHead: null, key: k.key, state: "merged" }), after: 10 * MINUTE, state: "done", effects: [] },
+	{ fact: (k) => ({ kind: "pr_read", webhooks: false, prHead: null, key: k.key, state: "merged" }), after: 10 * MINUTE, state: "done", effects: [], also: (o) =>
+		holds(isDeepStrictEqual(o.events.map(e => [e.step, e.said]), [[null, "The pull request was merged."]]), `logged ${JSON.stringify(o.events)}`) },
+]);
+
+// A close at GitHub, and the person's send-back, are about the item: not lines of the step that waits for the merge (live: "[merged#1] The pull request was closed without merging").
+drive("a pull request closed without merging is said of the item, not of the merge's step", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	...toReview,
+	{ fact: (k) => ({ kind: "pr_read", webhooks: false, prHead: null, key: k.key, state: "closed" }), after: 10 * MINUTE, state: "cancelled", effects: [], also: (o) =>
+		holds(isDeepStrictEqual(o.events.map(e => [e.step, e.said]), [[null, "The pull request was closed without merging."]]), `logged ${JSON.stringify(o.events)}`) },
+]);
+drive("a send-back is said of the item, not of the merge's step", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	...toReview,
+	{ fact: () => ({ kind: "send_back", by: "person:u1", note: "Rename sum to add." }), state: "queued", effects: ["verified_check", "deliver", "check_turn"], also: (o) =>
+		holds(o.events[0]?.step === null && o.events[0].said === "Sent back: Rename sum to add.", `logged ${JSON.stringify(o.events)}`) },
 ]);
 
 drive("a required check fails at first and passes after a fix turn", newItem(), [

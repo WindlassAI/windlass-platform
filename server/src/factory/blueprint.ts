@@ -208,6 +208,15 @@ class Change {
 		this.events.push({ at: this.at, by: this.by, step: run === null || run.step.n === 0 ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt }, said, ...(stopReason && { stopReason }) });
 	}
 
+	/**
+	 * A line about the item, not about the step it is at: what the person or GitHub did to it. Said within the wait for the
+	 * merge, "The pull request was closed without merging" would read as a line of the step named "merged", and a send-back
+	 * as one of the run it ends.
+	 */
+	sayOfItem(said: string): void {
+		this.events.push({ at: this.at, by: this.by, step: null, said });
+	}
+
 	/** Moves the item to `next`, keeping its active time (§2.4: only time "working" counts). */
 	state(next: ItemState, wait: Wait | null = null): void {
 		const { item } = this;
@@ -363,7 +372,7 @@ function apply(c: Change, fact: Fact): boolean {
 			return true;
 		case "send_back":
 			if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
-			c.say(`Sent back: ${fact.note}`);
+			c.sayOfItem(`Sent back: ${fact.note}`);
 			beginRun(c, { ...IMPLEMENT, text: `The person sent your work back: ${fact.note}` });
 			decided(item, { kind: "send_back", run: c.run.n, text: fact.note });
 			return true;
@@ -1466,7 +1475,7 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 			run.endedAt = c.at;
 			c.item.question = null;
 		}
-		c.say(fact.state === "merged" ? "The pull request was merged." : "The pull request was closed without merging.");
+		c.sayOfItem(fact.state === "merged" ? "The pull request was merged." : "The pull request was closed without merging.");
 		return c.state(fact.state === "merged" ? "done" : "cancelled");
 	}
 	const ci = run.ci;
