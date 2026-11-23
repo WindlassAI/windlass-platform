@@ -1,6 +1,7 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
 import type { Verified } from "@contract";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { FOLD_WORDS, FoldToggle, LongText } from "./Fold";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
 import { linkProps } from "../lib/router";
@@ -95,11 +96,12 @@ function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; ht
  * turn runs.
  */
 /**
- * Set by the conversation of an item's second reviewer: every prompt there is the platform's own (the
- * brief it builds for the review, or its word after an interruption), never a person's, and the first
- * arrives with no text of its own. Each stands as one quiet line, its text folded under it when it has one.
+ * Set by the conversation of an item's session, to the role of its agent: every prompt there is the
+ * platform's own (the factory's brief, a fix it asks for, the reviewer's brief, its word after an
+ * interruption), never a person's; a reviewer's first arrives with no text of its own. Each stands as one
+ * quiet line, the start of its text under it, clamped, with "Show all".
  */
-export const PlatformPrompts = createContext(false);
+export const PlatformPrompts = createContext<"builder" | "reviewer" | null>(null);
 
 /**
  * A prompt's model as the rest of the page names it (lib/acp.ts, `sessionModelWords`): another agent's by the
@@ -107,28 +109,19 @@ export const PlatformPrompts = createContext(false);
  */
 export const ModelLabel = createContext<(id: string) => string>((id) => id);
 
-/** The line a prompt of the platform's to the second reviewer stands as. `first`: the one that starts its timeline. */
-export const platformPromptLabel = (first: boolean) => (first ? "The platform's brief for this review" : "The platform's word to the reviewer");
+/** The line a prompt of the platform's stands as, by the role of the agent it is to. `first`: the one that starts its timeline. */
+export const platformPromptLabel = (first: boolean, role: "builder" | "reviewer" = "reviewer") =>
+	role === "builder" ? (first ? "The factory's brief" : "The factory's word to the agent") : first ? "The platform's brief for this review" : "The platform's word to the reviewer";
 
-function PlatformPrompt({ block, first }: { block: UserBlock; first: boolean }) {
-	const [open, setOpen] = useState(false);
-	const shown = useId();
+function PlatformPrompt({ block, first, role }: { block: UserBlock; first: boolean; role: "builder" | "reviewer" }) {
 	const text = block.text.trim();
-	const label = platformPromptLabel(first);
 	return (
 		<div className="user user-platform">
+			<p className="user-platform-line">{platformPromptLabel(first, role)}</p>
 			{text ? (
-				<button type="button" className="link user-platform-line" aria-expanded={open} aria-controls={shown} onClick={() => setOpen((value) => !value)}>
-					<ChevronIcon size={11} className="user-platform-chevron" />
-					{label}
-				</button>
-			) : (
-				<p className="user-platform-line">{label}</p>
-			)}
-			{text ? (
-				<p className="user-text user-platform-text" id={shown} hidden={!open}>
-					{block.text}
-				</p>
+				<LongText lines={2} className="user-text user-platform-text">
+					{text}
+				</LongText>
 			) : null}
 			{block.at !== null ? (
 				<p className="user-meta">
@@ -140,8 +133,8 @@ function PlatformPrompt({ block, first }: { block: UserBlock; first: boolean }) 
 }
 
 function UserPrompt({ block, first = false }: { block: UserBlock; first?: boolean }) {
-	const platform = useContext(PlatformPrompts);
-	if (platform) return <PlatformPrompt block={block} first={first} />;
+	const role = useContext(PlatformPrompts);
+	if (role) return <PlatformPrompt block={block} first={first} role={role} />;
 	return <PersonPrompt block={block} />;
 }
 
@@ -245,20 +238,17 @@ const OUTPUT_LINES = 24;
 /** Monospace output, capped: the first lines of a finished output, or the last lines of one still arriving. */
 export function Output({ text, tail = false, limit = OUTPUT_LINES, label }: { text: string; tail?: boolean; limit?: number; label: string }) {
 	const [all, setAll] = useState(false);
+	const id = useId();
 	const lines = useMemo(() => text.replace(/\n$/, "").split("\n"), [text]);
 	const hidden = Math.max(0, lines.length - limit);
 	const shown = all || hidden === 0 ? lines : tail ? lines.slice(-limit) : lines.slice(0, limit);
 	return (
 		<div className="output">
 			{tail && hidden > 0 && !all ? <p className="output-more output-more-top">{plural(hidden, "earlier line")} above</p> : null}
-			<pre className="output-text" tabIndex={0} aria-label={label}>
+			<pre id={id} className="output-text" tabIndex={0} aria-label={label}>
 				{shown.join("\n")}
 			</pre>
-			{hidden > 0 ? (
-				<button type="button" className="output-more" onClick={() => setAll((value) => !value)}>
-					{all ? "show less" : `show ${plural(hidden, "more line")}`}
-				</button>
-			) : null}
+			{hidden > 0 ? <FoldToggle open={all} controls={id} label={FOLD_WORDS.more(hidden, hidden === 1 ? "more line" : "more lines")} onToggle={() => setAll((value) => !value)} /> : null}
 		</div>
 	);
 }
@@ -793,6 +783,7 @@ function TaintLine({ block }: { block: NoticeBlock }) {
 function Notice({ block }: { block: NoticeBlock }) {
 	if (block.noticeKind === "taint") return <TaintLine block={block} />;
 	const [open, setOpen] = useState(false);
+	const id = useId();
 	const [first = "", ...rest] = block.text.split("\n");
 	const more = rest.join("\n").trim();
 	return (
@@ -800,10 +791,10 @@ function Notice({ block }: { block: NoticeBlock }) {
 			<p className="callout-text">{first}</p>
 			{more !== "" ? (
 				<>
-					{open ? <pre className="callout-more">{more}</pre> : null}
-					<button type="button" className="link" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-						{open ? "hide the details" : "what would fix it"}
-					</button>
+					<pre className="callout-more" id={id} hidden={!open}>
+						{more}
+					</pre>
+					<FoldToggle open={open} controls={id} label={FOLD_WORDS.all} onToggle={() => setOpen((value) => !value)} />
 				</>
 			) : null}
 		</Callout>
@@ -812,8 +803,9 @@ function Notice({ block }: { block: NoticeBlock }) {
 
 function ErrorLine({ block }: { block: ErrorBlock }) {
 	return (
-		<Callout tone="bad" title={block.title} detail={block.detail}>
+		<Callout tone="bad" title={block.title}>
 			<p className="callout-text">{block.message}</p>
+			{block.detail ? <Output text={block.detail} limit={12} label="The error's details" /> : null}
 		</Callout>
 	);
 }

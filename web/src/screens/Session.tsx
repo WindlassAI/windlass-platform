@@ -18,7 +18,7 @@
  * offered where it has its own list (`models`), and Plan mode where it has one (`planMode`). Where its
  * machine says it is not signed in, the line above the composer shows the machine terminal command.
  */
-import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
+import { USAGE_LOW_SHARE, type ItemView, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
@@ -162,7 +162,8 @@ function PanelToggle() {
  * right what runs it and the way out. A work item's session is part of its item, and the way back is to
  * the item. `summary`, once known, adds the repository, the turn's time, the facts and the actions.
  */
-export function SessionCrumb({ title, status, place, machine, item, harness, summary = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null }) {
+/** `itemView`: a work item's agent's item, once read: the crumb names it, and its feature first for a subtask. */
+export function SessionCrumb({ title, status, place, machine, item, harness, summary = null, itemView = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null; itemView?: ItemView | null }) {
 	const harnessName = acpHarnessName({ harness });
 	const machineName = machine ? machineLabel(machine) : null;
 	const repository = summary?.repository ?? null;
@@ -170,10 +171,25 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 	return (
 		<>
 			<nav className="crumb" aria-label="Where you are">
-				<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
-					<ArrowLeftIcon size={14} />
-					<span>{item ? "Work item" : "Agents"}</span>
-				</a>
+				{item && itemView?.parent ? (
+					<>
+						<a className="crumb-back" {...linkProps({ name: "item", id: itemView.parent.itemId })} title={itemView.parent.title}>
+							<ArrowLeftIcon size={14} />
+							<span className="crumb-feature">{itemView.parent.title}</span>
+						</a>
+						<span className="crumb-sep" aria-hidden="true">
+							/
+						</span>
+						<a className="crumb-repo crumb-feature" {...linkProps({ name: "item", id: item.id })} title={itemView.title}>
+							{itemView.title}
+						</a>
+					</>
+				) : (
+					<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })} title={itemView?.title}>
+						<ArrowLeftIcon size={14} />
+						<span className={itemView ? "crumb-feature" : undefined}>{item ? (itemView?.title ?? "Work item") : "Agents"}</span>
+					</a>
+				)}
 				{repository && !item ? (
 					<>
 						<span className="crumb-sep" aria-hidden="true">
@@ -189,8 +205,15 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 						<span className="crumb-sep" aria-hidden="true">
 							/
 						</span>
+						{/* A work item's agent is named by its item, just before: the last part says only what this page is. */}
 						<h1 className="crumb-title" title={title}>
-							{title}
+							{item && itemView ? (
+								<>
+									session<span className="visually-hidden"> of {title}</span>
+								</>
+							) : (
+								title
+							)}
 						</h1>
 					</>
 				) : null}
@@ -252,7 +275,7 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 }
 
 /** `machine`: the machine the session runs on, as `useSessionMachine` says. */
-export function Session({ sessionId, state, machine }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null }) {
+export function Session({ sessionId, state, machine, item = null }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null; item?: ItemView | null }) {
 	const { client, explain, platform } = useApp();
 	const models = useModels();
 	const auth = useAuth();
@@ -375,6 +398,15 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						<button type="button" className="link" onClick={() => location.reload()}>
 							Reload
 						</button>
+					</p>
+				) : null}
+				{item?.question && summary.item?.role !== "reviewer" ? (
+					<p className="banner banner-needs" role="status">
+						<span className="banner-needs-dot" aria-hidden="true" />
+						{item.parent ? "This subtask waits for your answer." : "This work item waits for your answer."} The agent is idle until you reply.
+						<a className="link" {...linkProps({ name: "item", id: item.id })}>
+							Answer on its page
+						</a>
 					</p>
 				) : null}
 				<InteractiveProvider value={interactive}>

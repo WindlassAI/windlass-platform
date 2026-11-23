@@ -4,7 +4,7 @@
  * numbers, and an agent that is at work or waits on its user is never among it.
  */
 import { MAX_TITLE_CHARS, type PullRequestInfo, type SessionSummary, type TurnOutcome } from "@contract";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { acpHarnessName, sessionModelWords } from "../lib/acp";
 import { absoluteTime, clockDuration, plural, relativeTime } from "../lib/format";
 import { foldGroup } from "../lib/repositories";
@@ -12,6 +12,7 @@ import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
+import { FOLD_WORDS, FoldToggle } from "./Fold";
 import { MergedIcon, PencilIcon, PullRequestIcon, RingIcon, TrashIcon, WarnIcon } from "./Icons";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph, STATUS_WORD, StatusGlyph } from "./Status";
 import { AgentGlyph } from "./ui/Pill";
@@ -296,6 +297,7 @@ export function AgentList({
 	const { platform } = useApp();
 	const [open, setOpen] = useState(() => unfolded.has(foldKey));
 	const [deleting, setDeleting] = useState<SessionSummary | null>(null);
+	const listId = useId();
 	const folded = foldGroup(sessions, limit);
 	const shown = open ? sessions : folded.shown;
 	const profileName = (id: string) => platform.info?.profiles.find((profile) => profile.id === id)?.name ?? id;
@@ -307,16 +309,14 @@ export function AgentList({
 
 	return (
 		<>
-			<ul className="agents" aria-label={label}>
+			<ul className="agents" aria-label={label} id={listId}>
 				{shown.map((session) => (
 					<AgentRow key={session.id} session={session} profileName={profileName(session.profile)} now={now} grouped={grouped} onDelete={setDeleting} />
 				))}
 			</ul>
 			{folded.hidden > 0 ? (
 				<p className="agents-fold">
-					<button type="button" className="link" onClick={toggle} aria-expanded={open}>
-						{open ? "Show fewer" : `Show ${plural(folded.hidden, "more agent")}`}
-					</button>
+					<FoldToggle open={open} controls={listId} label={FOLD_WORDS.more(folded.hidden, folded.hidden === 1 ? "more agent" : "more agents")} onToggle={toggle} />
 					{open ? null : <span>used before the ones above; none of them is working</span>}
 				</p>
 			) : null}

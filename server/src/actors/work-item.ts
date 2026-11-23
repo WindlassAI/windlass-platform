@@ -199,6 +199,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		updatedAt: meta.updatedAt,
 		...(item.endedAt !== undefined && ENDED.has(item.state) && { endedAt: item.endedAt }),
 		revision: item.revision,
+		...(item.run && item.run.endedAt === null && !ENDED.has(item.state) && { step: { kind: item.run.step.kind, startedAt: item.run.step.startedAt, turn: item.run.step.turn, rounds: { ...item.run.rounds, review: item.run.rounds.review ?? 0 } } }),
 	};
 }
 

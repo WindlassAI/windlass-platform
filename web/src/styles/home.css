@@ -438,10 +438,6 @@
 	font-size: var(--text-13);
 	line-height: 1.45;
 	color: var(--ink-dim);
-	display: -webkit-box;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 2;
-	overflow: hidden;
 }
 .needs-meta {
 	display: flex;

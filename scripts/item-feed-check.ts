@@ -22,7 +22,7 @@ process.env.RIVETKIT_STORAGE_PATH = join(scratch, "storage");
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
 const { ITEM_FEED_ENDED } = await import("../server/src/contract.js");
-const { itemFeed, listedItems } = await import("../server/src/item-pages.js");
+const { itemFeed, listedItems, openChildren } = await import("../server/src/item-pages.js");
 const { config } = await import("../server/src/config.js");
 const { ITEM_TABLES, itemActions, loadItems } = await import("../server/src/actors/user-items.js");
 const { serviceParams } = await import("../server/src/auth.js");
@@ -114,6 +114,16 @@ await check("the pure feed: open items, the 25 newest filed ended ones, the coun
 	assert.ok(feed.counts.byRepository.every((row) => row.owner === "acme" && (row.name === "harbor" || row.name === "tide-tables")));
 });
 
+await check("the feed carries every open subtask under its own title, asking or not, and no ended one", () => {
+	const all = [...seed(), item(82, "done", HARBOR, { id: "i_child_done", parent })];
+	const feed = itemFeed(listedItems(all), all);
+	assert.deepEqual(ids(feed.children ?? []), ["i_child_quiet", "i_child_asks"]);
+	assert.equal(feed.children?.find((one) => one.id === "i_child_asks")?.title, "Item 80");
+	assert.deepEqual(ids(openChildren(all)), ids(feed.children ?? []));
+	// Without the items held, as before: no children.
+	assert.equal(itemFeed(listedItems(all)).children, undefined);
+});
+
 // The actor's actions, on an in-memory database.
 config.items = true;
 const sql = new DatabaseSync(":memory:");
@@ -191,6 +201,25 @@ await check("an item that ends: the next broadcast counts it, and carries it whe
 	} finally {
 		(c.conn as { params: unknown }).params = users;
 	}
+});
+
+await check("a subtask's step is kept in the index and its change goes out in the feed's children", async () => {
+	const users = c.conn!.params;
+	(c.conn as { params: unknown }).params = serviceParams();
+	try {
+		const quiet = state.items.get("i_child_quiet")!;
+		const step = { kind: "gate" as const, startedAt: T0 + 5, turn: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0, review: 0 } };
+		await itemActions.internalItemChanged(c, { ...quiet, step, revision: quiet.revision + 1 });
+		assert.deepEqual(state.items.get("i_child_quiet")?.step, step);
+		const feed = sent.at(-1)!.body as ItemFeed;
+		const carried = feed.children?.find((one) => one.id === "i_child_quiet");
+		assert.equal(carried?.revision, quiet.revision + 1);
+		assert.deepEqual(carried?.step, step);
+		assert.ok(!feed.open.some((one) => one.id === "i_child_quiet"), "a quiet subtask stays out of the list");
+	} finally {
+		(c.conn as { params: unknown }).params = users;
+	}
+	assert.deepEqual(itemActions.itemFeed(c).children?.map((one) => one.id).sort(), ["i_child_asks", "i_child_quiet"]);
 });
 
 if (failed > 0) {

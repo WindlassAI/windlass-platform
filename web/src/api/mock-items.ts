@@ -88,6 +88,8 @@ export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
 	state?: MockItemsState;
+	/** True writes the seeded features' texts at length (`?long=1`, `longFeatures`). */
+	long?: boolean;
 	/** False plays a deployment without the second review: no item gets one, as WLP_FACTORY_REVIEWER unset leaves them. Default true. */
 	reviewer?: boolean;
 	now(): number;
@@ -1203,12 +1205,66 @@ function featurePlan(version: number, status: FeaturePlan["status"], spec: Featu
 }
 
 
+/** `?long=1`: a gate line as long as the platform writes one when a check fails with its reasons. */
+const LONG_GATE_LINE = "“Add a golden-file test for 2.4.0” stopped at the gate: `pnpm test test/golden` failed with 3 of 41 tests failing (expected CRLF line endings, got LF in rows 2–40,001; the golden file was written on a machine with core.autocrlf=true). Sent it back for a fix: round 1 of 2.";
+
+/** `?long=1`: an agent's question as agents write them, several sentences and options a sentence long. */
+const LONG_ASK: NonNullable<ItemQuestion["asked"]> = {
+	text: "The release runner gives a step 64 MiB, but the 40,000-artefact fixture holds every checksum in one JSON array that is 71 MiB on its own before any row is written. I can either (a) switch artefacts.ts to a streaming JSON parser, which touches a file another subtask also reads, or (b) keep the parser and ask the compliance team whether releases that large can be exported in two halves by platform. Option (a) is the cleaner fix but it widens what this subtask owns; option (b) keeps the change small but changes what the team receives.\n\nWhich do you want?",
+	options: ["Switch artefacts.ts to a streaming parser, even though it is outside the paths this subtask owns", "Keep the parser and export very large releases in two halves, split by platform", "Stop here and re-plan"],
+};
+
+/** A subtask's brief as a planner writes one: about twenty lines, with steps, constraints and the hand-off. */
+function longBrief(what: string): string {
+	return [
+		`Goal: ${what}. Work only inside the paths this subtask owns; anything outside them belongs to another subtask and will be rejected at integration.`,
+		"",
+		"Context: the manifest command lives in src/manifest/ and reads the release's artefact list through src/release/artefacts.ts. The CSV export is for the compliance team, who import it into a spreadsheet that expects RFC 4180 quoting, a header row, CRLF line endings and UTF-8 without a byte order mark.",
+		"",
+		"Steps:",
+		"1. Read src/manifest/index.ts and src/release/artefacts.ts to learn how artefacts are listed and in which order.",
+		"2. Add the code described above, keeping the existing text output byte-for-byte unchanged when --csv is not given.",
+		"3. Stream rows: a release can list more than 40,000 artefacts, so never build the whole CSV in memory.",
+		"4. Quote every field that contains a comma, a double quote, CR or LF; double any embedded double quote.",
+		"5. Keep column order: name, version, platform, size_bytes, sha256, signed_by, published_at (ISO 8601, UTC).",
+		"6. Add or update unit tests next to the code; use the fixtures in test/fixtures/manifest-2.4.0.json.",
+		"7. Run the checks listed under acceptance and paste their last lines into your report.",
+		"",
+		"Constraints: do not add dependencies; the repository bans new runtime packages without an issue. Do not change the public flags of other commands. Keep functions under 60 lines; the lint rule max-lines-per-function is on in CI.",
+		"",
+		"Hand-off: report what you changed, the commands you ran and their results, and anything the next subtask (see dependsOn) must know, such as exported function names and their signatures.",
+	].join("\n");
+}
+
+/** `?long=1`: the export plan with six subtasks and the search plan's questions, each as long as a planner writes them. */
+function longPlan(exportPlan: FeaturePlan, searchPlan: FeaturePlan): void {
+	const owns = (base: string) => [`${base}/**`, `${base}/index.ts`, `${base}/types.ts`, `${base}/stream.ts`, `${base}/quote.ts`, `${base}/header.ts`, `${base}/__tests__/**`, "test/fixtures/manifest-2.4.0.json", "test/fixtures/manifest-empty.json", "docs/manifest.md", "src/cli.ts", "src/release/artefacts.ts"];
+	const acceptance = (target: string) => [`Run \`pnpm test ${target}\` and it passes with no skipped tests.`, "Run `pnpm lint` and it reports no new warnings in the owned paths.", "Run `pnpm typecheck` with no errors.", "A 40,000-artefact fixture exports in under 2 seconds and under 64 MiB of memory, measured with `node --max-old-space-size=64`.", "The text output of `harbor manifest 2.4.0` without --csv is byte-for-byte what it was on main.", "The report lists every command run with its last three lines of output."];
+	const place = { prefer: "nas", reason: "nas has the release fixtures cached from the last export and both of its slots are free right now; studio is busy with the visual checks and ci-box holds no repository secrets, so nas is the only place that can run the integration test against the signed artefacts without fetching them again.", allow: ["studio"] };
+	const subtask = (key: string, title: string, dependsOn: string[]): PlanSubtask => ({ key, title, brief: longBrief(title), acceptance: acceptance(`src/${key}`), dependsOn, owns: owns(`src/${key}`), budget: { tokens: 1_500_000 }, place });
+	exportPlan.subtasks = [
+		{ ...subtask("writer", "Add the CSV writer", []) },
+		{ ...subtask("flag", "Wire --csv into the manifest command", ["writer"]), budget: { tokens: 2_000_000 } },
+		subtask("golden", "Add a golden-file test for 2.4.0", ["writer"]),
+		subtask("stream", "Stream rows for releases with 40,000 artefacts", ["writer"]),
+		subtask("docs", "Document the CSV export for the compliance team", ["flag"]),
+		subtask("bench", "Benchmark the export against the memory limit", ["stream", "golden"]),
+	];
+	exportPlan.spec.goal = "Export a release's manifest as CSV for the compliance team, who import it into a spreadsheet each quarter: every artefact as one row with its name, version, platform, size, checksum, signer and publish time, quoted as RFC 4180 says, streamed so that the largest releases (over 40,000 artefacts) export within the memory the release runner gives a step, and without changing what the command prints when --csv is not given.";
+	exportPlan.spec.requirements = acceptance("src").concat(["The CSV header names the columns in the order the compliance spreadsheet expects them.", "Rows are written in the order the release lists its artefacts."]);
+	exportPlan.overflow = true;
+	searchPlan.questions = [
+		{ id: "archived", text: "Release notes before 2.0 were written in a different format (one long HTML page per year rather than one Markdown file per release), so indexing them means writing a second parser for that format and accepting that their search results will show a year rather than a release number. Should the search index include the notes of releases older than 2.0, or should it start at 2.0 and say so in the command's help text?", options: ["Yes, index every release, including the HTML pages from before 2.0, and show the year for those", "No, start at 2.0 and mention in `harbor search --help` that older notes are not searched"] },
+		{ id: "ranking", text: "Term frequency ranks long pages above short ones that match better. Should the command rank by plain term frequency as the issue says, or by BM25, which normalises for page length but is harder to explain in the docs?", options: ["Plain term frequency, as the issue asks", "BM25, normalised for page length", "Term frequency now, with a follow-up item for BM25"] },
+	];
+}
+
 /**
  * The orchestrated features of `?items=features`, with their subtasks' items: a plan waiting for
  * approval with a question to answer first, a feature running its second subtask, and one whose first
  * subtask asks its person something (listed in Needs you under the feature's name).
  */
-function seededFeatures(at: number, uid: string): ItemView[] {
+function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	const ago = (minutes: number) => at - minutes * MINUTE;
 	const feature = (seed: Seed, plan: FeaturePlan, wait: Waiting | null): ItemView => {
 		const view = viewOf(seed, at, uid);
@@ -1263,6 +1319,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			{ key: "golden", title: "Add a golden-file test for 2.4.0", brief: "Check the CSV of the 2.4.0 manifest against a file kept in test/golden.", acceptance: ["Run `pnpm test test/golden`."], dependsOn: ["flag"], owns: ["test/golden/**"], budget: { tokens: 400_000 } },
 		],
 	);
+	// `?long=1`: the texts as long as planners write them, and six subtasks, three of them at once.
+	if (long) longPlan(exportPlan, searchPlan);
 	exportPlan.approvedAt = ago(80);
 	exportPlan.approvedBy = `person:${uid}`;
 	const exporting = feature(
@@ -1276,6 +1334,26 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	const writer = child(exporting, "writer", { n: 63, title: "", on: HARBOR, state: "done", filed: 79, run: { n: 1, started: 79, ended: 31, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 31 } }, spent: { tokens: 1_210_000, turns: 3, activeSeconds: 44 * 60, hostedSeconds: 41 * 60 } });
 	const flag = child(exporting, "flag", { n: 64, title: "", on: HARBOR, state: "working", filed: 30, run: { n: 1, started: 30, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 29, turn: "started" } }, spent: { tokens: 520_000, turns: 1, activeSeconds: 12 * 60, hostedSeconds: 12 * 60 } });
 	exporting.children = [writer, flag].map(summaryOf);
+	const longOnes: ItemView[] = [];
+	if (long) {
+		const studio: SandboxPlace = { kind: "machine", machineId: "m_studio" };
+		const onNas: SandboxPlace = { kind: "machine", machineId: "m_nas" };
+		const reason = exportPlan.subtasks[0]!.place!.reason;
+		writer.placement = { place: onNas, name: "nas", reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		flag.placement = { place: onNas, name: "nas", reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		flag.spent = { ...flag.spent, turns: 2 };
+		const golden = child(exporting, "golden", { n: 91, title: "", on: HARBOR, state: "working", filed: 29, run: { n: 1, started: 29, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 3, kind: "implement", started: 6, turn: "started" } }, spent: { tokens: 880_000, turns: 2, activeSeconds: 21 * 60, hostedSeconds: 21 * 60 } });
+		golden.placement = { place: onNas, name: "nas", reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		golden.events.push({ ...golden.events[golden.events.length - 1]!, at: ago(6), said: LONG_GATE_LINE });
+		const stream = child(exporting, "stream", { n: 92, title: "", on: HARBOR, state: "waiting", filed: 28, question: { kind: "agent_ask", text: "The agent stopped to ask you a question before it goes on.", choices: choices("reply", "give_up"), asked: 3, asked_: LONG_ASK }, run: { n: 1, started: 28, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 27 } }, spent: { tokens: 1_310_000, turns: 3, activeSeconds: 26 * 60, hostedSeconds: 26 * 60 } });
+		stream.placement = { place: studio, name: "studio", reason: "Approved overflow from ‘nas’", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		stream.wait = { reason: "person", sentence: "Waiting for your answer to the agent's question.", since: ago(3), retryAt: null };
+		longOnes.push(golden, stream);
+		exporting.children = [writer, flag, golden, stream].map(summaryOf);
+		exporting.wait = { reason: "children", sentence: "Running “Wire --csv into the manifest command” on ‘nas’, “Add a golden-file test for 2.4.0” on ‘nas’ and “Stream rows for releases with 40,000 artefacts” on ‘studio’ (overflow from ‘nas’, whose two slots are both taken); waiting for you on “Stream rows for releases with 40,000 artefacts”; 2 of 6 subtasks not started.", since: ago(3), retryAt: null };
+		exporting.events.push({ ...exporting.events[exporting.events.length - 1]!, at: ago(6), said: LONG_GATE_LINE });
+		search.question = { ...search.question!, text: approvalText(searchPlan) };
+	}
 
 	// 3. Its first subtask asks: the agent changed nothing. The question is listed in Needs you under the feature's name.
 	const themePlan = featurePlan(
@@ -1533,7 +1611,7 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		null,
 	);
 
-	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback];
+	return [search, exporting, writer, flag, ...longOnes, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
@@ -1544,7 +1622,11 @@ function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
 }
 
-const summaryOf = ({ feedback: _feedback, plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
+/** An item's summary, as the server's index keeps it: its page's own fields, and the step its run is at while it goes on (`ItemSummary.step`). */
+const summaryOf = ({ feedback: _feedback, plan: _plan, children: _children, task: _task, run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => {
+	if (!run || run.endedAt !== null || ["done", "failed", "cancelled"].includes(summary.state)) return summary;
+	return { ...summary, step: { kind: run.step.kind, startedAt: run.step.startedAt, turn: run.step.turn, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } } };
+};
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -1577,7 +1659,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
 				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.map((view) => (deps.reviewer === false ? withoutReviewer(view) : view))
-				.concat(state === "features" ? seededFeatures(at, auth.profile.uid) : [])
+				.concat(state === "features" ? seededFeatures(at, auth.profile.uid, deps.long === true) : [])
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
@@ -1608,7 +1690,7 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	function changed(auth: AuthResult): void {
 		// As the server's live feed: the open items, the newest ended ones and the counts (`ItemFeed`).
-		const sent = itemFeed(listedItems(auth));
+		const sent = itemFeed(listedItems(auth), keptOf(auth).items.map(summaryOf));
 		for (const feed of deps.feeds(auth)) feed.onItems?.(sent);
 	}
 
@@ -1905,7 +1987,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async itemFeed() {
 				await answer(240);
-				return itemFeed(listedItems(auth));
+				return itemFeed(listedItems(auth), keptOf(auth).items.map(summaryOf));
 			},
 			async item(id) {
 				await answer(220);

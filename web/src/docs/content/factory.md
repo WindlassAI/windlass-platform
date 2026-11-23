@@ -219,7 +219,7 @@ When the platform runs the checks itself (Claude Code, OpenCode, Codex), it does
 
 A builder can stop and ask you a question when it can't go on without your decision, for example which of two approaches the task means. It is told to ask only about what it can't settle from the repository, the task and its acceptance criteria. Otherwise it decides and says what it decided in its report.
 
-- **Where.** The item waits under **Needs you**: "The agent stopped to ask you a question before it goes on." Below that, the page shows the agent's own question, marked as the agent's and quoted as plain text, with up to 4 answers it suggests.
+- **Where.** The item waits under **Needs you**, on the Factory page and the Agents home, with the first line of the agent's question. The item's page shows the agent's own question, marked as the agent's and quoted as plain text, with up to 4 answers it suggests.
 - **Answering.** Write your answer under **Your answer** and choose **Answer the agent**. A suggested answer only fills the box, so you can change it before you send it. The agent gets your answer as its next message, in the same conversation and the same step, and goes on from where it stopped. Its work stays as it was while it waits. You can also **Hand it over as it is**, when the run has pushed something, or **Give up**. Once answered, **What happened** keeps the agent's question, quoted as its words, and your answer.
 - **How often.** At most 1 question per turn. A run has no cap of its own: each question ends a turn and waits for you, and the item's budget and turns bound the run.
 - **How long.** The question waits until you answer, for days if need be. If the item's budget has run out by the time you answer, the item asks you for more first, and keeps your answer for the turn it resumes. A subtask does the same.
@@ -383,7 +383,11 @@ Each subtask is a work item with its own page, which says **subtask of** the fea
 
 A subtask opens no pull request of its own. It pushes its branch, and joins the feature only when its checks pass and CI passes on its commit. The platform then moves the feature's branch forward to it. If the feature's branch moved meanwhile, the subtask rebases onto it and is checked again.
 
-Subtasks are not listed on the Factory page unless they ask you something.
+**Following them as they run.** Once the plan is approved, the feature's page shows a **Subtasks** block where it showed where the item is. Its first line counts them, for example "2 running · 1 asks you · 1 of 6 done", with a bar of one segment per subtask. Under it each subtask has one row, in the plan's order: what it is doing now (its step and fix round, for example "implementing · turn 2" or "fixing · your checks failed, fix 1"), where it runs (with "overflow from nas" when it went to an alternative), what it has spent of its token budget, and a **Session** link to its agent. A subtask that asks you shows the start of its question and **Answer**, which opens its page. A subtask not started says what it waits for, for example "after 2 and 3". The approved plan folds under the block to its goal; **Show all** opens it.
+
+A subtask's page shows the feature in the bar (repository / feature / subtask) and, under its title, **Subtask 4 of 6** with a numbered chip for each subtask and links to the one before and after it. Its session's bar names the feature and the subtask too, and while the subtask waits for you, a line above the conversation says so, with **Answer on its page**. These pages update as the subtasks move on, without reloading.
+
+On the Factory page, a feature in progress counts its subtasks that are running and asking, and lists the active ones, each with its step and where it runs. The lane's count adds how many subtasks run, for example "2 work items · 3 subtasks running". A subtask that asks you is also listed under **Needs you**, with the first line of its question.
 
 If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again, and its budgets with it. When the same subtask stops a second time, or two subtasks stop with the same failure, the feature asks you instead: **Revise the plan** or **Give up**.
 

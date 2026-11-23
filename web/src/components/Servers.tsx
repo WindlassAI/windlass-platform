@@ -26,6 +26,7 @@ import { absoluteTime, day, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
+import { LongText } from "./Fold";
 import { RefreshIcon, WarnIcon } from "./Icons";
 
 type Tone = "on" | "ask" | "bad" | "off";
@@ -160,10 +161,19 @@ function Server({
 				</span>
 			</p>
 			{/* A project's command is shown to its last character: it is what an approval is of. The user's own is theirs to read in full in their settings. */}
-			<p className={`server-subject${server.origin === "user" ? " server-subject-short" : ""}`} title={server.origin === "user" ? "Defined in your settings" : server.file ? `Defined in ${server.file}` : undefined}>
-				<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
-				{server.subject}
-			</p>
+			{server.origin === "user" ? (
+				<LongText lines={3} className="server-subject">
+					<span title="Defined in your settings">
+						<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
+						{server.subject}
+					</span>
+				</LongText>
+			) : (
+				<p className="server-subject" title={server.file ? `Defined in ${server.file}` : undefined}>
+					<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
+					{server.subject}
+				</p>
+			)}
 			{server.reason ? <p className="server-reason">{server.reason}</p> : null}
 			{server.earlier || forgot === "earlier" ? <p className="server-reason">Its definition changed since you approved it.</p> : null}
 			{server.asks ? (

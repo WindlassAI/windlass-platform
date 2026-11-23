@@ -192,4 +192,6 @@ On the list of agents, each row has **Rename** and **Delete**. Deleting asks fir
 
 An agent that works for a work item cannot be deleted while the item has it. Cancel the item instead.
 
+In the session of a work item's agent, every prompt is the platform's, never yours. The first stands as **The factory's brief** (for the second reviewer, **The platform's brief for this review**), with its first lines and **Show all**.
+
 Deleting an agent on one of your machines records that its sandbox must be removed, and the runner removes it now or when it is next online. If that record cannot be written, the delete is refused: "The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment."

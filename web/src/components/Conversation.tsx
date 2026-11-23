@@ -123,8 +123,8 @@ export function Conversation({ view, summary, profile, onSuggest }: { view: Sess
 			<div className="conversation" ref={scroller} onScroll={onScroll} tabIndex={0} role="log" aria-label="Conversation" aria-live="off">
 				<div className={`conversation-inner${view.turns.length > 0 ? " timeline" : ""}`} ref={content}>
 					{view.turns.length === 0 && !active ? <Empty summary={summary} profile={profile} onSuggest={onSuggest} /> : null}
-					{/* An item's second reviewer takes only the platform's prompts: they stand as the platform's, never as a person's. */}
-					<PlatformPrompts.Provider value={summary.item?.role === "reviewer"}>
+					{/* An item's agents, its builder and its second reviewer, take only the platform's prompts: they stand as the platform's, never as a person's. */}
+					<PlatformPrompts.Provider value={summary.item ? (summary.item.role === "reviewer" ? "reviewer" : "builder") : null}>
 						<ModelLabel.Provider value={modelLabel}>
 							{view.turns.map((turn) => (
 								<Turn key={turn.turn} turn={turn} />

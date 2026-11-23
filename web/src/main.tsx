@@ -55,6 +55,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 		// `?machine=none|claude-signed-out|claude-unchecked|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
 		// `?machineSession=answering|not_answering|offline|removed` how the agent on the machine "nas" finds it (`MockMachineSession`),
 		// `?items=few|features|none|full|many|loading|failed|off` the user's work items and API tokens in that state (`MockItemsState`), `off` a deployment without them,
+		// `&long=1` with `items=features`, the features' texts as long as planners and agents write them,
 		// and `?reviewer=off` a deployment without the second review.
 		const params = new URLSearchParams(location.search);
 		const usage = params.get("usage");
@@ -72,6 +73,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			machine: MOCK_MACHINE_STATES.find((state) => state === machine),
 			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
 			items: MOCK_ITEMS_STATES.find((state) => state === items),
+			long: params.get("long") === "1",
 			reviewer: params.get("reviewer") !== "off",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),

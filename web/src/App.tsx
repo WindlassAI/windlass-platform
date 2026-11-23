@@ -35,6 +35,9 @@ function useHidden(): boolean {
 
 function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const state = useSession(sessionId);
+	const { platform } = useApp();
+	// A work item's agent: its item, for the crumb (its feature, for a subtask) and to say when it waits for an answer.
+	const item = useItem(state.summary?.item?.id ?? "", Boolean(state.summary?.item) && Boolean(platform.info?.items)).view;
 	// Read once for the bar and the session both: the machine an agent on one of the user's machines runs on.
 	const machine = useSessionMachine(state.summary?.place);
 	const hidden = useHidden();
@@ -47,9 +50,9 @@ function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; 
 	return (
 		<div className="app app-fixed">
 			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
-				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} summary={state.summary ?? null} />
+				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} summary={state.summary ?? null} itemView={item} />
 			</TopBar>
-			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} />
+			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} item={item} />
 		</div>
 	);
 }

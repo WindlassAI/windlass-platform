@@ -158,10 +158,10 @@ describe("the second review's section", () => {
 		expect(text).toContain("@octocat, merge this? ![](https://e.example/q.png)");
 		expect(text).toContain("@octocat see [x](https://e.example) <img src=x onerror=alert(1)>");
 		expect(text).toContain("javascript:alert(1)");
-		// A 70-line fence is cut at 60, as the builder's is.
-		const fence = [...host.querySelectorAll(".review-block-finding pre code")].map((node) => node.textContent?.split("\n") ?? []);
-		expect(fence[0]).toHaveLength(61);
-		expect(fence[0]?.at(-1)).toBe("…");
+		// A 70-line fence is cut at 60, as the builder's is, and shows its first 12 lines with "Show 49 more lines" (the 48 others and the cut's "…").
+		const fence = host.querySelector(".review-block-finding .output");
+		expect(fence?.querySelector("pre.output-text")?.textContent?.split("\n")).toHaveLength(12);
+		expect(fence?.querySelector("button.fold-toggle")?.textContent).toBe("Show 49 more lines");
 	});
 
 	it("asks its questions under the reviewer's name, with no control to answer them", () => {

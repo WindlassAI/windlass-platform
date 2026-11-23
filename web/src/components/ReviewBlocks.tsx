@@ -10,7 +10,9 @@
  * one group (Screenshots.tsx), in the order filed.
  */
 import { REVIEW_LIMITS, type CheckStatus, type ItemAttachment, type ReviewBlock, type ReviewLocation, type ReviewRecord, type ReviewRef, type Verdict } from "@contract";
-import type { ReactNode } from "react";
+import { Fragment, useId, useState, type ReactNode } from "react";
+import { Output } from "./Blocks";
+import { FOLD_SHOWN, FOLD_WORDS, FoldList, FoldToggle, LongText, listFolds } from "./Fold";
 import { Screenshots, type ScreenshotLinks } from "./Screenshots";
 
 /** A run's conclusions that are a failure (server/src/factory/verdict.ts, `FAILING_CONCLUSIONS`): `error` is a commit status that errored. */
@@ -81,29 +83,52 @@ export function Inline({ text }: { text: string }) {
 	return <>{out}</>;
 }
 
-/** An agent's text, as the platform renders it: paragraphs, bullets, `code` spans and fenced code (at most REVIEW_LIMITS.fenceLines lines each). Nothing else is read into it. */
-export function ReviewText({ text }: { text: string }) {
+/** How many lines of a fence show in a report or a review before "Show N more lines" (the timeline shows 24). */
+export const FENCE_SHOWN = 12;
+
+/**
+ * An agent's text, as the platform renders it: paragraphs, bullets, `code` spans and fenced code (at most
+ * REVIEW_LIMITS.fenceLines lines each). Nothing else is read into it. Each paragraph is clamped to six
+ * lines (`LongText`), a list shows three items (`FoldList`), and a fence its first twelve lines (`Output`).
+ * `plain` draws it unfolded, for a place that clamps the whole text itself.
+ */
+export function ReviewText({ text, plain = false }: { text: string; plain?: boolean }) {
 	return (
 		<div className="review-text">
-			{partsOf(text).map((part, index) =>
-				part.kind === "p" ? (
+			{partsOf(text).map((part, index) => {
+				if (part.kind === "pre") {
+					const code = part.lines.join("\n") + (part.cut > 0 ? "\n…" : "");
+					return plain ? (
+						<pre key={index} tabIndex={0}>
+							<code>{code}</code>
+						</pre>
+					) : (
+						<Output key={index} text={code} limit={FENCE_SHOWN} label="Code" />
+					);
+				}
+				if (part.kind === "ul") {
+					return plain ? (
+						<ul key={index}>
+							{part.items.map((item, at) => (
+								<li key={at}>
+									<Inline text={item} />
+								</li>
+							))}
+						</ul>
+					) : (
+						<FoldList key={index} items={part.items} render={(item) => <Inline text={item} />} />
+					);
+				}
+				return plain ? (
 					<p key={index}>
 						<Inline text={part.text} />
 					</p>
-				) : part.kind === "ul" ? (
-					<ul key={index}>
-						{part.items.map((item, at) => (
-							<li key={at}>
-								<Inline text={item} />
-							</li>
-						))}
-					</ul>
 				) : (
-					<pre key={index} tabIndex={0}>
-						<code>{part.lines.join("\n") + (part.cut > 0 ? "\n…" : "")}</code>
-					</pre>
-				),
-			)}
+					<LongText key={index} lines={6}>
+						<Inline text={part.text} />
+					</LongText>
+				);
+			})}
 		</div>
 	);
 }
@@ -409,6 +434,38 @@ export function Block({ block, records, verdict, author, linkTo, named }: { bloc
 	);
 }
 
+/**
+ * An author's blocks as one list of the page's facts, in the order given. Past three findings, the rest
+ * fold under "Show N more" in the findings' place; each finding's title always shows, its text clamped.
+ */
+export function BlockRows({ blocks, records, verdict, author, linkTo, named }: { blocks: ReviewBlock[]; records: ReviewRecord[]; verdict: Verdict | null; author: string; linkTo?: LinkTo; named?: (finding: string) => string | null }) {
+	const [open, setOpen] = useState(false);
+	const id = useId();
+	const findings: ReviewBlock[] = blocks.filter((block) => block.kind === "finding");
+	const folds = listFolds(findings.length);
+	const last = findings[FOLD_SHOWN - 1];
+	const hidden = new Set<ReviewBlock>(folds && !open ? findings.slice(FOLD_SHOWN) : []);
+	return (
+		<dl id={id} className="usage-facts item-facts review-blocks">
+			{blocks.map((block, index) =>
+				hidden.has(block) ? null : (
+					<Fragment key={index}>
+						<Block block={block} records={records} verdict={verdict} author={author} linkTo={linkTo} named={named} />
+						{folds && block === (open ? findings[findings.length - 1] : last) ? (
+							<div className="review-block review-block-fold">
+								<dt />
+								<dd>
+									<FoldToggle open={open} controls={id} label={FOLD_WORDS.more(findings.length - FOLD_SHOWN)} onToggle={() => setOpen((value) => !value)} />
+								</dd>
+							</div>
+						) : null}
+					</Fragment>
+				),
+			)}
+		</dl>
+	);
+}
+
 /** The screenshots an author's blocks name: the item's records of them (`ItemReport.screenshots`), and their links. */
 export interface BlockScreenshots {
 	shots: ItemAttachment[];
@@ -431,11 +488,7 @@ export function ReviewBlocks({ blocks, records, verdict, author, screenshots }: 
 	const first = shots[0];
 	return (
 		<>
-			<dl className="usage-facts item-facts review-blocks">
-				{blocks.map((block, index) => (
-					<Block key={index} block={block} records={records} verdict={verdict} author={author} />
-				))}
-			</dl>
+			<BlockRows blocks={blocks} records={records} verdict={verdict} author={author} />
 			{first && screenshots ? <Screenshots by={first.by} head={first.head} shots={shots} links={screenshots.links} days={screenshots.days} /> : null}
 		</>
 	);
