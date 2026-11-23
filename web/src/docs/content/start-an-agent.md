@@ -41,12 +41,12 @@ The **agent** chip shows the agent, the model and the effort, for example **Wind
 
 ### The agent
 
-There are four agents, each with its own badge in the **agent** chip:
+There are four agents, each shown by its own logo. The row of logos at the top of the **agent** menu switches to another agent the place offers in one press, on that agent's default model.
 
-- **Windlass** (W) runs everywhere.
-- **Claude Code** (CC) runs only on one of your machines whose runner offers it. It runs with your Claude subscription.
-- **OpenCode** (OC) runs only on one of your machines whose runner offers it. It runs with the model providers you signed it in with, or OpenCode's free public models.
-- **Codex** (C) runs only on one of your machines whose runner offers it. It runs with the ChatGPT sign-in or API key you signed it in with on that machine.
+- **Windlass** runs everywhere.
+- **Claude Code** runs only on one of your machines whose runner offers it. It runs with your Claude subscription.
+- **OpenCode** runs only on one of your machines whose runner offers it. It runs with the model providers you signed it in with, or OpenCode's free public models.
+- **Codex** runs only on one of your machines whose runner offers it. It runs with the ChatGPT sign-in or API key you signed it in with on that machine.
 
 Choose the machine under **on** first. Claude Code and OpenCode run in the hardened Docker profile only. They do not run the repository's checks; CI's result is on the pull request. The **agent** chip groups the models under each agent's name, with its sign-in state. An agent offered only on another machine of yours says "choose that machine first". Under **Terminal sign-in commands** are the commands that sign each one in.
 
@@ -58,7 +58,7 @@ See [Agents on your machine](/docs/machines#agents-on-your-machine) to set them 
 
 ### The effort
 
-**Effort** sets how hard the model reasons. Choose **default**, or one of the levels the chosen model offers. The levels come from your plan, so they differ between models.
+**Effort** sets how hard the model reasons. It is its own control beside the **agent** chip, shown when the chosen model has levels: choose **default**, or one of the levels the chosen model offers. The levels come from your plan, so they differ between models.
 
 ## Choose the mode
 
