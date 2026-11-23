@@ -54,6 +54,24 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 	return box;
 }
 
+/**
+ * The relay's latest notes about answers it did not pass on as the provider gave them (sandbox/relay/server.cjs
+ * `notesFile`): relay containers keep no Docker log. Only the fields the relay writes, as short printable text.
+ */
+export async function relayNotes(m: MachineDocker, harness: MachineHarness, latest = 3): Promise<string[]> {
+	const box = await ownedRelay(m, harness).catch(() => undefined);
+	if (!box?.State?.Running) return [];
+	const read = await docker(["exec", box.Id, "cat", "/workspace/relay-notes.json"], { timeoutMs: 15_000 });
+	if (read.code !== 0) return [];
+	let notes: unknown;
+	try { notes = JSON.parse(read.stdout); } catch { return []; }
+	if (!Array.isArray(notes)) return [];
+	const field = (value: unknown) => (typeof value === "string" || typeof value === "number") && /^[A-Za-z0-9 ./;=_+:,-]{0,120}$/.test(String(value)) ? String(value) : "?";
+	return notes.slice(-latest).filter(note => note && typeof note === "object").map((note: Record<string, unknown>) =>
+		[field(note.at), field(note.event), field(note.route), note.upstream !== undefined ? `upstream ${field(note.upstream)}, content-type ${field(note.contentType)}` : `error ${field(note.error)}`,
+			note.passedAs !== undefined ? `passed as ${field(note.passedAs)}` : `answered ${field(note.answered)}`].join("  "));
+}
+
 // Call under the login lock, including logout from a standalone runner command.
 /** `signedOut` for a logout: sessions are then told signed out, not to try again (sandbox/relay/server.cjs SIGNED_OUT). */
 export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude", signedOut = false) {

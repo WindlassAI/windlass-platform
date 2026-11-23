@@ -2,7 +2,7 @@
 const { createPublicKey, randomUUID } = require('node:crypto');
 const { readFile, rename, unlink, writeFile } = require('node:fs/promises');
 const { rmSync } = require('node:fs');
-const { createRelay, scrubStream, stopOnSignal, SIGNED_OUT, Stopping } = require('./server.cjs');
+const { createRelay, scrubStream, stopOnSignal, SIGNED_OUT, Stopping, NOTES_FILE } = require('./server.cjs');
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const filename = '/run/wlp-harness/opencode/login.json';
@@ -105,6 +105,9 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		/** The credentials this relay has read, so no forwarded header can carry one. */
 		secrets: () => secrets,
 		accepts: url => Boolean(endpointFor(allowed, url)),
+		// A ChatGPT sign-in's stream comes from chatgpt.com/backend-api, which may send its 200 without a content
+		// type (codex.cjs): only that route is read as an event stream. API-key providers name their types.
+		untyped: (method, url) => (method === 'POST' && endpointFor(allowed, url)?.id === 'chatgpt' ? 'text/event-stream' : null),
 		bearer(h, url) {
 			const kind = url ? endpointFor(allowed,url,h)?.kind : provider;
 			// Sessions created by older runners carry the lease in a separate header.
@@ -161,5 +164,5 @@ if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	rmSync(socket, { force: true });
 	rmSync(SIGNED_OUT, { force: true });
 	const provider = providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation);
-	stopOnSignal(createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider }).listen(socket), provider);
+	stopOnSignal(createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider, notesFile: NOTES_FILE }).listen(socket), provider);
 }

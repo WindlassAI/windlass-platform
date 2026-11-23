@@ -15,7 +15,7 @@ import { storeProvider, changeProviderLogin, currentProvider, installedProvider,
 import { changeCodexLogin, codexLogin } from "./codex-login.js";
 import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
-import { removeRelay } from "./claude-relay.js";
+import { relayNotes, removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
 import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
 import { localSizing, storeFlags } from "./sizing.js";
@@ -152,6 +152,11 @@ async function main() {
 				if (offered || claude || harnessImage("claude")) {
 					const signIn = await claudeSignIn(executor);
 					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
+				}
+				// What each relay refused or passed on differently, latest last (its container keeps no log).
+				for (const [relay, label] of [["codex", "Codex"], ["opencode", "OpenCode"], ["claude", "Claude Code"]] as const) {
+					const notes = await relayNotes(executor, relay).catch(() => []);
+					if (notes.length) console.log(`  ${label} relay, latest notes:\n${notes.map(line => "    " + line).join("\n")}`);
 				}
 				try {
 					await executor.discover();
