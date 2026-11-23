@@ -205,8 +205,15 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 						<span className="crumb-sep" aria-hidden="true">
 							/
 						</span>
+						{/* A work item's agent is named by its item, just before: the last part says only what this page is. */}
 						<h1 className="crumb-title" title={title}>
-							{title}
+							{item && itemView ? (
+								<>
+									session<span className="visually-hidden"> of {title}</span>
+								</>
+							) : (
+								title
+							)}
 						</h1>
 					</>
 				) : null}

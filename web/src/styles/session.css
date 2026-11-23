@@ -2995,7 +2995,8 @@ dd.kv-clip > svg {
 	font-weight: 450;
 	color: var(--ink-dim);
 	background: none;
-	border-style: dashed;
+	border: 0;
+	padding: 0;
 }
 
 /* A phone: the toolbar keeps one row; the pills give way before Send does, and the key hints are not drawn. */

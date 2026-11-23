@@ -2867,6 +2867,7 @@ a.subtask-chip:hover {
 .subtask-strip-previous,
 .subtask-strip-next {
 	display: inline-flex;
+	min-width: 0;
 	max-width: 22ch;
 	white-space: nowrap;
 }
@@ -2880,6 +2881,11 @@ a.subtask-chip:hover {
 		margin-left: 0;
 		width: 100%;
 		justify-content: space-between;
+		gap: 12px;
+	}
+	.subtask-strip-previous,
+	.subtask-strip-next {
+		max-width: calc(50% - 6px);
 	}
 }
 
