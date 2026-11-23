@@ -46,7 +46,7 @@ describe("the mock's work items", () => {
 
 	it("says in platform info whether the second review is on, and without it gives no item one", async () => {
 		const off = createMockClient({ pace: 0, reviewer: false });
-		expect((await off.info()).items).toEqual({ reviewer: false, orchestrate: true });
+		expect((await off.info()).items).toEqual({ reviewer: false, orchestrate: true, screenshots: true });
 		const list = await off.user(auth).listItems();
 		expect(list.some((item) => item.review !== null)).toBe(true);
 		expect(list.every((item) => item.review === null || item.review.state === "off")).toBe(true);
@@ -54,7 +54,7 @@ describe("the mock's work items", () => {
 	});
 
 	it("offers work items unless told not to, and without them refuses every item and API token call but the limits", async () => {
-		expect((await make().info()).items).toEqual({ reviewer: true, orchestrate: true });
+		expect((await make().info()).items).toEqual({ reviewer: true, orchestrate: true, screenshots: true });
 		const off = make("off");
 		expect((await off.info()).items).toBeUndefined();
 		const user = off.user(auth);
