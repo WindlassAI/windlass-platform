@@ -111,9 +111,9 @@ describe("pages rendered with the mock", () => {
 			const view = viewNamed(title);
 			const page = { view, error: null, missing: false, reload: () => undefined, replace: () => undefined };
 			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })));
-			const strip = host.querySelector('section[aria-labelledby="item-verdict"]') as HTMLElement;
+			const strip = host.querySelector('section[aria-labelledby="item-checks"]') as HTMLElement;
 			expect(strip.querySelector(".item-verdict") === null, title).toBe(reviewing);
-			expect(strip.querySelector(".item-verdict-head")?.textContent?.startsWith(reviewing ? "being reviewed" : "Ready for review"), title).toBe(true);
+			expect(strip.querySelector(reviewing ? ".checks-summary .item-row-review" : ".checks-summary .item-verdict")?.textContent, title).toBe(reviewing ? "being reviewed" : "Ready for review");
 			expect(strip.textContent?.includes("Its word is given when the second review is filed and the work is handed over."), title).toBe(reviewing);
 			if (!reviewing) expect(strip.textContent).toContain("On GitHub as windlass/verified: Success");
 			// The facts the verdict rests on are there either way.

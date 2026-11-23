@@ -119,7 +119,7 @@ describe("a work item's agent session", () => {
 			const child = items.find(one => one.parent)!;
 			return createElement(Item, { page: useItem(child.id, true) });
 		}, { items: "features" });
-		const review = host.querySelector('section[aria-labelledby="item-second"]');
+		const review = host.querySelector('section[aria-labelledby="item-checks"]');
 		expect(review?.textContent).toContain("the feature’s combined change is reviewed once its parts are done");
 		expect(review?.textContent).not.toContain("turned off for this deployment");
 	});

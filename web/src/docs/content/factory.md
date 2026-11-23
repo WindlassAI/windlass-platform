@@ -146,9 +146,11 @@ Turn on **Take screenshots for work items** in the repository's settings, under 
 
 When an item is handed over, its page gives a verdict, such as **Ready for review**, **Needs a look** or **Failing**. The verdict rests on CI on the pushed commit, your checks where you set them, and what was seen in the changes. It never rests on the agent's words. A verdict merges nothing.
 
+The item's page puts it in one **Checks** panel near the top. Its first line says **Ready to merge**, or how many things are open and what they are. Below it: each CI check on the pushed commit, failed first and folded to one line when all passed; your checks; the second reviewer's recommendation with its blocking findings, each opening to its text, and **Show the full review**; and open comments from people on the pull request, with **Show all batches**. Earlier verdicts fold at its foot.
+
 ### Network
 
-Below the verdict, a **Network** block appears when the sandboxes of the item's builder or reviewer refused network requests. It gives the count across their turns and the destinations, most actionable first, each with how many times it was refused and when last. A host the repository's network list can allow has **Allow for this repository**; one a paired machine refused says to add it to that machine's `--egress-domains`. A feature over several repositories lists the hosts without the button: allow one in the settings of the repository that needs it. See [Blocked network requests](/docs/sessions#blocked-network-requests).
+Below the Checks panel, a **Network** block appears when the sandboxes of the item's builder or reviewer refused network requests. It gives the count across their turns and the destinations, most actionable first, each with how many times it was refused and when last. A host the repository's network list can allow has **Allow for this repository**; one a paired machine refused says to add it to that machine's `--egress-domains`. A feature over several repositories lists the hosts without the button: allow one in the settings of the repository that needs it. See [Blocked network requests](/docs/sessions#blocked-network-requests).
 
 ### The check on GitHub
 
@@ -267,7 +269,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count.
 
-**On the item's page**, **From GitHub** lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
+**On the item's page**, the Checks panel lists the open comments, and **Show all batches** under them lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
 
 ## Text from someone else
 

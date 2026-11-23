@@ -1,6 +1,6 @@
 /**
- * "From GitHub" on an item's page (G4): the reviews and comments on the item's pull request that the
- * platform collected, batch by batch, and what became of each batch: waiting, held, asking you, taken
+ * Feedback from GitHub on an item's page (G4), as its Checks panel unfolds it: the reviews and comments
+ * on the item's pull request that the platform collected, batch by batch, and what became of each batch: waiting, held, asking you, taken
  * into a run, or not taken and why (the server's reason, `FeedbackBatch.reason`). Feedback from people
  * without write access is never stored, so it shows only as a count.
  *
@@ -15,17 +15,17 @@ import { ExternalIcon } from "./Icons";
 import { ReviewText } from "./ReviewBlocks";
 
 /** The batch's state as one word: the reason after it says the rest. */
-const STATE_WORD: Record<FeedbackBatch["state"], string> = { pending: "Waiting", held: "Held", question: "Needs you", taken: "Taken", declined: "Not taken" };
+export const STATE_WORD: Record<FeedbackBatch["state"], string> = { pending: "Waiting", held: "Held", question: "Needs you", taken: "Taken", declined: "Not taken" };
 
-const KIND_WORD: Record<FeedbackEntry["kind"], string> = { changes_requested: "Changes requested", commented: "Review", issue_comment: "Comment", review_comment: "Line comment" };
+export const KIND_WORD: Record<FeedbackEntry["kind"], string> = { changes_requested: "Changes requested", commented: "Review", issue_comment: "Comment", review_comment: "Line comment" };
 
 /** Open batches first, then the rest, newest first. */
-const OPEN = new Set<FeedbackBatch["state"]>(["question", "pending", "held"]);
+export const OPEN = new Set<FeedbackBatch["state"]>(["question", "pending", "held"]);
 
 /** How many settled batches show before the fold. */
 const SHOWN = 2;
 
-const githubUrl = (url: string) => (/^https:\/\/[^\s/]+\//.test(url) ? url : null);
+export const githubUrl = (url: string) => (/^https:\/\/[^\s/]+\//.test(url) ? url : null);
 
 /** A body, clamped to six lines as a whole, with "Show all" when it is cut. */
 function Body({ text }: { text: string }) {
@@ -108,7 +108,7 @@ function Batch({ view, batch, when }: { view: ItemView; batch: FeedbackBatch; wh
 	);
 }
 
-/** The section, when the item has feedback to speak of; nothing otherwise. */
+/** Every batch, open first, when the item has feedback to speak of; nothing otherwise. The panel above it says what is open in rows. */
 export function GithubFeedback({ view, when }: { view: ItemView; when(at: number): ReactNode }) {
 	const [open, setOpen] = useState(false);
 	const folded = useId();
@@ -120,15 +120,9 @@ export function GithubFeedback({ view, when }: { view: ItemView; when(at: number
 	const settled = batches.filter((batch) => !OPEN.has(batch.state)).sort((a, b) => latest(b) - latest(a));
 	const shown = [...active, ...settled.slice(0, SHOWN)];
 	const rest = settled.slice(SHOWN);
-	const pr = view.pullRequest ? `pull request #${view.pullRequest.number}` : "the pull request";
 	return (
-		<section className="usage-section item-github" aria-labelledby="github-feedback-title">
-			<h2 className="usage-title" id="github-feedback-title">
-				From GitHub
-			</h2>
-			<p className="usage-lede">
-				Reviews and comments on {pr} from you and from people with write access, quoted as they wrote them. A taken batch starts a new run; the agent reads others' words as review, not as your instructions.
-			</p>
+		<div className="item-github">
+			<p className="usage-gloss">From you and from people with write access, quoted as they wrote them. A taken batch starts a new run; the agent reads others' words as review, not as your instructions.</p>
 			{shown.length > 0 ? (
 				<ol className="gh-batches">
 					{shown.map((batch) => (
@@ -156,6 +150,6 @@ export function GithubFeedback({ view, when }: { view: ItemView; when(at: number
 					</span>
 				</p>
 			) : null}
-		</section>
+		</div>
 	);
 }

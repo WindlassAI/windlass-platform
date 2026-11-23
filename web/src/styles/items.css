@@ -2943,3 +2943,143 @@ a.subtask-chip:hover {
 .factory-subtask-asks .factory-subtask-doing {
 	color: var(--needs);
 }
+
+/* The Checks panel: one line of what is open, then CI, the user's checks, the review and GitHub as rows in the facts card. */
+.checks-at {
+	margin-top: 0;
+	font-weight: var(--weight-regular);
+	letter-spacing: 0;
+}
+.checks-summary {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	margin: 8px 0 12px;
+	font-size: var(--text-15);
+	font-weight: var(--weight-medium);
+	line-height: 1.4;
+}
+.checks-summary .outcome,
+.checks-summary .item-row-review {
+	margin-left: auto;
+}
+.checks-summary-main {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	min-width: 0;
+}
+.checks-summary-mark {
+	flex: none;
+	margin-top: 2px;
+}
+.checks-dot {
+	width: 7px;
+	height: 7px;
+	margin-top: 7px;
+	border-radius: 50%;
+	background: var(--warn);
+}
+.checks-groups dd > * + * {
+	margin-top: 4px;
+}
+.checks-head,
+.checks-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 2px 8px;
+	min-width: 0;
+}
+.checks-rows {
+	display: grid;
+	gap: 4px;
+}
+.checks-glyph {
+	flex: none;
+}
+.checks-glyph-dash {
+	position: relative;
+	width: 13px;
+	height: 13px;
+	color: var(--ink-faint);
+}
+.checks-glyph-dash::before {
+	content: "";
+	position: absolute;
+	left: 3px;
+	right: 3px;
+	top: 6px;
+	height: 1.5px;
+	border-radius: 1px;
+	background: currentColor;
+}
+.checks-said {
+	max-width: 74ch;
+}
+.checks-where {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+	overflow-wrap: anywhere;
+}
+.checks-finding-toggle {
+	align-items: baseline;
+	min-width: 0;
+	color: var(--ink);
+	text-align: left;
+}
+.checks-finding-toggle .machine-chevron {
+	flex: none;
+	align-self: center;
+}
+.checks-finding-title {
+	overflow-wrap: anywhere;
+}
+.checks-finding-body {
+	display: grid;
+	gap: 6px;
+	flex-basis: 100%;
+	min-width: 0;
+	padding: 2px 0 6px 14px;
+}
+.checks-comment > .long-text,
+.checks-ask > .long-text {
+	flex-basis: 100%;
+	min-width: 0;
+}
+.checks-quote {
+	max-width: 74ch;
+	color: var(--ink-dim);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.checks-open {
+	margin-left: auto;
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+}
+.checks-ask-label {
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+}
+.checks-more {
+	margin-top: 6px;
+}
+.checks-fold > * + * {
+	margin-top: 8px;
+}
+@media (max-width: 760px) {
+	.checks-summary .outcome,
+	.checks-summary .item-row-review {
+		margin-left: 0;
+	}
+	.checks-groups > div > dt {
+		margin-bottom: 2px;
+	}
+}
+.checks-rows[hidden],
+.checks-finding-body[hidden] {
+	display: none;
+}
