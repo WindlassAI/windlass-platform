@@ -423,6 +423,15 @@
 .item-note {
 	min-height: 64px;
 }
+/* A check the sandbox could not run: its row and the end of its output, as the session's check results show them. */
+.item-check {
+	display: grid;
+	gap: 8px;
+	min-width: 0;
+}
+.item-check code {
+	overflow-wrap: anywhere;
+}
 /* The agent's own question: a quotation, set apart from the platform's sentence by a rule and a caption that says whose it is. */
 .item-asked {
 	display: grid;

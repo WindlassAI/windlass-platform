@@ -851,9 +851,10 @@ export type Verified = ({
 	/**
 	 * For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its
 	 * reason. "not_started": no check that did not pass was started (`VerifiedCheck.startError`), so
-	 * the turn ended at once and the agent was not sent back.
+	 * the turn ended at once and the agent was not sent back. "environment": every check that failed did so because the
+	 * sandbox could not run it (factory/check-environment.ts), so the agent was not sent back either.
 	 */
-	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started"; said: string | null };
+	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started" | "environment"; said: string | null };
 
 	/**
 	 * The checks that did not pass in a run of `turn` whose result does not stand: the agent then put
@@ -1534,15 +1535,15 @@ export interface FactoryLimits {
 	item: ItemBudget;
 }
 
-/** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask";
+/** "turn_refused": the session or provider refused the turn, in its words. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
+export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment";
 
 /**
  *   approve     the plan is approved: implement it
  *   revise      plan again, with the person's note
  *   raise       "Raise the limit and go on": the round counter that stopped is reset, or the budget raised
  *   retry       "Retry from scratch": a new run
- *   again       try the same thing again (a turn that changed nothing, a refused push)
+ *   again       try the same thing again (a turn that changed nothing, a refused push, a check the environment could not run)
  *   wait        keep waiting for CI
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
@@ -1564,6 +1565,12 @@ export interface ItemQuestion {
 	 * text; never Markdown, never in `text`, never posted anywhere. `options`: answers it suggests.
 	 */
 	asked?: { text: string; options: string[] };
+	/**
+	 * A `check_environment` question's check: one of the user's that failed because the sandbox could not run it
+	 * (factory/check-environment.ts), with the first line that shows why and the end of what it printed. The
+	 * output is the command's, shown as output, in plain text.
+	 */
+	check?: { name: string; command: string; exitCode: number | null; kind: "package_manager" | "network" | "not_found"; line: string; excerpt: string };
 }
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */
