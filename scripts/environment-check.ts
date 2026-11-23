@@ -12,7 +12,6 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import type { RawAccess } from "rivetkit/db";
 import type { EnvironmentBuild, MachineSummary, RepositoryCheck, SessionSummary } from "../server/src/contract.js";
 import {
 	afterChange, afterPush, CHANGE_DEBOUNCE_MS, ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, environmentInputs, environmentPlaces, HOSTED, judgeChecks, nextBuild, nextScheduled, nightlyMinute,
@@ -110,7 +109,7 @@ expect("a pull request merged into the default branch counts as a push", merged?
 
 // ---- the user actor's side, with a stand-in host ---------------------------------------------------
 
-function database(): RawAccess {
+function database(): EnvironmentHost["db"] {
 	const sqlite = new DatabaseSync(":memory:");
 	sqlite.exec(ENVIRONMENT_TABLE);
 	sqlite.exec(ENVIRONMENT_SCHEDULE_TABLE);
@@ -119,7 +118,7 @@ function database(): RawAccess {
 		async execute<Row extends Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]> {
 			return sqlite.prepare(query).all(...(args as Array<string | number | null>)) as Row[];
 		},
-	} as unknown as RawAccess;
+	} as unknown as EnvironmentHost["db"];
 }
 
 interface Stand { host: EnvironmentHost; started: BuildRequest[]; removed: string[]; clock: { now: number }; saved: { command: string; checks: RepositoryCheck[]; secrets: number }; refuse: string | null; machines: MachineSummary[]; watched: string[] }
