@@ -73,7 +73,9 @@ export function usable(row: Pick<EnvironmentRow, "ready" | "stale"> | undefined,
 
 export function stateOf(row: EnvironmentRow, inputs: EnvironmentInputs): EnvironmentState {
 	if (row.attempt && row.attempt.finishedAt === null) return "building";
-	const failedLater = row.attempt?.failure && (!row.ready || row.attempt.startedAt > row.ready.startedAt);
+	// A failure under settings that have changed since says nothing of today's: the record is stale then.
+	const failedLater = row.attempt?.failure && (!row.ready || row.attempt.startedAt > row.ready.startedAt)
+		&& row.attempt.setupHash === inputs.setupHash && row.attempt.checksHash === inputs.checksHash;
 	if (failedLater) return "failed";
 	if (!row.ready) return "stale";
 	return row.stale === null && row.ready.setupHash === inputs.setupHash && row.ready.checksHash === inputs.checksHash ? "ready" : "stale";
