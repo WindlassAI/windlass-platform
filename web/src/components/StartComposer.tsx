@@ -802,9 +802,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const repoRow: MenuItem = {
 		id: "repo",
 		value: "repo",
-		label: repoReading ? "…" : repo.kind === "github" ? repositoryName(repo.picked.repository) : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "Choose a repository" : "No repository",
+		label: repoReading ? "Repository" : repo.kind === "github" ? repositoryName(repo.picked.repository) : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "Choose a repository" : "No repository",
 		textValue: "repository",
-		description: repo.kind === "github" ? `at ${repo.picked.branch}` : repo.kind === "address" && repo.url !== "" ? "cloned from its address" : item ? "a repository of your GitHub connection" : "starts in an empty repository",
+		description: repoReading ? "being read" : repo.kind === "github" ? `at ${repo.picked.branch}` : repo.kind === "address" && repo.url !== "" ? "cloned from its address" : item ? "a repository of your GitHub connection" : "starts in an empty repository",
 		icon: repo.kind === "github" ? <RepoTile name={repo.picked.repository.name} size="sm" /> : <RepoIcon size={15} />,
 		tone: repoWarn ? ("warn" as const) : undefined,
 		// On a phone its list or form is pushed into the sheet; on a wide screen it takes the menu's place, anchored to the pill.
@@ -1228,6 +1228,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 									repository={repo.kind === "github" ? repositoryName(repo.picked.repository) : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : null}
 									branch={repo.kind === "github" ? repo.picked.branch : null}
 									empty={item ? "Choose a repository" : "No repository"}
+									emptyShort={item ? "Repo?" : "No repo"}
+									required={item}
 									reading={repoReading}
 									dot={whereWarn || repoWarn ? "warn" : profileChanged ? "changed" : chosenMachine ? (chosenMachine.status === "online" ? "ok" : "off") : null}
 									dotLabel={whereWarn || repoWarn ? "something is open, or cannot be used: see its menu" : chosenMachine ? chosenMachine.status : undefined}

@@ -402,6 +402,45 @@
 	flex: 0 1 auto;
 	max-width: 24ch;
 }
+/* No repository: quiet where none is fine, in the pill's ink where one is needed (its dot says so too). */
+.tray-where .tray-repo-none {
+	flex: 0 1 auto;
+	overflow: hidden;
+	min-width: 0;
+	color: var(--ink-faint);
+	font-weight: var(--weight-regular);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tray-where .tray-repo-required {
+	color: var(--ink-dim);
+	font-weight: 450;
+}
+.tray-only-phone {
+	display: none;
+}
+.start-phone .tray-only-phone {
+	display: inline;
+}
+/* While the repository it starts on is read: a quiet bar in its place. */
+.tray-repo-reading {
+	flex: none;
+	width: 9ch;
+	height: 8px;
+	border-radius: 4px;
+	background: var(--bg-active);
+	animation: tray-reading 1.4s var(--ease) infinite alternate;
+}
+@keyframes tray-reading {
+	to {
+		opacity: 0.45;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.tray-repo-reading {
+		animation: none;
+	}
+}
 .tray-sep {
 	flex: none;
 	color: var(--ink-faint);

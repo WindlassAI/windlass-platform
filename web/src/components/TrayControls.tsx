@@ -69,17 +69,22 @@ export function AgentPill({ trigger, harness, name, model, effort, efforts, dot,
 	);
 }
 
-/** Where: the place, then the repository's tile and name and its branch. */
-export function WherePill({ trigger, machine, place, repository, branch, empty, dot, dotLabel, changed, reading, ...data }: { trigger: TriggerProps; machine: boolean; place: string; repository: string | null; branch: string | null; /** Said where no repository is chosen. */ empty: string; dot: Dot; dotLabel?: string; changed: boolean; reading: boolean; "data-value": string; "data-sandbox": string; "data-repo": string }) {
+/**
+ * Where: the place, then the repository's tile and name and its branch. With none chosen it says so in
+ * words (`empty`, and `emptyShort` on a phone): quietly where none is a fine choice, in the pill's own
+ * ink with its warning dot where one is needed (`required`). While the repository it starts on is read,
+ * a quiet bar holds its place.
+ */
+export function WherePill({ trigger, machine, place, repository, branch, empty, emptyShort, required = false, dot, dotLabel, changed, reading, ...data }: { trigger: TriggerProps; machine: boolean; place: string; repository: string | null; branch: string | null; /** Said where no repository is chosen. */ empty: string; /** The same in a word or two, for a phone. */ emptyShort: string; /** A repository is needed: the words are not quiet. */ required?: boolean; dot: Dot; dotLabel?: string; changed: boolean; reading: boolean; "data-value": string; "data-sandbox": string; "data-repo": string }) {
 	return (
-		<button type="button" {...trigger} {...data} className={`ui-pill tray-pill tray-where${dot === "warn" ? " ui-pill-warn" : ""}${changed ? " ui-pill-changed" : ""}`} data-picker="where" aria-busy={reading || undefined} aria-label={`Where: ${place}, ${repository ? `${repository}${branch ? ` at ${branch}` : ""}` : empty}`}>
+		<button type="button" {...trigger} {...data} className={`ui-pill tray-pill tray-where${dot === "warn" ? " ui-pill-warn" : ""}${changed ? " ui-pill-changed" : ""}`} data-picker="where" aria-busy={reading || undefined} aria-label={`Where: ${place}, ${reading ? "reading the repository" : repository ? `${repository}${branch ? ` at ${branch}` : ""}` : empty}`}>
 			<span className="ui-pill-icon">{machine ? <MachineIcon size={15} /> : <CloudIcon size={15} />}</span>
 			<span className="ui-pill-value tray-place tray-hide-phone">{place}</span>
 			<span className="tray-sep tray-hide-phone" aria-hidden="true">
 				·
 			</span>
 			{reading ? (
-				<span className="tray-repo">…</span>
+				<span className="tray-repo-reading" aria-hidden="true" />
 			) : repository ? (
 				<>
 					<RepoTile name={repository.split("/").pop() ?? repository} size="xs" />
@@ -94,7 +99,10 @@ export function WherePill({ trigger, machine, place, repository, branch, empty, 
 					) : null}
 				</>
 			) : (
-				<span className="ui-pill-secondary tray-repo">{empty}</span>
+				<span className={`tray-repo tray-repo-none${required ? " tray-repo-required" : ""}`}>
+					<span className="tray-hide-phone">{empty}</span>
+					<span className="tray-only-phone">{emptyShort}</span>
+				</span>
 			)}
 			<PillDot dot={dot} label={dotLabel} />
 			<ChevronDownIcon size={12} className="ui-pill-chevron" />
