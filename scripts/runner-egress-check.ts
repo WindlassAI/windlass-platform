@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -324,7 +324,6 @@ test("proxy refusals carry only bounded destination counts, reasons and times", 
 	const { proxyServer, refusalLedger, targetAddress } = await import("../runner/src/egress-proxy.mjs");
 	const { request } = await import("node:http");
 	const counts = refusalLedger();
-	counts.read(1);
 	const proxy = proxyServer([], ["provider.example"], false, [], counts.record).listen(0, "127.0.0.1");
 	await once(proxy, "listening");
 	try {
@@ -363,10 +362,86 @@ test("proxy refusals carry only bounded destination counts, reasons and times", 
 		assert.equal(counts.read(2).overflow, 1);
 		assert.deepEqual(counts.read(1), { hosts: [], overflow: 0 }, "a late old turn cannot reset the ledger");
 		const replacement = refusalLedger();
+		replacement.record(new URL("http://new.example"), "machine_policy", 10);
+		replacement.record(new URL("http://registry.example"), "machine_policy", 11);
 		replacement.read(3, snapshot.hosts.concat(Array.from({ length: 46 }, (_, i) => ({ host: "prior" + i + ".example", port: 80 }))));
 		replacement.record(new URL("http://new.example"), "machine_policy");
 		replacement.record(new URL("http://registry.example"), "machine_policy");
-		assert.equal(replacement.read(3).overflow, 1);
+		assert.equal(replacement.read(3).overflow, 2);
+		assert.equal(replacement.read(3).hosts[0].firstAt, 11);
+		assert.equal(replacement.read(3).hosts[0].count, 2);
 		assert.equal(replacement.read(3).hosts[0].host, "registry.example");
 	} finally { proxy.close(); }
+});
+
+test("the runner samples the observation socket with curl in the broker", async () => {
+	const { createServer } = await import("node:http");
+	const { Executor } = await import("../runner/src/docker-executor.js");
+	const dir = mkdtempSync(join(tmpdir(), "observe-"));
+	const path = process.env.PATH;
+	const id = "a".repeat(64);
+	const owner = new Executor({ uid: "u_fixture", machineId: "m_fixture" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [] });
+	const labels = { ...owner.labels, "dev.windlass-platform": "1", "dev.windlass-platform.egress-helper": "broker" };
+	const received: unknown[] = [];
+	const server = createServer(async (req, res) => {
+		let body = "";
+		for await (const chunk of req) body += chunk;
+		received.push([req.method, req.url, JSON.parse(body)]);
+		res.end(JSON.stringify({ hosts: [], overflow: 3 }));
+	});
+	try {
+		server.listen(join(dir, "observe.sock"));
+		await once(server, "listening");
+		// Execute the real curl argv against the fixture socket in place of the broker's mount.
+		writeFileSync(join(dir, "docker"), `#!/bin/bash
+set -eu
+if [[ $1 = container ]]; then echo '${id}|true|${JSON.stringify(labels)}'; exit; fi
+[[ $1 = exec && $2 = -i && $3 = ${id} && $4 = curl ]]
+shift 4
+args=()
+for arg do
+  if [[ $arg = /workspace/observe.sock ]]; then arg="$(dirname "$0")/observe.sock"; fi
+  args+=("$arg")
+done
+exec curl "\${args[@]}"
+`, { mode: 0o700 });
+		process.env.PATH = dir + ":" + path;
+		const retained = [{ host: "known.example", port: 443 }];
+		assert.deepEqual(await owner.network.blocked("fixture", 7, retained), { broker: id, hosts: [], overflow: 3 });
+		assert.deepEqual(received, [["POST", "/7", retained]]);
+	} finally {
+		process.env.PATH = path;
+		server.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("migration removes the legacy brokers and their named socket volumes", async () => {
+	const { Executor } = await import("../runner/src/docker-executor.js");
+	const dir = mkdtempSync(join(tmpdir(), "egress-migrate-"));
+	const path = process.env.PATH;
+	const owner = new Executor({ uid: "u_fixture", machineId: "m_fixture" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [] });
+	const labels = { ...owner.labels, "dev.windlass-platform": "1", "dev.windlass-platform.egress-helper": "broker" };
+	const prefix = "wlp-egress-m_fixture";
+	const legacy = [prefix, prefix + "-codex-broker", prefix + "-opencode-broker"];
+	const dropped: string[] = [];
+	owner.dropVolume = async name => { dropped.push(name!); };
+	try {
+		// The OpenCode broker is already gone, as after an interrupted migration.
+		writeFileSync(join(dir, "docker"), `#!/bin/sh
+case "$1" in
+  ps) echo '${legacy.slice(0, 2).join("\n")}' ;;
+  container) echo "id-$5|true|"'${JSON.stringify(labels)}' ;;
+  rm) echo "$3" >> "$(dirname "$0")/removed" ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 });
+		process.env.PATH = dir + ":" + path;
+		await owner.network.reconcile(new Set());
+		assert.deepEqual(readFileSync(join(dir, "removed"), "utf8").trim().split("\n"), legacy.slice(0, 2).map(name => "id-" + name));
+		assert.deepEqual(dropped, legacy.map(name => name + "-socket"));
+	} finally {
+		process.env.PATH = path;
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

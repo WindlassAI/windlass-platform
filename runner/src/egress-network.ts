@@ -139,8 +139,9 @@ export class EgressNetwork {
 	async blocked(raw: string, turn: number, retained: Args<"blockedNetwork">["retained"]): Promise<Value<"blockedNetwork">> {
 		const broker = await this.helper(this.prefix + "-broker-" + raw, "broker");
 		if (!broker?.running) throw new Refusal("The network broker is unavailable.");
-		const read = 'process.stdin.pipe(require("node:http").request({method:"POST",socketPath:"/workspace/observe.sock",path:"/"+process.argv[1]}, res => res.pipe(process.stdout)).on("error", () => process.exit(1)))';
-		const result = await docker(["exec", "-i", broker.id, "node", "-e", read, String(turn)], { stdin: JSON.stringify(retained), check: true, timeoutMs: 4000 });
+		const result = await docker(["exec", "-i", broker.id, "curl", "-qfsS", "--noproxy", "*", "--max-time", "3",
+			"--unix-socket", "/workspace/observe.sock", "--data-binary", "@-", "http://localhost/" + turn],
+			{ stdin: JSON.stringify(retained), check: true, timeoutMs: 4000 });
 		const value: unknown = { ...JSON.parse(result.stdout), broker: broker.id };
 		if (!validValue("blockedNetwork", value)) throw new Refusal("The network broker returned an invalid snapshot.");
 		return value;
@@ -151,11 +152,13 @@ export class EgressNetwork {
 		const broker = await this.helper(this.prefix + "-broker-" + raw, "broker");
 		if (broker) await checked(["rm", "-fv", broker.id]);
 	}
+	private cleanedLegacyVolumes = false;
 	async reconcile(running: Set<string>) {
 		const flags = Object.entries(this.machine.labels).flatMap(([k, v]) => ["--filter", "label=" + k + "=" + v]);
 		const rows = await checked(["ps", "-a", "--filter", "label=" + LABEL_ARG, ...flags, "--filter", "label=" + roleLabel, "--format", "{{.Names}}"]);
+		const legacy = [this.prefix, this.prefix + "-codex-broker", this.prefix + "-opencode-broker"];
 		for (const name of rows.stdout.trim().split("\n").filter(Boolean)) {
-			if (name === this.prefix || name === this.prefix + "-opencode-broker" || name === this.prefix + "-codex-broker") {
+			if (legacy.includes(name)) {
 				// Shared brokers from earlier releases have been replaced by attach().
 				const helper = await this.helper(name, "broker");
 				if (helper) await checked(["rm", "-fv", helper.id]);
@@ -166,6 +169,12 @@ export class EgressNetwork {
 				const raw = name.slice(this.prefix.length + 1);
 				if (!running.has(raw)) await this.detach(raw);
 			}
+		}
+		// Docker's rm -v only removes anonymous volumes. Also recover an interrupted migration
+		// where the old broker was already removed. dropVolume checks this pairing's labels.
+		if (!this.cleanedLegacyVolumes) {
+			for (const name of legacy) await this.machine.dropVolume(name + "-socket");
+			this.cleanedLegacyVolumes = true;
 		}
 	}
 	async prune() {

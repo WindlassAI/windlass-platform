@@ -18,18 +18,24 @@ export function refusalLedger() {
 	return {
 		read(number, retained) {
 			if (number > turn) {
+				// Requests can arrive between attach and the first observer. Fit those counts around
+				// the slots already reserved by this session, including on a replacement broker.
+				const early = turn === 0 ? new Map(slots) : null;
+				if (!early) overflow = 0;
 				turn = number;
-				overflow = 0;
 				// A resumed sandbox can have a fresh broker. Reserve the session's previously admitted slots.
 				if (retained) {
 					slots.clear();
 					for (const { host, port } of retained) slots.set(JSON.stringify([host, port]), null);
 				} else for (const key of slots.keys()) slots.set(key, null);
+				if (early) for (const [key, entry] of early) {
+					if (slots.has(key) || slots.size < 50) slots.set(key, entry);
+					else overflow += entry.count;
+				}
 			}
 			return number === turn ? { hosts: [...slots.values()].filter(Boolean), overflow } : { hosts: [], overflow: 0 };
 		},
 		record(url, reason, at = Date.now()) {
-			if (!turn) return;
 			const name = url?.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
 			const host = name && (net.isIP(name) || (name.length <= 253 && name.split(".").every(label => LABEL.test(label)))) ? name : null;
 			const port = host ? (url.port ? Number(url.port) : url.protocol === "http:" ? 80 : url.protocol === "https:" ? 443 : null) : null;
