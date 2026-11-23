@@ -1,7 +1,7 @@
 /**
  * The start of an agent: a composer, not a form. Typing the task and pressing Enter launches it with
  * the choices already standing. The choices are a toolbar of pills inside the composer's box: the
- * agent and its model (effort in a submenu), where it runs (hosted or one of the user's machines,
+ * agent and its model, the effort beside it (its own picker), where it runs (hosted or one of the user's machines,
  * each with its sandboxes in a submenu), the repository at a branch (filtered as you type, branches in
  * a submenu), and the mode; "+" holds the repository's setup command and secrets. Launch is a split
  * button whose menu creates the agent without sending the task. Under the box, one line says what
@@ -169,7 +169,7 @@ export function useCatalog(machine: MachineSummary | null, id: "claude" | "openc
 }
 
 /** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
-type Picker = "repo" | "where" | "agent" | "mode" | "criteria" | "plus" | "settings";
+type Picker = "repo" | "where" | "agent" | "effort" | "mode" | "criteria" | "plus" | "settings";
 
 /** "github.com/acme/web" for a pasted address: the chip's few words. */
 const shortAddress = (url: string) => url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -803,49 +803,26 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	);
 
 	// ---- the agent and its model --------------------------------------------------------------------
-	/** The rows of one harness's models, each with its efforts in a submenu. */
+	/** The rows of one harness's models: models only, the effort being its own picker beside the agent's. */
 	const modelRows = (harnessId: HarnessId, list: typeof modelList): MenuItem[] => {
 		if (list === null || list.models.length === 0) return [];
 		const isOther = harnessId !== "windlass";
-		return list.models.map(({ id, name: reportedName, efforts: rowEfforts }) => {
+		return list.models.map(({ id, name: reportedName }) => {
 			const isDefault = id === list.defaultModel;
 			const name = isOther && reportedName ? reportedName : id;
 			const here = harness === harnessId;
 			// Another harness's reported default is its "": chosen, nothing is sent.
 			const checked = here && (isOther && model === "" ? isDefault : model === id);
-			const pick = (to: string | null) => {
-				setHarness(harnessId);
-				setModel(id);
-				if (to !== null) setEffort(to);
-			};
 			return {
 				id: `${harnessId}:${id}`,
 				label: name,
 				icon: <AgentGlyph harness={HARNESS_NAMES[harnessId]} accent={harnessId === "windlass" && isDefault} />,
-				description: rowEfforts.length > 0 ? (checked && effort ? `effort ${effort} · ${rowEfforts.length} levels` : `${rowEfforts.length} effort levels`) : undefined,
 				trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
 				checked,
-				onSelect: () => pick(null),
-				submenu:
-					rowEfforts.length > 0
-						? {
-								label: `Effort for ${name}`,
-								width: 200,
-								groups: [
-									{
-										id: "efforts",
-										label: `Effort for ${name}`,
-										items: effortChoices(rowEfforts).map((level, index) => ({
-											id: level || "default",
-											label: level || "default",
-											icon: <EffortBars level={index} of={rowEfforts.length} />,
-											checked: checked && (effort || "default") === (level || "default"),
-											onSelect: () => pick(level),
-										})),
-									},
-								],
-							}
-						: undefined,
+				onSelect: () => {
+					setHarness(harnessId);
+					setModel(id);
+				},
 			};
 		});
 	};
@@ -901,8 +878,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		label: "Agent and model",
 		width: 304,
 		maxHeight: 520,
-		submenuWidth: 200,
-		hints: { right: "effort" },
 		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
 		header:
 			offersOther || (!other && ignored.model) || harnessProblem ? (
@@ -935,8 +910,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		),
 	};
 	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
-	const shownEffort = effort;
-	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`;
+	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}`;
 	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
 	const agentPill = (props: TriggerProps) => (
 		<Pill
@@ -944,13 +918,42 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			data-picker="agent"
 			data-value={agentValue}
 			icon={<AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />}
-			secondary={`· ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`}
+			secondary={`· ${agentModel}`}
 			dot={agentWarn ? "warn" : modelChanged ? "changed" : null}
 			dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined}
 			className={modelChanged ? "ui-pill-changed" : undefined}
 			aria-label={`Agent: ${agentValue}`}
 		>
 			{HARNESS_NAMES[harness]}
+		</Pill>
+	);
+
+	// ---- the effort: its own picker beside the agent's, for a model that has efforts -------------------
+	const effortModel = !other ? model || "default model" : agentModel;
+	const effortSpec: MenuSpec | null =
+		efforts.length > 0
+			? {
+					label: "Effort",
+					width: 220,
+					groups: [
+						{
+							id: "efforts",
+							label: `Effort for ${effortModel}`,
+							items: effortChoices(efforts).map((level, index) => ({
+								id: level || "default",
+								label: level || "default",
+								icon: <EffortBars level={index} of={efforts.length} />,
+								checked: (effort || "default") === (level || "default"),
+								onSelect: () => setEffort(level),
+							})),
+						},
+					],
+				}
+			: null;
+	const effortWord = effort ? `effort ${effort}` : "default effort";
+	const effortPill = (props: TriggerProps) => (
+		<Pill {...props} data-picker="effort" data-value={effort || "default"} aria-label={`Effort: ${effort || "default"}`}>
+			{effortWord}
 		</Pill>
 	);
 
@@ -1049,6 +1052,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				id: "settings",
 				items: [
 					{ id: "agent", label: "Agent & model", icon: <AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />, description: agentValue, tone: agentWarn ? ("warn" as const) : undefined, submenu: agentSpec },
+					...(effortSpec ? [{ id: "effort", label: "Effort", icon: <EffortBars level={Math.max(0, effortChoices(efforts).indexOf(effort))} of={efforts.length} />, description: effort || "default", submenu: effortSpec }] : []),
 					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
 					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
 					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
@@ -1157,6 +1161,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								</Tooltip>
 							) : null}
 							<Menu spec={agentSpec} open={open === "agent"} onOpenChange={openOnly("agent")} trigger={agentPill} surface="popover" />
+							{effortSpec ? <Menu spec={effortSpec} open={open === "effort"} onOpenChange={openOnly("effort")} trigger={effortPill} surface="popover" /> : null}
 							{showWhere && (mine.length > 0 || !item) ? <Menu spec={whereSpec} open={open === "where"} onOpenChange={openOnly("where")} trigger={wherePill} surface="popover" /> : null}
 							{repoSpec ? (
 								<Menu spec={repoSpec} open={open === "repo"} onOpenChange={openOnly("repo")} trigger={repoPill} surface="popover" />

@@ -122,6 +122,12 @@ function pickIn(row: string, value: string): void {
 	act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
 	act(() => (document.querySelector(`.ui-pop-sub [data-value="${value}"]`) as HTMLElement).click());
 }
+/** Chooses a model in the agent's menu, then an effort in the effort's own picker beside it. */
+function pickModelEffort(model: string, effort: string): void {
+	pick(model);
+	open("effort");
+	pick(effort);
+}
 /** Chooses a mode in the mode's menu, by its name. */
 function mode(name: string): void {
 	open("mode");
@@ -255,8 +261,13 @@ describe("each picker of the start composer", () => {
 	it("sends the model chosen with the agent, and the effort with its first prompt", async () => {
 		await show();
 		open("agent");
-		pickIn("windlass:gpt-6.1-sol", "low");
-		expect(value("agent")).toBe("Windlass · gpt-6.1-sol · low");
+		pickModelEffort("windlass:gpt-6.1-sol", "low");
+		expect(value("agent")).toBe("Windlass · gpt-6.1-sol");
+		expect(value("effort")).toBe("low");
+		// The agent's menu lists models only: the efforts are the effort picker's.
+		open("agent");
+		expect(pop().querySelector(".ui-pop-sub, [aria-haspopup]")).toBeNull();
+		open("agent");
 		write("Fix the flaky test");
 		await enter();
 		expect(created[0]?.model).toBe("gpt-6.1-sol");
@@ -287,8 +298,9 @@ describe("each picker of the start composer", () => {
 			["Sonnet", false],
 			["haiku", false],
 		]);
-		pickIn("claude:sonnet", "high");
-		expect(value("agent")).toBe("Claude Code · Sonnet · high");
+		pickModelEffort("claude:sonnet", "high");
+		expect(value("agent")).toBe("Claude Code · Sonnet");
+		expect(value("effort")).toBe("high");
 		write("Add the test command to the README");
 		await enter();
 		expect(created[0]).toMatchObject({ harness: "claude", model: "sonnet" });
@@ -315,8 +327,9 @@ describe("each picker of the start composer", () => {
 		pick("claude:haiku");
 		expect(value("agent")).toBe("Claude Code · Haiku");
 		open("agent");
-		pickIn("claude:opus", "high");
-		expect(value("agent")).toBe("Claude Code · Opus (default) · high");
+		pickModelEffort("claude:opus", "high");
+		expect(value("agent")).toBe("Claude Code · Opus (default)");
+		expect(value("effort")).toBe("high");
 		write("Add the test command to the README");
 		await enter();
 		expect(created[0]).toMatchObject({ harness: "claude" });

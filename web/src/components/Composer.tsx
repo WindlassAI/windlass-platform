@@ -1,6 +1,6 @@
 /**
  * The composer: Enter sends, Shift-Enter makes a new line. Helm's box: the field, then a toolbar inside
- * it with the mode and model pills (the model's efforts in its submenu) and Send, Steer and Stop. While a turn runs (or waits on a question)
+ * it with the mode, model and effort pills and Send, Steer and Stop. While a turn runs (or waits on a question)
  * what is sent steers that turn, and Stop sits beside Send. While the sandbox starts or the turn stops
  * it cannot send and says why. The model and effort for the next turn sit beside it; they do not
  * apply to a steer, so they are off while a turn runs. The models are the user's own, the efforts
@@ -199,7 +199,6 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 		const name = modelById.get(id)?.name || id;
 		return id === models?.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
 	};
-	const effortPicker = harness === null || efforts.length > 0;
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
 	const reason = closed || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
@@ -318,35 +317,17 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const modelMenu: MenuSpec = {
 		label: "Model",
 		width: 280,
-		submenuWidth: 200,
-		hints: { right: "effort" },
 		groups: [
 			{
 				id: "models",
 				label: harness === null ? "Model" : `${harness}'s models`,
 				note: models && harness === null ? modelsNoteShort(models) : undefined,
-				items: listed.map((id) => {
-					const rowEfforts = modelById.get(id)?.efforts ?? [];
-					const choose = (level: string | null) => {
-						setChosenModel(id);
-						if (level !== null) setEffort(level);
-					};
-					return {
-						id,
-						label: harnessModelLabel(id),
-						description: rowEfforts.length > 0 ? (id === currentModel && currentEffort ? `effort ${currentEffort}` : `${rowEfforts.length} effort levels`) : undefined,
-						checked: id === currentModel,
-						onSelect: () => choose(null),
-						submenu:
-							rowEfforts.length > 0
-								? {
-										label: `Effort for ${harnessModelLabel(id)}`,
-										width: 200,
-										groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(id)}`, items: effortChoices(rowEfforts).map((level) => ({ id: level || "default", label: level || "default", checked: id === currentModel && (currentEffort || "default") === (level || "default"), onSelect: () => choose(level) })) }],
-									}
-								: undefined,
-					};
-				}),
+				items: listed.map((id) => ({
+					id,
+					label: harnessModelLabel(id),
+					checked: id === currentModel,
+					onSelect: () => setChosenModel(id),
+				})),
 			},
 		],
 		footer: models ? <p className="ui-menu-note">{harness === null ? modelsNote(models) : `The models ${harness} offered for this agent.`}</p> : undefined,
@@ -357,21 +338,21 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			spec={modelMenu}
 			side="top"
 			trigger={(props) => (
-				<Pill {...props} data-picker="model" data-value={currentModel} disabled={!idle} secondary={currentEffort ? `· ${currentEffort}` : undefined} aria-label={`Model: ${harnessModelLabel(currentModel)}${currentEffort ? `, effort ${currentEffort}` : ""}${modelTitle ? `. ${modelTitle}` : ""}`}>
+				<Pill {...props} data-picker="model" data-value={currentModel} disabled={!idle} aria-label={`Model: ${harnessModelLabel(currentModel)}${modelTitle ? `. ${modelTitle}` : ""}`}>
 					{harnessModelLabel(currentModel)}
 				</Pill>
 			)}
 		/>
 	);
 
-	// A harness that offers one model and efforts for it: the efforts on their own.
+	// The chosen model's efforts, as their own picker beside the model: every agent whose model has efforts.
 	const effortMenu: MenuSpec = {
 		label: "Effort",
 		width: 200,
 		groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(currentModel)}`, items: effortChoices(efforts).map((level) => ({ id: level || "default", label: level || "default", checked: (currentEffort || "default") === (level || "default"), onSelect: () => setEffort(level) })) }],
 	};
 	const effortPill =
-		!modelPicker && effortPicker && efforts.length > 0 ? (
+		efforts.length > 0 ? (
 			<Menu
 				spec={effortMenu}
 				side="top"
@@ -499,7 +480,10 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						</>
 					) : null}
 					{modelPicker ? (
-						modelPill
+						<>
+							{modelPill}
+							{effortPill}
+						</>
 					) : (
 						<>
 							{effortPill}
