@@ -1843,10 +1843,9 @@ export interface Verdict {
 	 * "timed_out": still running when the work was handed over; "unread": the platform could not read it
 	 * (GitHub did not answer while it waited), or not all of it (more checks than it reads: `said`
 	 * says so), so nothing is claimed of what was not read. "none" only when GitHub was read and
-	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped,
-	 * cancelled or neutral).
+	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped or neutral). "cancelled" includes stale checks.
 	 */
-	ci: { state: "passed" | "failed" | "none" | "skipped" | "not_run" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
+	ci: { state: "passed" | "failed" | "none" | "skipped" | "cancelled" | "not_run" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;

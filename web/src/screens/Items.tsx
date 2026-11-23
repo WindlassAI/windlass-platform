@@ -165,6 +165,7 @@ export const CI_WORD: Record<NonNullable<ItemSummary["verdict"]>["ci"], { word: 
 	failed: { word: "CI failed", tone: "bad" },
 	none: { word: "no CI", tone: "dim" },
 	skipped: { word: "CI skipped", tone: "dim" },
+	cancelled: { word: "CI did not finish", tone: "warn" },
 	not_run: { word: "CI did not start", tone: "warn" },
 	timed_out: { word: "CI unfinished", tone: "warn" },
 	not_permitted: { word: "CI not readable", tone: "warn" },

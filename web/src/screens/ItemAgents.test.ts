@@ -36,8 +36,8 @@ async function wait(steps = 8): Promise<void> {
 }
 
 /** Signs in to the mock and renders `screen` in the app's context, once the lists are known. */
-async function render(screen: () => ReturnType<typeof createElement>): Promise<void> {
-	client = createMockClient({ origin: "http://localhost:5173" });
+async function render(screen: () => ReturnType<typeof createElement>, options: Parameters<typeof createMockClient>[0] = {}): Promise<void> {
+	client = createMockClient({ origin: "http://localhost:5173", ...options });
 	const begun = client.login.start();
 	await vi.advanceTimersByTimeAsync(1000);
 	const { redirectPrefix, url } = await begun;
@@ -114,12 +114,33 @@ describe("a work item's agent session", () => {
 		expect(linksTo(section, `/agents/${draft.sessionId}`)).toEqual([]);
 	});
 
+	it("explains where a feature subtask gets its second review", async () => {
+		await render(() => {
+			const child = items.find(one => one.parent)!;
+			return createElement(Item, { page: useItem(child.id, true) });
+		}, { items: "features" });
+		const review = host.querySelector('section[aria-labelledby="item-second"]');
+		expect(review?.textContent).toContain("the feature’s combined change is reviewed once its parts are done");
+		expect(review?.textContent).not.toContain("turned off for this deployment");
+	});
+
+	it("explains when the first running turn will count toward spend", async () => {
+		await render(() => {
+			const item = items.find(one => one.title === "Cache the downloaded tide predictions")!;
+			return createElement(Item, { page: useItem(item.id, true) });
+		});
+		const cost = host.querySelector('section[aria-labelledby="item-cost"]');
+		expect(cost?.textContent).toContain("Spend is counted when the running turn ends. This step started 29 min ago.");
+		expect(cost?.textContent).toContain("0 turns");
+	});
+
 	it("is opened from its item's page", async () => {
 		await render(() => {
 			const draft = items.find((one) => one.state === "draft") as ItemSummary;
 			return createElement(Item, { page: useItem(draft.id, true) });
 		});
 		const draft = items.find((one) => one.state === "draft") as ItemSummary;
+		expect(host.textContent).not.toContain("Spend is counted when the running turn ends.");
 		expect(linksTo(host, `/agents/${draft.sessionId}`).map((link) => link.textContent)).toEqual(["Open the agent"]);
 	});
 

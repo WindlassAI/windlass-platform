@@ -5,7 +5,7 @@ const digits = /^[0-9]{1,20}$/;
 /** Node 24 supplies the original token, even when the parsed number has lost precision. */
 export function parseGithubJson(raw: string): unknown {
 	return JSON.parse(raw, (key: string, value: unknown, context?: { source?: string }) => {
-		if ((key === "id" || key === "installation_id" || key === "repository_id" || key === "pull_request_review_id") && typeof value === "number") {
+		if ((key === "id" || key === "run_id" || key === "installation_id" || key === "repository_id" || key === "pull_request_review_id") && typeof value === "number") {
 			const source = context?.source;
 			return source && digits.test(source) ? source : null;
 		}

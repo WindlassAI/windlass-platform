@@ -430,7 +430,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
-		const reviewer = child || !config.factory.reviewer ? { off: "deployment" } as const :
+		const reviewer = child ? { off: "feature" } as const : !config.factory.reviewer ? { off: "deployment" } as const :
 			session.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
 		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
 		if (reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {

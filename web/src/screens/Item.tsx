@@ -612,7 +612,7 @@ const LONG_OPTION = 40;
 const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" : `${count} times`);
 
 /** CI's tone: a failure is bad; CI that was not read, or not in full, or had not finished is a quiet warning; passed and none are plain facts. */
-const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", not_run: "tone-warn", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
+const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", cancelled: "tone-warn", not_run: "tone-warn", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
 
 /** What the gate said when none of the user's checks is listed. */
 function gateWords(gate: Verdict["gate"]): string {
@@ -823,7 +823,8 @@ function spendFacts(view: ItemView): { label: string; value: string }[] {
 	];
 }
 
-function Cost({ view }: { view: ItemView }) {
+function Cost({ view, now }: { view: ItemView; now: number }) {
+	const step = view.run?.step;
 	const rows = budgetFields(view);
 	const hosted = view.place.kind === "hosted";
 	return (
@@ -835,6 +836,9 @@ function Cost({ view }: { view: ItemView }) {
 				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
 				{agentLine(view.agent)}.
 			</p>
+			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
+				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
+			)}
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
 			{[...spendFacts(view), ...agentFacts(view.agent)].length > 0 ? (
 				<dl className="usage-facts item-facts">
@@ -1238,7 +1242,7 @@ export function Item({ page }: { page: ItemPage }) {
 			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
 			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
-			<Cost view={view} />
+			<Cost view={view} now={now} />
 
 			{reading ? null : (
 				<section className="usage-section" aria-labelledby="item-task">

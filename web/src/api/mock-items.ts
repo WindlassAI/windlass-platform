@@ -722,7 +722,6 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 					[30, "Started.", undefined, true],
 					[29, "The turn started.", [1, 1, "implement"]],
 				],
-				spent: { tokens: 640_000, turns: 0, activeSeconds: 29 * 60 },
 			});
 		}
 		if (away) {
@@ -964,8 +963,16 @@ const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_
 export function ciSentence(ci: Verdict["ci"]): string {
 	const count = new Set(ci.runs.map((run) => run.name)).size;
 	switch (ci.state) {
-		case "passed":
-			return `CI passed (${count} ${count === 1 ? "check" : "checks"}).`;
+		case "passed": {
+			const passed = new Set(ci.runs.filter(run => run.conclusion === "success").map(run => run.name)).size;
+			return `CI passed (${passed} ${passed === 1 ? "check" : "checks"}).`;
+		}
+		case "cancelled": {
+			const cancelled = ci.runs.filter(run => run.conclusion === "cancelled" || run.conclusion === "stale");
+			const names = cancelled.map(run => run.name).join(", ");
+			const outcomes = [...new Set(cancelled.map(run => run.conclusion))].join(" or ");
+			return `CI did not finish: ${cancelled.length} ${cancelled.length === 1 ? "check was" : "checks were"} ${outcomes} (${names}); nothing failed.`;
+		}
 		case "failed": {
 			const failing = ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion));
 			return `CI failed: ${[...new Set(failing.map((run) => run.name))].join(", ")}.`;
@@ -1277,7 +1284,7 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	const child = (parent: ItemView, key: string, seed: Seed): ItemView => {
 		const sub = parent.plan!.subtasks.find((one) => one.key === key)!;
 		const view = viewOf({ ...seed, title: sub.title, on: HARBOR, body: sub.brief, acceptance: sub.acceptance }, at, uid);
-		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, review: { state: "off", recommendation: null }, reviewNone: "Subtasks share the feature review.", task: { ...view.task, base: `windlass/feature-${parent.id}` } };
+		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, review: { state: "off", recommendation: null }, reviewNone: FEATURE_REVIEW, task: { ...view.task, base: `windlass/feature-${parent.id}` } };
 	};
 
 	// 1. Waiting for approval: three subtasks in a chain, and a question to answer before it can be approved.
@@ -1618,12 +1625,13 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	return [search, exporting, writer, flag, ...longOnes, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback];
 }
 
-/** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
+/** Match the server’s reasons when an item has no reviewer session. */
+const FEATURE_REVIEW = "the feature’s combined change is reviewed once its parts are done";
 const DEPLOYMENT_OFF = "turned off for this deployment";
 
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
 function withoutReviewer(view: ItemView): ItemView {
-	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
+	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: view.parent ? FEATURE_REVIEW : DEPLOYMENT_OFF };
 }
 
 /** An item's summary, as the server's index keeps it: its page's own fields, and the step its run is at while it goes on (`ItemSummary.step`). */
@@ -1873,8 +1881,8 @@ export function createMockItems(deps: MockItemsDeps) {
 				const agentHarness = fit.decision.harness ?? "windlass";
 				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: "docker-hardened" as const }), ...(sub.agent?.model && { model: sub.agent.model }) });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
-				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:FEATURE_REVIEW,
+					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, startedAt: at, step: { ...item.run!.step, startedAt: at, kind: "implement", turn: "started" } },
 					place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, sub.agent?.effort ?? (agentHarness === "windlass" && !sub.agent?.model ? item.agent?.effort : undefined)) };
 				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);

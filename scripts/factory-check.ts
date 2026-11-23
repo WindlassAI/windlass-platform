@@ -35,7 +35,7 @@ mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
-const { CI_POLLING, readCi, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
+const { CI_POLLING, readCi, rerunCancelled, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
 const { GithubApp, GithubError } = await import("../server/src/github/app.js");
 
 const output: string[] = [];
@@ -450,6 +450,7 @@ function handoverWithout(fact: Row["fact"], reason: string): Row {
 }
 for (const [name, reviewer, reason] of [
 	["deployment off", { off: "deployment" }, "turned off for this deployment"],
+	["feature part", { off: "feature" }, "the feature’s combined change is reviewed once its parts are done"],
 	["profile off", { off: "profile" }, "in this sandbox the reviewer's commands would run with the network"],
 ] as const) {
 	drive(`review: ${name}`, newItem({ reviewer }), [...toCi, handoverWithout(ci(reviewHead, ciPassed), reason)]);
@@ -1572,12 +1573,12 @@ const unread = verdict(PASSED, "not_permitted");
 		"changed after": verified("passed", [check("test", "passed"), check("lint", "passed")], { changedAfter: true }),
 	} as const;
 	type CiState = Verdict["ci"]["state"];
-	const CI: CiState[] = ["passed", "failed", "none", "skipped", "not_run", "timed_out", "not_permitted", "unread"];
+	const CI: CiState[] = ["passed", "failed", "cancelled", "none", "skipped", "not_run", "timed_out", "not_permitted", "unread"];
 	const expected: Record<keyof typeof checksOf, Record<CiState, Verdict["result"]>> = {
-		none: { passed: "pass", failed: "fail", none: "unverified", skipped: "unverified", timed_out: "unverified", not_permitted: "unverified", not_run: "unverified", unread: "unverified" },
-		passed: { passed: "pass", failed: "fail", none: "pass", skipped: "pass", timed_out: "pass", not_permitted: "pass", not_run: "pass", unread: "pass" },
-		failed: { passed: "fail", failed: "fail", none: "fail", skipped: "fail", timed_out: "fail", not_permitted: "fail", not_run: "fail", unread: "fail" },
-		"changed after": { passed: "pass", failed: "fail", none: "unverified", skipped: "unverified", timed_out: "unverified", not_permitted: "unverified", not_run: "unverified", unread: "unverified" },
+		none: { cancelled: "unverified", passed: "pass", failed: "fail", none: "unverified", skipped: "unverified", timed_out: "unverified", not_permitted: "unverified", not_run: "unverified", unread: "unverified" },
+		passed: { cancelled: "unverified", passed: "pass", failed: "fail", none: "pass", skipped: "pass", timed_out: "pass", not_permitted: "pass", not_run: "pass", unread: "pass" },
+		failed: { cancelled: "fail", passed: "fail", failed: "fail", none: "fail", skipped: "fail", timed_out: "fail", not_permitted: "fail", not_run: "fail", unread: "fail" },
+		"changed after": { cancelled: "unverified", passed: "pass", failed: "fail", none: "unverified", skipped: "unverified", timed_out: "unverified", not_permitted: "unverified", not_run: "unverified", unread: "unverified" },
 	};
 	// A pass whose CI has not spoken says both halves in its first words; every other pass is ready.
 	const headline = (result: Verdict["result"], state: CiState) =>
@@ -1818,7 +1819,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 
 	// CI ran, and every check was skipped. Not a pass; waited for as "no CI" is, then said as itself.
 	const skipped = ciRead([{ name: "deploy", state: "neutral" }, { name: "release", state: "neutral" }]);
-	expect("CI whose every check was skipped, cancelled or neutral is skipped, not passed", ciState(skipped) === "skipped" && ciState(ciRead([{ name: "build", state: "passed" }, { name: "deploy", state: "neutral" }])) === "passed", ciState(skipped));
+	expect("CI whose every check was skipped or neutral is skipped, not passed", ciState(skipped) === "skipped" && ciState(ciRead([{ name: "build", state: "passed" }, { name: "deploy", state: "neutral" }])) === "passed", ciState(skipped));
 	const soon = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1 }]);
 	const later = walk(soon.item, [{ kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: skipped, mergeable: true, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
 	const said = effect(later.last, "handoff")?.verdict;
@@ -2237,8 +2238,71 @@ try {
 	expect("nothing reported yet: none", ciState(await readCi(app, target)) === "none");
 	const named = await readCi({ withToken: async (_i: number, _s: unknown, step: (token: string) => Promise<unknown>) => step(""), pages: async ({ path }: { path: string }, pick: (body: unknown) => unknown[]) => ({ items: pick(path.endsWith("/status") ? { sha: H(7), statuses: [] } : { check_runs: [] }), truncated: false }) } as unknown as InstanceType<typeof GithubApp>, target);
 	expect("a reading is of the commit GitHub's combined status names, not only the one asked", named.kind === "read" && named.head === H(7), named.kind === "read" ? named.head : named.kind);
-	ciData.runs = [checkRun(5301, "deploy", "skipped"), checkRun(5302, "release", "cancelled")];
-	expect("every job skipped or cancelled: skipped, not passed", ciState(await readCi(app, target)) === "skipped");
+	ciData.runs = [checkRun(5301, "deploy", "skipped")];
+	expect("every job skipped: skipped", ciState(await readCi(app, target)) === "skipped");
+
+	{
+		const names = ["darwin-arm64", "darwin-x64", "macOS tests"];
+		const cancelled = names.map((name, i) => checkRun(5400 + i, name, "cancelled"));
+		const linux = checkRun(5390, "linux", "success");
+		const skip = checkRun(5391, "deploy", "skipped");
+		const item = walk(newItem(), pushedRun(HEAD)).item;
+		const poll = async (before: FactoryItem) => walk(before, [ciFact(await readCi(app, target), HEAD)]);
+		ciData.runs = [linux, ...cancelled, skip];
+		const initial = await poll(item);
+		const retry = effect(initial.last, "rerun_ci");
+		assert.ok(retry);
+		expect("passed plus cancelled asks for a rerun without a fix turn", initial.item.run?.ci?.last?.state === "cancelled" && !effect(initial.last, "deliver"));
+		const claim = { ...retry, kind: "ci_rerun_started" };
+		const claimed = walk(initial.item, [claim]);
+		expect("the rerun claim survives replay and schedules the next poll", !!effect(claimed.last, "poll_ci") && walk(claimed.item, [claim]).item === claimed.item);
+		const denied = await rerunCancelled(app, target, retry.jobs);
+		const receipt = (result: typeof denied) => ({ kind: "ci_rerun_result", head: HEAD, ...result });
+		const refused = walk(claimed.item, [receipt(denied)]);
+		const unavailable = await poll(refused.item);
+		expect("read-only installation explains the skipped rerun and hands over cancelled checks", !denied.accepted.length && refused.last.events.some(e => e.said.includes("Actions: write")) && effect(unavailable.last, "handoff")?.verdict.ci.state === "cancelled");
+
+		// The stand-in supplies the installation token and job records. Capture only the workflow POST.
+		const workflow = "9007199254740993";
+		for (const job of cancelled) {
+			const details = { run_id: BigInt(workflow), head_sha: HEAD, steps: [], runner_id: null, runner_name: "" };
+			repo.jobs.set(String(job.id), details);
+		}
+		const posts: string[] = [];
+		const original = globalThis.fetch;
+		standin.appPermissions = { ...granted, actions: "write" };
+		globalThis.fetch = (input, init) => {
+			const path = new URL(String(input)).pathname;
+			if (!path.endsWith("/rerun-failed-jobs")) return original(input, init);
+			const token = standin.minted.at(-1)?.token;
+			assert.ok(token && new Headers(init?.headers).get("authorization") === `Bearer ${token}`, "the POST uses the installation token");
+			posts.push(`${init?.method} ${path}`);
+			return Promise.resolve(new Response(null, { status: 201 }));
+		};
+		let result;
+		try {
+			result = await rerunCancelled(app, target, retry.jobs);
+		} finally {
+			globalThis.fetch = original;
+			standin.appPermissions = granted;
+		}
+		expect("three cancelled jobs in one workflow request one correctly scoped POST", result.accepted.length === 3 && posts.join() === `POST /api/v3/repos/ada/harbor/actions/runs/${workflow}/rerun-failed-jobs` && standin.minted.at(-1)?.permissions?.actions === "write");
+		const waiting = walk(claimed.item, [receipt(result)]).item;
+		expect("rereading the original cancelled jobs only polls", !!effect((await poll(waiting)).last, "poll_ci"));
+		ciData.runs = [linux, skip];
+		expect("checks missing while GitHub queues replacements cannot pass", !!effect((await poll(waiting)).last, "poll_ci"));
+		const latest = names.map((name, i) => checkRun(5500 + i, name, "success"));
+		ciData.runs = [linux, skip, ...latest, ...cancelled];
+		const passed = await poll(waiting);
+		expect("successful reruns win regardless of listing order and skipped checks do not inflate the count", effect(passed.last, "handoff")?.verdict.said.ci === "CI passed (4 checks).");
+		ciData.runs = [linux, skip, ...cancelled, ...names.map((name, i) => checkRun(5500 + i, name, "cancelled"))];
+		const twice = await poll(waiting);
+		const handoff = effect(twice.last, "handoff");
+		const sentence = `CI did not finish: 3 checks were cancelled (${names.join(", ")}); nothing failed.`;
+		expect("cancelled twice names the checks in the handoff and verification without another rerun or fix turn", handoff?.verdict.result === "unverified" && handoff.words.includes(sentence) && !handoff.words.includes("CI passed") && effect(twice.last, "verified_check")?.conclusion === "action_required" && !effect(twice.last, "rerun_ci") && !effect(twice.last, "deliver") && twice.item.run?.rounds.ci === 0);
+		ciData.runs = [linux, checkRun(5503, "macOS tests", "stale")];
+		expect("a stale check prevents a pass", ciState(await readCi(app, target)) === "cancelled");
+	}
 
 	{
 		const billing = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";

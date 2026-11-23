@@ -13,6 +13,12 @@ import type { EarlierFinding } from "./types.js";
 
 export const REVIEW_PROFILE_REASON = "in this sandbox the reviewer's commands would run with the network";
 
+export const REVIEW_OFF_REASON = {
+	deployment: "turned off for this deployment",
+	profile: REVIEW_PROFILE_REASON,
+	feature: "the feature’s combined change is reviewed once its parts are done",
+};
+
 export function reviewerAllowed(place: SandboxPlace, profile: SandboxProfile): boolean {
 	return place.kind === "hosted" && commandSandbox(profile) === "windlass";
 }

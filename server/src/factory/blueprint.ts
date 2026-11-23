@@ -63,7 +63,7 @@ import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./ch
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, FeatureJob, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
-import { openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
+import { REVIEW_OFF_REASON, openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
 import { harnessName } from "../sandbox/harnesses.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
@@ -397,6 +397,14 @@ function apply(c: Change, fact: Fact): boolean {
 		case "repo_pr_read":
 		case "repo_pr_lost":
 			return item.run !== null && crossRepo(item) && crossFact(flow(c), fact, item.approvedPlan?.finalIntegration);
+		case "ci_rerun_result": {
+			const rerun = item.ciReruns?.[fact.head];
+			if (!rerun || rerun.reported) return false;
+			rerun.reported = true;
+			for (const job of rerun.jobs) if (job.jobId && !fact.accepted.includes(job.jobId)) job.jobId = null;
+			c.say(fact.said);
+			return true;
+		}
 		case "spent":
 			// The ledger only grows: an older figure that arrives late says nothing new.
 			if (item.place.kind !== "hosted" || !(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
@@ -408,7 +416,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -618,6 +626,13 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 			if (step.kind !== "publish" || fact.key !== key) return false;
 			if (fact.kind === "published") published(c, fact);
 			else publishFailed(c, fact);
+			return true;
+		case "ci_rerun_started":
+			if (step.kind !== "ci" || fact.key !== key || !run.ci || c.item.ciReruns?.[fact.head]) return false;
+			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
+			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
+			step.attempt++;
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the cancelled checks.");
 			return true;
 		case "ci_read":
 			if ((step.kind !== "ci" && step.kind !== "handoff") || fact.key !== key || fact.head !== run.ci?.head) return false;
@@ -1239,7 +1254,11 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	// A reading GitHub gave for another commit than the one asked of it is not a reading of this one: it waits as a reading that failed.
 	const reading: CiReading =
 		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
-	const state = ciState(reading);
+	const rerun = reading.kind === "read" ? c.item.ciReruns?.[reading.head]?.jobs : undefined;
+	let state = ciState(reading);
+	// GitHub can briefly omit the old jobs before listing their replacements.
+	if (reading.kind === "read" && (state === "passed" || state === "none" || state === "skipped") &&
+		rerun?.some(job => !reading.runs.some(check => check.name === job.name))) state = "pending";
 	ci.lastReadState = state;
 	ci.webhooks = fact.webhooks;
 	// The poll is used up, whatever follows: the same reading again names an earlier one.
@@ -1294,6 +1313,23 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		case "passed":
 			c.say("CI passed.");
 			return afterCi(c, ci);
+		case "cancelled": {
+			if (reading.kind !== "read") return;
+			const cancelled = reading.runs.filter(check => check.state === "cancelled");
+			const sentence = ciSentence(verdictCi(ci));
+			if (!rerun && isSha(reading.head)) {
+				c.say(sentence);
+				c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
+					jobs: cancelled.map(({ name, jobId }) => ({ name, jobId })) });
+				return;
+			}
+			if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
+				(job.jobId && cancelled.some(check => check.jobId === job.jobId)))) {
+				return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the cancelled checks.");
+			}
+			c.say(sentence);
+			return afterCi(c, ci);
+		}
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
 			return afterCi(c, ci);
@@ -1313,7 +1349,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		case "skipped":
 			// Waited for as "no CI" is: a job that needs another may not be listed yet.
 			if (since >= CI_POLLING.noneAfterMs) {
-				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped, cancelled or neutral.`);
+				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped or neutral.`);
 				return afterCi(c, ci);
 			}
 			break;
@@ -1399,7 +1435,7 @@ function afterCi(c: Change, ci: CiProgress): void {
 		return ask(c, "ci_timeout", "No passing CI reported on the complete feature. Wait for a check or hand over the PR.", [choice("wait"), ...handOver(item), choice("give_up")], null, null);
 	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
 	if (item.place.kind === "machine" || "off" in item.reviewer) {
-		const why = "off" in item.reviewer && item.reviewer.off === "deployment" ? "turned off for this deployment" : "in this sandbox the reviewer's commands would run with the network";
+		const why = "off" in item.reviewer ? REVIEW_OFF_REASON[item.reviewer.off] : REVIEW_OFF_REASON.profile;
 		if (item.mode === "orchestrate") return ask(c, "turn_refused", "The whole-feature reviewer is unavailable: " + why + ".", [...handOver(item), choice("give_up")], null, null);
 		return handoff(c, skippedReview(why));
 	}

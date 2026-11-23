@@ -63,10 +63,10 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
-import { feedbackComment, itemComment, reportBlocks, REVIEW_PROFILE_REASON } from "../factory/review.js";
+import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
-import { readCi } from "../github/ci.js";
+import { readCi, rerunCancelled } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
@@ -284,7 +284,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
-		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? stored.item.reviewer.off === "profile" ? REVIEW_PROFILE_REASON : "turned off for this deployment" : null),
+		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? REVIEW_OFF_REASON[stored.item.reviewer.off] : null),
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
@@ -475,7 +475,9 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	const [row] = await db.execute<{ data: string }>("SELECT data FROM item WHERE id = 1");
 	if (!row) return null;
 	const stored = JSON.parse(row.data) as Stored;
-	stored.item.reviewer ??= { off: "deployment" };
+	if (stored.item.parent && (!stored.item.reviewer || ("off" in stored.item.reviewer && stored.item.reviewer.off === "deployment"))) {
+		stored.item.reviewer = { off: "feature" };
+	} else stored.item.reviewer ??= { off: "deployment" };
 	return stored;
 }
 
@@ -1039,6 +1041,8 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 			return effect.turn === key && run.step.turn !== null;
 		case "publish":
 			return effect.key === key && run.step.kind === "publish" && item.question?.kind !== "turn_refused";
+		case "rerun_ci":
+			return effect.key === key && run.step.kind === "ci" && !item.question;
 		case "poll_ci":
 			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && (item.pr !== null || !!item.parent);
 		case "poll_pr":
@@ -1451,6 +1455,18 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			if (answer === gone) return true;
 			const receipt = { at: Date.now(), key: effect.key };
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
+			return true;
+		}
+		case "rerun_ci": {
+			if (!await take(c, { ...effect, kind: "ci_rerun_started", at: Date.now() })) return false;
+			let result;
+			try {
+				const hub = await github(c, meta, "write");
+				result = await rerunCancelled(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
+			} catch (error) {
+				result = { accepted: [], said: `Could not request a CI rerun: ${describeError(error)}.` };
+			}
+			await take(c, { kind: "ci_rerun_result", at: Date.now(), head: effect.head, ...result });
 			return true;
 		}
 		case "poll_ci": {
