@@ -17,7 +17,7 @@
 
 import type { RawAccess } from "rivetkit/db";
 import type { BillingView, HostedMonth } from "../contract.js";
-import { meterPeriod, monthOf, shiftMonths, type MeterPeriod } from "./meter.js";
+import { meterPeriod, shiftMonths, type MeterPeriod } from "./meter.js";
 import { capMinutes, effectivePlan, MAX_CAP_CENTS, NO_SUBSCRIPTION, PLAN_LIST, PLANS, type BillingState } from "./plans.js";
 import type { BillingEvent, BillingProvider, CheckoutInput } from "./provider.js";
 
@@ -30,7 +30,7 @@ export const BILLING_TABLES = [
 	`CREATE TABLE IF NOT EXISTS billing_checkout (id INTEGER PRIMARY KEY CHECK (id = 1), session TEXT NOT NULL, url TEXT NOT NULL, opened_at INTEGER NOT NULL, period TEXT)`,
 	// The deliveries applied, by the provider's id. Kept for 90 days, longer than any provider retries one.
 	`CREATE TABLE IF NOT EXISTS billing_event (id TEXT PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, outcome TEXT NOT NULL)`,
-	// Keyed by subscription id and period start (UTC calendar month on legacy rows): the overage minutes the provider has taken, and the report under way, if any.
+	// Keyed by subscription id and period start: the overage minutes the provider has taken, and the report under way, if any.
 	`CREATE TABLE IF NOT EXISTS billing_usage (month TEXT PRIMARY KEY, reported INTEGER NOT NULL, pending_to INTEGER, pending_id TEXT)`,
 ];
 
@@ -38,15 +38,11 @@ export const EVENT_KEPT_MS = 90 * 86_400_000;
 
 export async function billingTables(db: BillingDb): Promise<void> {
 	for (const statement of BILLING_TABLES) await db.execute(statement);
-	const columns = await db.execute<{ name: string }>("PRAGMA table_info(billing_checkout)");
-	if (!columns.some(c => c.name === "period")) await db.execute("ALTER TABLE billing_checkout ADD COLUMN period TEXT");
 }
 
 export async function readBilling(db: BillingDb): Promise<BillingState> {
 	const [row] = await db.execute<{ state: string }>("SELECT state FROM billing WHERE id = 1");
-	const state = { ...NO_SUBSCRIPTION, ...(row ? JSON.parse(row.state) as Partial<BillingState> : {}) };
-	if (state.periodStart === null && state.periodEnd === null && state.eventAt) state.periodStart = state.eventAt;
-	return state;
+	return row ? JSON.parse(row.state) as BillingState : { ...NO_SUBSCRIPTION };
 }
 
 async function writeBilling(db: BillingDb, state: BillingState): Promise<void> {
@@ -250,12 +246,7 @@ export async function reportOverage(db: BillingDb, provider: BillingProvider, in
 		const open = await usageRow(db, key);
 		if (open.pending_to !== null) await send(open);
 		const row = await usageRow(db, key);
-		// Legacy month totals have no per-hold attribution. Credit every possibly overlapping minute, including
-		// pending deliveries whose acknowledgement may have been lost, before sending anything under a new id.
-		const [legacy] = await db.execute<{ credit: number }>(
-			"SELECT COALESCE(SUM(COALESCE(pending_to, reported)), 0) AS credit FROM billing_usage WHERE length(month) = 7 AND month BETWEEN ? AND ?",
-			monthOf(period.start), monthOf(period.end - 1));
-		const counted = overageMinutes(state, input.usedSeconds(period), input.includedSeconds, now) - legacy!.credit;
+		const counted = overageMinutes(state, input.usedSeconds(period), input.includedSeconds, now);
 		if (counted <= row.reported) continue;
 		const id = `wlp_${input.uid}_${key}_${row.reported}_${counted}`;
 		await db.execute("INSERT INTO billing_usage (month, reported, pending_to, pending_id) VALUES (?, ?, ?, ?) ON CONFLICT (month) DO UPDATE SET pending_to = excluded.pending_to, pending_id = excluded.pending_id",

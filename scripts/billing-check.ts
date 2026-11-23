@@ -339,10 +339,6 @@ async function memoryDbWithTables() {
 	expect("5 December renewal reports the old remainder and the new overage under distinct period ids",
 		renewed.periodStart === start && rollover.length === 2 && rollover[0]!.minutes === 10 && rollover[1]!.minutes === 10 &&
 		rollover[0]!.eventId.includes(`sub_1_${start}_`) && rollover[1]!.eventId.includes(`sub_1_${end}_`) && fake.minutes === 70);
-	const legacyDb = await memoryDbWithTables();
-	await legacyDb.execute("INSERT INTO billing_usage VALUES ('2026-11', 2, 4, 'legacy_pending')");
-	const migrated = await reportOverage(legacyDb, dodo, { ...input(pro()), usedSeconds: () => 1805 * 60 });
-	expect("the new period key credits four possibly billed legacy minutes and sends only one", migrated[0]?.minutes === 1);
 	const calls = fake.calls.length;
 	expect("yearly Pro never sends an overage event", !(await reportOverage(db, dodo, input(pro({ period: "year" })))).length && fake.calls.length === calls);
 }
@@ -393,7 +389,7 @@ async function memoryDbWithTables() {
 	const base = { db, client, key: [profile.uid], broadcast: () => undefined };
 	if (!("db" in user.config && "createVars" in user.config)) throw new Error("Missing account database");
 	const { db: schema, createVars } = user.config;
-	const reload = () => createVars(base as never, undefined);
+	const reload = () => createVars({ ...base, client: () => { throw new Error("Directory unavailable during account load"); } } as never, undefined);
 	await schema.onMigrate(db as never);
 	// Old tables did not have the weight columns. Run the actual migration against them.
 	for (const table of ["usage_entry", "usage_hold"]) {
@@ -406,7 +402,9 @@ async function memoryDbWithTables() {
 	const svc = { ...base, vars, conn: { params: serviceParams() } };
 	const actions = user.config.actions!;
 	const now = Date.now();
-	expect("a migrated unweighted row uses the legacy size", vars.usage.month(now).usedSeconds === 5);
+	expect("an entry without a recorded weight counts once from the start of its UTC day", vars.usage.usedInPeriod({ start: dayOf(now) * DAY_MS, end: dayOf(now) * DAY_MS + 1 }) === 10);
+	vars.usage.limits.subscription = pro();
+	expect("a missing opening instant excludes the row from a period starting later that day", vars.usage.usedInPeriod({ start: dayOf(now) * DAY_MS + 1, end: now + 1 }) === 0);
 	// The session knows its new size before the index receives its summary.
 	vars.sessions.set("agent", { id: "agent", hostedSize: "small" } as never);
 	await actions.internalReserve(svc as never, { sessionId: "agent", id: "settled", hostedSize: "large" });
@@ -414,7 +412,7 @@ async function memoryDbWithTables() {
 	const restored = await reload();
 	const open = restored.usage.holdOf("agent");
 	expect("a reload without the session restores the weights of both SQLite rows", !!open &&
-		restored.usage.month(now).usedSeconds === 9 && restored.usage.month(now).heldSeconds === open.seconds * 2);
+		restored.usage.month(now).usedSeconds === 14 && restored.usage.month(now).heldSeconds === open.seconds * 2);
 
 	const layer = await getLayer();
 	layer.sandboxes.sizes = () => HOSTED_SIZES.map(id => ({ id, ...HOSTED_SIZE_SPECS[id], usdPerHour: null }));

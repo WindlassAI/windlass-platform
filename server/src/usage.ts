@@ -267,11 +267,7 @@ export interface ReserveInput {
 }
 
 function openingTime(row: UsageEntry | UsageHold): number {
-	if (!("at" in row)) return row.startedAt;
-	if (row.startedAt !== undefined) return row.startedAt;
-	// Pre-index ledger entries have only a settlement time and a UTC day.
-	const dayStart = row.day * DAY_MS;
-	return Math.max(dayStart, Math.min(dayStart + DAY_MS - 1, row.at - Math.max(0, row.seconds) * 1000));
+	return row.startedAt ?? row.day * DAY_MS;
 }
 
 /** One user's sandbox time and kept sandboxes. Every method takes the time, so nothing here reads a clock. */
@@ -295,12 +291,7 @@ weightOf: (session: string) => number = () => 1;
 		readonly limits: UsageLimits,
 		state: { entries?: readonly UsageEntry[]; holds?: readonly UsageHold[]; kept?: readonly KeptClaim[] } = {},
 	) {
-		const unreported = new Map<string, number>();
-		for (const entry of state.entries ?? []) {
-			if (entry.startedAt === undefined && entry.kind === "unreported") unreported.set(entry.hold, openingTime(entry));
-			const startedAt = entry.startedAt ?? (entry.kind === "corrected" ? unreported.get(entry.hold.slice(0, -LATE.length)) : undefined);
-			this.add(startedAt === undefined ? entry : { ...entry, startedAt });
-		}
+		for (const entry of state.entries ?? []) this.add(entry);
 		for (const hold of state.holds ?? []) this.holds.set(hold.session, hold);
 		for (const claim of state.kept ?? []) this.claims.set(claim.session, claim);
 	}
@@ -334,7 +325,7 @@ weightOf: (session: string) => number = () => 1;
 	}
 
 	private storedWeight(row: UsageEntry | UsageHold): number {
-		return row.weight ?? this.weightOf(row.session);
+		return row.weight ?? 1;
 	}
 
 	/** Free keeps the ledger day (including the midnight handover). Pro uses the hold's opening instant. */

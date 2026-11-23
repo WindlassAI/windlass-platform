@@ -1675,12 +1675,6 @@ export const user = actor({
 		const items = await loadItems(c.db);
 		// Where the deployment has billing, the account's subscription sets its plan's limits (billing/plans.ts).
 		items.limits.billing = billing() ? await readBilling(c.db) : null;
-		// Backfill customers from before checkout populated the directory.
-		if (items.limits.billing?.customerId) {
-			const id = items.limits.billing.customerId;
-			const owner = await customerDirectory(c.client()).claim(id, c.key[0]!);
-			if (owner !== c.key[0]) console.warn(`[wlp] billing.customer_mismatch customer=${id} uid=${c.key[0]} owner=${owner}`);
-		}
 		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), checkout: new AccountCheckout(), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 

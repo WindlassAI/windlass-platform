@@ -65,8 +65,7 @@ export function meterPeriod(dates: SubscriptionDates | null, now: number): Meter
 		return { start, end: shiftMonths(start, 1) };
 	}
 	const end = dates.periodEnd;
-	// Older account rows stored only the renewal date. The next subscription webhook supplies the exact start.
-	const start = dates.periodStart ?? (end === null ? now : shiftMonths(end, dates.period === "year" ? -12 : -1));
+	const start = dates.periodStart ?? now;
 	if (end !== null && now >= end) return anniversaryPeriod(end, now);
 	if (dates.period === "month" && end !== null) return { start, end };
 	const window = anniversaryPeriod(start, Math.max(start, now));
