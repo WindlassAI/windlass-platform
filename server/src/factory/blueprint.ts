@@ -73,8 +73,8 @@ import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verd
  * goes nowhere. What is left here are mechanical retries and bounds of one turn.
  */
 export const RULES = {
-	/** A factory turn's `_meta["windlass/maxSteps"]`. */
-	maxSteps: 60,
+	/** Loop guard for one builder turn (including planning and summary). */
+	maxSteps: 400,
 	reviewMaxSteps: 40,
 	feedbackRuns: 3,
 	reviewFilings: 4,
@@ -1027,6 +1027,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		const resume: TurnPlan = { ...IMPLEMENT, kind, newStep: false };
 		return ask(c, "agent_ask", AGENT_ASKS, [choice("reply"), ...handOver(item), choice("give_up")], null, resume, AGENT_ASKS, { text: fact.asked.text, options: [...fact.asked.options] });
 	}
+	if (fact.stepLimit !== undefined) return stepLimitReached(c, { ...IMPLEMENT, kind }, fact.stepLimit, fact.verified);
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
 		// The cut-off that reaches the limit is not tried again: the person is asked next (`nextTurn`, "interruptions").
@@ -1056,10 +1057,10 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		// Every check that failed did so because the sandbox could not run it: that says nothing about the code, and
 		// another turn of fixing would only fail the same way. The person is asked instead.
 		const environment = environmentChecks(fact.verified);
-		if (environment.length && !failingNames(fact.verified)) return askEnvironment(c, kind, environment);
-		const failing = failingNames(fact.verified);
+		const failing = failingNames(fact.verified.run?.checks ?? []);
+		if (environment.length && !failing) return askEnvironment(c, kind, environment);
 		c.say(`The checks failed: ${failing}.`);
-		return nextTurn(c, { ...IMPLEMENT, kind, text: `Your turn ended with checks still failing: ${failing}. Continue fixing until they pass.`, charge: "gate", fingerprint: gateFingerprint(fact.verified) });
+		return nextTurn(c, { ...IMPLEMENT, kind, text: gateFixText(failing), charge: "gate", fingerprint: gateFingerprint(fact.verified) });
 	}
 	// What is true of the checks: none set is no shortcoming (CI decides); a turn with no record of them says so, whatever is set.
 	const said =
@@ -1087,11 +1088,23 @@ export function sandboxEscapeQuestion(item: Pick<FactoryItem, "agent">, note: st
 const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;
 
 /** The checks that failed for the agent's code: started, did not pass, and not for their environment (check-environment.ts). */
-function failingNames(verified: Verified): string {
-	return (verified.run?.checks ?? [])
+function failingNames(checks: VerifiedCheck[]): string {
+	return checks
 		.filter((check) => check.status !== "passed" && check.startError === undefined && environmentFailure(check) === null)
 		.map((check) => check.name)
 		.join(", ");
+}
+
+const gateFixText = (names: string) => `Your turn ended with checks still failing: ${names}. Continue fixing until they pass.`;
+
+function stepLimitReached(c: Change, plan: TurnPlan, limit: number, verified: Verified | null = null): void {
+	// Verification can carry a previous turn's run when this turn ran no checks.
+	const run = verified?.run;
+	const failing = run && run.turn === verified?.turn ? failingNames(run.checks.filter(check => check.required)) : "";
+	let text = `Your last turn reached the limit of ${limit} steps for one turn. Continue from where you stopped.`;
+	if (failing) text += `\n\n${gateFixText(failing)}`;
+	c.say("The turn reached its step limit; it goes on in a new turn.");
+	nextTurn(c, { ...plan, text, newStep: false, ...(failing && verified && { charge: "gate", fingerprint: gateFingerprint(verified) }) });
 }
 
 /** The checks of the gate's run that failed because the sandbox could not run them, each with why. */
@@ -1492,6 +1505,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, { ...reviewPlan(c), newStep: false });
 	delete c.run.step.sandboxFailures;
 	if (fact.outOfMemory && fact.outcome !== "succeeded") return outOfMemory(c, fact.outOfMemory, { ...reviewPlan(c), newStep: false });
+	if (fact.stepLimit !== undefined) return stepLimitReached(c, reviewPlan(c), fact.stepLimit);
 	if (CUT_SHORT.has(fact.outcome)) {
 		c.run.step.interruptions += 1;
 		c.say(`The review ${OUTCOME_WORDS[fact.outcome]}.`);

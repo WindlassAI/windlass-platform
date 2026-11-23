@@ -101,10 +101,11 @@ interface Row {
 
 const H = (n: number) => `${String(n).repeat(40).slice(0, 40)}`;
 const started = (): Row["fact"] => (k) => ({ kind: "turn_started", key: k.key });
-const ended = (outcome: "succeeded" | "unresolved" | "interrupted" | "stopped", evidence: Verified | null, more: { changes?: boolean; report?: AgentReport | string; tokens?: number } = {}): Row["fact"] => (k) => ({
+const ended = (outcome: Extract<Fact, { kind: "turn_ended" }>["outcome"], evidence: Verified | null, more: { stepLimit?: number; changes?: boolean; report?: AgentReport | string; tokens?: number } = {}): Row["fact"] => (k) => ({
 	kind: "turn_ended",
 	key: k.key,
 	outcome,
+	...(more.stepLimit !== undefined && { stepLimit: more.stepLimit }),
 	verified: evidence,
 	flags: [],
 	changes: more.changes ?? true,
@@ -235,7 +236,7 @@ drive("polls pick up the fallback switch on the next GitHub reading", newItem(),
 ]);
 
 drive("the plain run: implement, checks pass, publish, CI passes, review, merged", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.text.includes("add(1, 2) is 3") === true && effect(o, "deliver")?.maxSteps === 60, "the task and its criteria go to the agent, with 60 steps") },
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"], also: (o) => holds(effect(o, "deliver")?.text.includes("add(1, 2) is 3") === true && effect(o, "deliver")?.maxSteps === 400, "the task and its criteria go to the agent, with 400 steps") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: (k) => ({ kind: "turn_running", key: k.check }), after: 5 * MINUTE, state: "working", effects: ["check_turn"] },
 	...toReview,
@@ -483,6 +484,10 @@ drive("review: provider refusal asks the owner and their retry uses the pinned c
 	{ fact: endReview({ outcome: "failed", providerRefusal: { kind: "usage_limit", message: "Quota exhausted.", retry: { text: "", fetchBase: null } } }), state: "waiting", wait: "person", effects: ["ask"],
 		also: o => holds(o.item.question?.text.includes("Quota exhausted.") === true && o.item.run?.step.interruptions === 0, "the reviewer lost the provider refusal") },
 	retryReview(answer("again"), "", 0),
+]);
+
+drive("a reviewer at its step limit continues reviewing the same checkout", reviewerOn(), [...reviewing,
+	retryReview(endReview({ outcome: "failed", stepLimit: 40 }), "Your last turn reached the limit of 40 steps for one turn. Continue from where you stopped.", 0),
 ]);
 
 drive("review: three cutoffs ask the person", reviewerOn(), [...reviewing, reviewCutOff("failed", 1), reviewCutOff("stopped", 2), {
@@ -1024,11 +1029,38 @@ drive("the same CI failure after a fix stops the run at once", newItem(), [
 	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 ]);
 
+const limitPrompt = (limit: number) => `Your last turn reached the limit of ${limit} steps for one turn. Continue from where you stopped.`;
+const currentFailure = verified("failed", [check("test", "failed"), check("optional", "failed", undefined, "repository")]);
+const limitedWithFailure = ended("failed", currentFailure, { stepLimit: 60, changes: false });
+drive("three step-limit ends use ordinary turns and tokens and continue the same step", newItem(), [
+	...begun.slice(0, 2),
+	...(["failed", "unresolved", "succeeded"] as const).map((outcome, i): Row => ({
+		fact: ended(outcome, { ...FAILING, turn: 2 }, { stepLimit: 400, changes: false }),
+		state: "working", effects: ["deliver", "check_turn"],
+		also: o => holds(effect(o, "deliver")?.text === limitPrompt(400) && o.item.run?.step.n === 1 && o.item.run.step.attempt === i + 2
+			&& o.item.run.step.interruptions === 0 && o.item.spent.turns === i + 1 && o.item.spent.tokens === (i + 1) * 100_000
+			&& o.events.some(e => e.said === "The turn reached its step limit; it goes on in a new turn."), "expected a counted turn with no interruption or stale check failure"),
+	})),
+]);
+drive("a step-limit continuation names the failing required check and a repeat trips the stuck detector", newItem(), [
+	...begun.slice(0, 2),
+	{ fact: limitedWithFailure, state: "working", effects: ["deliver", "check_turn"],
+		also: o => holds(effect(o, "deliver")?.text === limitPrompt(60) + "\n\nYour turn ended with checks still failing: test. Continue fixing until they pass."
+			&& o.item.run?.rounds.gate === 1, "expected the original limit and the gate's fix instruction") },
+	{ fact: limitedWithFailure, state: "waiting", wait: "person", effects: ["ask"],
+		also: o => holds(o.item.question?.cause === "repeated" && o.item.run?.step.interruptions === 0, "expected the repeated failure to stop the item") },
+]);
+drive("a step-limit continuation waits for more budget", newItem({ budget: { tokens: 100_000 } }), [
+	...begun.slice(0, 2),
+	{ fact: limitedWithFailure, state: "waiting", wait: "budget", effects: ["ask"],
+		also: o => holds(o.item.question?.cause === "tokens" && o.item.run?.step.interruptions === 0, "expected a token-budget question") },
+]);
+
 const interrupted = ended("interrupted", null);
 drive("a deploy in the middle of the implement step", newItem(), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/interrupted/.test(effect(o, "deliver")?.text ?? "") && effect(o, "deliver")?.key.endsWith(":1:2") === true, "the same step, its next attempt, told to continue") },
+	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.run?.step.interruptions === 1 && effect(o, "deliver")?.text === "You were interrupted. Continue from where you were." && effect(o, "deliver")?.key.endsWith(":1:2") === true, "the same step, its next attempt, told to continue") },
 	{ fact: (k) => ({ kind: "turn_started", key: k.key.replace(/:2$/, ":1") }), state: "working", effects: [], also: (o) => holds(o.events.length === 0, "a fact about the cut attempt is ignored") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"] },
@@ -1177,7 +1209,7 @@ drive("the largest size offers no larger sandbox", newItem(), [
 		const sql = new DatabaseSync(":memory:");
 		const db = { async execute<T>(query: string, ...args: unknown[]): Promise<T[]> { return sql.prepare(query).all(...args as SQLInputValue[]) as T[]; } };
 		for (const table of INBOX_TABLES) sql.exec(table);
-		const delivery = deliveryOf({ key: resume.key, itemId: item.id, title: "Fix add()", text: resume.text, agent: null, maxSteps: 60, fetchBase: null, untrusted: resume.untrusted, fresh: resume.fresh });
+		const delivery = deliveryOf({ key: resume.key, itemId: item.id, title: "Fix add()", text: resume.text, agent: null, maxSteps: resume.maxSteps, fetchBase: null, untrusted: resume.untrusted, fresh: resume.fresh });
 		await receive(db as never, delivery!, T0);
 		const row = (await inboxRow(db as never, resume.key))!;
 		const freed = itemTurnText(row, row.text, null);

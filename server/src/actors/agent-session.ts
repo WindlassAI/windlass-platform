@@ -4409,6 +4409,7 @@ fi`, { signal, timeoutMs: 5000 });
 			await sendOutbox(c, meta.uid);
 		}
 		let outcome: TurnOutcome;
+		let stepLimit: number | undefined;
 		let message: string | null = null;
 		if (caps.events === "acp") {
 			const reason = result?.acp?.stopReason;
@@ -4422,7 +4423,8 @@ fi`, { signal, timeoutMs: 5000 });
 			} else if (result?.acp?.stepLimit !== undefined && !result.aborted && !signal.aborted) {
 				// The platform stopped the turn at its step limit (platform-steps.ts), as Windlass stops at its own.
 				outcome = "unresolved";
-				note(c, turn, "warn", stepLimitNote(harnessName(meta.harness), result.acp.stepLimit));
+				stepLimit = result.acp.stepLimit;
+				note(c, turn, "warn", stepLimitNote(harnessName(meta.harness), stepLimit));
 			} else if (reason === "cancelled" || result?.aborted || signal.aborted) outcome = "stopped";
 			// Checks the platform ran still failed, or could not start: the turn ends as Windlass's does then.
 			else if (reason === "end_turn") outcome = result?.acp?.checks === "unresolved" ? "unresolved" : "succeeded";
@@ -4453,6 +4455,7 @@ fi`, { signal, timeoutMs: 5000 });
 			} else if (reported !== undefined && WINDLASS_OUTCOMES.includes(reported)) {
 				// Windlass's own outcome stands. If the turn failed, its events in the timeline say how.
 				outcome = reported;
+				if (typeof summary?.stepLimit === "number") stepLimit = summary.stepLimit;
 				// Unless the platform failed it: the turn's access token ran out and could not be replaced. Windlass's
 				// events say that in words meant for whoever hands the token in; the sandbox layer's sentence is for the user.
 				if (failure?.reason === "token_unavailable" && said) message = said;
@@ -4560,7 +4563,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
-		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, stepLimit, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -5431,7 +5434,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
  * used), and its slot is given back, both in one transaction with the meta. A turn whose sandbox could
  * not be had because the deployment's are all in use waits for a slot again instead.
  */
-async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
+async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; stepLimit?: number; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
 	const { row } = item;
 	if ((item.full !== null || item.machineAway) && !item.started) {
 		await serial(c, () =>
@@ -5457,6 +5460,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
 		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
+	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (item.sandboxFailed) fact.sandboxFailed = item.sandboxFailed;
 	if (item.outOfMemory) fact.outOfMemory = item.outOfMemory;

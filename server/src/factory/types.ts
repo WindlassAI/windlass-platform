@@ -313,7 +313,7 @@ export interface TurnPlan {
 	text: string;
 	/** Range occupied by the quoted batch. A held batch's line locations are rendered against the head at handoff. */
 	feedbackQuote?: { head: string | null; start: number; length: number };
-	/** False: another attempt of the current step (after an interruption). */
+	/** False: another attempt of the current step. */
 	newStep: boolean;
 	/** The round the turn counts in (`Run.rounds`, shown and never capped); "interruptions": the step's cut-off turns, counted when they end. */
 	charge: "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | null;
@@ -424,6 +424,8 @@ export type Fact =
 			at: number;
 			key: string;
 			outcome: TurnOutcome;
+			/** The configured limit when the harness ended this turn at its step limit. */
+			stepLimit?: number;
 			verified: Verified | null;
 			flags: VerifiedFlag[];
 			/** Whether there is something to push: the workspace or local commits differ from what GitHub has of the branch (from the base, before the first push). */
@@ -463,7 +465,7 @@ export type Fact =
 			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
+	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
