@@ -265,5 +265,5 @@ export async function readSchedule(db: Pick<RawAccess, "execute">, project: stri
 export function environmentView(row: EnvironmentRow, inputs: EnvironmentInputs, placeName: string, nextAt: number | null): RepositoryEnvironment {
 	const state = stateOf(row, inputs);
 	const newer = row.attempt && (!row.ready || row.attempt.startedAt > row.ready.startedAt) ? row.attempt : null;
-	return { place: row.place, placeName, state, ready: row.ready, attempt: newer, note: state === "stale" ? staleReason(row, inputs) : row.note, nextAt: row.dueAt ?? nextAt };
+	return { place: row.place, placeName, state, ready: row.ready, attempt: newer, note: row.note ?? (state === "stale" ? staleReason(row, inputs) : null), nextAt: row.dueAt ?? nextAt };
 }

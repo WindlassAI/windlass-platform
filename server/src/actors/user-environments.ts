@@ -162,6 +162,7 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 		session = await host.startBuild({ project: due.project, place: due.place, ...sandbox, trigger: due.trigger, repositoryId: repoOf(due.project) });
 	} catch (error) {
 		// The user's running-agent limit, daily sandbox time, a full machine: the same refusals any session gets.
+		console.log(`[wlp] environment.waiting uid=${host.uid} project=${due.project} place=${due.place}: ${error instanceof Error ? error.message.slice(0, 200) : "refused"}`);
 		return later(error instanceof Error ? error.message.slice(0, 300) : "The build could not start.");
 	}
 	await writeEnvironment(host.db, { ...row, attempt, session, note: null, dueAt: null, dueTrigger: null, firstPush: null });

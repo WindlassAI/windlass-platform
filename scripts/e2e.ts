@@ -4510,10 +4510,14 @@ async function preparedSessions(server: Server) {
 		await user.saveRepositorySetup({repositoryId:repo.id, command});
 		// Only a prepared environment's build saves an image (environments.ts): ask for one and wait for how it ends.
 		async function build(): Promise<RepositoryEnvironment> {
+			const asked = Date.now();
 			await user.rebuildEnvironment({ repositoryId: repo.id, place: "hosted" });
 			return await waitFor("the environment build", async () => {
 				const env = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
-				return env && env.state !== "building" && env.attempt?.finishedAt !== null ? env : undefined;
+				// A build that could not start says why in its note; it would only be tried again half an hour later.
+				if (env && !env.attempt && env.note && env.note !== "Not built yet.") throw new Error("The build did not start: " + env.note);
+				if (env?.attempt) return env.attempt.finishedAt !== null && env.attempt.startedAt >= asked ? env : undefined;
+				return env?.ready && env.ready.startedAt >= asked ? env : undefined;
 			}, 10 * 60_000, 2000);
 		}
 		async function turn(hit: boolean, secret = false, branch = "main") {
