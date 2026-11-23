@@ -332,10 +332,16 @@
 .start-box:has(.start-text:focus) .start-keys {
 	opacity: 1;
 }
+/*
+ * The row wraps rather than squeezing a pill below its text: a work item's row (kind, notes, agent, place,
+ * repository, criteria, Plan first, File) is wider than the box at most desktop widths, and a pill cut
+ * below its text draws it over the next one. What does not fit goes to a second line, File still at the end.
+ */
 .start-tools {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 4px;
+	gap: 6px 4px;
 	min-width: 0;
 	padding: 8px;
 	container-type: inline-size;
@@ -343,6 +349,7 @@
 .start-tools > .ui-pill,
 .start-tools .ui-tooltip-anchor + .ui-pill {
 	flex: 0 1 auto;
+	overflow: hidden;
 }
 /* A pill's value stays whole (long names end in an ellipsis at their own cap); its quieter part gives way first. */
 .start-tools .ui-pill-value {
@@ -563,6 +570,7 @@
 	display: none;
 }
 .start-phone .start-tools {
+	flex-wrap: nowrap;
 	gap: 6px;
 	padding: 6px;
 }
