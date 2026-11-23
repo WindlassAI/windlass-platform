@@ -354,7 +354,7 @@ describe("turns that do not go well", () => {
 	});
 
 	it("plays a call that is refused", async () => {
-		const { api, record } = await freshSession("docker-hardened");
+		const { api, record } = await freshSession("docker-windlass-sandbox");
 		await after(400, api.prompt({ text: "Run it with nobody to approve it." }));
 		await vi.advanceTimersByTimeAsync(20_000);
 		const [call] = toolBlocks(record.view?.turns[0] as never);

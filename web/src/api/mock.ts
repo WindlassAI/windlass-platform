@@ -2668,7 +2668,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			repository: sessionRepository("acme", "harbor", "release/2.4"),
 			pull: { number: 38, state: "open", hoursAgo: 20 },
 		});
-		history("unattended", "Run a command with nobody to approve it", "docker-hardened", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
+		// Recorded in Auto, where Windlass asks before a command runs outside its sandbox: on the profile that has Auto, so the panel says what the run did.
+		history("unattended", "Run a command with nobody to approve it", "docker-windlass-sandbox", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
 		history("probe", "Check what the sandbox allows", "docker-windlass-sandbox", 2 * HOUR, [{ text: "check the sandbox", script: "sandboxed" }]);
 		history(
 			"add-test",
