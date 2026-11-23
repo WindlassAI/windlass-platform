@@ -21,7 +21,7 @@ A work item runs in one of two ways:
 6. Where the platform offers orchestration, the **File** button says how the item runs: **File · Plan first** or **File · Quick**. Its menu switches between them: **Plan first**, where a planner splits it into subtasks you approve, then they run; or **Quick**, where one agent goes straight to a pull request. Your browser remembers the last choice.
 7. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
 
-To file it without starting it, choose **File as a draft** in the **File** menu, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page. **Options**, the sliders icon, leads to the repository's saved settings, such as screenshots.
+To file it without starting it, choose **File as a draft** in the **File** menu, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page. **Options**, the sliders icon, leads to the repository's saved settings, such as screenshots. Where the platform offers [hosted sizes](/docs/start-an-agent#hosted-sizes), it also lists them with their price an hour: a hosted work item runs on **Standard** (2 vCPU, 4 GiB) unless you choose another here or the repository saved one. Its reviewer runs on the same size. An item's hosted time and the daily allowance are in seconds, whatever the size.
 
 ### From a repository
 
@@ -188,6 +188,10 @@ An item also stops and asks you when it is stuck. There is no cap on rounds of f
 
 A turn whose sandbox could not be prepared is not a cut-off: the agent never ran. The item tries that turn once more by itself. If it fails again, the item asks you and says what went wrong. **Try again** uses the same sandbox. **Start on a fresh sandbox** removes the old sandbox and starts the step in a new one, from the repository on GitHub. Anything that was not pushed from the old sandbox is lost.
 
+When a turn's hosted sandbox runs out of memory and the turn does not finish, the item asks you, with the figures: "The sandbox ran out of memory (942 of 977 MiB)." **Go on in a larger sandbox** removes the sandbox and goes on in a new one of the next size, from the repository on GitHub; what was not pushed is lost. **Try again** stays in the same size. On the largest size, the item says so and suggests having the agent's commands use less memory at once. A turn that finished even though a program in it was killed for memory goes on, and its timeline says what happened.
+
+A command the agent runs may take at most what is left of its turn (a turn is limited to 45 minutes). Windlass asks for a command's time limit itself; a longer one is refused with how much is left, and the agent runs it again with less. So a command that hangs, for example in a sandbox out of memory, cannot hold the turn to its end. Claude Code, OpenCode and Codex keep their own limits: Claude Code stops a command after 10 minutes at most by default.
+
 When a step goes on in an agent that no longer has its conversation, for example in a new sandbox or after its memory was lost, the agent is given the whole task again, not "continue from where you were". It is also told that its earlier conversation and any work that was not pushed are gone. The timeline says when that happened.
 
 The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently, and no choice throws away the sandbox's work.
@@ -327,7 +331,7 @@ The plan says what the feature is for, what it must do, what is left out of it a
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
-A subtask can request up to four slots on a runner that reports per-slot CPU and memory. Older runners support one slot per subtask. A feasible machine that is busy or offline can be approved, and the subtask waits for capacity.
+A subtask can request up to four slots on a runner that reports per-slot CPU and memory. Older runners support one slot per subtask. On hosted, the CPUs and memory a subtask names choose the least [hosted size](/docs/start-an-agent#hosted-sizes) that has them, up to 4 vCPU and 8 GiB; a subtask that names none runs on the feature's size, **Standard** by default. A feasible machine that is busy or offline can be approved, and the subtask waits for capacity.
 
 The planner may ask you questions with the plan. It may also say that one item is enough. The item shows the planner’s reason and offers **Approve for one implementer** or **Ask for subtasks**.
 

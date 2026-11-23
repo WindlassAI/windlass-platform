@@ -150,7 +150,7 @@ On a deployment that turns it on, a Windlass turn running on your machine can ou
 
 ### CPU and memory
 
-On a machine with one or two CPUs, one slot defaults to half the available CPUs, 1536 MiB of memory and 512 processes. Larger machines reserve CPU and memory for the host before dividing resources into slots. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget.
+On a machine with one or two CPUs, one slot defaults to half the available CPUs, 1536 MiB of memory and 512 processes. Larger machines reserve CPU and memory for the host before dividing resources into slots. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget. A slot's memory limits what an agent's commands can use at once, as a hosted size does: a large build or test suite can run a 1.5 GiB slot out of memory. Give such work a larger `--slot-memory`, or let a subtask take more slots.
 
 ## Network access
 

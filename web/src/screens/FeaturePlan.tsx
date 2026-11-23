@@ -371,7 +371,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				</p>
 			) : null}
 			{/* Said only of a plan that sizes a subtask: a runner that reports no slots cannot give it more than one. */}
-			{!single && plan.subtasks.some((task) => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) ? <p className="field-note">Sizing beyond one slot is not supported by current runners.</p> : null}
+			{!single && plan.subtasks.some((task) => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) ? <p className="field-note">On hosted, a subtask's CPUs and memory choose the least sandbox size that has them, at most 4 vCPU and 8 GiB; on a machine, its slots.</p> : null}
 		</section>
 	);
 }

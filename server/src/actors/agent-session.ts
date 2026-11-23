@@ -169,6 +169,10 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 	WIDE_HOSTS,
+	HOSTED_SIZES,
+	type HostedSize,
+	isHostedSize,
+	outOfMemoryWords,
 } from "../contract.js";
 import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../blocked-network.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
@@ -182,7 +186,7 @@ import { type PublishEvidence, PullProblem, type Published, type StoredRepositor
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
-import type { AccessToken, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { AccessToken, OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import type { ConversationRecord } from "../runner/channel.js";
 import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, readConversation, saveCheckpoint, saveReceived } from "../runner/journal.js";
@@ -319,6 +323,10 @@ interface SessionMeta {
 	environmentBuild?: EnvironmentBuildOrigin;
 	/** The validated environment the current sandbox started from (SessionSummary.environment); null once it has another. */
 	environment?: SessionSummary["environment"] | null;
+	/** Hosted, where the layer offers sizes: what its sandboxes are made in. A sandbox keeps its size; another is a new sandbox. */
+	hostedSize?: HostedSize;
+	/** The sandbox whose running out of memory a turn's end noted: its restart at the next connect is not asked about again. */
+	memoryNoted?: string;
 	uid: string;
 	sessionId: string;
 	demo: boolean;
@@ -563,7 +571,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its hosted sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
 }
 
 /**
@@ -834,6 +842,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		title: meta.title,
 		place: meta.place,
 		profile: meta.profile,
+		...(meta.hostedSize && { hostedSize: meta.hostedSize }),
 		model: meta.model,
 		mode: meta.mode,
 		availableModes: meta.availableModes,
@@ -3772,6 +3781,40 @@ function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | nu
 	});
 }
 
+/** The memory figures with the next size the layer offers above the one that ran out, if any. */
+function withLarger(layer: SandboxLayer, memory: OutOfMemory): OutOfMemory {
+	const offered = layer.sandboxes.sizes?.().map((size) => size.id) ?? [];
+	const larger = HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(memory.size ?? "large") + 1).find((size) => offered.includes(size));
+	return larger ? { ...memory, larger } : memory;
+}
+
+/**
+ * At the end of a turn on a guest of its own (E2B): whether its memory ran out during the turn. Its kernel killed a
+ * program for memory (its own count went up), or it no longer answers and E2B's samples show its memory used up.
+ * Said in the turn's row, with a larger size where there is one; a work item's turn carries it to the item.
+ */
+async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, start: { oomKills: number; totalMiB: number }, began: number, turn: number): Promise<void> {
+	try {
+		const end = await sandbox.memoryEvents?.().catch(() => null);
+		const killed = end ? end.oomKills - start.oomKills : 0;
+		// A guest that answers and whose kernel killed nothing did not run out; one that no longer answers is asked of E2B.
+		if (end && killed <= 0) return;
+		const peak = (await sandbox.memoryPeak?.(began).catch(() => null)) ?? null;
+		if (peak === null && !end) return;
+		const memory: OutOfMemory = peak ?? { usedMiB: end!.totalMiB, totalMiB: end!.totalMiB, ...(meta.hostedSize && { size: meta.hostedSize }) };
+		const layer = await layerOf(c, meta);
+		const offered = layer.sandboxes.sizes?.().map((size) => size.id);
+		const what = end ? ` Its kernel stopped ${killed === 1 ? "a program" : `${killed} programs`} to free memory during this turn: a command that ended with "Killed" or exit code 137 was one of them.` : " It stopped answering commands.";
+		note(c, turn, "warn", `${outOfMemoryWords(memory, offered)}${what}`);
+		console.log(`[wlp] sandbox.out_of_memory session=${meta.sessionId} turn=${turn} size=${meta.hostedSize ?? "small"} used=${memory.usedMiB} total=${memory.totalMiB} killed=${killed}`);
+		if (active.item) active.item.outOfMemory = withLarger(layer, memory);
+		// Its next connect finds it silent and restarts it: the item has been told of this sandbox's memory already.
+		meta.memoryNoted = sandbox.id;
+	} catch (error) {
+		c.log.warn({ msg: "could not read the sandbox's memory at the turn's end", error: String(error) });
+	}
+}
+
 async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void, machine: ReturnType<typeof machineActor> | null): Promise<void> {
 	const startedAt = Date.now();
 	const turn = active.number;
@@ -3830,6 +3873,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let used: SandboxHandle | null = null;
 	/** While `openSandbox` runs: an error then is the sandbox's, not the agent's (`sandboxFailed`). */
 	let opening = false;
+	/** When the turn's limit stops it, ms since the epoch: set when its clock starts. */
+	let turnEndsAt = Date.now() + TURN_TIMEOUT_MS;
+	/** `TurnSandbox.memoryEvents` when the sandbox was opened. */
+	let memoryAtStart: { oomKills: number; totalMiB: number } | null = null;
+	const turnBegan = Date.now();
 	/** The meter's use when the turn ended (`meterAfterTurn`). */
 	let meterUse: string | null = null;
 	/** A request of the agent's to publish or push, kept until it is handled: the turn does not close under it. */
@@ -3864,6 +3912,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			}
 		}
 		clock = c.vars.startClock = startClock(c, meta, turn, machine ? Date.now() - waiting : null);
+		turnEndsAt = Date.now() + TURN_TIMEOUT_MS;
 		limit = setTimeout(() => {
 			if (!open) return;
 			note(c, turn, "warn", `This turn ran for ${duration(TURN_TIMEOUT_MS)}, which is the limit, so it was stopped.`);
@@ -3900,6 +3949,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			throw new TurnProblem("The environment build ended.");
 		}
 		used = sandbox;
+		// The guest's own count of programs its kernel killed for memory, to compare at the turn's end (E2B only).
+		memoryAtStart = (await sandbox.memoryEvents?.().catch(() => null)) ?? null;
+		if (sandbox.outOfMemory && active.item && meta.memoryNoted !== sandbox.id) {
+			// It had run out of memory before this turn, and was restarted: in the same size the same commands run it out again,
+			// so a work item asks its person first, where a larger size is offered. A person's own agent goes on: they read the note.
+			active.item.outOfMemory = withLarger(layer, sandbox.outOfMemory);
+			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
+		}
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
 		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
 			c.log.warn({ msg: "Provider login generation unavailable for this turn" });
@@ -4127,6 +4184,8 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				prompt: notes.text + text,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
+				// A command's timeout is held to what is left of the turn (windlass-config.ts `TURN_TIME_HOOK`).
+				endsAt: turnEndsAt,
 				...(handling.kind === "marked" && ((sources) => ({ untrusted: sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(sources)); } }))(handling.sources)),
 				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
 				...(item && { unaskedUntilTainted: true }),
@@ -4249,6 +4308,7 @@ fi`, { signal, timeoutMs: 5000 });
 	sealTurn(c, meta, active);
 	// A push for the agent that was under way when the turn ended is finished first: the turn does not close under it.
 	if (active.publishes.size > 0) await Promise.allSettled([...active.publishes]);
+	if (used && memoryAtStart && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
 
 	try {
 		const caps = capabilitiesOf(meta.harness);
@@ -4981,6 +5041,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	}
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (item.sandboxFailed) fact.sandboxFailed = item.sandboxFailed;
+	if (item.outOfMemory) fact.outOfMemory = item.outOfMemory;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () => c.db.execute("INSERT OR REPLACE INTO attachment_filing VALUES (?,?)", row.key, JSON.stringify(fact)));
@@ -5091,6 +5152,7 @@ export const agentSession = actor({
 				place: input.place,
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
 				...(input.size && { size: input.size }),
+				...(input.place.kind === "hosted" && isHostedSize(input.hostedSize) && { hostedSize: input.hostedSize }),
 				harness: input.harness,
 				profile: input.profile,
 				...initialSessionModes(input.profile, input.harness, !!input.origin, input.codexModes ?? input.harnessOptions?.modes),
@@ -5913,7 +5975,7 @@ export const agentSession = actor({
 		 * that was not used for long is, the timeline says who did it and what became of the agent's
 		 * memory, and the next prompt starts a new sandbox. Refused while the session works.
 		 */
-		internalFreeSandbox: async (c, throughReviewRun?: number): Promise<{ freed: boolean }> => {
+		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean }> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
@@ -5935,6 +5997,8 @@ export const agentSession = actor({
 				// its place is given back here too: `removeSandbox` did not run.
 				await sweepSandboxes(c, meta, layer);
 				if (!id) await releasePlace(c, meta);
+				// A larger size for the next sandbox (a work item whose sandbox ran out of memory): only a new sandbox has another size.
+				if (meta.place.kind === "hosted" && isHostedSize(hostedSize)) meta.hostedSize = hostedSize;
 				publish(c);
 				await persist(c);
 			})();

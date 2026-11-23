@@ -45,7 +45,7 @@ export function approvalText(plan: FeaturePlan): string {
 			`Tested together in ${final.runFrom}: ${final.command} (inputs ${final.inputs.join(", ")}; at most ${final.timeoutSeconds} seconds; required cases: ${final.requiredCases.join("; ")}).`,
 			plan.releaseGate === "wait" ? "Ends when the owner's release is adopted." : "Ends at a tested set of pull requests and a release request; adopting a release is a separate feature.",
 		] : []),
-		...(plan.subtasks.some(s => s.needs?.cpus !== undefined || s.needs?.memoryGiB !== undefined) ? ["Sizing beyond one slot is not supported by current runners."] : []),
+		...(plan.subtasks.some(s => s.needs?.cpus !== undefined || s.needs?.memoryGiB !== undefined) ? ["On hosted, cpus and memoryGiB choose the least sandbox size that has them, at most 4 vCPU and 8 GiB; on a machine, its slots."] : []),
 		"Subtasks together — " + words({ tokens: planTokens(plan) }) + " (cost-weighted: cached input counts at a tenth)", "Feature budget with planning, summary and review — " + words(plan.budget), "At most per subtask — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }

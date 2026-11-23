@@ -1,8 +1,8 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
 import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
 import { nextUtcDay, usesPlatformModel } from "../usage.js";
-import { sandboxSlots } from "../contract.js";
-import type { ChildPlacement, EgressMode, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
+import { HOSTED_SIZE_SPECS, hostedSizeFor, sandboxSlots } from "../contract.js";
+import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
@@ -30,6 +30,8 @@ export interface PlacementInventory {
 	dailyTokenWait?: string | null;
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
+	/** The hosted sizes the deployment offers (`Sandboxes.sizes`), smallest first. Absent: one size, which takes no `cpus` or `memoryGiB`. */
+	hostedSizes?: HostedSize[];
 	/** What hosted sandboxes may reach (`Sandboxes.egress`); `none` takes no repository work. */
 	hostedEgress?: EgressMode;
 	defaultProfile?: SandboxProfileId;
@@ -179,12 +181,16 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };
 		if (!inventory.hostedProfiles.length || (needs.profile && !inventory.hostedProfiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };
-		if (needs.tags?.length || needs.egress || needs.cpus || needs.memoryGiB)
+		if (needs.tags?.length || needs.egress)
 			return { refused: "hosted does not report the required machine capabilities", permanent: true };
+		// `cpus` and `memoryGiB` choose a hosted size: the least that has them. Absent: the item's own size (standard by default).
+		const sized = hostedSizeFor(needs);
+		if ((needs.cpus || needs.memoryGiB) && !sized) return { refused: `hosted sandboxes have at most ${HOSTED_SIZE_SPECS.large.cpus} vCPU and ${HOSTED_SIZE_SPECS.large.memoryMiB / 1024} GiB`, permanent: true };
+		if (sized && !(inventory.hostedSizes ?? ["small"]).includes(sized)) return { refused: `hosted has no ${sized} sandbox (${HOSTED_SIZE_SPECS[sized].cpus} vCPU, ${HOSTED_SIZE_SPECS[sized].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
 		if (limited) return waiting(limited, "hosted");
 		if (tokenWait) return { wait: tokenWait, dailyCap: true };
 		const profile = needs.profile ?? inventory.hostedProfiles.find(p => p === inventory.defaultProfile);
-		return { decision: { name: "hosted", place, units: 1, reason, sendSecrets: true, profile }, score: bonus };
+		return { decision: { name: "hosted", place, units: 1, reason, sendSecrets: true, profile, ...(sized && inventory.hostedSizes && { hostedSize: sized }) }, score: bonus };
 	}
 	const m = inventory.machines.find(m => m.machineId === place.machineId);
 	if (!m) return { refused: (name ? "‘" + name + "’" : "The selected machine") + " is no longer one of your machines.", permanent: true };

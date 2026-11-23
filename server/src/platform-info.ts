@@ -78,6 +78,9 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	// Left out where hosted sandboxes have no network mode, or it is `open`: the answer is then what it was before modes.
 	const hostedEgress = layer.sandboxes.egress?.();
 	if (hostedEgress !== undefined && hostedEgress !== "open") info.hostedEgress = hostedEgress;
+	// Left out where hosted sandboxes have one size: the web app then shows nothing of sizes.
+	const sizes = layer.sandboxes.sizes?.() ?? [];
+	if (sizes.length > 1) info.hostedSizes = sizes;
 	// Left out without a GitHub App: the answer is then what it was before there could be one.
 	const app = githubInfo();
 	if (app) info.github = app;

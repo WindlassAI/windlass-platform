@@ -10,7 +10,7 @@
 
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -25,6 +25,8 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
 	size?: number;
+	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. */
+	hostedSize?: HostedSize;
 	mode?: string;
 	harness?: HarnessId;
 	harnessOptions?: HarnessOptions;
@@ -61,10 +63,10 @@ export type EnvironmentBuildResult = Omit<EnvironmentBuild, "trigger" | "started
 export interface EnvironmentBuildOrigin { project: string; place: string; screenshots: boolean }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(size && { size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots) || session.environmentBuild?.screenshots === true };
+	return { uid, sessionId, profile, ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots) || session.environmentBuild?.screenshots === true };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -197,7 +199,7 @@ export interface SessionInternal {
 	/** Destroys the sandbox, then the actor. */
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */
-	internalFreeSandbox(throughReviewRun?: number): Promise<{ freed: boolean }>;
+	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean }>;
 	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
 	internalDeliver(input: Delivery): Promise<void>;
 	/** The user's turn queue gives the delivery of `key` its slot. */

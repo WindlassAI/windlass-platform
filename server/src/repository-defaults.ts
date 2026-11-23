@@ -21,7 +21,7 @@
  */
 
 import { modelRefusal } from "./account-models.js";
-import { MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId } from "./contract.js";
+import { type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, isHostedSize } from "./contract.js";
 
 /** Thrown for defaults that cannot be saved; `message` is fit to show, `code` is the UserError's. */
 export class DefaultsProblem extends Error {
@@ -39,6 +39,7 @@ export interface DefaultsChange {
 	screenshots?: boolean;
 	profile?: SandboxProfileId | null;
 	model?: string | null;
+	hostedSize?: HostedSize | null;
 }
 
 /**
@@ -46,8 +47,8 @@ export interface DefaultsChange {
  * null, or a sandbox this deployment can run and one of the user's models (account-models.ts). Throws
  * DefaultsProblem otherwise.
  */
-export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList): DefaultsChange {
-	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { profile?: unknown; model?: unknown; screenshots?: unknown };
+export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList, sizes: readonly HostedSize[] = []): DefaultsChange {
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { profile?: unknown; model?: unknown; screenshots?: unknown; hostedSize?: unknown };
 	const change: DefaultsChange = {};
 	if (input.screenshots !== undefined) {
 		if (typeof input.screenshots !== "boolean") throw new DefaultsProblem("bad_input", "Screenshots must be true or false.");
@@ -67,6 +68,11 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 		if (refusal !== null) throw new DefaultsProblem("bad_model", refusal);
 		change.model = input.model as string | null;
 	}
+	if (input.hostedSize !== undefined) {
+		// `sizes`: what the deployment offers now. A size saved earlier that it no longer offers is read as the largest below it.
+		if (input.hostedSize !== null && (!isHostedSize(input.hostedSize) || !sizes.includes(input.hostedSize))) throw new DefaultsProblem("bad_input", sizes.length > 1 ? `Choose one of the hosted sizes: ${sizes.join(", ")}.` : "This deployment has one hosted size.");
+		change.hostedSize = input.hostedSize;
+	}
 	return change;
 }
 
@@ -83,14 +89,21 @@ export const DEFAULTS_TABLE = `
 		screenshots INTEGER NOT NULL DEFAULT 0,
 		profile TEXT,
 		model TEXT,
-		updated_at INTEGER NOT NULL
+		updated_at INTEGER NOT NULL,
+		hosted_size TEXT
 	)
 `;
 
+/** A table from before hosted sizes gets their column. */
+export async function migrateDefaults(db: DefaultsDb): Promise<void> {
+	const columns = await db.execute<{ name: string }>("PRAGMA table_info(repository_defaults)");
+	if (!columns.some((column) => column.name === "hosted_size")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN hosted_size TEXT");
+}
+
 /** The defaults saved for a project; none when there is no row. */
 export async function readDefaults(db: DefaultsDb, project: string): Promise<RepositoryDefaults> {
-	const [row] = await db.execute<{ profile: string | null; model: string | null; screenshots: number; updated_at: number }>("SELECT profile, model, screenshots, updated_at FROM repository_defaults WHERE project = ?", project);
-	return { screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, updatedAt: row?.updated_at ?? null };
+	const [row] = await db.execute<{ profile: string | null; model: string | null; screenshots: number; updated_at: number; hosted_size: string | null }>("SELECT profile, model, screenshots, updated_at, hosted_size FROM repository_defaults WHERE project = ?", project);
+	return { screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, hostedSize: isHostedSize(row?.hosted_size) ? row.hosted_size : null, updatedAt: row?.updated_at ?? null };
 }
 
 /**
@@ -99,19 +112,20 @@ export async function readDefaults(db: DefaultsDb, project: string): Promise<Rep
  * is removed, and so are the rows beyond what one user may keep.
  */
 export async function saveDefaults(db: DefaultsDb, project: string, label: string, change: DefaultsChange, now: number): Promise<RepositoryDefaults> {
-	const columns = (["profile", "model", "screenshots"] as const).filter((column) => change[column] !== undefined);
+	const columns = (["profile", "model", "screenshots", "hostedSize"] as const).filter((column) => change[column] !== undefined).map((field) => (field === "hostedSize" ? "hosted_size" : field));
 	if (columns.length > 0) {
 		await db.execute(
-			`INSERT INTO repository_defaults (project, label, profile, model, screenshots, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+			`INSERT INTO repository_defaults (project, label, profile, model, screenshots, hosted_size, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (project) DO UPDATE SET ${columns.map((column) => `${column} = excluded.${column}`).join(", ")}, label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, updated_at = excluded.updated_at`,
 			project,
 			label,
 			change.profile ?? null,
 			change.model ?? null,
 			change.screenshots === true ? 1 : 0,
+			change.hostedSize ?? null,
 			now,
 		);
-		await db.execute("DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0", project);
+		await db.execute("DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0 AND hosted_size IS NULL", project);
 		// Somebody who saves for one repository after another leaves no more than this many rows.
 		await db.execute("DELETE FROM repository_defaults WHERE project NOT IN (SELECT project FROM repository_defaults ORDER BY updated_at DESC, project LIMIT ?)", MAX_REPOSITORY_DEFAULTS);
 	}

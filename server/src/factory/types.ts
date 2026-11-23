@@ -14,7 +14,8 @@ import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
-import type { ChoiceId, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
+import type { OutOfMemory } from "../sandbox/api.js";
+import type { ChoiceId, HostedSize, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
 import type { CiReading, CiState } from "../github/ci.js";
 
@@ -447,9 +448,14 @@ export type Fact =
 			 * session's sentence. The agent never ran, so it is no cut-off: the step is tried once more, then the person is asked.
 			 */
 			sandboxFailed?: string;
+			/**
+			 * Set when the turn's hosted sandbox ran out of memory (E2B's metrics, or its kernel killed programs for
+			 * memory): how much of how much, in MiB, and the size. The item asks whether to go on in a larger one.
+			 */
+			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; spend: TurnSpend }
+	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
@@ -501,7 +507,7 @@ export type Effect =
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }
 	/** Remove the session's sandbox (the person chose a fresh one); `sandbox_freed` with `plan` follows. */
-	| { kind: "fresh_sandbox"; key: string; plan: TurnPlan; to?: "review" }
+	| { kind: "fresh_sandbox"; key: string; plan: TurnPlan; to?: "review"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */

@@ -167,6 +167,23 @@ The default template is `windlass-platform-sandbox`. Build `windlass-platform-sa
 `WLP_E2B_TEMPLATE` and `WLP_E2B_SHOTS_TEMPLATE` override their respective names for both build and server.
 Use `--print` with either variant to inspect it locally.
 
+**Sizes.** E2B fixes a sandbox's CPUs and memory when its template is built (`Sandbox.create` takes neither), so
+each hosted size is a template of its own, built from the same Dockerfile with `WLP_E2B_SIZE`:
+
+| Size | Template (shots variant adds `-shots`) | Size | Build |
+|---|---|---|---|
+| small | `windlass-platform-sandbox` | 1 vCPU, 1 GiB | `sandbox/e2b/build.sh` |
+| standard | `windlass-platform-sandbox-standard` | 2 vCPU, 4 GiB | `WLP_E2B_SIZE=standard sandbox/e2b/build.sh` |
+| large | `windlass-platform-sandbox-large` | 4 vCPU, 8 GiB | `WLP_E2B_SIZE=large sandbox/e2b/build.sh` |
+
+Build each with `WLP_SANDBOX_VARIANT=shots` too where screenshots are on. The server offers a size only once
+`WLP_E2B_SIZES` lists it (default `small`): set `WLP_E2B_SIZES=small,standard,large` after building them. A
+size asked for that is not listed gets the largest listed below it. Work items default to standard, a person's
+agents to the repository's saved size, else small. `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE` and
+`WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `_LARGE` override the names. Post-setup snapshots are per template, so per
+size. The Hobby plan allows up to 8 vCPUs and 8 GiB, 10 sandboxes at once and one hour without a pause, so
+large fits; a larger size uses the credit faster.
+
 `sandbox/e2b/build.sh --print` shows what E2B would be asked to build and needs no key. The template is made
 from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a container has: the user `agent`,
 `/workspace`, Windlass's data directory, `wlp-run`, git, bubblewrap and Windlass. A server on E2B needs no
@@ -209,7 +226,7 @@ at once and one hour of running without a pause; every default is well inside th
 
 | What | How | Default |
 |---|---|---|
-| Size of a sandbox | the template's, set when it is built: `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` for `sandbox/e2b/build.sh` | 1 vCPU, 1024 MiB |
+| Size of a sandbox | the template's, one per size (`WLP_E2B_SIZE` for `sandbox/e2b/build.sh`), offered by `WLP_E2B_SIZES` | small: 1 vCPU, 1024 MiB |
 | Sandboxes running at once | `WLP_E2B_MAX_RUNNING`, counted from E2B's own list of the deployment's running sandboxes before one is created or resumed, and again after, so it holds across servers. At the cap the user reads: "This deployment runs at most 3 sandboxes at the same time, and all of them are in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended." A work item's turn is not refused at the cap: it waits, and is tried again after 30 seconds, then twice as long each time up to five minutes ([Work items](work-items.md)) | 3 |
 | A sandbox nobody uses | its own timeout at E2B, `WLP_E2B_IDLE_TIMEOUT_MS`: E2B pauses it by itself that long after the last use | 2 minutes |
 | A sandbox whose server died | while a turn runs, the server pushes the timeout out to `WLP_E2B_TURN_LEASE_MS` every third of it; a dead server stops doing so, and E2B pauses the sandbox | 3 minutes |

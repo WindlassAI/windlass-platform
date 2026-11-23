@@ -69,6 +69,10 @@ import { githubId } from "../../../server/src/github/ids.js";
 import { publishAsksEveryTime } from "../../../server/src/agent-publish.js";
 import { NetworkProblem, cleanEntries, expandEntries, networkLimit, networkPresets } from "../../../server/src/repository-network.js";
 import {
+	HOSTED_SIZE_SPECS,
+	isHostedSize,
+	type HostedSize,
+	type HostedSizeOption,
 	MAX_IDEMPOTENCY_KEY_CHARS,
 	MAX_PROMPT_CHARS,
 	MAX_SECRET_NAME_CHARS,
@@ -166,6 +170,8 @@ import { dayOf, reportedModelUsage, usesPlatformModel } from "../../../server/sr
 import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
 
 export interface MockOptions {
+	/** "one": a deployment whose hosted sandboxes have one size (Docker, or E2B with only small built): no sizes are shown. */
+	sizes?: "one";
 	/** Multiplies every wait: 1 is real time, 0 makes everything happen at once (still asynchronously). */
 	pace?: number;
 	now?: () => number;
@@ -334,6 +340,13 @@ const MOCK_HOLD_SECONDS = 5 * 60;
 const MOCK_START_SECONDS = 30;
 /** E2B's published price for the size the platform's template has. */
 const MOCK_PRICE = { usdPerSecond: 0.0000185, basis: "1 vCPU and 1,024 MiB of memory at E2B's published prices" };
+/** The hosted sizes, as an E2B deployment with all three templates built offers them (pricing.ts's rates). */
+const MOCK_SIZES: HostedSizeOption[] = (["small", "standard", "large"] as const).map((id) => {
+	const spec = HOSTED_SIZE_SPECS[id];
+	return { id, cpus: spec.cpus, memoryMiB: spec.memoryMiB, usdPerHour: 3600 * (spec.cpus * 0.000014 + (spec.memoryMiB / 1024) * 0.0000045) };
+});
+/** A hosted session's size, where none was recorded: a work item's standard, a person's own small. */
+const sizeOfSession = (summary: SessionSummary): HostedSize | undefined => (summary.place.kind !== "hosted" ? undefined : (summary.hostedSize ?? (summary.item ? "standard" : "small")));
 /** The thirteen days before today, the oldest first, in seconds: one of them at the limit. */
 const MOCK_HISTORY = [0, 3_120, 5_460, 1_890, 0, 0, 4_410, 7_200, 2_280, 6_630, 960, 0, 3_870];
 /** What the seeded sessions' sandboxes ran today, by session id; "probe" lost five minutes to a server that stopped under it. */
@@ -1526,6 +1539,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				seconds: (world.spent.get(session.summary.id) ?? 0) + (session.summary.id === "add-test" ? offset : 0),
 				unreportedSeconds: MOCK_UNREPORTED[session.summary.id] ?? 0,
 				heldSeconds: session.summary.place.kind === "hosted" && session.summary.sandbox === "running" ? MOCK_HOLD_SECONDS : 0,
+				...(sizeOfSession(session.summary) && { hostedSize: sizeOfSession(session.summary) }),
 			}))
 			.filter((row) => row.seconds > 0 || row.heldSeconds > 0)
 			.sort((a, b) => b.seconds + b.heldSeconds - (a.seconds + a.heldSeconds));
@@ -1545,9 +1559,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					busy: session.summary.status !== "idle",
 					repository: session.summary.repository ? `${session.summary.repository.owner}/${session.summary.repository.name}` : null,
 					pushed: session.pushed,
+					...(sizeOfSession(session.summary) && { hostedSize: sizeOfSession(session.summary) }),
 				}))
 				.sort((a, b) => b.usedAt - a.usedAt),
 			price: MOCK_PRICE,
+			hostedSizes: MOCK_SIZES,
 			memory: "copied",
 		};
 	}
@@ -2979,7 +2995,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const saved = world.defaults.get(repositoryId);
 		const enabled = world.screenshotsEnabled.get(repositoryId);
 		const updatedAt = saved || enabled !== undefined ? Math.max(saved?.updatedAt ?? 0, enabled ?? 0) : null;
-		return { screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt };
+		const size = hostedSizes.get(repositoryId) ?? null;
+		return { screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: updatedAt ?? (size ? now() : null) };
 	}
 
 	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {
@@ -3028,8 +3045,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
-	function saveDefaults(world: World, repositoryId: GithubId, { screenshots, ...change }: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): RepositoryDefaults {
+	/** Each repository's saved hosted size. */
+	const hostedSizes = new Map<GithubId, HostedSize>();
+	function saveDefaults(world: World, repositoryId: GithubId, { screenshots, hostedSize, ...change }: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
+		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: small, standard, large.", { reason: "bad_input" });
+		if (hostedSize === null) hostedSizes.delete(repositoryId);
+		else if (hostedSize !== undefined) hostedSizes.set(repositoryId, hostedSize);
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
@@ -3558,6 +3580,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: input.model || models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
 				if (harness !== "windlass" && options) session.summary = { ...session.summary, harnessModels: models };
+				if (!machine) {
+					if (input.hostedSize !== undefined && !isHostedSize(input.hostedSize)) throw new PlatformError("user", "Choose a hosted size: small, standard, large.", { reason: "bad_input" });
+					const saved = repository ? hostedSizes.get(repository.id) : undefined;
+					session.summary = { ...session.summary, hostedSize: input.hostedSize ?? saved ?? (itemStarts.has(asked) ? "standard" : "small") };
+				}
 				if (machine) {
 					session.summary = { ...session.summary, place: { kind: "machine", machineId: machine.machineId } };
 					session.machine = { profile, reach: null };
@@ -3692,7 +3719,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
 				return saveDefaults(world(), repositoryId, change);
@@ -4219,7 +4246,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode", "codex"] as Array<"claude" | "opencode" | "codex">, platformUrl: origin } };
-			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
+			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {

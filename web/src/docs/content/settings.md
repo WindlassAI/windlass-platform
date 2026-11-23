@@ -42,6 +42,8 @@ Choose a repository in the rail of **Agents**, then **Saved settings**. Each sec
 
 The sandbox and model a new agent on this repository starts from. You can still change them when you launch an agent. An agent that exists keeps what it was launched with.
 
+Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. Without a saved size, agents start on **Small** and work items on **Standard**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
+
 ### Screenshots
 
 **Take screenshots for work items** lets builders and reviewers attach pictures of the app to their work item reports. It is off by default. When it is on, new work item sandboxes include a browser where available.
@@ -86,7 +88,7 @@ It is rebuilt:
 - 2 minutes after you save the setup command or the checks;
 - when you choose **Rebuild** for a place, or **Rebuild all**.
 
-A build takes sandbox time like an agent, counts as one of your running agents while it runs, and is held to the same limits. When a limit is reached it waits, says why, and tries again later. It is built only on machines left on **Any feature** under [Let features use it](/docs/machines#let-features-use-it), never on one set to **When named** or **Never**, and waits while a machine is offline. A repository with saved secrets has no environment. Only Windlass sessions start from one.
+A build takes sandbox time like an agent, counts as one of your running agents while it runs, and is held to the same limits. When a limit is reached it waits, says why, and tries again later. It is built only on machines left on **Any feature** under [Let features use it](/docs/machines#let-features-use-it), never on one set to **When named** or **Never**, and waits while a machine is offline. A repository with saved secrets has no environment. Only Windlass sessions start from one. On this platform an environment is built in one [hosted size](/docs/start-an-agent#hosted-sizes), that of the repository's latest agent or work item here (else its saved size, else **Standard**), and only sandboxes of that size start from it: one of another size starts cold.
 
 ### Network
 
@@ -159,7 +161,7 @@ A hosted sandbox left behind by an agent that no longer exists takes no place, a
 
 ### Estimated cost
 
-Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
+Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. Where there are hosted sizes, **Sandbox time today** lists each size with its price an hour, and **Today by agent** names each agent's size and prices its time at that size. The daily allowance counts seconds the same whatever the size: a larger sandbox costs more, and uses no more of the allowance. Earlier days in the history are priced at the small size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
 
 ### Other sections
 

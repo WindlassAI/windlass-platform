@@ -44,7 +44,8 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
-import { MAX_ITEM_BODY_CHARS, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
+import type { OutOfMemory } from "../sandbox/api.js";
+import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
@@ -901,6 +902,18 @@ function sandboxFailed(c: Change, said: string, resume: TurnPlan): void {
 	ask(c, "sandbox_failed", text, [choice("again"), choice("fresh_sandbox"), ...handOverAny(c.item), choice("give_up")], null, resume);
 }
 
+/**
+ * The turn's hosted sandbox ran out of memory and the turn did not finish (`turn_ended.outOfMemory`): the person is
+ * asked, with the figures, whether to go on in a sandbox of the next size (`larger_sandbox`), which starts from the
+ * repository on GitHub, or in the same one.
+ */
+function outOfMemory(c: Change, memory: OutOfMemory, resume: TurnPlan): void {
+	const larger = memory.larger;
+	const text = `${outOfMemoryWords(memory, larger ? [larger] : [])} The agent's turn did not finish. ${larger ? `Go on in a ${larger} sandbox: it starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it. Or try again in the same one.` : "Try again, or give it up."}`;
+	ask(c, "out_of_memory", text, [...(larger ? [choice("larger_sandbox")] : []), choice("again"), ...handOverAny(c.item), choice("give_up")], null, resume);
+	if (larger && c.item.question) c.item.question.largerSize = larger;
+}
+
 const OUTCOME_WORDS: Partial<Record<TurnOutcome, string>> = { stopped: "was stopped", failed: "failed", interrupted: "was cut off", error: "could not run" };
 
 function spendTurn(c: Change, spend: TurnSpend, providerRefusal?: ItemProviderRefusal): void {
@@ -945,10 +958,13 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	// A turn whose tokens should count but were not reported stops the item: another turn would run unbounded by its token budget.
 	// One the session refused before the agent ran used none.
-	const unmeasured = fact.refused || fact.sandboxFailed ? null : unmeasuredTurn(fact.spend, itemAgent(item));
+	// A turn whose sandbox ran out of memory and did not finish: in the same size the same commands run it out again.
+	const memory = fact.outOfMemory && fact.outcome !== "succeeded" ? fact.outOfMemory : null;
+	const unmeasured = fact.refused || fact.sandboxFailed || (memory && fact.outcome === "error") ? null : unmeasuredTurn(fact.spend, itemAgent(item));
 	// The sandbox could not be prepared: the agent never ran, so nothing of the turn is judged and it is no cut-off.
 	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) });
 	delete step.sandboxFailures;
+	if (memory) return outOfMemory(c, memory, { ...IMPLEMENT, kind, text: `Your last turn ran the sandbox out of memory and did not finish. Carry on with the task, and keep the memory your commands use at once low (fewer tests or workers in parallel):\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) });
 	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
 	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
@@ -1417,6 +1433,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, reviewPlan(c));
 	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, { ...reviewPlan(c), newStep: false });
 	delete c.run.step.sandboxFailures;
+	if (fact.outOfMemory && fact.outcome !== "succeeded") return outOfMemory(c, fact.outOfMemory, { ...reviewPlan(c), newStep: false });
 	if (CUT_SHORT.has(fact.outcome)) {
 		c.run.step.interruptions += 1;
 		c.say(`The review ${OUTCOME_WORDS[fact.outcome]}.`);
@@ -1804,6 +1821,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	reply: "Answer the agent",
 	run_anyway: "Run it anyway",
 	fresh_sandbox: "Start on a fresh sandbox",
+	larger_sandbox: "Go on in a larger sandbox",
 };
 const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
 /**
@@ -1998,6 +2016,14 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			item.unsandboxed = sources(item.unsandboxed, outside);
 			c.say(runAnywayWords(itemAgent(item).harness, outside));
 			nextTurn(c, { ...resume, text: withNote(resume.text, note) });
+			break;
+		}
+		case "larger_sandbox": {
+			const larger = question.kind === "out_of_memory" ? question.largerSize : undefined;
+			if (larger === undefined || resume === null) return false;
+			c.say(`The sandbox is removed, and the step goes on in a new ${larger} one.`);
+			c.state(item.place.kind === "machine" ? "queued" : "working");
+			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: { ...resume, text: withNote(resume.text, note) }, hostedSize: larger, ...(resume.to === "review" && { to: "review" as const }) });
 			break;
 		}
 		case "fresh_sandbox":

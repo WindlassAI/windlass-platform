@@ -34,7 +34,7 @@
 
 import type { SnapshotSelection, SnapshotSource } from "./snapshot-key.js";
 
-import type { AcpContext, AcpUpdate, EgressMode, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, TurnUsage, WindlassEvent } from "../contract.js";
+import type { AcpContext, AcpUpdate, EgressMode, HostedSize, HostedSizeOption, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, TurnUsage, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -132,6 +132,19 @@ export interface SandboxHandle {
 	 */
 	readonly notice?: string;
 	/**
+	 * With `notice`: the sandbox had stopped answering and its memory was used up when it did, as the
+	 * provider's metrics or the guest's own counters said (E2B). What a work item asks its person about.
+	 */
+	readonly outOfMemory?: OutOfMemory;
+	/**
+	 * The guest's own count of processes its kernel killed for want of memory (`oom_kill` in /proc/vmstat), and
+	 * its memory in MiB; null when it cannot be read. Only where the sandbox is a guest of its own (E2B): a
+	 * container's /proc/vmstat counts the whole host. A turn reads it at its start and its end.
+	 */
+	memoryEvents?(): Promise<{ oomKills: number; totalMiB: number } | null>;
+	/** The most memory the provider sampled the sandbox using since `sinceMs`, when it came near its total (E2B's metrics). */
+	memoryPeak?(sinceMs: number): Promise<OutOfMemory | null>;
+	/**
 	 * What a runner said of making this sandbox, on the first connect after its create, to a server that
 	 * named `start-times` (StartTimes.image, pulled, runnerCreate). Absent elsewhere.
 	 */
@@ -172,6 +185,8 @@ export interface CreateSandboxInput {
 	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
+	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. Left out: the smallest. */
+	hostedSize?: HostedSize;
 	fromSnapshot?: SnapshotSelection;
 	/** Immutable GitHub repository ID for a transport-owned Docker mirror. */
 	mirrorRepo?: string;
@@ -184,6 +199,15 @@ export interface CreateSandboxInput {
 	uid: string;
 	sessionId: string;
 	profile: SandboxProfileId;
+}
+
+/** A sandbox that ran out of memory: how much it used of how much, in MiB, and its size. */
+export interface OutOfMemory {
+	usedMiB: number;
+	totalMiB: number;
+	size?: HostedSize;
+	/** The next size the deployment offers, set by the session: what a work item offers to go on in. */
+	larger?: HostedSize;
 }
 
 /** A sandbox as its provider lists it for a user. */
@@ -215,6 +239,11 @@ export interface Sandboxes {
 	 * where running one is not billed by the second (Docker).
 	 */
 	price(): SandboxPrice | null;
+	/**
+	 * The sizes a sandbox can be made in, smallest first, each with its estimated price. Absent where
+	 * every sandbox has one size (Docker, machines: a machine's slot is its runner's, `--slot-memory`).
+	 */
+	sizes?(): HostedSizeOption[];
 	/**
 	 * The user's sandboxes as the provider has them now, running and paused, whichever server made
 	 * them: what the count of the sandboxes a user keeps is held against (usage.ts, `reconcile`).
@@ -497,6 +526,8 @@ export interface RunTurnInput {
 	onCheckpoint?: (read: () => TurnCheckpoint | null) => void;
 	/** Take up the process this checkpoint names instead of starting one: the turn goes on where it was. */
 	reattach?: TurnCheckpoint;
+	/** When the platform stops the turn, ms since the epoch: Windlass's shell calls may not ask for a timeout beyond it (windlass-config.ts `TURN_TIME_HOOK`). */
+	endsAt?: number;
 	/** Told at each point of the turn's start (StartMark); `ms` with `relay`. A listener's failure does not stop the turn. */
 	onStartMark?: (mark: StartMark, ms?: number) => void;
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */

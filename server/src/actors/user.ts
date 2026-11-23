@@ -87,6 +87,7 @@ import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, 
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
+import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize, type HostedSizeOption } from "../contract.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -155,7 +156,7 @@ import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { refreshSecretRows } from "../signin/secret-rows.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
-import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
@@ -962,6 +963,7 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 				busy: session !== undefined && session.status !== "idle",
 				repository: session?.repository ? `${session.repository.owner}/${session.repository.name}` : null,
 				pushed: Boolean(session?.pullRequest),
+				...(session?.hostedSize && { hostedSize: session.hostedSize }),
 			};
 		})
 		.sort((a, b) => (b.usedAt ?? 0) - (a.usedAt ?? 0) || (a.sessionId < b.sessionId ? -1 : 1));
@@ -969,10 +971,14 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 		...book.numbers(now),
 		usedModelTokens: book.modelTokens(now),
 		factoryLimits: effectiveUserLimits(c.vars.items.limits.overrides).factory,
-		today: book.today(now).map((row) => ({ ...row, title: c.vars.sessions.get(row.sessionId)?.title ?? null })),
+		today: book.today(now).map((row) => {
+			const session = c.vars.sessions.get(row.sessionId);
+			return { ...row, title: session?.title ?? null, ...(session?.hostedSize && { hostedSize: session.hostedSize }) };
+		}),
 		days: book.days(now),
 		kept,
 		price: layer.sandboxes.price(),
+		...((() => { const sizes = sizesOf(layer); return sizes ? { hostedSizes: sizes } : {}; })()),
 		// Where Windlass's data is on the sandbox's own disk, the agent's memory goes with it unless a copy is kept in a bucket.
 		memory: layer.sandboxes.sessionsLiveInSandbox ? (layer.backups ? "copied" : "lost") : "kept",
 	};
@@ -1020,6 +1026,25 @@ const KEYED = "agent";
  * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
+/** The hosted sizes the layer offers, with their prices; null where it has one size. */
+function sizesOf(layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[] | null {
+	const sizes = layer.sandboxes.sizes?.() ?? [];
+	return sizes.length > 1 ? sizes : null;
+}
+
+/**
+ * The size of a hosted session's sandboxes: the one asked for, else the repository's saved size, else small for a
+ * person's agent and standard for a work item's (contract.ts). One the layer does not offer is the largest it
+ * offers below it. Undefined where the layer has one size.
+ */
+async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: Parameters<MakeSession>[4] | undefined): Promise<HostedSize | undefined> {
+	const offered = sizesOf(await getLayer())?.map((size) => size.id);
+	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.join(", ")}.`, { code: "bad_input" });
+	if (!offered) return undefined;
+	const wanted = (asked as HostedSize | undefined) ?? item?.hostedSize ?? (project ? (await readDefaults(c.db, project)).hostedSize : null) ?? (item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
+	return [...offered].reverse().find((size) => HOSTED_SIZES.indexOf(size) <= HOSTED_SIZES.indexOf(wanted)) ?? offered[0];
+}
+
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], build?: EnvironmentBuildOrigin): Promise<SessionSummary> {
 	// Builds of prepared environments start from the actor's own alarm, with no caller: they need the profile kept.
 	if (!build && !c.vars.profile) await rememberProfile(c, profile);
@@ -1095,6 +1120,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const itemSignIn = item && harness !== "windlass" && machineHarnesses[harness].itemTokens === "sign-in" ? offered?.method : undefined;
 		const methodProblem = item && harness !== "windlass" ? itemSignInMethodProblem(machineHarnesses[harness], machine?.name ?? "your machine", offered?.method) : null;
 		if (methodProblem) throw new UserError(methodProblem, { code: "bad_input" });
+		const hostedSize = place.kind === "hosted" ? await sessionHostedSize(c, input.hostedSize, repo ? setupKeyOf(repo.id) : null, item) : undefined;
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -1130,6 +1156,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			harness,
 			capabilities: sessionCapabilities(harness),
 			profile: chosen.id,
+			...(hostedSize && { hostedSize }),
 			...modes,
 			...(options && { harnessModels: models }),
 			model,
@@ -1148,6 +1175,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
+			...(hostedSize && { hostedSize }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
 			place: summary.place,
@@ -1256,7 +1284,7 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 			const place = request.place === HOSTED ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: request.place };
 			let summary: SessionSummary;
 			try {
-				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
+				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, ...(request.hostedSize && { hostedSize: request.hostedSize }), repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
 					{ project: request.project, place: request.place, screenshots: request.screenshots });
 			} catch (error) {
 				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
@@ -1454,6 +1482,7 @@ export const user = actor({
 			`);
 			// What new sessions on a repository start with (repository-defaults.ts): one row per repository, `project` as above.
 			await db.execute(DEFAULTS_TABLE);
+			await migrateDefaults(db);
 			// The checks of repositories (repository-checks.ts): one row per repository, `project` as above, the list as JSON.
 			await db.execute(CHECKS_TABLE);
 			// The network lists of repositories and the hosts their sessions could not reach (repository-network.ts), `project` as above.
@@ -2226,7 +2255,7 @@ export const user = actor({
 			const session = c.vars.sessions.get(approvalText(sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
 			if (!session || !project || session.environmentBuild || (kind !== "missed" && kind !== "cold")) return;
-			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind);
+			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind, session.hostedSize);
 		},
 		internalEnvironmentPushed: async (c, repositoryId: GithubId): Promise<void> => {
 			requireService(c);
@@ -2318,7 +2347,7 @@ export const user = actor({
 			const setup = includeSnapshotSetup && snapshotsFor(session.place) && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
-			const environment = snapshotSetup?.command ? await sessionEnvironment(c, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, snapshotSetup.command, checks) : undefined;
+			const environment = snapshotSetup?.command ? await sessionEnvironment(c, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, snapshotSetup.command, checks, session.hostedSize) : undefined;
 			return { project, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
@@ -2356,13 +2385,13 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;
 			try {
 				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo));
+				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo), sandboxes.sizes?.().map((size) => size.id) ?? []);
 				if (change.screenshots === true && !config.factory.screenshots) throw new DefaultsProblem("bad_input", "Screenshots are turned off for this whole deployment, so they cannot be turned on for a repository.");
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
@@ -2370,7 +2399,7 @@ export const user = actor({
 			}
 			try {
 				const saved = await saveDefaults(c.db, project, await labelFor(c, input.repositoryId, project), change, Date.now());
-				console.log(`[wlp] defaults.saved uid=${profile.uid} project=${project}${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}`);
+				console.log(`[wlp] defaults.saved uid=${profile.uid} project=${project}${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}${change.hostedSize === undefined ? "" : ` hosted_size=${change.hostedSize ?? "none"}`}`);
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");

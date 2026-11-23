@@ -40,7 +40,7 @@
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -51,6 +51,7 @@ import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
+import { perHour, sizeName, sizeSpec, startingSize } from "../lib/sizes";
 import { clockTime, useMachines } from "../screens/Machines";
 import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
@@ -268,6 +269,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
 	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" || draft?.harness === "codex" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
+	/** The hosted size chosen here; null: the repository's saved one, else the default for agents or work items. */
+	const [sizeChoice, setSizeChoice] = useState<HostedSize | null>(null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -389,6 +392,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const runsHere = (id: HarnessId) => (item ? itemProfilesHere(chosenMachine, id).length > 0 : hardened);
 	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
+	// ---- the hosted size: where the deployment offers more than one, for a hosted sandbox -----------------
+	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []) : [];
+	const savedSize = saved.defaults?.hostedSize ?? null;
+	const defaultSize = sizes.length > 1 ? startingSize(sizes, savedSize, item) : null;
+	const hostedSize = defaultSize === null ? null : sizeChoice !== null && sizes.some((size) => size.id === sizeChoice) ? sizeChoice : defaultSize;
+	const hostedOption = sizes.find((size) => size.id === hostedSize) ?? null;
 	// The agent the last one was, where it cannot be this one's: said in the agent's picker.
 	const harnessProblem =
 		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
@@ -475,6 +484,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				repoUrl: repo.kind === "address" && repo.url !== "" ? repo.url : undefined,
 				repository,
 				setupCommand: repository ? setup.toSave : undefined,
+				...(hostedSize ? { hostedSize } : {}),
 			};
 			// One key for the agent: launching again after an answer that never came, with nothing changed, makes no second one.
 			asked.current = submissionOf(JSON.stringify(input), asked.current);
@@ -520,6 +530,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			...(model && (other || modelChoice !== "") ? { model } : {}),
 			// Every turn of the item runs at it; left out, at the agent's default.
 			...(effort && effort !== "default" ? { effort } : {}),
+			...(hostedSize ? { hostedSize } : {}),
 		};
 		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
 		asked.current = submissionOf(JSON.stringify(input), asked.current);
@@ -1079,7 +1090,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	// ---- what the sandbox lets its commands do, and where: the lock's tooltip and the options' last line ----
 	const facts = !item && chosenProfile ? sandboxFacts(chosenProfile, claude) : [];
-	const where = chosenMachine ? `runs on ${machineLabel(chosenMachine)}` : "runs hosted";
+	const where = chosenMachine ? `runs on ${machineLabel(chosenMachine)}` : hostedOption ? `runs hosted, ${sizeName(hostedOption.id)} (${sizeSpec(hostedOption.id)}${perHour(hostedOption.usdPerHour) ? `, about ${perHour(hostedOption.usdPerHour)}` : ""})` : "runs hosted";
 	const anyOpen = facts.some((fact) => fact.open);
 	const safety = facts.length > 0 ? sentence([...facts.map((fact) => fact.long), where]) : null;
 
@@ -1105,11 +1116,30 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				},
 			]
 		: [{ id: "modes", label: "Mode", items: modeRows.length > 0 ? modeRows : [{ id: "mode:none", label: "No modes", description: "This agent has no modes to choose", disabled: true }] }];
+	// The size of a hosted sandbox, with what an hour of it is estimated to cost; the daily sandbox time counts every size the same.
+	const sizeGroups: MenuGroup[] = hostedSize
+		? [
+				{
+					id: "size",
+					label: "Hosted size",
+					items: sizes.map((size) => ({
+						id: `size:${size.id}`,
+						value: size.id,
+						label: `${sizeName(size.id)} · ${sizeSpec(size.id)}`,
+						description: size.id === savedSize && chosen ? `Saved for ${chosen.repository.name}` : size.id === defaultSize ? (item ? "The default for work items" : "The default for agents") : undefined,
+						trailing: perHour(size.usdPerHour) ?? undefined,
+						checked: hostedSize === size.id,
+						disabled: busy !== null,
+						onSelect: () => setSizeChoice(size.id),
+					})),
+				},
+			]
+		: [];
 	const optionsSpec: MenuSpec = {
 		label: item ? "Filing options" : "Options",
 		width: 320,
 		hints: false,
-		groups: optionsGroups,
+		groups: [...sizeGroups, ...optionsGroups],
 		footer:
 			safety || (item && chosenMachine) ? (
 				<p className={`ui-menu-note tray-safety${anyOpen ? " tone-warn" : ""}`}>
@@ -1118,7 +1148,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				</p>
 			) : undefined,
 	};
-	const optionsLabel = item ? "Filing options" : `Options${mode ? `: mode ${mode.name}` : ""}`;
+	const optionsLabel = item ? "Filing options" : `Options${mode ? `: mode ${mode.name}` : ""}${hostedSize ? `, ${sizeName(hostedSize)} sandbox` : ""}`;
 
 	// ---- the done-when criteria of a work item: one line under the text, opened only when used --------
 	const criteriaLine = item ? (
