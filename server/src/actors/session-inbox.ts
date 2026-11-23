@@ -392,7 +392,7 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
 export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
 	const work = await readWork(sandbox, baseSha);
-	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns && (path => ownsPath(owns, path)));
+	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns?.length ? path => ownsPath(owns, path) : undefined);
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */

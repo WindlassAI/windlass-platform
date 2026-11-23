@@ -1677,19 +1677,65 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const task = (key: string, owns: string[] = [key], dependsOn: string[] = []) => ({ key, title: key, brief: key, owns, dependsOn, acceptance: ["Run npm test"], budget: { tokens: 1000 } });
 	const zero = { tokens: 0, activeSeconds: 0, turns: 0, hostedSeconds: 0 };
-	function start(subtasks: ReturnType<typeof task>[], available?: number) {
+	function start(subtasks: ReturnType<typeof task>[], available?: number, hostedSpent = 0) {
 		const plan = { subtasks, questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };
 		const approved = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [
 			{ kind: "start" }, { kind: "file_plan", plan }, turnEnded("succeeded", null), { kind: "approve_plan", version: 1 },
 		]).item;
+		approved.spent.hostedSeconds = hostedSpent;
 		if (available !== undefined) approved.spent.tokens = approved.budget.tokens - available;
 		return walk(approved, [{ kind: "feature_ready", head: H(1), pr: { number: 1, url: "" } }]).item;
 	}
-	function update(item: FactoryItem, task: string, state: ItemState, tokens = 0) {
+	function update(item: FactoryItem, task: string, state: ItemState, tokens = 0, hostedSeconds = 0) {
 		const job = item.jobs!.find(j => j.task.key === task)!;
-		return walk(item, [{ kind: "child_update", key: job.dispatchKey, child: job.id, state, spent: { ...zero, tokens }, head: H(2), report: state }]).item;
+		return walk(item, [{ kind: "child_update", key: job.dispatchKey, child: job.id, state, spent: { ...zero, tokens, hostedSeconds }, head: H(2), report: state }]).item;
 	}
 	const keys = (item: FactoryItem) => item.jobs!.map(j => j.task.key);
+	const { ownsPath, sharedPaths } = await import("../server/src/factory/feature-plan.js");
+	for (const [entry, path, matches] of [
+		["src/*", "src/file.ts", true], ["src/*", "src/a/b/c.ts", false],
+		["*", "README.md", true], ["*", "src/file.ts", false],
+		["src/**", "src/a/b/c.ts", true], ["src", "src/a/b/c.ts", true],
+	] as const) {
+		assert.equal(ownsPath([entry], path), matches);
+		const a = task("a", [entry]), b = task("b", [path]);
+		assert.equal(sharedPaths(a, b), matches);
+		assert.equal(sharedPaths(b, a), matches);
+	}
+	expect("owned paths and scheduling overlaps respect glob depth", true);
+
+	const { turnFlags } = await import("../server/src/actors/session-inbox.js");
+	const sandbox = { run: async (command: string) => {
+		const mark = command.match(/\bwlp-[a-f0-9]{18}\b/)![0];
+		const stdout = ["M\0src/file.ts\0D\0test/old.test.ts\0", "", "absent", "absent", "absent", "absent", ""].join("\n" + mark + "\n");
+		return { exitCode: 0, stdout, stderr: "" };
+	} } as Parameters<typeof turnFlags>[0];
+	const removed = { kind: "tests_removed", where: ["test/old.test.ts"] };
+	assert.deepEqual(await turnFlags(sandbox, H(1), [], null, []), [removed]);
+	assert.deepEqual(await turnFlags(sandbox, H(1), [], null, ["src"]), [removed, { kind: "outside_scope", where: ["test/old.test.ts"] }]);
+	expect("empty owns skips the scope warning and keeps other review flags", true);
+
+	const seconds = FACTORY_DEFAULTS.item.hostedSeconds;
+	const hostedTasks = [task("first"), { ...task("second"), budget: { tokens: 4000 } }, task("third")];
+	const hosted = start(hostedTasks);
+	assert.equal(hosted.budget.hostedSeconds, seconds * 3);
+	assert.deepEqual(hosted.jobs!.map(j => j.budget), hostedTasks.map(t => ({ ...t.budget, hostedSeconds: seconds })));
+	const limited = start(hostedTasks, undefined, seconds);
+	assert.deepEqual(keys(limited), ["first", "second"]);
+	assert.deepEqual(keys(update(limited, "first", "done")), ["first", "second", "third"]);
+
+	const done = update(hosted, "first", "done", 0, seconds / 2);
+	const failed = update(done, "second", "failed", 0, seconds);
+	const cancelled = update(failed, "third", "cancelled", 0, seconds / 2);
+	const redo = walk(cancelled, [
+		{ kind: "file_plan", plan: hosted.approvedPlan }, turnEnded("succeeded", null), { kind: "approve_plan", version: 2 },
+	]).item;
+	assert.equal(redo.spent.hostedSeconds, seconds * 2);
+	assert.equal(redo.featurePlan!.budget.hostedSeconds, seconds * 4);
+	assert.equal(redo.budget.hostedSeconds, seconds * 4);
+	assert.deepEqual(redo.jobs!.slice(3).map(j => [j.task.key, j.budget?.hostedSeconds]), [["second", seconds], ["third", seconds]]);
+	expect("hosted children reserve a full item allowance and a replan funds each remaining child after spend", true);
+
 	const tasks = [task("a", ["src/lib"]), task("b", ["src/library/file"]), task("c", ["src/lib/file"]), task("d", ["doc"], ["b"]), task("e"), task("f")];
 	const parallel = start(tasks);
 	assert.deepEqual(keys(parallel), ["a", "b", "e"]);

@@ -119,14 +119,16 @@ function overlaps(a: string, b: string, literalRight = false) {
 	return intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m,n) => m === n, literalRight), literalRight);
 }
 
-/** Directory entries own their descendants. Existing plans may also name globs. */
+/** Plain paths include their descendants. A glob describes its own depth. */
+const ownedGlob = (entry: string) => entry.includes("*") ? entry : entry + "/**";
+
 export function sharedPaths(a: PlanSubtask, b: PlanSubtask): boolean {
 	if (!a.owns?.length || !b.owns?.length) return true;
-	return a.repo === b.repo && a.owns.some(p => b.owns.some(q => overlaps(p + "/**", q + "/**")));
+	return a.repo === b.repo && a.owns.some(p => b.owns.some(q => overlaps(ownedGlob(p), ownedGlob(q))));
 }
 
 export function ownsPath(owns: string[], path: string): boolean {
-	return owns.some(pattern => overlaps(pattern + "/**", path, true));
+	return owns.some(pattern => overlaps(ownedGlob(pattern), path, true));
 }
 
 /** The longest model id a subtask may name; an effort is at most 64 characters, as a Quick item's. */

@@ -48,7 +48,7 @@ import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
+import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
@@ -855,8 +855,13 @@ function featureTotal(item: FactoryItem, plan: Pick<import("../contract.js").Fea
 	let tokens = ownTokens(item);
 	for (const job of jobs) tokens += (job.budget ?? job.task.budget).tokens;
 	const placed = new Set(jobs.filter(job => job.state !== "failed" && job.state !== "cancelled").map(job => job.task.key));
-	for (const task of plan?.subtasks ?? []) if (!placed.has(task.key)) tokens += task.budget.tokens;
-	return { tokens, hostedSeconds: item.budget.hostedSeconds };
+	const remaining = plan?.subtasks.filter(task => !placed.has(task.key)) ?? [];
+	for (const task of remaining) tokens += task.budget.tokens;
+	// A revised plan carries settled spend forward and gives every remaining subtask a fresh allowance.
+	const hostedSeconds = plan?.subtasks.length
+		? (item.replans ? item.spent.hostedSeconds : 0) + remaining.length * (item.singleBudget ?? item.budget).hostedSeconds
+		: item.budget.hostedSeconds;
+	return { tokens, hostedSeconds };
 }
 
 /**
@@ -1892,6 +1897,10 @@ function retryFeature(c: Change) {
 	nextChild(c);
 }
 
+function canUseHosted(item: FactoryItem, route?: PlacementRoute) {
+	return [route?.preferred ?? item.place, ...(route?.alternatives ?? [])].some(place => place.kind === "hosted");
+}
+
 function nextChild(c: Change) {
 	const { item } = c, plan = item.featurePlan!;
 	const jobs = item.jobs ??= [];
@@ -1919,19 +1928,19 @@ function nextChild(c: Change) {
 	const done = completedKeys(item);
 	if (plan.subtasks.every(s => done.has(s.key))) return crossRepo(item) ? beginIntegration(flow(c)) : closing(c);
 	// Spend already includes each child's receipts. Reserve only the unused part of live allowances.
+	const perChildSeconds = (item.singleBudget ?? item.budget).hostedSeconds;
 	const free = { tokens: item.budget.tokens - item.spent.tokens, hostedSeconds: item.budget.hostedSeconds - item.spent.hostedSeconds };
 	for (const job of running) {
 		free.tokens -= Math.max(0, (job.budget ?? job.task.budget).tokens - job.spent.tokens);
-		free.hostedSeconds -= Math.max(0, (job.budget?.hostedSeconds ?? item.singleBudget!.hostedSeconds) - job.spent.hostedSeconds);
+		if (canUseHosted(item, job.route)) free.hostedSeconds -= Math.max(0, (job.budget?.hostedSeconds ?? perChildSeconds) - job.spent.hostedSeconds);
 	}
 	let short: keyof ItemBudget | undefined;
 	for (const task of plan.subtasks) {
 		if (running.length >= RULES.parallelChildren) break;
 		if (done.has(task.key) || !task.dependsOn.every(k => done.has(k)) || running.some(j => j.task.key === task.key || sharedPaths(j.task, task))) continue;
 		const route = item.routes?.[task.key];
-		const hosted = [route?.preferred ?? item.place, ...(route?.alternatives ?? [])].some(place => place.kind === "hosted");
-		// The planner assigns tokens. Divide hosted time in the same proportions, including the feature's own share.
-		const budget = { tokens: task.budget.tokens, hostedSeconds: hosted ? Math.max(1, Math.floor(item.budget.hostedSeconds * task.budget.tokens / plan.budget.tokens)) : 0 };
+		const hosted = canUseHosted(item, route);
+		const budget = { tokens: task.budget.tokens, hostedSeconds: perChildSeconds };
 		if (budget.tokens > free.tokens || (hosted && budget.hostedSeconds > free.hostedSeconds)) {
 			short = budget.tokens > free.tokens ? "tokens" : "hostedSeconds";
 			continue;
@@ -1940,7 +1949,7 @@ function nextChild(c: Change) {
 		const job: FeatureJob = { id: childItemId(item.id, plan.version, task.key), task, budget, route, warm, state: "draft", spent: noSpend(), head: null,
 			start: crossRepo(item) ? repoOf(item, task.repo).head : item.head, dispatchedAt: c.at, report: "" };
 		free.tokens -= budget.tokens;
-		free.hostedSeconds -= budget.hostedSeconds;
+		if (hosted) free.hostedSeconds -= budget.hostedSeconds;
 		jobs.push(job);
 		running.push(job);
 		dispatchJob(c, job);
@@ -2306,7 +2315,7 @@ function raise(c: Change, cause: StopCause | null, budget: Partial<ItemBudget> |
 			const next = typeof asked === "number" && Number.isFinite(asked) && asked > spent ? Math.round(asked) : Math.max(before, Math.ceil(spent)) + extraOf(item, cause);
 			if (item.mode === "orchestrate" && cause === "tokens") {
 				item.ownTokens = next;
-				item.budget = featureTotal(item);
+				item.budget.tokens = featureTotal(item).tokens;
 			} else item.budget[cause] = next;
 			c.say(cause === "tokens" ? `The budget is now ${spellTokens(item.budget.tokens)} tokens.` : `The hosted time budget is now ${spellSeconds(item.budget.hostedSeconds)}.`);
 			break;
