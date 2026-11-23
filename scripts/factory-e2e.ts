@@ -471,13 +471,19 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			await waitFor("the reopened feature check", () => standin.checks.find(r => r.external_id === "pending:" + feature.id + ":2" && r.status === "in_progress"), 12_000);
 			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});
 			const proposal = await untilItem(user,second.id,"a second plan",v=>v.plan?.status==="proposed" && !!v.question);
-			await user.actOnItem({id:second.id,action:{kind:"approve_plan",version:proposal.plan!.version}});
-			const active = await untilItem(user,second.id,"a child before cancellation",v=>v.children?.length === 1);
-			await user.actOnItem({id:second.id,action:{kind:"cancel"}});
-			const stopped = await untilItem(user,active.children![0].id,"the cancelled child",v=>v.state === "cancelled");
-			const tree = await user.item(second.id);
-			assert(tree.state === "cancelled" && tree.children?.length === 1 && !stopped.pullRequest, "Cancellation dispatched more work.");
-			return "two child heads fast-forwarded, one summary, one whole-feature review; a second feature cancelled its child";
+			const independent = structuredClone(proposal.plan!);
+			independent.subtasks[1].dependsOn = [];
+			const edit = await user.actOnItem({ id: second.id, action: { kind: "edit_plan", version: independent.version, plan: independent } });
+			await user.actOnItem({ id: second.id, action: { kind: "approve_plan", version: edit.plan!.version } });
+			// Withhold CI from both children: neither can finish and release its dependent before this observation.
+			const active = await untilItem(user, second.id, "both independent child sessions before cancellation",
+				v => v.children?.length === 2 && v.children.every(child => child.step?.kind === "ci"));
+			assert(new Set(active.children!.map(child => child.sessionId)).size === 2, "Parallel children shared a session.");
+			await user.actOnItem({ id: second.id, action: { kind: "cancel" } });
+			const stopped = await untilItem(user, second.id, "both cancelled child branches",
+				v => v.state === "cancelled" && v.children?.length === 2 && v.children.every(child => child.state === "cancelled"));
+			assert(stopped.children!.every(child => !child.pullRequest), "A cancelled child opened a pull request.");
+			return "two checked children integrated in order; a second feature ran two independent children together and cancelled both";
 		});
 	} finally { await server.stop(); server.remove(); }
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
