@@ -42,19 +42,22 @@ export class WarmSpares {
 	constructor(private build: (raw: string, spec: SpareSpec, signal: AbortSignal) => Promise<void>,
 		private drop: (raw: string) => Promise<void>, private now = Date.now, private changed: () => void = () => {}) {}
 
-	get ready() { return [...this.entries].filter(e => e.ready).length; }
+	get ready() { return [...this.entries].filter(e => e.ready && !e.abort.signal.aborted).length; }
 	get raws() { return [...this.entries].map(e => e.raw); }
 	owns(raw: string) { return this.raws.includes(raw); }
 
 	private discard(e: Entry) {
-		this.entries.delete(e);
+		if (e.abort.signal.aborted) return;
 		e.abort.abort();
-		// A build that is still in docker run also cleans up once it returns.
-		void this.drop(e.raw).catch(() => {});
+		// Keep the reservation until removal finishes. The foreground never waits.
+		// A build still in docker run removes its container again when it returns.
+		void this.drop(e.raw).catch(() => {}).finally(() => { if (e.ready) this.entries.delete(e); });
 	}
 	trim(limit = 0, spec?: SpareSpec) {
 		for (const e of this.entries) {
-			if (this.now() - e.started >= SPARE_TTL || (spec && key(spec) !== key(e.spec)) || this.entries.size > limit) this.discard(e);
+			if (e.abort.signal.aborted) continue;
+			if (this.now() - e.started >= SPARE_TTL || (spec && key(spec) !== key(e.spec)) || limit === 0) this.discard(e);
+			else limit--;
 		}
 	}
 	foreground(spec?: SpareSpec) {
@@ -62,11 +65,12 @@ export class WarmSpares {
 	}
 	async take(spec: SpareSpec, verify: (raw: string, built: SpareSpec) => Promise<boolean>) {
 		this.trim(2, spec);
-		const e = [...this.entries].find(e => e.ready);
+		const e = [...this.entries].find(e => e.ready && !e.abort.signal.aborted);
 		if (!e) return;
 		this.entries.delete(e); // A claim consumes the sandbox even when verification fails.
 		if (await verify(e.raw, e.spec).catch(() => false)) return e.raw;
-		void this.drop(e.raw).catch(() => {});
+		this.entries.add(e);
+		this.discard(e);
 	}
 	fill(spec: SpareSpec, limit: number) {
 		this.trim(limit, spec);
@@ -77,10 +81,12 @@ export class WarmSpares {
 			if (!e.abort.signal.aborted) { e.ready = true; this.changed(); }
 		}).catch(() => {
 			if (!e.abort.signal.aborted) this.nextBuild = this.now() + 60_000;
-			this.entries.delete(e);
 			e.abort.abort();
 		}).finally(async () => {
-			if (e.abort.signal.aborted) await this.drop(e.raw).catch(() => {});
+			if (e.abort.signal.aborted) {
+				await this.drop(e.raw).catch(() => {});
+				this.entries.delete(e);
+			}
 		});
 	}
 }

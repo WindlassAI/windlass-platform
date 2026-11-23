@@ -193,7 +193,7 @@ export class Executor extends MachineDocker {
 		}
 	}
 	/** Preparation never owns the executor's serial queue. */
-	async maintainSpares() {
+	async maintainSpares(online = () => true) {
 		if (!this.inventoryStarted) return;
 		if (!this.warmSpares || !this.sessionVolumes || !this.dockerHealth.ok || this.egressError || this.limits.spares === 0) {
 			this.spares.trim(); return;
@@ -216,7 +216,11 @@ export class Executor extends MachineDocker {
 			this.spareDisk = await this.disk().catch(() => 0);
 		}
 		if (this.spareDisk <= Math.max(this.storeLimits().free, 5e9)) { this.spares.trim(); return; }
-		if (this.warmSpares && this.recent === spec) this.spares.fill(spec, Math.min(limit, this.spareRoom(spec.args.size)));
+		// A create or resume can have reserved capacity without having published its
+		// running box yet. Admit in its order, then build outside that order.
+		await this.serial(async () => {
+			if (online() && this.warmSpares && this.recent === spec) this.spares.fill(spec, this.spareRoom(spec.args.size));
+		});
 	}
 	stopSpares() { this.spares.trim(); }
 	turnEnded(box: Box) { this.remember(box.recipe); }

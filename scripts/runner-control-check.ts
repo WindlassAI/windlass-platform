@@ -322,7 +322,7 @@ try {
 		let now = 0;
 		const removed = new Set<string>();
 		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
-		const fill = async () => { pool.fill(base, 1); await until(() => pool.ready === 1); return pool.raws[0]!; };
+		const fill = async () => { await until(() => !pool.raws.length); pool.fill(base, 1); await until(() => pool.ready === 1); return pool.raws[0]!; };
 		for (const other of [{ ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
 			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
 			const raw = await fill();
@@ -350,6 +350,17 @@ try {
 		building.trim(0);
 		assert.ok(cancelled);
 		assert.equal(building.ready, 0);
+		let builds = 0, finish!: () => void;
+		const retiring = new WarmSpares(async () => { builds++; }, () => new Promise(resolve => { finish = resolve; }));
+		retiring.fill(base, 1);
+		await until(() => retiring.ready === 1);
+		retiring.trim(0);
+		retiring.fill(base, 1);
+		assert.equal(builds, 1, "a retiring container still occupies its background reservation");
+		finish();
+		await until(() => !retiring.raws.length);
+		retiring.fill(base, 1);
+		assert.equal(builds, 2);
 	});
 
 	await checkControl("an idle stop reports the paused sandbox immediately", async () => {

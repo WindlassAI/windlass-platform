@@ -143,6 +143,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 	// A refused copy of the key must never idle-stop a sandbox used by the accepted runner.
 	let removed = false;
 	let mayMaintain = false;
+	let spareServiceOnline = false;
 	let maintaining = false;
 	let lastRefresh = 0;
 	const maintain = async () => {
@@ -154,7 +155,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				if (Date.now() - lastRefresh >= REPORT_MS) { await owner.refresh(); lastRefresh = Date.now(); }
 				if (mayMaintain && idle !== undefined) await owner.idle(idle, id => sessions.get(id)?.channel.connected === true);
 			});
-			if (mayMaintain && owner.warmSpares) await owner.maintainSpares();
+			if (mayMaintain && spareServiceOnline) await owner.maintainSpares(() => spareServiceOnline);
 			if (Date.now() - lastSent >= REPORT_MS) owner.publishReport?.();
 			if (mayMaintain) await maintainSnapshots(Date.now() + offset);
 		} catch (error) { audit(null, null, "maintenance", category(error)); }
@@ -294,6 +295,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						if (active.aborted || ws.readyState !== 1 || refusal) return;
 						await owner.welcome(active);
 						reportReady = !active.aborted;
+						spareServiceOnline = reportReady && owner.warmSpares;
 						if (!active.aborted) owner.publishReport?.();
 					} else if (phase !== "online") { reason = "Unexpected control handshake"; disconnect(); }
 					else if (f.kind === "attach") {
@@ -356,7 +358,13 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 				try { if (active.aborted) disconnect(); await closed; }
 				finally { clearInterval(heartbeat); active.removeEventListener("abort", disconnect); }
 			} catch (error) { reason = category(error); }
-			finally { attempt.abort(); owner.publishReport = undefined; if (owner.warmSpares) owner.stopSpares(); owner.warmSpares = false; }
+			finally {
+				attempt.abort();
+				owner.publishReport = undefined;
+				spareServiceOnline = false;
+				// Session sockets can outlive control. Keep their negotiated connect fields.
+				if (owner.warmSpares) owner.stopSpares();
+			}
 			if (signal.aborted) break;
 			if (refusal || slow) {
 				mayMaintain = false; idle = undefined;
