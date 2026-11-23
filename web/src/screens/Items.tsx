@@ -39,6 +39,8 @@ import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Check } from "../components/ui/Check";
 import { AgentGlyph } from "../components/ui/Pill";
+import { LongText } from "../components/Fold";
+import { childrenOf, FactorySubtasks } from "./Subtasks";
 
 export interface ItemsState {
 	/** What the feed holds, open items first: every open item and the newest ended ones. Null until it was read, and when it could not be. */
@@ -201,7 +203,7 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider limit", children: "subtasks", capacity: "for a turn", machine: "for its machine", ci: "CI", person: "for you", budget: "budget", integration: "testing together", sandboxes: "for a sandbox" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider", children: "subtasks", capacity: "for a turn", machine: "machine", ci: "CI", person: "for you", budget: "budget", integration: "testing", sandboxes: "sandbox" };
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
@@ -309,7 +311,9 @@ export function questionLine(item: ItemSummary): string | null {
 	if (!item.question) return null;
 	if (item.question.kind === "plan_approval") return "Its plan waits for your approval.";
 	if (item.question.kind === "replan_approval") return "A subtask stopped: its revised plan waits for your approval.";
-	return item.question.text;
+	// The agent's own question says more than "The agent stopped to ask you…": its first line.
+	const asked = item.question.kind === "agent_ask" ? item.question.asked?.text.trim().split("\n")[0] : undefined;
+	return asked || item.question.text;
 }
 
 /** Why the item is where it is, in a line: the server's sentence while it waits, and what ended it. */
@@ -358,9 +362,11 @@ export function dayWord(word: string, at: number, now: number): string {
 }
 
 /** `filed`: the row says when the item was filed, not when it last changed (an ended list, in filing order). */
-export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean }) {
+/** `subtasks`: the feed's open subtasks; a feature's row counts its own and lists the active ones in place of the wait sentence. */
+export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false, subtasks }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean; subtasks?: readonly ItemSummary[] }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
+	const running = !asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
 	return (
 		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}${filed ? " item-row-filed" : ""}`}>
 			<span className="agent-glyph">
@@ -371,7 +377,13 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					<RowTitle item={item} />
 					{asks ? <span className="visually-hidden"> (waiting for your answer)</span> : null}
 				</a>
-				{line ? <p className="item-row-why">{line}</p> : null}
+				{running ? (
+					<FactorySubtasks feature={item} children={subtasks!} now={now} />
+				) : line ? (
+					<LongText lines={2} className="item-row-why">
+						{line}
+					</LongText>
+				) : null}
 				<p className="agent-meta">
 					{repository ? (
 						<span className="agent-repo">

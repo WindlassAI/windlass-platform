@@ -32,6 +32,8 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
+import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
+import { showsSubtasks } from "./Subtasks";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
@@ -481,6 +483,9 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 			</section>
 		);
 	}
+	// Once approved and running, the subtasks block above says where each subtask is: the plan folds to its goal and what it holds.
+	const folds = showsSubtasks(view) && !review.open;
+	const body = `${heading}-body`;
 	return (
 		<section className="usage-section feature-plan" aria-labelledby={heading}>
 			<h2 className="usage-title" id={heading}>
@@ -489,7 +494,26 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 					v{plan.version} · {STATUS_WORD[plan.status]}
 				</span>
 			</h2>
-			<PlanBody view={view} review={review} acting={acting} pool={pool} />
+			{folds && !opened ? (
+				<>
+					<LongText lines={3} className="plan-goal">
+						<Inline text={plan.spec.goal} />
+					</LongText>
+					<p className="plan-folded">
+						<FoldToggle open={false} controls={body} label={FOLD_WORDS.all} onToggle={() => setOpened(true)} />
+						<span className="tone-dim">{[...specParts(plan), plural(plan.subtasks.length, "subtask brief")].join(" · ")}</span>
+					</p>
+				</>
+			) : (
+				<div id={body}>
+					<PlanBody view={view} review={review} acting={acting} pool={pool} />
+					{folds ? (
+						<p className="plan-folded">
+							<FoldToggle open controls={body} label={FOLD_WORDS.all} onToggle={() => setOpened(false)} />
+						</p>
+					) : null}
+				</div>
+			)}
 			{singleSpend}
 		</section>
 	);
@@ -537,9 +561,9 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	};
 	return (
 		<>
-			<p className="plan-goal">
+			<LongText lines={3} className="plan-goal">
 				<Inline text={plan.spec.goal} />
-			</p>
+			</LongText>
 
 			{/* The goal stands; the rest of the spec is folded under one line that counts it. */}
 			{specParts(plan).length > 0 ? (
@@ -605,13 +629,8 @@ function specParts(plan: FeaturePlan): string[] {
 	return [requirements.length > 0 ? plural(requirements.length, "requirement") : null, acceptance.length > 0 ? `${acceptance.length} done when` : null, outOfScope.length > 0 ? `${outOfScope.length} not in it` : null].filter((part): part is string => part !== null);
 }
 
-/** One part of the spec: its name in the margin, its lines as a list, the first few shown and the rest behind "Show more". */
+/** One part of the spec: its name in the margin, its lines as a list, the first few shown and the rest behind "Show N more". */
 function SpecList({ term, kind, lines }: { term: string; kind: "requirements" | "acceptance" | "out"; lines: string[] }) {
-	const [all, setAll] = useState(false);
-	const list = useId();
-	// Folding away a single line saves nothing: a part one longer than the shown lines is shown whole.
-	const folds = lines.length > SPEC_SHOWN + 1;
-	const shown = folds && !all ? lines.slice(0, SPEC_SHOWN) : lines;
 	return (
 		<div className={`plan-spec-part plan-spec-${kind}`}>
 			<dt>
@@ -619,18 +638,7 @@ function SpecList({ term, kind, lines }: { term: string; kind: "requirements" | 
 				<span className="plan-spec-count">{lines.length}</span>
 			</dt>
 			<dd>
-				<ul id={list}>
-					{shown.map((line, index) => (
-						<li key={index}>
-							<Inline text={line} />
-						</li>
-					))}
-				</ul>
-				{folds ? (
-					<button type="button" className="link plan-spec-more" aria-expanded={all} aria-controls={list} onClick={() => setAll((value) => !value)}>
-						{all ? "Show fewer" : `Show ${lines.length - SPEC_SHOWN} more`}
-					</button>
-				) : null}
+				<FoldList items={lines} shown={SPEC_SHOWN} render={(line) => <Inline text={line} />} />
 			</dd>
 		</div>
 	);
@@ -689,7 +697,9 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 						<ChevronIcon size={11} className="plan-task-more-chevron" />
 						Details
 					</summary>
-					<p className="plan-task-brief">{task.brief}</p>
+					<LongText lines={6} className="plan-task-brief">
+						{task.brief}
+					</LongText>
 					<dl className="plan-task-more-facts">
 						{placeReason(task, child, place) ? (
 							<div>
@@ -700,25 +710,15 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 						{task.owns.length > 0 ? (
 							<div>
 								<dt>owns</dt>
-								<dd className="plan-paths">
-									{task.owns.map((path) => (
-										<code key={path} className="plan-path">
-											{path}
-										</code>
-									))}
+								<dd>
+									<PathList paths={task.owns} />
 								</dd>
 							</div>
 						) : null}
 						<div>
 							<dt>checked by</dt>
 							<dd>
-								<ul className="plan-checks">
-									{task.acceptance.map((line, index) => (
-										<li key={index}>
-											<Inline text={line} />
-										</li>
-									))}
-								</ul>
+								<FoldList className="plan-checks" items={task.acceptance} render={(line) => <Inline text={line} />} />
 							</dd>
 						</div>
 					</dl>

@@ -349,7 +349,7 @@ describe("a plan that was set aside", () => {
 		expect(more.textContent).toBe("Show 3 more");
 		act(() => more.click());
 		expect(requirements.querySelectorAll("li")).toHaveLength(6);
-		expect(more.textContent).toBe("Show fewer");
+		expect(more.textContent).toBe("Hide");
 		// Three lines are shown whole: nothing to fold.
 		expect(host.querySelector(".plan-spec-acceptance .plan-spec-more")).toBeNull();
 		expect(host.querySelector(".plan-spec-acceptance .plan-code")?.textContent).toBe("harbor upload");
