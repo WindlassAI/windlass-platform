@@ -34,7 +34,7 @@ back to Free deletes nothing: kept sandboxes, machines and items stay, and only 
 
 - **The unit.** One hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB). Small counts 0.5 and large counts 2.
 - **What is counted.** The minutes are counted from the same ledger as sandbox time (`server/src/usage.ts`). Each entry is weighted by its session's size (`server/src/billing/meter.ts`, `sessionSize`).
-- **Before sizes exist,** every hosted sandbox is small. `sessionSize` is the one place the sizes work fills in.
+- **The size** is the session's `hostedSize`. A session from before sizes has none and counts as small, the size it ran at. On Free, large is not offered: a launch that asks for it is refused, and a saved default of large steps down to standard.
 - **Months** are UTC calendar months. A hold never reaches past midnight UTC, so the first hold of a month is the new month's.
 - **Machines are not metered.** Runs on users' own machines never enter the ledger.
 
