@@ -36,7 +36,7 @@ Open the account menu and choose **Sign out**. This signs you out in this browse
 
 Connect GitHub to launch agents on your own repositories, private ones included, and to get their work back as pull requests. Without it, an agent can still clone a public repository by its address, or start in an empty one.
 
-1. Open the account menu and choose **Connect GitHub**. You can also connect from the repository chip when you start an agent.
+1. Open the account menu and choose **Connect GitHub**. You can also connect from the repository row of the **where** menu when you start an agent.
 2. GitHub opens in a new window. Authorize the Windlass GitHub App there.
 3. If the App is not installed on your account yet, GitHub shows its installation page. Choose the account and the repositories the App may see.
 
@@ -83,7 +83,7 @@ The App does not ask for the Workflows permission. So GitHub refuses a push that
 
 1. Go to **Agents**, the home page.
 2. Type what the agent should do in **What should it do?**
-3. Under the field, choose the repository under **repo**. Leave the other choices as they are for now.
+3. Under the field, open **where** (it shows **Hosted** and the repository) and choose the repository. Leave the other choices as they are for now.
 4. Press <kbd>Enter</kbd>, or choose **Launch**.
 
 The platform creates the agent, makes its sandbox, clones the repository and sends your prompt. The agent's page opens and shows its work as it happens.
