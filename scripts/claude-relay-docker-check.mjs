@@ -218,7 +218,7 @@ try {
 	assert.notEqual((await docker(['exec',first,'curl','--max-time','2','--noproxy','*','-fsS','http://127.0.0.1:19123'])).code, 0);
 	ok('Restricted Claude sessions have only loopback; a verified listener is unreachable from its peer.');
 	const [relay] = JSON.parse(await cmd(['container','inspect',relayName]));
-	assert.equal(relay.HostConfig.LogConfig.Type,'none'); assert.ok(!JSON.stringify(relay.Config).includes(token));
+	assert.deepEqual(relay.HostConfig.LogConfig, { Type: 'json-file', Config: { 'max-size': '4m', 'max-file': '2' } }); assert.ok(!JSON.stringify(relay.Config).includes(token));
 	assert.ok(relay.Mounts.some(m => m.Name === owner.claudeVolume && !m.RW));
 	const one = saved.get(first), two = saved.get(second);
 	assert.equal(await status(first, one.placeholder), '200');

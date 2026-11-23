@@ -62,8 +62,8 @@ prompts ([@clack/prompts](https://github.com/bombshell-dev/clack)) on a terminal
 without one. It pairs (or keeps the pairing), asks the machine's name, the agents to offer and signs each in
 through the same code as `login`, then the profiles, the network mode and the limits. A failed or skipped
 sign-in is shown and setup carries on. At the end it starts the service itself through the Docker socket
-it was given, with the same `docker run -d --name windlass-runner --restart unless-stopped …` as the
-setup container's own image and mounts, replacing an existing `windlass-runner` container when the user
+it was given, using the setup container's image and mounts, rotated logs and the `unless-stopped` restart
+policy. It replaces an existing `windlass-runner` container when the user
 agrees (the volume stays). It lets go of the state lock first, then waits until the service writes
 `Online` to `status.json`. Its answers are kept in `setup.json` in the state volume and are the defaults
 the next time; `setup --quick` asks only what is missing and `setup <section>` one part (`name`, `agents`,
@@ -297,7 +297,7 @@ A successful answer passes only as an event stream or JSON. chatgpt.com answers 
 with no content type or as text/plain, so on that route alone (Codex's `/codex/v1/responses`, OpenCode's
 ChatGPT `/openai/responses`) such an answer passes as an event stream; anywhere else it is refused with 502.
 
-Relay containers keep no Docker log. Each relay notes, without bodies, credentials or query strings, every
+On a machine, `docker logs <relay-container>` shows diagnostics. Docker retains up to two 4 MiB files per relay. Each relay notes, without bodies, credentials or query strings, every
 answer it did not pass on as the provider gave it: an upstream error status, a refused or retyped 200, a
 provider it could not reach. It prints the note to its stderr and keeps the latest 20 in
 `/workspace/relay-notes.json` of its socket volume. `windlass-runner status` prints the latest three of each

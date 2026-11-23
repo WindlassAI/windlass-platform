@@ -27,7 +27,7 @@ every profile.
 
 The Docker relay is the program `sandbox/relay/windlass.cjs`, on the shared `createRelay` of
 `sandbox/relay/server.cjs`, the same one the Claude Code, Codex and OpenCode relays of machines use. It
-runs from the pinned base image as `agent`, read-only, with every capability dropped, no Docker logs,
+runs from the pinned base image as `agent`, read-only, with every capability dropped, rotated Docker logs on machines,
 192 MiB (`RELAY_MEMORY`) and 48 processes. The Docker check runs 64 streams at once through it, each with a
 1 MiB request body and a 2 MiB answer, and fails if the relay comes near that memory. Its only network is the Docker bridge, which it needs for
 `https://api.openai.com`. The forwarder is `wlp-model-forward` in `runner/src/egress-proxy.mjs`, beside

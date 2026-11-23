@@ -20,8 +20,7 @@ to `api.anthropic.com:443`. The only accepted operations are POST to
 `/v1/messages` and `/v1/messages/count_tokens`, optionally with `?beta=true`.
 Successful JSON and SSE responses stream with backpressure. An upstream failure
 returns a generic diagnostic and its HTTP error status. A redirect returns 502.
-The relay disables Docker log capture and supplies all destination and auth fields
-itself.
+Machine relay containers keep two 4 MiB Docker log files for diagnostics. The relay supplies all destination and auth fields itself.
 
 ## Pinned client verification
 

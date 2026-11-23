@@ -1,6 +1,6 @@
 // Run with tsx from server/: npx tsx ../scripts/container-logs-check.ts
 // Every container the platform and the runner start names its log driver, whatever the daemon's default:
-// none for sessions, relays, egress and helpers, a small rotated json-file log for the runner itself.
+// none for sessions, egress and helpers, rotated json-file logs for the runner and machine relays.
 // A stand-in `docker` on PATH records each call, so this needs no Docker daemon.
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +19,9 @@ if (a[0] === "container" && a[1] === "inspect" && a.at(-1) === "0123456789ab")
   console.log(JSON.stringify([${JSON.stringify(pin)}, "local:test", [
     { Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock" },
     { Type: "volume", Name: "windlass-runner", Destination: "/var/lib/windlass-runner" }]]));
+else if (a[1] === "inspect" && a.at(-1).startsWith("wlp-model-")) {
+  console.error("No such object"); process.exitCode = 1;
+}
 else if (a[0] === "run" && a.includes("-d")) console.log("c0ffee");
 else if (a[0] === "run" && a.some(v => v.endsWith("df"))) console.log("Avail\\n1000000");
 `);
@@ -30,6 +33,7 @@ Object.assign(globalThis, { SANDBOX_IMAGE: "windlass-platform-sandbox:check", SH
 
 const { NO_LOGS, RUNNER_LOGS, helperFlags } = await import("../server/src/sandbox/docker.js");
 const { DockerSandboxes } = await import("../server/src/sandbox/sandboxes.js");
+const { DockerModelRelay } = await import("../server/src/sandbox/model-relay.js");
 const { DockerSnapshots } = await import("../server/src/sandbox/snapshots.js");
 const { MachineDocker } = await import("../runner/src/policy.js");
 // setup inspects only its own container, which Docker names by its short id.
@@ -68,6 +72,13 @@ try {
 	ok("A hosted Docker session container keeps no log, so the agent cannot fill the host's disk through it.");
 
 	const machine = "m_" + "b".repeat(16);
+	const model = new DockerModelRelay({ machine, image: "fixture" });
+	await model.ensure();
+	const [modelContainer] = started();
+	assert.equal(modelContainer[modelContainer.indexOf("--name") + 1], model.relayName);
+	assert.deepEqual(logOptions(modelContainer), ["--log-driver", "json-file", "--log-opt", "max-size=4m", "--log-opt", "max-file=2"]);
+	ok("A machine model relay starts with two rotated 4 MiB Docker logs.");
+
 	const relayed = new DockerSandboxes({ machine, image: "windlass-platform-claude:check", harness: "claude",
 		sessionRelay: async () => ({ env: ["-e", "WLP_RELAY=placeholder"], nonce: "n".repeat(16) }) });
 	await relayed.create({ uid, sessionId, profile: "docker-hardened", harness: "claude" });

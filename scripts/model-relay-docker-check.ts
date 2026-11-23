@@ -61,6 +61,7 @@ http.createServer((req, res) => {
 	req.on("end", () => {
 		if (req.url === "/__seen") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify(seen)); }
 		seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization ?? null, cookie: req.headers.cookie ?? null });
+		if (body.includes("private-relay-check")) { res.writeHead(403); return res.end("refused"); }
 		if (req.url === "/v1/models") {
 			res.writeHead(200, { "content-type": "application/json" });
 			return res.end(JSON.stringify({ models: [{ slug: "relay-model", display_name: "Relay model", visibility: "list" }] }));
@@ -204,10 +205,16 @@ try {
 	expect("the relay's caps hold: past them a request waits, then is refused with the session's ceiling named",
 		statuses.filter((s) => s === 200).length === 2 && statuses.filter((s) => s === 503).length === 3 && capped.some((r) => /from this session/.test(r.text)), JSON.stringify(capped));
 
-	// 4d. The relay itself: no logs, no token on its command line or in its environment.
+	// 4d. Inspect a diagnostic from the scoped relay through Docker's actual log driver.
+	await request(a, placeholderA, "/v1/responses", '{"input":"private-relay-check"}');
 	const inspected = await docker(["inspect", relayName], { timeoutMs: 20_000 });
+	const config = JSON.parse(inspected.stdout)[0].HostConfig.LogConfig;
 	const logs = await docker(["logs", relayName], { timeoutMs: 20_000 });
-	expect("the relay keeps no logs, and its configuration holds no token", !inspected.stdout.includes(REAL_A) && !inspected.stdout.includes(REAL_B) && /logging driver|configured logging driver does not support/i.test(logs.stderr + logs.stdout), logs.stderr);
+	const output = logs.stdout + logs.stderr;
+	expect("the scoped relay rotates two 4 MiB Docker logs", config.Type === "json-file" && config.Config["max-size"] === "4m" && config.Config["max-file"] === "2");
+	expect("docker logs includes the refused request's status", logs.code === 0 && output.includes("upstream=403"));
+	expect("relay diagnostics and configuration omit the request body and credentials",
+		[REAL_A, REAL_B, REAL_C, placeholderA, placeholderB, "private-relay-check"].every(value => !output.includes(value) && !inspected.stdout.includes(value)));
 
 	// 4e. After the turn.
 	await fileA.stop();
