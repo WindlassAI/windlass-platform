@@ -664,10 +664,10 @@
 	flex: none;
 	display: grid;
 	place-items: center;
-	min-width: 18px;
+	width: 18px;
 	height: 18px;
-	padding: 0 3px;
 	border-radius: 5px;
+	letter-spacing: -0.04em;
 	background: var(--bg-active);
 	box-shadow: inset 0 0 0 1px var(--line-strong);
 	color: var(--ink);
@@ -679,7 +679,7 @@
 	color: var(--accent-text);
 }
 .ui-menu-sheet .ui-glyph {
-	min-width: 24px;
+	width: 24px;
 	height: 24px;
 	border-radius: 7px;
 	font-size: 11px;
