@@ -627,6 +627,11 @@ export interface RunTurnInput {
 	 * For `steps: "platform"`, the most tool calls, counted by the platform (platform-steps.ts).
 	 */
 	maxSteps?: number;
+	/**
+	 * An ACP agent's turn ends when the agent sends nothing for this long while no call of its own is running and
+	 * nobody is being asked (acp-harness.ts). Left out: `ACP_IDLE_MS`.
+	 */
+	idleMs?: number;
 }
 
 /** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */
