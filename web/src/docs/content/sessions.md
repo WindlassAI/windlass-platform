@@ -54,6 +54,8 @@ A finished session is not closed. Send another prompt to go on from where it sto
 
 You can change the model, effort and mode before each prompt. While a turn runs, only the mode can be changed, and the change applies from the next prompt.
 
+A **Codex** session also has **Plan mode** in the composer, beside the effort and the model. Turned on, the next prompt asks Codex for a plan, and it changes nothing; turned off, it does the work. It is set before a prompt that starts a turn, not while one runs. It is not the work items' **Plan first**.
+
 ## Steer a running agent
 
 While the agent works, the field says **Steer it: add to or change what it is doing**. Type a message and press <kbd>Enter</kbd>, or choose **Steer**. The agent reads it after its current step. Your message is marked **steer** in the timeline.
