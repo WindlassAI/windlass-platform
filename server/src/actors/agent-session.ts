@@ -2232,7 +2232,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 			recordPushHead(meta, sandbox, pushed.head);
 			return { state: await afterPublish(c, meta, sandbox), opened: false };
 		}
-		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
+		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
 		meta.updatedAt = Date.now();

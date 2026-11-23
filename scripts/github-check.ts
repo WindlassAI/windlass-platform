@@ -1272,12 +1272,23 @@ await section("an item's step after its agent pushed everything: the open pull r
 	expect("from the panel, nothing to push is still refused", refused?.message.startsWith("There is nothing to push") === true, refused?.message);
 	expect("for the item, it answers with the pull request: nothing pushed, nothing opened, the title kept", !shown.pushed && !shown.opened && shown.pull.number === opened.pull.number && shown.pull.title === "The item" && standin.branchHead(harbor, branch) === pushed.head, JSON.stringify(shown));
 
+	// A later turn's report is about its own part of the work (a CI fix, a review fix): the pull request keeps its title, and the person's own edit of it.
+	writeFileSync(join(sandbox.cwd, "ITEM.md"), "- one\n- two\n- three\n");
+	const later = await publish.publishWork({ ...base, pull: shown.pull, pushed: pushed.head, lease: pushed.head, shownIsEnough: true, retitle: true, keepTitle: true, message: { title: "Restore the requested sum export", body: "Round three." } });
+	const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === opened.pull.number)!;
+	expect("an item's later push keeps the pull request's title and gives it the new description", later.pushed && later.pull.title === "The item" && pull.title === "The item" && own(pull.body) === "Round three.", `${pull.title} | ${own(pull.body)}`);
+	pull.title = "Add an add() helper";
+	writeFileSync(join(sandbox.cwd, "ITEM.md"), "- one\n- two\n- three\n- four\n");
+	const edited = await publish.publishWork({ ...base, pull: later.pull, pushed: later.head, lease: later.head, shownIsEnough: true, retitle: true, keepTitle: true, message: { title: "Complete capitalize API exports and docs", body: "Round four." } });
+	expect("a title the person gave the pull request at GitHub stays", edited.pull.title === "Add an add() helper" && pull.title === "Add an add() helper", pull.title);
+	const { head: kept } = edited;
+
 	// The agent rebased onto a moved base and did not push: the item's step pushes over the platform's own last push, as the agent's push would.
 	standin.commit(harbor, "main", { "ITEM_BASE.md": "the base moved\n" }, "The base moves for the item");
 	await publish.fetchBase(app, adaConnection, repository, sandbox);
 	const rebased = await sandbox.run("git rebase --quiet origin/main && git rev-parse HEAD");
-	const fromPanel = await problem(() => publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, message: { title: "unused", body: "" } }));
-	const fromItem = await publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, lease: pushed.head, shownIsEnough: true, message: { title: "unused", body: "" } });
+	const fromPanel = await problem(() => publish.publishWork({ ...base, pull: opened.pull, pushed: kept, message: { title: "unused", body: "" } }));
+	const fromItem = await publish.publishWork({ ...base, pull: opened.pull, pushed: kept, lease: kept, shownIsEnough: true, message: { title: "unused", body: "" } });
 	expect(
 		"after the agent rebased without pushing, the panel's push is refused, and the item's step, under the lease, replaces the platform's last push and keeps the pull request",
 		rebased.exitCode === 0 && fromPanel?.message.includes("has commits this workspace does not have") === true && fromItem.pushed && fromItem.pull.number === opened.pull.number && standin.branchHead(harbor, branch) === rebased.stdout.trim(),

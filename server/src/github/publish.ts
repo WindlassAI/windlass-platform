@@ -262,6 +262,12 @@ export interface PublishInput extends PushInput {
 	 */
 	retitle?: boolean;
 	/**
+	 * With `retitle`: a pull request that is open already keeps the title it has at GitHub, which its first push gave it or its
+	 * person wrote since; only its description is given anew. A work item's later turns report on their own part of the
+	 * work, and the last one's title would name only that part.
+	 */
+	keepTitle?: boolean;
+	/**
 	 * The caller wants the pull request to show the work, and a push only where one is needed: a work
 	 * item's step, after its agent may have pushed everything itself (`push`). With nothing new to push
 	 * and the pull request open, its section is written again instead of the push being refused.
@@ -460,8 +466,9 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 				if (current && (current.state === "open" || current.state === "draft")) {
 					// When nothing was pushed, the pull request keeps the time of its last push.
 					const at = pushed ? now : open.pushedAt;
-					if (input.retitle && (current.title !== title || current.body.trim() !== body)) {
-						const updated = await app.updatePull(token, owner, repo, current.number, { title, body });
+					const titled = input.keepTitle ? current.title : title;
+					if (input.retitle && (current.title !== titled || current.body.trim() !== body)) {
+						const updated = await app.updatePull(token, owner, repo, current.number, { title: titled, body });
 						return { pull: infoOf(updated, at, said.words), opened: false, pushed, retitled: true, head, committedFiles };
 					}
 					if (!pushed && !input.shownIsEnough) throw nothingToPush();
@@ -481,7 +488,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
 					const existing = await app.openPull(token, owner, repo, branch, repository.branch);
 					if (existing) {
-						const described = input.shownIsEnough && input.retitle ? { title, body } : { title: existing.title, body: pullBody(repository, existing.body, said.section) };
+						const described = input.shownIsEnough && input.retitle ? { title: input.keepTitle ? existing.title : title, body } : { title: existing.title, body: pullBody(repository, existing.body, said.section) };
 						const kept = existing.title === described.title && existing.body.trim() === described.body ? existing : await app.updatePull(token, owner, repo, existing.number, described);
 						return { pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
 					}
