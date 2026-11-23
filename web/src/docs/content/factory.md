@@ -146,6 +146,10 @@ Turn on **Take screenshots for work items** in the repository's settings, under 
 
 When an item is handed over, its page gives a verdict, such as **Ready for review**, **Needs a look** or **Failing**. The verdict rests on CI on the pushed commit, your checks where you set them, and what was seen in the changes. It never rests on the agent's words. A verdict merges nothing.
 
+### Network
+
+Below the verdict, a **Network** block appears when the sandboxes of the item's builder or reviewer refused network requests. It gives the count across their turns and the destinations, most actionable first, each with how many times it was refused and when last. A host the repository's network list can allow has **Allow for this repository**; one a paired machine refused says to add it to that machine's `--egress-domains`. A feature over several repositories lists the hosts without the button: allow one in the settings of the repository that needs it. See [Blocked network requests](/docs/sessions#blocked-network-requests).
+
 ### The check on GitHub
 
 Look for **windlass/verified** on the pull request. It starts in progress when the item publishes its commit. A feature gets one check on its assembled work after its subtasks finish. **Details** opens the evidence for the item's owner. Anyone who can read the repository can read the check summary. It contains platform observations, including check names, flagged paths, the second review's recommendation, counts and spending. The task, builder's report and reviewer's findings stay out of the check summary.

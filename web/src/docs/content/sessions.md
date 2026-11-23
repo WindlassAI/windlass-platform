@@ -44,11 +44,18 @@ At the end of each turn, a summary line gives the outcome, the number of steps, 
 
 You can copy a prompt, an answer (as Markdown) or a code block with the copy button beside it.
 
-### A host the sandbox cannot reach
+### Blocked network requests
 
-On a restricted E2B sandbox, the session timeline can show a refused DNS name with **Allow for this repository**. Choose it to allow an eligible host in the running sandbox and for other hosted agents from their next turn. The name also appears under **Asked for by its agents** in repository network settings. Allow only a host you expect.
+When the sandbox's network policy refuses a request, the turn shows one **Blocked network requests** row. It counts the refused requests and lists each destination as `host:port` (a hosted E2B sandbox sees only the name, so it shows the host alone), with how many times it was refused and when last. The first three are shown; **Show N more** opens the rest. The row updates while the turn runs. A session keeps 50 destinations; requests to any beyond those are counted under the list, not named.
 
-When a work item publishes a pull request, the description includes a count of observed network refusals from its builder and reviewer. A private, single-repository PR can also name the destinations. Public and cross-repository PRs show counts only. A paired machine contributes observations when its runner supports refusal reporting. Its owner controls the runner’s public host list with `--egress-domains`.
+Each destination says what can be done about it:
+
+- **Allow for this repository**, on a restricted E2B sandbox of a repository agent. It adds the host to the repository's network list. While a turn is running, this agent's sandbox reaches it at once; otherwise it applies from the next turn, as it does for the repository's other hosted agents. **Network list** under the row opens the list, where the host also waits under **Asked for by its agents**. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+- **Blocked by machine *name*'s settings**, on a paired machine. Its owner allows it by adding it to `--egress-domains` when starting the runner; **How to allow** shows the flag.
+- **Only the deployment's operator can allow it**, for a hosted agent with no repository.
+- A short reason for what is never allowed: a **private address**, **cloud metadata**, or the **provider policy**.
+
+The session panel's **Sandbox** section says how many requests were blocked in the current turn; **Show** scrolls to the row. A work item's page rolls up its builder's and reviewer's blocked requests in its **Network** block, and its pull request description includes a count of them. A private, single-repository pull request can also name the destinations; public and cross-repository ones show counts only.
 
 ## Send a prompt
 
