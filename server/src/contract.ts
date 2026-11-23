@@ -1437,6 +1437,11 @@ export interface ItemFeed {
 		/** One row for each repository and way of filing that has items. */
 		byRepository: ItemCount[];
 	};
+	/**
+	 * Every open subtask of a feature, asking or not, under its own title: what a feature's page, a
+	 * subtask's page and the lists read to stay current while subtasks run. Absent from servers before it.
+	 */
+	children?: ItemSummary[];
 }
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
@@ -1900,6 +1905,16 @@ export interface ItemSummary {
 	endedAt?: number;
 	/** Increased by every change: a client that holds an `ItemView` of a lower revision asks for it again. */
 	revision: number;
+	/** The step its run is at, while the run goes on: what a list row says it is doing without reading the page. */
+	step?: ItemSummaryStep;
+}
+
+/** The step of `ItemSummary.step`: its kind, since when, its turn, and the rounds of fixing used. */
+export interface ItemSummaryStep {
+	kind: StepKind;
+	startedAt: number;
+	turn: ItemStep["turn"];
+	rounds: ItemRun["rounds"];
 }
 
 /** An item's page. */

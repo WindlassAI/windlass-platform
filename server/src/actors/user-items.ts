@@ -230,12 +230,12 @@ function itemList(state: ItemsState): ItemSummary[] {
 }
 
 /** What the live feed carries: open items, the newest ended ones, the counts (item-pages.ts). */
-const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state));
+const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state), state.items.values());
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
+	return { id, title, repository, place, ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */

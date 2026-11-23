@@ -185,6 +185,8 @@ export interface MockOptions {
 	machineSession?: MockMachineSession;
 	/** How the user's work items and API tokens stand when the page loads (mock-items.ts, `MockItemsState`). Default "all". */
 	items?: MockItemsState;
+	/** True writes the seeded features' texts as long as planners and agents write them (`?long=1`): long briefs, paths and questions, six subtasks, three of them at once. */
+	long?: boolean;
 	/** False plays a deployment without the second review (WLP_FACTORY_REVIEWER unset): platform info says so. Default true. */
 	reviewer?: boolean;
 	/** False plays a deployment with screenshots turned off (WLP_FACTORY_SCREENSHOTS=off): platform info says so. Default true. */
@@ -1339,6 +1341,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
 	const items = createMockItems({
 		state: options.items,
+		long: options.long,
 		reviewer: options.reviewer,
 		now: () => realNow(),
 		latency,
