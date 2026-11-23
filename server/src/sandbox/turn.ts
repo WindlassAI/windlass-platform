@@ -415,7 +415,7 @@ class Turn {
 	/** The prompt was answered, with a result or an error. */
 	private promptSettled = false;
 	/** How the prompt's answer says its execution ended. */
-	private promptEnding: { executionId: string | null; outcome: Outcome | null } | null = null;
+	private promptEnding: { executionId: string | null; outcome: Outcome | null; stepLimit: boolean } | null = null;
 	/** The `_meta` keys the engine takes on `session/prompt` (`promptMeta` in its answer to `initialize`). */
 	private promptKeys: string[] = [];
 	private steersInFlight = 0;
@@ -931,7 +931,7 @@ class Turn {
 			(result) => {
 				const turn = result?._meta?.[NS] as { executionId?: unknown; outcome?: unknown } | undefined;
 				const outcome = typeof turn?.outcome === "string" && ["succeeded", "unresolved", "failed", "interrupted"].includes(turn.outcome) ? (turn.outcome as Outcome) : result?.stopReason === "cancelled" ? "interrupted" : null;
-				this.promptEnding = { executionId: typeof turn?.executionId === "string" ? turn.executionId : null, outcome };
+				this.promptEnding = { executionId: typeof turn?.executionId === "string" ? turn.executionId : null, outcome, stepLimit: result?.stopReason === "max_turn_requests" };
 				this.promptSettled = true;
 				this.check();
 			},
@@ -1592,9 +1592,10 @@ class Turn {
 		// With an execution still at work the turn was cut off before Windlass said how it ended: no summary then.
 		if (last !== null && this.tally.running === null) {
 			// How the prompt's answer says its execution ended; an execution a late message started has only its own event.
-			const answered = this.promptEnding !== null && (this.promptEnding.executionId === null || this.promptEnding.executionId === last.executionId) ? this.promptEnding.outcome : null;
-			const summary = this.tally.summary(answered);
+			const answered = this.promptEnding !== null && (this.promptEnding.executionId === null || this.promptEnding.executionId === last.executionId) ? this.promptEnding : null;
+			const summary = this.tally.summary(answered?.outcome ?? null);
 			if (summary !== null) {
+				if (answered?.stepLimit && this.input.maxSteps !== undefined) summary.stepLimit = this.input.maxSteps;
 				this.summary = summary;
 				try {
 					this.input.onEvent?.(summary);

@@ -94,7 +94,7 @@ or hand over the commit the run already pushed.
   is answered at once, makes the item's question when the turn ends (`agent_ask`, at most 3 a run, 1 a
   turn), and resumes the step with the person's answer ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)). On a machine using `docker-hardened`, Windlass runs shell commands unasked
   inside the runner's container. There is no per-command sandbox. Those commands can reach the machine's
-  local network and read the session's access token. A turn takes at most 60 steps. The agent is not given `publish`, since the
+  local network and read the session's access token. A builder turn has a backstop of 400 steps and a reviewer turn has 40. The agent is not given `publish`, since the
   platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a
   description that the platform puts on the pull request, and what it is unsure of, and `push` and
   `fetch_base` as a person's agent is ([The agent's own tools](github-and-repositories.md#the-agents-own-tools)): it may push the item's branch during its
@@ -227,7 +227,7 @@ as well as an item's:
   turn's, and the item's gate and verdict read them the same way. The timeline gets a note per run. A turn
   whose checks ended `unresolved` ends `unresolved`.
 - **Steps.** `sandbox/platform-steps.ts` counts each `tool_call` update with a new call id, over every
-  prompt of the turn. The limit is the item's `maxSteps` (`RULES.maxSteps`, 60; the reviewer's 40). When the
+  prompt of the turn. The limit is the item's `maxSteps` (`RULES.maxSteps`, 400; the reviewer's 40). When the
   agent starts the call past it, the harness sends `session/cancel`, the turn ends `unresolved` with a
   timeline note, and no check runs. `turn.ended.steps` is the count in every ACP turn.
 

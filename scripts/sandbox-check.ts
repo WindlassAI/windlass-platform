@@ -191,6 +191,7 @@ interface TurnRun {
 }
 
 interface TurnExtra {
+	maxSteps?: number;
 	onReview?: () => Promise<string>;
 	windlassSessionId?: string;
 	signal?: AbortSignal;
@@ -210,6 +211,7 @@ async function turn(handle: DockerSandboxHandle, prompt: string, script: Scripte
 	const ask = extra.onQuestion;
 	const result = await (extra.windlass ?? layer.windlass).runTurn(handle, {
 		prompt,
+		maxSteps: extra.maxSteps,
 		onReview: extra.onReview,
 		script: script ?? undefined,
 		windlassSessionId: extra.windlassSessionId,
@@ -1649,10 +1651,12 @@ PYTHON`);
 			unknown.result.failure?.reason === "session_not_found" && /no session ses_0{24}/.test(unknown.result.failure.message) && unknown.events.length === 0 && unknown.result.summary === null && unknown.result.windlassSessionId === null && unknown.result.exitCode === 0 && !unknown.result.aborted,
 			`${unknown.result.failure?.message} (${unknown.durationMs} ms)`,
 		);
+		const limited = await turn(handle, "Keep working.", { responses: Array.from({ length: 5 }, (_, i) => shell(`read${i}`, "pwd")) }, { maxSteps: 1 });
+		expect("a failed turn at its step limit reports the configured limit", outcomeOf(limited) === "failed" && limited.result.summary?.stepLimit === 1);
 		const failing = await turn(handle, "Fail.", { responses: [[{ type: "fail", kind: "usage_limit", message: "the scripted plan has no requests left" }]] });
 		expect(
 			"a turn whose model call fails ends as `execution_failed`, with the events and a summary that say failed",
-			failing.result.failure?.reason === "execution_failed" && outcomeOf(failing) === "failed" && endsWithSummary(failing) && ofType(failing.events, "execution.failed").length === 1 && failing.result.exitCode === 0,
+			failing.result.failure?.reason === "execution_failed" && outcomeOf(failing) === "failed" && failing.result.summary?.stepLimit === undefined && endsWithSummary(failing) && ofType(failing.events, "execution.failed").length === 1 && failing.result.exitCode === 0,
 			failing.result.failure?.message ?? "",
 		);
 		const signedOut = await turn(handle, "Fail.", { responses: [[{ type: "fail", kind: "auth", message: "the scripted token was rejected" }]] }, { windlassSessionId: failing.result.windlassSessionId ?? undefined });
