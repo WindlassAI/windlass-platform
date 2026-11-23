@@ -61,10 +61,13 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 export async function relayNotes(m: MachineDocker, harness: MachineHarness, latest = 3): Promise<string[]> {
 	const box = await ownedRelay(m, harness).catch(() => undefined);
 	if (!box?.State?.Running) return [];
-	const read = await docker(["exec", box.Id, "cat", "/workspace/relay-notes.json"], { timeoutMs: 15_000 });
-	if (read.code !== 0) return [];
+	// Copied out as a tar stream, never run in the relay (status starts and runs nothing: runner-check.ts). One file, so one header.
+	const read = await docker(["cp", box.Id + ":/workspace/relay-notes.json", "-"], { timeoutMs: 15_000 });
+	if (read.code !== 0 || read.stdout.length < 512) return [];
+	const size = Number.parseInt(read.stdout.slice(124, 136).replace(/\0/g, "").trim(), 8);
+	if (!Number.isSafeInteger(size) || size <= 0 || size > 65_536) return [];
 	let notes: unknown;
-	try { notes = JSON.parse(read.stdout); } catch { return []; }
+	try { notes = JSON.parse(read.stdout.slice(512, 512 + size)); } catch { return []; }
 	if (!Array.isArray(notes)) return [];
 	const field = (value: unknown) => (typeof value === "string" || typeof value === "number") && /^[A-Za-z0-9 ./;=_+:,-]{0,120}$/.test(String(value)) ? String(value) : "?";
 	return notes.slice(-latest).filter(note => note && typeof note === "object").map((note: Record<string, unknown>) =>
