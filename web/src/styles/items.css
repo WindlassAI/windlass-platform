@@ -2072,9 +2072,18 @@ a.plan-task-title:hover {
 	color: var(--ink-dim);
 }
 .plan-ask-why summary {
-	width: max-content;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
 	cursor: pointer;
 	color: var(--ink-faint);
+	list-style: none;
+}
+.plan-ask-why summary::-webkit-details-marker {
+	display: none;
+}
+.plan-ask-why[open] .plan-task-more-chevron {
+	transform: rotate(90deg);
 }
 .plan-ask-why summary:hover,
 .plan-ask-why[open] summary {

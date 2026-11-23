@@ -396,7 +396,10 @@ function PlanAsk({ question, value, disabled, onChange }: { question: FeaturePla
 	const { ask, why } = questionParts(question);
 	const background = why ? (
 		<details className="plan-ask-why">
-			<summary>Why it asks</summary>
+			<summary>
+				<ChevronIcon size={11} className="plan-task-more-chevron" />
+				Why it asks
+			</summary>
 			<p>{why}</p>
 		</details>
 	) : null;
