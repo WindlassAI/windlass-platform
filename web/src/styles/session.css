@@ -212,6 +212,20 @@
 .to-details {
 	display: none;
 }
+/* Why "Publish pull request" cannot open its dialog now, at the button. */
+.bar-publish-why {
+	display: grid;
+	gap: 8px;
+	padding: 12px 14px;
+	font-size: var(--size-small);
+}
+.bar-publish-why-text {
+	color: var(--ink);
+}
+.bar-publish-why .link {
+	justify-self: start;
+}
+
 /* An agent's sign-in on its machine (HarnessStatus): in the composer's column, above it. */
 .session-notice {
 	flex: none;
