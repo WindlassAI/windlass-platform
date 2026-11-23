@@ -19,6 +19,9 @@ COPY --chmod=0644 managed-settings.json /etc/claude-code/managed-settings.json
 COPY --chmod=0755 wlp-claude-acp /usr/local/bin/wlp-claude-acp
 RUN chmod 0755 /etc/claude-code
 USER agent
+# User-scope defaults let a repository supply its own Claude settings.
+RUN mkdir -p /home/agent/.claude
+COPY --chown=agent:agent --chmod=0644 settings.json /home/agent/.claude/settings.json
 # SHA-256 from https://downloads.claude.ai/claude-code-releases/2.1.328/manifest.json
 # These also match package/claude in the corresponding npm archives.
 RUN --network=none set -eu; \

@@ -59,6 +59,8 @@ There are four agents, each shown by its own logo. The row of logos at the top o
 
 Choose the machine under **where** first. Claude Code and OpenCode run in the hardened Docker profile only. They do not run the repository's checks; CI's result is on the pull request. The **agent** menu groups the models under each agent's name, with its sign-in state. An agent offered only on another machine of yours says "choose that machine first". Under **Terminal sign-in commands** are the commands that sign each one in.
 
+On machines with the updated runner, Claude Code reads the repository’s `CLAUDE.md` and `.claude/` settings, skills and commands. New sandboxes start with bundled skills such as `/deep-research`, the plugin-authoring plugin, dynamic workflows and account skill and plugin sync turned off. The built-in tools for code-review findings and loop wakeups are disabled. Claude uses shorter tool descriptions and keeps the platform tools and their usual approvals.
+
 See [Agents on your machine](/docs/machines#agents-on-your-machine) to set them up.
 
 ### The model
