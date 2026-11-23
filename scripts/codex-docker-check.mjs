@@ -87,7 +87,7 @@ headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER,'content-type':'
 async function terminalLogin(hostileUrl) {
 	const child = spawn('script', ['-qef', '-c', 'exec node runner.cjs login codex', '/dev/null'], {
 		cwd: dir,
-		env: { ...process.env, ...(hostileUrl && { F3_DEVICE_URL: hostileUrl, WLP_CODEX_DEVICE_LOGIN: '1' }) },
+		env: { ...process.env, ...(hostileUrl && { F3_DEVICE_URL: hostileUrl }) },
 		stdio: ['pipe', 'pipe', 'pipe'],
 		timeout: 60000,
 	});

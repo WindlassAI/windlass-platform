@@ -1,12 +1,10 @@
-# Validate Codex device login on a machine
+# Codex on a machine
 
-API-key login is available from the machine terminal. ChatGPT device login requires an owner-run validation with the pinned adapter and CLI. Use a dedicated machine pairing that offers Codex. The Machines setup command uses `--log-driver none` for the interactive Codex container. Include that option when constructing a one-off setup command yourself. Keep the terminal and verification code private.
+Sign Codex in from the machine's terminal with `windlass-runner login codex` (for a containerized runner, `docker exec -it windlass-runner windlass-runner login codex`). Choose 1) ChatGPT (device code) and enter the displayed code at the official OpenAI verification URL, or 2) an OpenAI API key at the hidden prompt. Workspace policy may require an administrator to enable device login. The Machines setup command uses `--log-driver none` for the interactive Codex container; include that option when constructing a one-off setup command yourself. Keep the terminal and verification code private. `windlass-runner logout codex` ends access through the machine.
 
-1. In the runner's terminal environment, run `WLP_CODEX_DEVICE_LOGIN=1 WLP_CODEX_VERIFY_REFRESH=1 windlass-runner login codex`. For a containerized runner, pass both variables with `docker exec -it -e WLP_CODEX_DEVICE_LOGIN=1 -e WLP_CODEX_VERIFY_REFRESH=1 <runner> windlass-runner login codex`.
-2. Choose ChatGPT. Enter the displayed code at the official OpenAI verification URL. Workspace policy may require an administrator to enable device login.
-3. Confirm that Machines reports a signed-in Codex harness. Start a session and complete a short turn. Send a second prompt and confirm that it completes. With the validation flag, the relay treats the access token as expiring on the next request after the first Responses request. It saves the rotated token and clears the validation flag. Inventory requests can trigger the refresh between turns.
-4. Run `windlass-runner logout codex` in the same runner environment. Confirm that Machines reports signed out and another prompt asks for terminal sign-in.
-5. Record the runner and image digests and the outcomes of both turns and logout. A maintainer can then enable device login for the validated pair. Keep verification codes, credentials and account identifiers out of the record.
+## Checking token refresh
+
+A ChatGPT access token lasts about an hour, and the machine's relay refreshes it with the saved refresh token. To see a refresh happen without waiting, sign in with `WLP_CODEX_VERIFY_REFRESH=1 windlass-runner login codex` (containerized: `docker exec -it -e WLP_CODEX_VERIFY_REFRESH=1 windlass-runner windlass-runner login codex`). The relay then treats the access token as expiring on the next request after the first Responses request, saves the rotated token and clears the flag. Run two short turns: both must complete. Model-list requests can trigger the refresh between turns. `windlass-runner status` lists the relay's latest refused answers if one fails.
 
 The login volume belongs to a single machine pairing. Each session receives a signed lease for its local relay. What each mode allows depends on the sandbox profile:
 
