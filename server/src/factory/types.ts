@@ -160,6 +160,7 @@ export interface FeatureJob {
 	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
 	dispatchKey?: string;
+	dispatchedAt?: number;
 	startedAt?: number;
 	wait?: string;
 	placementRefusal?: string;
@@ -243,6 +244,8 @@ export interface FactoryItem {
 	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
+	/** The feature commit after this child's successful join. Its own pushed head stays on the child. */
+	integratedHead?: string;
 	cancelAfterIntegration?: boolean;
 	approvedPlan?: import("../contract.js").FeaturePlan;
 	mode?: import("../contract.js").ItemMode;
@@ -402,7 +405,7 @@ export type Fact =
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
 	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
 	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
-	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
+	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; head?: string; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }

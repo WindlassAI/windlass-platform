@@ -281,7 +281,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		feedback: await feedbackView(c.db),
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: plan ?? null,
-		...(stored.item.jobs && { subtasks: stored.item.jobs.map(j => ({ id: j.id, key: j.task.key, state: j.state, startedAt: j.startedAt ?? null, wait: j.wait ?? j.placementRefusal ?? null })) }),
+		...(stored.item.jobs && { subtasks: stored.item.jobs.map(j => ({ id: j.id, key: j.task.key, state: j.state, dispatchedAt: j.dispatchedAt ?? null, startedAt: j.startedAt ?? null, wait: j.wait ?? j.placementRefusal ?? null })) }),
 		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
@@ -1014,7 +1014,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
 export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
-	if (effect.kind === "notify_integrated") return item.state === "done" && item.head === effect.head;
+	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "issue_comment") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
@@ -1359,7 +1359,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					return true;
 				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, placement: v.placement, head: v.head, spent: v.spent, budget: v.budget, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, startedAt: v.run?.startedAt, wait: v.wait?.sentence, placement: v.placement, head: v.head, spent: v.spent, budget: v.budget, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
 				if (!changed && live(c.vars.stored!.item, effect)) {
 					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
 					await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));

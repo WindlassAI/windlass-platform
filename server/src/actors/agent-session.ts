@@ -1372,7 +1372,10 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 		head = pinned.marks.get("work") ?? "";
 		if (head !== plan.commit) return false;
 		repo.baseSha = plan.commit;
-	} else if (meta.origin?.childBranch) head = await putOnWork(sandbox, ".", meta.origin.childBranch.name, meta.origin.childBranch.start);
+	} else if (meta.origin?.childBranch) {
+		head = await putOnWork(sandbox, ".", meta.origin.childBranch.name, meta.origin.childBranch.start);
+		repo.baseSha = head;
+	}
 	else head = await putOnWork(sandbox, ".", repo.branch);
 	if (head !== plan.commit) {
 		// The branch moved during startup. Decide using the immutable tree we actually checked out.
@@ -2167,20 +2170,23 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	const due = meta.workDue;
 	const repo = meta.repo;
 	if (!due || !repo) return;
+	const child = meta.origin?.childBranch;
+	const fresh = !meta.pushedHead && child ? child : null;
+	const branch = fresh?.name ?? due.branch;
 	let head: string;
 	try {
-		const child = !meta.pushedHead && meta.origin?.childBranch;
-		head = child ? await putOnWork(sandbox, due.directory, child.name, child.start) : await putOnWork(sandbox, due.directory, due.branch);
+		head = await putOnWork(sandbox, due.directory, branch, fresh?.start);
 	} catch (error) {
-		throw new TurnProblem(`The new sandbox could not be put on ${due.branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
+		throw new TurnProblem(`The new sandbox could not be put on ${branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
 	}
 	meta.workDue = null;
-	if (due.branch !== repo.branch) meta.pushedHead = head;
+	if (child) repo.baseSha = child.start;
+	if (!fresh && branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
 	const base = due.setupBase ?? repo.branch;
 	// Every agent is told, in a person's session and in an item's alike (`platformNotes`).
-	if (due.setUp) meta.setupOnBase = { branch: due.branch, base };
-	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
+	if (due.setUp) meta.setupOnBase = { branch, base };
+	note(c, turn, "info", `Put the workspace on ${branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
 

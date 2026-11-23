@@ -1617,7 +1617,7 @@ export interface ItemFeed {
 	 */
 	children?: ItemSummary[];
 	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
-	subtasks?: { id: string; key: string; state: ItemState; startedAt: number | null; wait: string | null }[];
+	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
 }
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
@@ -1733,7 +1733,7 @@ export interface ItemSpend extends ItemBudget {
 	activeSeconds: number;
 }
 
-/** A subtask's budget in a feature's plan: one token figure. Its hosted time is the account's per-item budget. */
+/** A subtask's budget in a feature's plan: one token figure. At dispatch its token share also determines its share of hosted time. */
 export type SubtaskBudget = Pick<ItemBudget, "tokens">;
 
 /** Effective account limits after applying the operator’s overrides to the deployment defaults. */
@@ -2164,7 +2164,7 @@ export interface ItemView extends ItemSummary {
 	completedSubtasks?: string[];
 	children?: ItemSummary[];
 	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
-	subtasks?: { id: string; key: string; state: ItemState; startedAt: number | null; wait: string | null }[];
+	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */

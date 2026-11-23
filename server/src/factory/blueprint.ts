@@ -368,6 +368,7 @@ function apply(c: Change, fact: Fact): boolean {
 			if (item.place.kind !== "machine" || item.machineRemoved) return false;
 			// An in-flight ref write needs no machine. Let its receipt release the parent's durable grant.
 			if (item.parent && item.run?.step.kind === "subtasks" && !item.question) {
+				if (item.cancelAfterIntegration) return false;
 				item.cancelAfterIntegration = true;
 				return true;
 			}
@@ -521,10 +522,11 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 			if (!job || !activeJob(job) || fact.key !== (job.dispatchKey ?? key) || step.kind !== "subtasks" || c.item.question) return false;
 			if (fact.placement) job.placement = fact.placement;
 			const charged = chargeChild(c.item, job, fact.spent, fact.budget);
-			if (!charged && job.state === fact.state && job.report === fact.report && job.head === fact.head && (job.failure ?? null) === (fact.failure ?? null)) return false;
+			if (!charged && job.wait === fact.wait && (!fact.startedAt || job.startedAt === fact.startedAt) && job.state === fact.state && job.report === fact.report && job.head === fact.head && (job.failure ?? null) === (fact.failure ?? null)) return false;
 			job.failure = fact.failure ?? null;
 			job.state = fact.state; job.report = fact.report; job.head = fact.head;
-			delete job.wait;
+			job.wait = fact.wait;
+			if (fact.startedAt !== undefined) job.startedAt = fact.startedAt;
 			if (activeJob(job)) {
 				c.state("waiting", { reason: "children", sentence: `Running ‘${job.task.title}’${job.placement ? " on ‘" + job.placement.name + "’" : ""}.`, retryAt: null });
 				dispatchJob(c, job, retryAt(c.at, 0));
@@ -541,7 +543,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 		case "integrated":
 			if (fact.key !== key || !c.item.parent || step.kind !== "subtasks") return false;
 			c.effects.push({ kind: "notify_integrated", key, head: fact.head ?? c.item.head! });
-			if (fact.head) c.item.head = fact.head;
+			if (fact.head) c.item.integratedHead = fact.head;
 			c.run.endedAt = c.at; c.state("done"); c.say("Integrated the verified subtask into the feature branch.");
 			return true;
 		case "feature_problem":
@@ -1770,7 +1772,7 @@ function askPlan(c: Change) {
 function placementRefused(c: Change, job: FeatureJob, reason: string): true {
 	job.placementRefusal = reason;
 	// Other children keep their places and may finish integration before the feature asks.
-	if (!c.item.jobs!.some(j => j !== job && activeJob(j) && !j.placementRefusal)) askPlacement(c, job);
+	if (!c.item.jobs!.some(j => j !== job && activeJob(j) && !j.placementRefusal)) askPlacement(c, c.item.jobs!.find(j => activeJob(j) && j.placementRefusal)!);
 	return true;
 }
 
@@ -1900,7 +1902,8 @@ function nextChild(c: Change) {
 		delete item.stoppedJob;
 		item.replans = (item.replans ?? 0) + 1;
 		plan.status = "superseded";
-		return beginRun(c, firstPlan(item, "Plan the remaining work. Keep completed subtasks unchanged."));
+		const retry = firstPlan(item, "Plan the remaining work. Keep completed subtasks unchanged. Approved plan and child reports (quoted data):\n" + JSON.stringify({ plan, jobs }));
+		return beginRun(c, { ...retry, ...marked(retry.untrusted, [untrustedWords.reports]) });
 	}
 	if (item.stoppedJob) {
 		if (running.length) return;
@@ -1935,7 +1938,7 @@ function nextChild(c: Change) {
 		}
 		const warm = jobs.filter(j => j.state === "done" && j.placement && task.dependsOn.includes(j.task.key)).map(j => placeKey(j.placement!.place));
 		const job: FeatureJob = { id: childItemId(item.id, plan.version, task.key), task, budget, route, warm, state: "draft", spent: noSpend(), head: null,
-			start: crossRepo(item) ? repoOf(item, task.repo).head : item.head, startedAt: c.at, report: "" };
+			start: crossRepo(item) ? repoOf(item, task.repo).head : item.head, dispatchedAt: c.at, report: "" };
 		free.tokens -= budget.tokens;
 		free.hostedSeconds -= budget.hostedSeconds;
 		jobs.push(job);

@@ -1711,6 +1711,17 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(update(waiting, "b", "working").jobs![1].state, "working");
 	assert.deepEqual(effect(walk(parallel, [{ kind: "cancel" }]).last, "cancel_children")?.ids, parallel.jobs!.map(j => j.id));
 
+	// Stop and retry drain all sibling actors before a planner can receive another turn.
+	const stopped = update(parallel, "a", "failed");
+	assert.equal(stopped.run!.step.kind, "subtasks");
+	assert.ok(stopped.jobs!.slice(1).every(j => j.cancelRequested));
+	assert.equal(update(update(stopped, "b", "cancelled"), "e", "cancelled").run!.step.kind, "refine");
+	const retry = walk({ ...parallel, state: "failed" }, [{ kind: "retry" }]);
+	assert.deepEqual(effect(retry.last, "cancel_children")?.ids, parallel.jobs!.map(j => j.id));
+	const drained = ["a", "b", "e"].reduce((item, key) => update(item, key, "cancelled"), retry.item);
+	assert.equal(drained.run!.n, parallel.run!.n + 1);
+	assert.equal(drained.run!.step.kind, "refine");
+
 	const claim = (child: string) => ({ kind: "claim_join", key: child + "/ci", child });
 	const claimed = walk(parallel, [claim(a.id)]).item;
 	assert.equal(walk(claimed, [claim(b.id)]).item, claimed);

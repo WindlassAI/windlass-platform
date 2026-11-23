@@ -385,7 +385,7 @@ test("a re-plan respects the historical tree limit and repeated failures in diff
 	const first = advance(running, fail).item;
 	for (let n=0; n<5; n++) first.jobs!.push({...job, id:"i_old"+n, task:{...job.task,key:"old"+n}});
 	assert.throws(() => advance(first, {kind:"file_plan", key:currentKey(first)!, at:8, plan:proposal()}), /six|limit/i);
-	running.jobs!.unshift({...job, task:{...job.task,key:"another"}, state:"failed", failure:fail.failure});
+	running.jobs!.unshift({...job, id:"i_previous", task:{...job.task,key:"another"}, state:"failed", failure:fail.failure});
 	const stopped = advance(running, fail);
 	assert.equal(stopped.item.question?.kind, "rounds");
 	assert.match(stopped.item.question!.text, /same failure/i);

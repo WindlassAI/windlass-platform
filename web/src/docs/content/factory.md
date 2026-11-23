@@ -331,7 +331,7 @@ If these checks are missing, you can still run the plan with one implementer. Th
 
 ### The plan
 
-The plan says what the feature is for, what it must do, what is left out of it and when it is done. A split plan also lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget: one token figure. Subtasks that do not wait for each other may not own the same paths.
+The plan says what the feature is for, what it must do, what is left out of it and when it is done. A split plan also lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget: one token figure. Subtasks that own overlapping paths take turns, even when neither depends on the other.
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
