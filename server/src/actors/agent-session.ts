@@ -1339,7 +1339,7 @@ async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | nu
 	if (!project || !app || !repo) return null;
 	try {
 		const saved = secrets.snapshotSetup, command = saved.command;
-		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : repo.branch;
+		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : meta.origin?.childBranch?.start ?? repo.branch;
 		if (!revision) return null;
 		const key = { repo: String(repo.id), attempt: randomBytes(16).toString("hex"), generation: snapshotGeneration(String(repo.id), saved.updatedAt, saved.connectedAt) };
 		// A build always starts cold, and is the only kind of session that saves an image (environments.ts).
@@ -1373,6 +1373,9 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 		head = pinned.marks.get("work") ?? "";
 		if (head !== plan.commit) return false;
 		repo.baseSha = plan.commit;
+	} else if (meta.origin?.childBranch) {
+		head = await putOnWork(sandbox, ".", meta.origin.childBranch.name, meta.origin.childBranch.start);
+		repo.baseSha = head;
 	} else head = await putOnWork(sandbox, ".", repo.branch);
 	if (head !== plan.commit) {
 		// The branch moved during startup. Decide using the immutable tree we actually checked out.
@@ -2180,19 +2183,23 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	const due = meta.workDue;
 	const repo = meta.repo;
 	if (!due || !repo) return;
+	const child = meta.origin?.childBranch;
+	const fresh = !meta.pushedHead && child ? child : null;
+	const branch = fresh?.name ?? due.branch;
 	let head: string;
 	try {
-		head = await putOnWork(sandbox, due.directory, due.branch);
+		head = await putOnWork(sandbox, due.directory, branch, fresh?.start);
 	} catch (error) {
-		throw new TurnProblem(`The new sandbox could not be put on ${due.branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
+		throw new TurnProblem(`The new sandbox could not be put on ${branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
 	}
 	meta.workDue = null;
-	if (due.branch !== repo.branch) meta.pushedHead = head;
+	if (child) repo.baseSha = child.start;
+	if (!fresh && branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
 	const base = due.setupBase ?? repo.branch;
 	// Every agent is told, in a person's session and in an item's alike (`platformNotes`).
-	if (due.setUp) meta.setupOnBase = { branch: due.branch, base };
-	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
+	if (due.setUp) meta.setupOnBase = { branch, base };
+	note(c, turn, "info", `Put the workspace on ${branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
 
@@ -5611,7 +5618,7 @@ export const agentSession = actor({
 				cloned: false,
 				windlassSessionId: null,
 				turnStartedAt: null,
-				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin } : {}),
+				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin, ...(input.origin.childBranch && { publishBranch: input.origin.childBranch.name }) } : {}),
 				...(!input.origin && typeof input.environmentBuild?.project === "string" && typeof input.environmentBuild.place === "string"
 					? { environmentBuild: { project: input.environmentBuild.project, place: input.environmentBuild.place, screenshots: input.environmentBuild.screenshots === true } } : {}),
 			};

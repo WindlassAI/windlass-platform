@@ -16,6 +16,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { subtaskBranch } from "../server/src/github/feature.js";
 import { branchFor } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
@@ -433,7 +434,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
 				if (v.run?.step.kind === "subtasks") assert(!standin.checks.some(r => r.external_id.includes(feature.id)), "A check appeared during feature integration");
 				for (const child of v.children ?? []) {
-					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
+					const pushed = standin.branchHead(harbor, subtaskBranch(child.parent!.itemId, child.parent!.key, child.id));
 					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
 				}
 				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
@@ -443,16 +444,18 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
 			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
-			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			const approvedTokens = single.tokens + checkedPlan.subtasks.reduce((sum, child) => sum + child.budget.tokens, 0);
+			assert(done.spent.turns === 6 && done.budget.tokens === approvedTokens,
+				"Unexpected feature spend or budget " + JSON.stringify({ spent: done.spent, budget: done.budget, approvedTokens }));
 			await waitFor("one successful feature check", () => standin.checks.find(r => r.external_id === done.verdicts.at(-1)?.id && r.conclusion === "success"), 30_000);
 			assert(standin.checks.filter(r => r.external_id.includes(feature.id)).length === 1 && !standin.checks.some(r => done.children!.some(child => r.external_id.includes(child.id))), "Extra feature or child checks were posted");
 			const [first, secondChild] = done.children;
-			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
-			assert(standin.fileOn(harbor, branchFor(first.title, first.sessionId), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
+			const firstHead = standin.branchHead(harbor, subtaskBranch(first.parent!.itemId, first.parent!.key, first.id))!;
+			assert(standin.fileOn(harbor, subtaskBranch(first.parent!.itemId, first.parent!.key, first.id), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
 			const snapshot = await client.agentSession.get([auth.profile.uid, secondChild.sessionId], { params: { token: auth.token } }).snapshot();
 			const setup = snapshot.timeline.find(e => e.kind === "setup" && e.state === "succeeded");
 			assert(setup?.kind === "setup" && setup.output.trim() === "seed-setup", "The second subtask must run the seed setup with the fixture secret. Observed " + (setup?.kind === "setup" ? setup.output : "no successful setup"));
-			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
+			const parent = standin.branchHead(harbor, subtaskBranch(secondChild.parent!.itemId, secondChild.parent!.key, secondChild.id))!;
 			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
 			assert(log("%s", firstHead + "^") === "Start feature " + feature.id && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
@@ -470,13 +473,19 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			await waitFor("the reopened feature check", () => standin.checks.find(r => r.external_id === "pending:" + feature.id + ":2" && r.status === "in_progress"), 12_000);
 			const second = await user.createItem({repository:{id:harbor.id}, title:"Cancel this feature", body:"Index and search documents.", mode:"orchestrate", start:true});
 			const proposal = await untilItem(user,second.id,"a second plan",v=>v.plan?.status==="proposed" && !!v.question);
-			await user.actOnItem({id:second.id,action:{kind:"approve_plan",version:proposal.plan!.version}});
-			const active = await untilItem(user,second.id,"a child before cancellation",v=>v.children?.length === 1);
-			await user.actOnItem({id:second.id,action:{kind:"cancel"}});
-			const stopped = await untilItem(user,active.children![0].id,"the cancelled child",v=>v.state === "cancelled");
-			const tree = await user.item(second.id);
-			assert(tree.state === "cancelled" && tree.children?.length === 1 && !stopped.pullRequest, "Cancellation dispatched more work.");
-			return "two child heads fast-forwarded, one summary, one whole-feature review; a second feature cancelled its child";
+			const independent = structuredClone(proposal.plan!);
+			independent.subtasks[1].dependsOn = [];
+			const edit = await user.actOnItem({ id: second.id, action: { kind: "edit_plan", version: independent.version, plan: independent } });
+			await user.actOnItem({ id: second.id, action: { kind: "approve_plan", version: edit.plan!.version } });
+			// Withhold CI from both children: neither can finish and release its dependent before this observation.
+			const active = await untilItem(user, second.id, "both independent child sessions before cancellation",
+				v => v.children?.length === 2 && v.children.every(child => child.step?.kind === "ci"));
+			assert(new Set(active.children!.map(child => child.sessionId)).size === 2, "Parallel children shared a session.");
+			await user.actOnItem({ id: second.id, action: { kind: "cancel" } });
+			const stopped = await untilItem(user, second.id, "both cancelled child branches",
+				v => v.state === "cancelled" && v.children?.length === 2 && v.children.every(child => child.state === "cancelled"));
+			assert(stopped.children!.every(child => !child.pullRequest), "A cancelled child opened a pull request.");
+			return "two checked children integrated in order; a second feature ran two independent children together and cancelled both";
 		});
 	} finally { await server.stop(); server.remove(); }
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
@@ -547,7 +556,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 				for (const child of v.children ?? []) {
 					const repo = child.repository.id === cli.id ? cli : platform;
 					children.add(child.id + ":" + child.repository.id);
-					const pushed = standin.branchHead(repo, branchFor(child.title, child.sessionId));
+					const pushed = standin.branchHead(repo, subtaskBranch(child.parent!.itemId, child.parent!.key, child.id));
 					if (pushed && !repo.ci.has(pushed)) setCi(repo, pushed, "success");
 				}
 				return v.run?.step.kind === "integration" || !!v.question || !!v.children?.some(c => c.question);

@@ -908,6 +908,19 @@ export class GithubStandin {
 				const paths = git(["ls-tree","-r","--name-only",repository.defaultBranch,"--",".github/workflows"],repository.path);
 				return pageOf("workflows", paths.split("\n").filter(Boolean).map(path => ({path,state:"active"})));
 			}
+			if (rest === "/merges" && method === "POST") {
+				if (!this.allows(token, repository, "contents", "write")) return denied();
+				const { base, head, commit_message } = body as { base: string; head: string; commit_message: string };
+				const old = this.branchHead(repository, base);
+				if (!old || !/^[a-f0-9]{40}$/.test(head)) return answer(422, { message: "Invalid merge" });
+				if (git(["merge-base", old, head], repository.path) === head) return answer(204, null);
+				let tree: string;
+				try { tree = git(["merge-tree", "--write-tree", old, head], repository.path); }
+				catch { return answer(409, { message: "Merge conflict" }); }
+				const sha = git(["commit-tree", tree, "-p", old, "-p", head, "-m", commit_message], repository.path);
+				git(["update-ref", "refs/heads/" + base, sha, old], repository.path);
+				return answer(201, { sha });
+			}
 			if (rest.startsWith("/git/")) {
 				if (!this.allows(token,repository,"contents",method === "GET" ? "read" : "write")) return denied();
 				const fields = body as {ref:string; sha:string; tree:string; parents:string[]; message:string; author:{date:string; name:string; email:string}; force:boolean};
@@ -929,7 +942,7 @@ export class GithubStandin {
 					if (rest.startsWith("/git/refs/heads/") && method === "PATCH") {
 						const ref = rest.slice("/git/".length);
 						if (fields.force !== false) return answer(422,{message:"Forced update refused"});
-						git(["merge-base","--is-ancestor",ref,fields.sha],repository.path);
+						if (git(["merge-base",ref,fields.sha],repository.path) !== git(["rev-parse",ref],repository.path)) return answer(422, { message: "Update is not a fast forward" });
 						git(["update-ref",ref,fields.sha],repository.path);
 						return answer(200,{object:{sha:fields.sha}});
 					}

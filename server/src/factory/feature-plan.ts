@@ -119,8 +119,16 @@ function overlaps(a: string, b: string, literalRight = false) {
 	return intersect(a.split("/"), b.split("/"), "**", (x, y) => intersect([...x], [...y], "*", (m,n) => m === n, literalRight), literalRight);
 }
 
+/** Plain paths include their descendants. A glob describes its own depth. */
+const ownedGlob = (entry: string) => entry.includes("*") ? entry : entry + "/**";
+
+export function sharedPaths(a: PlanSubtask, b: PlanSubtask): boolean {
+	if (!a.owns?.length || !b.owns?.length) return true;
+	return a.repo === b.repo && a.owns.some(p => b.owns.some(q => overlaps(ownedGlob(p), ownedGlob(q))));
+}
+
 export function ownsPath(owns: string[], path: string): boolean {
-	return owns.some(pattern => overlaps(pattern, path, true));
+	return owns.some(pattern => overlaps(ownedGlob(pattern), path, true));
 }
 
 /** The longest model id a subtask may name; an effort is at most 64 characters, as a Quick item's. */
@@ -296,7 +304,7 @@ export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">,
 		const n = asked.tokens;
 		requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= minimum.tokens && n <= single.tokens, `Subtask tokens must be a whole number between ${minimum.tokens} and ${single.tokens}.`);
 		const budget: SubtaskBudget = { tokens: n };
-		const owns = lines(s.owns, 1, 32);
+		const owns = lines(s.owns ?? [], 0, 32);
 		for (const path of owns) requirePlan(/^[\w.*@/-]+$/.test(path) && path.split("/").every(part => part && ![".", "..", ".git"].includes(part)), "Use repository-relative owned path globs.");
 		const dependsOn = lines(s.dependsOn, 0, 5).map(keyOf);
 		unique(dependsOn);
@@ -306,16 +314,10 @@ export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">,
 		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget, ...placementFields(s), ...(repo && { repo }) };
 	});
 	unique(subtasks.map(s => s.key));
-	const ancestors = new Map<string, Set<string>>();
 	const done = new Set<string>();
 	while (done.size < subtasks.length) {
 		const next = subtasks.find(s => !done.has(s.key) && s.dependsOn.every(k => done.has(k)));
 		requirePlan(next, "Dependencies must name existing subtasks and form an acyclic graph.");
-		const deps = new Set(next.dependsOn.flatMap(k => [k, ...ancestors.get(k)!]));
-		// Paths are a repository's: the same path in two repositories is two paths.
-		for (const other of subtasks) if (done.has(other.key) && !deps.has(other.key) && other.repo === next.repo)
-			requirePlan(!next.owns.some(p => other.owns.some(q => overlaps(p, q))), "Independent subtasks must not overlap owned paths.");
-		ancestors.set(next.key, deps);
 		done.add(next.key);
 	}
 	const plan: FeaturePlanEdit = { overflow: p.overflow === true, questions, singleSuggested, subtasks, spec: { goal: text(spec.goal, 2000), acceptance: lines(spec.acceptance, 1), requirements: lines(spec.requirements), outOfScope: lines(spec.outOfScope) } };

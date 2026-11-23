@@ -172,14 +172,19 @@
         "scripts/github-standin.ts",
         "scripts/runner-standin.ts",
         "scripts/feature-git-fixture.ts",
+        "scripts/factory-check.ts",
+        "scripts/orchestrator-check.ts",
         "scripts/factory-e2e.ts"
       ],
       "shards": {
-        "1": { "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
-        "2": { "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,sleep,deploy,creation" } },
-        "3": { "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo" } }
+        "1": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
+        "2": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,sleep,deploy,creation" } },
+        "3": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo" } },
+        "orchestration": { "env": { "FACTORY_ONLY": "orchestrator" } }
       },
       "checks": {
+        "factory-check": "tsx ../scripts/factory-check.ts",
+        "orchestrator-check": "tsx ../scripts/orchestrator-check.ts",
         "factory-e2e": "tsx ../scripts/factory-e2e.ts"
       }
     },

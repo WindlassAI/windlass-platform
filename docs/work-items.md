@@ -342,8 +342,12 @@ displayed version. `approve_plan` requires that same version and answered questi
 Approval requires saved checks and evidence of push CI on the planned Windlass branches. It opens
 a draft PR on `windlass/feature-<item-id>`. When GitHub refuses drafts, it opens an ordinary PR
 whose description marks the feature as in progress. Each child starts from that branch and
-has its own session. Passing local checks and passing CI on the child's pushed SHA let the platform
-fast-forward the feature branch. Repositories using only pull-request workflows need a push or
+has its own session. The Factory dispatches up to three children whose dependencies have integrated and whose
+owned paths are disjoint within their repository. A missing or empty path list runs alone. Each child reserves
+its planned tokens and a proportional share of hosted time and goes through the account's normal place queue.
+Completion releases the unused reservation. After local checks and push CI pass, the parent serializes updates
+to the feature branch by fast-forward or merge commit. A conflict sends the child to merge the latest feature
+branch and pass both gates again. Summary and whole-feature review wait for every child. Repositories using only pull-request workflows need a push or
 external check for child commits. The preflight reads enabled Actions workflows and their branch filters. It also recognizes successful
 external checks or statuses on a prior standalone Windlass push. A missing child check offers a wait
 for late CI. Stopping there ends orchestration and offers handover of the last integrated head. Child questions appear

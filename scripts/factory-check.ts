@@ -1673,6 +1673,121 @@ const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) =
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
+// Exercise approval, child polling and replay with more than one outstanding dispatch.
+{
+	const task = (key: string, owns: string[] = [key], dependsOn: string[] = []) => ({ key, title: key, brief: key, owns, dependsOn, acceptance: ["Run npm test"], budget: { tokens: 1000 } });
+	const zero = { tokens: 0, activeSeconds: 0, turns: 0, hostedSeconds: 0 };
+	function start(subtasks: ReturnType<typeof task>[], available?: number, hostedSpent = 0) {
+		const plan = { subtasks, questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };
+		const approved = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [
+			{ kind: "start" }, { kind: "file_plan", plan }, turnEnded("succeeded", null), { kind: "approve_plan", version: 1 },
+		]).item;
+		approved.spent.hostedSeconds = hostedSpent;
+		if (available !== undefined) approved.spent.tokens = approved.budget.tokens - available;
+		return walk(approved, [{ kind: "feature_ready", head: H(1), pr: { number: 1, url: "" } }]).item;
+	}
+	function update(item: FactoryItem, task: string, state: ItemState, tokens = 0, hostedSeconds = 0) {
+		const job = item.jobs!.find(j => j.task.key === task)!;
+		return walk(item, [{ kind: "child_update", key: job.dispatchKey, child: job.id, state, spent: { ...zero, tokens, hostedSeconds }, head: H(2), report: state }]).item;
+	}
+	const keys = (item: FactoryItem) => item.jobs!.map(j => j.task.key);
+	const { ownsPath, sharedPaths } = await import("../server/src/factory/feature-plan.js");
+	for (const [entry, path, matches] of [
+		["src/*", "src/file.ts", true], ["src/*", "src/a/b/c.ts", false],
+		["*", "README.md", true], ["*", "src/file.ts", false],
+		["src/**", "src/a/b/c.ts", true], ["src", "src/a/b/c.ts", true],
+	] as const) {
+		assert.equal(ownsPath([entry], path), matches);
+		const a = task("a", [entry]), b = task("b", [path]);
+		assert.equal(sharedPaths(a, b), matches);
+		assert.equal(sharedPaths(b, a), matches);
+	}
+	expect("owned paths and scheduling overlaps respect glob depth", true);
+
+	const { turnFlags } = await import("../server/src/actors/session-inbox.js");
+	const sandbox = { run: async (command: string) => {
+		const mark = command.match(/\bwlp-[a-f0-9]{18}\b/)![0];
+		const stdout = ["M\0src/file.ts\0D\0test/old.test.ts\0", "", "absent", "absent", "absent", "absent", ""].join("\n" + mark + "\n");
+		return { exitCode: 0, stdout, stderr: "" };
+	} } as Parameters<typeof turnFlags>[0];
+	const removed = { kind: "tests_removed", where: ["test/old.test.ts"] };
+	assert.deepEqual(await turnFlags(sandbox, H(1), [], null, []), [removed]);
+	assert.deepEqual(await turnFlags(sandbox, H(1), [], null, ["src"]), [removed, { kind: "outside_scope", where: ["test/old.test.ts"] }]);
+	expect("empty owns skips the scope warning and keeps other review flags", true);
+
+	const seconds = FACTORY_DEFAULTS.item.hostedSeconds;
+	const hostedTasks = [task("first"), { ...task("second"), budget: { tokens: 4000 } }, task("third")];
+	const hosted = start(hostedTasks);
+	assert.equal(hosted.budget.hostedSeconds, seconds * 3);
+	assert.deepEqual(hosted.jobs!.map(j => j.budget), hostedTasks.map(t => ({ ...t.budget, hostedSeconds: seconds })));
+	const limited = start(hostedTasks, undefined, seconds);
+	assert.deepEqual(keys(limited), ["first", "second"]);
+	assert.deepEqual(keys(update(limited, "first", "done")), ["first", "second", "third"]);
+
+	const done = update(hosted, "first", "done", 0, seconds / 2);
+	const failed = update(done, "second", "failed", 0, seconds);
+	const cancelled = update(failed, "third", "cancelled", 0, seconds / 2);
+	const redo = walk(cancelled, [
+		{ kind: "file_plan", plan: hosted.approvedPlan }, turnEnded("succeeded", null), { kind: "approve_plan", version: 2 },
+	]).item;
+	assert.equal(redo.spent.hostedSeconds, seconds * 2);
+	assert.equal(redo.featurePlan!.budget.hostedSeconds, seconds * 4);
+	assert.equal(redo.budget.hostedSeconds, seconds * 4);
+	assert.deepEqual(redo.jobs!.slice(3).map(j => [j.task.key, j.budget?.hostedSeconds]), [["second", seconds], ["third", seconds]]);
+	expect("hosted children reserve a full item allowance and a replan funds each remaining child after spend", true);
+
+	const tasks = [task("a", ["src/lib"]), task("b", ["src/library/file"]), task("c", ["src/lib/file"]), task("d", ["doc"], ["b"]), task("e"), task("f")];
+	const parallel = start(tasks);
+	assert.deepEqual(keys(parallel), ["a", "b", "e"]);
+	const next = update(parallel, "b", "done");
+	assert.deepEqual(keys(next), ["a", "b", "e", "d"]);
+	assert.deepEqual(keys(update(next, "a", "done")), ["a", "b", "e", "d", "c"]);
+	for (const owns of [[], ["src/lib"], ["src/lib/nested.ts"]]) {
+		const first = start([tasks[0], task("other", owns)]);
+		assert.deepEqual(keys(first), ["a"]);
+		assert.deepEqual(keys(update(first, "a", "done")), ["a", "other"]);
+	}
+	const budget = start([task("a"), task("b")], 1600);
+	assert.deepEqual(keys(budget), ["a"]);
+	assert.deepEqual(keys(update(budget, "a", "done", 500)), ["a", "b"]);
+	const [a, b] = parallel.jobs!;
+	const waiting = walk(parallel, [{ kind: "placement_wait", key: a.dispatchKey, child: a.id, sentence: "Waiting for a free machine slot." }]).item;
+	assert.equal(waiting.jobs![0].wait, "Waiting for a free machine slot.");
+	assert.equal(waiting.jobs![1].dispatchKey, b.dispatchKey);
+	assert.equal(update(waiting, "b", "working").jobs![1].state, "working");
+	assert.deepEqual(effect(walk(parallel, [{ kind: "cancel" }]).last, "cancel_children")?.ids, parallel.jobs!.map(j => j.id));
+
+	// Stop and retry drain all sibling actors before a planner can receive another turn.
+	const stopped = update(parallel, "a", "failed");
+	assert.equal(stopped.run!.step.kind, "subtasks");
+	assert.ok(stopped.jobs!.slice(1).every(j => j.cancelRequested));
+	assert.equal(update(update(stopped, "b", "cancelled"), "e", "cancelled").run!.step.kind, "refine");
+	const retry = walk({ ...parallel, state: "failed" }, [{ kind: "retry" }]);
+	assert.deepEqual(effect(retry.last, "cancel_children")?.ids, parallel.jobs!.map(j => j.id));
+	const drained = ["a", "b", "e"].reduce((item, key) => update(item, key, "cancelled"), retry.item);
+	assert.equal(drained.run!.n, parallel.run!.n + 1);
+	assert.equal(drained.run!.step.kind, "refine");
+
+	const claim = (child: string) => ({ kind: "claim_join", key: child + "/ci", child });
+	const claimed = walk(parallel, [claim(a.id)]).item;
+	assert.equal(walk(claimed, [claim(b.id)]).item, claimed);
+	const refusal = { key: a.id + "/ci", reason: "Merge conflict", conflict: true };
+	const released = walk(claimed, [{ kind: "finish_join", child: a.id, result: refusal }, claim(b.id)]).item;
+	assert.equal(released.joining?.child, b.id);
+	assert.deepEqual(released.jobs![0].join, refusal);
+	const child = newItem();
+	child.parent = { itemId: parallel.id, key: "a", title: "Build" };
+	child.task.base = "windlass/feature-" + parallel.id;
+	const passed = walk(child, [...pushedRun(H(2)).map(f => f.kind === "published" ? { ...f, pr: null } : f), ciFact(passedCi, H(2), null)]).item;
+	const conflict = walk(passed, [{ kind: "feature_problem", reason: refusal.reason, rebase: true }]);
+	assert.equal(conflict.item.run?.step.kind, "conflict");
+	assert.equal(effect(conflict.last, "deliver")?.fetchBase, child.task.base);
+	const repeated = structuredClone(passed);
+	repeated.run!.failures = conflict.item.run!.failures;
+	assert.equal(walk(repeated, [{ kind: "feature_problem", reason: refusal.reason, rebase: true }]).item.question?.cause, "repeated");
+	expect("parallel scheduling, ownership, dependencies, reservations, placement, cancellation and conflict retries", true);
+}
+
 // Each scenario starts from a real pushed run and has a positive G4 observation, including refusals.
 {
 	const reviewed = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
@@ -2215,6 +2330,24 @@ const checkRun = (id: number | bigint, name: string, conclusion: string | null) 
 
 try {
 	standin.appPermissions = granted;
+	const { featureBranch, advanceFeatureRef } = await import("../server/src/github/feature.js");
+	const id = "i_parallel", branch = featureBranch(id);
+	standin.commit(repo, branch, {}, "Start feature", "main");
+	const a = standin.commit(repo, "child-a", { a: "one" }, "First change", branch);
+	const b = standin.commit(repo, "child-b", { b: "two" }, "Second change", branch);
+	const conflicting = standin.commit(repo, "child-c", { a: "conflict" }, "Third change", branch);
+	await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "write", metadata: "read" } }, async token => {
+		const integrate = (head: string) => advanceFeatureRef(app, token, repo.owner, repo.name, id, "main", head);
+		assert.equal(await integrate(a), a);
+		const merged = await integrate(b);
+		assert.notEqual(merged, b);
+		assert.equal(standin.fileOn(repo, branch, "a"), "one");
+		assert.equal(standin.fileOn(repo, branch, "b"), "two");
+		assert.equal(await integrate(b), merged);
+		await assert.rejects(integrate(conflicting), e => e instanceof GithubError && e.status === 409);
+		assert.equal(standin.branchHead(repo, branch), merged);
+	});
+	expect("the feature fast-forwards, merges divergent children, replays the merge and preserves its tip on conflict", true);
 	ciData.runs = Array.from({ length: 250 }, (_, index) => checkRun(index === 137 ? 9007199254740993n : 5000 + index, `job-${index}`, index === 137 ? "failure" : "success"));
 	ciData.statuses = [{ context: "ci/legacy", state: "success", description: "ok", target_url: "https://ci.invalid/1" }];
 	const lines = Array.from({ length: 5000 }, (_, index) => `2026-11-19T20:0${index % 10}:00.1234567Z \x1b[31mline ${index}\x1b[0m`);

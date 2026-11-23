@@ -51,7 +51,7 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number; effort?: string; signIn?: SignInMethod };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod };
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
@@ -225,6 +225,8 @@ export interface ItemInternal {
 	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;
+	internalClaimJoin(child: string, key: string): Promise<"busy" | "claimed" | import("../factory/types.js").JoinResult>;
+	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;
 	/** `repository`: a cross-repo feature's child's own repository and base; null for a one-repository feature. */
 	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;

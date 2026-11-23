@@ -28,7 +28,7 @@ import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, PlanSubtask } from "../contract.js";
 import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
-import { featureBranch } from "../github/feature.js";
+import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -221,7 +221,7 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; /** Hosted: the item's size, where it chose one (`CreateItemInput.hostedSize`, a subtask's placement). */ hostedSize?: HostedSize; owns?: string[]; issue?: { number: number; installationId: GithubId }; effort?: string }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; /** Hosted: the item's size, where it chose one (`CreateItemInput.hostedSize`, a subtask's placement). */ hostedSize?: HostedSize; owns?: string[]; childBranch?: { name: string; start: string }; issue?: { number: number; installationId: GithubId }; effort?: string }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -400,7 +400,7 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	// A GitHub issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (github && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
@@ -430,7 +430,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
 		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
 		const reviewer = child ? { off: "feature" } as const : !config.factory.reviewer ? { off: "deployment" } as const :
@@ -947,12 +947,12 @@ export const itemActions = {
 				const previous = request.previous;
 				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
 					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
-				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
+				const body = job.task.brief + "\n\nOwned paths: " + (job.task.owns ?? []).join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
 				const agent = childAgent(job.task, placement, session.model, feature.agent?.effort);
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+						{ id: input.child, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.

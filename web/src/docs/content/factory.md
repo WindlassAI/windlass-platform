@@ -331,7 +331,7 @@ If these checks are missing, you can still run the plan with one implementer. Th
 
 ### The plan
 
-The plan says what the feature is for, what it must do, what is left out of it and when it is done. A split plan also lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget: one token figure. Subtasks that do not wait for each other may not own the same paths.
+The plan says what the feature is for, what it must do, what is left out of it and when it is done. A split plan also lists 2 to 6 subtasks. Each subtask has a title, a brief, the paths it owns, the subtasks it waits for, how it is checked and a budget: one token figure. Subtasks that own overlapping paths take turns, even when neither depends on the other.
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
@@ -396,7 +396,9 @@ When the feature's own turns use its own budget, for example a long planning, it
 
 Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's Windlass model where it chose none), and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
 
-A subtask opens no pull request of its own. It pushes its branch, and joins the feature only when its checks pass and CI passes on its commit. The platform then moves the feature's branch forward to it. If the feature's branch moved meanwhile, the subtask rebases onto it and is checked again.
+Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
+
+After local checks and push CI pass, the platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
 
 **Following them as they run.** Once the plan is approved, the feature's page shows a **Subtasks** block where it showed where the item is. Its first line counts them, for example "2 running · 1 asks you · 1 of 6 done", with a bar of one segment per subtask. Under it each subtask has one row, in the plan's order: what it is doing now (its step and fix round, for example "implementing · turn 2" or "fixing · your checks failed, fix 1"), where it runs (with "overflow from nas" when it went to an alternative), what it has spent of its token budget, and a **Session** link to its agent. A subtask that asks you shows the start of its question and **Answer**, which opens its page. A subtask not started says what it waits for, for example "after 2 and 3". The approved plan folds under the block to its goal; **Show all** opens it.
 
@@ -448,7 +450,7 @@ Changing any of these after approval counts as a change of scope. The combined r
 
 **Pull requests.** Each repository gets its own branch, `windlass/feature-<id>`, and a draft pull request. Both can be #1. A repository without draft pull requests stops the feature before any subtask runs; the pull request already opened in the other one is kept, and **Try the remaining repository again** retries only the one that failed. Each pull request carries a section, kept up to date, that links the other by its full address, says which is primary, the merge order and the combined result. Anything you write around it is kept. Neither says `Closes #n`, so the issue is not closed by the first of the two merges.
 
-**Subtasks** run one at a time across both repositories. Each is made in its subtask's repository, starts from that repository's feature branch, and can push only there. It joins its repository's feature branch under the same rules as any subtask.
+**Subtasks** share the same three active places across both repositories. Each is made in its subtask's repository, starts from that repository's feature branch, and can push only there. It joins its repository's feature branch under the same rules as any subtask.
 
 **Testing them together.** When every subtask is in, the platform checks the integration workflow again, as it is at the commit it is about to run, by the same rules as at approval, and dispatches it in `runFrom`, on its feature branch, with the head of both feature branches. It follows only its own run: the one with the feature's run name, of that workflow file, on that commit, started by the App. The workflow checks every input out at its commit beside that checkout, checks the commits, and runs the approved command for at most an hour. For the Windlass CLI and this platform the command is `bash scripts/cross-repo-integration.sh`. It builds the CLI from its checkout, stages that executable where the server takes it from, and runs the platform's real-binary checks with it. A case that skips fails the run. The run's time is charged to the feature once.
 
