@@ -21,7 +21,7 @@
  * one line that says whose words they are, and Start stands under it rather than in the header.
  *
  * An item on one of the user's machines (`place`) says which, from the user's live list of machines.
- * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Raise the limit"
+ * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Give it more"
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */

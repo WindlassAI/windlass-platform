@@ -866,8 +866,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 					<span className="check-means">
 						{start
 							? chosenMachine
-								? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
-								: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
+								? `It starts as soon as “${machineLabel(chosenMachine)}” is online and has a free slot; until then it waits, and says for what.`
+								: "It starts as soon as one of your hosted sandboxes is free; until then it waits, and says for what."
 							: "It is kept as a draft until you start it from its page."}
 					</span>
 				</Check>

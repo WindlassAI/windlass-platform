@@ -1,6 +1,6 @@
 ## Why use your own machine
 
-An agent on one of your machines runs in a Docker container there, made by a small program called the runner. Its sandboxes take none of your daily sandbox time, no place among your kept sandboxes and no place among your agents working at once. You set its limits yourself. On a machine you can also run Claude Code with your Claude subscription, or OpenCode with a model provider of yours.
+An agent on one of your machines runs in a Docker container there, made by a small program called the runner. Its sandboxes take none of your daily sandbox time, no place among your kept sandboxes and none of the sandboxes running at once on this platform, work items included. You set its limits yourself. On a machine you can also run Claude Code with your Claude subscription, or OpenCode with a model provider of yours.
 
 The runner connects out to the platform. Nothing needs to reach your machine from outside.
 
@@ -108,7 +108,7 @@ When you start an agent, choose the machine under **on**. Each machine offers tw
 
 ### Turn limit and queueing
 
-The runner sizes its slots from the machine’s CPU and memory. A personal turn takes one slot by default. A large factory turn can take up to four. Turns wait in arrival order, so a large turn at the head waits for enough free slots before a smaller turn can start. **Stop** takes a turn out of the queue. Set the capacity with `--slots` or `--max-turns`. See [Runner reference](/docs/runner#run-options).
+The runner sizes its slots from the machine’s CPU and memory. A personal turn takes one slot by default. A large factory turn can take up to four. Turns wait in arrival order, so a large turn at the head waits for enough free slots before a smaller turn can start. **Stop** takes a turn out of the queue. Set the capacity with `--slots` or `--max-turns`. The platform sets no limit of its own on how many turns run on your machines: the runner's slots are the limit. See [Runner reference](/docs/runner#run-options).
 
 ### CPU and memory
 
