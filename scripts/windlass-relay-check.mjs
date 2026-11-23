@@ -203,6 +203,21 @@ test('the provider\'s error code, type and message reach Windlass; its body does
 	assert.equal(JSON.parse(errorBody(500, '{"error":{"code":"a b"}}')).error.code, null);
 });
 
+test('a model answer with no content type is passed on as an event stream, as api.openai.com sends one for a ChatGPT token', async (t) => {
+	const { turn } = await stack(t, { upstreamReply: (req, res) => {
+		if (req.url === '/v1/models') { res.writeHead(200); return res.end('<html>'); }
+		res.writeHead(200);
+		res.end(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { output: [] } })}\n\n`);
+	} });
+	const a = await turn(hex('a'), REAL_A);
+	const reply = await a.call('POST', '/v1/responses');
+	assert.equal(reply.status, 200);
+	assert.equal(reply.headers['content-type'], 'text/event-stream');
+	assert.match(reply.text, /response\.completed/);
+	// Only the streaming route: an untyped answer to anything else is still refused.
+	assert.equal((await a.call('GET', '/v1/models')).status, 502);
+});
+
 test('a redirect is not followed', async (t) => {
 	const { turn, seen } = await stack(t, { upstreamReply: (req, res) => { res.writeHead(302, { location: 'https://example.com/' }); res.end(); } });
 	const a = await turn(hex('a'), REAL_A);

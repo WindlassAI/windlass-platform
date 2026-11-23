@@ -132,6 +132,9 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 			return { ...upstream, path: url, headers: out, secrets: [record.accessToken] };
 		},
 		responseFilter: (type, url, secrets) => scrubStream(secrets ?? [], type, true),
+		// api.openai.com answers a ChatGPT-token stream with a 200 and no content type (as the server's route found,
+		// server/src/model-relay-route.ts); Windlass reads it as an event stream whatever it says.
+		untyped: (method, url) => (method === 'POST' && url.split('?')[0] === '/v1/responses' ? 'text/event-stream' : null),
 		errorBody,
 	};
 }

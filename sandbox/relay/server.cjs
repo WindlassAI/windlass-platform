@@ -392,7 +392,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 					reply.destroy();
 					return;
 				}
-				const type = reply.headers['content-type']?.split(';')[0];
+				let type = reply.headers['content-type']?.split(';')[0].trim().toLowerCase();
+				// A provider may name the type of an answer that comes without one (or as text/plain) on its streaming route.
+				if ((!type || type === 'text/plain') && provider?.untyped) type = provider.untyped(req.method, req.url) ?? type;
 				if (type !== 'text/event-stream' && type !== 'application/json') {
 					reject(res, 502); reply.destroy(); return;
 				}
