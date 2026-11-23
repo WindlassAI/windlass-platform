@@ -129,7 +129,7 @@ try {
 	cleanup.push(() => docker(["volume", "rm", "-f", `wlp-user-${uid}`]));
 	const make = async (session: string) => {
 		const id = await layer.sandboxes.create({ uid, sessionId: session, profile: "docker-hardened" });
-		cleanup.unshift(() => layer.sandboxes.destroy(id));
+		cleanup.push(() => layer.sandboxes.destroy(id));
 		const box = (await layer.sandboxes.connect(id)) as DockerSandboxHandle | undefined;
 		if (!box) throw new Error("the sandbox could not be connected");
 		return box;
@@ -280,9 +280,9 @@ try {
 	const load = new DockerModelRelay({ machine: loadScope, image, network, upstream: `http://${upstreamName}:8080`, requests: 64,
 		limits: { sessionRequests: 64, sessionConnections: 80, sessionWaiting: 64, waitMs: 60_000 } });
 	cleanup.push(() => docker(["volume", "rm", "-f", `wlp-model-socket-${loadScope}`]));
-	cleanup.unshift(() => docker(["rm", "-f", `wlp-model-relay-${loadScope}`]));
+	cleanup.push(() => docker(["rm", "-f", `wlp-model-relay-${loadScope}`]));
 	const leaseL = await load.open(a.container, a.id, uid);
-	cleanup.unshift(() => leaseL.close());
+	cleanup.push(() => leaseL.close());
 	await leaseL.hand({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 });
 	const loadRelay = `wlp-model-relay-${loadScope}`;
 	const loadStart = Date.now();
@@ -301,7 +301,8 @@ try {
 	failed += 1;
 	console.log(`FAIL  the check could not run: ${error instanceof Error ? error.stack : String(error)}`);
 } finally {
-	for (const step of cleanup) await step().catch(() => undefined);
+	// Last made, first removed: a container goes before the network and volumes it uses.
+	for (const step of cleanup.reverse()) await step().catch(() => undefined);
 }
 console.log(failed === 0 ? "\nall model relay Docker checks passed" : `\n${failed} model relay Docker check(s) failed`);
 process.exit(failed === 0 ? 0 : 1);

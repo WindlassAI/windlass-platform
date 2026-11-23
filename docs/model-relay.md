@@ -34,6 +34,13 @@ runs from the pinned base image as `agent`, read-only, with every capability dro
 the machine's other forwarders. Only the relay and the forwarders mount the socket volume
 (`wlp-model-socket[-<machine id>]`), and the forwarders mount it read-only.
 
+One hosted server per Docker daemon. The relay container, its socket volume and the forwarders
+(`wlp-model-fwd-<sandbox>`) are named per daemon, not per deployment, and a starting server removes every
+hosted forwarder it does not hold a lease for, with the relay's token files. A second platform server on
+the same daemon (a test server beside a live one) would remove the first one's forwarders and share its
+relay, cutting its turns' model requests. Give each server its own Docker daemon, or run the second with
+`WLP_MODEL_RELAY=off` or on the fake layer. Runner relays are per machine and are not affected.
+
 E2B's microVMs reach the platform only over the internet, so there is no namespace to put a forwarder
 in, and the relay is a route of the server. The server also holds the sign-in, so the token never
 leaves it.
