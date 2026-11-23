@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** The item page's run facts: the second review's fixes are counted only where the item's reviewer can send its builder back. */
+/** The item page's run facts: the rounds of fixing, never capped, and the second review's only once there were some. */
 import type { ItemView } from "@contract";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -10,9 +10,8 @@ import { RunFacts } from "./Item";
 
 const at = Date.UTC(2026, 10, 22, 12);
 const run = (review?: number): NonNullable<ItemView["run"]> => ({
-	n: 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0, review: 0 },
+	n: 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 3, conflict: 0, review: review ?? 0 },
 	step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "started", checks: 0, interruptions: 0 },
-	caps: { plan: 3, gate: 2, ci: 2, conflict: 1, ...(review !== undefined && { review }) },
 });
 
 function facts(of: NonNullable<ItemView["run"]>): string {
@@ -25,12 +24,13 @@ function facts(of: NonNullable<ItemView["run"]>): string {
 }
 
 describe("the item page's run facts", () => {
-	it("counts the second review's fixes when the item's reviewer is on", () => {
-		expect(facts(run(2))).toContain("after the second review 0 of 2");
+	it("counts the second review's fixes once there were some", () => {
+		expect(facts(run(2))).toContain("after the second review 2");
 	});
-	it("says nothing of the second review on an item without one", () => {
+	it("says the rounds with no cap, and nothing of a second review that sent nothing back", () => {
 		const text = facts(run());
-		expect(text).toContain("after CI 0 of 2");
+		expect(text).toContain("after CI 3");
+		expect(text).not.toContain(" of ");
 		expect(text).not.toContain("second review");
 	});
 });

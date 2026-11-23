@@ -157,7 +157,6 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const shownCount = shown === null ? 0 : shown.length - groups.ended.length + endedCount;
 	const repositories = repositoriesOf(list ?? [], feedRepositories(items.feed));
 	const filtered = filters.repository !== undefined || filters.from !== undefined;
-	const running = workingCounts(sessions ?? []).items;
 	const choose = (next: { repository?: GithubId; from?: ItemSource }) => {
 		navigate({ name: "factory", ...next }, { replace: true });
 	};
@@ -171,7 +170,9 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 		{ n: groups.drafts.length, word: groups.drafts.length === 1 ? "draft" : "drafts", tone: "draft" },
 		{ n: groups.needs.length, word: groups.needs.length === 1 ? "needs you" : "need you", tone: "needs" },
 	] satisfies Fact[]).filter((fact) => fact.n > 0);
-	const turnsUsed = limits && sessions !== null ? Math.min(running, limits.factoryTurns) : null;
+	// The hosted sandboxes at work, items and the person's own agents together, against the one ceiling on them.
+	const hosted = workingCounts(sessions ?? []).ceilinged;
+	const turnsUsed = limits && sessions !== null ? Math.min(hosted, limits.hostedRunning) : null;
 
 	return (
 		<main className="home factory">
@@ -202,22 +203,22 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 						<>
 							<span className="factory-turns-line">
 								{turnsUsed !== null ? (
-									<span className="factory-meter" role="img" aria-label={`${turnsUsed} of ${limits.factoryTurns} factory turns in use`}>
-										{Array.from({ length: limits.factoryTurns }, (_, index) => (
+									<span className="factory-meter" role="img" aria-label={`${turnsUsed} of ${limits.hostedRunning} hosted sandboxes in use`}>
+										{Array.from({ length: limits.hostedRunning }, (_, index) => (
 											<i key={index} className={index < turnsUsed ? "on" : undefined} />
 										))}
 									</span>
 								) : null}
 								{sessions === null ? (
-									<span>Up to {plural(limits.factoryTurns, "factory turn")} at once</span>
+									<span>Up to {plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} at once</span>
 								) : (
 									<span>
-										<span className="factory-turns-n">{running}</span> of {plural(limits.factoryTurns, "factory turn")} running
+										<span className="factory-turns-n">{hosted}</span> of {plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} at work
 									</span>
 								)}
 							</span>
 							<span className="factory-turns-line">
-								New items wait while {limits.reviewCap} are in review
+								Your machines run beside them
 								<span className="home-account-sep" aria-hidden="true">
 									·
 								</span>

@@ -1,4 +1,4 @@
-import { approvalText, featureCap, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
@@ -44,13 +44,13 @@ import {
 	type ItemAction,
 	type ItemAttachment,
 	type ItemBudget,
+	type ItemSpend,
 	type ItemEvent,
 	type ItemQuestion,
 	type ItemReview,
 	type ItemRun,
 	type ReviewRecommendation,
 	type ReviewRecord,
-	type RoundCaps,
 	type ItemSummary,
 	type FeedbackBatch,
 	type FeedbackEntry,
@@ -113,11 +113,9 @@ export interface MockItemsDeps {
 	machines(auth: AuthResult): { list: MachineSummary[]; minRunnerVersion: string } | null;
 }
 
-/** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`). */
-export const MOCK_FACTORY_LIMITS: FactoryLimits = structuredClone(FACTORY_DEFAULTS);
+/** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`), its owner having raised the hosted sandboxes at once to 6: the seeded agents at work leave room for more. */
+export const MOCK_FACTORY_LIMITS: FactoryLimits = { ...structuredClone(FACTORY_DEFAULTS), hostedRunning: 6 };
 
-/** The rounds a run allows (server/src/factory/blueprint.ts, `RULES`), as the server sends them in `ItemView.run.caps`. */
-const ROUND_CAPS: RoundCaps = { plan: 3, gate: 2, ci: 2, conflict: 1, review: 2 };
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -135,8 +133,8 @@ const CHOICES: Record<ChoiceId, string> = {
 	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
-	raise: "Raise the limit and go on",
-	retry: "Retry from scratch",
+	raise: "Go on",
+	retry: "Start over (discards the sandbox's work)",
 	again: "Try again",
 	wait: "Keep waiting",
 	hand_over: "Hand it over as it is",
@@ -146,6 +144,8 @@ const CHOICES: Record<ChoiceId, string> = {
 	run_anyway: "Run it anyway",
 };
 const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
+/** A budget question's choices, as the server words them (blueprint.ts, `askBudget`): "Give it N more", hand over, give up. */
+const budgetChoices = (more: string, handOver = true) => [{ id: "raise" as const, label: `Give it ${more} more tokens` }, ...(handOver ? choices("hand_over") : []), ...choices("give_up")];
 
 const hex = (seed: number, length = 40) => {
 	let out = "";
@@ -198,7 +198,7 @@ interface Seed {
 	 * none when left out.
 	 */
 	verdicts?: SeedVerdict[];
-	spent?: Partial<ItemBudget>;
+	spent?: Partial<ItemSpend>;
 	budget?: Partial<ItemBudget>;
 }
 
@@ -301,14 +301,14 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			spent: { tokens: 1_240_000, turns: 1, activeSeconds: 16 * 60, hostedSeconds: 16 * 60 },
 		},
 		// Each wait for capacity, as the user actor's turn queue words it (budget.ts, `admit`).
-		waitingFor(5, "Fix the flaky clock test", "The clock test fails about one run in twenty when the minute rolls over. Freeze the time in it.", HARBOR, "capacity", "Waiting for one of your 5 factory turns; 5 are running (“Bump the TLS library”, “Rename the config loader's options”, “Tidy the README's install steps”, …).", 6, at + 25_000),
-		waitingFor(6, "Drop the Node 20 workaround", "Node 20 is no longer supported. Remove the fallback for its missing fetch timeout, and 20 from the engines range.", HARBOR, "capacity", "Waiting for one of your 6 running turns; 6 are running, 1 of them your own.", 4, at + 40_000),
+		waitingFor(5, "Fix the flaky clock test", "The clock test fails about one run in twenty when the minute rolls over. Freeze the time in it.", HARBOR, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 6, at + 25_000),
+		waitingFor(6, "Drop the Node 20 workaround", "Node 20 is no longer supported. Remove the fallback for its missing fetch timeout, and 20 from the engines range.", HARBOR, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 4, at + 40_000),
 		waitingFor(7, "Log the upload's size", "Log each artefact's size when it is uploaded, in a unit a person reads easily.", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${spellSeconds(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). The allowance is this deployment's setting, which its owner can raise.`, 50, nextMidnight(at)),
 		waitingFor(8, "Explain the tide formula in a comment", "Above the harmonic sum, say in a comment what each term stands for and where the constants come from.", TIDES, "capacity", "Waiting for a place among the 20 sandboxes you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.", 12, at + 2 * MINUTE),
-		waitingFor(9, "Speed up the harmonic constants table", "Building the harmonic constants table takes 2 s at start. Build it once and keep it.", TIDES, "capacity", "Waiting for one of your 3 hosted sandboxes: 3 running now.", 7, at + 30_000),
+		waitingFor(9, "Speed up the harmonic constants table", "Building the harmonic constants table takes 2 s at start. Build it once and keep it.", TIDES, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 7, at + 30_000),
 		waitingFor(10, "Show the next high tide first", "On a station's page, list the next high tide above the rest of the day's tides.", TIDES, "capacity", `Waiting for a hosted sandbox: this deployment runs 10 at once and all are in use. Trying again at ${utc(at + 4 * MINUTE)} UTC.`, 9, at + 4 * MINUTE),
 		waitingFor(11, "Fix the timezone in the station list", "The station list shows times in UTC. Show them in each station's own timezone, and say which.", TIDES, "capacity", "Waiting for the item's agent to answer.", 1, at + 30_000),
-		waitingFor(12, "Add a changelog entry for 2.4", "Add the changelog entry for 2.4: the new search, the end of IE support and the fixed anchor links.", DOCS, "review_cap", "Waiting until fewer than 6 of your items are in review (6 now).", 35, at + 5 * MINUTE),
+		waitingFor(12, "Add a changelog entry for 2.4", "Add the changelog entry for 2.4: the new search, the end of IE support and the fixed anchor links.", DOCS, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 35, at + 5 * MINUTE),
 		// The waits on CI (blueprint.ts, `ciWaitSentence`): the work is pushed and has a pull request.
 		ciWait(13, "Cache the parsed station file", "Parse the station file once per run instead of once per lookup.", TIDES, `Waiting for CI to start on ${short(hex(13))}.`, 2, 51),
 		ciWait(14, "Use the new rounding helper", "Replace the three hand-written rounding functions with the shared helper.", TIDES, `Waiting for CI on ${short(hex(14))}: 2 of 5 checks finished.`, 6, 52),
@@ -416,14 +416,14 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		},
 		{
 			n: 23,
-			budget: { tokens: 4_000_000 },
+			budget: { tokens: 2_000_000 },
 			title: "Migrate the docs search to the new index",
 			body: "Move the docs search to the new search index and remove the old index's build step.",
 			on: DOCS,
 			state: "waiting",
 			filed: 420,
 			pr: 12,
-			question: { kind: "budget", text: "This item has used 4.1M of its 4M tokens.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 130 },
+			question: { kind: "budget", text: "This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are.", choices: budgetChoices("2M"), asked: 130 },
 			run: { n: 1, started: 419, stopReason: null, rounds: { plan: 0, gate: 1, ci: 2, conflict: 0 }, step: { n: 9, kind: "ci", started: 130 } },
 			events: [
 				[419, "Started.", undefined, true],
@@ -727,7 +727,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			const head = hex(53);
 			made.push({
 				n: 53,
-				budget: { turns: 10 },
+				budget: { tokens: 1_000_000 },
 				title: "Generate the API reference from the doc comments",
 				body: "Replace the hand-written API page with one generated from the doc comments at build time.",
 				on: DOCS,
@@ -735,7 +735,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				state: "waiting",
 				filed: 260,
 				pr: 64,
-				question: { kind: "budget", text: "This item has used 10 of its 10 turns.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 20 },
+				question: { kind: "budget", text: "This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.", choices: budgetChoices("1M"), asked: 20 },
 				run: { n: 1, started: 259, stopReason: null, rounds: { plan: 0, gate: 2, ci: 2, conflict: 0 }, step: { n: 12, kind: "ci_fix", started: 21 } },
 				events: [
 					[259, "Started.", undefined, true],
@@ -1120,7 +1120,8 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const id = `it_${hex(seed.n, 12)}`;
 	const ago = (minutes: number) => at - minutes * MINUTE;
 	const budget: ItemBudget = { ...MOCK_FACTORY_LIMITS.item, ...seed.budget };
-	const spent: ItemBudget = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent };
+	// Tokens are cost-weighted; what was reported, cached input at full count, is about nine times as many where the agent rereads its context.
+	const spent: ItemSpend = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent, rawTokens: seed.spent?.rawTokens ?? Math.round((seed.spent?.tokens ?? 0) * 9.2) };
 	const head = seed.pr === undefined ? null : hex(seed.n);
 	const repository = seed.on.repository;
 	const place: SandboxPlace = seed.place ?? { kind: "hosted" };
@@ -1147,7 +1148,6 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 				stopReason: seed.run.stopReason,
 				rounds: seed.run.rounds,
 				step: { n: seed.run.step.n, kind: seed.run.step.kind, attempt: seed.run.step.attempt ?? 1, startedAt: ago(seed.run.step.started), turn: seed.run.step.turn ?? null, checks: 0, interruptions: seed.run.step.interruptions ?? 0 },
-				caps: ROUND_CAPS,
 			}
 		: null;
 	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person, asked]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said, ...(asked !== undefined && { asked }) }));
@@ -1198,10 +1198,9 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 /** A feature's plan as the planner files it, at `single` a single item's budget (server/src/factory/blueprint.ts, `file_plan`). */
 function featurePlan(version: number, status: FeaturePlan["status"], spec: FeaturePlan["spec"], subtasks: PlanSubtask[], questions: FeaturePlan["questions"] = []): FeaturePlan {
 	const single = MOCK_FACTORY_LIMITS.item;
-	return { version, status, questions, singleSuggested: null, spec, subtasks, budget: featureCap(single), compare: { singleBudget: { ...single } } };
+	return { version, status, questions, singleSuggested: null, spec, subtasks, budget: { tokens: single.tokens + planTokens({ subtasks }), hostedSeconds: single.hostedSeconds }, compare: { singleBudget: { ...single } } };
 }
 
-const HOUR_S = 3600;
 
 /**
  * The orchestrated features of `?items=features`, with their subtasks' items: a plan waiting for
@@ -1217,7 +1216,7 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	const child = (parent: ItemView, key: string, seed: Seed): ItemView => {
 		const sub = parent.plan!.subtasks.find((one) => one.key === key)!;
 		const view = viewOf({ ...seed, title: sub.title, on: HARBOR, body: sub.brief, acceptance: sub.acceptance }, at, uid);
-		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { ...sub.budget }, review: { state: "off", recommendation: null }, reviewNone: "Subtasks share the feature review.", task: { ...view.task, base: `windlass/feature-${parent.id}` } };
+		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, review: { state: "off", recommendation: null }, reviewNone: "Subtasks share the feature review.", task: { ...view.task, base: `windlass/feature-${parent.id}` } };
 	};
 
 	// 1. Waiting for approval: three subtasks in a chain, and a question to answer before it can be approved.
@@ -1231,9 +1230,9 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`harbor search upload retry` lists the retry section of docs/uploads.md first.", "`pnpm test` passes."],
 		},
 		[
-			{ key: "index", title: "Build the search index at release", brief: "Walk docs/ and CHANGELOG.md, tokenise each page and write search-index.json beside the release artefacts.", acceptance: ["Run `pnpm test src/search/index.test.ts`.", "The index lists every page under docs/."], dependsOn: [], owns: ["src/search/index/**", "scripts/release.ts"], budget: { tokens: 2_400_000, turns: 6, activeSeconds: 1.5 * HOUR_S, hostedSeconds: 45 * 60 } },
-			{ key: "command", title: "Add the search command", brief: "Read search-index.json and rank pages by term frequency. Print the title, path and the first matching line.", acceptance: ["Run `pnpm test src/search/command.test.ts`.", "`harbor search` with no words prints its usage."], dependsOn: ["index"], owns: ["src/search/command/**", "src/cli.ts"], budget: { tokens: 1_800_000, turns: 5, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 } },
-			{ key: "docs", title: "Document search in the README", brief: "A short section with two examples and what the index covers.", acceptance: ["Run `pnpm lint:docs`."], dependsOn: ["command"], owns: ["README.md", "docs/search.md"], budget: { tokens: 700_000, turns: 2, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 } },
+			{ key: "index", title: "Build the search index at release", brief: "Walk docs/ and CHANGELOG.md, tokenise each page and write search-index.json beside the release artefacts.", acceptance: ["Run `pnpm test src/search/index.test.ts`.", "The index lists every page under docs/."], dependsOn: [], owns: ["src/search/index/**", "scripts/release.ts"], budget: { tokens: 1_000_000 } },
+			{ key: "command", title: "Add the search command", brief: "Read search-index.json and rank pages by term frequency. Print the title, path and the first matching line.", acceptance: ["Run `pnpm test src/search/command.test.ts`.", "`harbor search` with no words prints its usage."], dependsOn: ["index"], owns: ["src/search/command/**", "src/cli.ts"], budget: { tokens: 700_000 } },
+			{ key: "docs", title: "Document search in the README", brief: "A short section with two examples and what the index covers.", acceptance: ["Run `pnpm lint:docs`."], dependsOn: ["command"], owns: ["README.md", "docs/search.md"], budget: { tokens: 300_000 } },
 		],
 		[{ id: "archived", text: "Should search include the notes of releases older than 2.0?", options: ["Yes, every release", "No, 2.0 and later"] }],
 	);
@@ -1258,9 +1257,9 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`harbor manifest 2.4.0 --csv` prints one row per artefact.", "`pnpm test` passes."],
 		},
 		[
-			{ key: "writer", title: "Add the CSV writer", brief: "A small writer in src/csv/ with quoting and a header row.", acceptance: ["Run `pnpm test src/csv`."], dependsOn: [], owns: ["src/csv/**"], budget: { tokens: 1_500_000, turns: 4, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 } },
-			{ key: "flag", title: "Wire --csv into the manifest command", brief: "Add the flag, stream the rows through the writer.", acceptance: ["Run `pnpm test src/manifest`."], dependsOn: ["writer"], owns: ["src/manifest/**"], budget: { tokens: 2_000_000, turns: 5, activeSeconds: 1.25 * HOUR_S, hostedSeconds: 40 * 60 } },
-			{ key: "golden", title: "Add a golden-file test for 2.4.0", brief: "Check the CSV of the 2.4.0 manifest against a file kept in test/golden.", acceptance: ["Run `pnpm test test/golden`."], dependsOn: ["flag"], owns: ["test/golden/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 } },
+			{ key: "writer", title: "Add the CSV writer", brief: "A small writer in src/csv/ with quoting and a header row.", acceptance: ["Run `pnpm test src/csv`."], dependsOn: [], owns: ["src/csv/**"], budget: { tokens: 600_000 } },
+			{ key: "flag", title: "Wire --csv into the manifest command", brief: "Add the flag, stream the rows through the writer.", acceptance: ["Run `pnpm test src/manifest`."], dependsOn: ["writer"], owns: ["src/manifest/**"], budget: { tokens: 800_000 } },
+			{ key: "golden", title: "Add a golden-file test for 2.4.0", brief: "Check the CSV of the 2.4.0 manifest against a file kept in test/golden.", acceptance: ["Run `pnpm test test/golden`."], dependsOn: ["flag"], owns: ["test/golden/**"], budget: { tokens: 400_000 } },
 		],
 	);
 	exportPlan.approvedAt = ago(80);
@@ -1283,8 +1282,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		"approved",
 		{ goal: "A dark theme for the release dashboard, following the system setting.", requirements: ["Colour tokens for both themes.", "The dashboard reads prefers-color-scheme."], outOfScope: ["A theme switch in the page."], acceptance: ["A screenshot of the dashboard in both themes.", "`pnpm test` passes."] },
 		[
-			{ key: "tokens", title: "Move the dashboard's colours to tokens", brief: "Replace literal colours in web/dashboard with CSS custom properties.", acceptance: ["Run `pnpm test web/dashboard`.", "A screenshot of the dashboard unchanged."], dependsOn: [], owns: ["web/dashboard/styles/**"], budget: { tokens: 1_200_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 30 * 60 } },
-			{ key: "dark", title: "Add the dark palette", brief: "Define the dark values under prefers-color-scheme.", acceptance: ["A screenshot of the dashboard in dark."], dependsOn: ["tokens"], owns: ["web/dashboard/theme/**"], budget: { tokens: 1_000_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 25 * 60 } },
+			{ key: "tokens", title: "Move the dashboard's colours to tokens", brief: "Replace literal colours in web/dashboard with CSS custom properties.", acceptance: ["Run `pnpm test web/dashboard`.", "A screenshot of the dashboard unchanged."], dependsOn: [], owns: ["web/dashboard/styles/**"], budget: { tokens: 500_000 } },
+			{ key: "dark", title: "Add the dark palette", brief: "Define the dark values under prefers-color-scheme.", acceptance: ["A screenshot of the dashboard in dark."], dependsOn: ["tokens"], owns: ["web/dashboard/theme/**"], budget: { tokens: 400_000 } },
 		],
 	);
 	themePlan.approvedAt = ago(48);
@@ -1321,8 +1320,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			],
 		},
 		[
-			{ key: "state", title: "Keep the chunk state beside the artefact", brief: "Write and read the state file, keyed by the artefact's checksum.", acceptance: ["Run `pnpm test src/upload/state.test.ts`."], dependsOn: [], owns: ["src/upload/state/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 30 * 60 } },
-			{ key: "resume", title: "Send only the missing chunks", brief: "Ask the server which chunks it holds, then send the rest in order.", acceptance: ["Run `pnpm test src/upload`."], dependsOn: ["state"], owns: ["src/upload/client.ts", "src/upload/chunks.ts"], budget: { tokens: 2_200_000, turns: 6, activeSeconds: 1.5 * HOUR_S, hostedSeconds: 45 * 60 } },
+			{ key: "state", title: "Keep the chunk state beside the artefact", brief: "Write and read the state file, keyed by the artefact's checksum.", acceptance: ["Run `pnpm test src/upload/state.test.ts`."], dependsOn: [], owns: ["src/upload/state/**"], budget: { tokens: 600_000 } },
+			{ key: "resume", title: "Send only the missing chunks", brief: "Ask the server which chunks it holds, then send the rest in order.", acceptance: ["Run `pnpm test src/upload`."], dependsOn: ["state"], owns: ["src/upload/client.ts", "src/upload/chunks.ts"], budget: { tokens: 900_000 } },
 		],
 	);
 	const resuming = feature(
@@ -1347,11 +1346,11 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["A screenshot of each capture.", "`pnpm test test/visual` passes."],
 		},
 		[
-			{ key: "fixtures", title: "Record the chart fixtures", brief: "Generate three tide days with known extremes and keep them in test/visual/fixtures.", acceptance: ["Run `pnpm test test/visual/fixtures.test.ts`."], dependsOn: [], owns: ["test/visual/fixtures/**"], budget: { tokens: 1_200_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+			{ key: "fixtures", title: "Record the chart fixtures", brief: "Generate three tide days with known extremes and keep them in test/visual/fixtures.", acceptance: ["Run `pnpm test test/visual/fixtures.test.ts`."], dependsOn: [], owns: ["test/visual/fixtures/**"], budget: { tokens: 500_000 },
 				place: { prefer: "nas", reason: "Big builds, and both its slots are free." }, needs: { cpus: 4, memoryGiB: 6 } },
-			{ key: "capture", title: "Capture the chart in both themes", brief: "Render the chart for each fixture at two widths and both themes, and save the captures.", acceptance: ["A screenshot of each capture."], dependsOn: ["fixtures"], owns: ["test/visual/capture/**"], budget: { tokens: 1_600_000, turns: 5, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 },
+			{ key: "capture", title: "Capture the chart in both themes", brief: "Render the chart for each fixture at two widths and both themes, and save the captures.", acceptance: ["A screenshot of each capture."], dependsOn: ["fixtures"], owns: ["test/visual/capture/**"], budget: { tokens: 600_000 },
 				place: { prefer: "studio", reason: "The only machine that reports screenshots.", allow: ["nas"] }, needs: { screenshots: true } },
-			{ key: "compare", title: "Compare captures against the baseline", brief: "Diff each capture against the kept baseline and fail above 0.2% changed pixels.", acceptance: ["Run `pnpm test test/visual`."], dependsOn: ["capture"], owns: ["test/visual/compare/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+			{ key: "compare", title: "Compare captures against the baseline", brief: "Diff each capture against the kept baseline and fail above 0.2% changed pixels.", acceptance: ["Run `pnpm test test/visual`."], dependsOn: ["capture"], owns: ["test/visual/compare/**"], budget: { tokens: 400_000 },
 				place: { prefer: "ci-box", reason: "Idle, with four slots free." } },
 		],
 	);
@@ -1377,10 +1376,10 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["A screenshot of the first page.", "`pnpm test src/export` passes."],
 		},
 		[
-			{ key: "query", title: "Read the night's readings", brief: "Query the readings of the last night by station.", acceptance: ["Run `pnpm test src/export/query.test.ts`."], dependsOn: [], owns: ["src/export/query/**"], budget: { tokens: 800_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 } },
-			{ key: "render", title: "Render the table as a PDF", brief: "Lay out one page per station with the headless browser.", acceptance: ["Run `pnpm test src/export/pdf.test.ts`."], dependsOn: ["query"], owns: ["src/export/pdf/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 25 * 60 },
+			{ key: "query", title: "Read the night's readings", brief: "Query the readings of the last night by station.", acceptance: ["Run `pnpm test src/export/query.test.ts`."], dependsOn: [], owns: ["src/export/query/**"], budget: { tokens: 300_000 } },
+			{ key: "render", title: "Render the table as a PDF", brief: "Lay out one page per station with the headless browser.", acceptance: ["Run `pnpm test src/export/pdf.test.ts`."], dependsOn: ["query"], owns: ["src/export/pdf/**"], budget: { tokens: 600_000 },
 				place: { prefer: "studio", reason: "Its browser is warm from the last export.", allow: ["nas"] } },
-			{ key: "proof", title: "Screenshot each page as a proof", brief: "Capture every page of the PDF and attach the first to the report.", acceptance: ["A screenshot of the first page."], dependsOn: ["render"], owns: ["test/export/proof/**"], budget: { tokens: 700_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 },
+			{ key: "proof", title: "Screenshot each page as a proof", brief: "Capture every page of the PDF and attach the first to the report.", acceptance: ["A screenshot of the first page."], dependsOn: ["render"], owns: ["test/export/proof/**"], budget: { tokens: 300_000 },
 				place: { prefer: "studio", reason: "The only machine that reports screenshots." }, needs: { screenshots: true, cpus: 4 } },
 		],
 	);
@@ -1413,8 +1412,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`pnpm test src/alerts` passes."],
 		},
 		[
-			{ key: "detect", title: "Detect flood-line crossings", brief: "Compare each reading with the station's flood line and record a crossing once.", acceptance: ["Run `pnpm test src/alerts/detect.test.ts`."], dependsOn: [], owns: ["src/alerts/detect/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 35 * 60, hostedSeconds: 20 * 60 } },
-			{ key: "mail", title: "Send the alert mails", brief: "Mail each subscriber of the station once per crossing, through the release relay.", acceptance: ["Run `pnpm test src/alerts/mail.test.ts`."], dependsOn: ["detect"], owns: ["src/alerts/mail/**"], budget: { tokens: 1_100_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 25 * 60 },
+			{ key: "detect", title: "Detect flood-line crossings", brief: "Compare each reading with the station's flood line and record a crossing once.", acceptance: ["Run `pnpm test src/alerts/detect.test.ts`."], dependsOn: [], owns: ["src/alerts/detect/**"], budget: { tokens: 400_000 } },
+			{ key: "mail", title: "Send the alert mails", brief: "Mail each subscriber of the station once per crossing, through the release relay.", acceptance: ["Run `pnpm test src/alerts/mail.test.ts`."], dependsOn: ["detect"], owns: ["src/alerts/mail/**"], budget: { tokens: 400_000 },
 				place: { prefer: "ci-box", reason: "It holds the release relay's credentials." } },
 		],
 	);
@@ -1471,9 +1470,9 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`pnpm test src/mail` passes."],
 		},
 		[
-			{ key: "templates", title: "Write the alert email templates", brief: "One template per alert kind, with a plain-text part.", acceptance: ["Run `pnpm test src/mail/templates.test.ts`."], dependsOn: [], owns: ["src/mail/templates/**"], budget: { tokens: 900_000, turns: 4, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+			{ key: "templates", title: "Write the alert email templates", brief: "One template per alert kind, with a plain-text part.", acceptance: ["Run `pnpm test src/mail/templates.test.ts`."], dependsOn: [], owns: ["src/mail/templates/**"], budget: { tokens: 400_000 },
 				place: { prefer: "nas", reason: "Claude Code is signed in there." }, agent: { harness: "claude", model: "opus", effort: "high" } },
-			{ key: "sender", title: "Send alerts to subscribers", brief: "Send each alert to the station's subscribers, retrying a bounce once.", acceptance: ["Run `pnpm test src/mail/send.test.ts`."], dependsOn: ["templates"], owns: ["src/mail/send/**"], budget: { tokens: 1_100_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+			{ key: "sender", title: "Send alerts to subscribers", brief: "Send each alert to the station's subscribers, retrying a bounce once.", acceptance: ["Run `pnpm test src/mail/send.test.ts`."], dependsOn: ["templates"], owns: ["src/mail/send/**"], budget: { tokens: 400_000 },
 				place: { prefer: "nas", reason: "Same machine as the templates." } },
 		],
 	);
@@ -1539,13 +1538,6 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
 const DEPLOYMENT_OFF = "turned off for this deployment";
 
-/** The rounds a run allows, as the server sends them: the second review's only where it can send the builder back (blueprint.ts, `reviewSendsBack`). */
-function capsFor(view: ItemView, reviewer: boolean): RoundCaps {
-	const { review: _, ...caps } = ROUND_CAPS;
-	return reviewer && view.mode !== "orchestrate" && !view.parent && view.place.kind === "hosted" && view.review?.state !== "off" ? ROUND_CAPS : caps;
-}
-const withCaps = (view: ItemView, reviewer: boolean): ItemView => (view.run ? { ...view, run: { ...view.run, caps: capsFor(view, reviewer) } } : view);
-
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
 function withoutReviewer(view: ItemView): ItemView {
 	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
@@ -1585,7 +1577,6 @@ export function createMockItems(deps: MockItemsDeps) {
 				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.map((view) => (deps.reviewer === false ? withoutReviewer(view) : view))
 				.concat(state === "features" ? seededFeatures(at, auth.profile.uid) : [])
-				.map((view) => withCaps(view, deps.reviewer !== false))
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
@@ -1695,7 +1686,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
 		const at = deps.now();
 		const before = item.run;
-		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: capsFor(item, deps.reviewer !== false) };
+		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 } };
 		if (item.state === "review" && item.verifiedCheck?.state === "completed")
 			item.verifiedCheck = { ...item.verifiedCheck, state: "in_progress", conclusion: null, said: `Sent back: being reworked in run ${run.n}` };
 		if (item.mode === "orchestrate") {
@@ -1706,7 +1697,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				spec: { goal: item.title, requirements: [item.task.body], outOfScope: [], acceptance: item.task.acceptance.length ? item.task.acceptance : ["Complete the requested feature."] },
 				budget: item.budget, compare: { singleBudget: MOCK_FACTORY_LIMITS.item },
 				subtasks: ["implementation", "verification"].map((key, i) => ({ key, title: i ? "Verify the feature" : item.title, brief: i ? "Add regression coverage." : item.task.body,
-					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { ...MOCK_FACTORY_LIMITS.item } })),
+					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { tokens: MOCK_FACTORY_LIMITS.item.tokens } })),
 			};
 			const text = approvalText(plan);
 			return change(auth, item, { run, state: "waiting", wait: { reason: "person", since: at, retryAt: null, sentence: text }, question: { id: item.id + ":plan" + version, kind: "plan_approval", text, askedAt: at, choices: choices("approve","revise","give_up") } }, [said,"The planner filed a proposal."], "platform");
@@ -1746,16 +1737,16 @@ export function createMockItems(deps: MockItemsDeps) {
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
 				if (plan.questions.some(q => !q.answer)) throw conflict("Answer and save the plan’s questions before approving one implementer.");
-				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = singleAfterPlanning(plan.compare.singleBudget, item.spent, item.budget);
+				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = singleAfterPlanning(plan.compare.singleBudget, item.spent);
 				return beginRun(auth, item, "Run as single item.");
 			case "edit_plan": {
 				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");
 				let edited;
-				try { edited = validatePlan(action.plan, plan.compare.singleBudget, plan.budget); }
+				try { edited = validatePlan(action.plan, plan.compare.singleBudget); }
 				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				const kind = edited.singleSuggested ? "single_suggested" : item.question?.kind === "replan_approval" ? "replan_approval" : "plan_approval";
 				const offered = kind === "single_suggested" ? choices("run_single","orchestrate_anyway") : edited.questions.some(q => !q.answer) ? choices("revise","give_up") : choices("approve","revise","give_up");
-				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? approvalText({ ...plan, ...edited }) } }, ["Edited the plan."], "person");
+				return change(auth, item, { plan: { ...plan, ...edited, budget: { ...plan.budget, tokens: plan.budget.tokens - planTokens(plan) + planTokens(edited) }, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? approvalText({ ...plan, ...edited }) } }, ["Edited the plan."], "person");
 			}
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
@@ -1781,7 +1772,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: "docker-hardened" as const }), ...(sub.agent?.model && { model: sub.agent.model }) });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
 					place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, sub.agent?.effort ?? (agentHarness === "windlass" && !sub.agent?.model ? item.agent?.effort : undefined)) };
 				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
@@ -2002,8 +1993,8 @@ export function createMockItems(deps: MockItemsDeps) {
 					question: null,
 					pullRequest: null,
 					verdict: null,
-					budget: input.mode !== "single" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
-					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
+					budget: { ...MOCK_FACTORY_LIMITS.item },
+					spent: { tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 					agent: newAgent(session.harness ?? "windlass", session.model, input.effort),
 					sessionId: session.id,
 					createdAt: at,

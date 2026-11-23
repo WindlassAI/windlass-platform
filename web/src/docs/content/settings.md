@@ -146,17 +146,18 @@ Where the platform's sandboxes are billed by the second, as on E2B, the page sho
 
 ## Limits
 
-These are the platform's defaults. Whoever runs the platform can change them.
+The platform limits only what costs its owner money or could be abused. Your own machines have no platform limit: their runners decide what they run. These are the defaults, and whoever runs the platform can change them for your account.
 
 | Limit | Default |
 | --- | --- |
-| Model tokens | Unlimited |
 | Sandbox time on this platform | 2 hours a day, reset at 00:00 UTC |
+| Sandboxes running at once on this platform | 3, your agents and work items together |
 | Sandboxes kept on this platform | 5 |
-| Agents working at once on this platform | 6 |
+| A paused sandbox on this platform | removed after 7 days without use |
+| Model tokens | Unlimited |
 | Prompt length | 20,000 characters |
 | Turn length | 45 minutes |
-| Time to answer a question | 10 minutes |
+| Time to answer a question during a turn | 10 minutes |
 | Note with an answer | 2,000 characters |
 | Clone of a repository | 3 minutes |
 | Setup command | 10 minutes |
@@ -168,4 +169,6 @@ These are the platform's defaults. Whoever runs the platform can change them.
 | Secrets per repository | 50 |
 | API tokens | 20 |
 
-A paused sandbox on this platform is removed after 7 days without use. On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).
+A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. A work item never asks this way: its questions end the turn and wait for days if need be.
+
+Work items have their own budgets and one limit on items filed from GitHub. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).

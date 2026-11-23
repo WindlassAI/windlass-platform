@@ -352,10 +352,12 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 	);
 }
 
-/** The run it is in, or ended last: its step, and the rounds of fixing used of what a run allows. */
-/** The run's facts. The second review's fixes are counted only where the server gives their cap: where the item's reviewer can send its builder back. */
+/**
+ * The run it is in, or ended last: its step, and the rounds of fixing it took. Rounds are not capped: a run stops when the
+ * same failure comes back or its budget is used, and asks. The second review's fixes are shown once there were some.
+ */
 export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
-	const { step, rounds, caps } = run;
+	const { step, rounds } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
 		<dl className="usage-facts item-facts">
@@ -385,20 +387,10 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 				<dt>Fixes</dt>
 				<dd>
 					<span className="item-rounds">
-						<span>
-							after your checks {rounds.gate} of {caps.gate}
-						</span>
-						<span>
-							after CI {rounds.ci} of {caps.ci}
-						</span>
-						<span>
-							merging the base {rounds.conflict} of {caps.conflict}
-						</span>
-						{caps.review !== undefined ? (
-							<span>
-								after the second review {rounds.review ?? 0} of {caps.review}
-							</span>
-						) : null}
+						<span>after your checks {rounds.gate}</span>
+						<span>after CI {rounds.ci}</span>
+						<span>merging the base {rounds.conflict}</span>
+						{(rounds.review ?? 0) > 0 ? <span>after the second review {rounds.review}</span> : null}
 					</span>
 				</dd>
 			</div>
@@ -409,16 +401,14 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 // ---- what it asks -------------------------------------------------------------------------------
 
 const BUDGET_FIELDS: Array<{ key: keyof ItemBudget; label: string; unit: string; toInput(value: number): string; fromInput(text: string): number; spelled(value: number): string }> = [
-	{ key: "tokens", label: "Tokens", unit: "millions", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
-	{ key: "turns", label: "Turns", unit: "", toInput: String, fromInput: (text) => Math.round(Number(text)), spelled: String },
-	{ key: "activeSeconds", label: "Working time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
+	{ key: "tokens", label: "Tokens", unit: "millions, cost-weighted", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
 	{ key: "hostedSeconds", label: "Hosted sandbox time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
 ];
 
 /** The figures of an item's budget that limit it: hosted sandbox time only for an item on a hosted sandbox. */
 const budgetFields = (view: Pick<ItemView, "place">) => BUDGET_FIELDS.filter((field) => field.key !== "hostedSeconds" || view.place.kind === "hosted");
 
-/** The new budget, for "Raise the limit and go on" on a budget question: each figure as it is, to be raised where it was reached. */
+/** Another amount than the question's "Give it N more": the new budget, each figure as it is, raised where it was reached. */
 function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: boolean; onRaise(budget: Partial<ItemBudget>): void; onBack(): void }) {
 	const fields = budgetFields(view);
 	const [values, setValues] = useState(() => Object.fromEntries(fields.map((field) => [field.key, field.toInput(view.budget[field.key])])) as Record<keyof ItemBudget, string>);
@@ -429,7 +419,7 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 	const changed = Object.fromEntries(parsed.filter(({ field, value }) => value !== view.budget[field.key]).map(({ field, value }) => [field.key, value])) as Partial<ItemBudget>;
 	return (
 		<div className="item-raise">
-			<div className={`item-raise-fields${fields.length === 3 ? " item-raise-fields-three" : ""}`}>
+			<div className="item-raise-fields">
 				{fields.map((field) => {
 					const reached = view.spent[field.key] >= view.budget[field.key];
 					return (
@@ -446,10 +436,10 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 					);
 				})}
 			</div>
-			<p className="field-note">For this item only. {short.length > 0 ? `Raise ${short.map(({ field }) => field.label.toLowerCase()).join(" and ")} above what is used, or it stops again at once.` : ""}</p>
+			<p className="field-note">For this item only{view.parent ? "; what you give a subtask adds to its feature's budget" : ""}. It goes on in the same session and sandbox. {short.length > 0 ? `Raise ${short.map(({ field }) => field.label.toLowerCase()).join(" and ")} above what is used, or it stops again at once.` : ""}</p>
 			<div className="item-choices">
 				<button type="button" className="button button-primary" disabled={busy || bad || short.length > 0 || Object.keys(changed).length === 0} onClick={() => onRaise(changed)}>
-					{busy ? "Sending…" : "Raise and go on"}
+					{busy ? "Sending…" : "Give it this and go on"}
 				</button>
 				<button type="button" className="button button-quiet" onClick={onBack} disabled={busy}>
 					Back
@@ -508,11 +498,16 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 								type="button"
 								className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
 								disabled={busy || (choice.id === "reply" && note.trim() === "")}
-								onClick={() => (choice.id === "raise" && question.kind === "budget" ? setRaising(true) : answer(choice.id))}
+								onClick={() => answer(choice.id)}
 							>
 								{acting.busy === choice.id ? "Sending…" : choice.label}
 							</button>
 						))}
+						{question.kind === "budget" && question.choices.some((choice) => choice.id === "raise") ? (
+							<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRaising(true)}>
+								Another amount…
+							</button>
+						) : null}
 					</div>
 				</>
 			)}
@@ -777,6 +772,14 @@ function Report({ view, report, links, now }: { view: ItemView; report: ItemRepo
 
 // ---- what it cost -------------------------------------------------------------------------------
 
+/** What an item spent that no budget of its holds: its turns and its working time, said and not metered. */
+function spendFacts(view: ItemView): { label: string; value: string }[] {
+	return [
+		{ label: "Turns", value: plural(view.spent.turns, "turn") },
+		{ label: "Working time", value: sandboxTime(view.spent.activeSeconds) },
+	];
+}
+
 function Cost({ view }: { view: ItemView }) {
 	const rows = budgetFields(view);
 	const hosted = view.place.kind === "hosted";
@@ -790,9 +793,9 @@ function Cost({ view }: { view: ItemView }) {
 				{agentLine(view.agent)}.
 			</p>
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
-			{agentFacts(view.agent).length > 0 ? (
+			{[...spendFacts(view), ...agentFacts(view.agent)].length > 0 ? (
 				<dl className="usage-facts item-facts">
-					{agentFacts(view.agent).map((fact) => (
+					{[...spendFacts(view), ...agentFacts(view.agent)].map((fact) => (
 						<div key={fact.label}>
 							<dt>{fact.label}</dt>
 							<dd className="usage-number">{fact.value}</dd>
@@ -801,6 +804,7 @@ function Cost({ view }: { view: ItemView }) {
 				</dl>
 			) : null}
 			<p className="usage-note">
+				Tokens count cost-weighted: an input token read from the prompt cache counts as a tenth. When the budget is used, the item asks you for more and keeps its work.{" "}
 				{hosted
 					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."
 					: "Working time counts only while the item works: waiting for a turn, for your machine, for CI or for you does not. On your machine it costs no hosted time."}

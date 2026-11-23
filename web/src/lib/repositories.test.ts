@@ -294,7 +294,7 @@ describe("an agent's title, from its task", () => {
 });
 
 describe("what is at work", () => {
-	it("counts what the server counts against the ceiling: the user's agents on hosted sandboxes, and every work item's turn wherever it runs", () => {
+	it("counts what the server counts against the ceiling: the user's agents and work items on hosted sandboxes, never a machine's", () => {
 		const machine = { kind: "machine" as const, machineId: "m_nas" };
 		const sessions = [
 			session({ status: "running" }),
@@ -305,9 +305,9 @@ describe("what is at work", () => {
 			session({ item: { id: "it_3" } }),
 			session(),
 		];
-		expect(workingCounts(sessions)).toEqual({ ceilinged: 4, items: 2, onMachines: 1 });
-		expect(workingWords(workingCounts(sessions), 6)).toBe("4 of 6 working, 2 of them work items");
-		expect(workingWords(workingCounts(sessions), null)).toBe("4 working, 2 of them work items");
+		expect(workingCounts(sessions)).toEqual({ ceilinged: 3, items: 1, onMachines: 2 });
+		expect(workingWords(workingCounts(sessions), 6)).toBe("3 of 6 working, 1 of them a work item");
+		expect(workingWords(workingCounts(sessions), null)).toBe("3 working, 1 of them a work item");
 		expect(workingWords({ ceilinged: 1, items: 0 }, 6)).toBe("1 of 6 working");
 		expect(workingWords({ ceilinged: 1, items: 1 }, 6)).toBe("1 of 6 working, a work item");
 		expect(workingWords({ ceilinged: 3, items: 3 }, 6)).toBe("3 of 6 working, all work items");

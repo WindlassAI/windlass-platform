@@ -1,6 +1,7 @@
 /**
- * The usage page's part for work items: the factory's limits for the user, which the deployment's
- * owner sets and nobody can raise from here, and what each item has cost so far against its budget.
+ * The usage page's part for work items: the limits for the user, which the deployment's owner sets and
+ * nobody can raise from here, and what each item has cost so far against its budget: its tokens
+ * cost-weighted, with what was reported beside them.
  * The usage view supplies the effective limits alongside the user's live items: every open one and
  * the newest ended ones (`ItemFeed`), and how many older ended ones there are, which the Factory page lists.
  * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
@@ -36,42 +37,27 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 			<h2 className="usage-title" id="usage-items">
 				Work items
 			</h2>
-			<p className="usage-lede">What the factory may run for you at once, and what each item may spend. Set by this deployment's owner.</p>
+			<p className="usage-lede">What the platform runs for you at once, and what each item may spend before it asks you for more. Set by this deployment's owner. Your machines have no limit here: their runners' slots are theirs.</p>
 			<dl className="usage-facts factory-limits">
 				<div>
-					<dt>Running turns</dt>
-					<dd className="usage-number">{count(value.runningTurns)}</dd>
-					<dd className="usage-gloss">of yours at once: the factory's and your own prompts; your own agents on your machines are not counted</dd>
-				</div>
-				<div>
-					<dt>Factory turns</dt>
-					<dd className="usage-number">{count(value.factoryTurns)}</dd>
-					<dd className="usage-gloss">of those, for work items; the rest stay free for your own prompts</dd>
-				</div>
-				<div>
-					<dt>Sandboxes</dt>
+					<dt>Hosted sandboxes</dt>
 					<dd className="usage-number">{count(value.hostedRunning)}</dd>
-					<dd className="usage-gloss">hosted sandboxes of yours running at once</dd>
-				</div>
-				<div>
-					<dt>In review</dt>
-					<dd className="usage-number">{count(value.reviewCap)}</dd>
-					<dd className="usage-gloss">items of yours in review before new ones wait; work already started goes on</dd>
+					<dd className="usage-gloss">running at once on this platform, work items and your own agents together; more wait their turn</dd>
 				</div>
 				<div>
 					<dt>Each item</dt>
-					<dd className="usage-number">{count(value.item.tokens)} tokens</dd>
+					<dd className="usage-number">{compact(value.item.tokens)} tokens</dd>
 					<dd className="usage-gloss">
-						and {plural(value.item.turns, "turn")}, {sandboxClock(value.item.activeSeconds)} of work and {sandboxClock(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}; when one is used up, the item asks you
+						cost-weighted: cached input counts at a tenth; and {sandboxClock(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}. Used up, the item asks you for more and keeps its work
 					</dd>
 				</div>
 				<div>
-					<dt>Feature budget</dt>
-					<dd className="factory-limit-text">{value.featureMultiplier}× the item budget</dd>
+					<dt>A feature</dt>
+					<dd className="factory-limit-text">Its subtasks' budgets, as you approve them in its plan, and one item's for its planning, summary and review</dd>
 				</div>
 				<div>
 					<dt>Items from GitHub</dt>
-					<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day · {count(value.githubDrafts)} open drafts</dd>
+					<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day, drafts among them</dd>
 				</div>
 				<div>
 					<dt>Screenshots</dt>
@@ -96,7 +82,7 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 								Tokens
 							</th>
 							<th scope="col" className="usage-number usage-wide">
-								Turns
+								As reported
 							</th>
 							<th scope="col" className="usage-number usage-wide">
 								Working
@@ -117,12 +103,8 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 								<td className="usage-number">
 									<Of spent={item.spent.tokens} budget={item.budget.tokens} spell={compact} />
 								</td>
-								<td className="usage-number usage-wide">
-									<Of spent={item.spent.turns} budget={item.budget.turns} spell={count} />
-								</td>
-								<td className="usage-number usage-wide">
-									<Of spent={item.spent.activeSeconds} budget={item.budget.activeSeconds} spell={sandboxTime} />
-								</td>
+								<td className="usage-number usage-wide tone-dim">{compact(item.spent.rawTokens ?? item.spent.tokens)}</td>
+								<td className="usage-number usage-wide tone-dim">{sandboxTime(item.spent.activeSeconds)}</td>
 								<td className="usage-number">
 									{item.place.kind === "hosted" ? <Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} /> : <span className="tone-faint">your machine</span>}
 								</td>

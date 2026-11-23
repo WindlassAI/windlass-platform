@@ -98,7 +98,7 @@ async function featureNamed(title: string): Promise<ItemView> {
 	return api().item(found.id);
 }
 
-/** A subtask's budget field on the page, by its key and figure ("tokens", "turns", "working", "hosted"). */
+/** A subtask's budget field on the page, by its key and figure ("tokens"). */
 function budgetField(task: string, short: string): HTMLInputElement {
 	const row = [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === task) as HTMLElement;
 	const label = [...row.querySelectorAll("label.plan-budget-label")].find((candidate) => candidate.textContent === short) as HTMLLabelElement;
@@ -118,7 +118,7 @@ describe("the Factory composer's mode choice", () => {
 		make({});
 		await show("/factory");
 		expect(group()?.textContent).toBe("Plan firstQuick");
-		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Adds a planning turn you approve and may spend up to 3× a Quick item’s budget.");
+		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Adds a planning turn you approve. The feature may spend what you approve for its subtasks, and one Quick item's budget for its planning and review.");
 		expect(option("orchestrate")?.checked).toBe(true);
 		await file("Search the docs");
 		expect(filed[0]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
@@ -206,7 +206,7 @@ describe("a feature's plan on its page", () => {
 			if (action.kind !== "approve_plan") return void (meanwhile = otherTab);
 			const view = await api().item(id);
 			const plan = structuredClone(view.plan!);
-			plan.subtasks[2]!.budget.turns = 3;
+			plan.subtasks[2]!.budget.tokens = 300_000;
 			await api().actOnItem(id, { kind: "edit_plan", version: view.plan!.version, plan });
 		};
 		meanwhile = otherTab;
@@ -221,33 +221,33 @@ describe("a feature's plan on its page", () => {
 		expect(host.querySelector(".plan-question")).toBeNull();
 	});
 
-	it("checks each budget against the floor and a single item's cap, and the total against what the subtasks share", async () => {
+	it("checks each subtask's one token budget against the floor and a single item's, and holds no total", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");
 		await show(`/items/${feature.id}`);
-		const turns = budgetField("docs", "turns");
-		type(turns, "1");
-		expect(turns.getAttribute("aria-invalid")).toBe("true");
-		expect(host.querySelector(`#${CSS.escape(turns.id)}-range`)?.textContent).toBe("2–14");
+		const docs = budgetField("docs", "tokens");
+		type(docs, "0.1");
+		expect(docs.getAttribute("aria-invalid")).toBe("true");
+		expect(host.querySelector(`#${CSS.escape(docs.id)}-range`)?.textContent).toBe("200k–2M");
 		expect(button("Save as version 3")?.disabled).toBe(true);
-		type(turns, "3");
-		expect(turns.getAttribute("aria-invalid")).toBeNull();
+		type(docs, "0.4");
+		expect(docs.getAttribute("aria-invalid")).toBeNull();
 		expect(button("Save as version 3")?.disabled).toBe(false);
-		// Over a single item's 6M tokens for one subtask.
+		// Over a single item's 2M tokens for one subtask.
 		const tokens = budgetField("index", "tokens");
-		type(tokens, "6.5");
+		type(tokens, "2.5");
 		expect(tokens.getAttribute("aria-invalid")).toBe("true");
-		// Each within the cap, but together over what the subtasks may share once the reserve is kept.
-		type(tokens, "6");
-		type(budgetField("command", "tokens"), "6");
-		type(budgetField("docs", "tokens"), "6");
+		// Each at a single item's: together they are what the feature may spend, never over it.
+		type(tokens, "2");
+		type(budgetField("command", "tokens"), "2");
+		type(budgetField("docs", "tokens"), "2");
 		expect(tokens.getAttribute("aria-invalid")).toBeNull();
-		expect(host.querySelector(".plan-total-over dt")?.textContent).toBe("Tokens");
-		expect(button("Save as version 3")?.disabled).toBe(true);
+		expect(host.querySelector(".plan-total-over")).toBeNull();
+		expect(host.querySelector(".plan-total-number")?.textContent).toBe("6M of 8M the feature may spend");
+		expect(button("Save as version 3")?.disabled).toBe(false);
 		// Discarding brings back the plan's own figures.
 		act(() => button("Discard changes")?.click());
-		expect(budgetField("index", "tokens").value).toBe("2.4");
-		expect(host.querySelector(".plan-total-over")).toBeNull();
+		expect(budgetField("index", "tokens").value).toBe("1");
 	});
 
 	it("says the server's refusal on a repository without checks, and offers the feature as one item", async () => {
@@ -290,8 +290,8 @@ describe("a feature's plan on its page", () => {
 	});
 
 	it.each(["suggested", "approved", "superseded"] as const)("shows actual spend and the single-item cap for a %s plan with no subtasks", async stage => {
-		const single = { tokens: 6_000_000, turns: 14, activeSeconds: 14_400, hostedSeconds: 7200 };
-		const spent = { tokens: 2_900_000, turns: 5, activeSeconds: 3750, hostedSeconds: 3800 };
+		const single = { tokens: 6_000_000, hostedSeconds: 7200 };
+		const spent = { tokens: 2_900_000, rawTokens: 26_000_000, turns: 5, activeSeconds: 3750, hostedSeconds: 3800 };
 		make({ items: "features" }, item => ({
 			...item, mode: stage === "suggested" ? "orchestrate" : "single", spent, question: null,
 			budget: stage === "suggested" ? item.budget : { ...single, tokens: 8_000_000 },
@@ -302,9 +302,9 @@ describe("a feature's plan on its page", () => {
 		const plan = host.querySelector(".feature-plan")!;
 		expect(plan.textContent).toContain("Runs as one item after this plan");
 		expect(plan.querySelector(".plan-card")).toBeNull();
-		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens", "Turns", "Working time"]);
+		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens"]);
 		const cap = stage === "suggested" ? 8.9 : 8;
-		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M`, stage === "suggested" ? "5 of 19" : "5 of 14", stage === "suggested" ? "1 h 2 min of 5 h 2 min" : "1 h 2 min of 4 h"]);
+		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M · 26M as reported`]);
 		expect(parseFloat(plan.querySelector<HTMLElement>(".usage-meter-used")!.style.width)).toBeCloseTo(100 * 2.9 / cap);
 	});
 
@@ -360,14 +360,15 @@ describe("a plan that was set aside", () => {
 });
 
 describe("the rules the page checks before sending", () => {
-	const single = { tokens: 6_000_000, turns: 14, activeSeconds: 4 * 3600, hostedSeconds: 2 * 3600 };
-	it("takes a subtask's floor as a tenth of a single item, two turns, at least 1,000 tokens and a minute", () => {
-		expect(subtaskFloor(single)).toEqual({ tokens: 600_000, turns: 2, activeSeconds: 1440, hostedSeconds: 720 });
-		expect(subtaskFloor({ tokens: 5000, turns: 3, activeSeconds: 100, hostedSeconds: 100 })).toEqual({ tokens: 1000, turns: 2, activeSeconds: 60, hostedSeconds: 60 });
-		const pool = { tokens: 10_000_000, turns: 30, activeSeconds: 8 * 3600, hostedSeconds: 4 * 3600 };
-		expect(budgetProblems(single, pool, { a: { ...single, turns: 1.5 } }).fields.a).toEqual({ turns: "bad" });
-		expect(budgetProblems(single, pool, { a: single, b: single }).total).toEqual(["tokens"]);
-		expect(budgetProblems(single, pool, { a: { ...single, tokens: 4e6 }, b: { ...single, tokens: 4e6 } }).any).toBe(false);
+	const single = { tokens: 2_000_000 };
+	it("takes a subtask's floor as a tenth of a single item, at least 1,000 tokens, and holds no total", () => {
+		expect(subtaskFloor(single)).toEqual({ tokens: 200_000 });
+		expect(subtaskFloor({ tokens: 5000 })).toEqual({ tokens: 1000 });
+		expect(budgetProblems(single, { a: { tokens: 1.5e6 + 0.5 } }).fields.a).toEqual({ tokens: "bad" });
+		expect(budgetProblems(single, { a: { tokens: 2_000_001 } }).fields.a).toEqual({ tokens: "high" });
+		expect(budgetProblems(single, { a: { tokens: 199_999 } }).fields.a).toEqual({ tokens: "low" });
+		// Their total is no limit: the feature's budget is what they come to.
+		expect(budgetProblems(single, { a: single, b: single, c: single }).any).toBe(false);
 	});
 
 	it("refuses machine details as the server does", () => {
