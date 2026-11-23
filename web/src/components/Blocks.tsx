@@ -1019,12 +1019,14 @@ function TurnSummary({ turn }: { turn: TurnView }) {
 					</span>
 				</p>
 			) : null}
-			{tokenLine ? (tokensOpen ? tokenLine : null) : end.context ? (
+			{tokenLine && tokensOpen ? tokenLine : null}
+			{/* An agent that reports its context (`end.context`, ACP) says how full it is, beside the tokens its turn answered with. */}
+			{end.context ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>context {contextWords(end.context)}</span>
 					{end.context.cost ? <span>{costWords(end.context.cost)}</span> : null}
 				</p>
-			) : end.context === null ? null : end.outcome !== "error" ? (
+			) : tokenLine || end.context === null ? null : end.outcome !== "error" ? (
 				<p className="turn-end-line turn-end-sub">
 					<span>no token counts were reported</span>
 				</p>

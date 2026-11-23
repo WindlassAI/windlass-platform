@@ -276,6 +276,35 @@ export type TurnOutcome =
 
 export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
+/** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
+export type PlatformToolName = "publish" | "report" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan";
+
+/**
+ * What a session's agent can do, as the screens need it: a read-only part of its agent's capability record
+ * (server/src/sandbox/harnesses.ts, `HarnessCapabilities`, each field as documented there). The screens decide
+ * by these, never by the agent's name, so an agent added later needs no screen edited.
+ */
+export interface SessionCapabilities {
+	/** Stopping one tool call of a running turn; without it, only the turn. */
+	cancelCall: boolean;
+	/** What its turns report of their use: token counts per model call ("tokens"), or how full the context is and each turn's tokens where it reports them ("context"). */
+	usage: "tokens" | "context" | "none";
+	/** Whether the user's saved checks run before a turn is called done: by the agent's engine ("required"), by the platform between the agent's prompts ("platform"), or not ("none": CI decides). */
+	checks: "required" | "platform" | "none";
+	/** Whether saved secrets are handed to the agent, with named variables withheld from commands or passed to them. */
+	envLists: boolean;
+	/** The platform's tools it can be given. Without "publish", the person publishes from the side panel. */
+	platformTools: readonly PlatformToolName[];
+	/** Screenshots with a builder's report. */
+	reportScreenshots: boolean;
+	/** Where the models a prompt may name come from: the account's plan, or the agent's own list (pickers drawn only where it offers a choice). */
+	models: "account" | "harness";
+	/** A plan mode of the agent's own, chosen per prompt (`PromptInput.planMode`). */
+	planMode: boolean;
+	/** Whether a project's own MCP servers wait for the person's approval in the side panel. */
+	projectServerApproval: boolean;
+}
+
 export interface SessionMode {
 	id: string;
 	name: string;
@@ -345,6 +374,8 @@ export interface SessionSummary {
 	/** For Claude, the machine's reported choices until the session reports its own. Empty for item sessions. */
 	availableModes: SessionMode[];
 	harness?: HarnessId;
+	/** What its agent can do (`SessionCapabilities`): the screens draw by these, not by `harness`. */
+	capabilities: SessionCapabilities;
 	harnessModels?: ModelList | null;
 	id: string;
 	title: string;
@@ -2767,7 +2798,8 @@ export interface SessionSnapshot {
 }
 
 export interface PromptInput {
-	planFirst?: boolean;
+	/** The agent's own plan mode for this turn, where it has one (`SessionCapabilities.planMode`): it plans and changes nothing. Only for a turn that starts. */
+	planMode?: boolean;
 	text: string;
 	/** Switches to an offered account or harness model from this turn on. */
 	model?: string;

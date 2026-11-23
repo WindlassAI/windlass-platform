@@ -21,9 +21,101 @@ function typedField(update: AcpUpdate): string | undefined {
 	if (update.sessionUpdate === "tool_call") return update.toolCallId;
 	if (update.sessionUpdate === "current_mode_update") return update.currentModeId;
 }
+/**
+ * The text of every string and template literal in TypeScript source, by the line it starts on; comments
+ * are left out, and code inside a template's `${}` is read as code, its own strings included.
+ */
+function stringTexts(source: string): Array<{ line: number; text: string }> {
+	const out: Array<{ line: number; text: string }> = [];
+	// The brace depth at which each open template's `${` began.
+	const templates: number[] = [];
+	let i = 0, line = 1, depth = 0;
+	const at = (k = 0) => source[i + k] ?? "";
+	const literal = (quote: string) => {
+		const start = line;
+		let text = "";
+		i++;
+		while (i < source.length && at() !== quote) {
+			if (at() === "\\") { text += at(1); i += 2; continue; }
+			if (at() === "\n") { if (quote !== "`") break; line++; }
+			if (quote === "`" && at() === "$" && at(1) === "{") { out.push({ line: start, text }); templates.push(depth++); i += 2; return; }
+			text += at();
+			i++;
+		}
+		out.push({ line: start, text });
+		i++;
+	};
+	while (i < source.length) {
+		const ch = at();
+		if (ch === "\n") { line++; i++; }
+		else if (ch === "/" && at(1) === "/") while (i < source.length && at() !== "\n") i++;
+		else if (ch === "/" && at(1) === "*") {
+			i += 2;
+			while (i < source.length && !(at() === "*" && at(1) === "/")) { if (at() === "\n") line++; i++; }
+			i += 2;
+		} else if (ch === "\"" || ch === "'" || ch === "`") literal(ch);
+		else if (ch === "{") { depth++; i++; }
+		else if (ch === "}") {
+			depth--;
+			// The end of a template's `${}`: the template goes on from here.
+			if (templates.at(-1) === depth) { templates.pop(); literal("`"); }
+			else i++;
+		} else i++;
+	}
+	return out;
+}
 const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = true;
 assert.equal(itemHasHarness, true);
 assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
+
+// One capability record per agent (harnesses.ts): the platform and the screens decide by these flags, never by the agent's id.
+{
+	const { CLAUDE, CODEX, OPENCODE, WINDLASS_CAPABILITIES, capabilitiesOf, harnessName, machineHarnesses, sessionCapabilities, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+	const { AcpHarness } = await import("../server/src/sandbox/acp-harness.js");
+	assert.equal(capabilitiesOf("windlass"), WINDLASS_CAPABILITIES);
+	assert.equal(capabilitiesOf(undefined), WINDLASS_CAPABILITIES, "a session that names no agent is Windlass's");
+	for (const profile of Object.values(machineHarnesses)) {
+		assert.equal(capabilitiesOf(profile.id), profile.capabilities, `${profile.name}: its own record`);
+		assert.equal(await new AcpHarness(profile, "box").capabilities(), profile.capabilities, `${profile.name}: the harness answers with its record`);
+		assert.ok(Object.isFrozen(profile.capabilities) && Object.isFrozen(profile.capabilities.platformTools), `${profile.name}: its record cannot be changed by a caller`);
+		const caps = profile.capabilities;
+		assert.ok(caps.events === "acp" && caps.untrustedMarker === "none" && caps.steps === "platform" && caps.checks === "platform" && !caps.cancelCall && caps.usage === "context" && caps.models === "harness", `${profile.name}: an ACP agent takes no marker, has the platform run its checks and count its steps, and reports context`);
+		assert.equal(takesUntrustedMarker(profile.id), false, `${profile.name} takes no marker`);
+	}
+	assert.ok(WINDLASS_CAPABILITIES.untrustedMarker === "taint" && WINDLASS_CAPABILITIES.steps === "engine" && takesUntrustedMarker("windlass") && takesUntrustedMarker(undefined), "Windlass takes the marker, and its engine keeps the step limit");
+	assert.deepEqual([CLAUDE, OPENCODE, CODEX].filter(p => p.capabilities.planMode).map(p => p.id), ["codex"], "only Codex has a plan mode of its own");
+	assert.ok(CLAUDE.capabilities !== OPENCODE.capabilities && OPENCODE.capabilities !== CODEX.capabilities, "each ACP agent has a record of its own");
+	// What the screens are sent: the same flags, read-only, and nothing of the record that is not theirs.
+	const sent = sessionCapabilities("claude");
+	assert.deepEqual(Object.keys(sent).sort(), ["cancelCall", "checks", "envLists", "models", "planMode", "platformTools", "projectServerApproval", "reportScreenshots", "usage"]);
+	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
+	assert.deepEqual(sessionCapabilities(undefined), sessionCapabilities("windlass"));
+	assert.ok(sessionCapabilities("windlass").cancelCall && sessionCapabilities("windlass").usage === "tokens" && sessionCapabilities("codex").planMode);
+	assert.equal(harnessName("codex"), "Codex");
+	assert.equal(harnessName(undefined), "Windlass");
+
+	// No agent's name is written out in the server outside harnesses.ts: each comes from `harnessName` or an `AcpProfile`'s
+	// `name`, so a renamed or added agent is one record more and no sentence calls it by another's name.
+	const { readdirSync, statSync } = await import("node:fs");
+	const serverSrc = fileURLToPath(new URL("../server/src/", import.meta.url));
+	const ALLOWED: Record<string, string> = {
+		"sandbox/harnesses.ts": "the agents' records, where their names are kept",
+		"github/redact.ts": "\"OpenCode API key\" names a kind of secret the redactor finds, not the agent",
+	};
+	const walk = (dir: string): string[] => readdirSync(dir).flatMap(name => {
+		const path = join(dir, name);
+		return statSync(path).isDirectory() ? walk(path) : path.endsWith(".ts") ? [path] : [];
+	});
+	const names = new RegExp(`\\b(${[CLAUDE, OPENCODE, CODEX].map(p => p.name).join("|")})\\b`);
+	const found = walk(serverSrc).flatMap(path => {
+		const file = path.slice(serverSrc.length).replaceAll("\\", "/");
+		if (ALLOWED[file]) return [];
+		return stringTexts(readFileSync(path, "utf8")).filter(({ text }) => names.test(text)).map(({ line, text }) => `server/src/${file}:${line}: ${text.slice(0, 100)}`);
+	});
+	assert.deepEqual(found, [], "an agent's name is written out by hand; use harnessName() or the AcpProfile's name");
+	// The scanner itself: strings and template text count, comments do not.
+	assert.deepEqual(stringTexts("// Codex\n/* OpenCode */ const a = `x ${b ? \"Claude Code\" : `in ${c}`} y`;").map(t => t.text), ["x ", "Claude Code", "in ", "", " y"]);
+}
 
 // ask_person (agent-publish.ts): which harness and which turn is offered it, how it is declared, and what a call comes to.
 {
@@ -31,7 +123,8 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { turnHostTools, hostToolsMeta } = await import("../server/src/sandbox/turn.js");
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
-	for (const acp of ["claude", "opencode"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL], `${acp} can be given report and ask_person, and no other platform tool`);
+	// Codex takes them through its image's wlp-acp-mcp (sandbox/harness/codex/requirements.toml).
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL], `${acp} can be given report and ask_person, and no other platform tool`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
 	const declared = builder.find(tool => tool.name === ASK_TOOL);
 	assert.ok(declared && declared.effect === "read" && declared.untrustedResult === false && declared.timeoutSeconds === 30, "ask_person is declared read, its result trusted, 30 s");

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ItemFeed, ItemSummary, ModelList, PlatformInfo, SandboxProfile, SessionRepository, SessionSummary } from "@contract";
 import { itemFeed } from "../../../server/src/item-pages";
 import { MAX_TITLE_CHARS } from "@contract";
+import { sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, feedCounts, feedRepositories, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, startedOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
@@ -12,7 +13,7 @@ const tides = repository(7102, "ada", "tide-tables");
 let made = 0;
 function session(patch: Partial<SessionSummary> = {}): SessionSummary {
 	made += 1;
-	return { id: `s${made}`, title: `Agent ${made}`, place: { kind: "hosted" }, profile: "docker-windlass-sandbox", model: "gpt-6.1-sol", mode: "auto", availableModes: [], repoUrl: null, createdAt: made, updatedAt: made, status: "idle", turns: 0, lastOutcome: null, sandbox: "none", ...patch };
+	return { id: `s${made}`, capabilities: sessionCapabilities("windlass"), title: `Agent ${made}`, place: { kind: "hosted" }, profile: "docker-windlass-sandbox", model: "gpt-6.1-sol", mode: "auto", availableModes: [], repoUrl: null, createdAt: made, updatedAt: made, status: "idle", turns: 0, lastOutcome: null, sandbox: "none", ...patch };
 }
 
 describe("the list of agents, grouped", () => {

@@ -5,9 +5,11 @@
  * and that repository's setup command, and, where the project names MCP servers, those and the user's
  * approvals of them.
  *
- * An agent of another harness (Claude Code) reports no token counts and has no prompt cache to chart:
- * in their place the panel says how full its context is, and what it has cost so far when the harness
- * says. Its saved secrets are not handed to it, so they are not listed as if they were.
+ * What it draws follows the session's capabilities (`SessionSummary.capabilities`), never the agent's name.
+ * An agent that reports token counts per model call (`usage` "tokens", Windlass) gets the token counts and
+ * the cache chart. One that reports how full its context is (`usage` "context", the ACP agents) gets that,
+ * and what it has cost so far when it says, and the token counts its turns answered with once one did;
+ * it has no per-call chart. Saved secrets are listed only for an agent they are handed to (`envLists`).
  *
  * The session's facts include the mode its next prompt runs in, for every agent, a work item's too,
  * which keeps its profile's. For Claude Code the sandbox's facts say that mode in place of the
@@ -15,7 +17,7 @@
  */
 import type { EgressMode, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
-import { acpHarnessName, contextWords, costWords, sessionModelWords } from "../lib/acp";
+import { acpHarnessName, contextWords, costWords, HARNESS_NAMES, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -172,7 +174,11 @@ function Stat({ label, value, unit, share, meter, sub }: { label: string; value:
 	);
 }
 
-function Tokens({ view }: { view: SessionView }) {
+/** Whether any turn reported its tokens: a turn of an agent that counts per call, or one that answered its prompt with them. */
+const reportsTokens = (view: SessionView) => view.calls.length > 0 || view.turns.some((one) => one.end?.usage != null);
+
+/** The session's token counts. `perCall`: counted per model call, with how many calls (`usage` "tokens"); else per turn only. */
+function Tokens({ view, perCall }: { view: SessionView; perCall: boolean }) {
 	const session = sessionUsage(view);
 	const last = lastTurn(view);
 	const turn: TurnUsage | null = last ? turnUsage(last) : null;
@@ -181,6 +187,7 @@ function Tokens({ view }: { view: SessionView }) {
 	// A scripted model reports no usage at all: say so rather than show zeros.
 	const unreported = view.turns.some((one) => one.end !== null) && calls === 0 && view.turns.every((one) => one.end === null || one.end.usage === null);
 	const lastUnreported = last !== null && last.end !== null && last.end.usage === null && lastCalls === 0;
+	const turnsReported = view.turns.filter((one) => one.end?.usage != null).length;
 	const cell = (value: number | null) => (value === null ? "–" : count(value));
 	const total = (value: number) => (unreported ? "–" : count(value));
 	const turnCell = (value: number | null) => (lastUnreported ? "–" : cell(value));
@@ -188,7 +195,7 @@ function Tokens({ view }: { view: SessionView }) {
 		<section className="panel-section" aria-labelledby="panel-tokens">
 			<h2 className="panel-title" id="panel-tokens">
 				Tokens
-				<span className="panel-title-aside">{plural(calls, "call")}</span>
+				<span className="panel-title-aside">{perCall ? plural(calls, "call") : `${plural(turnsReported, "turn")} reported`}</span>
 			</h2>
 			<div className="stats">
 				<Stat label="Input" value={unreported ? "–" : compact(session.inputTokens)} share={unreported || session.inputTokens === 0 ? null : cachedShare(session)} meter="Input read from the prompt cache" sub={unreported ? "not reported" : `${percent(cachedShare(session))} cached`} />
@@ -233,11 +240,13 @@ function Tokens({ view }: { view: SessionView }) {
 						<td>{total(session.reasoningTokens)}</td>
 						<td>{turnCell(turn?.reasoningTokens ?? null)}</td>
 					</tr>
-					<tr>
-						<th scope="row">calls</th>
-						<td>{calls}</td>
-						<td>{last ? lastCalls : "–"}</td>
-					</tr>
+					{perCall ? (
+						<tr>
+							<th scope="row">calls</th>
+							<td>{calls}</td>
+							<td>{last ? lastCalls : "–"}</td>
+						</tr>
+					) : null}
 				</tbody>
 			</table>
 			</details>
@@ -274,7 +283,7 @@ function Context({ view, harness, turns }: { view: SessionView; harness: string;
 					<Stat label="Cost so far" value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} sub={context.cost ? plural(turns, "turn") : "not reported"} />
 				</div>
 			) : (
-				<p className="panel-empty">{harness} says how full its context is once a turn has run. It reports no token counts.</p>
+				<p className="panel-empty">{harness} says how full its context is once a turn has run.</p>
 			)}
 		</section>
 	);
@@ -471,23 +480,26 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
 	const published = useCallback(() => setReloads((value) => value + 1), []);
-	const harness = acpHarnessName(summary);
+	const { usage, envLists } = summary.capabilities;
 	return (
 		<aside className="panel" id="details" aria-label="Session details">
 			<Facts summary={summary} profile={profile} view={view} />
 			<Sandbox summary={summary} profile={profile} />
-			{harness ? (
-				<Context view={view} harness={harness} turns={summary.turns} />
-			) : (
+			{usage === "tokens" ? (
 				<>
-					<Tokens view={view} />
+					<Tokens view={view} perCall />
 					<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
 				</>
-			)}
+			) : usage === "context" ? (
+				<>
+					<Context view={view} harness={HARNESS_NAMES[summary.harness ?? "windlass"]} turns={summary.turns} />
+					{reportsTokens(view) ? <Tokens view={view} perCall={false} /> : null}
+				</>
+			) : null}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
 			<SetupSection egress={egress} hosted={hosted} domains={domains} summary={summary} />
-			{harness ? null : <SecretsSection summary={summary} />}
+			{envLists ? <SecretsSection summary={summary} /> : null}
 			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
 			<ServersSection sessionId={sessionId} summary={summary} question={question} />
 		</aside>

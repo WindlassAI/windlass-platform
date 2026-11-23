@@ -91,7 +91,10 @@ const text = () => host.textContent ?? "";
 
 it.each(["claude", "opencode", "codex"] as const)("shows %s models and modes in the idle composer and panel before its first turn", async harness => {
 	await open({ harness });
-	if (harness === "codex") expect(host.textContent).toContain("Plan first");
+	// Codex's own plan mode (`capabilities.planMode`), not the items' Plan first.
+	if (harness === "codex") expect(host.textContent).toContain("Plan mode");
+	else expect(host.textContent).not.toContain("Plan mode");
+	expect(host.textContent).not.toContain("Plan first");
 	const names = harness === "codex" ? ["6.2 Sol (default)"] : harness === "claude" ? ["Default (recommended)", "Opus", "Haiku"] : ["OpenAI/GPT-5.4 (default)", "OpenAI/GPT-5.4 mini"];
 	const modeNames = harness === "codex" ? ["Container access"] : harness === "claude" ? ["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"] : ["build", "plan"];
 	expect(host.querySelector("#panel-session")?.textContent).toContain("no turns yet");
@@ -127,7 +130,7 @@ it.each(["token", "none", "unknown"] as const)("shows session login instructions
 });
 
 describe("a Claude Code agent's page", () => {
-	it("shows its turn in the platform's blocks: the plan, the calls with the edit's diff, the context instead of tokens", async () => {
+	it("shows its turn in the platform's blocks: the plan, the calls with the edit's diff, the context and the turn's tokens", async () => {
 		await open("nas-claude");
 		const turn = host.querySelector(".turn") as HTMLElement;
 		expect(turn.querySelector(".block-plan")).not.toBeNull();
@@ -144,10 +147,15 @@ describe("a Claude Code agent's page", () => {
 		expect(turn.querySelector(".turn-end")?.textContent).toContain("context 41% used");
 		expect(turn.querySelector(".turn-end")?.textContent).toContain("$0.38 so far");
 		expect(turn.querySelector(".turn-end")?.textContent).not.toContain("no token counts were reported");
-		// The side panel: the context and the cost; no token table, no cache chart.
+		// The side panel: the context and the cost, and the tokens the turn answered with, per turn; no cache chart, since it counts no calls.
 		expect(host.querySelector("#panel-context")?.closest("section")?.textContent).toContain("41% used");
-		expect(host.querySelector("#panel-tokens")).toBeNull();
+		const tokens = host.querySelector("#panel-tokens")?.closest("section");
+		expect(tokens?.querySelector(".panel-title-aside")?.textContent).toBe("1 turn reported");
+		expect(tokens?.textContent).toContain("24,300");
+		expect(tokens?.textContent).not.toContain("calls");
 		expect(host.querySelector("#panel-cache")).toBeNull();
+		// Its saved secrets are not handed to it (`envLists`), so the panel does not list them.
+		expect(host.querySelector("#panel-secrets")).toBeNull();
 	});
 
 	it("has no effort picker, since Claude Code offered no thought_level, and the model picker its models", async () => {
@@ -229,6 +237,14 @@ describe("an agent's mode on its page", () => {
 		expect(sandbox).not.toContain("ChatGPT");
 		expect(sandbox).not.toContain("access token");
 		expect(sandbox).not.toContain("runs every call without asking");
+	});
+
+	it("gives a Windlass agent on a repository, by its flags, per-call tokens, no context section and its saved secrets", async () => {
+		await open((sessions) => sessions.find((one) => (one.harness ?? "windlass") === "windlass" && one.item === undefined && one.turns > 0 && one.repository));
+		expect(host.querySelector("#panel-tokens")?.closest("section")?.querySelector(".panel-title-aside")?.textContent).toMatch(/call/);
+		expect(host.querySelector("#panel-context")).toBeNull();
+		expect(host.querySelector("#panel-secrets")).not.toBeNull();
+		expect(host.textContent).not.toContain("Plan mode");
 	});
 
 	it("gives a Windlass agent the picker of its sandbox's two modes, and its sandbox's facts as before", async () => {

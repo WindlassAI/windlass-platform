@@ -145,7 +145,7 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -1092,6 +1092,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			title: givenTitle ?? DEFAULT_TITLE,
 			place,
 			harness,
+			capabilities: sessionCapabilities(harness),
 			profile: chosen.id,
 			...modes,
 			...(options && { harnessModels: models }),
@@ -1427,7 +1428,9 @@ export const user = actor({
 		const sessions = new Map<string, SessionSummary>();
 		const created = new Map<string, Submission & { id: string }>();
 		for (const { summary, key, sent, launch_until, launch_claim } of rows) {
-			const parsed = JSON.parse(summary) as SessionSummary;
+			// A summary stored before it carried its agent's capabilities, or with those of an older build, takes this build's.
+			const parsed = { ...(JSON.parse(summary) as SessionSummary) };
+			parsed.capabilities = sessionCapabilities(parsed.harness);
 			sessions.set(parsed.id, parsed);
 			if (launch_until !== null) launchUntil.set(parsed.id, launch_until);
 			if (launch_until !== null && launch_claim !== null) launchClaim.set(parsed.id, launch_claim);

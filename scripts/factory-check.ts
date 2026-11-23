@@ -1707,10 +1707,13 @@ print("\n== untrusted text: each turn says where its outside text came from");
 
 	// "Docker, hardened": what the session refuses (someone else's text) and what goes labelled only (the run's own).
 	const { thirdParty, untrustedTurn, runAnywayWords, agentUnmarkedNote, hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
-	const { harnessName, machineHarness, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+	const { capabilitiesOf, harnessName, machineHarness, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+	// The rule reads each agent's record (`untrustedMarker`), not its id: Windlass takes the marker, every ACP agent none.
+	expect("the marker follows each agent's capability record", (["windlass", "claude", "opencode", "codex"] as const).every(agent => takesUntrustedMarker(agent) === (capabilitiesOf(agent).untrustedMarker === "taint"))
+		&& capabilitiesOf("windlass").untrustedMarker === "taint" && (["claude", "opencode", "codex"] as const).every(agent => capabilitiesOf(agent).untrustedMarker === "none"));
 	const { newAgent } = await import("../server/src/factory/budget.js");
 	const decide = (agent: "windlass" | "claude" | "opencode" | "codex", profile: "docker-hardened" | "docker-windlass-sandbox" | "e2b", d: { untrusted?: string[]; unsandboxed?: true } | undefined) =>
-		untrustedTurn({ agent, marker: takesUntrustedMarker(agent), profile, untrusted: d?.untrusted, unsandboxed: d?.unsandboxed });
+		untrustedTurn({ agent, profile, untrusted: d?.untrusted, unsandboxed: d?.unsandboxed });
 	const runOwn = [untrustedWords.ci(H(1)), untrustedWords.review(H(1)), untrustedWords.builder(7), untrustedWords.reports, untrustedWords.earlier];
 	expect("someone else's: an issue of theirs and GitHub feedback with another writer; the run's own is none of it", isDeepStrictEqual(thirdParty([ISSUE, untrustedWords.feedback("@alex"), ...runOwn]), [ISSUE, "GitHub feedback from @alex"]));
 	const stopOf = (o: Outcome) => { const d = decide("windlass", "docker-hardened", effect(o, "deliver")); return d.kind === "stop" ? d.sources : []; };

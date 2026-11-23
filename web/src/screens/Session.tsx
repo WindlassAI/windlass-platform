@@ -13,9 +13,10 @@
  * call's stop, the answers to its questions, and the panel's pull request and servers.
  *
  * An agent of another harness than Windlass (Claude Code, on one of the user's machines) says which
- * beside its title, and the page draws only what that harness does: its tool calls cannot be stopped
- * one by one, and the composer offers the models it offered. Where its machine says Claude Code is not
- * signed in, the line above the composer shows the machine terminal command.
+ * beside its title, and the page draws only what its capabilities say it does (`SessionSummary.capabilities`),
+ * never by its name: a tool call's stop only where one call can be stopped (`cancelCall`), the models it
+ * offered where it has its own list (`models`), and Plan mode where it has one (`planMode`). Where its
+ * machine says it is not signed in, the line above the composer shows the machine terminal command.
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useState } from "react";
@@ -24,7 +25,7 @@ import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, Mark, PullRequestIcon, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
-import { acpHarnessName, harnessModelsOf, sessionModelWords } from "../lib/acp";
+import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
 import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
@@ -218,7 +219,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	const handover = useMemo(() => takeHandover(sessionId), [sessionId]);
 	const [suggestion, setSuggestion] = useState<{ key: number; text: string } | null>(null);
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
-	const [planFirst, setPlanFirst] = useState(false);
+	const [planMode, setPlanMode] = useState(false);
 	const [refusals, setRefusals] = useState(0);
 	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
 	const online = state.connection === "connected";
@@ -251,8 +252,8 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 			throw new Error(explain(failure));
 		}
 	}, [api, explain]);
-	// A harness other than Windlass cannot stop one call of a turn: only the turn.
-	const harness = state.summary ? acpHarnessName(state.summary) : null;
+	// An agent that cannot stop one call of a turn (`capabilities.cancelCall`) offers only the turn's stop.
+	const cancelCall = state.summary?.capabilities.cancelCall === true;
 	const panelHidden = usePanelHidden();
 	const allowHost = useCallback(
 		async (host: string) => {
@@ -265,7 +266,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 		[api, explain],
 	);
 	const repositoryId = state.summary?.repository?.id ?? null;
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && harness === null ? stopCall : null, allowHost: online ? allowHost : null, repositoryId }), [flow, stopCall, online, harness, allowHost, repositoryId]);
+	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId]);
 
 	if (state.phase === "missing") {
 		return (
@@ -346,7 +347,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
-				{summary.harness === "codex" && <label>Plan first <select value={planFirst ? "plan" : "default"} onChange={e => setPlanFirst(e.target.value === "plan")}>
+				{summary.capabilities.planMode && <label>Plan mode <select value={planMode ? "plan" : "default"} onChange={e => setPlanMode(e.target.value === "plan")}>
 					<option value="default">Off</option><option value="plan">On</option>
 				</select></label>}
 				{summary.item ? (
@@ -355,9 +356,9 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 					<Composer
 						status={summary.status}
 						online={online}
-						models={harness === null ? models.list : harnessModelsOf(summary)}
+						models={summary.capabilities.models === "harness" ? harnessModelsOf(summary) : models.list}
 						model={summary.model}
-						harness={harness}
+						harness={summary.capabilities.models === "harness" ? HARNESS_NAMES[summary.harness ?? "windlass"] : null}
 						modes={sessionModes(summary, profile)}
 						mode={summary.mode}
 						onMode={setMode}
@@ -367,7 +368,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						closed={reach?.removed ? "Its machine was removed, so this agent cannot run again." : null}
 						onSend={async (input) => {
 							try {
-								await api.prompt(summary.harness === "codex" && planFirst && summary.status === "idle" ? {...input,planFirst:true} : input);
+								await api.prompt(summary.capabilities.planMode && planMode && summary.status === "idle" ? { ...input, planMode: true } : input);
 							} catch (failure) {
 								setRefusals((value) => value + 1);
 								// `explain` signs out on a refused token; the composer reads the rest itself (`turn_running`, `steer_unavailable`).

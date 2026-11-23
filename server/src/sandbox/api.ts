@@ -451,7 +451,8 @@ export interface RunTurnInput {
 	onStartMark?: (mark: StartMark, ms?: number) => void;
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
 	mode?: string;
-	planFirst?: boolean;
+	/** The agent's own plan mode for this turn (`HarnessCapabilities.planMode`). */
+	planMode?: boolean;
 	/** Efforts already observed on other models in this session. */
 	harnessModels?: ModelList | null;
 	onEffortFallback?: (fallback: string | null) => void;

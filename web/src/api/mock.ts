@@ -60,7 +60,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
-import { initialHarnessModels } from "../../../server/src/sandbox/harnesses.js";
+import { initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
@@ -1611,6 +1611,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				place: { kind: "hosted" },
 				profile: input.profile,
 				harness: input.harness ?? "windlass",
+				capabilities: sessionCapabilities(input.harness),
 				...(input.modes ?? initialSessionModes(input.profile, input.harness)),
 				model: input.model,
 				repoUrl: repository ? `${repository.url}.git` : input.repoUrl,
@@ -2502,7 +2503,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		});
 	}
 
-	/** The turn's ending, as the server writes it for an ACP turn: the outcome from the stop reason, no gate, the context's fill. */
+	/** What a mock agent answers a prompt that ran to its end with (server/src/sandbox/acp-harness.ts, `promptUsage`): the turn's tokens. */
+	const MOCK_ACP_TOKENS: TurnUsage = { inputTokens: 24_300, cachedInputTokens: 18_900, outputTokens: 1_240, reasoningTokens: 310 };
+
+	/** The turn's ending, as the server writes it for an ACP turn: the outcome from the stop reason, no gate, the context's fill, and the tokens the agent answered with. */
 	function finishAcp(world: World, session: MockSession, stopReason: string): void {
 		const state = session.run;
 		if (!state) return;
@@ -2511,7 +2515,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		session.run = null;
 		session.pending = [];
 		const outcome = acpOutcome(stopReason);
-		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
+		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: stopReason === "end_turn" ? MOCK_ACP_TOKENS : null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
 		// Once it has run, the session has the models Claude Code listed.
 		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), startTimes: mockStartTimes(session.summary, state.turn, state.startedAt), harnessModels: { ...(session.summary.harness === "codex" ? MOCK_CODEX_MODELS : session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
 		if (clock === null) {
@@ -3967,14 +3971,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				if (!session.question.choices.some((choice) => choice.id === input.choice)) throw new PlatformError("user", "That is not one of the question's answers.");
 				const note = input.note?.trim() ?? "";
-				if (session.question.messageId === "acp" && note !== "") throw new PlatformError("user", "Claude Code takes a choice without a note.", { reason: "bad_input" });
+				if (session.question.messageId === "acp" && note !== "") throw new PlatformError("user", `${HARNESS_NAMES[session.summary.harness ?? "windlass"]} takes a choice without a note.`, { reason: "bad_input" });
 				if (note.length > MAX_NOTE_CHARS) throw new PlatformError("user", `A note can be at most ${MAX_NOTE_CHARS} characters.`);
 				settle(world, session, input.choice, note === "" ? null : note);
 			},
 			async stopCall(input: { messageId: string; callId: string }) {
 				await latency(120);
 				const { session } = find();
-				if (session.summary.harness === "claude") return { stopped: false, message: "Claude Code cannot stop one call. Stop the turn instead." };
+				if (!session.summary.capabilities.cancelCall) return { stopped: false, message: `${HARNESS_NAMES[session.summary.harness ?? "windlass"]} cannot stop one call. Stop the turn instead.` };
 				return stopOneCall(session, input.messageId, input.callId);
 			},
 			async stop() {

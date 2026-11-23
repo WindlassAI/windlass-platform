@@ -4,23 +4,14 @@ import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js
 import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle, type StartMark } from "./api.js";
-import type { Harness, HarnessCapabilities } from "./harness.js";
+import type { Harness } from "./harness.js";
 import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
-import { ASK_TOOL, REPORT_TOOL } from "../agent-publish.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 import { PlatformChecks } from "./platform-checks.js";
 import { StepCounter } from "./platform-steps.js";
 
 import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, SANDBOX_ESCAPE_REFUSED, sandboxEscapeNote } from "./codex-modes.js";
-
-export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
-	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
-	// Over MCP: only the tools that may be served from inside the sandbox (platform-tools.ts, `TOOL_REACH`).
-	platformTools: Object.freeze([REPORT_TOOL, ASK_TOOL] as const), reportScreenshots: false, restrictedReview: false, userServers: "none", projectServerApproval: false,
-	checks: "platform", envLists: false, sessionHome: false, usage: "context", models: "harness",
-	signIn: "machine", backups: false, stepLimit: true, steps: "platform", demo: false,
-});
 
 function unsupported(input: RunTurnInput): string | undefined {
 	if (input.servers?.length) return "servers";
@@ -194,7 +185,7 @@ export class AcpHarness implements Harness {
 	readonly id;
 	constructor(private readonly profile: AcpProfile, private readonly machine: string) { this.id = profile.id; }
 
-	async capabilities() { return ACP_CAPABILITIES; }
+	async capabilities() { return this.profile.capabilities; }
 
 	async runTurn(handle: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
 		const profile = this.profile;
@@ -404,8 +395,9 @@ export class AcpHarness implements Harness {
 				input.onAcpModes?.(chosen, modes.modes, chosen === requested ? undefined : requested);
 				await request("session/set_mode", { sessionId, modeId: chosen });
 			}
-			if (profile.id === "codex") {
-				const collaboration = input.planFirst ? "plan" : "default";
+			// The agent's own plan mode (`capabilities.planMode`): Codex's collaboration mode, set for every turn.
+			if (profile.capabilities.planMode) {
+				const collaboration = input.planMode ? "plan" : "default";
 				await request("session/set_config_option", {sessionId,configId:"collaboration_mode",value:collaboration});
 			}
 			const priorModel = text(configs.model?.currentValue);

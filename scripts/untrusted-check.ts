@@ -162,7 +162,7 @@ const CURRENT = ["windlass/maxSteps", MARKER];
 	const anywayRow = await rowOf("i_2:1:2:1", [ISSUE], true);
 	const ciRow = await rowOf("i_2:1:3:1", ["CI logs of 1111111"], false);
 	const decide = (agent: "windlass" | "claude" | "opencode" | "codex", profile: (typeof PROFILES)[number]["id"], row: typeof issueRow) =>
-		untrustedTurn({ agent, marker: takesUntrustedMarker(agent), profile, untrusted: row.untrusted, unsandboxed: row.unsandboxed });
+		untrustedTurn({ agent, profile, untrusted: row.untrusted, unsandboxed: row.unsandboxed });
 	expect("only Windlass takes the marker", takesUntrustedMarker("windlass") && takesUntrustedMarker(undefined) && !takesUntrustedMarker("claude") && !takesUntrustedMarker("opencode") && !takesUntrustedMarker("codex"));
 	for (const agent of ["windlass", "claude", "opencode", "codex"] as const) {
 		const name = harnessName(agent);

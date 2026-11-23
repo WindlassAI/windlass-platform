@@ -32,6 +32,7 @@ import { config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
+import { harnessName, machineHarness } from "./harnesses.js";
 import { describeError, serviceParams } from "../auth.js";
 import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/channel.js";
 import { machineProfiles } from "../machines/profiles.js";
@@ -600,12 +601,13 @@ class RunnerSandboxes implements Sandboxes {
 		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError(`${findProfile(input.profile).name} does not run on a machine of yours.`);
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
-		if (input.harness && input.profile !== "docker-hardened" && !(input.harness === "codex" && input.profile === "docker-windlass-sandbox")) throw new SandboxUserError(`${input.harness === "claude" ? "Claude Code" : input.harness === "codex" ? "Codex" : "OpenCode"} requires the docker-hardened profile.`);
+		const agent = input.harness ? machineHarness(input.harness) : null;
+		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.join(" or ")} profile.`);
 		const report = input.profile === "docker-windlass-sandbox" || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
 		if ((input.size ?? 1) > 1 && !report?.slots) throw new SandboxUserError("This runner does not support sizing beyond one slot.");
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
-			throw new SandboxUserError(`This machine's runner does not offer ${input.harness === "claude" ? "Claude Code" : input.harness === "codex" ? "Codex" : "OpenCode"}. Update it and start it with --harness ${input.harness}.`);
+			throw new SandboxUserError(`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
 		const args = { profile: input.profile, ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {

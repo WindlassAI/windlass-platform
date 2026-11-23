@@ -1,16 +1,19 @@
 import type { SandboxProfileId, SessionMode } from "../contract.js";
+import { CODEX } from "./harnesses.js";
+
+const name = CODEX.name;
 
 export const containerMode = "agent-full-access";
 export const innerModesReason =
-	"Codex read-only and workspace-write modes require a successful Codex sandbox probe on the docker-windlass-sandbox profile.";
+	`${name} read-only and workspace-write modes require a successful ${name} sandbox probe on the docker-windlass-sandbox profile.`;
 const container: SessionMode = {
 	id: containerMode,
 	name: "Container access",
 	description: "Commands run as agent in this machine’s container, with this machine’s egress setting.",
 };
 const inner: SessionMode[] = [
-	{ id: "read-only", name: "Read-only", description: "Commands run in Codex’s sandbox without network and cannot change files. Requests to edit or to go outside the sandbox are refused." },
-	{ id: "workspace-write", name: "Workspace access", description: "Commands run in Codex’s sandbox without network and can change files in the workspace only. Requests to go outside the sandbox are refused." },
+	{ id: "read-only", name: "Read-only", description: `Commands run in ${name}’s sandbox without network and cannot change files. Requests to edit or to go outside the sandbox are refused.` },
+	{ id: "workspace-write", name: "Workspace access", description: `Commands run in ${name}’s sandbox without network and can change files in the workspace only. Requests to go outside the sandbox are refused.` },
 ];
 /**
  * The Windlass sandbox profile's container is loosened (AppArmor and system paths unconfined, user
@@ -30,8 +33,8 @@ export const refusesSandboxEscape = (profile: SandboxProfileId) => profile === "
 /** The timeline note for a refused request. An edit Codex asks about is one outside its sandbox's writable paths. */
 export const sandboxEscapeNote = (kind: unknown) =>
 	kind === "edit"
-		? "Codex asked to edit files outside its sandbox; refused on this profile."
-		: "Codex asked to run a command outside its sandbox; refused on this profile.";
+		? `${name} asked to edit files outside its sandbox; refused on this profile.`
+		: `${name} asked to run a command outside its sandbox; refused on this profile.`;
 /**
  * A work item's turn in which Codex asked to leave its sandbox on this profile fails with this reason
  * (`RunTurnResult.failure`), its message the note above: the request is refused and the turn is stopped,

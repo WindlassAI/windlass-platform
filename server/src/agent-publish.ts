@@ -34,6 +34,7 @@
  */
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
+import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import type { CommandSandbox, Redactor } from "./repo-secrets.js";
 
@@ -43,6 +44,9 @@ import type { CommandSandbox, Redactor } from "./repo-secrets.js";
  * model, and to whoever reads its calls, like the platform's own.
  */
 export const PUBLISH_SERVER = "windlass_platform";
+/** The machine agents a Plan-first subtask may run (harnesses.ts, `subtasks`), as the planner is told of them. */
+const SUBTASK_AGENTS = Object.values(machineHarnesses).filter(h => h.subtasks);
+
 export const PUBLISH_TOOL = "publish";
 /**
  * The tool a work item's agent files its report with: what it did, in
@@ -230,7 +234,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
 	if (offer.plan) return [tool("file_plan",
-		"Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: windlass, claude or opencode, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). Claude Code and OpenCode run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list."
+		`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.`
 			+ (offer.crossRepo ? " For a feature over two repositories (the prompt names them), also give repos[], each subtask's repo alias, mergeOrder [{repo, prerequisite[], intermediate, evidence, fallback}], releaseGate request and finalIntegration {runFrom, command, inputs[], profile: actions, timeoutSeconds, requiredCases[], artifactOutputs[]}." : ""),
 		{ type: "object", required: ["spec", "questions", "subtasks"], properties: {
 			overflow: { type: "boolean" }, spec: { type: "object" }, questions: { type: "array", items: { type: "object" } },
@@ -250,7 +254,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 					cpus: { type: "number", exclusiveMinimum: 0 }, memoryGiB: { type: "number", exclusiveMinimum: 0 },
 				} },
 				agent: { type: "object", additionalProperties: false, required: ["harness"], properties: {
-					harness: { enum: ["windlass", "claude", "opencode"] }, model: { type: "string", maxLength: 200 }, effort: { type: "string", maxLength: 64 },
+					harness: { enum: ["windlass", ...SUBTASK_AGENTS.map(h => h.id)] }, model: { type: "string", maxLength: 200 }, effort: { type: "string", maxLength: 64 },
 				} },
 			} } }, singleSuggested: { type: ["string", "null"] },
 		} })];

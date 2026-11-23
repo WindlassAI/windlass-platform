@@ -1,4 +1,93 @@
-import type { HarnessOptions, HarnessId, ModelList, SandboxProfileId } from "../contract.js";
+import type { HarnessOptions, HarnessId, ModelList, PlatformToolName, SandboxProfileId, SessionCapabilities } from "../contract.js";
+
+/**
+ * What an agent can do: one record per agent (Windlass's below, each ACP agent's on its `AcpProfile`). The
+ * platform and the screens decide by these flags, never by the agent's id or name, so one shared path serves
+ * every agent and an agent added later is one record more.
+ */
+export interface HarnessCapabilities {
+	/** What the timeline stores for its turns. */
+	events: "windlass" | "acp";
+	/** How the next turn continues the conversation: Windlass's resolve and resume, ACP's resume, ACP's load, or not at all. */
+	resume: "windlass" | "resume" | "load" | "none";
+	/** A message sent into a running turn. */
+	steer: boolean;
+	/** Stopping one tool call of a running turn. */
+	cancelCall: boolean;
+	/** Questions to whoever has the session open. */
+	questions: boolean;
+	/**
+	 * Which of the platform's tools this harness can be given (platform-tools.ts), by whichever transport it
+	 * takes them: Windlass's host tools, or MCP over ACP for those that may be served from the sandbox.
+	 * Without `publish`, the person publishes from the side panel.
+	 */
+	platformTools: readonly PlatformToolName[];
+	/** Screenshots with a builder's report (`RunTurnInput.reportScreenshots`, `wlp-shot`). */
+	reportScreenshots: boolean;
+	/** The reviewer's restricted session: no subagents, an agent profile of the platform's, required checks, host tools. */
+	restrictedReview: boolean;
+	/** How the user's own MCP servers reach it. */
+	userServers: "config-file" | "session-new" | "none";
+	/** Whether a project's own MCP servers wait for the person's approval before they start. */
+	projectServerApproval: boolean;
+	/** The user's saved checks, run before the turn is called done: by Windlass as required checks, by the platform between the agent's prompts (platform-checks.ts), or not at all. */
+	checks: "required" | "platform" | "none";
+	/** Named variables withheld from commands, and credential-looking ones passed to them (`withholdEnv`, `passEnv`). */
+	envLists: boolean;
+	/** A home of the session's own for its commands. */
+	sessionHome: boolean;
+	/**
+	 * What a turn reports of its use: token counts per model call, with the cache's share ("tokens"); how full
+	 * the context is, and the turn's tokens where the agent answers its prompt with them ("context"); or nothing.
+	 */
+	usage: "tokens" | "context" | "none";
+	/** Where the models a prompt may name come from: the account's plan, or the harness's own list. */
+	models: "account" | "harness";
+	/** Whose sign-in a turn runs on: the user's ChatGPT sign-in handed in per turn, or one kept on the machine. */
+	signIn: "chatgpt" | "machine";
+	/** Whether its session is copied out of a sandbox that may be lost (`SandboxLayer.backups`). */
+	backups: boolean;
+	/**
+	 * Who holds a turn to a step limit (`RunTurnInput.maxSteps`): the engine itself (Windlass's model steps), the
+	 * platform counting the turn's tool calls (platform-steps.ts), or nobody.
+	 */
+	steps: "engine" | "platform" | "none";
+	/**
+	 * How the agent is told which text of a turn is not the person's (factory/untrusted.ts): "taint", Windlass's
+	 * marker with the prompt (`_meta["windlass/untrusted"]`), after which the session asks again before what could
+	 * send data out; "none", the labelled prompt only.
+	 */
+	untrustedMarker: "taint" | "none";
+	/** A plan mode of the agent's own, chosen per prompt (`RunTurnInput.planMode`): Codex's collaboration plan mode. */
+	planMode: boolean;
+	/** A scripted model for a demo session (`Windlass.demoScript`). */
+	demo: boolean;
+}
+
+/** The platform's tools by name (platform-tools.ts); literal here so that this file imports nothing of the server's. */
+const tools = (...names: PlatformToolName[]): readonly PlatformToolName[] => Object.freeze(names);
+
+export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
+	events: "windlass", resume: "windlass", steer: true, cancelCall: true, questions: true,
+	platformTools: tools("publish", "report", "ask_person", "push", "fetch_base", "file_review"),
+	reportScreenshots: true, restrictedReview: true, userServers: "config-file", projectServerApproval: true,
+	checks: "required", envLists: true, sessionHome: true, usage: "tokens", models: "account",
+	signIn: "chatgpt", backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
+});
+
+/**
+ * What every ACP agent shares; each profile below names its own record from it. Over MCP: only the tools that
+ * may be served from inside the sandbox (platform-tools.ts, `TOOL_REACH`). The ACP harness refuses a turn that
+ * asks for what its record lacks (acp-harness.ts, `unsupported`).
+ */
+const ACP_BASE: HarnessCapabilities = Object.freeze({
+	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
+	platformTools: tools(), reportScreenshots: false, restrictedReview: false, userServers: "none", projectServerApproval: false,
+	checks: "platform", envLists: false, sessionHome: false, usage: "context", models: "harness",
+	signIn: "machine", backups: false, steps: "platform", untrustedMarker: "none", planMode: false, demo: false,
+});
+
+const acpCapabilities = (own: Partial<HarnessCapabilities>): HarnessCapabilities => Object.freeze({ ...ACP_BASE, ...own });
 
 export interface AcpProfile {
 	id: Exclude<HarnessId, "windlass">;
@@ -36,6 +125,10 @@ export interface AcpProfile {
 	items: boolean;
 	/** Whether a Plan-first subtask may run this agent (`subtaskHarnessProblem`). Only where `items` is. */
 	subtasks: boolean;
+	/** What it can do (`HarnessCapabilities`), its own record. */
+	capabilities: HarnessCapabilities;
+	/** Whose sign-in it runs with, in a sentence's words: "your Claude subscription". */
+	signedInWith: string;
 }
 
 /** How a machine's Codex is signed in, as its runner reports it. */
@@ -46,6 +139,9 @@ export const CLAUDE: AcpProfile = {
 	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
 	// Offered where the adapter is not root (the container's agent user is uid 1000) and the managed settings do not disable it.
 	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "subscription", items: true, subtasks: true,
+	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
+	capabilities: acpCapabilities({ platformTools: tools("report", "ask_person") }),
+	signedInWith: "your Claude subscription",
 };
 
 export const OPENCODE: AcpProfile = {
@@ -53,6 +149,9 @@ export const OPENCODE: AcpProfile = {
 	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
 	// Its permission config asks before edits and commands; an item's turn answers those itself (acp-harness.ts, `unattended`).
 	itemModes: { "docker-hardened": "build" }, sandboxedOn: [], itemTokens: "budget", items: true, subtasks: true,
+	// Its image's wlp-acp-mcp serves it the platform's MCP server.
+	capabilities: acpCapabilities({ platformTools: tools("report", "ask_person") }),
+	signedInWith: "the provider sign-in kept on this machine",
 };
 
 export const CODEX: AcpProfile = {
@@ -66,6 +165,11 @@ export const CODEX: AcpProfile = {
 	// but no API-key turn has been seen through the platform yet: ChatGPT only for now.
 	itemTokens: "sign-in", itemSignIns: ["chatgpt"],
 	items: true, subtasks: false,
+	// Its image's wlp-acp-mcp serves the platform's MCP server on the one URL its requirements.toml allows; an older
+	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
+	// chosen per prompt.
+	capabilities: acpCapabilities({ platformTools: tools("report", "ask_person"), planMode: true }),
+	signedInWith: "the ChatGPT or API-key sign-in kept on this machine",
 };
 
 export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };
@@ -76,7 +180,7 @@ export function machineHarness(id: unknown): AcpProfile | null {
 }
 
 /** Names joined for a sentence: "Windlass, Claude Code or OpenCode". */
-const anyOf = (names: string[]) => names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : names[0] ?? "";
+export const anyOf = (names: string[]) => names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : names[0] ?? "";
 
 /** Why a work item cannot run this agent, or null when it can. Windlass always can. */
 export function itemHarnessProblem(id: HarnessId): string | null {
@@ -143,17 +247,31 @@ export function knownHarness(id: unknown): HarnessId | null {
 	return id === "windlass" ? "windlass" : machineHarness(id)?.id ?? null;
 }
 
-/** What a harness is called: "Windlass", "Claude Code". */
-export function harnessName(id: HarnessId): string {
+/** What a harness is called: "Windlass", "Claude Code". The one place an agent's name comes from (`AcpProfile.name`). */
+export function harnessName(id: HarnessId | undefined): string {
 	return machineHarness(id)?.name ?? "Windlass";
 }
 
+/** What an agent can do, by its id; Windlass's for none. Launch and admission decisions precede the sandbox: no capability probe runs. */
+export function capabilitiesOf(id: HarnessId | undefined = "windlass"): HarnessCapabilities {
+	return machineHarness(id)?.capabilities ?? WINDLASS_CAPABILITIES;
+}
+
+/** The part of an agent's record the screens read (`SessionSummary.capabilities`). */
+export function sessionCapabilities(id: HarnessId | undefined): SessionCapabilities {
+	const caps = capabilitiesOf(id);
+	return {
+		cancelCall: caps.cancelCall, usage: caps.usage, checks: caps.checks, envLists: caps.envLists, platformTools: caps.platformTools,
+		reportScreenshots: caps.reportScreenshots, models: caps.models, planMode: caps.planMode, projectServerApproval: caps.projectServerApproval,
+	};
+}
+
 /**
- * Whether the agent takes Windlass's marker for outside text (`_meta["windlass/untrusted"]`, factory/untrusted.ts):
- * only Windlass does. Claude Code, OpenCode and Codex get the labelled prompt only.
+ * Whether the agent takes Windlass's marker for outside text (`_meta["windlass/untrusted"]`, factory/untrusted.ts),
+ * by its record (`HarnessCapabilities.untrustedMarker`). An agent without one gets the labelled prompt only.
  */
 export function takesUntrustedMarker(id: HarnessId | undefined): boolean {
-	return machineHarness(id) === null;
+	return capabilitiesOf(id).untrustedMarker === "taint";
 }
 
 export function initialHarnessModels(options?: HarnessOptions): ModelList {
@@ -181,4 +299,21 @@ export function itemSignInMessage(profile: AcpProfile, machine: string, signIn: 
 export function worksWithoutAsking(id: HarnessId | undefined, profile: SandboxProfileId = "docker-hardened"): boolean {
 	const machine = machineHarness(id);
 	return machine?.items === true && machine.itemModes[profile] !== undefined && !machine.sandboxedOn.includes(profile);
+}
+
+/**
+ * What the platform does with the repository's saved checks for this agent, in one sentence after a line about
+ * it (`HarnessCapabilities.checks`); "" where its engine runs them. `sandboxed`: its commands run in its own
+ * sandbox on this profile (`sandboxedOn`), where the platform does not run them either (platform-checks.ts).
+ */
+export function checksSentence(id: HarnessId, sandboxed = false): string {
+	const checks = capabilitiesOf(id).checks;
+	if (checks === "none" || (checks === "platform" && sandboxed)) return "It does not run your repository's checks: CI decides.";
+	return checks === "platform" ? "The platform runs your repository's saved checks when it ends a turn, and sends it back with what fails." : "";
+}
+
+/** Where an agent's session runs and on whose sign-in, in one sentence, for a machine agent being chosen. */
+export function machineAgentLine(profile: AcpProfile): string {
+	const where = profile.profiles.length === 1 && profile.profiles[0] === "docker-hardened" ? "the hardened container" : "its container";
+	return `${profile.name} runs in ${where} with ${profile.signedInWith}, in the mode chosen for it.`;
 }

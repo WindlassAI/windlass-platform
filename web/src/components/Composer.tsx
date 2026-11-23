@@ -63,7 +63,11 @@ export interface ComposerProps {
 	suggestion?: { key: number; text: string } | null;
 	/** Set when nothing can be sent to this agent again, with why (its machine was removed). */
 	closed?: string | null;
-	/** The name of the harness the agent runs when it is not Windlass ("Claude Code"): its pickers are drawn only where it offers a choice. */
+	/**
+	 * The name of the agent whose own model list `models` is ("Claude Code"), where the session's capabilities say
+	 * its models are its own (`SessionCapabilities.models` "harness"): its pickers are drawn only where it offers a
+	 * choice. Null for the account's models, whose pickers are always drawn.
+	 */
 	harness?: string | null;
 	/** The modes the agent can be put in; no picker without them. */
 	modes?: SessionMode[];
@@ -181,7 +185,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const efforts = effortsOf(models, currentModel);
 	// An effort the chosen model does not take is not sent: the picker is back at the default.
 	const currentEffort = efforts.includes(effort) ? effort : "";
-	// Another harness's pickers are drawn only where it offers a choice.
+	// An agent's own list draws its pickers only where it offers a choice.
 	const modelPicker = harness === null || offered.length > 1;
 	// Another harness's models by the names it gave them, its default marked as the start composer marks it; Windlass's by their ids, as before.
 	const modelById = new Map(models?.models.map(row => [row.id, row]));

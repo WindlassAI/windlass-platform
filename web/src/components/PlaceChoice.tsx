@@ -16,7 +16,7 @@ import { linkProps } from "../lib/router";
 import { MachineState } from "../screens/Machines";
 import { HarnessStatus } from "./HarnessStatus";
 import { machineLabel } from "../lib/machines";
-import { itemProfiles, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
+import { capabilitiesOf, checksSentence, itemModeOf, itemProfiles, machineAgentLine, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -146,7 +146,18 @@ export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: 
 	const how = worksWithoutAsking(harness, profile)
 		? `${name} works in the hardened container, without asking, and runs Quick.`
 		: `${name} works in its own sandbox, without network, and runs Quick. A request to leave the sandbox ends the step.`;
-	return `${how} The platform runs your repository's saved checks when it ends a turn, and sends it back with what fails.`;
+	const sentence = checksSentence(harness, machineHarness(harness)?.sandboxedOn.includes(profile));
+	return sentence ? `${how} ${sentence}` : how;
+}
+
+/**
+ * What happens to the repository's checks with an agent of a person's session, and where CI's result is, after
+ * its line (`HarnessCapabilities.checks`): " The platform runs …, and CI's result is on the pull request."
+ */
+export function onPullRequest(harness: HarnessId): string {
+	const checks = capabilitiesOf(harness).checks;
+	if (checks === "platform") return " The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.";
+	return checks === "none" ? " It does not run this repository's checks; CI's result is on the pull request." : "";
 }
 
 /**
@@ -155,8 +166,9 @@ export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: 
  */
 export function itemProfilesHere(machine: MachineSummary | null, harness: HarnessId): SandboxProfileId[] {
 	const reported = offeredHarnesses(machine).find((offered) => offered.id === harness);
+	// Where the agent's commands run in its own sandbox (`sandboxedOn`), only once the machine reported the item's mode there, which its probe decides.
 	return itemProfiles(harness).filter((id) => machine?.profiles.some((profile) => profile.id === id && profile.available)
-		&& (harness !== "codex" || id !== "docker-windlass-sandbox" || reported?.modes?.includes("workspace-write") === true));
+		&& (!machineHarness(harness)?.sandboxedOn.includes(id) || reported?.modes?.includes(itemModeOf(harness, id) ?? "") === true));
 }
 
 /**
@@ -187,7 +199,7 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 			{offered.map((harness) => (
 				<HarnessState key={harness.id} harness={harness} machine={machine} hardened={hardened} />
 			))}
-			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container with your Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.</p> : null}
+			{machineHarness(chosen) ? <p className="field-note">{machineAgentLine(machineHarness(chosen)!)}{onPullRequest(chosen)}</p> : null}
 		</div>
 	);
 }

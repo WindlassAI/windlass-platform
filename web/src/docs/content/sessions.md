@@ -26,7 +26,7 @@ Tool calls that finished one after another are folded into one line that says wh
 
 Above the field, a status line says what is happening, for example **running `bun test` · step 3**, with a timer. If you scroll up, **Jump to latest** takes you back to the end. When you hide the side panel, the timeline stays in the middle of the page.
 
-At the end of each turn, a summary line gives the outcome, the number of steps, the time it took and the files it changed. The tokens it used are folded behind **tokens** at the end of that line: choose it, or hover it, to see them. For Claude Code the line gives how full the context is and the cost so far instead. The session panel shows the tokens too.
+At the end of each turn, a summary line gives the outcome, the number of steps, the time it took and the files it changed. The tokens it used are folded behind **tokens** at the end of that line: choose it, or hover it, to see them. For Claude Code, OpenCode and Codex the line also gives how full the context is and the cost so far. The session panel shows the tokens too.
 
 You can copy a prompt, an answer (as Markdown) or a code block with the copy button beside it.
 
@@ -77,7 +77,7 @@ With Windlass, you can also stop a single tool call: choose **Stop this call** o
 
 For Windlass, **Tokens** counts input, cached, cache share, output, reasoning and calls, for the whole session and for the last turn. **Cache per call** charts how much of each of the last 40 calls came from the cache.
 
-For Claude Code, **Usage** shows how full the context is, for example "38% used", and the cost so far when Claude Code reports it.
+For Claude Code, OpenCode and Codex, **Usage** shows how full the context is, for example "38% used", and the cost so far when the agent reports it. Once a turn has answered with its tokens, **Tokens** counts them too, per turn: these agents report no single model calls, so there is no cache chart.
 
 ### Changes
 

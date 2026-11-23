@@ -1,4 +1,5 @@
 import type { AcpUpdate, ProviderAccount, UsageWindow, Wait } from "./contract.js";
+import { harnessName, knownHarness } from "./sandbox/harnesses.js";
 
 export type LimitEvent = NonNullable<Extract<AcpUpdate, { sessionUpdate: "usage_update" }>["rateLimit"]>;
 export type UsageObservation =
@@ -99,7 +100,7 @@ export function observeUsage(previous: StoredUsage, observation: UsageObservatio
 export const utcReset = (at: number) => new Date(at).toISOString().slice(11, 16) + " UTC";
 
 export function providerWait(harness: string, place: string, until: number, reset?: number | null): Wait {
-	const name = harness === "claude" ? "Claude Code" : harness === "windlass" ? "Windlass" : "OpenCode";
+	const name = harnessName(knownHarness(harness) ?? "windlass");
 	const where = place === "hosted" ? "on hosted" : "on ‘" + place + "’";
 	const sentence = reset != null ? `Your ${name} limit ${where} resets at ${utcReset(reset)}. This item continues at ${utcReset(until)}.`
 		: `Waiting for the ${name} usage limit ${where}. This item can try again at ${utcReset(until)}.`;

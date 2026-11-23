@@ -1,8 +1,9 @@
 /** The harnesses the composer offers on a machine, for an agent and for a work item, and the profiles an item of each runs in. */
 import type { MachineSummary } from "@contract";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { OPENCODE } from "../../../server/src/sandbox/harnesses.js";
 import { agentChoices } from "../lib/subtask-agents";
-import { itemAgentLine, itemHarnesses, itemProfilesHere, offeredHarnesses } from "./PlaceChoice";
+import { itemAgentLine, itemHarnesses, itemProfilesHere, offeredHarnesses, onPullRequest } from "./PlaceChoice";
 
 const machine = (harnesses: { id: string; signIn: string; modes?: string[] }[], profiles = ["docker-hardened", "docker-windlass-sandbox"]) =>
 	({ machineId: "m_1", name: "Bench", harnesses, profiles: profiles.map((id) => ({ id, available: true })) }) as unknown as MachineSummary;
@@ -50,5 +51,21 @@ describe("itemAgentLine", () => {
 	});
 	it("says the platform runs the repository's saved checks for every machine agent", () => {
 		for (const harness of ["claude", "opencode", "codex"] as const) expect(itemAgentLine(harness, "docker-hardened")).toMatch(/The platform runs your repository's saved checks when it ends a turn/);
+	});
+});
+
+describe("itemAgentLine, by the agent's checks flag", () => {
+	// OpenCode is given a record whose checks nobody runs: the lines follow the flag, not the name.
+	const kept = OPENCODE.capabilities;
+	afterEach(() => { OPENCODE.capabilities = kept; });
+
+	it("says CI decides for an agent whose checks nobody runs, and where the platform cannot run them", () => {
+		OPENCODE.capabilities = Object.freeze({ ...kept, checks: "none" as const });
+		expect(itemAgentLine("opencode", "docker-hardened")).toBe("OpenCode works in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.");
+		expect(onPullRequest("opencode")).toBe(" It does not run this repository's checks; CI's result is on the pull request.");
+		expect(itemAgentLine("claude", "docker-hardened")).toMatch(/The platform runs your repository's saved checks when it ends a turn/);
+		expect(onPullRequest("claude")).toBe(" The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.");
+		// Codex in its own sandbox: the platform does not run what it changed there (platform-checks.ts).
+		expect(itemAgentLine("codex", "docker-windlass-sandbox")).toMatch(/CI decides\.$/);
 	});
 });

@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createClient, type Registry } from "../server/src/client.js";
 import { GithubStandin } from "./github-standin.js";
+import { sessionCapabilities } from "../server/src/sandbox/harnesses.js";
 import {
 	type AuthResult,
 	type WindlassDelta,
@@ -881,7 +882,7 @@ async function main(server: Server | null): Promise<void> {
 		return "no token, bad token, another user's key";
 	});
 	await check("auth: internal actions refuse a user's token", async () => {
-		const fake: SessionSummary = { id: "s_x", title: "x", place: { kind: "hosted" }, profile: "docker-hardened", model: "m", mode: "full", availableModes: [], repoUrl: null, createdAt: 0, updatedAt: 0, status: "idle", turns: 0, lastOutcome: null, sandbox: "none" };
+		const fake: SessionSummary = { id: "s_x", capabilities: sessionCapabilities("windlass"), title: "x", place: { kind: "hosted" }, profile: "docker-hardened", model: "m", mode: "full", availableModes: [], repoUrl: null, createdAt: 0, updatedAt: 0, status: "idle", turns: 0, lastOutcome: null, sandbox: "none" };
 		await refused(() => userHandle.internalSessionChanged(fake), "forbidden");
 		await refused(() => userHandle.internalAcquireRun("s_x"), "forbidden");
 		await refused(() => userHandle.internalReleaseRun({ sessionId: "s_x", claim: 1, summary: fake }), "forbidden");

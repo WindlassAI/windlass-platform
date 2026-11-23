@@ -18,12 +18,13 @@
  */
 import type { AcpContext, AcpUpdate, HarnessId, MachineSummary, ModelList, SessionSummary } from "@contract";
 import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBlock, ToolState, TurnView } from "./timeline";
+import { harnessName } from "../../../server/src/sandbox/harnesses.js";
 
 /** The message id of every ACP tool call: the platform names an ACP question's call this way too. */
 export const ACP_MESSAGE = "acp";
 
-/** Each harness by the name the screens give it. */
-export const HARNESS_NAMES: Record<HarnessId, string> = { windlass: "Windlass", claude: "Claude Code", opencode: "OpenCode", codex: "Codex" };
+/** Each harness by the name the screens give it: the server's, from its record (`harnessName`). */
+export const HARNESS_NAMES: Record<HarnessId, string> = Object.fromEntries((["windlass", "claude", "opencode", "codex"] as const satisfies readonly HarnessId[]).map((id) => [id, harnessName(id)])) as Record<HarnessId, string>;
 
 /** The name of the harness a session runs when it is not Windlass, which it is when the summary names none; null for Windlass. */
 export function acpHarnessName(summary: Pick<SessionSummary, "harness">): string | null {

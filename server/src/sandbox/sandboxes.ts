@@ -37,6 +37,7 @@ import type { SnapshotSource } from "./snapshot-key.js";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { sandboxSlots, type MachineSlotCapacity, type SandboxProfile, type SandboxProfileId } from "../contract.js";
+import { CLAUDE, machineHarness } from "./harnesses.js";
 import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type SandboxPrice, SandboxUserError, type Sandboxes } from "./api.js";
 import { DATA_DIR, IMAGE, SHOTS_IMAGE, LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, WORKSPACE, docker, randomId } from "./docker.js";
 import { PROFILE_RUN_FLAGS } from "./docker-flags.js";
@@ -632,10 +633,10 @@ export class DockerSandboxes implements Sandboxes {
 	async create(input: CreateSandboxInput & { ownData?: boolean }): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
-		const harnessName = (input.harness ?? harness) === "codex" ? "Codex" : (input.harness ?? harness) === "opencode" ? "OpenCode" : "Claude Code";
-		if (harness !== input.harness) throw new SandboxUserError(`${harnessName} runs only on a machine offering it.`);
-		if (harness && ((input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) || input.screenshots))
-			throw new SandboxUserError(`${harnessName} requires the hardened ${harnessName} image.`);
+		const agent = machineHarness(input.harness ?? harness) ?? CLAUDE;
+		if (harness !== input.harness) throw new SandboxUserError(`${agent.name} runs only on a machine offering it.`);
+		if (harness && (!agent.profiles.includes(input.profile) || input.screenshots))
+			throw new SandboxUserError(`${agent.name} requires the hardened ${agent.name} image.`);
 		const base = input.screenshots ? this.shotsImage : this.image;
 		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)
 			.select(input.fromSnapshot, input.uid, input.profile).catch(() => null) : null;

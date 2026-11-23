@@ -225,7 +225,7 @@ import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, takesUntrustedMarker } from "../sandbox/harnesses.js";
+import { harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -491,7 +491,7 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
-	planFirst?: boolean;
+	planMode?: boolean;
 	openAcp?: () => NewItem | null;
 	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
 	modeQueued?: boolean;
@@ -550,6 +550,8 @@ interface ActiveTurn {
  * values out of text.
  */
 interface HeldSecrets {
+	/** Read before the turn had a number (the prompt's own row is redacted with them): what could not be opened, for the turn to tell once. */
+	unopened: string[];
 	snapshotSetup?: SealedSecrets["snapshotSetup"];
 	screenshots: boolean;
 	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
@@ -761,6 +763,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 	return {
 		id: meta.sessionId,
 		...(meta.harness ? { harness: meta.harness } : {}),
+		capabilities: sessionCapabilities(meta.harness),
 		...(meta.harnessModels !== undefined ? { harnessModels: meta.harnessModels } : {}),
 		title: meta.title,
 		place: meta.place,
@@ -1801,6 +1804,8 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		throw new TurnProblem(`${project ? `The secrets saved for ${project.label} and for your account` : "The secrets saved for your account"} could not be read. Nothing was started, because without them the platform could not take their values out of what it shows. Try again.`);
 	}
 	const sealer = serverSealer();
+	// What could not be opened, told on the turn's timeline: now, or by the turn that takes these (`HeldSecrets.unopened`).
+	const unopened: string[] = [];
 	const opened: OpenedSecret[] = [];
 	const closed: string[] = [];
 	if (project && sealed.project === project.key) {
@@ -1814,7 +1819,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	}
 	if (project && closed.length > 0) {
 		console.error(`[wlp] secret.unreadable uid=${meta.uid} session=${meta.sessionId} project=${project.key} names=${closed.join(",")}: sealed with another key than this server's, or changed in storage`);
-		if (turn !== null) note(c, turn, "warn", `${closed.length === 1 ? `The secret ${closed[0]}` : `The secrets ${closed.join(", ")}`} saved for ${project.label} could not be opened by this server, so ${closed.length === 1 ? "it is" : "they are"} not handed over. Save ${closed.length === 1 ? "it" : "them"} again under Secrets in the session's panel.`);
+		unopened.push(`${closed.length === 1 ? `The secret ${closed[0]}` : `The secrets ${closed.join(", ")}`} saved for ${project.label} could not be opened by this server, so ${closed.length === 1 ? "it is" : "they are"} not handed over. Save ${closed.length === 1 ? "it" : "them"} again under Secrets in the session's panel.`);
 	}
 	const account: OpenedAccountSecret[] = [];
 	const shut: string[] = [];
@@ -1827,12 +1832,14 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	}
 	if (shut.length > 0) {
 		console.error(`[wlp] secret.unreadable uid=${meta.uid} session=${meta.sessionId} project=${ACCOUNT_SECRET_PROJECT} names=${shut.join(",")}: sealed with another key than this server's, or changed in storage`);
-		if (turn !== null) note(c, turn, "warn", `${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
+		unopened.push(`${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
 	}
+	if (turn !== null) for (const text of unopened) note(c, turn, "warn", text);
 	if (meta.origin?.role === "reviewer" && (closed.length || shut.length || sealed.project !== project?.key)) throw new TurnProblem("The platform could not read all saved secrets to redact this review.");
 	if (capabilitiesOf(meta.harness).events === "acp" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the harness session.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
+		unopened: turn === null ? unopened : [],
 		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
 		// Off for the whole deployment wins over the repository's choice, also for a sandbox made before it was turned off.
 		screenshots: sealed.screenshots === true && config.factory.screenshots,
@@ -1931,7 +1938,8 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	if (due.branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
 	const base = due.setupBase ?? repo.branch;
-	if (due.setUp && (capabilitiesOf(meta.harness).events === "windlass" || meta.origin)) meta.setupOnBase = { branch: due.branch, base };
+	// Every agent is told, in a person's session and in an item's alike (`platformNotes`).
+	if (due.setUp) meta.setupOnBase = { branch: due.branch, base };
 	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
@@ -3506,7 +3514,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
 	const untrusted = active.item?.row.untrusted ?? [];
-	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", marker: takesUntrustedMarker(meta.harness), profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
 	const unmarked = (text: string) => {
 		if (meta.untrustedUnmarkedNoted) return;
 		meta.untrustedUnmarkedNoted = true;
@@ -3608,6 +3616,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
+		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		clock.opened();
 		used = sandbox;
@@ -3635,7 +3644,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			void persist(c);
 		}
 		const common: RunTurnInput = {
-			prompt: text, mode, planFirst:active.planFirst, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
+			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
 			onStartMark: (point, ms) => clock?.mark(point, ms),
@@ -3947,7 +3956,7 @@ fi`, { signal, timeoutMs: 5000 });
 		if (caps.events === "acp") {
 			const reason = result?.acp?.stopReason;
 			if (result?.acp && result.windlassSessionId) meta.harnessModels = result.acp.models;
-			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", `${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"} could not continue the conversation; the files are as they were.`);
+			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", `${harnessName(meta.harness)} could not continue the conversation; the files are as they were.`);
 			if (result?.failure || problem) {
 				outcome = "error";
 				message = result?.failure?.message ?? problem;
@@ -3956,13 +3965,13 @@ fi`, { signal, timeoutMs: 5000 });
 			} else if (result?.acp?.stepLimit !== undefined && !result.aborted && !signal.aborted) {
 				// The platform stopped the turn at its step limit (platform-steps.ts), as Windlass stops at its own.
 				outcome = "unresolved";
-				note(c, turn, "warn", stepLimitNote(machineHarness(meta.harness)?.name ?? "The agent", result.acp.stepLimit));
+				note(c, turn, "warn", stepLimitNote(harnessName(meta.harness), result.acp.stepLimit));
 			} else if (reason === "cancelled" || result?.aborted || signal.aborted) outcome = "stopped";
 			// Checks the platform ran still failed, or could not start: the turn ends as Windlass's does then.
 			else if (reason === "end_turn") outcome = result?.acp?.checks === "unresolved" ? "unresolved" : "succeeded";
 			else if (reason === "max_tokens" || reason === "max_turn_requests") outcome = "unresolved";
 			else if (reason === "refusal") outcome = "failed";
-			else { outcome = "error"; message = `${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"} ended without a recognized stop reason.`; }
+			else { outcome = "error"; message = `${harnessName(meta.harness)} ended without a recognized stop reason.`; }
 		} else if (result?.aborted || (!result && signal.aborted)) {
 			outcome = "interrupted";
 		} else if (result) {
@@ -4229,7 +4238,7 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 		// The turn ended while Windlass was taking the message; nothing can be added to a closed turn.
 		throw new UserError("The turn ended just as the message arrived. Try again in a moment.", { code: "steer_unavailable" });
 	}
-	const shown = capabilitiesOf(meta.harness).events === "acp" ? active.secrets?.redactor.text(message) ?? message : message;
+	const shown = active.secrets?.redactor.text(message) ?? message;
 	append(c, { turn: active.number, kind: "user", text: shown, model: meta.model, effort: active.effort, steer: true });
 	meta.updatedAt = Date.now();
 	publish(c);
@@ -4247,8 +4256,8 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
  */
 async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
 	// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
-	if (input.planFirst !== undefined && (meta.harness !== "codex" || typeof input.planFirst !== "boolean")) throw new UserError("Plan first is available for Codex.", {code:"bad_input"});
-	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort || input.planFirst)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
+	if (input.planMode !== undefined && (!capabilitiesOf(meta.harness).planMode || typeof input.planMode !== "boolean")) throw new UserError(`${harnessName(meta.harness)} has no plan mode.`, {code:"bad_input"});
+	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort || input.planMode)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
 	if (c.vars.turn || c.vars.accepting) return await steerTurn(c, meta, c.vars.turn, text, submission);
 	if (capabilitiesOf(meta.harness).events === "acp") return queuePrompt(c, meta, input, text, submission);
 	return startPrompt(c, meta, input, text, submission);
@@ -4298,7 +4307,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		if (meta.repoUrl && meta.place.kind === "hosted" && (await layerOf(c, meta)).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		if (caps.signIn === "machine" && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
-			if (!offered) throw new UserError(`This machine does not offer ${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"}.`, { code: "bad_input" });
+			if (!offered) throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, {code:"bad_input"});
 			if (offered.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
@@ -4310,11 +4319,11 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			c.vars.signedInUntil = Date.now() + SIGNED_IN_FRESH_MS;
 		}
 
-		// The user row and default title are published before the ACP process starts. Scrub them with the same secrets as its output.
-		const held = caps.events === "acp" ? await readSecrets(c, meta, null).catch(error => {
+		// The user row and default title are published before the agent starts, for every agent. Scrub them with the same secrets as its output.
+		const held = await readSecrets(c, meta, null).catch(error => {
 			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
 			throw error;
-		}) : null;
+		});
 		if (usesPlatformModel(meta.place, meta.harness)) {
 			await settleTokenReceipts(c, meta.uid).catch(() => {
 				throw new UserError("Your previous turn’s model usage could not be settled. Try again in a moment.", { code: "usage_unavailable" });
@@ -4332,7 +4341,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 
-		const shown = held?.redactor.text(text) ?? text;
+		const shown = held.redactor.text(text);
 		// Accepted. From here to the return nothing is awaited.
 		const turn = meta.turns + 1;
 		const now = Date.now();
@@ -4345,7 +4354,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		append(c, { turn, kind: "user", text: shown, model, effort });
 		publish(c);
 
-		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, planFirst:meta.harness === "codex" && input.planFirst === true, secrets: held, checks: new VerificationLog(), publishes: new Set() };
+		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, planMode: capabilitiesOf(meta.harness).planMode && input.planMode === true, secrets: held, checks: new VerificationLog(), publishes: new Set() };
 		c.vars.turn = active;
 		// The turn's first step writes the session, and the key with it.
 		const answer = remember(meta, submission, { turn, steered: false });
@@ -5077,7 +5086,7 @@ export const agentSession = actor({
 			if (!active || !asked || active.stopping || active.closed) {
 				throw new UserError("That question is not waiting for an answer any more.", { code: "no_question" });
 			}
-			if (asked.pending.messageId === "acp" && note) throw new UserError("Claude Code takes a choice without a note.", { code: "bad_input" });
+			if (asked.pending.messageId === "acp" && note) throw new UserError(`${harnessName(meta.harness)} takes a choice without a note.`, { code: "bad_input" });
 			const choice = asked.pending.choices.find((candidate) => candidate.id === input.choice);
 			if (!choice) {
 				throw new UserError(`That is not one of the question's answers. Choose one of: ${asked.pending.choices.map((candidate) => candidate.label).join(", ")}`, { code: "bad_choice" });
@@ -5243,7 +5252,7 @@ export const agentSession = actor({
 		approveServer: async (c, input: { name: string; fingerprint: string }): Promise<SessionServers> => {
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
-			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
+			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError(`${harnessName(meta.harness)} does not take project MCP servers here.`, { code: "bad_server" });
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot start MCP servers.", { code: "reviewer" });
 			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || typeof input.fingerprint !== "string" || input.fingerprint === "") {
 				throw new UserError("Say which server to approve, and which definition of it.", { code: "bad_server" });
@@ -5281,7 +5290,7 @@ export const agentSession = actor({
 		forgetServer: async (c, input: { name: string }): Promise<SessionServers> => {
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
-			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError("Claude Code does not take project MCP servers here.", { code: "bad_server" });
+			if (!capabilitiesOf(meta.harness).projectServerApproval) throw new UserError(`${harnessName(meta.harness)} does not take project MCP servers here.`, { code: "bad_server" });
 			if (typeof input !== "object" || input === null || typeof input.name !== "string" || input.name === "" || input.name.length > 200) {
 				throw new UserError("Say which server's approval to forget.", { code: "bad_server" });
 			}

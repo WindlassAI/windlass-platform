@@ -26,7 +26,7 @@
  */
 
 import type { HarnessId, SandboxProfileId } from "../contract.js";
-import { harnessName, machineHarness } from "../sandbox/harnesses.js";
+import { harnessName, machineHarness, takesUntrustedMarker } from "../sandbox/harnesses.js";
 
 /** The longest source Windlass takes (its docs/acp.md, `_meta["windlass/untrusted"]`). */
 export const UNTRUSTED_SOURCE_MAX = 200;
@@ -90,10 +90,8 @@ export type UntrustedHandling =
 
 /** What `untrustedTurn` decides by. */
 export interface UntrustedTurn {
-	/** The agent (`HarnessId`): its name goes in the refusal and the notes (`harnessName`). */
+	/** The agent (`HarnessId`): its record says whether it takes the marker (`untrustedMarker`), and its name goes in the refusal and the notes (`harnessName`). */
 	agent: HarnessId;
-	/** Whether the agent takes Windlass's marker (`takesUntrustedMarker`): Windlass does, Claude Code, OpenCode and Codex do not. */
-	marker: boolean;
 	/** The sandbox profile the turn runs in. */
 	profile: SandboxProfileId;
 	/** The turn's sources (`TurnPlan.untrusted`), the run's own and someone else's. */
@@ -118,29 +116,31 @@ export interface UntrustedTurn {
 export function untrustedTurn(turn: UntrustedTurn): UntrustedHandling {
 	const list = sources(turn.untrusted);
 	if (!list.length) return { kind: "none" };
+	const marker = takesUntrustedMarker(turn.agent);
 	if (turn.profile === "docker-hardened") {
 		const outside = turn.unsandboxed ? [] : thirdParty(list);
 		if (outside.length) return { kind: "stop", sources: outside, reason: hardenedRefusal(turn.agent, outside) };
-		return { kind: "labelled", sources: list, note: turn.marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
+		return { kind: "labelled", sources: list, note: marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
 	}
-	if (turn.marker) return { kind: "marked", sources: list };
+	if (marker) return { kind: "marked", sources: list };
 	return { kind: "labelled", sources: list, note: agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
 }
 
 /** Why a turn with someone else's text does not start on "Docker, hardened" (`untrustedTurn`), in the words of its agent. */
 export const hardenedRefusal = (agent: HarnessId, list: readonly string[]) => {
 	const name = harnessName(agent);
-	const what = agent === "windlass"
-		? `On “Docker, hardened” Windlass cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
+	const marker = takesUntrustedMarker(agent);
+	const what = marker
+		? `On “Docker, hardened” ${name} cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
 		: `On “Docker, hardened” ${name} cannot be told which text is not yours, so the text would go to it labelled only, and its commands would run without asking, with the container's network and the session's access.`;
-	const elsewhere = agent === "windlass" ? `file the work again on “Docker + Windlass sandbox”` : `file the work again with Windlass on “Docker + Windlass sandbox”`;
+	const elsewhere = marker ? `file the work again on “Docker + Windlass sandbox”` : `file the work again with Windlass on “Docker + Windlass sandbox”`;
 	return `This turn carries text from someone else (${sources(list).join("; ")}). ${what} Run it anyway, ${elsewhere}, or give up.`;
 };
 
 /** What the item says once the person chose to run someone else's text anyway, in the words of its agent. */
 export const runAnywayWords = (agent: HarnessId, list: readonly string[]) =>
-	agent === "windlass"
-		? `You chose to run text from someone else (${sources(list).join("; ")}) without Windlass's sandbox.`
+	takesUntrustedMarker(agent)
+		? `You chose to run text from someone else (${sources(list).join("; ")}) without ${harnessName(agent)}'s sandbox.`
 		: `You chose to run text from someone else (${sources(list).join("; ")}) with ${harnessName(agent)}, which runs its commands without asking.`;
 
 /** Once per session, on "Docker, hardened", where Windlass is told of no source (`untrustedTurn`). */
