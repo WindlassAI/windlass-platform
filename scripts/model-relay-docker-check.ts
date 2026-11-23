@@ -101,8 +101,20 @@ Promise.all(Array.from({ length: Number(count || 1) }, (_, i) => new Promise((ok
 const LOAD = `
 const [bearer, count, pad, kb] = process.argv.slice(1);
 const body = JSON.stringify({ stream: Number(kb), pad: "p".repeat(Number(pad)) });
-const one = () => fetch("http://127.0.0.1:17893/v1/responses", { method: "POST", body, headers: { authorization: "Bearer " + bearer, "content-type": "application/json" } })
-	.then(async (r) => { let bytes = 0, tail = ""; for await (const c of r.body) { bytes += c.length; tail = (tail + Buffer.from(c).toString("latin1")).slice(-400); } return { status: r.status, bytes, done: tail.includes("response.completed") }; }, (e) => ({ status: 0, bytes: 0, done: false, error: String(e.cause?.code ?? e) }));
+async function one() {
+	let status = 0, bytes = 0, tail = "";
+	try {
+		const r = await fetch("http://127.0.0.1:17893/v1/responses", { method: "POST", body, headers: { authorization: "Bearer " + bearer, "content-type": "application/json" } });
+		status = r.status;
+		for await (const chunk of r.body) {
+			bytes += chunk.length;
+			tail = (tail + Buffer.from(chunk).toString("latin1")).slice(-400);
+		}
+		return { status, bytes, done: tail.includes("response.completed") };
+	} catch (e) {
+		return { status, bytes, done: false, error: String(e.cause?.code ?? e) };
+	}
+}
 Promise.all(Array.from({ length: Number(count) }, one)).then((r) => console.log(JSON.stringify(r)));`;
 
 async function seen(): Promise<{ method: string; url: string; authorization: string | null; cookie: string | null }[]> {
@@ -301,9 +313,15 @@ try {
 	const peakMiB = Math.round(Number(peak.stdout.trim()) / 2 ** 20);
 	const limitMiB = Math.round(Number(state.stdout.trim().split("|")[2]) / 2 ** 20);
 	console.log(`      64 streams: ${Date.now() - loadStart} ms, relay memory peak ${peakMiB} MiB of ${limitMiB} MiB (${RELAY_MEMORY})`);
-	expect("64 streams at once with 1 MiB bodies and 2 MiB answers all complete through a relay of the hosted relay's memory, which is not killed",
-		results.length === 64 && results.every((r) => r.status === 200 && r.done && r.bytes > 2 * 1024 * 1024) && state.stdout.trim().startsWith("true|false|") && peakMiB > 0 && peakMiB < limitMiB,
-		JSON.stringify({ statuses: results.map((r) => r.status).join(), short: results.filter((r) => !r.done).length, errors: [...new Set(results.map((r) => r.error).filter(Boolean))], peakMiB, limitMiB, state: state.stdout.trim(), stderr: said?.stderr.slice(0, 500) }));
+	const incomplete = results.filter(r => r.status !== 200 || !r.done || r.bytes <= 2 * 1024 * 1024);
+	const passed = said?.code === 0 && results.length === 64 && incomplete.length === 0 && state.stdout.trim().startsWith("true|false|") && peakMiB > 0 && peakMiB < limitMiB;
+	let details = "";
+	if (!passed) {
+		const forwarder = await docker(["inspect", "--format", "{{.State.Status}} OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}}", load.forwarderName(a.id)], { timeoutMs: 20_000 });
+		details = JSON.stringify({ results: results.length, incomplete: incomplete.length, firstFailure: incomplete[0], peakMiB, limitMiB,
+			relay: state.stdout.trim(), forwarder: (forwarder.stdout || forwarder.stderr).trim(), clientExit: said?.code, stderr: said?.stderr.slice(-1000) });
+	}
+	expect("64 streams at once with 1 MiB bodies and 2 MiB answers all complete through a relay of the hosted relay's memory, which is not killed", passed, details);
 } catch (error) {
 	failed += 1;
 	console.log(`FAIL  the check could not run: ${error instanceof Error ? error.stack : String(error)}`);

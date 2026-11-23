@@ -226,16 +226,16 @@ class Server {
 		};
 		child.stdout?.on("data", keep);
 		child.stderr?.on("data", keep);
-		child.on("exit", (code, signal) => {
+		child.on("close", (code, signal) => {
 			if (this.child === child) this.child = null;
-			log.write(`\n[e2e] server exited: code ${code} signal ${signal}\n`);
+			log.end(`\n[e2e] server exited: code ${code} signal ${signal}\n`);
 		});
 
 		// The HTTP routes come up once the node has registered with the engine.
 		await waitFor(
 			"the server to answer",
 			async () => {
-				if (!this.child) throw new Error(`the server exited while starting; see ${this.logFile}\n${this.output.slice(-1500)}`);
+				if (!this.child) throw new Error(`the server exited while starting (code ${child.exitCode}, signal ${child.signalCode})`);
 				try {
 					return (await fetch(`${API}/platform/info`)).ok;
 				} catch {
@@ -244,7 +244,9 @@ class Server {
 			},
 			120_000,
 			400,
-		);
+		).catch(error => {
+			throw new Error(`${error.message}\nLast lines of ${this.logFile}:\n${this.output.trimEnd().split("\n").slice(-80).join("\n")}`, { cause: error });
+		});
 	}
 
 	/** Stops the server as Ctrl-C would. */
