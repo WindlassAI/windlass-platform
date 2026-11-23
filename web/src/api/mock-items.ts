@@ -398,7 +398,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			state: "waiting",
 			filed: 300,
 			pr: 49,
-			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 75 },
+			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: [{ id: "raise", label: "Try the fix once more" }, ...choices("retry", "hand_over", "give_up")], asked: 75 },
 			run: { n: 1, started: 299, stopReason: null, rounds: { plan: 0, gate: 0, ci: 1, conflict: 0 }, step: { n: 5, kind: "ci_fix", started: 75 } },
 			events: [
 				[299, "Started.", undefined, true],

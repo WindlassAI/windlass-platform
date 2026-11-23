@@ -1764,9 +1764,13 @@ const STOP_WORDS: Record<Exclude<StopCause, keyof ItemBudget>, (task: Task) => s
 	sandboxes: () => "Every hosted sandbox the account may keep was in use.",
 };
 
+/** "Raise" after a failure that came back is no limit raised: the fix is tried once more (`raise`), and its button says so. */
+export const TRY_AGAIN_LABEL = "Try the fix once more";
+
 function stop(c: Change, cause: StopCause, sentence: string, resume: TurnPlan): void {
 	const budget = cause === "tokens" || cause === "turns" || cause === "activeSeconds" || cause === "hostedSeconds";
-	ask(c, budget ? "budget" : "rounds", sentence, [...(!c.item.parent || !budget ? [choice("raise")] : []), ...(!c.item.approvedPlan && !c.item.jobs?.length ? [choice("retry")] : []), ...handOver(c.item), choice("give_up")], cause, resume);
+	const raiseChoice = cause === "repeated" ? { id: "raise" as const, label: TRY_AGAIN_LABEL } : choice("raise");
+	ask(c, budget ? "budget" : "rounds", sentence, [...(!c.item.parent || !budget ? [raiseChoice] : []), ...(!c.item.approvedPlan && !c.item.jobs?.length ? [choice("retry")] : []), ...handOver(c.item), choice("give_up")], cause, resume);
 }
 
 function askRemoved(c: Change): void {

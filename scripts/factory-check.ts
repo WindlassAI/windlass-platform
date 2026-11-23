@@ -545,7 +545,7 @@ drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
 drive("review: a rounds question can hand over failing CI", reviewerOn(), [...begun,
 	...pushedAndFailed(reviewHead, "build failed"),
 	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
-	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", "expected a rounds question") },
+	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated" && o.item.question.choices[0]?.label === "Try the fix once more", "expected a rounds question that tries the fix once more") },
 	...personHandover(ci(H(2), failingCi("build failed"))),
 ]);
 const prAt = (sha: string): Row["fact"] => ({ key }) => ({ kind: "pr_read", webhooks: false, key, state: "open", prHead: sha });
