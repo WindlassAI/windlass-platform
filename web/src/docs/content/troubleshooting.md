@@ -151,6 +151,9 @@ These come from the model's provider, or from the relay on your machine that for
 **"The provider refused the request. …"**\
 The model's provider refused the turn, and gave the reason that follows. If it adds "You can change the model or reasoning effort with your next prompt.", choose another model or effort and send the prompt again. In a work item, the item asks you instead, with **Try again** and **Give up**.
 
+**"The turn did not run: Windlass could not use one of the tools the platform gives the agent. …"**\
+The platform declared one of its own tools to Windlass in a way Windlass does not take, and Windlass said why after "Windlass said:". This is a fault in the platform, not your setup, the model or the provider, and the same turn fails again until the platform is fixed, so a work item offers no **Try again**: **Give up**, or **Hand it over as it is** if it has pushed work. Report the sentence to whoever runs the platform.
+
 **"The provider refused the request. The provider gave no reason."**\
 The provider refused without saying why. Try again later, or with another model.
 

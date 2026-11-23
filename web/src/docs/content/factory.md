@@ -119,7 +119,9 @@ If no CI starts within 10 minutes of a push, the item is handed over without it.
 
 ### The second review
 
-A second agent, with no part in making the change, checks out the pushed commit in its own sandbox and reads it against the task. It approves, asks for changes, or says it needs you. Its findings are marked **Blocking**, **Should fix** or **Note**. The verdict never rests on its words.
+A second agent, with no part in making the change, checks out the pushed commit in its own sandbox and reads it against the task. It approves, asks for changes, or says it needs you.
+
+It is also given what you said to the work since you filed it, as your decisions: your notes when you sent it back, your notes when you answered a question, and your own feedback on the pull request. Where one disagrees with the task, it reviews against your decision. It is told not to ask for a decision to be undone, and not to ask you again what you already answered. The agent that made the change is told the same: it keeps your choice where a finding asks otherwise, and says so in its report. Feedback from other people is not a decision of yours and is not passed on this way. Its findings are marked **Blocking**, **Should fix** or **Note**. The verdict never rests on its words.
 
 What happens next depends on its recommendation:
 
@@ -206,7 +208,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **What is read.** A review that requests changes is read whole, with its line comments. A conversation comment, a line comment on its own or a comment-only review is read only when it starts with the App's mention or `/windlass`. An approval adds a line to the item's log and starts nothing.
 
-**Who counts.** You, through the GitHub account linked to Windlass, and anyone GitHub reports as having write access to the repository. Feedback from anyone else is only counted on the page: its text is not kept, sent to the agent or answered. Windlass reads each review or comment again from GitHub before taking it, and does not take one more than 3 days old.
+**Who counts.** Anyone GitHub reports as having write access to the repository: you, through the GitHub account linked to Windlass, and others. Windlass asks GitHub for that permission itself. The role GitHub shows beside a comment (Member, Contributor) does not count, so feedback from a member of an organisation who keeps the membership private is taken. Feedback from anyone else is only counted on the page: its text is not kept, sent to the agent or answered. Windlass reads each review or comment again from GitHub before taking it, and does not take one more than 3 days old.
 
 **Batches.** A review is taken at once. Comments are collected into one batch: it goes after two minutes without a new comment, or ten minutes after the first. A batch holds up to 20 entries and 8,000 characters, oldest first. The rest goes with the next batch. A single entry longer than 8,000 characters is not taken: shorten it or split it. The same feedback twice is taken once.
 
