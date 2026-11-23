@@ -258,7 +258,7 @@ export class AcpHarness implements Harness {
 		let phase: "setup" | "running" | "checking" | "ended" = "setup";
 		const steps = new StepCounter(input.maxSteps);
 		const gate = new PlatformChecks(handle, input.checks ?? [], (event, note) => input.onChecks?.(event, note), {
-			agent: profile.name, redactor, signal: input.signal,
+			agent: profile.name, redactor, signal: input.signal, force: input.forceChecks,
 			unavailable: profile.sandboxedOn.includes(handle.profile) ? `${profile.name} runs its commands in its own sandbox without network here, and the platform does not run what the agent changed outside it. CI decides.` : undefined,
 		});
 		let configs = optionsOf([]);

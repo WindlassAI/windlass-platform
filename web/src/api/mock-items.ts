@@ -142,6 +142,8 @@ const CHOICES: Record<ChoiceId, string> = {
 	again: "Try again",
 	wait: "Keep waiting",
 	hand_over: "Hand it over as it is",
+	run_checks: "Run the checks again",
+	ci_alone: "Integrate on CI alone",
 	give_up: "Give up",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",

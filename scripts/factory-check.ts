@@ -32,7 +32,7 @@ process.env.RIVETKIT_STORAGE_PATH = join(scratch, "storage");
 for (const name of Object.keys(process.env)) if (name.startsWith("WLP_GITHUB_")) delete process.env[name];
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
-const { advance, createItem, currentKey } = await import("../server/src/factory/blueprint.js");
+const { advance, createItem, currentKey, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
 const { CI_POLLING, readCi, rerunCancelled, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
@@ -1587,6 +1587,8 @@ print("\n== verdict");
 
 const gates: Array<[string, Verified, string]> = [
 	["the checks passed", PASSED, "pass"],
+	["a pass carried from an earlier turn without an attestation", { ...PASSED, turn: 2 }, "unverified"],
+	["a failure carried from an earlier turn", { ...FAILING, turn: 2 }, "unverified"],
 	["a check failed", FAILING, "fail"],
 	["a check could not start, none failed", verified("unresolved", [{ ...check("test", "could_not_start"), startError: "npm: not found" }], { unresolved: { reason: "not_started", said: null } }), "unverified"],
 	["not needed, resting on a run that passed", verified({ reason: "not_covered", on: "run" }, [check("test", "passed")]), "pass"],
@@ -1817,6 +1819,65 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const waiting = walk(child, [...pushedRun(H(1)), { ...ciFact(pendingBuild), at: T0 + 96 * MINUTE }]);
 	expect("a subtask waiting on CI offers only wait or give up", waiting.item.question?.kind === "ci_timeout" &&
 		waiting.item.question.choices.map(choice => choice.id).join() === "wait,give_up");
+}
+
+{
+	const child = { ...newItem(), parent: { itemId: "i_feature", title: "Feature", key: "first" } };
+	const head = H(2);
+	const pushed = { kind: "published", webhooks: false, head, pr: null, openItems: 1 };
+	const skipped: Verified = { ...PASSED, turn: 2, state: "not_needed", unneeded: { reason: "not_covered", on: null }, changedAfter: true };
+	const ciFix = walk(child, [...pushedRun(H(1)), ciFact(ciRead([{ name: "test", state: "failed" }]))]).item;
+	const unchecked = walk(ciFix, [turnEnded("succeeded", skipped), pushed]).item;
+	const recovery = walk(unchecked, [ciFact(passedCi, head)]);
+	const delivery = effect(recovery.last, "deliver");
+	expect("an unverified CI fix gets a gate round to run the named checks", ciFix.run?.step.kind === "ci_fix" &&
+		!recovery.item.question && recovery.item.run?.rounds.gate === 1 && delivery?.agent === "run_checks" &&
+		delivery.text.includes("(test, lint)") && delivery.text.includes("do not change anything else unless a check fails"));
+
+	// The explicit turn must produce real check evidence even when it edits no files.
+	const { PlatformChecks } = await import("../server/src/sandbox/platform-checks.js");
+	const { VerificationLog } = await import("../server/src/verified.js");
+	const log = new VerificationLog();
+	const commands: string[] = [];
+	const handle = { cwd: "/repo", run: async (command: string) => {
+		const snapshot = command.includes("git write-tree");
+		if (!snapshot) commands.push(command);
+		return { stdout: snapshot ? H(8) : "", stderr: "", exitCode: 0, timedOut: false, aborted: false };
+	} };
+	const saved = [{ name: "test", command: "npm test", when: ["src/**"] }, { name: "lint", command: "npm run lint" }];
+	const gate = new PlatformChecks(handle, saved, event => log.note(event), { agent: "builder", force: true });
+	await gate.begin();
+	await gate.settle();
+	const pass = log.verified(3, saved, undefined, skipped);
+	const finish = (verified: Verified) => walk(recovery.item, [{ ...turnEnded("succeeded", verified), changes: false }, pushed, ciFact(passedCi, head)]);
+	const green = finish(pass);
+	expect("the unchanged recovery commit integrates with fresh local evidence and passing CI", commands.join() === "npm test,npm run lint" &&
+		pass.run?.turn === 3 && pass.state === "passed" && effect(green.last, "integrate")?.head === head && green.last.storeVerdict?.verdict.head === head);
+
+	const stuck = finish(skipped).item;
+	const choices = ["Run the checks again", "Integrate on CI alone", "Give up"];
+	expect("a recovery that verifies nothing asks with three choices", stuck.question?.choices.map(c => c.label).join() === choices.join());
+	const legacy: FactoryItem = JSON.parse(JSON.stringify(stuck));
+	legacy.question = { ...stuck.question!, text: "This subtask needs passing local checks and CI on its commit before integration.",
+		choices: [{ id: "give_up", label: "Give up" }], cause: null, resume: null };
+	upgradeSubtaskQuestion(legacy);
+	expect("a stored give-up-only question keeps its ID and gains both recovery choices",
+		legacy.question?.id === stuck.question?.id && legacy.question?.choices.map(c => c.label).join() === choices.join());
+	for (const [label, item] of [["new", stuck], ["stored", legacy]] as const) {
+		const retry = walk(item, [{ kind: "answer", choice: "run_checks" }]);
+		expect(`${label} question: run the checks again grants exactly one more gate turn`, retry.item.run?.rounds.gate === 2 &&
+			effect(retry.last, "deliver")?.agent === "run_checks" && !retry.item.question);
+		const alone = walk(item, [{ kind: "answer", choice: "ci_alone" }]);
+		const confirmed = walk(alone.item, [ciFact(passedCi, head)]);
+		const verdict = confirmed.last.storeVerdict?.verdict;
+		expect(`${label} question: CI alone integrates only the reconfirmed head and records the missing local evidence`,
+			effect(alone.last, "poll_ci")?.head === head && effect(confirmed.last, "integrate")?.head === head &&
+			verdict?.gate.state === "not_needed" && !verdict.gate.required.length && verdict.said.ci.includes("CI alone"));
+		const moved = walk(alone.item, [ciFact(passedCi, head, H(3))]);
+		const failed = walk(alone.item, [ciFact(ciRead([{ name: "lint", state: "failed" }]), head)]);
+		expect(`${label} question: CI alone cannot integrate a moved head or failed CI`, !effect(moved.last, "integrate") && !effect(failed.last, "integrate") && !failed.last.storeVerdict);
+		expect(`${label} question: give up stops the subtask`, walk(item, [{ kind: "answer", choice: "give_up" }]).item.state === "failed");
+	}
 }
 
 {

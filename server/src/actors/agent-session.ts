@@ -4158,6 +4158,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
 				// and records them as Windlass's gate would be; and the step limit, which the platform counts (platform-steps.ts).
 				checks: planner || reviewer ? [] : held.checks,
+				forceChecks: item?.row.agent === "run_checks",
 				onChecks: (event, said) => {
 					active.checks.note(event);
 					if (open && said) note(c, turn, said.level, said.text);

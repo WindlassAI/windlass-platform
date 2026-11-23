@@ -875,7 +875,11 @@ const failuresOf = (run: Run): string[] => run.failures ?? (run.lastFailure === 
 function nextTurn(c: Change, plan: TurnPlan): void {
 	const { item, run } = c;
 	// The stuck detector: a fix for a failure this run already tried to fix. Then the backstops: cut-off turns, the item's turns.
-	if (plan.fingerprint !== null && failuresOf(run).includes(plan.fingerprint)) return stop(c, "repeated", repeatedWords(plan, item.task), plan);
+	if (plan.fingerprint !== null && failuresOf(run).includes(plan.fingerprint)) {
+		if (plan.fingerprint === NO_GATE)
+			return ask(c, "rounds", SUBTASK_CHECK_QUESTION, subtaskChoices(), "repeated", plan);
+		return stop(c, "repeated", repeatedWords(plan, item.task), plan);
+	}
 	if (plan.charge === "interruptions" && run.step.interruptions >= RULES.interruptions) return stop(c, "interruptions", `This step was cut off ${RULES.interruptions} times, by deploys or restarts.`, plan);
 	if (backstopTurns(item) >= RULES.turnBackstop) return stop(c, "turns", `This item has taken ${RULES.turnBackstop} turns without finishing. Look at its log before it goes on.`, plan);
 
@@ -913,7 +917,7 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		const untrusted = marked(plan.untrusted);
 		// The whole task goes with its own sources: the session sends one text or the other, with the sources of that one.
 		const freshPrompt = fresh && { fresh: { text: fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
-		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
+		c.effects.push({ ...delivery, agent: plan.kind === "run_checks" || plan.kind === "summary" ? plan.kind : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);
@@ -1056,11 +1060,16 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		c.say(`The agent changed nothing for the review; ${shortSha(run.ci.head)} is reviewed again, with the agent's report.`);
 		return startReview(c, run.ci);
 	}
-	if (!fact.changes) {
+	// A checks-only turn can verify the existing commit. Publish confirms its SHA before CI is read.
+	if (!fact.changes && kind !== "run_checks") {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, text: "Your last turn changed nothing. Look again at what was asked, and make the change." };
 		return ask(c, "no_change", "The agent ended its turn without changing anything.", [choice("again"), ...handOver(item), choice("give_up")], null, resume);
 	}
 
+	if (kind === "run_checks" && result !== "unverified") {
+		run.failures = failuresOf(run).filter(failure => failure !== NO_GATE);
+		if (run.lastFailure === NO_GATE) run.lastFailure = null;
+	}
 	c.enter("gate");
 	run.gate = { turn: fact.key, outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
 	if (result === "fail" && fact.verified !== null) {
@@ -1423,6 +1432,30 @@ function keptReview(run: Run, ci: CiProgress): HandoffReview {
 	return skippedReview(PERSON_HANDOVER);
 }
 
+const NO_GATE = "integration/no-gate";
+const OLD_SUBTASK_QUESTION = "This subtask needs passing local checks and CI on its commit before integration.";
+const SUBTASK_CHECK_QUESTION = "Local checks did not verify this subtask commit. Run them again or use passing CI for integration.";
+const subtaskChoices = () => [choice("run_checks"), choice("ci_alone"), choice("give_up")];
+
+export function upgradeSubtaskQuestion(item: FactoryItem): void {
+	const q = item.question;
+	if (item.parent && q?.kind === "rounds" && q.text === OLD_SUBTASK_QUESTION && q.choices.length === 1 && q.choices[0].id === "give_up") {
+		q.text = SUBTASK_CHECK_QUESTION;
+		q.choices = subtaskChoices();
+		if (item.wait?.sentence === OLD_SUBTASK_QUESTION) item.wait.sentence = q.text;
+	}
+}
+
+function subtaskCheckPlan(ci: CiProgress, note: string | null = null): TurnPlan {
+	const verified = ci.gate?.verified;
+	const names = new Set([
+		...[...(verified?.run?.checks ?? []), ...(verified?.putBack ?? [])].filter(check => check.whose === "user" || check.required).map(check => check.name),
+		...(verified?.unrun ?? []).map(check => check.name),
+	]);
+	const text = `Your last turn did not run the required checks${names.size ? ` (${[...names].join(", ")})` : ""}. Run them now and fix until they pass; do not change anything else unless a check fails.`;
+	return { ...IMPLEMENT, kind: "run_checks", charge: "gate", fingerprint: NO_GATE, text: withNote(text, note) };
+}
+
 function afterCi(c: Change, ci: CiProgress): void {
 	const { item, run } = c;
 	if (item.parent) {
@@ -1430,11 +1463,21 @@ function afterCi(c: Change, ci: CiProgress): void {
 			run.lastFailure = "integration/no-ci";
 			return ask(c, "ci_timeout", "No passing CI reported on the subtask push. Wait for an external check or stop orchestration.", [choice("wait"), choice("give_up")], null, null);
 		}
-		if (!ci.gate || gateResult(ci.gate.outcome, ci.gate.verified) !== "pass") run.lastFailure = "integration/no-gate";
-		if (ci.moved || ci.last?.state !== "passed" || !isSha(ci.head) || run.lastFailure === "integration/no-gate")
-			return ask(c, "rounds", "This subtask needs passing local checks and CI on its commit before integration.", [choice("give_up")], null, null);
-		const { verdict, words } = verdictAt(c, ci);
-		c.storeVerdict = { kind: "verdict", verdict, words };
+		if (ci.moved || ci.head !== item.head || ci.last?.state !== "passed" || !isSha(ci.head))
+			return ask(c, "ci_timeout", "CI must pass on the current subtask commit before integration.", [choice("wait"), choice("give_up")], null, null);
+		const gate = ci.gate ? gateResult(ci.gate.outcome, ci.gate.verified) : "unverified";
+		if (gate === "unverified" && !ci.ciAlone) return nextTurn(c, subtaskCheckPlan(ci));
+		if (gate === "fail" || gate === "incomplete")
+			return ask(c, "rounds", "The local gate did not finish successfully.", [choice("run_checks"), choice("give_up")], null, null);
+		const record = verdictAt(c, ci);
+		if (gate === "unverified") {
+			const reason = "The person accepted passing CI alone for integration. Local checks did not verify this commit.";
+			record.verdict.said.ci += " " + reason;
+			record.words += " " + reason;
+			c.say(reason);
+		}
+		if (run.lastFailure === NO_GATE) run.lastFailure = null;
+		c.storeVerdict = { kind: "verdict", verdict: record.verdict, words: record.words };
 		c.enter("subtasks");
 		c.effects.push({ kind: "integrate", head: ci.head, key: c.key });
 		return;
@@ -1898,6 +1941,8 @@ const CHOICES: Record<ChoiceId, string> = {
 	again: "Try again",
 	wait: "Keep waiting",
 	hand_over: "Hand it over as it is",
+	run_checks: "Run the checks again",
+	ci_alone: "Integrate on CI alone",
 	give_up: "Give up",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
@@ -2024,6 +2069,22 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const resume = question.resume;
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
 	switch (fact.choice) {
+		case "run_checks": {
+			if (!item.parent || !run.ci) return false;
+			const plan = subtaskCheckPlan(run.ci, note);
+			raise(c, "repeated", undefined, plan);
+			nextTurn(c, plan);
+			break;
+		}
+		case "ci_alone":
+			if (!item.parent || !run.ci || run.ci.head !== item.head || !isSha(run.ci.head)) return false;
+			run.ci.ciAlone = true;
+			run.ci.last = null;
+			run.ci.since = c.at;
+			c.enter("ci");
+			c.state("waiting", { reason: "ci", sentence: `Confirming CI on ${shortSha(run.ci.head)} for integration.`, retryAt: c.at });
+			c.effects.push({ kind: "poll_ci", key: c.key, head: run.ci.head, at: c.at });
+			break;
 		case "run_single":
 			runSingle(c);
 			break;

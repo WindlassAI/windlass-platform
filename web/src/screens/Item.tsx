@@ -62,6 +62,7 @@ const STEP_WORD: Record<StepKind, string> = {
 	publish: "Pushing",
 	ci: "Waiting for CI",
 	ci_fix: "Fixing CI",
+	run_checks: "Running local checks",
 	conflict: "Merging the base",
 	review: "Second review",
 	review_fix: "Fixing the review",
