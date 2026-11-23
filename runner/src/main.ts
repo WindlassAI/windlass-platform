@@ -222,7 +222,7 @@ async function main() {
 								if (launch?.importFile && await importOpenCode(launch.importFile, p => terminalQuestion(p, abort.signal),
 									(provider,key) => storeProvider(machine,{provider,key}), login)) return;
 								await login();
-							});
+							}, console.log, () => abort.signal.aborted);
 						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
 						if (values["slot-cpus"] === undefined && process.env.WLP_RUNNER_CPUS !== undefined) flags.push("--slot-cpus", String(slots!.unit.cpus));
 						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));
