@@ -250,7 +250,7 @@ const MOCK_OPENCODE_MODES = [
 ];
 
 /** What the mock's runners say they are, and what its platform asks of them. */
-const MOCK_RUNNER_VERSION = "0.2.1";
+const MOCK_RUNNER_VERSION = "0.3.3";
 const MOCK_MIN_RUNNER_VERSION = "0.2.0";
 const MOCK_RUNNER_IMAGE = "registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
 
@@ -2947,7 +2947,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** What the demo's hosted sandboxes reach anyway: a deployment with WLP_E2B_NETWORK=restricted and the default presets. */
-	const MOCK_HOSTED = { mode: "restricted" as const, hosts: ["api.openai.com", "codeload.github.com", "files.pythonhosted.org", "github.com", "objects.githubusercontent.com", "pypi.org", "raw.githubusercontent.com", "registry.npmjs.org", "registry.yarnpkg.com", "release-assets.githubusercontent.com"] };
+	// Model calls go through the platform's model relay, so the model provider is not among them.
+	const MOCK_HOSTED = { mode: "restricted" as const, hosts: ["codeload.github.com", "files.pythonhosted.org", "github.com", "objects.githubusercontent.com", "pypi.org", "raw.githubusercontent.com", "registry.npmjs.org", "registry.yarnpkg.com", "release-assets.githubusercontent.com"] };
 
 	/** A repository's network list as the server answers it (server/src/repository-network.ts). */
 	function networkOf(world: World, repositoryId: GithubId): RepositoryNetwork {
