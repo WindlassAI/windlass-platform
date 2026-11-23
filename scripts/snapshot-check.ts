@@ -9,6 +9,7 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { canReuseSnapshot, canSaveSnapshot, dependencyHash, digest, snapshotPrompt, type TreeEntry } from "../server/src/sandbox/snapshot-key.js";
 import { attemptLabel, candidateLabel, DockerSnapshots, evictions, relieveDiskPressure, snapshotLimits, sourceFromLabels } from "../server/src/sandbox/snapshots.js";
 import { DATA_DIR, docker, LABEL } from "../server/src/sandbox/docker.js";
+import { BUILT_IN_STORE_LIMITS, clampStoreLimits, DEFAULT_STORE_LIMITS, parseStoreSize, storeSettings } from "../server/src/sandbox/store-limits.js";
 import { runSetupCommand } from "../server/src/sandbox/setup.js";
 import { containerName, DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../server/src/sandbox/token-file.js";
@@ -49,7 +50,49 @@ assert.deepEqual(evictions([rows[2]], 4, { machine: 20, user: 8, free: 0 }, [row
 const retired: number[] = [], readings = [0, 0, 15];
 assert.equal(await relieveDiskPressure([...rows].reverse(), 15, async () => readings.shift()!, async row => { retired.push(row.used); }), true);
 assert.deepEqual(retired, [1, 2]);
-console.log("PASS dependency key, writer and secret policy, first-prompt notice, user and machine eviction, expiry");
+
+// Sizes as the runner's flags take them: decimal units, any case, nothing else.
+assert.equal(parseStoreSize("20GB"), 20e9);
+assert.equal(parseStoreSize("512MB"), 512e6);
+assert.equal(parseStoreSize("1.5tb"), 1.5e12);
+assert.equal(parseStoreSize(" 0GB "), 0);
+for (const bad of ["", "20", "20G", "20GiB", "-1GB", "1e3GB", "GB", "20 GB extra", "2000TB"]) assert.equal(parseStoreSize(bad), null, bad);
+assert.deepEqual(DEFAULT_STORE_LIMITS, { machine: 10e9, user: 2e9, free: 40e9 });
+assert.deepEqual(BUILT_IN_STORE_LIMITS, { machine: 10e9, user: 2e9, free: 15e9 }, "what runner 0.3.1 applies");
+assert.deepEqual(snapshotLimits, DEFAULT_STORE_LIMITS, "a store given no limits uses the defaults");
+
+// The deployment's settings: its own Docker uses them, machines are held to the ones that are set.
+assert.deepEqual(storeSettings({}), { own: { ...DEFAULT_STORE_LIMITS }, caps: {}, problems: [] });
+const set = storeSettings({ WLP_SNAPSHOT_MACHINE_MAX_GB: "50", WLP_KEEP_FREE_MIN_GB: "12.5" });
+assert.deepEqual(set.own, { machine: 50e9, user: 2e9, free: 12.5e9 });
+assert.deepEqual(set.caps, { machine: 50e9, free: 12.5e9 });
+assert.deepEqual(storeSettings({ WLP_KEEP_FREE_MIN_GB: "0" }).caps, { free: 0 });
+for (const [name, value] of [["WLP_SNAPSHOT_MACHINE_MAX_GB", "0"], ["WLP_SNAPSHOT_USER_MAX_GB", "ten"], ["WLP_KEEP_FREE_MIN_GB", "-1"], ["WLP_SNAPSHOT_MACHINE_MAX_GB", "2000000"]]) {
+	const bad = storeSettings({ [name]: value });
+	assert.equal(bad.problems.length, 1, name + "=" + value);
+	assert.match(bad.problems[0], new RegExp(name));
+	assert.deepEqual(bad.caps, {}, "an unusable setting counts as not set");
+	assert.deepEqual(bad.own, DEFAULT_STORE_LIMITS);
+}
+
+// Ceiling on the sizes, floor on keep-free: a machine can choose less space or more free disk, never the other way.
+const caps = { machine: 20e9, user: 4e9, free: 30e9 };
+assert.deepEqual(clampStoreLimits({ machine: 50e9, user: 8e9, free: 10e9 }, caps), caps, "more space and less free disk are held to the caps");
+assert.deepEqual(clampStoreLimits({ machine: 5e9, user: 1e9, free: 60e9 }, caps), { machine: 5e9, user: 1e9, free: 60e9 }, "less space and more free disk stand");
+assert.deepEqual(clampStoreLimits({ machine: 50e9, user: 1e9, free: 10e9 }, { free: 30e9 }), { machine: 50e9, user: 1e9, free: 30e9 }, "only the caps that are set apply");
+assert.deepEqual(clampStoreLimits(DEFAULT_STORE_LIMITS), DEFAULT_STORE_LIMITS, "no caps from an older platform");
+
+// Eviction under an owner's limits: a larger machine total keeps more, a smaller user share evicts sooner.
+const many = Array.from({ length: 6 }, (_, n) => ({ uid: n % 2 ? "B" : "A", bytes: 3e9, used: n + 1 }));
+assert.deepEqual(evictions(many, 10, DEFAULT_STORE_LIMITS).map(r => r.used), [1, 2, 3, 4, 5, 6], "the defaults: each 3 GB snapshot is over a user's 2 GB");
+const roomy = clampStoreLimits({ machine: 15e9, user: 9e9, free: 40e9 });
+assert.deepEqual(evictions(many, 10, roomy).map(r => r.used), [1], "--snapshot-disk 15GB --snapshot-user 9GB keeps five of six");
+assert.deepEqual(evictions(many, 10, clampStoreLimits(roomy, { machine: 12e9 })).map(r => r.used), [1, 2], "the deployment's ceiling evicts down to 12 GB");
+assert.deepEqual(evictions(many, 10, clampStoreLimits(roomy, { user: 6e9 })).map(r => r.used), [1, 2], "the deployment's ceiling on a user's share");
+const reading = [5e9, 9e9, 20e9], gone: number[] = [];
+assert.equal(await relieveDiskPressure(many, clampStoreLimits({ ...DEFAULT_STORE_LIMITS, free: 8e9 }, { free: 18e9 }).free, async () => reading.shift()!, async row => { gone.push(row.used); }), true);
+assert.deepEqual(gone, [1, 2], "the deployment's keep-free floor evicts until 18 GB is free");
+console.log("PASS dependency key, writer and secret policy, first-prompt notice, user and machine eviction, expiry, store limits and their caps");
 
 if (process.argv.includes("--docker")) {
 	const base = await imageId(), machine = "m_" + randomBytes(8).toString("hex");
@@ -193,7 +236,7 @@ if (process.argv.includes("--docker")) {
 		assert.equal(last.hit, true);
 		await checked("tag", last.image, alias);
 		await checked("run", "-d", "--pull", "never", "--name", consumer, last.image);
-		await snapshotMaintenance(current, key, platform, null)(Date.now());
+		await snapshotMaintenance(current, key, platform, null, () => snapshotLimits)(Date.now());
 		assert.equal(await cache.has(uid, source.repo), false, "re-pairing retained the previous owner's snapshot");
 		assert.equal(await checked("image", "inspect", "--format", "{{.Id}}", alias), last.image, "removed a tag outside the index");
 		// Replacing the tags leaves a pinned image with no repository name, as on older runners.

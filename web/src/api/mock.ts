@@ -3244,6 +3244,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			],
 			commandSandbox: { ok: true },
 			freeDiskBytes: 61.4e9,
+			storeLimits: { machine: 10e9, user: 2e9, free: 40e9 },
 			egress: "open",
 			profiles: mockMachineProfiles(patch.name ?? "nas", {}, patch.egress),
 			slots: slots(2, 0),
@@ -3269,7 +3270,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			case "claude-signed-out":
 				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
 			case "pairing":
-				return [nas({ status: "waiting", slots: undefined, since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: [], harnesses: undefined })];
+				return [nas({ status: "waiting", slots: undefined, since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, storeLimits: undefined, profiles: [], harnesses: undefined })];
 			case "outdated":
 				return [nas({ status: "offline", since: at - 12 * MINUTE, runnerVersion: "0.1.0", slots: undefined, warnings: [{ kind: "outdated" }] })];
 			case "docker":
@@ -3298,7 +3299,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 						harnesses: externalHarnesses,
 					}),
 					// Its owner started its runner with --max-running 2 --max-sandboxes 6; the others have no limit.
-					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
+					nas({ machineId: "m_build", name: "build-box", arch: "x64", since: at - 20 * MINUTE, agents: 0, sandboxes: [], freeDiskBytes: 402e9, storeLimits: { machine: 50e9, user: 10e9, free: 40e9 }, maxRunning: 2, maxSandboxes: 6, harnesses: undefined }),
 				];
 			// Feature placement (`?items=features` lists these by default): one machine of each policy. "studio" is
 			// the only one with screenshots, and both its slots are taken; "ci-box" takes no subtask of a feature.
@@ -3307,7 +3308,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [
 					nas({ allowedProfiles: allowed, slots: slots(2, 0) }),
 					nas({ machineId: "m_studio", name: "studio", arch: "x64", since: at - 5 * HOUR, agents: 2, sandboxes: [], freeDiskBytes: 240e9, orchestrator: "named", screenshots: true, whenToUse: "Browser tests and screenshots", tags: ["browser"], allowedProfiles: allowed, slots: slots(2, 2), turns: { running: 2, queued: 0, max: 2 }, harnesses: undefined }),
-					nas({ machineId: "m_ci", name: "ci-box", arch: "x64", since: at - 26 * HOUR, agents: 0, sandboxes: [], freeDiskBytes: 88e9, orchestrator: "never", sendSecrets: false, whenToUse: "Release builds only", tags: ["release"], allowedProfiles: allowed, slots: slots(4, 0), harnesses: undefined }),
+					nas({ machineId: "m_ci", name: "ci-box", arch: "x64", since: at - 26 * HOUR, agents: 0, sandboxes: [], freeDiskBytes: 88e9, storeLimits: { machine: 10e9, user: 2e9, free: 15e9, builtIn: true }, orchestrator: "never", sendSecrets: false, whenToUse: "Release builds only", tags: ["release"], allowedProfiles: allowed, slots: slots(4, 0), harnesses: undefined }),
 				];
 			}
 			case "unnamed":

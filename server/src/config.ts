@@ -242,6 +242,7 @@
 
 import { type ModelRelayUrl, parseModelRelayUrl } from "./model-relay-url.js";
 import { SNAPSHOT_MIN_SETUP_MS } from "./sandbox/snapshot-key.js";
+import { storeSettings, type StoreCaps, type StoreLimits } from "./sandbox/store-limits.js";
 
 import { readPlatformKey, type PlatformIdentity } from "./runner/frame-auth.js";
 import { configuredKeys, type Keyring } from "./keyring.js";
@@ -330,6 +331,12 @@ export interface Config {
 	/** WLP_E2B_SNAPSHOTS=on: post-setup snapshots of hosted E2B sessions (e2b/snapshots.ts). Docker and machines keep `snapshots`. */
 	e2bSnapshots: boolean;
 	snapshotMinSetupMs: number;
+	/**
+	 * The snapshot and Git mirror stores' limits on the platform's own Docker (WLP_SNAPSHOT_MACHINE_MAX_GB,
+	 * WLP_SNAPSHOT_USER_MAX_GB, WLP_KEEP_FREE_MIN_GB, or the defaults), and `caps`: the ones of those that are
+	 * set, which a machine's runner (0.3.2 or later) is held to: a ceiling on the sizes, a floor on keep-free.
+	 */
+	storeLimits: StoreLimits & { caps: StoreCaps };
 	/** How long a repository's setup command may run before the platform stops it. */
 	setupTimeoutMs: number;
 	/** How long one turn may run before the platform stops it (WLP_TURN_TIMEOUT_MS). */
@@ -636,6 +643,12 @@ function readModelRelay(): Config["modelRelay"] {
 	return { on: mode !== "off", requests: Number.isInteger(requests) && requests >= 1 && requests <= 4096 ? requests : 64, url: url !== null && "problem" in url ? null : url };
 }
 
+function readStoreLimits(): Config["storeLimits"] {
+	const { own, caps, problems } = storeSettings(process.env);
+	unusable.push(...problems);
+	return { ...own, caps };
+}
+
 const idleSuspendMs = readDuration("WLP_IDLE_SUSPEND_MS", 10 * 60 * 1000, 1_000);
 // Removing comes after suspending, never before it.
 const idleDestroyMs = Math.max(idleSuspendMs, readDuration("WLP_IDLE_DESTROY_MS", 7 * 24 * 60 * 60 * 1000, 1_000));
@@ -808,6 +821,7 @@ export const config: Config = {
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
 	e2bSnapshots: process.env.WLP_E2B_SNAPSHOTS === "on",
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
+	storeLimits: readStoreLimits(),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
 	usage: {

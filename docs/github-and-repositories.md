@@ -267,7 +267,8 @@ again on every start. Neither is a slot admitted in the last two minutes evicted
 container may not exist yet. When every slot is in use, the session clones without a mirror. A
 slot that a container already names is mounted without running the allocator. Should a stopped
 container's slot be gone anyway, its start puts back an empty slot and tries again. Below the
-free-space floor that snapshots keep (15 GB), the allocator admits nothing and evicts unused slots.
+free-space floor that snapshots keep (keep-free: 40 GB by default, `WLP_KEEP_FREE_MIN_GB` on the
+platform's own Docker, `--keep-free` on a machine), the allocator admits nothing and evicts unused slots.
 
 Refresh happens on demand. After a successful clone whose base GitHub confirmed, the transport
 stages its refs and hard links to its objects in its own private directory in the session's

@@ -1,6 +1,7 @@
 import { availableParallelism, totalmem } from "node:os";
 import type { MachineSlotCapacity } from "../../server/src/contract.js";
 import { RunnerError } from "./state.js";
+import { DEFAULT_STORE_LIMITS, parseStoreSize, type StoreLimits } from "../../server/src/sandbox/store-limits.js";
 
 const GiB = 2 ** 30;
 type Overrides = { slots?: number; cpus?: number; slotMemory?: number; sandboxMemory?: number };
@@ -49,4 +50,24 @@ export function sizeMachine({ cores, memoryBytes }: { cores: number; memoryBytes
 
 export function localSizing(flags: Flags = {}) {
 	return sizeMachine({ cores: availableParallelism(), memoryBytes: totalmem() }, sizingFlags(flags, process.env.WLP_RUNNER_CPUS));
+}
+
+type StoreFlags = Partial<Record<"snapshot-disk" | "snapshot-user" | "keep-free", string>>;
+/**
+ * The snapshot and Git mirror limits its owner gave (`--snapshot-disk`, `--snapshot-user`, `--keep-free`),
+ * the default for each one not given; undefined when none is. The platform's caps hold them later
+ * (`Executor.storeLimits`): a machine can choose less space or more free disk, never the other way.
+ */
+export function storeFlags(flags: StoreFlags): StoreLimits | undefined {
+	const given = { machine: flags["snapshot-disk"], user: flags["snapshot-user"], free: flags["keep-free"] };
+	if (Object.values(given).every(v => v === undefined)) return undefined;
+	const limits = { ...DEFAULT_STORE_LIMITS };
+	for (const [key, flag] of [["machine", "snapshot-disk"], ["user", "snapshot-user"], ["free", "keep-free"]] as const) {
+		const text = given[key];
+		if (text === undefined) continue;
+		const bytes = parseStoreSize(text);
+		if (bytes === null || (key !== "free" && bytes === 0)) throw new RunnerError(`Give --${flag} a size such as 20GB or 512MB${key === "free" ? " (0GB keeps nothing free)" : ""}.`);
+		limits[key] = bytes;
+	}
+	return limits;
 }

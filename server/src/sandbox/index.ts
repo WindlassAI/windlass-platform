@@ -77,6 +77,8 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 			modelRelay,
 			deployment: snapshotDeployment(config.storagePath, config.snapshots),
 			mirrorScope: mirrorDeployment(config.storagePath),
+			// The deployment's own settings (WLP_SNAPSHOT_MACHINE_MAX_GB and the others), or the defaults.
+			storeLimits: () => config.storeLimits,
 			dataVolume: async (uid, sandbox) => {
 				if (sandbox !== undefined) return ensureSessionVolume(uid, sandbox);
 				await ensureUserData(uid);

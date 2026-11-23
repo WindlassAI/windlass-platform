@@ -8,6 +8,7 @@ import { machineLabel, MAX_MACHINES, type HarnessOptions, type MachineClaim, typ
 import type { Registry } from "../registry.js";
 import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
+import { BUILT_IN_STORE_LIMITS } from "../sandbox/store-limits.js";
 import { codeDigest } from "../runner-keys.js";
 import { compactReport, type CatalogId } from "../runner/catalog.js";
 import { MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MIN_RUNNER_VERSION, PAIRING_TTL_MS, versionAtLeast } from "../runner/control.js";
@@ -103,7 +104,9 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report?.claudeRelay && { claudeRelay: true as const }),
 			...(report?.harnesses ? { harnesses: report.harnesses } : {}),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
-			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}) };
+			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}),
+			// A runner 0.3.1 or older reports none: it applies its built-in limits.
+			...(report && { storeLimits: report.storeLimits ?? { ...BUILT_IN_STORE_LIMITS, builtIn: true as const } }) };
 	});
 }
 export async function changed(c: Ctx) {

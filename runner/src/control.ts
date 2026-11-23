@@ -128,7 +128,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 	const { createClient } = await import("rivetkit/client");
 	const { uid, machineId } = owner.identity;
 	const sessions = new Map<string, Session>();
-	const maintainSnapshots = snapshotMaintenance(owner.identity, key, platform, trust);
+	const maintainSnapshots = snapshotMaintenance(owner.identity, key, platform, trust, () => owner.storeLimits());
 	let idle = initialIdle;
 	let state = "";
 	let offset = 0;
@@ -280,6 +280,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
 						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);
+						owner.platformStoreCaps(f.storeLimits);
 						mayMaintain = true;
 						status("Online");
 						lastRefresh = Date.now();

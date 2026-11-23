@@ -1302,6 +1302,13 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	 */
 	maxRunning?: number;
 	maxSandboxes?: number;
+	/**
+	 * The snapshot and Git mirror limits in force there, in bytes, as its runner last reported: all
+	 * snapshots (`--snapshot-disk`), one user's (`--snapshot-user`), and the free disk kept (`--keep-free`).
+	 * `capped`: the deployment's caps changed what its owner set. `builtIn`: a runner 0.3.1 or older, which
+	 * takes no flags and reports nothing; these are the limits it applies. Absent before its runner first reported.
+	 */
+	storeLimits?: { machine: number; user: number; free: number; capped?: true; builtIn?: true };
 	/** The sandbox profiles this machine offers, for the launch form: every one, available or not; empty until its runner first reported. */
 	profiles: SandboxProfile[];
 	/** Whether the repository's and the account's saved secrets are sent to this machine's agents (on for a new machine). */

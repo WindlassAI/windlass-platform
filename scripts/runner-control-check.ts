@@ -20,7 +20,7 @@ import { validArgs, validValue } from "../server/src/runner/protocol.js";
 import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
-	CAPABILITIES_RUNNER_VERSION, REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, reportFor, secondHello, versionAtLeast, welcomeCapabilities, type Report,
+	CAPABILITIES_RUNNER_VERSION, STORE_LIMITS_RUNNER_VERSION, REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, reportFor, secondHello, versionAtLeast, welcomeCapabilities, type Report,
 } from "../server/src/runner/control.js";
 
 let failures = 0;
@@ -212,7 +212,8 @@ const lease = (validForMs?: number) => Response.json({ endpoint: null, namespace
 const answer = (status: number, body: unknown = {}) => Response.json(body, { status });
 
 async function withControl(answers: Response[], exercise: (runner: {
-	status: string[]; online(socketIndex?: number, capabilities?: string[]): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number; owner: Executor;
+	status: string[]; online(socketIndex?: number, capabilities?: string[], welcome?: object): Promise<CheckSocket>; expireLease(): void; now(): number; requests(): number; owner: Executor;
+	storeCaps: unknown[];
 }) => Promise<void>) {
 	const abort = new AbortController();
 	const status: string[] = [];
@@ -222,24 +223,25 @@ async function withControl(answers: Response[], exercise: (runner: {
 	globalThis.WebSocket = CheckSocket as unknown as typeof WebSocket;
 	Date.now = () => clock;
 	globalThis.fetch = async () => answers[requests++] ?? answer(503);
+	const storeCaps: unknown[] = [];
 	const owner = {
 		slots, maxTurns: slots.max,
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
-		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {},
+		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {}, platformStoreCaps: (caps: unknown) => { storeCaps.push(caps); },
 		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true, modelRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
 	const done = control(owner, key, "https://runner-check.invalid", abort.signal, s => status.push(s), undefined, "Build host", null);
 	try {
-		const test = exercise({ status, owner, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
-			async online(socketIndex = 0, capabilities?: string[]) {
+		const test = exercise({ status, owner, storeCaps, requests: () => requests, now: () => clock, expireLease: () => { clock += 2000; },
+			async online(socketIndex = 0, capabilities?: string[], welcome?: object) {
 				await until(() => sockets.length > socketIndex);
 				const socket = sockets[socketIndex];
 				socket.frame({ kind: "challenge", nonce: "a".repeat(43) });
 				await until(() => socket.sent.some(f => f.kind === "hello"));
-				socket.frame({ kind: "welcome", idleSuspendMs: 60_000, ...(capabilities && { capabilities }) });
+				socket.frame({ kind: "welcome", idleSuspendMs: 60_000, ...(capabilities && { capabilities }), ...welcome });
 				await until(() => socket.sent.some(f => f.kind === "report"));
 				const report = socket.sent.find(f => f.kind === "report");
 				for (const kind of ["hello", "report"]) {
@@ -484,6 +486,53 @@ try {
 			await until(() => ws.sent.some(f => f.kind === "removed"));
 			assert.deepEqual(ws.sent.filter(f => f.kind === "removed").map(f => f.sandbox), [other]);
 			assert.equal(r.requests(), 1);
+		});
+	});
+	await checkControl("the snapshot and mirror limits: the owner's flags, held to the platform's caps from its welcome, reported only to a server that named store-limits", async () => {
+		const { storeFlags } = await import("../runner/src/sizing.js");
+		const { RunnerError: FlagError } = await import("../runner/src/state.js");
+		assert.equal(storeFlags({}), undefined, "no flags: the defaults");
+		assert.deepEqual(storeFlags({ "snapshot-disk": "20GB", "keep-free": "8GB" }), { machine: 20e9, user: 2e9, free: 8e9 });
+		assert.deepEqual(storeFlags({ "snapshot-user": "512MB", "keep-free": "0GB" }), { machine: 10e9, user: 512e6, free: 0 });
+		for (const flags of [{ "snapshot-disk": "20" }, { "snapshot-user": "0GB" }, { "keep-free": "lots" }, { "snapshot-disk": "-5GB" }])
+			assert.throws(() => storeFlags(flags), (error: Error) => error instanceof FlagError && error.message.startsWith("Give --" + Object.keys(flags)[0]), JSON.stringify(flags));
+
+		// The welcome's caps: only to a runner that reads them, only those set, and only well-formed ones taken.
+		assert.equal("storeLimits" in welcomeCapabilities("0.3.1", undefined, { free: 50e9 }), false, "runner 0.3.1 refuses unknown welcome keys");
+		assert.equal("storeLimits" in welcomeCapabilities(STORE_LIMITS_RUNNER_VERSION), false, "no caps are set");
+		assert.deepEqual(welcomeCapabilities(STORE_LIMITS_RUNNER_VERSION, undefined, { machine: 20e9, free: 50e9 }).storeLimits, { machine: 20e9, free: 50e9 });
+		assert.ok(welcomeCapabilities("0.3.1").capabilities?.includes("store-limits"), "naming it costs an older runner nothing: it ignores names it does not know");
+		const welcome = { kind: "welcome", idleSuspendMs: 1000 };
+		assert.ok(parseServerFrame(JSON.stringify({ ...welcome, storeLimits: { machine: 20e9, user: 1e9, free: 0 } })));
+		for (const bad of [{ free: -1 }, { machine: 1.5 }, { machine: 2e15 }, { disk: 1 }, "50GB"])
+			assert.equal(parseServerFrame(JSON.stringify({ ...welcome, storeLimits: bad })), null, JSON.stringify(bad));
+
+		// The report: what is in force, `capped` where the platform changed it, and nothing to a server that did not name it.
+		Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
+		const { Executor } = await import("../runner/src/docker-executor.js");
+		const plainOwner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
+		assert.deepEqual(plainOwner.report().storeLimits, { machine: 10e9, user: 2e9, free: 40e9 }, "no flags, no caps: the defaults");
+		const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, { store: storeFlags({ "snapshot-disk": "50GB", "snapshot-user": "1GB", "keep-free": "10GB" }) });
+		assert.deepEqual(owner.report().storeLimits, { machine: 50e9, user: 1e9, free: 10e9 }, "the owner's flags before any welcome");
+		owner.platformStoreCaps({ machine: 20e9, user: 4e9, free: 30e9 });
+		assert.deepEqual(owner.storeLimits(), { machine: 20e9, user: 1e9, free: 30e9 }, "more space and less free disk are held to the caps, less space stands");
+		const report = owner.report();
+		assert.deepEqual(report.storeLimits, { machine: 20e9, user: 1e9, free: 30e9, capped: true });
+		assert.ok(parseRunnerFrame(JSON.stringify(reportFor(report, ["store-limits"])))?.kind === "report");
+		assert.equal("storeLimits" in reportFor(report, ["git-mirrors"]), false, "a server that did not name store-limits refuses the key");
+		assert.equal("storeLimits" in reportFor(report, undefined), false);
+		owner.platformStoreCaps(undefined);
+		assert.deepEqual(owner.report().storeLimits, { machine: 50e9, user: 1e9, free: 10e9 }, "a platform that sends no caps leaves the owner's limits");
+		assert.equal(parseRunnerFrame(JSON.stringify({ ...plainReport, storeLimits: { machine: 1, user: 1, free: 1, capped: false } })), null);
+
+		// The control loop hands the welcome's caps to the executor, and none from a welcome without them.
+		await withControl([lease()], async r => {
+			await r.online(0, ["store-limits"], { storeLimits: { free: 30e9 } });
+			assert.deepEqual(r.storeCaps, [{ free: 30e9 }]);
+		});
+		await withControl([lease()], async r => {
+			await r.online(0, ["store-limits"]);
+			assert.deepEqual(r.storeCaps, [undefined]);
 		});
 	});
 	await checkControl("status and log give the ten-minute retry time for HTTP and socket refusals", async () => {

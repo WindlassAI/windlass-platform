@@ -94,6 +94,9 @@ These options go after the runner image, with the `run` command or with no comma
 | `--sandbox-memory Ng` | Host memory after reserves on machines with 3 or more CPUs | Total memory budget used to size the slots. |
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
+| `--snapshot-disk SIZE` | 10GB | Disk for all setup snapshots on this machine. |
+| `--snapshot-user SIZE` | 2GB | Disk for one user's setup snapshots. |
+| `--keep-free SIZE` | 40GB | Free disk kept. Below it, snapshots are evicted oldest-first and no snapshot or Git mirror is saved. |
 | `--name TEXT` | Docker daemon name or system hostname | Set the machine’s display name for pairing and reports. |
 | `--egress MODE` | `restricted` for a new pairing; `open` for one made before network modes | The network mode of the agents' commands: `restricted`, `open` or `none`. See [Network access](/docs/machines#network-access). Claude Code, OpenCode and Codex keep their model relay in all three. |
 | `--egress-allow HOST[,HOST]` | Empty | In `restricted` mode, let commands reach these hosts on your private network. Exact DNS names, up to 64. Given alone, it means `--egress restricted`. The machine's own addresses, Docker's networks and metadata addresses stay blocked. |
@@ -107,6 +110,8 @@ These options go after the runner image, with the `run` command or with no comma
 The runner saves `--name`, `--egress`, `--egress-allow`, `--egress-domains` and `--allow-profile` for this pairing, and uses them again when it restarts without them. `--harness` and `--screenshots` are not saved: give them each time you start the runner.
 
 `N` is a positive whole number. A turn that would pass `--max-running` or `--max-sandboxes` ends with, for example, "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." The Machines page shows these limits under **Sandbox limit**, and says they are set on the machine, not there.
+
+`SIZE` is a number with `MB`, `GB` or `TB`, such as `20GB` or `512MB`. The platform can cap the snapshot options: it can hold `--snapshot-disk` and `--snapshot-user` to at most its own limit, and `--keep-free` to at least its own. A small machine can lower `--keep-free`, down to the platform's floor. The Machines page shows the limits in force under **Snapshot storage**. These options need runner 0.3.2 or later.
 
 ### Allowed profiles
 
@@ -150,6 +155,8 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "Use --name with setup, run or pair and a printable name of 1 to 64 characters." | Shorten the name, or take out control characters. |
 | "Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox." | Give one of the two profile IDs. |
 | "Use --slots, --slot-cpus, --slot-memory and --sandbox-memory with run or setup." | Give the sizing options to `run` or `setup` only. |
+| "Use --snapshot-disk, --snapshot-user and --keep-free with run or setup." | Give the snapshot options to `run` or `setup` only. |
+| "Give --snapshot-disk a size such as 20GB or 512MB." | Write the size with `MB`, `GB` or `TB`. The two snapshot sizes must be above 0. |
 | "Choose --harness claude, --harness opencode or --harness codex." | Those are the agents a runner can offer. |
 | "Use --harness opencode with a runner built with the pinned OpenCode image." | This runner image has no OpenCode. Use the image from the Machines page. Claude Code says the same for `--harness claude`. |
 | "The runner is already using this state. Use login <agent> in the running runner." | Setup cannot run beside the runner. Use `login` in the running container, or remove it first. |

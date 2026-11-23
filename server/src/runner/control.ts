@@ -40,6 +40,7 @@ import { endpointShape, helloFields, removalFields, welcomeFields } from "./fram
 import type { HarnessOptions, MachineProbe, PlatformConnection } from "../contract.js";
 import { MACHINE_PROFILES, machineProfile, type MachineProfile, positiveLimit } from "./protocol.js";
 import { type Assert, type Of, type Same, boolean, count, either, integer, is, json, list, nullable, object, oneOf, optional, plain, text } from "./check.js";
+import { MAX_STORE_BYTES, type StoreCaps } from "../sandbox/store-limits.js";
 
 /** The oldest runner release this server serves: raise it when the server stops reading what older runners send. */
 export const MIN_RUNNER_VERSION = "0.2.0";
@@ -158,8 +159,9 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    `modelRelayToken` and `modelRelayClose` operations (docs/model-relay.md); without
  *                    it, or from a runner that says neither, a turn's token goes into the sandbox
  *   start-times      the first connect's `startTimes` after a create (docs/architecture.md, "Start times")
+ *   store-limits     the report's `storeLimits`: the snapshot and Git mirror limits in force (docs/machines.md)
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -172,6 +174,14 @@ const capabilities = list(line(64), 32);
  * existed and refuses unknown welcome keys, so it must never get one. Raise it if another release ships without it.
  */
 export const GIT_HOST_RUNNER_VERSION = "0.3.1";
+/**
+ * The first runner release whose checks take `storeLimits` in a welcome: runner-v0.3.1 refuses unknown
+ * welcome keys, so it never gets one and keeps its built-in limits (BUILT_IN_STORE_LIMITS).
+ */
+export const STORE_LIMITS_RUNNER_VERSION = "0.3.2";
+const storeBytes = is<number>((v) => count(v) && (v as number) <= MAX_STORE_BYTES);
+/** The deployment's caps on a machine's stores, in bytes: a ceiling on `machine` and `user`, a floor on `free`. Only those it sets. */
+const storeCaps = object({ machine: optional(storeBytes), user: optional(storeBytes), free: optional(storeBytes) });
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** A DNS name of two labels or more, lower case, no address: what an --egress-domains list can hold. */
 const gitHost = is<string>((v) => typeof v === "string" && v.length <= 253 && v.split(".").length >= 2
@@ -181,14 +191,16 @@ const gitHost = is<string>((v) => typeof v === "string" && v.length <= 253 && v.
  * where the platform's git clones from (WLP_GITHUB_URL). Its host is named only for an https address on
  * the default port with a DNS name, the only kind a runner's list can reach (as hosted's, e2b/network.ts).
  */
-export function welcomeCapabilities(runnerVersion: string, gitUrl?: string): { capabilities?: string[]; gitHost?: string } {
+export function welcomeCapabilities(runnerVersion: string, gitUrl?: string, caps: StoreCaps = {}): { capabilities?: string[]; gitHost?: string; storeLimits?: StoreCaps } {
 	if (!versionAtLeast(runnerVersion, CAPABILITIES_RUNNER_VERSION)) return {};
 	let host: string | undefined;
 	try {
 		const url = new URL(gitUrl ?? "");
 		if (url.protocol === "https:" && url.port === "" && gitHost(url.hostname)) host = url.hostname;
 	} catch {}
-	return { capabilities: [...SERVER_CAPABILITIES], ...(host && versionAtLeast(runnerVersion, GIT_HOST_RUNNER_VERSION) && { gitHost: host }) };
+	const capped = Object.keys(caps).length > 0 && versionAtLeast(runnerVersion, STORE_LIMITS_RUNNER_VERSION);
+	return { capabilities: [...SERVER_CAPABILITIES], ...(host && versionAtLeast(runnerVersion, GIT_HOST_RUNNER_VERSION) && { gitHost: host }),
+		...(capped && { storeLimits: { ...caps } }) };
 }
 
 const refusal = either(
@@ -205,7 +217,7 @@ const refusal = either(
 );
 const serverFrame = either(
 	either(
-		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), refusal: optional(refusal), ...welcomeFields }))),
+		either(object({ kind: oneOf("challenge"), nonce }), either(object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), storeLimits: optional(storeCaps) }), object({ kind: oneOf("welcome"), idleSuspendMs: count, capabilities: optional(capabilities), gitHost: optional(gitHost), storeLimits: optional(storeCaps), refusal: optional(refusal), ...welcomeFields }))),
 		either(refusal, object({ kind: oneOf("heartbeat", "logout") })),
 	),
 	either(
@@ -288,6 +300,11 @@ const report = object({
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
+	/**
+	 * The snapshot and Git mirror limits in force, in bytes: its owner's (`--snapshot-disk`, `--snapshot-user`,
+	 * `--keep-free`, or the defaults) held to the welcome's `storeLimits`; `capped` where those changed one.
+	 */
+	storeLimits: optional(object({ machine: storeBytes, user: storeBytes, free: storeBytes, capped: optional(oneOf(true)) })),
 	/** The caps its owner set (`--max-running`, `--max-sandboxes`), left out where none is set. */
 	maxRunning: optional(positiveLimit),
 	maxSandboxes: optional(positiveLimit),
@@ -299,7 +316,7 @@ export type Report = Of<typeof report>;
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
 	// `start-times` has no field in the report: only a connect says it.
-	const fields: Partial<Record<Capability, keyof Report>> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay" };
+	const fields: Partial<Record<Capability, keyof Report>> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay", "store-limits": "storeLimits" };
 	const kept: Report = { ...report };
 	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
 		if (!named?.includes(capability)) delete kept[field];
@@ -431,4 +448,4 @@ const connection = object({
 /** For the runner: the 200 answer of RUNNER_CONNECTION_PATH. */
 export const parseConnection = (body: unknown): Of<typeof connection> | null => (connection(body) ? body : null);
 
-type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>];
+type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>, Assert<Same<Of<typeof storeCaps>, StoreCaps>>];

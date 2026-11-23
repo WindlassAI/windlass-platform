@@ -20,6 +20,7 @@ import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
+import { clampStoreLimits, DEFAULT_STORE_LIMITS, type StoreCaps, type StoreLimits } from "../../server/src/sandbox/store-limits.js";
 import { DockerModelRelay } from "../../server/src/sandbox/model-relay.js";
 import { readsModelRelay } from "../../server/src/model-relay-url.js";
 import { probeImage } from "../../server/src/sandbox/tokens.js";
@@ -132,6 +133,17 @@ export class Executor extends MachineDocker {
 	/** The model relay leases of each sandbox (external id) that its conversations hold: ended when it is suspended or removed. */
 	private readonly relayLeases = new Map<string, Set<() => Promise<void>>>();
 	private nextVolumeSweep = 0;
+	/** The connected platform's caps on the stores (the welcome's `storeLimits`); none from a platform that sends none. */
+	private storeCaps: StoreCaps = {};
+	/** The welcome's `storeLimits`: a platform that sends none leaves the owner's limits as they are. */
+	platformStoreCaps(caps: StoreCaps | undefined) { this.storeCaps = caps ?? {}; }
+	private reportedStoreLimits() {
+		const limits = this.storeLimits(), requested = this.limits.store ?? DEFAULT_STORE_LIMITS;
+		const capped = limits.machine !== requested.machine || limits.user !== requested.user || limits.free !== requested.free;
+		return { ...limits, ...(capped && { capped: true as const }) };
+	}
+	/** The snapshot and Git mirror limits in force: the owner's flags, held to the platform's caps. */
+	storeLimits(): StoreLimits { return clampStoreLimits(this.limits.store ?? DEFAULT_STORE_LIMITS, this.storeCaps); }
 
 	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false, readonly codex = false) {
 		super(identity);
@@ -141,7 +153,8 @@ export class Executor extends MachineDocker {
 		this.modelRelay = new DockerModelRelay({ machine: identity.machineId, image, labelFlags: this.pairingLabelFlags, ensureImage: async () => { await this.ensureImage(); } });
 		const network = this.network.sandboxNetwork();
 		const slots = this.slots;
-		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage,
+		const storeLimits = () => this.storeLimits();
+		this.provider = new DockerSandboxes({ slots, network, machine: identity.machineId, image, shotsImage, storeLimits,
 			dataVolume: async (_uid, sandbox) => {
 				const name = sandbox === undefined ? this.volume : this.sessionVolume(sandbox);
 				await this.ownedVolume(true, name, sandbox);
@@ -153,7 +166,7 @@ export class Executor extends MachineDocker {
 		if (codex) {
 			this.codexPin = harnessImage("codex");
 			if (!this.codexPin) throw new Refusal("This runner was built without the Codex image.");
-			this.codexProvider = new DockerSandboxes({slots,network,machine:identity.machineId,image:this.codexPin,harness:"codex",
+			this.codexProvider = new DockerSandboxes({slots,network,machine:identity.machineId,image:this.codexPin,harness:"codex",storeLimits,
 				sessionRelay:async () => {
 					const login = codexLogin(this);
 					if (!login) throw new Refusal("Run windlass-runner login codex on this machine.");
@@ -163,7 +176,7 @@ export class Executor extends MachineDocker {
 		if (opencode) {
 			this.opencodePin = harnessImage("opencode");
 			if (!this.opencodePin) throw new Refusal("This runner was built without the OpenCode image.");
-			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin, helperImage: image,
+			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin, helperImage: image, storeLimits,
 				harness: "opencode", sessionRelay: async () => {
 					const login = currentProvider(this);
 					if (!login) throw new Refusal("Run windlass-runner login opencode on this machine.");
@@ -173,7 +186,7 @@ export class Executor extends MachineDocker {
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, sessionRelay: () => this.prepareClaudeRelay() });
+			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, storeLimits, sessionRelay: () => this.prepareClaudeRelay() });
 		}
 	}
 	/** Caller holds the login lock while preparing the relay and issuing a session credential. */
@@ -515,7 +528,7 @@ export class Executor extends MachineDocker {
 			...(this.network.policy.domains && { egressDomains: this.network.domains()!.length }),
 			...(harnesses.length ? { harnesses } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
-			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes,
+			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes, storeLimits: this.reportedStoreLimits(),
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt, resizePending }]) => ({ id, sessionId, state, usedAt, resizePending })),
 			...(this.limits.maxRunning !== undefined ? { maxRunning: this.limits.maxRunning } : {}),
 			...(this.limits.maxSandboxes !== undefined ? { maxSandboxes: this.limits.maxSandboxes } : {}) };
@@ -594,7 +607,7 @@ export class Executor extends MachineDocker {
 	async saveMirror(session: string, id: string, stage: string, partial: boolean) {
 		const box = this.running(id, session);
 		// The base pin, never the session's image: a harness image, or a snapshot committed after setup.
-		return saveSessionMirror(containerName(box.raw), stage, partial, { image });
+		return saveSessionMirror(containerName(box.raw), stage, partial, { image, floor: this.storeLimits().free });
 	}
 	async saveSnapshot(session: string, id: string, source: SnapshotSource) {
 		const box = this.running(id, session);

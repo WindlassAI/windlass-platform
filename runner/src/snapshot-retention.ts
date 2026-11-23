@@ -1,6 +1,7 @@
 import { randomBytes, sign, type KeyObject } from "node:crypto";
 import { RETENTION_PATH, retentionRequest, verifyRetention, type Trust } from "../../server/src/runner/frame-auth.js";
 import { DockerSnapshots } from "../../server/src/sandbox/snapshots.js";
+import type { StoreLimits } from "../../server/src/sandbox/store-limits.js";
 import { image } from "./policy.js";
 import { loadPair, type Identity } from "./state.js";
 
@@ -10,9 +11,10 @@ export async function dropPreviousSnapshots(identity: Identity) {
 	for (const old of paired.previous) await new DockerSnapshots(old.machineId, image).drop(old.uid);
 }
 
-export function snapshotMaintenance(identity: Identity, key: KeyObject, platform: string, trust: Trust | null) {
+/** `limits`: the machine's store limits in force (`Executor.storeLimits`), read at each sweep. */
+export function snapshotMaintenance(identity: Identity, key: KeyObject, platform: string, trust: Trust | null, limits: () => StoreLimits) {
 	let next = 0;
-	const cache = new DockerSnapshots(identity.machineId, image);
+	const cache = new DockerSnapshots(identity.machineId, image, undefined, limits);
 	return async (now: number) => {
 		if (Date.now() < next) return;
 		next = Date.now() + 15 * 60_000;

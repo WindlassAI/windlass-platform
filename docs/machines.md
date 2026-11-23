@@ -345,6 +345,33 @@ limit is set on the machine, not there.
 A sandbox there is not removed after `WLP_IDLE_DESTROY_MS` either: it goes with its agent, with the
 machine's sandboxes, or by `prune`.
 
+### Snapshot storage on this machine
+
+The setup snapshots and Git mirrors a runner keeps are held to three limits, which its owner sets:
+
+| Flag | Default | What it limits |
+| --- | --- | --- |
+| `--snapshot-disk SIZE` | 10GB | All setup snapshots on this machine. |
+| `--snapshot-user SIZE` | 2GB | One user's setup snapshots. |
+| `--keep-free SIZE` | 40GB | The free disk kept. Below it, snapshots are evicted oldest-first, and no snapshot or Git mirror is written. |
+
+A size is a number with `MB`, `GB` or `TB` (decimal units, any case): `20GB`, `512MB`, `1.5TB`. The two
+sizes must be above 0; `--keep-free 0GB` keeps nothing free. The flags go with `run` or `setup`, like the
+sizing flags, and are not saved: give them each time the runner starts. A small machine can lower
+keep-free with the flag, down to the deployment's floor.
+
+The deployment can cap them ([configuration.md](configuration.md#snapshot-storage-limits)):
+`WLP_SNAPSHOT_MACHINE_MAX_GB` and `WLP_SNAPSHOT_USER_MAX_GB`, where set, are the most the two sizes can
+be, and `WLP_KEEP_FREE_MIN_GB`, where set, the least keep-free can be. A machine can choose less space or
+more free disk than that, never more space or less free disk. The caps come in the signed welcome, and
+the runner applies the result wherever it enforces the stores: saving and sweeping snapshots, the
+15-minute retention sweep, and admitting and saving Git mirrors. It reports the limits in force (the
+`store-limits` capability), and the Machines page shows them under "Snapshot storage", with a note
+where the platform's caps changed what the owner set.
+
+Runner 0.3.1 and older take none of these flags, get no caps (they refuse a welcome key they do not
+know) and report nothing: they keep their built-in 10 GB, 2 GB and 15 GB free, and the page says so.
+
 ### When the link drops
 
 One control socket per machine to its `machine` actor, and one socket per

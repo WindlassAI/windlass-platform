@@ -1,7 +1,7 @@
 // Docker owns the index as well as the layers. Tags record last use across process restarts.
 // Every operation names a local image ID; a session request can never select a Docker image.
 import { mirrorOwner, mirrorSlot } from "./git-mirrors.js";
-import { MIRROR_ROOT, MIRROR_VOLUME, snapshotLimits } from "./store-limits.js";
+import { MIRROR_ROOT, MIRROR_VOLUME, snapshotLimits, type StoreLimits } from "./store-limits.js";
 import { docker, LABEL, DATA_DIR, NO_LOGS, randomId } from "./docker.js";
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotKey, type SnapshotRequest, type SnapshotSource } from "./snapshot-key.js";
 
@@ -12,7 +12,7 @@ type Labels = Record<string, string>;
 type Image = { Id: string; Size: number; Os: string; Architecture: string; Variant?: string; Config: { Labels: Labels; Env: string[] }; RepoTags?: string[] };
 type Row = { tag: string; uid: string; repo: string; used: number; bytes: number; image: Image };
 
-export function evictions<T extends Pick<Row, "uid" | "used" | "bytes">>(rows: T[], now: number, caps = snapshotLimits, pinned: T[] = []) {
+export function evictions<T extends Pick<Row, "uid" | "used" | "bytes">>(rows: T[], now: number, caps: StoreLimits = snapshotLimits, pinned: T[] = []) {
 	const oldest = rows.slice().sort((a, b) => a.used - b.used);
 	const users = new Map<string, number>();
 	let total = 0;
@@ -62,11 +62,15 @@ const validScope = (key: SnapshotKey) => /^[1-9]\d{0,19}$/.test(key.repo) && HAS
 const valid = (key: SnapshotKey) => validScope(key) && HASH.test(key.inputs);
 export class DockerSnapshots {
 	private readonly namespace: string;
-	constructor(readonly machine: string, readonly base: string, readonly network?: { mode: string; env: Record<string, string> }, private readonly limits = snapshotLimits, private readonly screenshots = false, private readonly deployment = machine, private readonly mirrorScope = deployment) {
+	constructor(readonly machine: string, readonly base: string, readonly network?: { mode: string; env: Record<string, string> }, limits: StoreLimits | (() => StoreLimits) = () => snapshotLimits, private readonly screenshots = false, private readonly deployment = machine, private readonly mirrorScope = deployment) {
 		if (!deployment) throw new Error("Missing snapshot deployment identity");
 		// The persisted pairing id already namespaces a runner. Preserve its tags across upgrades.
 		this.namespace = "wlp-prepared-" + digest(machine === deployment ? [machine] : [deployment, machine]).slice(0, 24);
+		this.limitsOf = typeof limits === "function" ? limits : () => limits;
 	}
+	/** Read at each use: a runner's change when its platform's caps arrive (store-limits.ts, `clampStoreLimits`). */
+	private readonly limitsOf: () => StoreLimits;
+	private get limits() { return this.limitsOf(); }
 
 	// A daemon-local mutex also orders separate server processes. The sleeper releases it after a crash.
 	private async locked<T>(image: string, work: () => Promise<T>, busy: T) {

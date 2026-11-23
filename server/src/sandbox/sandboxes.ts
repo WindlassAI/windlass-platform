@@ -31,6 +31,7 @@
 import { INIT_WORKSPACE } from "../github/git-flags.js";
 import { gitMirrorMount, type MirrorStore, restoreGitMirror, saveSessionMirror } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
+import { snapshotLimits, type StoreLimits } from "./store-limits.js";
 import type { SnapshotSource } from "./snapshot-key.js";
 
 import { spawn } from "node:child_process";
@@ -114,6 +115,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		readonly ownData = false,
 		/** Windlass's model relay of this provider (docs/model-relay.md); none: the turn's token goes into the sandbox. */
 		relay?: DockerModelRelay,
+		/** The free bytes below which a mirror save writes nothing (`StoreLimits.free`); the default limits' when left out. */
+		private readonly mirrorFloor?: () => number,
 	) {
 		markTurnSandbox(this);
 		// The user names the lease in the relay, whose ceiling per user counts by it.
@@ -132,7 +135,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 	}
 
 	saveMirror(stage: string, partial: boolean): Promise<boolean> {
-		return saveSessionMirror(this.container, stage, partial, { image: this.helperImage });
+		return saveSessionMirror(this.container, stage, partial, { image: this.helperImage, floor: this.mirrorFloor?.() });
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -457,6 +460,12 @@ export async function removeRunningTokenFiles(uid: string, machine: string, file
 export type DockerSandboxOptions = {
 	/** The snapshot store's deployment identity. Left out where snapshots were never on. */
 	deployment?: string;
+	/**
+	 * The snapshot and Git mirror stores' limits (store-limits.ts), read at each use: the deployment's
+	 * settings for the hosted provider, the owner's flags held to the platform's caps for a runner's.
+	 * The default limits (`snapshotLimits`) when left out.
+	 */
+	storeLimits?: () => StoreLimits;
 	/** Scopes Git mirror slots to this deployment, whether or not snapshots are on. */
 	mirrorScope?: string;
 	cpus?: number;
@@ -642,7 +651,7 @@ export class DockerSandboxes implements Sandboxes {
 		const own = !harness && !input.privateData && SESSION_VOLUME_PROFILES.includes(input.profile) && this.options.ownVolumeName !== undefined && input.ownData !== false;
 		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
-		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo).catch(() => null) : null;
+		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, { floor: this.limits().free }).catch(() => null) : null;
 		const relay = await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
@@ -760,12 +769,14 @@ export class DockerSandboxes implements Sandboxes {
 		return removed;
 	}
 
+	private readonly limits = () => this.options.storeLimits?.() ?? snapshotLimits;
+
 	private get mirrorScope() {
 		return this.options.mirrorScope ?? this.options.deployment ?? this.machine;
 	}
 
 	private snapshots(base = this.image, screenshots = false) {
-		return new DockerSnapshots(this.machine, base, this.options.network, undefined, screenshots, this.options.deployment, this.mirrorScope);
+		return new DockerSnapshots(this.machine, base, this.options.network, this.limits, screenshots, this.options.deployment, this.mirrorScope);
 	}
 
 	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
@@ -843,7 +854,7 @@ export class DockerSandboxes implements Sandboxes {
 		}
 		// Only Windlass's own sandboxes: a harness session has a relay of its own (runner/src/claude-relay.ts).
 		const relay = /^[a-f0-9]{12}$/.test(id) && this.options.sessionRelay === undefined && await this.modelRelayReady() ? this.options.modelRelay : undefined;
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

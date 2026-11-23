@@ -75,6 +75,11 @@ function diskSize(bytes: number): string {
 	return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
 }
 
+/** The snapshot and Git mirror limits in force on a machine (`MachineSummary.storeLimits`). */
+function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
+	return `${diskSize(limits.machine)} in all, ${diskSize(limits.user)} per user, keeps ${limits.free === 0 ? "no disk" : diskSize(limits.free)} free`;
+}
+
 /** A code as it is typed: the eight characters the runner printed, in two groups of four. */
 function formatCode(typed: string): string {
 	const characters = typed.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 8);
@@ -584,6 +589,20 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 					<div>
 						<dt>Free disk</dt>
 						<dd>{machine.freeDiskBytes === null ? <span className="tone-faint">not reported yet</span> : diskSize(machine.freeDiskBytes)}</dd>
+					</div>
+					<div>
+						<dt>Snapshot storage</dt>
+						<dd>
+							{machine.storeLimits ? storeLimits(machine.storeLimits) : <span className="tone-faint">not reported yet</span>}
+							<p className="field-note">
+								{machine.storeLimits?.builtIn
+									? "This runner's built-in limits. Runner 0.3.2 or later takes "
+									: machine.storeLimits?.capped
+										? "Held to this platform's limits. Set on the machine with "
+										: "Set on the machine, not here: start its runner with "}
+								<code>--snapshot-disk</code>, <code>--snapshot-user</code> or <code>--keep-free</code>.
+							</p>
+						</dd>
 					</div>
 					<div>
 						<dt>Sandbox limit</dt>

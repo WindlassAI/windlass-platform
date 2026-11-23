@@ -331,7 +331,7 @@ export const machine = actor({
 					const r = await record(c);
 					const statement = frame.protocol === 2 ? machineStatement(context, frame) : controlProof(uid!, id!, nonce);
 					if (!r || !signed(r.public_key, statement, frame.signature)) { reject(ws, refuse("unknown")); return; }
-					const base = { kind: "welcome" as const, idleSuspendMs: config.idleSuspendMs, ...welcomeCapabilities(frame.runnerVersion, (process.env.WLP_GITHUB_URL ?? "").trim() || "https://github.com") };
+					const base = { kind: "welcome" as const, idleSuspendMs: config.idleSuspendMs, ...welcomeCapabilities(frame.runnerVersion, (process.env.WLP_GITHUB_URL ?? "").trim() || "https://github.com", config.storeLimits.caps) };
 					const greeting = (refusal?: Refusal) => identity && frame.protocol === 2
 						? platformWelcome(context, frame, { ...base, refusal }, identity) : undefined;
 					const decline = (refusal: Refusal) => {
