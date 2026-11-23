@@ -54,7 +54,7 @@ import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL } from "./reviewer-task.js";
-import { sources, thirdParty, untrustedWords } from "./untrusted.js";
+import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
 import { harnessName } from "../sandbox/harnesses.js";
 import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
@@ -571,8 +571,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 const IMPLEMENT: TurnPlan = { kind: "implement", text: "", newStep: true, charge: null, fingerprint: null, fetchBase: null };
 
 /**
- * A delivery's `unsandboxed`: someone else's text in it, all of which the person chose to run anyway where
- * Windlass can't sandbox a tainted session ("Docker, hardened"); the session refuses the turn there otherwise.
+ * A delivery's `unsandboxed`: someone else's text in it, all of which the person chose to run anyway where no
+ * agent can contain it ("Docker, hardened"); the session refuses the turn there otherwise (untrusted.ts, `untrustedTurn`).
  */
 const unsandboxedOf = (item: FactoryItem, list: readonly string[] | undefined): { unsandboxed?: true } => {
 	const outside = thirdParty(list);
@@ -1797,12 +1797,12 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			fixAfterReview(c, { ...resume, text: withNote(resume.text, note) });
 			break;
 		case "run_anyway": {
-			// Someone else's text on "Docker, hardened": the person lets it go labelled only, its commands outside Windlass's
-			// sandbox, for this turn and for any later one (and subtask) that carries no source beyond these.
+			// Someone else's text on "Docker, hardened" (untrusted.ts, `untrustedTurn`): the person lets it go labelled only, its
+			// commands uncontained, for this turn and for any later one (and subtask) that carries no source beyond these.
 			const outside = thirdParty(resume?.untrusted);
 			if (question.kind !== "turn_refused" || resume === null || !outside.length) return false;
 			item.unsandboxed = sources(item.unsandboxed, outside);
-			c.say(`You chose to run text from someone else (${outside.join("; ")}) without Windlass's sandbox.`);
+			c.say(runAnywayWords(itemAgent(item).harness, outside));
 			nextTurn(c, { ...resume, text: withNote(resume.text, note) });
 			break;
 		}

@@ -90,15 +90,17 @@ details.
 - **A work item's text is its agent's prompt.** Items from the web app and the API are their own user's
   words. An item filed from a GitHub issue that someone else wrote is a draft until its person starts it,
   and its agent is told to take the text as a description of what is wanted, not as instructions.
-- **Claude Code and OpenCode take no marker for text from someone else.** Windlass is told the source of
+- **Claude Code, OpenCode and Codex take no marker for outside text.** Windlass is told the source of
   each turn's outside text and taints the session ([Untrusted text](work-items.md#untrusted-text)); these
-  agents only get the labelled prompt, and run every command without asking. An item from someone else's
-  issue can still be started on them.
-- **On Docker, hardened, Windlass is told of no outside text.** A tainted Windlass there would refuse every
-  command, since its sandbox cannot start under Docker's default seccomp. CI logs, findings and reports go
-  labelled only; someone else's issue or feedback stops the turn until the person chooses **Run it
-  anyway**, and then goes labelled only too, its commands outside Windlass's sandbox. **Docker + Windlass
-  sandbox** is the profile for such work.
+  agents only get the labelled prompt, and run every command without asking. On Docker, hardened, the
+  only profile they run items on, someone else's issue or feedback stops their turn as it does
+  Windlass's (below); CI logs, findings and reports still go to them labelled only.
+- **On Docker, hardened, no agent is told of outside text.** A tainted Windlass there would refuse every
+  command, since its sandbox cannot start under Docker's default seccomp, and the other agents have no
+  marker. CI logs, findings and reports go labelled only; someone else's issue or feedback stops the turn,
+  whatever the agent, until the person chooses **Run it anyway**, and then goes labelled only too, its
+  commands not held by any sandbox of the agent's. Windlass on **Docker + Windlass sandbox** is the place
+  for such work.
 - **An item's verdict is as good as its repository's checks and CI.** The acceptance criteria are listed
   for the person and checked by nobody, and a repository with no checks of its user's and no CI is
   handed over `unverified`.

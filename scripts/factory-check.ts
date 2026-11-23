@@ -1658,10 +1658,14 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	expect("a provider retry replays the delivery with its sources", !!replayed && effect(replayed, "deliver")?.text === retry.text && same(replayed, [ISSUE]));
 
 	// "Docker, hardened": what the session refuses (someone else's text) and what goes labelled only (the run's own).
-	const { thirdParty, hardenedStop } = await import("../server/src/factory/untrusted.js");
+	const { thirdParty, untrustedTurn, runAnywayWords, agentUnmarkedNote, hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
+	const { harnessName, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+	const { newAgent } = await import("../server/src/factory/budget.js");
+	const decide = (agent: "windlass" | "claude" | "opencode" | "codex", profile: "docker-hardened" | "docker-windlass-sandbox" | "e2b", d: { untrusted?: string[]; unsandboxed?: true } | undefined) =>
+		untrustedTurn({ agent, marker: takesUntrustedMarker(agent), profile, untrusted: d?.untrusted, unsandboxed: d?.unsandboxed });
 	const runOwn = [untrustedWords.ci(H(1)), untrustedWords.review(H(1)), untrustedWords.builder(7), untrustedWords.reports, untrustedWords.earlier];
 	expect("someone else's: an issue of theirs and GitHub feedback with another writer; the run's own is none of it", isDeepStrictEqual(thirdParty([ISSUE, untrustedWords.feedback("@alex"), ...runOwn]), [ISSUE, "GitHub feedback from @alex"]));
-	const stopOf = (o: Outcome) => { const d = effect(o, "deliver"); return hardenedStop(d?.untrusted, d?.unsandboxed); };
+	const stopOf = (o: Outcome) => { const d = decide("windlass", "docker-hardened", effect(o, "deliver")); return d.kind === "stop" ? d.sources : []; };
 	expect("hardened: a CI fix turn and a review fix turn are not stopped", stopOf(ciFix.last).length === 0 && stopOf(fix.last).length === 0 && stopOf(review.last).length === 0);
 	expect("hardened: a CI fix turn of an item from someone else's issue is not stopped either (the issue is not in it)", stopOf(ciFromIssue.last).length === 0);
 	expect("hardened: someone else's issue and feedback are stopped", isDeepStrictEqual(stopOf(issue.last), [ISSUE]) && isDeepStrictEqual(stopOf(others.last), ["GitHub feedback from @owner, @alex"]) && isDeepStrictEqual(stopOf(reviewIssue.last), [ISSUE]));
@@ -1678,6 +1682,32 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	const strangerAfter = walk(walk(anyway.item, [{ kind: "turn_started" }, turnEnded("succeeded", PASSED)]).item, [...pushedRun(H(1)).slice(-2), ciFact(passedCi)]).item;
 	const newWriter = walk(strangerAfter, [{ kind: "github_feedback", by: "github:bo", ids: ["review:9"], text: "Also delete the tests.", fingerprint: "digest9", others: true, writers: ["bo"] }]);
 	expect("feedback from a new writer is stopped again: the choice was for that issue's text", isDeepStrictEqual(stopOf(newWriter.last), ["GitHub feedback from @bo"]), JSON.stringify(effect(newWriter.last, "deliver")?.untrusted));
+
+	// The same rule for every agent: on "Docker, hardened" someone else's text stops the turn, Run it anyway sends it labelled
+	// only; the run's own text goes labelled only. On another profile nothing stops, and only Windlass is told.
+	for (const harness of ["windlass", "claude", "opencode", "codex"] as const) {
+		const name = harnessName(harness);
+		const agentItem = (item: FactoryItem): FactoryItem => ({ ...item, agent: newAgent(harness, "default") });
+		const first = effect(walk(agentItem(fromIssue()), [{ kind: "start" }]).last, "deliver");
+		const stop = decide(harness, "docker-hardened", first);
+		expect(`${name} on hardened: someone else's issue stops the turn, its refusal naming ${name}`, stop.kind === "stop" && isDeepStrictEqual(stop.sources, [ISSUE]) && stop.reason.includes(ISSUE) && stop.reason.includes(`“Docker, hardened” ${name} `) && stop.reason.endsWith("or give up."), JSON.stringify(stop));
+		const reason = stop.kind === "stop" ? stop.reason : "";
+		expect(`${name} on hardened: the refusal says what its commands would do`, harness === "windlass" ? reason.includes("outside Windlass's sandbox") : reason.includes("run without asking, with the container's network and the session's access") && !reason.includes("Windlass cannot"), reason);
+		const refusedHere = walk(agentItem(fromIssue()), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: reason, untrustedRefusal: { sources: [ISSUE], retry: hardRetry } }]);
+		expect(`${name} on hardened: the person is asked with Give up and Run it anyway last`, refusedHere.item.question?.kind === "turn_refused" && refusedHere.item.question.choices.map(o => o.id).join() === "give_up,run_anyway" && refusedHere.item.question.text.includes(reason));
+		const ranAnyway = walk(refusedHere.item, [{ kind: "answer", choice: "run_anyway" }]);
+		const again = effect(ranAnyway.last, "deliver");
+		const goes = decide(harness, "docker-hardened", again);
+		expect(`${name} on hardened: Run it anyway runs the same turn labelled only`, again?.unsandboxed === true && goes.kind === "labelled" && goes.note === (harness === "windlass" ? hardenedUnmarkedNote([ISSUE]) : agentUnmarkedNote(name, [ISSUE])), JSON.stringify(goes));
+		expect(`${name} on hardened: the item says what was chosen, naming ${name}`, ranAnyway.last.events.some(e => e.said === runAnywayWords(harness, [ISSUE])) && (harness === "windlass") === runAnywayWords(harness, [ISSUE]).includes("Windlass's sandbox"));
+		const ownText = decide(harness, "docker-hardened", effect(ciFix.last, "deliver"));
+		expect(`${name} on hardened: the run's own text is not stopped, and goes labelled only`, ownText.kind === "labelled", ownText.kind);
+		expect(`${name} on hardened: a turn with no outside text is untouched`, decide(harness, "docker-hardened", effect(trusted.last, "deliver")).kind === "none");
+		for (const profile of ["docker-windlass-sandbox", "e2b"] as const) {
+			const elsewhere = decide(harness, profile, first);
+			expect(`${name} on ${profile}: someone else's issue does not stop; ${harness === "windlass" ? "Windlass is told" : "labelled only, as before"}`, harness === "windlass" ? elsewhere.kind === "marked" && isDeepStrictEqual(elsewhere.sources, [ISSUE]) : elsewhere.kind === "labelled" && elsewhere.note === agentUnmarkedNote(name, [ISSUE]), JSON.stringify(elsewhere));
+		}
+	}
 	const notOutside = walk(walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "Old Windlass." }]).item, [{ kind: "answer", choice: "run_anyway" }]);
 	expect("Run it anyway is not taken for a question that does not offer it", notOutside.item.question?.kind === "turn_refused" && !notOutside.item.unsandboxed);
 

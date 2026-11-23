@@ -71,6 +71,14 @@ export function harnessName(id: HarnessId): string {
 	return machineHarness(id)?.name ?? "Windlass";
 }
 
+/**
+ * Whether the agent takes Windlass's marker for outside text (`_meta["windlass/untrusted"]`, factory/untrusted.ts):
+ * only Windlass does. Claude Code, OpenCode and Codex get the labelled prompt only.
+ */
+export function takesUntrustedMarker(id: HarnessId | undefined): boolean {
+	return machineHarness(id) === null;
+}
+
 export function initialHarnessModels(options?: HarnessOptions): ModelList {
 	if (options) return { source: "harness", defaultModel: options.defaultModel, models: options.models, fetchedAt: options.checkedAt };
 	return { source: "harness", defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }], fetchedAt: null };

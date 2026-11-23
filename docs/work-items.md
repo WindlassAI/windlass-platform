@@ -349,28 +349,40 @@ Two kinds (`thirdParty`, by the words' beginnings): someone else's (an issue of 
 another writer, and either as a subtask inherits it) and the run's own (CI logs, findings, the
 builder's report, subtask reports).
 
-In the session (`agent-session.ts`), on `docker-hardened` a Windlass item turn is told of no source:
-Windlass runs there with approval `full`, a tainted session puts commands back in bubblewrap, and
-Docker's default seccomp does not let it start, so every command would ask and be refused. A turn with
-only the run's own sources goes labelled only, with one timeline line (`hardenedUnmarkedNote`). A turn
-with someone else's is refused before the sandbox opens (`hardenedStop`, `hardenedRefusal`), and the
+One rule decides, for every agent, what a turn does with its sources: `untrustedTurn` in
+`factory/untrusted.ts`. It takes the agent (`HarnessId`), whether it takes Windlass's marker
+(`takesUntrustedMarker`: only Windlass), the profile, the sources and `unsandboxed`, and answers
+`none`, `marked`, `labelled` (with the timeline's one note) or `stop` (with the refusal). The session
+(`agent-session.ts`, `executeTurn`) asks it once per turn, for Windlass and for the ACP agents alike.
+
+| Profile | Agent | The run's own sources | Someone else's |
+|---|---|---|---|
+| `docker-hardened` | Windlass | labelled (`hardenedUnmarkedNote`) | `stop`; run anyway: labelled |
+| `docker-hardened` | Claude Code, OpenCode, Codex | labelled (`agentUnmarkedNote`) | `stop`; run anyway: labelled |
+| any other | Windlass | marked (`unmarkedNote` for an engine before 0.6.0) | marked |
+| any other | Claude Code, OpenCode, Codex | labelled (`agentUnmarkedNote`) | labelled |
+
+On `docker-hardened` no agent can contain what such text talks it into. Windlass runs there with
+approval `full`, a tainted session puts commands back in bubblewrap, and Docker's default seccomp does
+not let it start, so every command would ask and be refused: it is told of no source. The ACP agents
+take no marker anywhere and run every command without asking. A `stop` turn is refused before the
+sandbox opens, with `hardenedRefusal(agent, sources)`, worded for its agent (`harnessName`), and the
 `turn_ended` fact carries `untrustedRefusal`: those sources and the delivered row's text. The item asks
 `turn_refused` with **Run it anyway** (`run_anyway`) and give up; the choice adds the sources to
-`FactoryItem.unsandboxed` and delivers that same text. A delivery whose sources of someone else's are
-all in `unsandboxed` carries `unsandboxed: true` (the inbox's `unsandboxed` column), which the session
-lets through, labelled only. A subtask starts with its feature's (`internalChildRequest`). Every other
-profile is told every source. `e2b-open` runs its tainted commands in bubblewrap, which works in its
-template.
+`FactoryItem.unsandboxed`, says so in the agent's words (`runAnywayWords`), and delivers that same text.
+A delivery whose sources of someone else's are all in `unsandboxed` carries `unsandboxed: true` (the
+inbox's `unsandboxed` column), which the rule lets through, labelled only. A subtask starts with its
+feature's (`internalChildRequest`). `e2b-open` runs its tainted commands in bubblewrap, which works in
+its template.
 
 An item turn with sources, or in a session Windlass has reported tainted (`meta.tainted`, from
 `taint.noticed` and `taint.cleared`), hands the user's servers with `unasked` off. Every item turn
 also sets `unaskedUntilTainted`: the layer stops answering for `unasked` servers at the turn's own
 `taint.noticed` (`turn.ts`), so a call after the taint goes to the item's question and is refused.
-Claude Code and OpenCode get no marker: the timeline says so once (`agentUnmarkedNote`).
 
 ```sh
-cd server && npx tsx ../scripts/factory-check.ts      # "untrusted text": each turn's sources, by input
-cd server && npx tsx ../scripts/untrusted-check.ts    # the session/prompt frame against a stand-in 0.6.0 and an older engine; the inbox column
+cd server && npx tsx ../scripts/factory-check.ts      # "untrusted text": each turn's sources, by input; the hardened stop and Run it anyway for each agent
+cd server && npx tsx ../scripts/untrusted-check.ts    # the session/prompt frame against a stand-in 0.6.0 and an older engine; the inbox column; the rule for every agent and profile
 cd server && FACTORY_ONLY=ci,untrusted,reviewer npx tsx ../scripts/factory-e2e.ts   # CI fix, reviewer and review fix reach the fake Windlass marked; on docker-hardened the CI fix runs unmarked
 cd server && WEBHOOK_ONLY="G3 a stranger" npx tsx ../scripts/webhook-check.ts       # someone else's issue, started by its owner; on docker-hardened refused, then run anyway
 cd server && npx tsx ../scripts/mcp-check.ts                                         # (Docker) an item turn stops answering for unasked servers at its own taint

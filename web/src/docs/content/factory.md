@@ -232,16 +232,19 @@ Your MCP servers set to run without asking lose that setting in an item once its
 
 Your own words are never marked: an item you wrote, your notes, your answers to the agent's questions, and your feedback on GitHub.
 
-What a turn with such text does depends on the item's profile:
+What a turn with such text does depends on the item's profile and its agent:
 
-| Profile | Text from the run (CI logs, findings, reports) | Text from someone else (issue, feedback) |
-|---|---|---|
-| Docker + Windlass sandbox, E2B + Windlass sandbox | Windlass is told. Commands run as before: in its sandbox, without network. | The same. |
-| E2B, before the sandbox check | Windlass is told. A command Windlass can't sandbox is refused, as before. | The same. |
-| E2B, microVM only | Windlass is told. Commands move into its sandbox: no network, and nothing written outside the workspace. | The same. |
-| Docker, hardened | Windlass is not told: it can't sandbox commands there, so it would refuse every one. The text goes labelled only, the timeline says so once, and commands run as on any turn, with the container's network. | The turn does not start. The item asks you, naming the text. **Run it anyway** sends that turn labelled only, as for text from the run: Windlass is not told, so the agent's commands run outside Windlass's sandbox, with the container's network and the session's access token, and a command the text talked it into is not stopped. Later turns of the item, and its subtasks, that carry no other text from someone else go the same way. Text from someone new asks again. Or file the work again on **Docker + Windlass sandbox**, or give up. |
+| Profile | Agent | Text from the run (CI logs, findings, reports) | Text from someone else (issue, feedback) |
+|---|---|---|---|
+| Docker + Windlass sandbox, E2B + Windlass sandbox | Windlass | Windlass is told. Commands run as before: in its sandbox, without network. | The same. |
+| E2B, before the sandbox check | Windlass | Windlass is told. A command Windlass can't sandbox is refused, as before. | The same. |
+| E2B, microVM only | Windlass | Windlass is told. Commands move into its sandbox: no network, and nothing written outside the workspace. | The same. |
+| Docker, hardened | Windlass | Windlass is not told: it can't sandbox commands there, so it would refuse every one. The text goes labelled only, the timeline says so once, and commands run as on any turn, with the container's network. | The turn does not start. The item asks you, naming the text. **Run it anyway** sends that turn labelled only, as for text from the run: Windlass is not told, so the agent's commands run outside Windlass's sandbox, with the container's network and the session's access token, and a command the text talked it into is not stopped. Or file the work again on **Docker + Windlass sandbox**, or give up. |
+| Docker, hardened | Claude Code, OpenCode | The agent can't be told. The text goes labelled only, the timeline says so once, and the agent runs every command without asking, with the container's network. | The turn does not start, as for Windlass. The item asks you, naming the text and the agent. **Run it anyway** sends that turn labelled only, and the agent runs its commands without asking, with the container's network and the session's access. Or file the work again with Windlass on **Docker + Windlass sandbox**, or give up. |
 
-**Claude Code and OpenCode** can't be told which text came from someone else. They get the same labelled prompt, the timeline says once that the text went as labelled text only, and they still run every command without asking, with network. Read an issue someone else wrote before you start an item on them.
+After **Run it anyway**, later turns of the item, and its subtasks, that carry no other text from someone else go the same way. Text from someone new asks again. Where the choice is offered, **Hand it over as it is** is there too, once the item has a pull request this run pushed.
+
+Claude Code and OpenCode run work items only on Docker, hardened. Read an issue someone else wrote before you choose **Run it anyway** for them.
 
 A sandbox whose Windlass is older than 0.6.0 also gets labelled text only, and its timeline says so once.
 

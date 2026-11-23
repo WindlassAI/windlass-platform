@@ -10,7 +10,11 @@
  *   - a turn without sources has no marker on either;
  *   - sources over 200 characters are cut, never refused;
  *   - the inbox keeps the sources of a delivery and whether the person chose to run someone else's text
- *     anyway, and a row stored before them reads as none and not.
+ *     anyway, and a row stored before them reads as none and not;
+ *   - the one rule for every agent (`untrustedTurn`), read from that row: on docker-hardened someone else's
+ *     text stops the turn for Windlass, Claude Code, OpenCode and Codex until the person runs it anyway, and
+ *     then goes labelled only, with no marker in the frame; on every other profile nothing stops, Windlass
+ *     is told and the others get the labelled prompt, as before.
  */
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -18,7 +22,9 @@ import type { RunTurnInput, SandboxHandle } from "../server/src/sandbox/api.js";
 import { markTurnSandbox, type ProcessEnd, type SandboxProcess } from "../server/src/sandbox/provider.js";
 
 const { SandboxWindlass } = await import("../server/src/sandbox/turn.js");
-const { UNTRUSTED_SOURCE_MAX } = await import("../server/src/factory/untrusted.js");
+const { UNTRUSTED_SOURCE_MAX, untrustedTurn, agentUnmarkedNote, hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
+const { harnessName, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+const { PROFILES } = await import("../server/src/sandbox/profiles.js");
 const { deliveryOf, receive, inboxRow, INBOX_TABLES } = await import("../server/src/actors/session-inbox.js");
 
 let passes = 0;
@@ -140,6 +146,47 @@ const CURRENT = ["windlass/maxSteps", MARKER];
 	expect("only true is a yes", deliveryOf({ key: "k", itemId: "i_1", title: "Fix", text: "x", agent: null, maxSteps: 60, fetchBase: null, startsRun: false, unsandboxed: "yes" })?.unsandboxed === false);
 	sqlite.exec("INSERT INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, starts_run, state, turn, slot, ended, at) VALUES ('old', 'i_1', 'Fix', 'Old.', NULL, 60, NULL, NULL, NULL, 0, 'waiting', NULL, NULL, NULL, 0)");
 	expect("a row stored before the columns reads as none, and not let through", JSON.stringify((await inboxRow(db, "old"))?.untrusted) === "[]" && (await inboxRow(db, "old"))?.unsandboxed === false);
+}
+
+{
+	// The one rule, as the session reads it from the inbox row: the same for every agent.
+	const sqlite = new DatabaseSync(":memory:");
+	const db = { execute: async <T>(sql: string, ...args: unknown[]) => sqlite.prepare(sql).all(...(args as SQLInputValue[])) as T[] } as never;
+	for (const table of INBOX_TABLES) await (db as { execute(sql: string): Promise<unknown> }).execute(table);
+	const ISSUE = "issue #42 by @someone";
+	const rowOf = async (key: string, untrusted: string[], unsandboxed: boolean) => {
+		await receive(db, deliveryOf({ key, itemId: "i_2", title: "Fix", text: "The issue.", agent: null, maxSteps: 60, fetchBase: null, startsRun: false, untrusted, unsandboxed })!, 1);
+		return (await inboxRow(db, key))!;
+	};
+	const issueRow = await rowOf("i_2:1:1:1", [ISSUE], false);
+	const anywayRow = await rowOf("i_2:1:2:1", [ISSUE], true);
+	const ciRow = await rowOf("i_2:1:3:1", ["CI logs of 1111111"], false);
+	const decide = (agent: "windlass" | "claude" | "opencode" | "codex", profile: (typeof PROFILES)[number]["id"], row: typeof issueRow) =>
+		untrustedTurn({ agent, marker: takesUntrustedMarker(agent), profile, untrusted: row.untrusted, unsandboxed: row.unsandboxed });
+	expect("only Windlass takes the marker", takesUntrustedMarker("windlass") && takesUntrustedMarker(undefined) && !takesUntrustedMarker("claude") && !takesUntrustedMarker("opencode") && !takesUntrustedMarker("codex"));
+	for (const agent of ["windlass", "claude", "opencode", "codex"] as const) {
+		const name = harnessName(agent);
+		const stop = decide(agent, "docker-hardened", issueRow);
+		expect(`${name}, docker-hardened: someone else's issue stops the turn, naming ${name} and the source`, stop.kind === "stop" && stop.sources.join() === ISSUE && stop.reason.includes(`“Docker, hardened” ${name} `) && stop.reason.includes(ISSUE), JSON.stringify(stop));
+		const anyway = decide(agent, "docker-hardened", anywayRow);
+		const note = agent === "windlass" ? hardenedUnmarkedNote([ISSUE]) : agentUnmarkedNote(name, [ISSUE]);
+		expect(`${name}, docker-hardened: run anyway, it goes labelled only, said once`, anyway.kind === "labelled" && anyway.note === note, JSON.stringify(anyway));
+		expect(`${name}, docker-hardened: the run's own text goes labelled only`, decide(agent, "docker-hardened", ciRow).kind === "labelled");
+		for (const profile of PROFILES.map(p => p.id).filter(id => id !== "docker-hardened")) {
+			const got = decide(agent, profile, issueRow);
+			const ok = agent === "windlass" ? got.kind === "marked" : got.kind === "labelled" && got.note === agentUnmarkedNote(name, [ISSUE]);
+			expect(`${name}, ${profile}: nothing stops; ${agent === "windlass" ? "Windlass is told" : "labelled only, as before"}`, ok, JSON.stringify(got));
+		}
+	}
+	// What reaches Windlass's frame: the sources only where the rule says marked.
+	const frameOf = async (profile: (typeof PROFILES)[number]["id"]) => {
+		const handling = decide("windlass", profile, anywayRow);
+		return (await turn(CURRENT, handling.kind === "marked" ? { untrusted: handling.sources } : {})).meta;
+	};
+	const hardenedFrame = await frameOf("docker-hardened");
+	const sandboxFrame = await frameOf("docker-windlass-sandbox");
+	expect("Windlass, docker-hardened, run anyway: the frame carries no marker", hardenedFrame !== undefined && !(MARKER in hardenedFrame), JSON.stringify(hardenedFrame));
+	expect("Windlass, docker-windlass-sandbox: the frame carries the source", JSON.stringify(sandboxFrame?.[MARKER]) === JSON.stringify({ source: ISSUE }), JSON.stringify(sandboxFrame));
 }
 
 assert.ok(passes > 0);

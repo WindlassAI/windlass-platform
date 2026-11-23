@@ -1070,7 +1070,8 @@ async function run() {
 				const refused = await until("the refusal", async () => { const v = await g2User.item(draft.id); return v.question ? v : null; }, 60_000);
 				const source = "issue #92 by @g3-reader";
 				assert.equal(refused.question?.kind, "turn_refused", JSON.stringify(refused.question));
-				assert.ok(refused.question.text.includes("“Docker, hardened”") && refused.question.text.includes(source), refused.question.text);
+				const { hardenedRefusal, hardenedUnmarkedNote, runAnywayWords } = await import("../server/src/factory/untrusted.js");
+				assert.ok(refused.question.text.includes(hardenedRefusal("windlass", [source])), refused.question.text);
 				assert.deepEqual(refused.question.choices.map(o => o.id), ["give_up", "run_anyway"]);
 				// Refused before the sandbox opened: the timeline has the turn's prompt, and nothing of Windlass.
 				const before = await timeline(draft.sessionId);
@@ -1078,10 +1079,9 @@ async function run() {
 				await g2User.actOnItem({ id: draft.id, action: { kind: "answer", question: refused.question.id, choice: "run_anyway" } });
 				const ran = await until("the turn run anyway", async () => { const t = await timeline(draft.sessionId); return t.some(e => e.kind === "windlass" && e.event.type === "step.started") ? t : null; }, 60_000);
 				assert.ok(!ran.some(e => e.kind === "windlass" && (e.event.type === "fake.prompt_untrusted" || e.event.type === "taint.noticed")), "the turn run anyway was marked");
-				const { hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
 				assert.ok(ran.some(e => e.kind === "platform" && e.text === hardenedUnmarkedNote([source])), "the timeline does not say the text went labelled only");
 				const view = await g2User.item(draft.id);
-				assert.ok(view.events.some(e => e.said.includes("without Windlass's sandbox")), JSON.stringify(view.events.map(e => e.said)));
+				assert.ok(view.events.some(e => e.said === runAnywayWords("windlass", [source])), JSON.stringify(view.events.map(e => e.said)));
 				await g2User.actOnItem({ id: draft.id, action: { kind: "cancel" } });
 			} finally {
 				await g2User.saveRepositoryDefaults({ repositoryId: projectG2.id, profile: null });

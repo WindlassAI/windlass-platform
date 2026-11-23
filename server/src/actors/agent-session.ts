@@ -215,7 +215,7 @@ import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
-import { agentUnmarkedNote, hardenedRefusal, hardenedStop, hardenedUnmarkedNote, unmarkedNote } from "../factory/untrusted.js";
+import { untrustedTurn, unmarkedNote } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull } from "../sandbox/api.js";
@@ -225,7 +225,7 @@ import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, takesUntrustedMarker } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
@@ -3500,11 +3500,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const mode = meta.origin ? machineHarness(meta.harness)?.itemMode : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
-	// Where the outside text of an item's turn came from: Windlass is told with the prompt (factory/untrusted.ts).
+	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
+	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
+	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
 	const untrusted = active.item?.row.untrusted ?? [];
-	// On "Docker, hardened" Windlass can't sandbox a tainted session's commands, so it is told of no source: the run's own text goes
-	// labelled only, and someone else's only once the person chose to run it anyway (`unsandboxed`).
-	const hardened = (meta.harness ?? "windlass") === "windlass" && meta.profile === "docker-hardened";
+	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", marker: takesUntrustedMarker(meta.harness), profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
 	const unmarked = (text: string) => {
 		if (meta.untrustedUnmarkedNoted) return;
 		meta.untrustedUnmarkedNoted = true;
@@ -3595,11 +3595,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
-		// Someone else's text on "Docker, hardened" would go unmarked, its commands outside Windlass's sandbox: refused before anything
+		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
 		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
-		const outside = hardenedStop(untrusted, active.item?.row.unsandboxed);
-		if (active.item && hardened && outside.length) {
-			const reason = hardenedRefusal(outside);
+		if (active.item && handling.kind === "stop") {
+			const { reason, sources: outside } = handling;
 			const { text: retryText, fetchBase } = active.item.row;
 			active.item.refused = reason;
 			active.item.untrustedRefusal = { sources: outside, retry: { text: retryText, fetchBase, untrusted } };
@@ -3692,7 +3691,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		} : undefined;
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
-			if (untrusted.length) unmarked(agentUnmarkedNote(machineHarnesses[meta.harness as keyof typeof machineHarnesses]?.name ?? "This agent", untrusted));
+			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
 				...common,
 				prompt: notes.text + text,
@@ -3785,8 +3784,8 @@ fi`, { signal, timeoutMs: 5000 });
 				text = brief;
 			}
 			let calls = 0;
-			// Told of no source there (above): the timeline says once that the text went labelled only.
-			if (hardened && untrusted.length) unmarked(hardenedUnmarkedNote(untrusted));
+			// Told of no source (above): the timeline says once that the text went labelled only.
+			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
 				...common,
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
@@ -3802,7 +3801,7 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				prompt: notes.text + text,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
-				...(untrusted.length && !hardened && { untrusted, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(untrusted)); } }),
+				...(handling.kind === "marked" && { untrusted: handling.sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(handling.sources)); } }),
 				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
 				...(item && { unaskedUntilTainted: true }),
 				reportScreenshots: browser,

@@ -25,6 +25,9 @@
  * marked as such (`untrustedWords.integration`).
  */
 
+import type { HarnessId, SandboxProfileId } from "../contract.js";
+import { harnessName } from "../sandbox/harnesses.js";
+
 /** The longest source Windlass takes (its docs/acp.md, `_meta["windlass/untrusted"]`). */
 export const UNTRUSTED_SOURCE_MAX = 200;
 
@@ -70,22 +73,77 @@ export function untrustedSource(list: readonly string[] | undefined): string | n
 }
 
 /**
- * On "Docker, hardened" Windlass runs with approval "full", and once a session is tainted it puts
- * commands back into its bubblewrap sandbox, which Docker's default seccomp profile does not let start:
- * every command would ask, and an item's turn refuses what asks. So there no source is marked. Text of
- * the run's own goes as labelled text only (`hardenedUnmarkedNote`); a turn with someone else's text
- * does not start (this sentence) until the person chooses to run it anyway (`FactoryItem.unsandboxed`),
- * and then it too goes labelled only, its commands outside Windlass's sandbox.
+ * What a turn does with its outside text: the one rule for every agent (`untrustedTurn`).
+ *
+ *   "none"      no outside text.
+ *   "marked"    Windlass is told the sources with the prompt (`untrustedSource`); an engine before 0.6.0
+ *               cannot be, and the timeline says so once (`unmarkedNote`).
+ *   "labelled"  the text goes in the labelled prompt only, and the timeline says so once (`note`).
+ *   "stop"      the turn does not start: the item asks, with `reason`, and the person may run it anyway
+ *               (`FactoryItem.unsandboxed`), after which the same turn goes "labelled".
  */
-export const hardenedRefusal = (list: readonly string[]) =>
-	`This turn carries text from someone else (${sources(list).join("; ")}). On “Docker, hardened” Windlass cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token. Run it anyway, file the work again on “Docker + Windlass sandbox”, or give up.`;
+export type UntrustedHandling =
+	| { kind: "none" }
+	| { kind: "marked"; sources: string[] }
+	| { kind: "labelled"; sources: string[]; note: string }
+	| { kind: "stop"; sources: string[]; reason: string };
 
-/** What stops a turn on "Docker, hardened" (above): its sources of someone else's, unless the person chose to run them anyway. */
-export function hardenedStop(list: readonly string[] | undefined, unsandboxed: boolean | undefined): string[] {
-	return unsandboxed ? [] : thirdParty(list);
+/** What `untrustedTurn` decides by. */
+export interface UntrustedTurn {
+	/** The agent (`HarnessId`): its name goes in the refusal and the notes (`harnessName`). */
+	agent: HarnessId;
+	/** Whether the agent takes Windlass's marker (`takesUntrustedMarker`): Windlass does, Claude Code, OpenCode and Codex do not. */
+	marker: boolean;
+	/** The sandbox profile the turn runs in. */
+	profile: SandboxProfileId;
+	/** The turn's sources (`TurnPlan.untrusted`), the run's own and someone else's. */
+	untrusted: readonly string[] | undefined;
+	/** The person chose to run this turn's text from someone else anyway (`FactoryItem.unsandboxed`). */
+	unsandboxed: boolean | undefined;
 }
 
-/** Once per session, on "Docker, hardened", where no source is marked (above). */
+/**
+ * The one decision, for every agent, of how a turn takes its outside text.
+ *
+ * On "Docker, hardened" no agent can contain a command the text talks it into. Windlass runs with approval
+ * "full" there, and once told it puts commands back into its bubblewrap sandbox, which Docker's default
+ * seccomp profile does not let start: every command would ask, and an item's turn refuses what asks. The
+ * other agents cannot be told at all, and run every command without asking. So there nothing is marked:
+ * the run's own text (CI logs, findings, reports) goes labelled only, and someone else's (`thirdParty`)
+ * stops the turn until the person chooses to run it anyway, then goes labelled only too.
+ *
+ * On every other profile nothing stops: an agent that takes the marker is told, and one that does not gets
+ * the labelled prompt, as before.
+ */
+export function untrustedTurn(turn: UntrustedTurn): UntrustedHandling {
+	const list = sources(turn.untrusted);
+	if (!list.length) return { kind: "none" };
+	if (turn.profile === "docker-hardened") {
+		const outside = turn.unsandboxed ? [] : thirdParty(list);
+		if (outside.length) return { kind: "stop", sources: outside, reason: hardenedRefusal(turn.agent, outside) };
+		return { kind: "labelled", sources: list, note: turn.marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list) };
+	}
+	if (turn.marker) return { kind: "marked", sources: list };
+	return { kind: "labelled", sources: list, note: agentUnmarkedNote(harnessName(turn.agent), list) };
+}
+
+/** Why a turn with someone else's text does not start on "Docker, hardened" (`untrustedTurn`), in the words of its agent. */
+export const hardenedRefusal = (agent: HarnessId, list: readonly string[]) => {
+	const name = harnessName(agent);
+	const what = agent === "windlass"
+		? `On “Docker, hardened” Windlass cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
+		: `On “Docker, hardened” ${name} cannot be told which text is not yours, so the text would go to it labelled only, and its commands would run without asking, with the container's network and the session's access.`;
+	const elsewhere = agent === "windlass" ? `file the work again on “Docker + Windlass sandbox”` : `file the work again with Windlass on “Docker + Windlass sandbox”`;
+	return `This turn carries text from someone else (${sources(list).join("; ")}). ${what} Run it anyway, ${elsewhere}, or give up.`;
+};
+
+/** What the item says once the person chose to run someone else's text anyway, in the words of its agent. */
+export const runAnywayWords = (agent: HarnessId, list: readonly string[]) =>
+	agent === "windlass"
+		? `You chose to run text from someone else (${sources(list).join("; ")}) without Windlass's sandbox.`
+		: `You chose to run text from someone else (${sources(list).join("; ")}) with ${harnessName(agent)}, which runs its commands without asking.`;
+
+/** Once per session, on "Docker, hardened", where Windlass is told of no source (`untrustedTurn`). */
 export const hardenedUnmarkedNote = (list: readonly string[]) =>
 	`On “Docker, hardened” Windlass is not told that this text is not yours (${sources(list).join("; ")}), since it could not sandbox commands once told. The text went to the agent as labelled text only, and commands run as on any turn.`;
 
@@ -93,6 +151,6 @@ export const hardenedUnmarkedNote = (list: readonly string[]) =>
 export const unmarkedNote = (list: readonly string[]) =>
 	`This sandbox's Windlass cannot be told which text came from someone else (${sources(list).join("; ")}); it went to the agent as labelled text only. Windlass 0.6.0 or later marks it.`;
 
-/** Once per session, for an agent that has no marker at all (Claude Code, OpenCode). */
+/** Once per session, for an agent that has no marker at all (Claude Code, OpenCode, Codex). */
 export const agentUnmarkedNote = (agent: string, list: readonly string[]) =>
 	`${agent} cannot be told which text came from someone else (${sources(list).join("; ")}); it went to the agent as labelled text only, and the agent runs its commands without asking.`;

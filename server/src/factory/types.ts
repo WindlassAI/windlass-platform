@@ -239,7 +239,7 @@ export interface FactoryItem {
 	untrusted?: string[];
 	/**
 	 * The sources of someone else's text (untrusted.ts, `thirdParty`) the person chose to run anyway on
-	 * "Docker, hardened" ("Run it anyway"), where Windlass can't sandbox a tainted session's commands: a
+	 * "Docker, hardened" ("Run it anyway"), where no agent can contain what such text talks it into: a
 	 * turn whose such sources are all here goes there labelled only. A subtask starts with its feature's.
 	 * Absent: none.
 	 */
@@ -319,7 +319,7 @@ export interface ItemProviderRefusal extends ProviderRefusal {
 	retry: Pick<TurnPlan, "text" | "fetchBase" | "untrusted">;
 }
 
-/** A turn the session did not start on "Docker, hardened" for someone else's text (untrusted.ts, `hardenedRefusal`). */
+/** A turn the session did not start on "Docker, hardened" for someone else's text, whatever the agent (untrusted.ts, `untrustedTurn`). */
 export interface UntrustedRefusal {
 	sources: string[];
 	retry: Pick<TurnPlan, "text" | "fetchBase" | "untrusted">;
