@@ -1,7 +1,7 @@
 /**
  * The second review on an item's page (Reviewer slice R3): what a second agent, in its own sandbox and
- * with no part in making the change, wrote about the pushed commit (contract.ts, `ItemReview`). It
- * stands in a section of its own, under the platform's verdict and above the builder's report, and is
+ * with no part in making the change, wrote about the pushed commit (contract.ts, `ItemReview`). The
+ * item's Checks panel says its recommendation and open findings in rows, and unfolds this in full; it is
  * labelled as the agent's throughout: its recommendation is a quiet word, never the verdict's pill, and
  * the verdict never rests on it. In R3 a recommendation does nothing by itself: every one hands over.
  *
@@ -180,38 +180,39 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 }
 
 /**
- * The section, when the item has a second review to speak of: the review of the run shown (or where it
- * is while there is none), then the earlier ones, folded. Nothing when the item has no review state and
- * no review: an item that has not reached it, or a view of a platform without reviewer sessions.
+ * The review of the run shown, when it was filed (or kept as not filed), the earlier ones newest first, and where the review
+ * is while there is none to show (`stateLine`). `current` is null while the run's review waits, runs, or was not reached.
  */
-export function SecondReview({ view, links, when }: { view: ItemView; links: ScreenshotLinks; when(at: number): ReactNode }) {
-	const [open, setOpen] = useState(false);
-	const folded = useId();
+export function shownReview(view: ItemView): { state: ReviewState | null; current: ItemReview | null; before: ItemReview[]; line: string | null } {
 	const { reviews } = view;
 	const state = view.review?.state ?? null;
-	if (state === null && reviews.length === 0) return null;
 	const run = view.run?.n ?? null;
 	const last = reviews[reviews.length - 1] ?? null;
 	// The review of the run shown is shown when it was filed; any other, earlier or not filed, is folded under it.
 	const current = last !== null && (run === null || last.run === run) && (state === null || state === "filed" || last.state === "none") ? last : null;
 	const before = reviews.filter((one) => one !== current).reverse();
 	const line = current ? null : state === null ? null : stateLine(view, state, null);
+	return { state, current, before, line };
+}
+
+/**
+ * The second review in full, as the Checks panel unfolds it: the review of the run shown (or where it is while there is
+ * none), then the earlier ones, folded. Nothing when the item has no review state and no review: an item that has not
+ * reached it, or a view of a platform without reviewer sessions. `bare` leaves out the state line, which the panel says
+ * itself.
+ */
+export function SecondReview({ view, links, when, bare = false }: { view: ItemView; links: ScreenshotLinks; when(at: number): ReactNode; bare?: boolean }) {
+	const [open, setOpen] = useState(false);
+	const folded = useId();
+	const { reviews } = view;
+	const { state, current, before, line } = shownReview(view);
+	if (state === null && reviews.length === 0) return null;
 	const titles = new Map(reviews.flatMap((one) => one.blocks.flatMap((block) => (block.kind === "finding" ? [[block.id, block.title] as const] : []))));
 	const named = (finding: string) => titles.get(finding) ?? null;
 	const session = view.reviewerSessionId;
 	return (
-		<section className="usage-section item-second" aria-labelledby="item-second" data-author="reviewer">
-			<h2 className="usage-title" id="item-second">
-				From the second reviewer
-			</h2>
-			<p className="usage-lede">
-				{current?.state === "filed"
-					? view.mode === "orchestrate"
-						? "A second agent, with no part in making the change, checked out the pushed commit in its own sandbox and read it against the task. Its own words: the verdict above does not rest on them, and its recommendation does nothing by itself."
-						: "A second agent, with no part in making the change, checked out the pushed commit in its own sandbox and read it against the task. Its own words: the verdict above does not rest on them. When it asks for changes, the agent that made the change works on its blocking findings and it reviews again, at most twice; when it has questions, you decide."
-					: "Once CI has finished, a second agent with no part in making the change reviews the pushed commit in its own sandbox. Its words are its own: the verdict above never rests on them."}
-			</p>
-			{line ? (
+		<div className="item-second" data-author="reviewer">
+			{line && !bare ? (
 				<p className={`review-state review-state-${state}`}>
 					<span>{line}</span>
 					{state === "running" && session ? (
@@ -227,7 +228,7 @@ export function SecondReview({ view, links, when }: { view: ItemView; links: Scr
 					<a className="link" {...linkProps({ name: "session", id: session })}>
 						Open the reviewer's session
 					</a>{" "}
-					to see what it ran.
+					to see what it ran. Its words are its own: the platform's records above do not rest on them.
 				</p>
 			) : null}
 			{before.length > 0 ? (
@@ -242,6 +243,6 @@ export function SecondReview({ view, links, when }: { view: ItemView; links: Scr
 					</div>
 				</>
 			) : null}
-		</section>
+		</div>
 	);
 }

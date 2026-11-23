@@ -1,9 +1,9 @@
 /**
  * A work item's page: where a person decides whether to trust a pull request they did not watch being
  * made. It says, each at a glance: where the item is and what it waits for, what it asks, what ran
- * (the run and its step, and the log), what the verdict rests on (CI first, which decides; the user's
- * checks where they set any; the flags; the criteria left to the person), and what it cost against its
- * budget.
+ * (the run and its step, and the log), whether the pull request is ready and what is open (the Checks
+ * panel: CI, the user's checks, the second review, feedback from GitHub, the flags), and what it cost
+ * against its budget.
  *
  * Everything is the user's actor's (`ItemView`): read when the page opens, and again when the item's
  * revision in the user's live feed (`onItems`) is higher than the one shown, and when that feed comes
@@ -34,19 +34,19 @@ import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
-import { FOLD_WORDS, FoldToggle, LongText } from "../components/Fold";
+import { LongText } from "../components/Fold";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
-import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
+import { ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
-import { GithubFeedback } from "../components/GithubFeedback";
 import { ItemNetwork } from "../components/ItemNetwork";
 import type { AllowHostContext } from "../components/BlockedNetwork";
-import { reviewShots, SecondReview } from "../components/SecondReview";
+import { reviewShots } from "../components/SecondReview";
+import { ItemChecks } from "./ItemChecks";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow, useSessions } from "../state/hooks";
-import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
+import { ItemGlyph, ItemRow, ItemStages, STATE_WORD } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 import { AgentGlyph } from "../components/ui/Pill";
@@ -607,174 +607,6 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 /** An option longer than this stacks all of a question's options as rows. */
 const LONG_OPTION = 40;
 
-// ---- what the verdict rests on ------------------------------------------------------------------
-
-const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" : `${count} times`);
-
-/** CI's tone: a failure is bad; CI that was not read, or not in full, or had not finished is a quiet warning; passed and none are plain facts. */
-const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", cancelled: "tone-warn", not_run: "tone-warn", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
-
-/** What the gate said when none of the user's checks is listed. */
-function gateWords(gate: Verdict["gate"]): string {
-	switch (gate.state) {
-		case null:
-			return "No record of the checks for this commit.";
-		case "passed":
-			return "None of yours ran; the repository's own checks passed.";
-		case "unresolved":
-			return "None of yours ran; the repository's own checks did not pass.";
-		case "not_needed":
-			return gate.unneeded?.on === "run" ? "No check needed to run again: they had passed on this state of the work." : "No check verified this state of the work.";
-		case "none_set":
-			return "None saved for this repository. CI decides.";
-		case "off":
-			return "The repository's own file turned verification off.";
-		case "no_sandbox":
-			return "Checks could not run in this sandbox.";
-		case "not_in_force":
-			return "No checks were in force.";
-		case "stopped":
-			return "The turn was stopped before its checks finished.";
-		case "failed":
-			return "The turn failed before its checks finished.";
-	}
-}
-
-/** One verdict. `reviewing`: it is the latest, and the second reviewer has it yet, so it is not handed over and its word waits. */
-function VerdictBlock({ verdict, view, now, reviewing = false }: { verdict: Verdict; view: ItemView; now: number; reviewing?: boolean }) {
-	const { gate, ci } = verdict;
-	const { said } = verdict;
-	return (
-		<article className="item-verdict-block">
-			<p className="item-verdict-head">
-				{reviewing ? <ReviewWord item={view} /> : <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} />}
-				<span className="agent-meta">
-					<span>at {verdict.head.slice(0, 7)}</span>
-					<span>
-						<When at={verdict.at} now={now} />
-					</span>
-					{view.verdicts.length > 1 ? <span>the {ordinal(verdict.run)} run</span> : null}
-				</span>
-			</p>
-			<dl className="usage-facts item-facts">
-				<div>
-					<dt>CI</dt>
-					<dd>
-						{/* "not_permitted" quotes GitHub's own words: shown as text, never read as Markdown. */}
-						{ci.state === "not_permitted" ? <span className={CI_TONE[ci.state]}>{said.ci}</span> : <InlineMarkdown className={CI_TONE[ci.state]} text={said.ci} />}
-						{ci.runs.length > 0 ? (
-							<ul className="item-checks">
-								{ci.runs.map((run) => (
-									<li key={`${run.app}/${run.name}`}>
-										<a className="item-check-name item-link" href={run.url} target="_blank" rel="noreferrer">
-											{run.name}
-											<ExternalIcon size={10} />
-										</a>{" "}
-										<span className={conclusionTone(run.conclusion)}>{conclusionWord(run.conclusion)}</span>
-										{run.app === "github-actions" ? null : <span className="tone-dim"> · {run.app === "status" ? "a commit status" : run.app}</span>}
-									</li>
-								))}
-							</ul>
-						) : null}
-					</dd>
-				</div>
-				<div>
-					<dt>Your checks</dt>
-					<dd>
-						{gate.required.length === 0 ? (
-							gateWords(gate)
-						) : (
-							<ul className="item-checks">
-								{gate.required.map((check) => (
-									<li key={check.name}>
-										<span className="item-check-name">{check.name}</span> <span className={`tone-${CHECK_TONE[check.status]}`}>{CHECK_WORD[check.status]}</span>
-										{check.sentBack > 0 ? <span className="tone-dim">, after the agent was sent back {times(check.sentBack)}</span> : null}
-									</li>
-								))}
-							</ul>
-						)}
-					</dd>
-				</div>
-				{verdict.flags.length > 0 ? (
-					<div>
-						<dt>To look at</dt>
-						<dd>
-							<ul className="item-checks">
-								{verdict.flags.map((flag, index) => (
-									<li key={flag.kind}>
-										<span className="tone-warn">
-											<InlineMarkdown text={said.flags[index] ?? flag.kind} />:
-										</span> <code className="item-paths">{flag.where.join(", ")}</code>
-									</li>
-								))}
-							</ul>
-						</dd>
-					</div>
-				) : null}
-				{verdict.acceptance.length > 0 ? (
-					<div>
-						<dt>For you to check</dt>
-						<dd>
-							<ul className="item-criteria-list">
-								{verdict.acceptance.map((line) => (
-									<li key={line}>{line}</li>
-								))}
-							</ul>
-							<span className="usage-gloss">No machine checked these.</span>
-						</dd>
-					</div>
-				) : null}
-				<div>
-					<dt>Merging</dt>
-					<dd className={verdict.mergeable === false ? "tone-warn" : undefined}>
-						{verdict.mergeable === false ? "GitHub says the pull request conflicts with its base." : verdict.mergeable ? "GitHub says it can be merged." : "GitHub had not said whether it can be merged."}
-					</dd>
-				</div>
-			</dl>
-		</article>
-	);
-}
-
-function Verdicts({ view, now }: { view: ItemView; now: number }) {
-	const [open, setOpen] = useState(false);
-	const earlier = useId();
-	const latest = view.verdicts[view.verdicts.length - 1];
-	const before = view.verdicts.slice(0, -1).reverse();
-	const check = view.verifiedCheck;
-	const checkLabel = check?.conclusion ? { success: "Success", action_required: "Action required", failure: "Failure", cancelled: "Cancelled" }[check.conclusion] : "In progress";
-	return (
-		<section className="usage-section" aria-labelledby="item-verdict">
-			<h2 className="usage-title" id="item-verdict">
-				Verdict
-			</h2>
-			<p className="usage-lede">What the pushed work rests on: CI on the pushed commit, your checks where you set them, and what was seen in the changes; never the agent's words. A verdict merges nothing.</p>
-			{latest === undefined ? (
-				<p className="usage-empty">None yet: a verdict is made when the work is handed over.</p>
-			) : (
-				<>
-					<VerdictBlock verdict={latest} view={view} now={now} reviewing={inSecondReview(view)} />
-					<p className="usage-note">{inSecondReview(view) ? "From the platform's own records. Its word is given when the second review is filed and the work is handed over." : "From the platform's own records."}</p>
-					{before.length > 0 ? (
-						<>
-							<p className="agents-fold items-fold">
-								<FoldToggle open={open} controls={earlier} label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier verdict" : "earlier verdicts")} onToggle={() => setOpen((value) => !value)} />
-							</p>
-							<div id={earlier} hidden={!open}>
-								{before.map((verdict) => (
-									<VerdictBlock key={verdict.id} verdict={verdict} view={view} now={now} />
-								))}
-							</div>
-						</>
-					) : null}
-				</>
-			)}
-			{check && <p className="usage-note">{check.state === "not_posted" ? check.said :
-				`On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}</p>}
-			{view.report === null && view.state === "review" ? <p className="usage-note">The agent that made the change filed no report.</p> : null}
-		</section>
-	);
-}
-
 // ---- what the agent says ------------------------------------------------------------------------
 
 /** The verdict a report's references are read against: the one at the commit it was filed at, else its run's last, else none. */
@@ -783,7 +615,7 @@ function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
 	return at ?? verdicts.findLast((verdict) => verdict.run === report.run) ?? null;
 }
 
-/** The agent that made the change, in its own words: below the verdict, labelled as its own, and never what the verdict rests on. */
+/** The agent that made the change, in its own words: below the checks, labelled as its own, and never what the verdict rests on. */
 function Report({ view, report, links, now }: { view: ItemView; report: ItemReport; links: ScreenshotLinks; now: number }) {
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const earlierRun = view.run !== null && report.run !== view.run.n;
@@ -794,7 +626,7 @@ function Report({ view, report, links, now }: { view: ItemView; report: ItemRepo
 			<h2 className="usage-title" id="item-report">
 				From the agent that made the change
 			</h2>
-			<p className="usage-lede">{earlierRun ? `From its report in the ${ordinal(report.run)} run. ` : ""}Its own words, filed with its report: the verdict above does not rest on them.</p>
+			<p className="usage-lede">{earlierRun ? `From its report in the ${ordinal(report.run)} run. ` : ""}Its own words, filed with its report: the checks above do not rest on them.</p>
 			<article className="item-verdict-block">
 				<p className="item-verdict-head">
 					<span className="item-report-title">{report.title}</span>
@@ -1237,10 +1069,9 @@ export function Item({ page }: { page: ItemPage }) {
 			) : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
-			<Verdicts view={view} now={now} />
+			<ItemChecks view={view} links={links} when={(at) => <When at={at} now={now} />} />
+
 			<ItemNetwork network={view.blockedNetwork} context={allowContext} now={now} />
-			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
-			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
 			<Cost view={view} now={now} />
 

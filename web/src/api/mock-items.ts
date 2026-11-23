@@ -223,6 +223,8 @@ const ci = {
 	unread: (): Verdict["ci"] => ({ state: "unread", runs: [], said: null }),
 	/** Read, but not in full: more checks than the platform reads, none of those it read failed. */
 	unreadPartly: (): Verdict["ci"] => ({ state: "unread", runs: ciRuns(3, "success"), said: "GitHub listed more checks than the platform reads, and none of those it read failed" }),
+	/** CI finished without a failure, but some of its checks were cancelled (a newer push or a person stopped them). */
+	cancelled: (): Verdict["ci"] => ({ state: "cancelled", runs: [...ciRuns(2, "success"), { name: "e2e (chromium)", app: "github-actions", conclusion: "cancelled", url: "https://github.com/acme/harbor/actions/runs/9140" }, { name: "e2e (firefox)", app: "github-actions", conclusion: "cancelled", url: "https://github.com/acme/harbor/actions/runs/9141" }], said: null }),
 };
 
 const noChecks: Verdict["gate"] = { state: "none_set", required: [] };
@@ -232,7 +234,7 @@ const OLD_SANDBOX =
 	"This agent's sandbox is from an older version of the platform, whose Windlass cannot give the agent the platform's tools, so nothing was run. Start a new agent.";
 
 function ciRuns(count: number, conclusion: string): VerdictRun[] {
-	const names = ["build", "test (node 22)", "test (node 24)", "typecheck", "docs"];
+	const names = ["build", "test (node 22)", "test (node 24)", "typecheck", "docs", "lint", "e2e (chromium)", "e2e (firefox)", "e2e (webkit)", "unit (linux)", "unit (macos)", "unit (windows)", "bundle size", "license check", "codeql", "dependency review", "coverage", "changeset"];
 	return names.slice(0, count).map((name, index) => ({ name, app: "github-actions", conclusion, url: `https://github.com/acme/harbor/actions/runs/${9100 + index}` }));
 }
 
@@ -524,6 +526,10 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		// Handed over without a second review: the reviewer could not take its tool, and an older push named no commit (Reviewer slice R3-D).
 		review(47, "Quote the artefact names in the upload log", HARBOR, 70, { body: "Put each artefact's name in quotes in the upload log, so that a name with spaces reads as one.", acceptance: [] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 21 }),
 		review(48, "Mention the docs site in the README", DOCS, 17, { body: "Link the docs site from the README's first paragraph.", acceptance: [] }, { result: "pass", gate: noChecks, ci: ci.passed(1), flags: [], mergeable: true, run: 1, ago: 44 }),
+		// Every check passed and the second reviewer approves: nothing is open.
+		review(82, "Show the build number in the footer", HARBOR, 75, { body: "Print the build number from BUILD_ID in the page footer, beside the version.", acceptance: [] }, { result: "pass", gate: passingGate, ci: ci.passed(18), flags: [], mergeable: true, run: 1, ago: 11 }),
+		// CI finished, but two of its checks were cancelled: nothing failed, and nothing verified the change either.
+		review(83, "Speed up the station import", TIDES, 62, { body: "The station import reads each file twice. Read it once.", acceptance: ["Importing every station takes less than half as long."] }, { result: "unverified", gate: passingGate, ci: ci.cancelled(), flags: [], mergeable: true, run: 1, ago: 15 }),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
 		// Feedback from GitHub (G4): a run started by the PR's feedback, with more held while CI runs; and a fourth batch from others that asks first (`seededFeedback`).
 		{
@@ -1124,6 +1130,11 @@ function seededFeedback(seed: Seed, repo: string, ago: (minutes: number) => numb
 					entry("mira", "review_comment", 5, "`Intl.DateTimeFormat` gives the full name with `timeZoneName: \"longGeneric\"`.", { path: "src/station/time.ts", line: 31 }),
 				]),
 			] };
+		case 41:
+			return { notTaken: 0, batches: [batch("pending", "Collecting the comments into one batch.", [
+				entry("ada", "changes_requested", 4, "Keep the 410 answer, but also link the migration note from the README's API section."),
+				entry("jonas", "review_comment", 3, "This leaves `exportRoutes` imported and unused. The lint check in CI will flag it once it runs on this file.", { path: "src/api/index.ts", line: 7 }),
+			])] };
 		default:
 			return { batches: [], notTaken: 0 };
 	}
@@ -2575,6 +2586,27 @@ const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off" | null; r
 					{ kind: "question", text: "For Avonmouth and Ilfracombe the file says +5 min and the old table +7 min. Which should win?" },
 					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "should_fix", title: "The old offset table is still bundled", text: "Nothing reads it now; it could be removed with this change.", at: [{ path: "data/offsets.json", lines: { start: 1, end: 3 } }], refs: [] },
 				],
+			},
+		],
+	},
+	82: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				blocks: [
+					{ kind: "summary", text: "The footer shows the build number from BUILD_ID beside the version, and nothing when it is unset. The footer's tests cover both." },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "note", title: "BUILD_ID is read on every render", text: "It could be read once when the module loads.", at: [{ path: "src/footer.tsx", lines: { start: 6, end: 9 } }], refs: [] },
+				],
+			},
+		],
+	},
+	83: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				blocks: [{ kind: "summary", text: "Each station file is read once now, and the parsed rows are passed on. I could not time the whole import in my sandbox; the unit tests pass." }],
 			},
 		],
 	},
