@@ -202,7 +202,7 @@ describe("the mock's repository page", () => {
 	it("names the repositories something is saved for, and deleting what is saved for one takes it off the list", async () => {
 		const mock = make();
 		const user = mock.user(ada);
-		expect((await user.savedRepositories()).map((repository) => `${repository.id} ${repository.name}`)).toEqual(["7101 acme/harbor", "7190 acme/old-pier", "7105 acme/quay", "7102 ada/tide-tables"]);
+		expect((await user.savedRepositories()).map((repository) => `${repository.id} ${repository.name}`)).toEqual(["7101 acme/harbor", "7190 acme/old-pier", "7105 acme/quay", "7106 acme/signal-flags", "7102 ada/tide-tables"]);
 		const emptied = await user.forgetRepository(7190);
 		expect(emptied).toMatchObject({ defaults: { profile: null, model: null }, approvals: [], saved: { setup: false, secrets: 0, checks: 0, network: 0 } });
 		expect((await user.repositorySetup(7190)).command).toBe("");

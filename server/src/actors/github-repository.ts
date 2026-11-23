@@ -30,6 +30,8 @@ export const githubRepository = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))");
 		await db.execute("DROP TABLE IF EXISTS access");
+		// The users with prepared environments of this repository, told of pushes to its default branch (github-inbox.ts).
+		await db.execute("CREATE TABLE IF NOT EXISTS environment_users (uid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
 	} }),
 	actions: {
 		internalIssuePermission: async (c, installation: GithubId, user: GithubUser): Promise<"write" | "read" | "none"> => {
@@ -86,6 +88,17 @@ export const githubRepository = actor({
 				pr = CASE WHEN excluded.issue IS NULL THEN coalesce(excluded.pr, items.pr) ELSE excluded.pr END,
 				moved = excluded.moved, head = CASE WHEN excluded.issue IS NULL THEN coalesce(excluded.head, items.head) ELSE excluded.head END, live = excluded.live`,
 				row.itemId, row.uid, row.issue ?? null, row.generation ?? null, row.pr ?? null, row.head ?? null, Number(row.live ?? true), row.installationId == null ? null : String(row.installationId), row.moved ?? null);
+		},
+		internalWatchPushes: async (c, uid: string): Promise<void> => {
+			requireServiceFor(c, "call");
+			if (typeof uid !== "string" || uid.length > 200) return;
+			await c.db.execute("INSERT OR REPLACE INTO environment_users (uid, at) VALUES (?, ?)", uid, Date.now());
+			// A user who has not built here in 30 days is told no more.
+			await c.db.execute("DELETE FROM environment_users WHERE at < ?", Date.now() - 30 * 86_400_000);
+		},
+		internalEnvironmentUsers: async (c): Promise<string[]> => {
+			requireServiceFor(c, "call");
+			return (await c.db.execute<{ uid: string }>("SELECT uid FROM environment_users ORDER BY at DESC LIMIT 100")).map(r => r.uid);
 		},
 		internalForget: async (c, itemId: string) => {
 			requireServiceFor(c, "call");

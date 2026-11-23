@@ -210,7 +210,10 @@ import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { agentTurn, turnTokens } from "../factory/budget.js";
 import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { judgeChecks } from "../environments.js";
+import { outputExcerpt } from "../factory/check-environment.js";
+import { PlatformChecks } from "../sandbox/platform-checks.js";
+import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson } from "../agent-publish.js";
@@ -310,6 +313,10 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 
 interface SessionMeta {
 	size?: number;
+	/** A session that only builds the repository's prepared environment (user-environments.ts): one turn, no agent. */
+	environmentBuild?: EnvironmentBuildOrigin;
+	/** The validated environment the current sandbox started from (SessionSummary.environment); null once it has another. */
+	environment?: SessionSummary["environment"] | null;
 	uid: string;
 	sessionId: string;
 	demo: boolean;
@@ -562,6 +569,7 @@ interface HeldSecrets {
 	/** Read before the turn had a number (the prompt's own row is redacted with them): what could not be opened, for the turn to tell once. */
 	unopened: string[];
 	snapshotSetup?: SealedSecrets["snapshotSetup"];
+	environment?: SealedSecrets["environment"];
 	screenshots: boolean;
 	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
 	opened: OpenedSecret[];
@@ -604,6 +612,8 @@ async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promis
 interface SessionVars {
 	/** Null for an actor that `user` did not create: it rejects everything and removes itself. */
 	meta: SessionMeta | null;
+	/** A build session's result, once its setup and checks ran (`buildEnvironment`); reported when its turn has closed. */
+	environmentResult?: EnvironmentBuildResult;
 	nextSeq: number;
 	/** Timeline items not yet in SQLite, in `seq` order. */
 	unwritten: TimelineItem[];
@@ -792,6 +802,8 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		sandbox: meta.sandbox,
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
 		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder" } } : {}),
+		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
+		...(meta.environment ? { environment: meta.environment } : {}),
 	};
 }
 
@@ -1201,22 +1213,24 @@ async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | nu
 		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : repo.branch;
 		if (!revision) return null;
 		const key = { repo: String(repo.id), attempt: randomBytes(16).toString("hex"), generation: snapshotGeneration(String(repo.id), saved.updatedAt, saved.connectedAt) };
-		const mayWrite = snapshotWriter(meta.origin) && !meta.pushedHead && !meta.windlassSessionId && !(await childSetupSeed(c, meta));
-		// A never-saved setup needs no Docker index lookup, runner request or GitHub tree.
-		if (!saved.previouslySaved || !(await layer.sandboxes.hasSnapshot(meta.uid, key.repo))) {
-			if (!mayWrite) return null;
+		// A build always starts cold, and is the only kind of session that saves an image (environments.ts).
+		if (meta.environmentBuild) {
+			if (meta.pushedHead || meta.windlassSessionId) return null;
 			return { key: { ...key, inputs: DEFERRED_INPUTS }, commit: "", defaultBranch: repo.branch, writer: true, command, updatedAt: saved.updatedAt };
 		}
+		// Only a validated environment's image is started from: one that is not ready and current at this place, or not
+		// there at all, leaves the session to start cold, as it would with none.
+		if (!secrets.environment?.usable || !saved.previouslySaved || !(await layer.sandboxes.hasSnapshot(meta.uid, key.repo))) return null;
 		const connection = await githubConnection(c, meta);
 		if (!connection || connection.connectedAt !== saved.connectedAt) return null;
 		const { commit, dependencies, defaultBranch } = await setupRevision(app, connection, repo, revision);
 		if (!dependencies) return null;
-		return { writer: mayWrite && repo.branch === defaultBranch, key: { ...key, inputs: digest([dependencies, saved.command]) },
+		return { writer: false, key: { ...key, inputs: digest([dependencies, saved.command]) },
 			commit, defaultBranch, command, updatedAt: saved.updatedAt };
 	} catch { return null; } // A missing permission, truncated tree or unavailable API still allows a normal clone.
 }
 
-async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, plan: SnapshotPlan | null) {
+async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, plan: SnapshotPlan | null, validated?: SealedSecrets["environment"]) {
 	const source = sandbox.snapshot, repo = meta.repo, app = githubApp();
 	if (!source || !repo || !app || !plan || source.attempt !== plan.key.attempt || source.repo !== plan.key.repo || source.inputs !== plan.key.inputs || source.generation !== plan.key.generation) return false;
 	const work = meta.origin?.role !== "reviewer" && meta.pushedHead ? meta.publishBranch : null;
@@ -1248,7 +1262,10 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 	meta.cloned = true;
 	meta.setupDue = null;
 	meta.snapshotCommit = source.commit;
-	note(c, turn, "info", `Started from a prepared sandbox. Setup ran at ${source.commit} on ${new Date(source.created).toISOString()}.`);
+	meta.environment = validated?.usable ? { commit: validated.commit, validatedAt: validated.validatedAt, checks: validated.checks } : null;
+	note(c, turn, "info", meta.environment
+		? `Started from a validated environment: setup and ${meta.environment.checks === 1 ? "the saved check" : `${meta.environment.checks} saved checks`} passed at ${meta.environment.commit.slice(0, 12)} on ${new Date(meta.environment.validatedAt).toISOString()}.`
+		: `Started from a prepared sandbox. Setup ran at ${source.commit} on ${new Date(source.created).toISOString()}.`);
 	await persist(c);
 	return true;
 }
@@ -1400,6 +1417,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
 		meta.accountSecrets = null;
 		meta.snapshotCommit = null;
+		meta.environment = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
 		meta.setupUnfinished = null;
@@ -1440,6 +1458,11 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		handle = await layer.sandboxes.connect(id, connectOptions(meta));
 		if (!handle) throw new TurnProblem("The new sandbox disappeared right after it was created.");
 		c.vars.startClock?.sandbox(Date.now() - making, true, handle.runnerStart);
+		// The repository's environment at this place: its image went missing (stale, build again), or it has none yet (build one).
+		if (!meta.environmentBuild && meta.repo && secrets?.snapshotSetup && canReuseSnapshot(snapshotsFor(meta.place), meta.harness, secrets.opened.length)) {
+			const kind = secrets.environment?.usable ? (plan && !handle.snapshot ? "missed" : null) : "cold";
+			if (kind) void c.keepAwake(userActor(c, meta.uid).internalEnvironmentNudge(meta.sessionId, kind).catch(() => undefined));
+		}
 		// Recorded for this sandbox from what it has, not from what the provider would make now.
 		meta.ownDataSandbox = handle.ownData ? id : null;
 		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes, id))) {
@@ -1457,7 +1480,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 
 	if (!meta.cloned && handle.snapshot) {
 		// A restarted actor can find the container before it recorded the successful refresh.
-		if (!await restorePrepared(c, meta, turn, handle, plan).catch(() => false)) {
+		if (!await restorePrepared(c, meta, turn, handle, plan, secrets?.environment).catch(() => false)) {
 			await layer.sandboxes.destroy(handle.id);
 			meta.sandboxId = null;
 			meta.cloned = false;
@@ -1927,6 +1950,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	return {
 		unopened: turn === null ? unopened : [],
 		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
+		environment: project && sealed.project === project.key ? sealed.environment : undefined,
 		// Off for the whole deployment wins over the repository's choice, also for a sandbox made before it was turned off.
 		screenshots: sealed.screenshots === true && config.factory.screenshots,
 		opened: sealed.redactOnly ? [] : opened,
@@ -2124,29 +2148,59 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
 	if (result.cleanupPending) throw new TurnProblem("The platform could not stop leftover setup processes. Send the prompt again to retry cleanup.");
-	if (plan && original && (!plan.commit || original === plan.commit) && !signal.aborted &&
-		layer.sandboxes.saveSnapshot && canSaveSnapshot(meta.origin, handed.length, result.state === "succeeded", result.durationMs, config.snapshotMinSetupMs)) {
-		// The setup can outlive an edit or a disconnect. Do not replace the newer image with its result.
-		const [current, connection] = await Promise.all([
-			orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS),
-			githubConnection(c, meta).catch(() => null),
-		]);
-		if (!current || !connection || current.command !== plan.command ||
-			snapshotGeneration(plan.key.repo, current.updatedAt, connection.connectedAt) !== plan.key.generation) return;
-		let inputs = plan.key.inputs;
-		if (inputs === DEFERRED_INPUTS) {
-			const app = githubApp(), repo = meta.repo;
-			if (!app || !repo) return;
-			const revision = await setupRevision(app, connection, repo, original).catch(() => null);
-			if (!revision?.dependencies || revision.commit !== original || revision.defaultBranch !== repo.branch) return;
-			inputs = digest([revision.dependencies, command]);
-		}
-		const began = Date.now();
-		note(c, turn, "info", "Saving a prepared sandbox for later sessions");
-		const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: original, created: began }).catch(() => false);
-		if (saved) await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt, meta.place.kind === "hosted" ? "hosted" : meta.place.machineId).catch(() => undefined);
-		note(c, turn, "info", saved ? `Saved the prepared sandbox in ${Math.round((Date.now()-began)/1000)} seconds.` : "The prepared sandbox could not be saved.");
+	if (meta.environmentBuild) c.vars.environmentResult = await buildEnvironment(c, meta, turn, sandbox, signal, secrets, plan, layer, { result, output, original: original ?? null, command });
+}
+
+/**
+ * A build session's work after its setup ran (environments.ts): every saved check once, then the image, saved only
+ * when setup and every check passed. A failed build saves nothing, so the snapshot store keeps the last ready image.
+ * Never throws: what went wrong is the result.
+ */
+async function buildEnvironment(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null, plan: SnapshotPlan | null, layer: SandboxLayer,
+	setup: { result: Awaited<ReturnType<typeof runSetupCommand>>; output: string; original: string | null; command: string }): Promise<EnvironmentBuildResult> {
+	const commit = setup.original ?? meta.repo?.baseSha ?? "";
+	const base: EnvironmentBuildResult = { finishedAt: null, commit: /^[a-f0-9]{40}$/.test(commit) ? commit : "", image: sandbox.image ?? "", checks: [], failure: null, snapshot: false };
+	if (setup.result.state !== "succeeded") {
+		const how = setup.result.state === "timed_out" ? "ran out of time" : setup.result.exitCode !== null ? `exited with ${setup.result.exitCode}` : "did not finish";
+		return { ...base, finishedAt: Date.now(), failure: { kind: "setup", check: null, line: `The setup command ${how}.`, excerpt: outputExcerpt(setup.output) } };
 	}
+	const checks = secrets?.checks ?? [];
+	// Files the checks write (build outputs, caches the repository ignores) stay; tracked files they change go back.
+	const clean = (await sandbox.run("git status --porcelain", { cwd: sandbox.cwd, timeoutMs: 60_000, signal }).catch(() => null))?.stdout.trim() === "";
+	note(c, turn, "info", checks.length ? `Validating: running ${checks.length === 1 ? "the saved check" : `the ${checks.length} saved checks`}.` : "No checks are saved, so the environment is validated by its setup alone.");
+	const ran = await new PlatformChecks(sandbox, checks, () => undefined, { agent: "the build", redactor: secrets?.redactor, signal }).runAll();
+	const judged = judgeChecks(ran);
+	for (const r of judged.checks) note(c, turn, r.status === "passed" ? "info" : "warn", `${r.name}: ${r.status.replace("_", " ")}${r.environment ? ` (the sandbox could not run it: ${r.environment.replace("_", " ")})` : ""}.`);
+	const done = { ...base, checks: judged.checks, ...(judged.codeFailures.length && { codeFailures: judged.codeFailures }) };
+	if (signal.aborted) return { ...done, finishedAt: Date.now(), failure: { kind: "setup", check: null, line: "The build was stopped.", excerpt: "" } };
+	if (judged.failure) return { ...done, finishedAt: Date.now(), failure: judged.failure };
+	if (clean) await sandbox.run("git reset -q --hard HEAD && git clean -fdq", { cwd: sandbox.cwd, timeoutMs: 120_000, signal }).catch(() => undefined);
+	// A quick setup is validated, and keeps no image: starting cold costs little more than starting from one.
+	if (setup.result.durationMs < config.snapshotMinSetupMs) return { ...done, finishedAt: Date.now() };
+	const saveFailed = (line: string): EnvironmentBuildResult => ({ ...done, finishedAt: Date.now(), failure: { kind: "save", check: null, line, excerpt: "" } });
+	if (!plan || !setup.original || !layer.sandboxes.saveSnapshot || (plan.commit && setup.original !== plan.commit)) return saveFailed("This place cannot keep a prepared sandbox of this repository.");
+	const project = setupProjectOf(meta);
+	const [current, connection] = await Promise.all([
+		project ? orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS) : null,
+		githubConnection(c, meta).catch(() => null),
+	]);
+	// The setup was changed, or GitHub reconnected, while it ran: what it made is not the current one's.
+	if (!project || !current || !connection || current.command !== plan.command || snapshotGeneration(plan.key.repo, current.updatedAt, connection.connectedAt) !== plan.key.generation)
+		return saveFailed("The setup command or the GitHub connection changed while it ran.");
+	let inputs = plan.key.inputs;
+	if (inputs === DEFERRED_INPUTS) {
+		const app = githubApp(), repo = meta.repo;
+		const revision = app && repo ? await setupRevision(app, connection, repo, setup.original).catch(() => null) : null;
+		if (!revision?.dependencies || revision.commit !== setup.original || revision.defaultBranch !== repo?.branch) return saveFailed("The repository has no lockfile the platform can key a prepared sandbox on.");
+		inputs = digest([revision.dependencies, setup.command]);
+	}
+	const began = Date.now();
+	note(c, turn, "info", judged.codeFailures.length ? `The sandbox ran every check; ${judged.codeFailures.join(", ")} failed on the base commit's code. Saving the prepared sandbox.` : "Every check passed. Saving the prepared sandbox.");
+	const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: setup.original, created: began }).catch(() => false);
+	if (!saved) return saveFailed("The prepared sandbox could not be saved here: the place's storage limits, or its free disk, left no room.");
+	await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt, meta.place.kind === "hosted" ? "hosted" : meta.place.machineId).catch(() => undefined);
+	note(c, turn, "info", `Saved the prepared sandbox in ${Math.round((Date.now() - began) / 1000)} seconds.`);
+	return { ...done, finishedAt: Date.now(), snapshot: true };
 }
 
 /** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
@@ -3596,6 +3650,12 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	} finally {
 		if (machine) await machine.releaseSlot(meta.sessionId, active.number).catch(error =>
 			c.log.warn({ msg: "could not release machine turn slot", error: describeError(error) }));
+		// A build reports once its turn has closed: the user's actor deletes the session on it.
+		if (meta.environmentBuild) {
+			const result = c.vars.environmentResult ?? { finishedAt: Date.now(), commit: "", image: "", checks: [], snapshot: false, failure: { kind: "setup" as const, check: null, line: "The build could not start its sandbox.", excerpt: "" } };
+			void c.keepAwake(userActor(c, meta.uid).internalEnvironmentResult(meta.sessionId, result).catch(error =>
+				c.log.warn({ msg: "could not report the environment build", error: describeError(error) })));
+		}
 	}
 }
 
@@ -3731,6 +3791,12 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
 		opening = false;
 		clock.opened();
+		// A build's turn ends here: it starts no agent (`buildEnvironment` ran in the setup).
+		if (meta.environmentBuild) {
+			c.vars.environmentResult ??= { finishedAt: Date.now(), commit: "", image: sandbox.image ?? "", checks: [], snapshot: false,
+				failure: { kind: meta.cloned ? "setup" : "clone", check: null, line: meta.cloned ? "The setup command did not run." : "The repository could not be cloned.", excerpt: "" } };
+			throw new TurnProblem("The environment build ended.");
+		}
 		used = sandbox;
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
 		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
@@ -4446,7 +4512,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, {code:"bad_input"});
 			if (offered.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
-		} else if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
+		} else if (!meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
 				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
@@ -4872,6 +4938,8 @@ export const agentSession = actor({
 				windlassSessionId: null,
 				turnStartedAt: null,
 				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin } : {}),
+				...(!input.origin && typeof input.environmentBuild?.project === "string" && typeof input.environmentBuild.place === "string"
+					? { environmentBuild: { project: input.environmentBuild.project, place: input.environmentBuild.place, screenshots: input.environmentBuild.screenshots === true } } : {}),
 			};
 			await c.db.execute("INSERT OR REPLACE INTO meta (id, data) VALUES (1, ?)", JSON.stringify(meta));
 		} catch (error) {
@@ -5175,6 +5243,7 @@ export const agentSession = actor({
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			if (meta.origin) throw new UserError("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.", { code: "item_session" });
+			if (meta.environmentBuild) throw new UserError("This session only builds the repository's prepared environment.", { code: "item_session" });
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {
 				throw new UserError("Write what the agent should do.", { code: "empty_prompt" });
 			}
@@ -5629,6 +5698,15 @@ export const agentSession = actor({
 		internalSummary: (c): SessionSummary => {
 			requireService(c);
 			return summaryOf(liveMeta(c));
+		},
+
+		internalBuildEnvironment: async (c): Promise<void> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			if (!meta.environmentBuild) throw new UserError("This session builds no environment.", { code: "bad_input" });
+			// Its one turn: a second call (a retried request) finds it taken.
+			if (meta.turns > 0 || c.vars.turn || c.vars.accepting) return;
+			await startPrompt(c, meta, { text: "Build the prepared environment." }, "Build the prepared environment.", null);
 		},
 
 		internalRename: async (c, title: string): Promise<SessionSummary> => {

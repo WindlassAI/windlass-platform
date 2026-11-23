@@ -68,6 +68,7 @@
         "runner-signin": "tsx ../scripts/runner-signin-check.ts",
         "secrets": "tsx ../scripts/secrets-check.ts",
         "setup": "tsx ../scripts/setup-check.ts",
+        "environment": "tsx ../scripts/environment-check.ts",
         "git-config": "tsx ../scripts/git-config-check.ts",
         "untrusted": "tsx ../scripts/untrusted-check.ts",
         "usage": "tsx ../scripts/usage-check.ts",

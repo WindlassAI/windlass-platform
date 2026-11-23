@@ -83,7 +83,9 @@ const operations = {
 		modelRelay: optional(oneOf(true)),
 		blockedNetwork: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })) }))],
+		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })),
+		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
+		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],

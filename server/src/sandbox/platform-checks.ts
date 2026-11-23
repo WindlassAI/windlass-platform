@@ -229,6 +229,19 @@ export class PlatformChecks {
 	}
 
 	/**
+	 * Every check once, in the saved order, whatever its `when` patterns: what a prepared environment's build
+	 * validates with (environments.ts). Emits nothing; stops at an abort.
+	 */
+	async runAll(): Promise<PlatformCheckResult[]> {
+		const results: PlatformCheckResult[] = [];
+		for (const check of this.checks) {
+			if (this.options.signal?.aborted) break;
+			results.push(await this.runOne(check));
+		}
+		return results;
+	}
+
+	/**
 	 * The agent's prompt ended with `end_turn`: runs what applies, and answers with the prompt that sends the agent
 	 * back, or null when the turn ends now (passed, nothing to run, out of rounds, or stopped).
 	 */

@@ -463,6 +463,8 @@ class RunnerHandle implements TurnSandbox {
 		/** What the runner said of making it (`SandboxHandle.runnerStart`), on the first connect after its create. */
 		readonly runnerStart?: RunnerStartTimes,
 		blockedNetwork = false,
+		/** The image it was made from (`SandboxHandle.image`), from a runner told `environment-image`. */
+		readonly image?: string,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
@@ -640,7 +642,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes, found.blockedNetwork === true) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes, found.blockedNetwork === true, found.image) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

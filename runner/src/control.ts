@@ -280,6 +280,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
 						owner.blockedNetwork = named?.includes("blocked-network" satisfies Capability) === true;
 						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
+						owner.environmentImage = named?.includes("environment-image" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);
 						owner.platformStoreCaps(f.storeLimits);
 						mayMaintain = true;

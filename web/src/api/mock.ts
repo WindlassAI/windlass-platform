@@ -63,6 +63,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
 import { initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
+import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import { publishAsksEveryTime } from "../../../server/src/agent-publish.js";
@@ -88,6 +89,8 @@ import {
 	CLAUDE_LAUNCH_MODES,
 	type RepositoryCheck,
 	type RepositoryChecks,
+	type RepositoryEnvironments,
+	type EnvironmentSchedule,
 	type Verified,
 	type AccountDefaults,
 	type LastStart,
@@ -2727,7 +2730,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		// Three agents that pushed their own branch, or asked to, on acme/signal-flags: one pushed with no pull request open,
 		// so "Open pull request" opens one from what is there; one pushed and then changed more; one named main, and was refused.
 		history("agent-pushed", "Fix add() and push the branch", "docker-windlass-sandbox", 50 * MINUTE, [{ text: "The add test is failing. Fix it, bring in what changed on main, and push.", script: "agentPush", effort: "low" }], { repository: sessionRepository("acme", "signal-flags") });
-		history(
+		const fromEnvironment = history(
 			"agent-pushed-more",
 			"Push the fix, then add a test",
 			"docker-windlass-sandbox",
@@ -2738,6 +2741,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			],
 			{ repository: sessionRepository("acme", "signal-flags") },
 		);
+		// Its sandbox started from acme/signal-flags's validated environment here (mock-environments.ts).
+		fromEnvironment.summary = { ...fromEnvironment.summary, environment: { commit: "4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a39", validatedAt: start - 9 * HOUR + 4 * MINUTE, checks: 2 } };
 		history("push-refused", "Fix add() and push it to main", "docker-windlass-sandbox", 90 * MINUTE, [{ text: "The add test is failing. Fix it and push it to main.", script: "agentPushRefused", effort: "low" }], { repository: sessionRepository("acme", "signal-flags") });
 
 		// One agent waits on a question when the user arrives: it asked half a minute ago.
@@ -2776,6 +2781,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 		// The user saved a setup command for acme/harbor some days ago: the launch form and the panel show it.
 		world.setups.set(7101, { command: "npm ci", updatedAt: start - 3 * 24 * HOUR - 50 * MINUTE });
+		// acme/signal-flags has a setup command and no secrets: its prepared environments are the mock's (mock-environments.ts).
+		world.setups.set(7106, { command: "corepack pnpm install --frozen-lockfile", updatedAt: start - 5 * 24 * HOUR });
 		// And four secrets: each scope under a name that looks like a credential and under one that does not, covering both kinds of names.
 		world.secrets.set(
 			7101,
@@ -2855,6 +2862,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- setup commands of repositories -----------------------------------------------------------
 
+	/** Why a repository can have no prepared environment, by the server's rules (user-environments.ts); null when it can. */
+	function environmentInputs(world: World, repositoryId: GithubId): string | null {
+		if (!world.setups.get(repositoryId)?.command) return "Save a setup command first: an environment is what it prepares.";
+		if ((world.secrets.get(repositoryId)?.size ?? 0) > 0) return "A repository with saved secrets always starts cold, so it has no prepared environment.";
+		return null;
+	}
 	function setupOf(world: World, repositoryId: GithubId): RepositorySetup {
 		const saved = world.setups.get(repositoryId);
 		return { command: saved?.command ?? "", updatedAt: saved?.updatedAt ?? null, timeoutMs: MOCK_SETUP_LIMIT_MS };
@@ -3603,6 +3616,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(320);
 				nameAtSave(world(), repositoryId);
 				return saveChecks(world(), repositoryId, checks);
+			},
+			async repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments> {
+				await latency(180);
+				return mockEnvironments(repositoryId, realNow(), environmentInputs(world(), repositoryId));
+			},
+			async rebuildEnvironment(repositoryId: GithubId, place?: string): Promise<RepositoryEnvironments> {
+				await latency(260);
+				const refused = environmentInputs(world(), repositoryId);
+				if (refused) throw new PlatformError("user", refused, { reason: "environment_refused" });
+				return mockRebuild(repositoryId, place, realNow(), later, () => undefined);
+			},
+			async saveEnvironmentSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule): Promise<RepositoryEnvironments> {
+				await latency(220);
+				return mockSchedule(repositoryId, schedule, realNow(), environmentInputs(world(), repositoryId));
 			},
 			async repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork> {
 				await latency(180);

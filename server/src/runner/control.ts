@@ -162,8 +162,10 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *   store-limits     the report's `storeLimits`: the snapshot and Git mirror limits in force (docs/machines.md)
  *   blocked-network  restricted proxy observation on the session socket (report and connect flags)
  *   sign-in-reason   a harness entry's `signInReason`: why its sign-in could not be checked ("unknown")
+ *   environment-image  a connect's `image`: the Docker image id the sandbox was made from, which a prepared
+ *                    environment records (docs/github-and-repositories.md, "A repository's prepared environment")
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a

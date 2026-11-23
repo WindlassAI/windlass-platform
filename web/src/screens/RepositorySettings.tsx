@@ -9,6 +9,7 @@ import type { RepositoryView } from "@contract";
 import { useEffect, useState } from "react";
 import { ChecksEditor } from "../components/Checks";
 import { DefaultsSection } from "../components/Defaults";
+import { EnvironmentSection } from "../components/Environments";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
 import { NetworkSection } from "../components/Network";
@@ -253,6 +254,14 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						<div className="usage-card repo-form">
 							<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
 						</div>
+					</section>
+
+					<section className="usage-section repo-saved" aria-labelledby="repo-environment">
+						<h2 className="usage-title" id="repo-environment">
+							Environment
+						</h2>
+						<p className="usage-lede">A prepared sandbox for {name}, rebuilt on a schedule and after pushes, run through the setup command and every check above. Sessions and work items start from it only while it passes; otherwise they start cold.</p>
+						<EnvironmentSection key={generation} repositoryId={page.id} labelledBy="repo-environment" />
 					</section>
 
 					<section className="usage-section repo-saved repo-network" aria-labelledby={ids.network}>

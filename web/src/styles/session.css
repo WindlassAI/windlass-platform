@@ -3328,3 +3328,14 @@ dd.kv-clip > svg {
 	font-size: var(--text-12);
 	color: var(--ink-dim);
 }
+
+/* The sandbox started from a validated environment (SessionSummary.environment). */
+.panel-env {
+	margin: 4px 0 0;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.panel-env code {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}

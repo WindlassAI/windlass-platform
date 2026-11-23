@@ -8,6 +8,7 @@ GitHub App is in [operating.md](operating.md#the-github-app). What users see is 
 - [GitHub](#github): connecting, tokens, the App's permissions and events, the agent's publish tools,
   replaced sandboxes, failures, testing
 - Per repository: [setup command](#a-repositorys-setup-command), [checks](#a-repositorys-checks),
+  [prepared environment](#a-repositorys-prepared-environment),
   [what a pull request shows was verified](#what-a-pull-request-shows-was-verified),
   [secrets](#a-repositorys-secrets), [MCP servers](#a-projects-mcp-servers), [the repository's page](#a-repositorys-page)
 - Per account: [Account settings](#account-settings)
@@ -532,6 +533,82 @@ cd server && npx tsx ../scripts/verified-check.ts --docker  # the same rules aga
 
 The mock has two checks for acme/harbor (`?mock=1`, `/repositories/7101/settings`), one with patterns its turns
 never match; a turn where all checks have patterns ends "no check covers what changed".
+
+## A repository's prepared environment
+
+A prepared sandbox (a post-setup snapshot, [configuration.md](configuration.md#docker-setup-snapshots)) used to be
+saved as a side effect of a session's successful setup, and was never checked. A repository whose image could
+not run its own checks (a pnpm that is not the one the repository pins, say) still got one, and every session
+then started in it. A **prepared environment** is a snapshot that the platform builds on its own, runs through
+the setup command and every saved check, and **promotes only when all of them pass**.
+
+**The record.** One per user, repository and place (`hosted` or a machine's id), in the user's actor
+(`environment` table, `server/src/environments.ts`). It keeps two parts:
+
+- the **attempt**: the latest build's trigger, start and end, its base commit, image, the setup command's and
+  the checks' digests, each check's result with its classification (`factory/check-environment.ts`:
+  `package_manager`, `network`, `not_found`, else the code's), and the first failure's output excerpt;
+- the **ready** part: the same facts of the last build that passed, with when it was built and validated.
+
+Its state is one of `building` (an attempt is running), `ready` (the ready part matches today's setup command,
+checks and image), `failed` (the latest attempt failed after the last ready one) and `stale` (the ready part was
+built under another setup command, other checks, or an image the place no longer has). A failed build never
+touches the ready part, and the image it made is never saved: the snapshot store keeps one image per user and
+repository, so a failed build leaves the last ready image in place.
+
+**Use.** A session or work item starts from a prepared sandbox only when the record for its place is ready
+and current (`internalSessionSecrets`, `environment`). Otherwise it starts cold, as before, and the timeline
+says so once. A session that starts from one has the line "Started from a validated environment" with the
+commit and time. Ordinary sessions no longer save snapshots; only builds do.
+
+**Builds.** A build is a hidden session of the user's (`SessionSummary.environmentBuild`, not listed) with the
+repository's saved defaults (profile, screenshots), on the place it builds for. Its one turn opens the sandbox,
+clones the default branch, runs the setup command, then runs every saved check once, ignoring `when` patterns.
+It saves the snapshot only when all passed, reports to the user's actor and is deleted. It starts no agent, so
+it is the same for every agent. It goes through the same gates as any session: the user's running-agent limit,
+daily sandbox time and hosted places (`internalAcquireRun`, `holdSandbox`), a machine's slots, and on save the
+snapshot store's own caps (E2B's per-user and total snapshot counts; a machine's `--snapshot-disk`,
+`--snapshot-user` and `--keep-free`). A refusal is recorded as a note on the record ("waiting: daily sandbox
+time is used up") and retried at the next trigger, never as a failed environment. One build per user runs at a
+time; the rest wait in order.
+
+**Triggers.**
+
+| Trigger | When |
+|---|---|
+| Schedule | per repository: nightly (the default once a setup command is saved), every 12 h, every 6 h, or off (the default without a setup command). Nightly starts at a time between 01:00 and 05:00 UTC picked from the user and repository, so builds spread out |
+| Push to the default branch | a `push` delivery, or a merged pull request into the default branch. Debounced: 10 minutes after the last push, and at most 60 minutes after the first |
+| Rebuild | the button on the repository's Settings, for one place or all |
+| A change | saving the setup command or the checks marks every record stale and builds again 2 minutes after the last save. A session whose ready record's image was not found at its place (the image changed or was evicted) marks it stale and builds again |
+
+**Places.** A repository gets an environment where its own sessions and work items ran in the last 14 days, at
+most three places, and only where prepared sandboxes are on: hosted when the deployment has `WLP_SNAPSHOTS` or
+`WLP_E2B_SNAPSHOTS` on; a machine when its runner is connected on the signed protocol, offers the profile, and
+its owner left "Let features use it" on **Any feature** (not **When named** or **Never**). A machine that is away is skipped until it is
+back. Rebuild can name any such place. A repository with secrets never uses a prepared sandbox (unchanged), so
+it gets no environment.
+
+**A failed validation** is one the sandbox caused: setup failed, a check could not start, or check-environment.ts
+classifies the failure ("the sandbox could not run `typecheck`: the image's pnpm is not the one the repository
+pins"). Only that keeps the environment from being promoted, and the Settings section shows the failing check, its
+classification and the end of its output. A check that ran and failed on the base commit's code (main is red) says
+nothing about the sandbox: the environment is promoted anyway, and its record lists those checks
+(`codeFailures`, "Ready · main's checks fail: lint").
+
+**Snapshot keys.** The image is the snapshot store's, under its existing key (deployment, place, user, repository,
+settings generation, dependency inputs, base image, profile, screenshots variant, network). A build asks for its
+sandbox like any session (`sessionSandboxInput`), so a new part of the key, such as a sandbox size, reaches builds
+by adding it to that input and to the record's sandbox fields beside `profile`; the record itself is keyed by repository and
+place only.
+
+**Follow-up, not promised.** Sessions of Claude Code, OpenCode and Codex start cold: reusing a snapshot is
+Windlass-only (`canReuseSnapshot`). The builds themselves run no agent, so extending reuse to the other agents is a
+change to that rule, not to builds.
+
+**What a runner needs.** Builds use only what runners already do. A runner that names the `environment-image`
+capability also says in a connect which image the sandbox was made from (`image`), which the record then shows
+and compares. Older runners leave it empty, and an image change on them is found when a session misses the
+ready image.
 
 ## A repository's network
 

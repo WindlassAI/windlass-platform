@@ -114,6 +114,11 @@ export interface SandboxHandle {
 	/** On a personal machine, the connected runner's permission to use its browser. */
 	readonly runnerScreenshots?: boolean;
 	readonly snapshot?: SnapshotSource;
+	/**
+	 * The image the sandbox was made from, as its place names it: the Docker image id, E2B's template build, a
+	 * runner's image id to a server that named `environment-image`. What a prepared environment records. Absent where the place does not say.
+	 */
+	readonly image?: string;
 	readonly profile: SandboxProfileId;
 	/**
 	 * Docker: this sandbox's Windlass data directory is a volume of its own (SESSION_VOLUME_PROFILES),

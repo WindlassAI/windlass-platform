@@ -118,6 +118,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		relay?: DockerModelRelay,
 		/** The free bytes below which a mirror save writes nothing (`StoreLimits.free`); the default limits' when left out. */
 		private readonly mirrorFloor?: () => number,
+		/** The image the container was made from (`SandboxHandle.image`). */
+		readonly image?: string,
 	) {
 		markTurnSandbox(this);
 		// The user names the lease in the relay, whose ceiling per user counts by it.
@@ -390,6 +392,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 interface Inspected {
 	screenshots: boolean;
 	snapshot?: SnapshotSource;
+	/** The Docker image id the container was made from. */
+	image?: string;
 	memory: number;
 	resize?: MachineSlotCapacity["unit"];
 	status: string;
@@ -543,10 +547,10 @@ export class DockerSandboxes implements Sandboxes {
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
 		// JSON has no raw newline in it, so each of the two takes a line of its own.
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}\n{{json .Mounts}}\n{{json .Config.Labels}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{.Image}}\n{{json .Mounts}}\n{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
 		const [fields = "", mountsJson = "", labelsJson = ""] = result.stdout.trim().split("\n");
-		const [status, shares, nanos, memory, swap, pids] = fields.split("|");
+		const [status, shares, nanos, memory, swap, pids, image] = fields.split("|");
 		let labels: Record<string, string> | null;
 		let mounts: { Type?: string; Name?: string; Destination?: string }[] | null;
 		try { labels = JSON.parse(labelsJson); mounts = JSON.parse(mountsJson); }
@@ -563,7 +567,7 @@ export class DockerSandboxes implements Sandboxes {
 		const ownName = windlass && this.options.ownVolumeName && NAME.test(uid ?? "") ? this.options.ownVolumeName(uid!, id) : undefined;
 		const ownData = data?.Type === "volume" && ownName !== undefined && data.Name === ownName;
 		return { status, profile, uid, ownData, sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
-			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory),
+			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory), image: /^sha256:[a-f0-9]{64}$/.test(image ?? "") ? image : undefined,
 			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
 
@@ -867,7 +871,7 @@ export class DockerSandboxes implements Sandboxes {
 		}
 		// Only Windlass's own sandboxes: a harness session has a relay of its own (runner/src/claude-relay.ts).
 		const relay = /^[a-f0-9]{12}$/.test(id) && this.options.sessionRelay === undefined && await this.modelRelayReady() ? this.options.modelRelay : undefined;
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free, found.image);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

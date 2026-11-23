@@ -130,7 +130,7 @@ The runner saves `--name`, `--egress`, `--egress-allow`, `--egress-domains` and 
 
 `N` is a positive whole number. A turn that would pass `--max-running` or `--max-sandboxes` ends with, for example, "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." The Machines page shows these limits under **Sandbox limit**, and says they are set on the machine, not there.
 
-`SIZE` is a number with `MB`, `GB` or `TB`, such as `20GB` or `512MB`. The platform can cap the snapshot options: it can hold `--snapshot-disk` and `--snapshot-user` to at most its own limit, and `--keep-free` to at least its own. A small machine can lower `--keep-free`, down to the platform's floor. The Machines page shows the limits in force under **Snapshot storage**. These options need runner 0.3.2 or later.
+`SIZE` is a number with `MB`, `GB` or `TB`, such as `20GB` or `512MB`. The platform can cap the snapshot options: it can hold `--snapshot-disk` and `--snapshot-user` to at most its own limit, and `--keep-free` to at least its own. A small machine can lower `--keep-free`, down to the platform's floor. The Machines page shows the limits in force under **Snapshot storage**. These options need runner 0.3.2 or later. A [prepared environment](/docs/settings#environment) is kept under the same limits: when a build's image does not fit, the build says so and sessions start cold.
 
 ### Allowed profiles
 

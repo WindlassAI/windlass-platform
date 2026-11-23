@@ -66,6 +66,28 @@ Commands that Windlass runs before it calls a turn done, in the agent's own sand
 
 Agents on the repository have new checks from their next turn.
 
+### Environment
+
+A prepared sandbox for the repository: the platform runs the setup command in a fresh sandbox, then every check above, all of them, on the default branch. It keeps the result when setup passes and the sandbox could run every check. New agents and work items on the repository then start from it, with setup already done, and say "Started from a validated environment". Until one passes, and while the one there is stale, they start cold, as without one.
+
+There is one environment for each place the repository's agents and work items ran in the last 14 days: this platform, or one of your machines (at most three). The section shows each place with its state:
+
+| State | What it means |
+| --- | --- |
+| Ready | It passed, under the setup command and checks saved now. New sessions start from it. When a check ran and failed on the default branch's own code (main is red), it is still ready and says so: "Ready · main's checks fail: lint". |
+| Building | A build is running. |
+| Failed | The latest build failed because of the sandbox: setup failed, or the sandbox could not run a check (an **environment problem**, such as a pnpm that is not the one the repository pins). The section shows which check, what kind of problem, and the end of its output. A failed build never replaces the last one that passed: if that one still matches the saved settings, sessions keep starting from it. |
+| Stale | The setup command or the checks changed since it was built, or the image is no longer at that place. Sessions start cold until it is rebuilt. |
+
+It is rebuilt:
+
+- on a schedule: **Nightly** (the default once a setup command is saved), every 12 hours, every 6 hours, or **Off**;
+- 10 minutes after a push to the default branch (or a merged pull request), at most an hour after the first of several;
+- 2 minutes after you save the setup command or the checks;
+- when you choose **Rebuild** for a place, or **Rebuild all**.
+
+A build takes sandbox time like an agent, counts as one of your running agents while it runs, and is held to the same limits. When a limit is reached it waits, says why, and tries again later. It is built only on machines left on **Any feature** under [Let features use it](/docs/machines#let-features-use-it), never on one set to **When named** or **Never**, and waits while a machine is offline. A repository with saved secrets has no environment. Only Windlass sessions start from one.
+
 ### Network
 
 Where the platform limits its hosted sandboxes' network (**Restricted**, see Security), the repository's agents reach the model API, GitHub, the bucket that keeps their memory and the hosts the platform allows. Here you can let them reach more, for every hosted agent on the repository. It changes nothing for agents on your own machines. A [cross-repo feature](/docs/factory#cross-repo-features)'s own agent, which plans over both repositories, reaches what each one's list allows; each of its subtasks gets its own repository's.

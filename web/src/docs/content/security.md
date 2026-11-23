@@ -117,6 +117,8 @@ The platform can ask the runner only for what its protocol names. In short, it c
 
 It cannot sign an agent in or out. That is done only in a terminal on the machine.
 
+With those same requests it builds a repository's [prepared environment](/docs/settings#environment) on the machine: a sandbox where it clones the repository, runs the setup command and the saved checks, and keeps the image only when they pass. It does this only for repositories your sessions or work items ran there lately, never on a machine set to **When named** or **Never** under [Let features use it](/docs/machines#let-features-use-it), and within the machine's snapshot limits.
+
 > **Careful** The platform can run any command in the containers the runner made, Claude Code's and OpenCode's included. In those containers, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the Claude setup token.
 
 ### What the platform cannot do there

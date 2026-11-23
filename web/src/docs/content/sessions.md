@@ -158,7 +158,7 @@ Where the repository has a [setup command](/docs/settings#setup-command), it nor
 
 Hosted Docker and supported machine runners can reuse Git objects from your earlier clones of the same connected repository on that machine. GitHub still supplies the branch head at launch. Each session keeps its own complete clone, including after the machine evicts the mirror.
 
-On deployments with prepared Docker sandboxes enabled, a successful setup on the repository’s default branch can be saved before the first agent turn. Setup must take at least 30 seconds and receive no repository secrets. A later session on the same machine can reuse your snapshot when its dependency files, setup command, sandbox image, and platform match. Subtasks and reviewers can reuse a prepared sandbox. Only the original builder or a personal session can save one.
+On deployments with prepared sandboxes enabled, a session starts from the repository's [validated environment](/docs/settings#environment) at its place when there is one that is ready: setup already ran there, and every saved check passed. The timeline then says "Started from a validated environment", with the commit and when it passed, and so does the Sandbox section of the side panel. It also needs matching dependency files, setup command, sandbox image and platform, and no repository secrets. Otherwise the session runs setup itself, as without one. Sessions no longer save prepared sandboxes; only environment builds do.
 
 Hosted E2B deployments can enable the same for E2B sandboxes. The snapshot is kept at E2B for your account on this platform only, never for another user, and expires after 14 days. Changing the setup command, reconnecting GitHub or adding a repository secret stops it being used.
 
