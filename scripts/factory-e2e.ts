@@ -2395,12 +2395,14 @@ try {
 		// Make the verdict visibly different even on the fake layer, whose head is a branch name.
 		const ci = harbor.ci.get(pull.head)!;
 		ci.statuses = [{ context: "lint", state: "success" }];
+		const firstTitle = pull.title;
 		await user.actOnItem({ id: item.id, action: { kind: "send_back", note: "Write a second short program." } });
 		const second = await untilItem(user, item.id, "the second handoff", (view) => view.state === "review" && view.verdicts.length === 2, CI_WAIT_MS);
 		await waitFor("the second handoff to edit the same comment", () => edits() === 2, 10_000);
 		const updated = checkHandoff(pull, second);
 		assert(second.report === null && !updated.body.includes("What the fake agent did"), "the second run shows the first report");
-		assert(pull.title === item.title && pull.body.startsWith("Add a small program to the repository. (report)") && !pull.body.includes("What the fake agent did"), "the second publish kept the previous report’s PR title or description");
+		// The pull request keeps the title its first publish gave it; the description is the new run's.
+		assert(pull.title === firstTitle && pull.body.startsWith("Add a small program to the repository. (report)") && !pull.body.includes("What the fake agent did"), `the second publish retitled the pull request (${JSON.stringify(pull.title)}) or kept the previous report’s description`);
 		assert(updated.id === original.id && updated.body.includes("CI passed \\(2 checks\\)"), "the second verdict did not replace the first on the same comment");
 		const fired = main.text.match(/\[wlp\] schedule\.fired action=internalDue item=[^\n]*/g) ?? [];
 		assert(fired.length > 0, "no firing of the item's schedule was logged");
