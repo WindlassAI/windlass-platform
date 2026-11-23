@@ -15,7 +15,7 @@
  */
 import type { FeaturePlan, ItemSummary, ItemView } from "@contract";
 import { LongText } from "../components/Fold";
-import { compact, plural, sandboxTime } from "../lib/format";
+import { compact, plural } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { activeSubtasks, doingNow, doneKeys, plannedSubtasks, siblingsOf, subtaskState, tallyOf, tallyParts, type PlannedSubtask, type SubtaskState, type SubtaskTally } from "../lib/subtasks";
 import { ItemGlyph } from "./Items";
@@ -141,7 +141,6 @@ export function SubtasksBlock({ plan, children, now }: { plan: FeaturePlan; chil
 	const made = subtasks.map((entry) => entry.child).filter((child): child is ItemSummary => child !== null);
 	const spent = made.reduce((sum, child) => sum + child.spent.tokens, 0);
 	const budget = subtasks.reduce((sum, entry) => sum + (entry.child?.budget.tokens ?? entry.task.budget.tokens), 0);
-	const worked = made.reduce((sum, child) => sum + child.spent.activeSeconds, 0);
 	return (
 		<section className="subtasks-block" aria-label="Subtasks">
 			<header className="subtasks-head">
@@ -158,7 +157,6 @@ export function SubtasksBlock({ plan, children, now }: { plan: FeaturePlan; chil
 				<span>
 					{compact(spent)} <span className="tone-faint">of {compact(budget)} tokens</span>
 				</span>
-				{worked > 0 ? <span>{sandboxTime(worked)} working</span> : null}
 			</p>
 		</section>
 	);

@@ -53,8 +53,8 @@ describe("the subtasks of a running feature", () => {
 		const doing = subtasks.map((entry) => doingNow(entry, numbers, done, NOW()));
 		expect(doing[0]!.word).toBe("merged");
 		expect(doing[1]!.word).toBe("implementing");
-		expect(doing[1]!.fact).toMatch(/^turn 2 of 5/);
-		expect(doing[2]).toMatchObject({ word: "fixing", fact: "your checks failed, fix 1 of 2", code: "pnpm test src/golden" });
+		expect(doing[1]!.fact).toBe("turn 2");
+		expect(doing[2]).toMatchObject({ word: "fixing", fact: "your checks failed, fix 1", code: "pnpm test src/golden" });
 		expect(doing[3]!.word).toBe("asks you");
 		expect(doing[4]).toEqual({ word: "waits", fact: "after 2" });
 		expect(doing[5]).toEqual({ word: "waits", fact: "after 3 and 4" });
@@ -132,7 +132,7 @@ describe("live updates from the feed's open subtasks", () => {
 
 	it("the mock's feed carries each open subtask with its step", () => {
 		const golden = children.find((child) => child.parent?.key === "golden")!;
-		expect(golden.step).toMatchObject({ kind: "implement", rounds: { gate: 1 }, caps: { gate: 2 } });
+		expect(golden.step).toMatchObject({ kind: "implement", rounds: { gate: 1 } });
 		expect(children.some((child) => child.state === "done")).toBe(false);
 	});
 });

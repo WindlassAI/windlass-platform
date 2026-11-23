@@ -6,7 +6,7 @@
  * Nothing here assumes one subtask at a time: any number may run at once.
  */
 import type { FeaturePlan, ItemSummary, PlanSubtask } from "@contract";
-import { relativeTime, sandboxTime } from "./format";
+import { relativeTime } from "./format";
 
 /** Where a subtask is, in one of five words: the segment bar's colours and the tally's parts. */
 export type SubtaskState = "running" | "asks" | "done" | "stopped" | "to_go";
@@ -93,7 +93,7 @@ const firstCommand = (task: PlanSubtask): string | undefined => task.acceptance.
 
 /**
  * What a subtask is doing now, from its summary's step (`ItemSummary.step`) where the server sends one:
- * "implementing · turn 2 of 5 · 12 min", "fixing · your checks failed, fix 1 of 2", "asks you · 3m ago".
+ * "implementing · turn 2", "fixing · your checks failed, fix 1", "asks you · 3m ago".
  * A subtask not made yet says what it waits for: "after 2 and 3", or "not started".
  */
 export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, number>, done: ReadonlySet<string>, now: number): Doing {
@@ -102,11 +102,10 @@ export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, num
 		const waiting = task.dependsOn.filter((key) => !done.has(key));
 		return waiting.length > 0 ? { word: "waits", fact: afterWords({ ...task, dependsOn: waiting }, numbers) } : { word: "not started", fact: null };
 	}
-	const worked = child.spent.activeSeconds > 0 ? sandboxTime(child.spent.activeSeconds) : null;
 	if (child.question) return { word: "asks you", fact: relativeTime(child.question.askedAt, now) };
 	switch (child.state) {
 		case "done":
-			return { word: "merged", fact: worked ? `into the feature branch · ${worked}` : "into the feature branch" };
+			return { word: "merged", fact: "into the feature branch" };
 		case "failed":
 			return { word: "failed", fact: null };
 		case "cancelled":
@@ -122,22 +121,22 @@ export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, num
 			return { word: "waits", fact: (child.wait && WAIT_FACT[child.wait.reason]) ?? null };
 	}
 	const step = child.step;
-	const turns = `turn ${Math.max(1, child.spent.turns)} of ${child.budget.turns}`;
-	if (!step) return { word: "working", fact: [turns, worked].filter(Boolean).join(" · ") };
-	const { rounds, caps } = step;
+	const turns = `turn ${Math.max(1, child.spent.turns)}`;
+	if (!step) return { word: "working", fact: turns };
+	const { rounds } = step;
 	switch (step.kind) {
 		case "implement":
 		case "refine":
-			if (rounds.gate > 0) return { word: "fixing", fact: `your checks failed, fix ${rounds.gate} of ${caps.gate}`, code: firstCommand(task) };
-			return { word: "implementing", fact: [turns, worked].filter(Boolean).join(" · ") };
+			if (rounds.gate > 0) return { word: "fixing", fact: `your checks failed, fix ${rounds.gate}`, code: firstCommand(task) };
+			return { word: "implementing", fact: turns };
 		case "gate":
-			return { word: "checking", fact: rounds.gate > 0 ? `after fix ${rounds.gate} of ${caps.gate}` : null };
+			return { word: "checking", fact: rounds.gate > 0 ? `after fix ${rounds.gate}` : null };
 		case "ci_fix":
-			return { word: "fixing", fact: `CI failed, fix ${rounds.ci} of ${caps.ci}` };
+			return { word: "fixing", fact: `CI failed, fix ${rounds.ci}` };
 		case "conflict":
-			return { word: "merging", fact: `the base, ${rounds.conflict} of ${caps.conflict}` };
+			return { word: "merging", fact: `the base, round ${rounds.conflict}` };
 		case "review_fix":
-			return { word: "fixing", fact: `the review, ${rounds.review ?? 0} of ${caps.review ?? 0}` };
+			return { word: "fixing", fact: `the review, fix ${rounds.review ?? 0}` };
 		case "publish":
 			return { word: "pushing", fact: null };
 		case "ci":
@@ -155,7 +154,6 @@ const WAIT_FACT: Partial<Record<NonNullable<ItemSummary["wait"]>["reason"], stri
 	budget: "for budget",
 	sandboxes: "for a sandbox",
 	integration: "for testing together",
-	review_cap: "for the review cap",
 };
 
 /** The keys of the plan's subtasks whose items are done: what a waiting subtask's "after" is read against. */
