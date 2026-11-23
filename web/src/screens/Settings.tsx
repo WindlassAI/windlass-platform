@@ -195,7 +195,7 @@ export function Settings() {
 						Machines
 					</h2>
 					<p className="usage-lede">
-						Your own Linux machines with Docker, where the agents you launch can run.{" "}
+						Your own computers with Docker, where the agents you launch can run.{" "}
 						<a className="link" {...linkProps({ name: "machines" })}>
 							Your machines
 						</a>

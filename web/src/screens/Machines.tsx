@@ -59,8 +59,13 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
 		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
-		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}${agents.windlassSandbox ? " --allow-profile docker-windlass-sandbox" : ""}`,
+		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}${agents.windlassSandbox ? " --allow-profile docker-windlass-sandbox" : " --allow-profile docker-hardened"}`,
 	].join("\n");
+}
+
+/** The one-line install the platform serves (server/src/install-script.ts); null while no runner image is published. */
+export function oneLineInstall(info: MachinesInfo): string | null {
+	return info.runnerImage === null ? null : `curl -fsSL ${info.platformUrl}/install.sh | sh`;
 }
 
 /** A time of day, with the day when it is not today: "14:02", "17 Nov, 14:02". */
@@ -661,6 +666,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode, windlassSandbox };
 	const setup = installCommand(info, agents, { importKeys });
 	const install = installCommand(info, agents);
+	const oneLine = oneLineInstall(info);
 	const complete = code.replace(/-/g, "").length === 8;
 
 	const shown = useRef(step.step);
@@ -831,7 +837,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	return (
 		<Dialog
 			title="Add a machine"
-			lede="Run this in a terminal on a machine with Docker: Linux, or a Mac or Windows PC with Docker Desktop or OrbStack. The runner connects out to the platform; nothing needs to reach your machine from outside."
+			lede="Run this in a terminal on a machine with Docker: Linux, a Mac with Docker Desktop or OrbStack, or Windows with Docker Desktop, in a WSL terminal. The runner connects out to the platform; nothing needs to reach your machine from outside."
 			onClose={onClose}
 			footer={
 				<>
@@ -845,28 +851,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 			}
 		>
 			<div className="machine-dialog">
-				{setup ? (
+				{oneLine ? (
 					<div>
-						<p className="machine-step">Set it up</p>
-						<div className="machine-setup-agents">
-							{offersClaude && <Check checked={claude} onChange={setClaude} label="Enable Claude Code" />}
-							{offersCodex && <Check checked={codex} onChange={setCodex} label="Enable Codex" />}
-							{offersOpenCode && <Check checked={openCode} onChange={setOpenCode} label="Enable OpenCode" />}
-							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
-							{agents.openCode && <Check checked={importKeys} onChange={setImportKeys} label="Import existing OpenCode API keys during setup" />}
-							<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow Windlass's command sandbox (recommended for Windlass and Codex)" />
-							{windlassSandbox && <p>Adds <code>--allow-profile docker-windlass-sandbox</code>: sessions may also run each command in a sandbox without network. Their container is loosened so that the sandbox can run inside it.</p>}
-						</div>
-						<Command text={setup} label="The setup command" />
-						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name. Under Docker Desktop the machine is named <code>docker-desktop</code> unless you add <code>--name</code> and a name of your own.</p>
-					</div>
-				) : null}
-				{install ? (
-					<div>
-						<p className="machine-step">Or start the runner in the background</p>
-						<Command text={install} label="The install command" />
+						<p className="machine-step">Install</p>
+						<Command text={oneLine} label="The install command" />
 						<p className="field-note">
-							Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
+							It checks Docker (Docker Desktop, OrbStack or Docker Engine), fetches the runner and opens its setup in your terminal. Setup pairs the machine, asks its name, signs its agents in, asks whether to allow Windlass's command sandbox (recommended, and on by default), its network and its limits, then starts the runner in the background. Nothing else is installed. <a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">Read the script</a>.
 						</p>
 					</div>
 				) : (
@@ -875,6 +865,43 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<span>The runner is not published yet, so there is nothing to install from here. Once it is, its command is shown here.</span>
 					</p>
 				)}
+				{oneLine && setup && install ? (
+					<details className="panel-more machine-other-ways">
+						<summary>
+							<ChevronIcon size={12} className="panel-more-chevron" />
+							Other ways
+						</summary>
+						<div className="machine-other-ways-body">
+							<div>
+								<p className="machine-step">Set it up with Docker</p>
+								<div className="machine-setup-agents">
+									{offersClaude && <Check checked={claude} onChange={setClaude} label="Enable Claude Code" />}
+									{offersCodex && <Check checked={codex} onChange={setCodex} label="Enable Codex" />}
+									{offersOpenCode && <Check checked={openCode} onChange={setOpenCode} label="Enable OpenCode" />}
+									{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
+									{agents.openCode && <Check checked={importKeys} onChange={setImportKeys} label="Import existing OpenCode API keys during setup" />}
+									<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow Windlass's command sandbox (recommended for Windlass and Codex)" />
+									<p>
+										{windlassSandbox ? (
+											<>Adds <code>--allow-profile docker-windlass-sandbox</code> to both commands: sessions may also run each command in a sandbox without network. Their container is loosened so that the sandbox can run inside it.</>
+										) : (
+											<>Adds <code>--allow-profile docker-hardened</code> to both commands: sessions run only on hardened Docker, and setup starts with the sandbox turned off.</>
+										)}
+									</p>
+								</div>
+								<Command text={setup} label="The setup command" />
+								<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes, then prints the command that starts the runner. With no agent ticked it is the same setup as the install. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name. Under Docker Desktop the machine is named <code>docker-desktop</code> unless you add <code>--name</code> and a name of your own.</p>
+							</div>
+							<div>
+								<p className="machine-step">Or start the runner in the background</p>
+								<Command text={install} label="The background command" />
+								<p className="field-note">
+									Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
+								</p>
+							</div>
+						</div>
+					</details>
+				) : null}
 				<p>The runner prints a code to pair the machine with: the next step asks for it.</p>
 			</div>
 		</Dialog>
@@ -962,7 +989,7 @@ export function Machines({ adding }: { adding: boolean }) {
 				<div className="repo-head">
 					<p className="eyebrow">account</p>
 					<h1 className="display display-small">Machines</h1>
-					<p className="home-account">Run agents on your own Linux machine with Docker. The runner on it connects out to the platform; nothing needs to reach your machine from outside.</p>
+					<p className="home-account">Run agents on your own computer with Docker: a Mac, a Linux machine, or Windows with WSL. The runner on it connects out to the platform; nothing needs to reach your machine from outside.</p>
 				</div>
 				<div className="machines-add">
 					<button type="button" className="button button-outline" onClick={add} disabled={info === null || full}>

@@ -29,13 +29,32 @@ The runner takes one command. With none, it runs `run`.
 | Command | What it does |
 | --- | --- |
 | `run` | Runs the runner's service. This is the default. |
-| `setup` | Pairs the machine in your terminal, asks to sign in each agent given with `--harness`, then prints the command that starts the runner in the background. See [Add a machine](/docs/machines#1-start-the-runner). |
+| `setup` | Sets the machine up in your terminal, one step at a time: pairs it, signs its agents in, asks for its profiles, network and limits, then starts the runner in the background and waits until it is online. See [Setup](#setup) and [Add a machine](/docs/machines#1-start-the-runner). With `--harness`, it asks line by line to sign in each agent given, then prints the command that starts the runner instead. |
 | `pair` | Makes a new pairing code, for example after the code expired or after the machine was removed. |
 | `status` | Says whether the runner is connected, its network mode, the limits in force, and for each pairing each enabled agent’s sign-in status, its sandboxes and its data volume. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
 | `prune` | Removes all containers and data volumes of this runner's pairings. |
 | `login claude`, `login opencode`, `login codex` | Signs that agent in on this machine, in your terminal. The machine must be paired first. With `opencode`, `--provider ID` skips the list of providers. See [Sign agents in](/docs/machines#sign-agents-in) and [Codex sign-in](#codex-sign-in). |
 | `logout claude`, `logout opencode`, `logout codex` | Signs that agent out, for this pairing and every earlier one. |
+
+### Setup
+
+`setup` runs in a one-off container with the Docker socket and the `windlass-runner` volume, as the one-line install starts it:
+
+```sh
+docker run -it --rm --log-driver none -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner <runner image> setup --platform <platform address>
+```
+
+| Form | What it does |
+| --- | --- |
+| `setup` | Every step. Your earlier answers are the defaults. |
+| `setup --quick` | Only what is missing: a pairing, a name, an agent that is not signed in, a step never answered. |
+| `setup name`, `setup agents`, `setup profile`, `setup network`, `setup limits` | That step alone, then the summary and the start. The machine must be paired. |
+| `setup claude`, `setup codex`, `setup opencode` | Signs that agent in, and adds it to the agents the machine offers. |
+| `setup --no-tui` | The same steps as numbered lines: Enter takes the default, `b` goes back and `q` cancels. Setup uses lines by itself when it has no terminal; then it takes the defaults and signs no agent in. |
+
+Setup keeps its answers in `setup.json` in the volume. The options of [Run options](#run-options) given to `setup` become its defaults, and those it does not ask about, such as `--slot-cpus`, are passed on to the runner it starts. With `--harness`, `setup` is the line-by-line setup from before, and prints the start command instead of running it.
 
 ### Codex sign-in
 
@@ -159,7 +178,11 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "Give --snapshot-disk a size such as 20GB or 512MB." | Write the size with `MB`, `GB` or `TB`. The two snapshot sizes must be above 0. |
 | "Choose --harness claude, --harness opencode or --harness codex." | Those are the agents a runner can offer. |
 | "Use --harness opencode with a runner built with the pinned OpenCode image." | This runner image has no OpenCode. Use the image from the Machines page. Claude Code says the same for `--harness claude`. |
-| "The runner is already using this state. Use login <agent> in the running runner." | Setup cannot run beside the runner. Use `login` in the running container, or remove it first. |
+| "The runner is already using this state. Use login <agent> in the running runner." | The line-by-line setup cannot run beside the runner. Use `login` in the running container, remove it first, or run `setup` without `--harness`. |
+| "Use setup, setup --quick, or setup with one of: name, agents, claude, codex, opencode, profile, network, limits." | Give one of those steps, or none. |
+| "Pair this machine first: run setup." | A single step needs a paired machine. Run `setup` with no step. |
+| "The runner is not online after 3 minutes …" or "The runner stopped. Read why with: docker logs windlass-runner" | Setup started the runner, but it did not report **Online**. Read `docker logs windlass-runner`. |
+| "Invalid setup.json. Repair or remove that file in the runner state volume." | Remove `setup.json` from the volume; setup then asks every step again. |
 | "Mount the Docker socket and runner state for setup." | Copy the setup command from the Machines page: it mounts both. |
 | "Pair this machine before signing in to Claude Code." | Pair the machine, then run `login` again. OpenCode says the same. |
 | "Attach a terminal to sign in interactively." | Run `login` with `docker exec -it`, so it has a terminal. |

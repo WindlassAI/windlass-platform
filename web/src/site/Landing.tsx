@@ -626,7 +626,7 @@ function WhereItRuns() {
 						</p>
 						<h3 className="lp-place-title">A runner that dials out</h3>
 						<p className="lp-place-text">
-							Pair a Linux machine with Docker. A small runner on it connects out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
+							Pair a Mac, Linux or Windows (WSL) machine with Docker. A small runner on it connects out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
 						</p>
 						<div className="lp-dial" aria-hidden="true">
 							<div className="lp-dial-box">

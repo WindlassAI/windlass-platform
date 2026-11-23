@@ -567,7 +567,7 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		act(() => checkbox("Enable Codex").click());
 		expect(command()).toContain("docker run -it --rm --log-driver none");
 		expect(command()).toContain("--harness codex");
-		const background = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;
+		const background = () => host.querySelector('pre[aria-label="The background command"]')?.textContent;
 		expect(background()).toContain("--harness claude --harness opencode");
 		expect(command()).toContain("--harness opencode");
 		expect(command()).not.toContain("/import/opencode");
@@ -578,7 +578,8 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		expect(command()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
 		expect(background()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
 		act(() => checkbox("Allow Windlass's command sandbox").click());
-		expect(command()).not.toContain("--allow-profile");
-		expect(background()).not.toContain("--allow-profile");
+		// Turned off, both say so: the setup wizard then starts with the sandbox off as well.
+		expect(command()).toMatch(/ --allow-profile docker-hardened$/);
+		expect(background()).toMatch(/ --allow-profile docker-hardened$/);
 	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
 });
