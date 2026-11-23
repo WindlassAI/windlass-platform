@@ -291,8 +291,8 @@ export class AcpHarness implements Harness {
 				if (profile.id === "codex" && phase === "running") {
 					const error = update.sessionUpdate === "session_info_update" ? codexModelError(update) : null;
 					if (error) {
+						if (modelError === null) errorText = "";
 						modelError = { status: error.status ?? modelError?.status, final: error.final || modelError?.final === true };
-						errorText = "";
 					} else if (modelError && update.sessionUpdate === "agent_message_chunk") errorText = (errorText + text(object(update.content).text)).slice(-2000);
 					else if (update.sessionUpdate !== "session_info_update" && update.sessionUpdate !== "usage_update") modelError = null;
 				}
