@@ -2613,6 +2613,8 @@ export type TimelineItem =
 			/** What the session's work rests on after this turn. */
 			verified: Verified | null;
 			context?: AcpContext | null;
+			/** Another agent's own session id, which it names only once a turn has opened it (ACP `session/new`); the panel shows it at once. */
+			sessionId?: string;
 	  };
 
 /**

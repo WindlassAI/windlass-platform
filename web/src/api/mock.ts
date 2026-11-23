@@ -2516,7 +2516,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		session.run = null;
 		session.pending = [];
 		const outcome = acpOutcome(stopReason);
-		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: stopReason === "end_turn" ? MOCK_ACP_TOKENS : null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
+		// The agent's own session id (`session/new`) comes with the turn's end, as the server sends it.
+		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: stopReason === "end_turn" ? MOCK_ACP_TOKENS : null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null, ...(session.windlassSessionId && { sessionId: session.windlassSessionId }) });
 		// Once it has run, the session has the models Claude Code listed.
 		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), startTimes: mockStartTimes(session.summary, state.turn, state.startedAt), harnessModels: { ...(session.summary.harness === "codex" ? MOCK_CODEX_MODELS : session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
 		if (clock === null) {

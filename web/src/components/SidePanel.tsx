@@ -84,7 +84,7 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 				) : null}
 				<dt>id</dt>
 				<dd className="kv-mono" title={id ?? undefined}>
-					{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">none until the first turn</span>}
+					{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">{summary.turns === 0 ? "none until the first turn" : "not reported"}</span>}
 				</dd>
 				<dt>created</dt>
 				<dd>{absoluteTime(summary.createdAt)}</dd>
@@ -283,7 +283,7 @@ function Context({ view, harness, turns }: { view: SessionView; harness: string;
 					<Stat label="Cost so far" value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} sub={context.cost ? plural(turns, "turn") : "not reported"} />
 				</div>
 			) : (
-				<p className="panel-empty">{harness} says how full its context is once a turn has run.</p>
+				<p className="panel-empty">{turns === 0 ? `${harness} says how full its context is once a turn has run.` : `${harness} has not said how full its context is.`}</p>
 			)}
 		</section>
 	);

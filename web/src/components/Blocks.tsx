@@ -101,6 +101,12 @@ function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; ht
  */
 export const PlatformPrompts = createContext(false);
 
+/**
+ * A prompt's model as the rest of the page names it (lib/acp.ts, `sessionModelWords`): another agent's by the
+ * name it gave the model ("6.2 Sol"), Windlass's by its id. Set by the conversation; the id as it is without it.
+ */
+export const ModelLabel = createContext<(id: string) => string>((id) => id);
+
 /** The line a prompt of the platform's to the second reviewer stands as. `first`: the one that starts its timeline. */
 export const platformPromptLabel = (first: boolean) => (first ? "The platform's brief for this review" : "The platform's word to the reviewer");
 
@@ -141,6 +147,7 @@ function UserPrompt({ block, first = false }: { block: UserBlock; first?: boolea
 
 function PersonPrompt({ block }: { block: UserBlock }) {
 	const steer = block.steer;
+	const modelLabel = useContext(ModelLabel);
 	return (
 		<div className={`user${steer ? " user-steer" : ""}`}>
 			<p className="user-text">
@@ -159,7 +166,7 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 						</span>
 					) : (
 						<>
-							<span>{block.model}</span>
+							<span title={modelLabel(block.model) === block.model ? undefined : block.model}>{modelLabel(block.model)}</span>
 							{block.effort ? <span>effort {block.effort}</span> : null}
 						</>
 					)}
