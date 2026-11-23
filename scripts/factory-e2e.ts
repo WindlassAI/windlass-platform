@@ -490,7 +490,9 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			const granted = standin.appPermissions;
 			standin.appPermissions = { ...granted, actions: "write" };
 			after = () => { standin.appPermissions = granted; };
-			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_CROSS_REPO: "1", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			const { config } = await import("../server/src/config.js");
+			const { serviceParams } = await import("../server/src/auth.js");
+			const { user, client, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_FACTORY_CROSS_REPO: "1", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
 			const ownCi = "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n";
 			const root = resolve(SERVER_DIR, "..");
 			const platform = standin.addRepository({ owner: "ada", name: "xplatform", installation, files: { ".github/workflows/build.yml": ownCi,
@@ -532,6 +534,12 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			// A reconfirmed base must be the head approval read: never a commit nobody read.
 			const unread = await refused(() => approve({ cli: "f".repeat(40) }), "bad_input");
 			assert(/bases names fffffff for cli, but main is at/.test(unread), "An unread base was accepted: " + unread);
+			const blockedName = "registry.internal.example";
+			await client.workItem.get([auth.profile.uid, id], { params: serviceParams() }).internalBlockedNetwork({
+				sessionId: page.sessionId, revision: 1, network: { hosts: [{ host: blockedName, port: 443, count: 2,
+					firstAt: 1, lastAt: 2, reason: "machine_policy", allow: "machine" }], overflow: 1 },
+			});
+			const countsOnly = (body: string) => body.split("\n").includes("Blocked network requests during this work: 3.") && !body.includes(blockedName);
 			await approve({ cli: moved });
 			const children = new Set<string>();
 			const integrating = await untilItem(user, id, "the combined run", v => {
@@ -546,6 +554,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			assert(integrating.run?.step.kind === "integration", integrating.question?.text ?? integrating.children?.find(c => c.question)?.question?.text ?? stateOf(integrating));
 			const pulls = [platform, cli].map(repo => standin.pulls.filter(p => p.repository === repo.id));
 			assert(pulls.every(list => list.length === 1 && list[0].number === 1 && list[0].draft), "Expected exactly one draft PR #1 per repository: " + JSON.stringify(pulls.map(l => l.map(p => [p.number, p.draft]))));
+			assert(pulls.every(list => countsOnly(list[0].body)), "A cross-repository draft did not show just the refusal count");
 			assert([...children].join() === integrating.children!.map(c => c.id + ":" + (c.title === "index" ? cli.id : platform.id)).join(), "A child ran on the wrong repository: " + [...children].join());
 			// No token ever written for both repositories at once: a child of one never had a write token or remote for the other.
 			const both = standin.minted.filter(m => (m.repositoryIds ?? []).includes(platform.id) && (m.repositoryIds ?? []).includes(cli.id));
@@ -564,6 +573,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 			assert(handed.state === "review" && handed.run?.step.kind === "merged" && handed.integration?.state === "passed", stateOf(handed));
 			for (const repo of [platform, cli]) {
 				const body = linked(repo);
+				assert(countsOnly(body), "The updated cross-repository PR did not show just the refusal count");
 				assert(body.includes("combined integration: passed") && !/\b(Closes|Fixes|Resolves) #\d/i.test(body), `${repo.name}'s PR body: ` + body);
 			}
 			assert(standin.pulls.filter(p => p.repository === platform.id || p.repository === cli.id).every(p => p.draft), "A cross-repo PR left draft");

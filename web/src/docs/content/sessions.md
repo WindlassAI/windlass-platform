@@ -44,11 +44,9 @@ You can copy a prompt, an answer (as Markdown) or a code block with the copy but
 
 ### A host the sandbox cannot reach
 
-Network refusals appear during the turn and are checked again when it ends. On a paired machine with a reporting runner in restricted mode, the session records the destination host and port, first and last refusal times, reason and count. It keeps 50 distinct destinations and counts further refusals together. Paths, query strings, headers and bodies are excluded. If the machine’s public host list blocked a name, its owner can add it with `--egress-domains` when starting that runner. A repository setting cannot override private-address, metadata or agent-provider restrictions.
+On a restricted E2B sandbox, the session timeline can show a refused DNS name with **Allow for this repository**. Choose it to allow an eligible host in the running sandbox and for other hosted agents from their next turn. The name also appears under **Asked for by its agents** in repository network settings. Allow only a host you expect.
 
-On restricted E2B sandboxes, the timeline reports the first refused DNS lookup for each name the sandbox records. DNS supplies neither a destination port nor a count of connection attempts. Choose **Allow for this repository** to apply an eligible host to the running hosted sandbox and to other hosted agents from their next turn. The name also appears under **Asked for by its agents** in repository network settings. Allow only a host you expect.
-
-A work item combines observations from its builder and reviewer. When the item publishes a pull request, its description includes a short count of blocked network requests.
+When a work item publishes a pull request, the description includes a count of observed network refusals from its builder and reviewer. A private, single-repository PR can also name the destinations. Public and cross-repository PRs show counts only. A paired machine contributes observations when its runner supports refusal reporting. Its owner controls the runner’s public host list with `--egress-domains`.
 
 ## Send a prompt
 

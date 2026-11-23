@@ -1146,7 +1146,7 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 					await take(c, { kind: "feature_seed", key, sha, repo: repo.alias, at: Date.now() });
 					return;
 				}
-				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: networkBody(withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), itemNetwork(meta)), draftOnly: true });
+				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: networkBody(withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), itemNetwork(meta), false), draftOnly: true });
 				await take(c, { kind: "feature_ready", key, ...opened, repo: repo.alias, at: Date.now() });
 			});
 			return;
@@ -1156,7 +1156,7 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 		for (const repo of item.repos!) {
 			const pr = repo.pr!.number;
 			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, ({ app, token, owner, name }) =>
-				app.updatePull(token, owner, name, pr, { title: item.task.title, body: networkBody(withSection(text, linkSection(item, repo.alias)), itemNetwork(meta)) }));
+				app.updatePull(token, owner, name, pr, { title: item.task.title, body: networkBody(withSection(text, linkSection(item, repo.alias)), itemNetwork(meta), false) }));
 		}
 		await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 	} catch (error) {
@@ -1341,13 +1341,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					} else if (effect.kind === "describe_feature") {
 						const report = await latestReport(c.db, item.run!.n);
 						const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
-						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta)) });
+						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta), hub.repository.private) });
 						await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 					} else if (!item.seed) {
 						const sha = await refHead(app, token, owner, name, meta.repository.branch);
 						await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
 					} else {
-						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta)) });
+						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta), hub.repository.private) });
 						await take(c, { kind: "feature_ready", key, ...opened, at: Date.now() });
 					}
 				});

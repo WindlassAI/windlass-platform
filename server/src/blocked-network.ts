@@ -40,33 +40,48 @@ export function limitNetwork(previous: BlockedNetwork, turn: BlockedNetwork): Bl
 	return { hosts, overflow };
 }
 
-export function networkBody(body: string, network?: BlockedNetwork): string {
+/** Name destinations only for work confined to a single private repository. A feature's
+ * cross-repository sessions share one roll-up with no per-repository host attribution. */
+export function networkBody(body: string, network: BlockedNetwork | undefined, showHosts: boolean): string {
 	if (!network || (!network.hosts.length && !network.overflow)) return body;
+	const prefix = body + "\n\nBlocked network requests during this work: ";
+	if (!showHosts) {
+		const total = network.hosts.reduce((n, host) => n + host.count, network.overflow);
+		return prefix + total + ".";
+	}
 	const names: string[] = [];
 	let rest = network.overflow;
 	for (const entry of network.hosts) {
 		const host = entry.host?.includes(":") ? "[" + entry.host + "]" : entry.host;
-		const name = (host ?? "malformed destination") + (entry.port === null ? "" : ":" + entry.port) + " (" + entry.count + ")";
+		const port = entry.port === null ? "" : ":" + entry.port;
+		const destination = host ? `\`${host}${port}\`` : "malformed destination";
+		const name = destination + " (" + entry.count + ")";
 		if (names.length < 3 && name.length + names.join(", ").length <= 230) names.push(name);
 		else rest += entry.count;
 	}
 	if (rest) names.push(rest + " other request" + (rest === 1 ? "" : "s"));
 	const settings = network.hosts.some(entry => entry.allow === "repository") ? " Eligible hosts can be allowed in repository network settings." : "";
-	return body + "\n\nBlocked network requests during this work: " + names.join(", ") + "." + settings;
+	return prefix + names.join(", ") + "." + settings;
 }
 
-/** Read once before setup, then five seconds after each completed read, and once after the turn.
- * finish waits for an outstanding read so that an older result can never follow the final one. */
-export async function watchNetwork(read: () => Promise<void>, onFailure: (error: unknown) => void) {
+/** Sample before setup and at turn end. Runner samples are 20 seconds apart. A hosted read
+ * returns false when it found no new names, backing off to at most two minutes between reads. */
+export async function watchNetwork(read: () => Promise<boolean | void>, onFailure: (error: unknown) => void, tearingDown: () => boolean) {
+	const interval = 20_000;
+	let delay = interval;
 	let stopped = false;
 	let timer: ReturnType<typeof setTimeout>;
 	let pending: Promise<void>;
 	const sample = async () => {
-		try { await read(); } catch (error) { onFailure(error); }
+		if (tearingDown()) return;
+		try { return await read(); } catch (error) { onFailure(error); }
 	};
 	const tick = () => {
-		pending = sample().then(() => {
-			if (!stopped) timer = setTimeout(tick, 5000);
+		pending = sample().then(changed => {
+			if (stopped || tearingDown()) return;
+			if (changed !== false) delay = interval;
+			timer = setTimeout(tick, delay);
+			if (changed === false) delay = Math.min(delay * 2, 120_000);
 		});
 		return pending;
 	};

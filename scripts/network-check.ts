@@ -65,6 +65,12 @@ function refusal(run: () => unknown): string | null {
 
 // ---- what may be saved ---------------------------------------------------------------------------
 
+for (const page of ["sessions", "settings"]) {
+	const doc = readFileSync(new URL("../web/src/docs/content/" + page + ".md", import.meta.url), "utf8");
+	expect(page + " documents the hosted timeline action and PR count", doc.includes("**Allow for this repository**") && /pull requests?[^.]*count of observed network refusals/i.test(doc));
+	expect(page + " describes only network observations the web app renders", !/Network refusals appear during the turn|refused DNS names appear during a turn/i.test(doc));
+}
+
 const RESTRICTED = readE2bNetwork({ WLP_E2B_NETWORK: "restricted" });
 {
 	expect("presets and exact names are kept, lower case, each once, in the order given", plain(cleanEntries(["@playwright", "Registry.Example.com.", "@playwright", "registry.example.com"])) === plain(["@playwright", "registry.example.com"]));

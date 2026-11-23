@@ -96,13 +96,13 @@ test("a running turn updates a single durable refusal row and flushes once more 
 		assert.deepEqual(first.hosts.map(h => [h.reason, h.allow]), [["machine_policy", "machine"], ["private", "never"], ["provider", "never"], ["malformed", "never"]]);
 		assert.deepEqual(first.hosts[0]?.machineNames, ["Build box"]);
 		for (const h of first.hosts) await assert.rejects(agentSession.config.actions!.allowHost(c as never, { host: h.host! }), /runner.*egress/);
-		t.mock.timers.tick(4999);
+		t.mock.timers.tick(19_999);
 		assert.equal(reads, 1);
 		t.mock.timers.tick(1);
 		await next();
 		assert.equal(replacements.length, 1);
 		await finish();
-		t.mock.timers.tick(10000);
+		t.mock.timers.tick(120_000);
 		assert.equal(reads, 3);
 		assert.equal(f.items.length, 1);
 		assert.deepEqual([first, ...replacements].map(i => i.revision), [1, 2, 3]);
@@ -140,14 +140,23 @@ test("a restricted hosted DNS observation can be allowed before its turn ends", 
 	});
 	try {
 		let found: string[] = [];
-		const finish = await observeNetwork(c as never, f.vars.meta as never, 1, { blockedHosts: async () => found } as never, layer);
+		let reads = 0;
+		const finish = await observeNetwork(c as never, f.vars.meta as never, 1, { blockedHosts: async () => { reads++; return found; } } as never, layer);
 		assert.ok(finish);
+		t.mock.timers.tick(20_000);
+		await next();
+		assert.equal(reads, 2);
 		found = [host];
-		t.mock.timers.tick(5000);
+		t.mock.timers.tick(39_999);
+		assert.equal(reads, 2, "idle DNS sampling backs off");
+		t.mock.timers.tick(1);
 		await next();
 		const row = f.stored().find(item => item.kind === "network.blocked");
 		assert.ok(row?.kind === "network.blocked");
 		assert.deepEqual(row.hosts.map(h => [h.host, h.port, h.count, h.allow]), [[host, null, 1, "repository"]]);
+		t.mock.timers.tick(20_000);
+		await next();
+		assert.equal(reads, 4, "a new host restores the initial interval");
 		const allowed = await agentSession.config.actions!.allowHost(c as never, { host });
 		assert.equal(allowed.applied, true);
 		assert.deepEqual(applied, [host]);
@@ -158,4 +167,20 @@ test("a restricted hosted DNS observation can be allowed before its turn ends", 
 		Object.assign(layer.sandboxes, prior);
 		f.sql.close();
 	}
+});
+
+for (const flag of ["stopping", "destroying"]) test(flag + " cancels polling without a final network read", async t => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const { observeNetwork } = await import("../server/src/actors/agent-session.js");
+	const f = fixture();
+	try {
+		let reads = 0;
+		const blockedNetwork = async () => { reads++; return { broker: "first", hosts: [], overflow: 0 }; };
+		const finish = await observeNetwork(f.c as never, f.vars.meta as never, 1, { blockedNetwork } as never, {} as never);
+		assert.ok(finish);
+		Object.assign(f.vars, { [flag]: true });
+		await finish();
+		t.mock.timers.tick(120_000);
+		assert.equal(reads, 1);
+	} finally { f.sql.close(); }
 });

@@ -1357,13 +1357,15 @@ export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sa
 			}) };
 			await save(unionNetwork(previousBrokers, current));
 		} else {
+			const before = lookups.hosts.length;
 			await noteBlockedHosts(c, meta, turn, sandbox, layer, names => {
 				const at = Date.now();
 				for (const host of names) lookups.hosts.push({ host, port: null, reason: "unlisted", allow: setupProjectOf(meta) ? "repository" : "deployment", count: 1, firstAt: at, lastAt: at });
 			});
 			await save(lookups);
+			return lookups.hosts.length > before;
 		}
-	}, error => c.log.warn({ msg: "could not read blocked network requests", error: describeError(error) }));
+	}, error => c.log.warn({ msg: "could not read blocked network requests", error: describeError(error) }), () => c.vars.stopping || c.vars.destroying);
 }
 
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */

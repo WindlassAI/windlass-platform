@@ -48,11 +48,11 @@ export function sessionRepository(app: GithubApp, connection: StoredConnection, 
 	return repo.closesIssue ? resolveBoundRepository(app, connection, repo.id, repo.installationId, need) : resolveRepository(app, connection, repo.id, need);
 }
 
-function pullBody(repo: StoredRepository, body: string, section: string, blocked?: BlockedNetwork) {
-	if (!repo.closesIssue) return withVerifiedSection(networkBody(body, blocked), section);
+function pullBody(repo: StoredRepository, body: string, section: string, blocked?: BlockedNetwork, showHosts = false) {
+	if (!repo.closesIssue) return withVerifiedSection(networkBody(body, blocked, showHosts), section);
 	const footer = `\n\nCloses #${repo.closesIssue}.`;
 	const text = body.trimEnd();
-	return withVerifiedSection(networkBody(text.endsWith(footer) ? text.slice(0, -footer.length) : text, blocked), section) + footer;
+	return withVerifiedSection(networkBody(text.endsWith(footer) ? text.slice(0, -footer.length) : text, blocked, showHosts), section) + footer;
 }
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
@@ -457,12 +457,14 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const now = Date.now();
 	const pushed = !nothingNew;
 	const title = input.message.title.trim();
-	const body = pullBody(repository, input.message.body, said.section, input.blockedNetwork);
 	try {
 		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
 		// ("not all refs are readable"), whatever it may do with pull requests.
 		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
 			const { owner, name: repo } = resolved.repository;
+			// The installation listing used to find a repository can predate a visibility change.
+			const showHosts = !!input.blockedNetwork?.hosts.length && (await app.repositoryById(token, repository.id)).private;
+			const body = pullBody(repository, input.message.body, said.section, input.blockedNetwork, showHosts);
 			if (open) {
 				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
 				const current = await app.pull(token, owner, repo, open.number).catch(() => null);
