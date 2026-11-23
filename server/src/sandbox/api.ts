@@ -611,6 +611,8 @@ export interface RunTurnInput {
 	 * `checks: "platform"` has them run by the platform when its prompt ends (platform-checks.ts).
 	 */
 	checks?: RepositoryCheck[];
+	/** A checks-only builder turn runs all saved platform checks, even on an unchanged tree. */
+	forceChecks?: boolean;
 	/**
 	 * For `checks: "platform"`: what the platform's run of the checks came to, as the events Windlass records
 	 * of its own gate (for `VerificationLog`), each with the timeline's note where there is one.

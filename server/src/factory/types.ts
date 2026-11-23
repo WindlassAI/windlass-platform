@@ -26,7 +26,7 @@ export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemSta
 // The item
 // ---------------------------------------------------------------------------------------------
 
-export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "conflict" | "review" | "review_fix";
+export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix";
 
 /** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
@@ -42,6 +42,8 @@ export interface GateEvidence {
 export interface CiProgress {
 	/** Older item rows predate webhook polling. */
 	webhooks?: boolean;
+	/** The person accepted CI alone for this published head. A new publication starts without it. */
+	ciAlone?: true;
 	lastReadState?: CiState;
 	head: string;
 	/** When it was pushed: CI's waits (CI_POLLING) count from here. */
@@ -530,7 +532,7 @@ export type Effect =
 	| { kind: "poll_repo_pr"; key: string; repo: string; pr: number; at: number }
 	| { kind: "dispatch"; child?: string; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | "run_checks" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }

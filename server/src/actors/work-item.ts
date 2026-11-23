@@ -62,7 +62,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
-import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -476,6 +476,7 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	const [row] = await db.execute<{ data: string }>("SELECT data FROM item WHERE id = 1");
 	if (!row) return null;
 	const stored = JSON.parse(row.data) as Stored;
+	upgradeSubtaskQuestion(stored.item);
 	if (stored.item.parent && (!stored.item.reviewer || ("off" in stored.item.reviewer && stored.item.reviewer.off === "deployment"))) {
 		stored.item.reviewer = { off: "feature" };
 	} else stored.item.reviewer ??= { off: "deployment" };

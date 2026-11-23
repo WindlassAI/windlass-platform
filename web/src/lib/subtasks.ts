@@ -129,6 +129,8 @@ export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, num
 		case "refine":
 			if (rounds.gate > 0) return { word: "fixing", fact: `your checks failed, fix ${rounds.gate}`, code: firstCommand(task) };
 			return { word: "implementing", fact: turns };
+		case "run_checks":
+			return { word: "checking", fact: "running local checks" };
 		case "gate":
 			return { word: "checking", fact: rounds.gate > 0 ? `after fix ${rounds.gate}` : null };
 		case "ci_fix":

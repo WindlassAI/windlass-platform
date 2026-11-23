@@ -163,7 +163,7 @@ export class PlatformChecks {
 		private readonly checks: readonly RepositoryCheck[],
 		private readonly emit: (event: WindlassEvent, note?: ChecksNote) => void,
 		/** `unavailable`: why no check may run in this sandbox (above); each is then recorded as not started, with it. */
-		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; unavailable?: string },
+		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; force?: boolean; unavailable?: string },
 	) {}
 
 	private event(type: string, data: Record<string, unknown>): WindlassEvent {
@@ -251,7 +251,7 @@ export class PlatformChecks {
 		if (!this.checks.length) return this.end({ status: "not_configured" });
 		const now = await this.snapshot("checks_end");
 		if (this.options.signal?.aborted) return null;
-		const changed = await this.changed(this.start, now);
+		const changed = this.options.force ? null : await this.changed(this.start, now);
 		// The agent put every file back as it was at the turn's start after its checks had run: nothing needs checking.
 		if (changed?.length === 0) return this.end(this.ran ? { status: "not_needed", reason: "state_unchanged", since: { run: null } } : { status: "not_needed", reason: "turn_unchanged" });
 		const selected = checksFor(this.checks, changed);

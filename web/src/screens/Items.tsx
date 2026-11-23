@@ -241,6 +241,7 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 		case "subtasks":
 		case "refine":
 		case "implement":
+		case "run_checks":
 		case "gate":
 			return 1;
 		case "publish":
