@@ -1117,7 +1117,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			harness,
 			...(machine ? { machineName: machine.name } : {}),
 			profile: summary.profile,
-			mode: harness === "codex" ? modes.mode : input.mode,
+			// An item's session takes its profile's mode for its agent in the actor (`itemModeOf`): none is passed for it.
+			...(!item && { mode: harness === "codex" ? modes.mode : input.mode }),
 			...(harness === "codex" && {codexModes:modes.availableModes}),
 			...(options && {harnessOptions:options}),
 			model,

@@ -1908,6 +1908,29 @@ async function machineChecks(): Promise<void> {
 			return `refused hosted (${hosted}), Plan first (${planFirst}), unknown (${unknown}); bypassPermissions, two allow-once answers, 33,500 tokens reported, CI decides`;
 		});
 
+		await check("machine: a Codex item is filed on each profile it runs on, in that profile's item mode", async () => {
+			const harnesses = runner.fake.report.harnesses;
+			runner.fake.report.harnesses = [...(harnesses ?? []), { id: "codex", adapter: "codex-acp 0.15.0", image: "sha256:fake", signIn: "token", method: "chatgpt", modes: ["agent-full-access", "read-only", "workspace-write"] }];
+			runner.report();
+			const filed: string[] = [];
+			try {
+				await waitFor("the machine reports Codex", async () => (await user.machines())[0]?.harnesses?.some(h => h.id === "codex" && h.method === "chatgpt"), 15_000);
+				for (const [profile, mode] of [["docker-hardened", "agent-full-access"], ["docker-windlass-sandbox", "workspace-write"]] as const) {
+					// Filing makes the builder's session; it used to be refused with "A work item and its reviewer use the profile's approval mode."
+					const item = await user.createItem({ ...task, title: `Codex on ${profile}`, profile, harness: "codex" });
+					filed.push(item.id);
+					const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
+					assert(item.agent?.harness === "codex" && builder?.harness === "codex" && builder.profile === profile && builder.mode === mode,
+						JSON.stringify(builder && { harness: builder.harness, profile: builder.profile, mode: builder.mode }));
+				}
+				return filed.join(", ");
+			} finally {
+				for (const id of filed) await user.actOnItem({ id, action: { kind: "cancel" } });
+				runner.fake.report.harnesses = harnesses;
+				runner.report();
+			}
+		});
+
 		await check("machine: a Claude Code item is filed only where it is known to be signed in, and its turn checks again", async () => {
 			const reported = async (signIn: "token" | "none" | "unknown") => {
 				runner.fake.report.harnesses = [{ id: "claude", adapter: "claude-agent-acp 0.109.0", image: "sha256:fake", signIn }];
