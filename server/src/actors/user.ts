@@ -1249,7 +1249,7 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 			const place = request.place === HOSTED ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: request.place };
 			let summary: SessionSummary;
 			try {
-				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, repository: { id: request.repositoryId } }, null, undefined,
+				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
 					{ project: request.project, place: request.place, screenshots: request.screenshots });
 			} catch (error) {
 				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
