@@ -80,7 +80,7 @@ describe("the mock's work items", () => {
 		const listed = (await user.listItems()).find((item) => item.question?.kind === "secret_needed")!;
 		const view = await user.item(listed.id);
 		const question = view.question!;
-		expect(question.secret).toEqual({ name: "RESEND_API_KEY", why: expect.any(String) });
+		expect(question.secret).toEqual({ name: "RESEND_API_KEY", why: expect.any(String), notice: expect.stringContaining("inside the agent's sandbox") });
 		expect(question.choices.map((choice) => choice.id)).toEqual(["add_secret", "without_secret", "give_up"]);
 		const session = mock.session(auth, view.sessionId);
 		await expect(session.setRequestedSecret({ requestId: "another", name: "RESEND_API_KEY", value: "re_live_5f2c9a81" })).rejects.toMatchObject({ reason: "item_conflict" });

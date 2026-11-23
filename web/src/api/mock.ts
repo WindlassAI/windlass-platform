@@ -2878,11 +2878,32 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const mailEnd = mailing.timeline.findLastIndex((item) => item.kind === "turn.ended");
 		if (mailEnd > 0) {
 			const ended = mailing.timeline[mailEnd]!;
-			const secretRequest = { id: String(ended.turn), name: "RESEND_API_KEY", why: "The release script sends the notes through Resend, and its integration test calls the API. Without the key the test is skipped, so the email step would ship unverified." };
-			mailing.timeline.splice(mailEnd, 0, { seq: 0, at: ended.at - 2_000, turn: ended.turn, kind: "platform", level: "info", text: `The agent requested ${secretRequest.name}.`, secretRequest });
+			const secretRequest = {
+				id: String(ended.turn),
+				name: "RESEND_API_KEY",
+				why: "The release script sends the notes through Resend, and its integration test calls the API. Without the key the test is skipped, so the email step would ship unverified.",
+				notice: "This request came through the agent's host tool connection.\nIf supplied, this will be saved for this repository with agent scope.",
+			};
+			mailing.timeline.splice(mailEnd, 0, { seq: 0, at: ended.at - 2_000, turn: ended.turn, kind: "platform", level: "info", text: `A secret was requested for ${secretRequest.name}.\n${secretRequest.notice}`, secretRequest });
 			mailing.timeline.forEach((item, index) => { item.seq = index + 1; });
 			mailing.seq = mailing.timeline.length;
 			mailing.secretRequest = secretRequest;
+		}
+		// And one with no repository: what it is given is saved for the account, so every agent of the person would have it.
+		const pinging = history("build-ping", "Post the nightly build result", "docker-windlass-sandbox", 7 * MINUTE, [{ text: "Write a script that posts the nightly build's result to our Slack channel, and try it once.", script: "steps", effort: "low" }], { sandbox: "paused" });
+		const pingEnd = pinging.timeline.findLastIndex((item) => item.kind === "turn.ended");
+		if (pingEnd > 0) {
+			const ended = pinging.timeline[pingEnd]!;
+			const secretRequest = {
+				id: String(ended.turn),
+				name: "SLACK_WEBHOOK_URL",
+				why: "The script posts to the channel's incoming webhook. I need its URL to try the post once.",
+				notice: "This request came through the agent's host tool connection.\nIf supplied, this will be saved for your account: every agent of yours will have it.",
+			};
+			pinging.timeline.splice(pingEnd, 0, { seq: 0, at: ended.at - 2_000, turn: ended.turn, kind: "platform", level: "info", text: `A secret was requested for ${secretRequest.name}.\n${secretRequest.notice}`, secretRequest });
+			pinging.timeline.forEach((item, index) => { item.seq = index + 1; });
+			pinging.seq = pinging.timeline.length;
+			pinging.secretRequest = secretRequest;
 		}
 
 		// One agent is at work when the user arrives: a second turn, a long build, played slowly.
@@ -3063,6 +3084,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	// ---- secrets of repositories ------------------------------------------------------------------
+
+	/** A name the agent asked for that is saved now, for the repository or the account, in the server's words (user.ts `requestedSecretConflict`). */
+	function requestedSecretConflict(world: World, repositoryId: GithubId | null, name: string): string | null {
+		const source = repositoryId !== null && world.secrets.get(repositoryId)?.has(name) ? "repository" : world.account.secrets.has(name) ? "account" : null;
+		return source ? `${name} already exists for this ${source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.` : null;
+	}
 
 	function secretsOf(world: World, repositoryId: GithubId, profileId: SandboxProfileId): RepositorySecrets {
 		const profile = profiles.find((item) => item.id === profileId);
@@ -4329,17 +4356,28 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async setRequestedSecret(input: SetRequestedSecretInput): Promise<void> {
 				await latency(320);
-				const { session } = find();
-				// An item's builder: the item's question is answered, as work-item.ts does.
+				const { world, session } = find();
+				const tooShort = () => typeof input.value !== "string" || input.value.trim().length < MIN_SECRET_VALUE_CHARS;
+				const shortWords = `A secret's value must be at least ${MIN_SECRET_VALUE_CHARS} characters long: a shorter one could not be taken out of what the platform shows.`;
+				// Saved for the repository with agent scope, or for the account without one. The value is not kept: nothing in the mock would read it.
+				const save = (repositoryId: GithubId | null, name: string) => (repositoryId === null ? world.account.secrets : world.secrets.get(repositoryId) ?? world.secrets.set(repositoryId, new Map()).get(repositoryId)!).set(name, { scope: "agent", updatedAt: now() });
+				// An item's builder: the item's question is answered, as work-item.ts does, or asked again under a new id when the save is refused.
 				if (session.summary.item) {
-					if (!items.setRequestedSecret(auth, id, input.requestId, input.name)) throw new PlatformError("user", "That secret request is no longer open.", { reason: "item_conflict" });
+					if (tooShort()) throw new PlatformError("user", shortWords, { reason: "bad_secret" });
+					const saved = items.setRequestedSecret(auth, id, input.requestId, input.name, (repositoryId) => requestedSecretConflict(world, repositoryId, input.name));
+					if (!saved) throw new PlatformError("user", "That secret request is no longer open.", { reason: "item_conflict" });
+					save(saved.id, input.name);
 					return;
 				}
 				const request = session.secretRequest;
 				if (!request || request.id !== input.requestId || request.name !== input.name) throw new PlatformError("user", "That secret request is no longer open.", { reason: "no_question" });
-				if (typeof input.value !== "string" || input.value.trim().length < MIN_SECRET_VALUE_CHARS) throw new PlatformError("user", `A secret's value must be at least ${MIN_SECRET_VALUE_CHARS} characters long: a shorter one could not be taken out of what the platform shows.`, { reason: "bad_secret" });
+				if (tooShort()) throw new PlatformError("user", shortWords, { reason: "bad_secret" });
 				if (session.summary.status !== "idle") throw new PlatformError("user", "The session is busy. Try again when the turn has ended.", { reason: "turn_running" });
-				// The value is not kept: nothing in the mock would read it. The session goes on with the server's own prompt.
+				// A name saved under Secrets since it was asked: refused, and the request stays open, as agent-session.ts does.
+				const repositoryId = session.summary.repository?.id ?? null;
+				const conflict = requestedSecretConflict(world, repositoryId, request.name);
+				if (conflict) throw new PlatformError("user", conflict, { reason: "secret_exists" });
+				save(repositoryId, request.name);
 				const text = `${request.name} is now set in your environment.`;
 				await api.prompt({ text });
 			},

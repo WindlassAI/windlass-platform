@@ -510,7 +510,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		},
 		// The builder asked for a secret it lacks (`request_secret`): the name, and its reason in its own words.
 		{
-			n: 83,
+			n: 84,
 			title: "Send the release notes by email",
 			body: "After a release is published, email its notes to the subscribers list.",
 			on: HARBOR,
@@ -521,7 +521,11 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				text: "The agent needs RESEND_API_KEY in its environment.",
 				choices: choices("add_secret", "without_secret", "give_up"),
 				asked: 4,
-				secret: { name: "RESEND_API_KEY", why: "The release script sends the notes through Resend, and its integration test calls the API. Without the key the test is skipped, so the email step would ship unverified." },
+				secret: {
+					name: "RESEND_API_KEY",
+					why: "The release script sends the notes through Resend, and its integration test calls the API. Without the key the test is skipped, so the email step would ship unverified.",
+					notice: "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it.\nIf supplied, this will be saved for this repository with agent scope.",
+				},
 			},
 			run: { n: 1, started: 33, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 33 } },
 			events: [
@@ -2219,18 +2223,28 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** Seeds the user's items, and with them their sessions, before anything is asked of either. */
 	const prepare = (auth: AuthResult): void => void keptOf(auth);
 	/**
-	 * "Add and continue" on an item's `secret_needed` question, sent through its builder's session (`setRequestedSecret`), as
-	 * work-item.ts `internalSetRequestedSecret`: the secret is saved, and the question answered with `add_secret`. False when no
-	 * item of that session asks it. The value is not kept: the mock has nowhere it would be read.
+	 * "Add it and continue" on an item's `secret_needed` question, sent through its builder's session (`setRequestedSecret`), as
+	 * work-item.ts `internalSetRequestedSecret`: the item claims the question, and the secret is saved and the question answered
+	 * with `add_secret`. `conflict`: why the save was refused once claimed (`secret_exists`: the name was saved under Secrets
+	 * since), and then, as blueprint.ts `settle_secret`, the question is asked again under a new id with the error, and the
+	 * refusal is thrown. Null when no item of that session asks it. The value is not kept: the mock has nowhere it would be read.
 	 */
-	function setRequestedSecret(auth: AuthResult, sessionId: string, requestId: string, name: string): boolean {
+	function setRequestedSecret(auth: AuthResult, sessionId: string, requestId: string, name: string, conflict: (repositoryId: ItemView["repository"]["id"]) => string | null): ItemView["repository"] | null {
 		const item = keptOf(auth).items.find((one) => one.sessionId === sessionId);
-		if (!item) return false;
+		if (!item) return null;
 		const question = item.question;
 		if (question?.kind !== "secret_needed" || question.id !== requestId || question.secret?.name !== name) throw new PlatformError("user", "That secret request is no longer open.", { reason: "item_conflict" });
+		const refused = conflict(item.repository.id);
+		if (refused !== null) {
+			const secret = question.secret;
+			const text = [`A secret was requested for ${secret.name}.`, secret.notice, refused].filter(Boolean).join("\n");
+			const reopened: ItemQuestion = { ...question, id: `${item.id}:q${item.revision + 1}`, text, askedAt: deps.now() };
+			change(auth, item, { question: reopened, wait: { reason: "person", sentence: text, retryAt: null, since: reopened.askedAt } }, [`Asked: ${text}`], "platform");
+			throw new PlatformError("user", refused, { reason: "secret_exists" });
+		}
 		const picked = question.choices.find((choice) => choice.id === "add_secret") ?? { id: "add_secret" as const, label: "Add it and continue" };
 		change(auth, item, { state: "working", wait: null, question: null }, [answeredWords(picked, null), "The turn started."], "person");
-		return true;
+		return item.repository;
 	}
 	return { calls, machinesChanged, prepare, setRequestedSecret, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
 }

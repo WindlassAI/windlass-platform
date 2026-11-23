@@ -558,6 +558,53 @@
 .secret-ask-choices {
 	margin-top: 6px;
 }
+/* The platform's own lines about the request: framed, with its source named, apart from the agent's quoted reason. */
+.secret-notice {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+	max-width: 74ch;
+	padding: 9px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-pop);
+	background: var(--bg-raised);
+	font-size: var(--size-small);
+	line-height: 1.5;
+}
+.secret-notice > svg {
+	flex: none;
+	margin-top: 3px;
+	color: var(--ink-faint);
+}
+.secret-notice-body {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+.secret-notice-who {
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink-faint);
+}
+.secret-notice-line {
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+/* Saved for the whole account: every agent of the person would have it. */
+.secret-notice-account {
+	border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+.secret-notice-account > svg {
+	color: var(--warn);
+}
+.secret-ask-account {
+	max-width: 520px;
+	border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+.secret-ask-account strong {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
 .secret-ask-saved .secret-ask-name {
 	font-size: var(--size-mono-small);
 }
@@ -586,8 +633,9 @@
 	grid-area: choices;
 	margin-top: 0;
 }
-.secret-ask-compact .field-note {
+.secret-ask-compact .secret-ask-note {
 	grid-area: note;
+	max-width: none;
 }
 @media (max-width: 720px) {
 	.secret-ask-compact .secret-ask-form {

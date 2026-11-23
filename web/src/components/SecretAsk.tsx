@@ -3,7 +3,9 @@
  * (`secret_needed`) and above a person's own session's field (`SessionSnapshot.secretRequest`).
  *
  * The reason is the agent's own text, which what it read may have steered: it is quoted as the agent's, in
- * plain text, never Markdown or links, and folded after a few lines. The value is typed into a field React
+ * plain text, never Markdown or links, and folded after a few lines. The platform's `notice` (where the request came
+ * from, where the value goes) is the platform's own text, shown apart from the reason, as text too. Saving for the
+ * account, where there is no repository, reaches every agent of the person, and says so first. The value is typed into a field React
  * does not hold: it is read from the field once, on submit, the field is emptied at once, and the value
  * goes only to `onAdd`. It is never kept in state, put in an address, stored in the browser, or logged, and
  * an error is shown with the value taken out of it.
@@ -11,7 +13,7 @@
 import { type FormEvent, type ReactNode, useId, useRef, useState } from "react";
 import { MIN_SECRET_VALUE_CHARS, type SecretRequest } from "@contract";
 import { LongText } from "./Fold";
-import { CheckIcon, LockIcon, WarnIcon } from "./Icons";
+import { CheckIcon, InfoIcon, LockIcon, WarnIcon } from "./Icons";
 
 export type SecretAskBusy = "add" | "without" | "give_up" | null;
 
@@ -35,6 +37,34 @@ export interface SecretAskProps {
 	offline?: boolean;
 	/** The card's own class: an item's question card. */
 	className?: string;
+	/**
+	 * An error to show from the start: the last save's, when its failure reopened the request under a new id (`secret_exists`)
+	 * and this card is the new one's. Already without the value.
+	 */
+	failure?: string | null;
+}
+
+/**
+ * The platform's own lines about a request (`SecretRequest.notice`): where it came from, and where the value is saved.
+ * Text the platform wrote, so not quoted as the agent's; still shown as text, one line each. `account`: the value would
+ * be saved for the whole account, the case that reaches furthest, which is marked as a warning.
+ */
+export function SecretNotice({ notice, account = false, className }: { notice: string; account?: boolean; className?: string }) {
+	const lines = notice.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+	if (lines.length === 0) return null;
+	return (
+		<div className={`secret-notice${account ? " secret-notice-account" : ""}${className ? ` ${className}` : ""}`} role="note" aria-label="From the platform">
+			{account ? <WarnIcon size={14} /> : <InfoIcon size={14} />}
+			<div className="secret-notice-body">
+				<p className="secret-notice-who">From the platform</p>
+				{lines.map((line, index) => (
+					<p key={index} className="secret-notice-line">
+						{line}
+					</p>
+				))}
+			</div>
+		</div>
+	);
 }
 
 /**
@@ -47,14 +77,14 @@ export function withoutValue(message: string, value: string): string {
 
 const messageOf = (failure: unknown) => (failure instanceof Error && failure.message ? failure.message : "That did not go through. Try again.");
 
-export function SecretAsk({ request, repository, shared = false, onAdd, onWithout, onGiveUp, head, compact = false, offline = false, className }: SecretAskProps) {
+export function SecretAsk({ request, repository, shared = false, onAdd, onWithout, onGiveUp, head, compact = false, offline = false, className, failure = null }: SecretAskProps) {
 	const ids = { title: useId(), why: useId(), value: useId(), note: useId() };
 	const field = useRef<HTMLInputElement>(null);
 	// Only whether the field has something in it, never what.
 	const [filled, setFilled] = useState(false);
 	const [shown, setShown] = useState(false);
 	const [busy, setBusy] = useState<SecretAskBusy>(null);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(failure);
 	const [saved, setSaved] = useState(false);
 	const disabled = busy !== null || offline;
 
@@ -119,6 +149,7 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 					{request.why}
 				</LongText>
 			</figure>
+			{request.notice ? <SecretNotice notice={request.notice} account={repository === null} /> : null}
 			<form className="secret-ask-form" onSubmit={add} method="post" autoComplete="off" noValidate>
 				<label className={compact ? "visually-hidden" : "label"} htmlFor={ids.value}>
 					Value of <code className="secret-ask-name">{request.name}</code>
@@ -144,19 +175,21 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 						{shown ? "Hide" : "Show"}
 					</button>
 				</div>
-				<p className="field-note" id={ids.note}>
-					{repository ? (
-						<>
-							Saved for repository <span className="secret-ask-where">{repository}</span>
-						</>
-					) : (
-						"Saved for your account"
-					)}
-					, as a secret the agent's commands read{shared ? "; this session may use it too" : ""}. It is not shown again.
-				</p>
+				{repository ? (
+					<p className="field-note secret-ask-note" id={ids.note}>
+						Saved for repository <span className="secret-ask-where">{repository}</span>, as a secret the agent's commands read{shared ? "; this session may use it too" : ""}. It is not shown again.
+					</p>
+				) : (
+					<p className="callout callout-warn secret-ask-note secret-ask-account" id={ids.note}>
+						<WarnIcon size={14} />
+						<span>
+							<strong>Saved for your account, not one repository.</strong> Every agent of yours can read it in its commands{shared ? ", this session too" : ""}. It is not shown again.
+						</span>
+					</p>
+				)}
 				<div className="item-choices secret-ask-choices">
 					<button type="submit" className="button button-primary" disabled={disabled || !filled}>
-						{busy === "add" ? "Saving…" : "Add and continue"}
+						{busy === "add" ? "Saving…" : "Add it and continue"}
 					</button>
 					<button type="button" className="button button-outline" disabled={disabled} onClick={() => void choose("without", onWithout)}>
 						{busy === "without" ? "Sending…" : "Continue without it"}

@@ -30,7 +30,7 @@ export interface SessionState {
 
 /** The open secret request once `item` is in: asked by its line, closed by a turn that starts (a message that steers leaves it). */
 export function secretRequestAfter(open: SessionState["secretRequest"], item: TimelineItem, summary: SessionSummary | null): SessionState["secretRequest"] {
-	if (item.kind === "platform" && item.secretRequest) return summary?.item ? null : { id: item.secretRequest.id, name: item.secretRequest.name, why: item.secretRequest.why };
+	if (item.kind === "platform" && item.secretRequest) return summary?.item ? null : { id: item.secretRequest.id, name: item.secretRequest.name, why: item.secretRequest.why, ...(item.secretRequest.notice !== undefined && { notice: item.secretRequest.notice }) };
 	if (item.kind === "user" && item.steer !== true) return null;
 	return open;
 }

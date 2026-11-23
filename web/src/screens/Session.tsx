@@ -25,7 +25,8 @@ import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { ArrowLeftIcon, CheckIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
-import { SecretAsk } from "../components/SecretAsk";
+import { SecretAsk, withoutValue } from "../components/SecretAsk";
+import { hasReason } from "../api/client";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
@@ -347,13 +348,22 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	const secretRequestId = secretRequest?.id ?? null;
 	const itemId = state.summary?.item?.id ?? null;
 	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId, secretRequestId, itemId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId, secretRequestId, itemId]);
+	// The last save's error, for the card of the same name should the session's snapshot bring the request back under a new id.
+	const [secretFailure, setSecretFailure] = useState<{ name: string; message: string } | null>(null);
 	const addSecret = useCallback(
 		async (request: { id: string; name: string }, value: string) => {
+			setSecretFailure(null);
 			try {
 				await api.setRequestedSecret({ requestId: request.id, name: request.name, value });
 			} catch (failure) {
-				throw new Error(explain(failure));
+				const message = withoutValue(explain(failure), value);
+				setSecretFailure({ name: request.name, message });
+				// The name was saved under Secrets since it was asked (`secret_exists`), or the request moved on: read the session
+				// again, so that a retry answers the request it has now.
+				if (hasReason(failure, "secret_exists") || hasReason(failure, "no_question")) api.resync();
+				throw new Error(message);
 			}
+			setSecretFailure(null);
 			setAnsweredSecret(request.id);
 			setSavedSecret({ name: request.name, turnsEnded: state.turnsEnded });
 		},
@@ -478,6 +488,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 								repository={summary.repository ? `${summary.repository.owner}/${summary.repository.name}` : null}
 								shared={summary.harness !== undefined && summary.harness !== null && summary.harness !== "windlass"}
 								offline={!online}
+								failure={secretFailure?.name === secretRequest.name ? secretFailure.message : null}
 								onAdd={(value) => addSecret(secretRequest, value)}
 								onWithout={() => continueWithout(secretRequest)}
 							/>
