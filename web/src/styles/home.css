@@ -938,16 +938,5 @@
 	.home-agents > .home-saved {
 		order: 40;
 	}
-	/* Docked, the sandbox's facts keep to one line under the box, fading at the edge. */
-	.home-agents > .home-start .start-sandbox {
-		flex-wrap: nowrap;
-		overflow: hidden;
-		white-space: nowrap;
-		-webkit-mask-image: linear-gradient(90deg, #000 85%, transparent);
-		mask-image: linear-gradient(90deg, #000 85%, transparent);
-	}
-	.home-agents > .home-start .start-sandbox > * {
-		flex: none;
-	}
 }
 
