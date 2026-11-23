@@ -354,6 +354,8 @@ interface SessionMeta {
 	lastUsedAt: number;
 	/** The idle check the durable schedule holds: its id, and when it fires. */
 	idleCheck?: { id: string; at: number } | null;
+	/** The last turn ended on an approval nobody answered in a hosted sandbox: the sandbox pauses at once, not after the idle time. */
+	pauseNow?: true;
 	/** Set when the session was launched on a repository of the user's GitHub connection (`repoUrl` is its address). */
 	repo?: StoredRepository | null;
 	/** The branch the platform pushes the session's work to: named when it first pushes, and kept. */
@@ -1619,6 +1621,7 @@ function busy(c: Ctx): boolean {
 function markUsed(c: Ctx, meta: SessionMeta): void {
 	if (c.vars.turn) return;
 	meta.lastUsedAt = Date.now();
+	delete meta.pauseNow;
 	armMeter(c, meta);
 	void c.keepAwake(armIdle(c, meta));
 }
@@ -2369,27 +2372,34 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 		choices,
 		subagent: typeof question.subagent === "string" && question.subagent !== "" ? question.subagent : null,
 		askedAt: now,
-		expiresAt: now + config.questionTimeoutMs,
+		expiresAt: now + questionWait(meta),
 	};
 	return new Promise<TurnAnswer>((resolve, reject) => {
 		const settled = (): void => {
 			withdrawn.removeEventListener("abort", onWithdrawn);
 			active.unsettled.delete(asked);
 		};
+		const wait = questionWait(meta);
 		const asked: Asked = {
 			pending,
 			timer: setTimeout(() => {
 				// Nobody answered: the turn must not wait for ever, and the model should know why it was refused.
 				if (active.question !== asked) return;
 				takeQuestion(c, meta, active);
-				note(c, active.number, "warn", `Nobody answered "${pending.title}" within ${duration(config.questionTimeoutMs)}, so it was declined.`, {
+				// A hosted sandbox runs, and costs, while it waits: the turn ends, and the sandbox pauses at once (`pauseNow`).
+				const hosted = hostedLimitsApply(meta.place);
+				note(c, active.number, "warn", hosted
+					? `Nobody answered "${pending.title}" within ${duration(wait)}, so the turn was ended and its sandbox paused. Send a prompt to go on.`
+					: `Nobody answered "${pending.title}" within ${duration(wait)}, so it was declined.`, {
 					code: "question_expired",
 					call: { messageId: pending.messageId, callId: pending.callId },
 				});
+				if (hosted) meta.pauseNow = true;
 				publish(c);
 				void persist(c);
-				asked.decline(`Nobody answered within ${duration(config.questionTimeoutMs)}, so the platform declined this call for the user.`);
-			}, config.questionTimeoutMs),
+				asked.decline(`Nobody answered within ${duration(wait)}, so the platform declined this call for the user.`);
+				if (hosted) abortTurn(c, meta, active);
+			}, wait),
 			answer: (answer) => {
 				settled();
 				resolve(answer);
@@ -2894,6 +2904,11 @@ async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, san
 	}
 }
 
+/** How long a turn's question waits for its answer: shorter in a hosted sandbox, which runs while it waits. */
+function questionWait(meta: SessionMeta): number {
+	return hostedLimitsApply(meta.place) ? config.hostedQuestionTimeoutMs : config.questionTimeoutMs;
+}
+
 /** Stops the turn. The question it may be waiting on goes first: nobody can answer a turn that is ending. */
 function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
 	active.stopping = true;
@@ -3352,7 +3367,7 @@ function removedWhenIdle(meta: SessionMeta): boolean {
 /** When the sandbox is next due: to be suspended while it runs, to be removed while it exists. Null when there is none. */
 function idleDue(meta: SessionMeta): number | null {
 	if (!meta.sandboxId) return null;
-	if (meta.sandbox === "running") return meta.lastUsedAt + config.idleSuspendMs;
+	if (meta.sandbox === "running") return meta.lastUsedAt + (meta.pauseNow ? 0 : config.idleSuspendMs);
 	return removedWhenIdle(meta) ? meta.lastUsedAt + config.idleDestroyMs : null;
 }
 
@@ -3403,7 +3418,9 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 	const since = meta.lastUsedAt;
 	const now = Date.now();
 	const remove = id !== null && removedWhenIdle(meta) && now >= since + config.idleDestroyMs;
-	const suspend = id !== null && !remove && meta.sandbox === "running" && now >= since + config.idleSuspendMs;
+	const pauseNow = meta.pauseNow === true;
+delete meta.pauseNow;
+const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNow || now >= since + config.idleSuspendMs);
 	let retry = 0;
 	if (id && (remove || suspend)) {
 		// Set in the same step as the checks above: from here a prompt waits for it.
@@ -3421,7 +3438,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 					console.log(`[wlp] sandbox.idle_suspended id=${id} session=${meta.sessionId}`);
 					meta.sandbox = "paused";
 					const use = useOf(meta);
-					note(c, meta.turns, "info", `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
+					note(c, meta.turns, "info", pauseNow ? "Paused the sandbox: its turn ended on a question nobody answered. The next prompt resumes it." : `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
 					await closeMeter(c, meta, "now", use);
 				} else {
 					// Paused by a sleep, or gone: nothing to suspend, and nothing to say.
@@ -4365,6 +4382,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		meta.turns = turn;
 		meta.model = model;
 		meta.status = "starting";
+		delete meta.pauseNow;
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
@@ -4481,6 +4499,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		const now = Date.now();
 		meta.turns = turn;
 		meta.status = "starting";
+		delete meta.pauseNow;
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort });

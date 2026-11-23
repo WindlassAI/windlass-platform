@@ -67,7 +67,7 @@ In some modes the agent asks before it acts. The question appears at the tool ca
 
 Choose one of the answers it offers. With Windlass, you can also decline with a note: choose **add a note**, then say why, or what to do instead.
 
-A question waits 10 minutes. A countdown shows **declines in** and the time left. If nobody answers in time, the platform declines for you, and the timeline says "Nobody answered … within 10 minutes, so it was declined." The agent is told, and goes on.
+A question waits 10 minutes. A countdown shows **declines in** and the time left. If nobody answers in time, the platform declines for you, and the timeline says "Nobody answered … within 10 minutes, so it was declined." The agent is told, and goes on. In one of the platform's own (hosted) sandboxes, which runs and is counted while it waits, an approval waits 5 minutes: then the turn ends, the timeline says "Nobody answered … within 5 minutes, so the turn was ended and its sandbox paused.", and the sandbox pauses at once. Send a prompt to go on.
 
 The agent asks one question at a time.
 

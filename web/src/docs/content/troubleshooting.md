@@ -79,6 +79,9 @@ The provider refused the agent's model request, or did not answer it. A work ite
 **"Nobody answered "…" within 10 minutes, so it was declined."**\
 The agent asked a question and nobody answered. It was told, and went on. Send a prompt to tell it what you want.
 
+**"Nobody answered "…" within 5 minutes, so the turn was ended and its sandbox paused. Send a prompt to go on."**\
+In a hosted sandbox an approval waits 5 minutes, so that a sandbox nobody watches does not run on. Send a prompt to go on; the sandbox resumes.
+
 **"Your sandbox time could not be checked just now, so nothing was started. Try again in a moment."**\
 Try again in a moment.
 

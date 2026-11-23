@@ -1676,26 +1676,25 @@ async function main(server: Server | null): Promise<void> {
 	});
 
 	if (OWN_SERVER) {
-		await check("a question nobody answers is declined by the platform when its time is up", async () => {
+		await check("a question nobody answers in a hosted sandbox ends the turn when its time is up, and the sandbox pauses at once", async () => {
 			const asked = await ask();
-			const from = askWatch.summaries.length - 1;
-			await waitFor("the platform to decline the question", () => askWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
+			await waitFor("the platform to settle the question", () => askWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
 			const waited = Date.now() - asked.askedAt;
+			// WLP_HOSTED_QUESTION_TIMEOUT_MS is at most WLP_QUESTION_TIMEOUT_MS: the short time this server was started with.
 			assert(waited >= QUESTION_MS - 200 && waited < QUESTION_MS + 10_000, `the question was settled after ${waited} ms; its time was ${QUESTION_MS} ms`);
 			const ended = await askWatch.untilEnded(asked.turn);
-			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(ended.outcome !== "succeeded", `outcome is ${ended.outcome}: the turn went on without an answer`);
 			const said = askWatch.items.find((item) => item.kind === "platform" && item.turn === asked.turn && item.text.includes("Nobody answered"));
-			assert(said?.kind === "platform" && said.level === "warn", "no platform item says that nobody answered");
-			const [answered] = answeredOf(asked);
-			assert(answered && answered.event.data?.choice === "deny" && answered.event.data.approve === false && String(answered.event.data.note).includes("Nobody answered"), `approval.answered is ${plain(answered?.event.data)}`);
-			assert(answered.seq > said.seq, "the platform's item does not come before the answer it explains");
+			assert(said?.kind === "platform" && said.level === "warn" && /so the turn was ended and its sandbox paused\. Send a prompt to go on\.$/.test(said.text), `no platform item says that nobody answered: ${plain(said)}`);
 			assert(askWatch.ofCall(asked.turn, "tool.started", asked).length === 0, "the call was started although nobody allowed it");
-			assert(askWatch.statusesFrom(from) === "waiting > running > idle", `statuses from the question on were ${askWatch.statusesFrom(from)}`);
+			await waitFor("the sandbox to pause", () => askWatch.summaries.at(-1)?.sandbox === "paused", 20_000);
+			const paused = askWatch.items.find((item) => item.kind === "platform" && item.text.startsWith("Paused the sandbox: its turn ended on a question nobody answered."));
+			assert(paused, "no line says the sandbox was paused for it");
 			await refused(() => askWatch.conn.answer({ questionId: asked.id, choice: "once" }), "no_question");
-			return `declined after ${waited} ms: "${said.text}"; the model was told: "${String(answered.event.data.note)}"`;
+			return `ended after ${waited} ms (${ended.outcome}): "${said.text}"; then "${paused.kind === "platform" ? paused.text : ""}"`;
 		});
 	} else {
-		skip("a question nobody answers is declined by the platform when its time is up", "needs its own server, started with a short time for questions");
+		skip("a question nobody answers in a hosted sandbox ends the turn when its time is up, and the sandbox pauses at once", "needs its own server, started with a short time for questions");
 	}
 
 	await check("stop() during a question withdraws it and ends the turn as interrupted", async () => {
