@@ -2804,7 +2804,10 @@ a.plan-task-title:hover {
 }
 
 /* A subtask's place among its siblings, under its title. */
+/* Its width is the header's, never the sum of its names: they are cut to fit. */
 .subtask-strip {
+	contain: inline-size;
+	width: 100%;
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
