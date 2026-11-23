@@ -38,6 +38,7 @@ beforeEach(() => {
 	document.body.append(host);
 	root = null;
 	filed = [];
+	localStorage.removeItem("wlp.factory.item-mode");
 	meanwhile = null;
 	sessionStorage.clear();
 });
@@ -112,45 +113,63 @@ function budgetField(task: string, short: string): HTMLInputElement {
 }
 
 describe("the Factory composer's mode choice", () => {
-	const group = () => host.querySelector('[role="radiogroup"][aria-label="How it runs"]');
-	const option = (mode: string) => group()?.querySelector<HTMLInputElement>(`input[value="${mode}"]`);
+	/** File's main button, which says how the item runs. */
+	const main = () => host.querySelector(".start-launch .ui-split-main") as HTMLButtonElement;
+	/** File's menu: how it runs, each with its line, and the draft. */
+	const openMenu = () => act(() => (host.querySelector(".start-launch .ui-split-more") as HTMLButtonElement).click());
+	const pop = () => [...document.querySelectorAll(".ui-pop")].at(-1) as HTMLElement | undefined;
+	const howRows = () => [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])] as HTMLElement[];
 	async function file(title: string) {
 		type(field(), title);
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
 	}
 
-	it("files Plan first by default and Quick for one item", async () => {
+	it("files Plan first by default, says it on File, and switches to Quick from File's menu, which this browser remembers", async () => {
 		make({});
 		await show("/factory");
-		expect(group()?.textContent).toBe("Plan firstQuick");
-		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Adds a planning turn you approve. The feature may spend what you approve for its subtasks, and one Quick item's budget for its planning and review.");
-		expect(option("orchestrate")?.checked).toBe(true);
+		expect(main().textContent).toBe("File · Plan first");
+		// No budget note under the composer: File's menu says what each does.
+		expect(host.querySelector(".start")?.textContent).not.toContain("budget");
+		openMenu();
+		expect(howRows().map((row) => [row.querySelector(".ui-item-label")?.textContent, row.querySelector(".ui-item-description")?.textContent, row.getAttribute("aria-checked")])).toEqual([
+			["Plan first", "A planner splits it into subtasks you approve, then they run.", "true"],
+			["Quick", "One agent goes straight to a pull request.", "false"],
+		]);
+		openMenu();
 		await file("Search the docs");
 		expect(filed[0]).toMatchObject({ title: "Search the docs", mode: "orchestrate" });
 		expect(host.querySelector(".start-filed")?.textContent).toContain("its plan comes to you for approval");
-		act(() => option("single")!.click());
-		expect(document.getElementById(group()!.getAttribute("aria-describedby")!)?.textContent).toBe("Starts one implementer at once, with no plan to approve.");
+		openMenu();
+		act(() => (howRows().find((row) => row.dataset.value === "single") as HTMLElement).click());
+		expect(main().textContent).toBe("File · Quick");
+		expect(filed).toHaveLength(1);
 		await file("Fix the report title");
 		expect(filed[1]).toMatchObject({ title: "Fix the report title", mode: "single" });
-		expect(option("orchestrate")?.checked).toBe(true);
+		// The last choice stays, here and on the next visit.
+		expect(main().textContent).toBe("File · Quick");
+		expect(localStorage.getItem("wlp.factory.item-mode")).toBe("single");
 	});
 
-	it("files Quick when the deployment disables planning", async () => {
+	it("files Quick when the deployment disables planning, and File says only File", async () => {
 		make({});
 		const info = client.info.bind(client);
 		client.info = async () => ({ ...await info(), items: { reviewer: true, orchestrate: false } });
 		await show("/factory");
-		expect(group()).toBeNull();
+		expect(main().textContent).toBe("File");
+		openMenu();
+		expect(howRows()).toHaveLength(0);
+		openMenu();
 		await file("Add an export");
 		expect(filed[0]?.mode).toBe("single");
 	});
 
-	it("offers the control only for work items", async () => {
+	it("has no switch to an agent: everything filed on Factory is a work item", async () => {
 		make({});
 		await show("/factory");
-		act(() => (host.querySelector('.start-kind input[value="agent"]') as HTMLInputElement).click());
-		expect(group()).toBeNull();
+		expect(host.querySelector('[role="radiogroup"][aria-label="What to start"]')).toBeNull();
+		expect(host.querySelector(".start-kind")).toBeNull();
+		expect(host.querySelector(".start textarea")?.getAttribute("placeholder")).toMatch(/^What should be done\?/);
 	});
 });
 

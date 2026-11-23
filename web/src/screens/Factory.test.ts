@@ -80,8 +80,14 @@ const rows = () => [...host.querySelectorAll(".factory-group .item-row")].filter
 const field = () => host.querySelector(".start textarea") as HTMLTextAreaElement;
 /** The start composer's pill of a picker, by its name ("repo", "where", "agent", "mode", "criteria"). */
 const pill = (name: string) => host.querySelector(`.start [data-picker="${name}"]`) as HTMLButtonElement | null;
-/** The open picker, drawn at the end of the page. */
-const pop = () => document.querySelector(".ui-pop") as HTMLElement | null;
+/** The open picker, the newest one, drawn at the end of the page. */
+const pop = () => ([...document.querySelectorAll(".ui-pop")].at(-1) ?? null) as HTMLElement | null;
+/** Opens the repository's picker: the last row of the where menu. */
+async function openRepo(): Promise<void> {
+	act(() => (pill("where") as HTMLButtonElement).click());
+	act(() => (pop()?.querySelector('[data-value="repo"]') as HTMLElement).click());
+	await settle(2);
+}
 const button = (words: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent === words) as HTMLButtonElement;
 
 function write(text: string, into: HTMLTextAreaElement = field()): void {
@@ -339,12 +345,16 @@ describe("filing a work item from the Factory page", () => {
 	it("files it with the composer on Work item, started, and stays: the row comes in through the live list", async () => {
 		await show("/factory");
 		const before = (await listed()).length;
-		expect(host.querySelector(".start-kind .segment-chosen")?.textContent).toBe("Work item");
 		write("Add the tests command to the README\nSay how to run the unit tests, with its command.");
 		expect(host.querySelector(".start-title")?.textContent).toBe("Title: Add the tests command to the README");
-		// Its acceptance criteria, one a line, in their own chip.
+		// Its done-when criteria: one line under the text, opened only when used, one criterion a line.
+		expect(pill("criteria")?.textContent).toBe("Add done-when criteria");
+		expect(host.querySelector(".start-criteria-inline")).toBeNull();
 		act(() => (pill("criteria") as HTMLButtonElement).click());
-		write("The README names the unit test command.\n\nIt says where the tests live.", pop()?.querySelector("textarea") as HTMLTextAreaElement);
+		write("The README names the unit test command.\n\nIt says where the tests live.", host.querySelector(".start-criteria-inline textarea") as HTMLTextAreaElement);
+		// Done: a short list in its place.
+		act(() => (host.querySelector(".start-criteria-done") as HTMLButtonElement).click());
+		expect([...host.querySelectorAll(".start-criteria-list li")].map((line) => line.textContent)).toEqual(["The README names the unit test command.", "It says where the tests live."]);
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
 		expect(filed).toHaveLength(1);
@@ -352,6 +362,7 @@ describe("filing a work item from the Factory page", () => {
 		expect(filed[0]?.idempotencyKey).toBeTruthy();
 		expect(location.pathname).toBe("/factory");
 		expect(field().value).toBe("");
+		expect(host.querySelector(".start-criteria-list")).toBeNull();
 		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Add the tests command to the README”: its plan comes to you for approval. Open");
 		expect((await listed()).length).toBe(before + 1);
 		expect(groups().find((group) => group.name === "Needs you")?.titles).toContain("Add the tests command to the README");
@@ -361,11 +372,13 @@ describe("filing a work item from the Factory page", () => {
 		await show("/factory");
 		act(() => (pill("agent") as HTMLButtonElement).click());
 		act(() => (pop()?.querySelector('[data-value="windlass:gpt-6.1-sol"]') as HTMLElement).click());
-		// The effort is its own picker in the tray, beside the agent's.
-		act(() => (pill("effort") as HTMLButtonElement).click());
+		// The effort is chosen in the same menu, under the models; the pill shows it as bars.
+		act(() => (pill("agent") as HTMLButtonElement).click());
+		expect([...(pop()?.querySelectorAll(".ui-menu-group-label b") ?? [])].map((label) => label.textContent)).toContain("Effort");
 		act(() => (pop()?.querySelector('[data-value="high"]') as HTMLElement).click());
 		expect(pill("agent")?.getAttribute("data-value")).toBe("Windlass · gpt-6.1-sol");
-		expect(pill("effort")?.getAttribute("data-value")).toBe("high");
+		expect(pill("agent")?.getAttribute("data-effort")).toBe("high");
+		expect(pill("agent")?.querySelectorAll(".effort-bars .effort-bar-on").length).toBeGreaterThan(0);
 		write("Rename the tide table columns");
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
@@ -390,20 +403,15 @@ describe("filing a work item from the Factory page", () => {
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
 		expect(filed).toHaveLength(0);
-		expect(host.querySelector(".start-status")?.textContent).toBe("A work item needs a repository: choose one under “repo”.");
+		expect(host.querySelector(".start-status")?.textContent).toBe("A work item needs a repository: choose one under “where”.");
 	});
 
-	it("switches to an agent and back, from the same composer", async () => {
+	it("has the same tray as the Agents page: agent, where (the place and the repository), options and File, on one line", async () => {
 		await show("/factory");
-		const agent = host.querySelector('.start-kind input[value="agent"]') as HTMLInputElement;
-		act(() => agent.click());
-		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
-		expect(pop()?.textContent).toContain("Create without a prompt");
-		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
-		expect(pill("agent")).not.toBeNull();
-		expect(pill("criteria")).toBeNull();
-		act(() => (host.querySelector('.start-kind input[value="item"]') as HTMLInputElement).click());
-		expect(pill("criteria")).not.toBeNull();
+		const tray = host.querySelector(".start-tools") as HTMLElement;
+		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["agent", "where", "options"]);
+		expect(tray.querySelector(".start-launch")).not.toBeNull();
+		expect(pill("where")?.dataset.repo).toMatch(/ @ main$/);
 		// A work item chooses its agent and model too; it starts on Windlass.
 		expect(pill("agent")?.getAttribute("data-value")).toMatch(/^Windlass · /);
 	});
@@ -412,14 +420,14 @@ describe("filing a work item from the Factory page", () => {
 describe("the screenshots of a work item's repository", () => {
 	it("are said in the repository's picker once one is chosen, with the way to its setting", async () => {
 		await show("/factory", { items: "none", github: false });
-		act(() => (pill("repo") as HTMLButtonElement).click());
+		await openRepo();
 		expect(pop()).not.toBeNull();
 		expect(document.querySelector(".start-shots")).toBeNull();
 		act(() => root?.unmount());
 		root = null;
 		client.dispose();
 		await show("/factory");
-		act(() => (pill("repo") as HTMLButtonElement).click());
+		await openRepo();
 		await settle();
 		const note = document.querySelector(".start-shots") as HTMLElement;
 		expect(note.textContent).toBe("Screenshots are off for this repository: turn them on.");
