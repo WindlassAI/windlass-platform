@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
-import { validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { SERVER_CAPABILITIES, validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { pairingTrust } from "./state.js";
 import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
@@ -52,7 +52,7 @@ async function main() {
 	// A release can publish this report without mounting runner state or a Docker socket.
 	if (command === "capabilities" && positionals.length === 1) {
 		const harnesses = (["claude", "opencode", "codex"] as const).filter(id => harnessImage(id));
-		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses }));
+		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses, capabilities: SERVER_CAPABILITIES }));
 		return;
 	}
 	if (command === "image-pins" && positionals.length === 1) {

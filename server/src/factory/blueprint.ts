@@ -940,11 +940,17 @@ function sandboxFailed(c: Change, said: string, resume: TurnPlan): void {
 }
 
 /**
- * The turn's hosted sandbox ran out of memory and the turn did not finish (`turn_ended.outOfMemory`): the person is
+ * The turn's sandbox ran out of memory and the turn did not finish (`turn_ended.outOfMemory`): the person is
  * asked, with the figures, whether to go on in a sandbox of the next size (`larger_sandbox`), which starts from the
  * repository on GitHub, or in the same one.
  */
 function outOfMemory(c: Change, memory: OutOfMemory, resume: TurnPlan): void {
+	if (c.item.place.kind === "machine") {
+		const text = `${outOfMemoryWords(memory, [], "machine")} The agent's turn did not finish. Go on anyway to try again in the same slot.`;
+		const handoff = handOverAny(c.item).map(({ id }) => ({ id, label: "Hand over" }));
+		ask(c, "out_of_memory", text, [{ id: "again", label: "Go on anyway" }, ...handoff, choice("give_up")], null, resume);
+		return;
+	}
 	const larger = memory.larger;
 	const text = `${outOfMemoryWords(memory, larger ? [larger] : [])} The agent's turn did not finish. ${larger ? `Go on in a ${larger} sandbox: it starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it. Or try again in the same one.` : "Try again, or give it up."}`;
 	ask(c, "out_of_memory", text, [...(larger ? [choice("larger_sandbox")] : []), choice("again"), ...handOverAny(c.item), choice("give_up")], null, resume);
@@ -2111,9 +2117,9 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 		}
 		case "larger_sandbox": {
 			const larger = question.kind === "out_of_memory" ? question.largerSize : undefined;
-			if (larger === undefined || resume === null) return false;
+			if (item.place.kind !== "hosted" || larger === undefined || resume === null) return false;
 			c.say(`The sandbox is removed, and the step goes on in a new ${larger} one.`);
-			c.state(item.place.kind === "machine" ? "queued" : "working");
+			c.state("working");
 			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: { ...resume, text: withNote(resume.text, note) }, hostedSize: larger, ...(resume.to === "review" && { to: "review" as const }) });
 			break;
 		}

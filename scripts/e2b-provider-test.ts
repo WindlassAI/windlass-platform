@@ -27,8 +27,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { WindlassEvent } from "../server/src/contract.js";
-import { type AccessTokens, type ChatgptLogins, DeploymentFull, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
+import type { TimelineItem, WindlassEvent } from "../server/src/contract.js";
+import { type AccessTokens, type ChatgptLogins, type OutOfMemory, DeploymentFull, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
@@ -685,6 +685,41 @@ await section("a sandbox that ran out of memory", async () => {
 	fake.samples.set(id, [{ at: Date.now(), memUsed: 300 * MiB, memTotal: 977 * MiB }]);
 	expect("samples far from the total are no running out", (await handle.memoryPeak(0)) === null);
 	expect("the largest size says to use less memory instead", /largest size this deployment has: have the agent's commands use less memory/.test(outOfMemoryWords({ usedMiB: 8000, totalMiB: 8100, size: "large" })) && /Large · 4 vCPU, 8 GiB/.test(outOfMemoryWords({ usedMiB: 4000, totalMiB: 4000, size: "standard" })));
+});
+
+await section("a machine slot that ran out of memory", async () => {
+	const { machineLayer } = await import("../server/src/sandbox/runner-layer.js");
+	const { noteTurnMemory } = await import("../server/src/actors/agent-session.js");
+	const { getLayer } = await import("../server/src/layer.js");
+	for (const [name, capable, kills, workItem] of [
+		["an unfinished work item", true, 2, true],
+		["a personal session", true, 1, false],
+		["no kills this turn", true, 0, true],
+		["an older runner", false, 0, true],
+	] as const) {
+		let reads = 0;
+		const link = { who: { machineId: "local" },
+			again: async () => ({ cwd: "/workspace", profile: "docker-hardened", ...(capable && { memoryEvents: true }) }),
+			request: async (op: string, args: { id: string }) => {
+				if (op !== "memoryEvents" || args.id !== "box") throw new Error("unexpected runner operation");
+				return { totalMiB: 1536, oomKills: 4 + (reads++ ? kills : 0) };
+			},
+		};
+		const sandbox = (await machineLayer(link as never, await getLayer()).sandboxes.connect("box"))!;
+		const start = await sandbox.memoryEvents?.() ?? null;
+		const rows: TimelineItem[] = [];
+		const c = { vars: { nextSeq: 1, unwritten: [], flushQueued: true }, log: console, broadcast: (_name: string, row: TimelineItem) => rows.push(row) };
+		const meta = { sessionId: "s1", place: { kind: "machine", machineId: "local" } };
+		const active: { item?: { outOfMemory?: OutOfMemory } } = workItem ? { item: {} } : {};
+		await noteTurnMemory(c as never, meta as never, active as never, sandbox, start, 0, 1);
+		const row = rows[0];
+		expect(name + ": only new kills warn on the timeline", kills ? rows.length === 1 && row?.kind === "platform" && row.level === "warn"
+			&& row.text.startsWith("The machine slot ran out of memory (limit 1,536 MiB).") && row.text.includes(kills === 1 ? "stopped a program" : "stopped 2 programs")
+			&& row.text.includes("137") && !row.text.includes("larger") : rows.length === 0);
+		expect(name + ": only a work item with kills carries the memory to its question", kills && workItem
+			? active.item?.outOfMemory?.totalMiB === 1536 && active.item.outOfMemory.larger === undefined : !active.item?.outOfMemory);
+		expect(name + ": only a capable runner receives memory reads", reads === (capable ? 2 : 0));
+	}
 });
 
 await section("the handle", async () => {

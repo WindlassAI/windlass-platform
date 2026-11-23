@@ -42,7 +42,7 @@ export interface TurnRun {
 	/** What the person sent while the turn was paused, as the timeline shows it: given to the agent when the turn resumes. */
 	held?: string[];
 	/**
-	 * The memory figures of the turn's sandbox when its first segment there started (E2B's `memoryEvents`): a resumed
+	 * The memory figures of the turn's sandbox when its first segment there started (`SandboxHandle.memoryEvents`): a resumed
 	 * segment in the same sandbox compares its end with these, so a program killed for memory before the pause still counts.
 	 */
 	memory?: { sandboxId: string; oomKills: number; totalMiB: number };

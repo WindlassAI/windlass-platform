@@ -137,9 +137,8 @@ export interface SandboxHandle {
 	 */
 	readonly outOfMemory?: OutOfMemory;
 	/**
-	 * The guest's own count of processes its kernel killed for want of memory (`oom_kill` in /proc/vmstat), and
-	 * its memory in MiB; null when it cannot be read. Only where the sandbox is a guest of its own (E2B): a
-	 * container's /proc/vmstat counts the whole host. A turn reads it at its start and its end.
+	 * The sandbox's own OOM kill count and memory limit in MiB, read at turn start and end. E2B reads the
+	 * guest's /proc/vmstat; a machine runner reads its session container's cgroup. Null when unavailable.
 	 */
 	memoryEvents?(): Promise<{ oomKills: number; totalMiB: number } | null>;
 	/** The most memory the provider sampled the sandbox using since `sinceMs`, when it came near its total (E2B's metrics). */

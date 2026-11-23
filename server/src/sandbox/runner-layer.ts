@@ -541,29 +541,31 @@ class RunnerProcess implements SandboxProcess {
 
 class RunnerHandle implements TurnSandbox {
 	readonly approval: "auto" | "full";
+	readonly profile: SandboxProfileId;
+	readonly cwd: string;
+	readonly runnerScreenshots: boolean;
+	readonly snapshot?: SnapshotSource;
+	readonly ownData: boolean;
+	readonly runnerStart?: RunnerStartTimes;
+	readonly image?: string;
+	readonly memoryEvents?: TurnSandbox["memoryEvents"];
 
-	constructor(
-		private readonly link: RunnerLink,
-		readonly id: string,
-		readonly profile: SandboxProfileId,
-		readonly cwd: string,
-		readonly runnerScreenshots: boolean,
-		readonly snapshot?: SnapshotSource,
-		/** As the runner's connect said (`SandboxHandle.ownData`): false from a runner that does not say. */
-		readonly ownData = false,
-		/** The runner's connect said `modelRelay` (docs/model-relay.md): false from a runner 0.3.x, whose turns get the token in the sandbox. */
-		relay = false,
-		/** What the runner said of making it (`SandboxHandle.runnerStart`), on the first connect after its create. */
-		readonly runnerStart?: RunnerStartTimes,
-		blockedNetwork = false,
-		/** The image it was made from (`SandboxHandle.image`), from a runner told `environment-image`. */
-		readonly image?: string,
-	) {
-		this.approval = findProfile(profile).approval;
+	constructor(private readonly link: RunnerLink, readonly id: string, found: NonNullable<Value<"connect">>) {
+		this.profile = found.profile;
+		this.cwd = found.cwd;
+		this.runnerScreenshots = found.screenshots === true;
+		this.snapshot = found.snapshot;
+		this.ownData = found.ownData === true;
+		this.runnerStart = found.startTimes;
+		this.image = found.image;
+		this.approval = findProfile(found.profile).approval;
 		markTurnSandbox(this);
-		if (blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
-		if (relay) this.modelRelay = () => this.openRelay();
-		if (relay && link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
+		if (found.memoryEvents) this.memoryEvents = () => link.request("memoryEvents", { id }, { signal: AbortSignal.timeout(5_000) });
+		if (found.blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
+		if (found.modelRelay && config.modelRelay.on) {
+			this.modelRelay = () => this.openRelay();
+			if (link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
+		}
 		if (link.durable) this.adopt = (process, tag, { onStdout, onStderr }) => link.adopt(process, { id, tag, argv: [] }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
 	}
 
@@ -748,7 +750,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes, found.blockedNetwork === true, found.image) : undefined;
+		return found ? new RunnerHandle(link, id, found) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

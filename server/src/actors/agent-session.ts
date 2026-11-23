@@ -583,7 +583,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its hosted sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
 }
 
 /**
@@ -3807,26 +3807,24 @@ function withLarger(layer: SandboxLayer, memory: OutOfMemory): OutOfMemory {
 	return larger ? { ...memory, larger } : memory;
 }
 
-/**
- * At the end of a turn on a guest of its own (E2B): whether its memory ran out during the turn. Its kernel killed a
- * program for memory (its own count went up), or it no longer answers and E2B's samples show its memory used up.
- * Said in the turn's row, with a larger size where there is one; a work item's turn carries it to the item.
- */
-async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, start: { oomKills: number; totalMiB: number }, began: number, turn: number): Promise<void> {
+/** Compare the sandbox's own kill counts over the turn. A silent E2B guest can also be diagnosed from its provider's samples. */
+export async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, start: { oomKills: number; totalMiB: number } | null, began: number, turn: number): Promise<void> {
+	if (!start) return;
 	try {
 		const end = await sandbox.memoryEvents?.().catch(() => null);
 		const killed = end ? end.oomKills - start.oomKills : 0;
-		// A guest that answers and whose kernel killed nothing did not run out; one that no longer answers is asked of E2B.
 		if (end && killed <= 0) return;
 		const peak = (await sandbox.memoryPeak?.(began).catch(() => null)) ?? null;
 		if (peak === null && !end) return;
-		const memory: OutOfMemory = peak ?? { usedMiB: end!.totalMiB, totalMiB: end!.totalMiB, ...(meta.hostedSize && { size: meta.hostedSize }) };
-		const layer = await layerOf(c, meta);
-		const offered = layer.sandboxes.sizes?.().map((size) => size.id);
+		const hosted = meta.place.kind === "hosted";
+		const memory: OutOfMemory = peak ?? { usedMiB: end!.totalMiB, totalMiB: end!.totalMiB, ...(hosted && meta.hostedSize && { size: meta.hostedSize }) };
+		const layer = hosted ? await layerOf(c, meta) : null;
+		const offered = layer?.sandboxes.sizes?.().map((size) => size.id);
 		const what = end ? ` Its kernel stopped ${killed === 1 ? "a program" : `${killed} programs`} to free memory during this turn: a command that ended with "Killed" or exit code 137 was one of them.` : " It stopped answering commands.";
-		note(c, turn, "warn", `${outOfMemoryWords(memory, offered)}${what}`);
-		console.log(`[wlp] sandbox.out_of_memory session=${meta.sessionId} turn=${turn} size=${meta.hostedSize ?? "small"} used=${memory.usedMiB} total=${memory.totalMiB} killed=${killed}`);
-		if (active.item) active.item.outOfMemory = withLarger(layer, memory);
+		note(c, turn, "warn", `${outOfMemoryWords(memory, offered, meta.place.kind)}${what}`);
+		const allocation = hosted ? `size=${meta.hostedSize ?? "small"} used=${memory.usedMiB}` : "place=machine";
+		console.log(`[wlp] sandbox.out_of_memory session=${meta.sessionId} turn=${turn} ${allocation} total=${memory.totalMiB} killed=${killed}`);
+		if (active.item) active.item.outOfMemory = layer ? withLarger(layer, memory) : memory;
 		// Its next connect finds it silent and restarts it: the item has been told of this sandbox's memory already.
 		meta.memoryNoted = sandbox.id;
 	} catch (error) {
@@ -3990,7 +3988,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			throw new TurnProblem("The environment build ended.");
 		}
 		used = sandbox;
-		// The guest's own count of programs its kernel killed for memory, to compare at the turn's end (E2B only).
+		// The sandbox’s own kill count, to compare at the end of the turn.
 		memoryAtStart = (await sandbox.memoryEvents?.().catch(() => null)) ?? null;
 		// A resumed turn in the same sandbox measures from where its first segment there began: a pause is no fresh start.
 		if (run?.memory?.sandboxId === sandbox.id) memoryAtStart = { oomKills: run.memory.oomKills, totalMiB: run.memory.totalMiB };
@@ -4386,7 +4384,7 @@ fi`, { signal, timeoutMs: 5000 });
 	const pausing = !!active.pausing && !!run && meta.run === run && !c.vars.destroying && !active.item?.withdrawn && !active.outOfTime && (active.pausing === "machine" || !ownEnd);
 	// The sandbox's memory is read at the turn's end, not at a pause: a server going away, or a machine away, is no guest that
 	// stopped answering. The resumed segment compares with the same start (`TurnRun.memory`).
-	if (!pausing && used && memoryAtStart && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
+	if (!pausing && used && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
 	if (pausing && active.pausing && run) {
 		try {
 			await pauseTurn(c, meta, active, active.pausing, usageOf(result?.summary?.usage) ?? result?.acp?.tokens ?? null, result);

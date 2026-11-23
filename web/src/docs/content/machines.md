@@ -154,7 +154,7 @@ If the machine shuts down or goes to sleep during a turn, the turn is paused, no
 
 ### CPU and memory
 
-By default, the runner fits up to 16 slots of 2 CPUs and 4–8 GiB each after reserving resources for the host. If none fits, one slot shares all cores with the host and uses up to 4 GiB, leaving at least 1 GiB or 25% of memory for the host, whichever is greater. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget. A slot's memory limits what an agent's commands can use at once, as a hosted size does: a large build or test suite can run a 1.5 GiB slot out of memory. Give such work a larger `--slot-memory`, or let a subtask take more slots.
+By default, the runner fits up to 16 slots of 2 CPUs and 4–8 GiB each after reserving resources for the host. If none fits, one slot shares all cores with the host and uses up to 4 GiB, leaving at least 1 GiB or 25% of memory for the host, whichever is greater. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget. A slot's memory limits what an agent's commands can use at once, as a hosted size does: a large build or test suite can run a 1.5 GiB slot out of memory. When the kernel kills a program because the slot ran out of memory, the turn’s timeline shows the slot limit and an unfinished work item asks you how to continue. The machine’s owner can raise `--slot-memory` or configure fewer slots to share the memory budget.
 
 ## Network access
 

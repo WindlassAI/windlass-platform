@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
@@ -162,6 +162,37 @@ async function until(test: () => boolean) {
 		assert.ok(performance.now() < end, "The runner did not handle the test event.");
 		await wait(5);
 	}
+}
+
+// Read the same files and run the same probe as a session container, using a private fixture tree.
+{
+	const { readMemoryEvents } = await import("../runner/src/memory-events.js");
+	const root = mkdtempSync(join(tmpdir(), "runner-memory-"));
+	const membership = join(root, "cgroup");
+	const read = () => readMemoryEvents({ ask: async ([sh, flag, script, arg0]) => {
+		const result = spawnSync(sh, [flag, script, arg0, root, membership], { encoding: "utf8" });
+		return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+	} });
+	try {
+		writeFileSync(membership, "0::/\n");
+		writeFileSync(join(root, "memory.max"), "1610612736\n");
+		writeFileSync(join(root, "memory.events"), "low 0\nhigh 0\nmax 19\noom 5\noom_kill 2\noom_group_kill 0\n");
+		assert.deepEqual(await read(), { oomKills: 2, totalMiB: 1536 });
+		writeFileSync(join(root, "memory.max"), "max\n");
+		assert.equal(await read(), null);
+
+		const slot = join(root, "memory", "docker", "session");
+		mkdirSync(slot, { recursive: true });
+		writeFileSync(membership, "2:memory:/docker/session\n");
+		writeFileSync(join(slot, "memory.limit_in_bytes"), "3221225472\n");
+		writeFileSync(join(slot, "memory.oom_control"), "oom_kill_disable 0\nunder_oom 0\noom_kill 1\n");
+		writeFileSync(join(slot, "memory.failcnt"), "22\n");
+		assert.deepEqual(await read(), { oomKills: 1, totalMiB: 3072 });
+		unlinkSync(join(slot, "memory.oom_control"));
+		assert.equal(await read(), null);
+		writeFileSync(join(slot, "memory.failcnt"), "0\n");
+		assert.deepEqual(await read(), { oomKills: 0, totalMiB: 3072 });
+	} finally { rmSync(root, { recursive: true, force: true }); }
 }
 
 const dir = mkdtempSync(join(tmpdir(), "runner-control-check-"));
@@ -353,17 +384,20 @@ try {
 			});
 		}
 	});
-	await checkControl("blocked-network is negotiated separately on the control and session sockets", async () => {
-		for (const capabilities of [undefined, ["sign-in-reason"], ["blocked-network"]]) {
+	await checkControl("blocked-network and memory-events are negotiated on connect", async () => {
+		for (const capabilities of [undefined, ["memory-events"], ["blocked-network"]]) {
+			const memory = capabilities?.includes("memory-events") === true;
 			const named = capabilities?.includes("blocked-network") === true;
 			await withControl([lease()], async r => {
 				const ws = await r.online(0, capabilities);
 				assert.equal(Object.hasOwn(ws.sent.find(f => f.kind === "report")!, "blockedNetwork"), named);
 				assert.equal(r.owner.blockedNetwork, named);
+				assert.equal(r.owner.memoryEvents, memory);
 			});
 			const { Executor } = await import("../runner/src/docker-executor.js");
 			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [] });
 			owner.blockedNetwork = named;
+			owner.memoryEvents = memory;
 			owner.discover = async () => { Object.assign(owner, { dockerHealth: { ok: true } }); };
 			Object.assign(owner, { disk: async () => 10_000_000_000 });
 			owner.network.prepare = async () => {};
@@ -374,6 +408,7 @@ try {
 			const found = await owner.lifecycle("connect", id, "s_network");
 			assert.ok(validValue("connect", found) && found);
 			assert.equal("blockedNetwork" in found, named);
+			assert.equal("memoryEvents" in found, memory);
 		}
 	});
 	await checkControl("a runner sends modelRelay, and lets turns use its relay, only for a server whose welcome names model-relay", async () => {

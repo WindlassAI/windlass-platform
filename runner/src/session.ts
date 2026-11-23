@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
 import { cleanClaudeOutput, claudeStream } from "./claude-output.js";
+import { readMemoryEvents } from "./memory-events.js";
 import { shotsImage } from "./policy.js";
 import { Refusal } from "./state.js";
 
@@ -153,6 +154,7 @@ class Conversation {
 					const answer = await h.ask(op.args.argv, op.args.options);
 					return box.harness && answer ? { ...answer, stdout: cleanClaudeOutput(answer.stdout), stderr: cleanClaudeOutput(answer.stderr) } : answer;
 				}
+				case "memoryEvents": return o.memoryEvents ? await readMemoryEvents(h) : null;
 				case "blockedNetwork":
 					if (!o.blockedNetwork || box.egress !== "restricted") throw new Refusal("This sandbox does not report blocked network requests.");
 					return await o.network.blocked(box.raw, op.args.turn, op.args.retained);

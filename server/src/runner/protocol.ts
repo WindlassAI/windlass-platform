@@ -71,6 +71,7 @@ const destination = nullable(is<string>(v => typeof v === "string" && v.length <
 const endpoint = { host: destination, port: nullable(is<number>(v => count(v) && v <= 65535)) };
 const refusalEntry = object({ ...endpoint, reason: oneOf("machine_policy", "private", "provider", "malformed"), firstAt: count, lastAt: count, count: positiveLimit });
 const operations = {
+	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
 	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
 	create: [object({ profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
@@ -82,6 +83,7 @@ const operations = {
 		/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
 		modelRelay: optional(oneOf(true)),
 		blockedNetwork: optional(oneOf(true)),
+		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
 		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })),
 		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */

@@ -1407,6 +1407,18 @@ expect("a budget: tokens used up, said with the numbers, weighted and as reporte
 expect("hosted sandbox seconds are no limit on a machine", budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "machine", machineId: "m1" }) === null && budgetStop(FACTORY_DEFAULTS.item, { ...spentAll, tokens: 0 }, { kind: "hosted" })?.cause === "hostedSeconds");
 
 const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId: "m1" } };
+drive("a machine out of memory asks how to continue in its slot", machineItem, [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: k => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 1536, totalMiB: 1536 } }),
+		state: "waiting", wait: "person", effects: ["ask"], also: o => {
+			const q = o.item.question;
+			return holds(q?.kind === "out_of_memory" && q.largerSize === undefined && /slot ran out of memory.*1,536 MiB/.test(q.text)
+				&& q.text.includes("--slot-memory") && q.text.includes("fewer slots") && !q.text.includes("larger")
+				&& q.choices.map(c => c.label).join("|") === "Go on anyway|Hand over|Give up", JSON.stringify(q));
+		} },
+	{ fact: answer("again"), state: "queued", effects: ["deliver", "check_turn"] },
+]);
 const offlineAdmission = admit({ at: T0, limits: FACTORY_DEFAULTS, place: machine(false, 0), attempt: 0 });
 if (offlineAdmission.ok) throw new Error("an offline machine was granted");
 drive("a machine wait spends nothing, even when repeated hours later", machineItem, [

@@ -160,6 +160,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    it, or from a runner that says neither, a turn's token goes into the sandbox
  *   start-times      the first connect's `startTimes` after a create (docs/architecture.md, "Start times")
  *   store-limits     the report's `storeLimits`: the snapshot and Git mirror limits in force (docs/machines.md)
+ *   memory-events    a connect's `memoryEvents`: the session can read its container's memory limit and OOM kills
  *   blocked-network  restricted proxy observation on the session socket (report and connect flags)
  *   sign-in-reason   a harness entry's `signInReason`: why its sign-in could not be checked ("unknown")
  *   environment-image  a connect's `image`: the Docker image id the sandbox was made from, which a prepared
@@ -169,7 +170,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation"] as const;
+export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a

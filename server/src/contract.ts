@@ -1455,7 +1455,8 @@ export function largerHostedSize(size: HostedSize): HostedSize | null {
  * "The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB." What the
  * turn's row and a work item's question say. `offered`: the deployment's sizes, so that only one it has is named.
  */
-export function outOfMemoryWords(memory: { usedMiB: number; totalMiB: number; size?: HostedSize }, offered: readonly HostedSize[] = HOSTED_SIZES): string {
+export function outOfMemoryWords(memory: { usedMiB: number; totalMiB: number; size?: HostedSize }, offered: readonly HostedSize[] = HOSTED_SIZES, place: SandboxPlace["kind"] = "hosted"): string {
+	if (place === "machine") return `The machine slot ran out of memory (limit ${memory.totalMiB.toLocaleString("en-US")} MiB). The machine’s owner can give slots more memory with --slot-memory or configure fewer slots to share the available memory.`;
 	const said = `The sandbox ran out of memory (${memory.usedMiB.toLocaleString("en-US")} of ${memory.totalMiB.toLocaleString("en-US")} MiB).`;
 	const from = memory.size ?? HOSTED_SIZES.find((size) => HOSTED_SIZE_SPECS[size].memoryMiB >= memory.totalMiB) ?? "large";
 	const larger = HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(from) + 1).find((size) => offered.includes(size));

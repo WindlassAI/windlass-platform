@@ -279,6 +279,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						owner.sessionVolumes = named?.includes("session-volumes" satisfies Capability) === true;
 						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
 						owner.blockedNetwork = named?.includes("blocked-network" satisfies Capability) === true;
+						owner.memoryEvents = named?.includes("memory-events" satisfies Capability) === true;
 						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
 						owner.environmentImage = named?.includes("environment-image" satisfies Capability) === true;
 						owner.platformGitHost(f.gitHost);

@@ -127,6 +127,7 @@ private signInRetries = 0;
 	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
 	blockedNetwork = false;
+	memoryEvents = false;
 	/** The connected server named `environment-image`: a connect says which image the sandbox was made from (`SandboxHandle.image`). */
 	environmentImage = false;
 	/** Windlass's model relay of this machine: its container and each turn's forwarder. */
@@ -731,6 +732,7 @@ private signInRetries = 0;
 				...(this.modelRelays && this.modelRelayReady && !box.harness ? { modelRelay: true as const } : {}),
 				// Only a reporting restricted proxy on a server that opted in.
 				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
+				...(this.memoryEvents && { memoryEvents: true as const }),
 				// Once, and only to a server that named `start-times`.
 				...(this.startTimes && box.startTimes ? { startTimes: box.startTimes } : {}),
 				// Only to a server that named `environment-image`: an older one refuses a key it does not know.
