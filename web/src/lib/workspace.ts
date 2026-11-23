@@ -312,8 +312,40 @@ export function searchRail(groups: readonly RailGroup[], query: string): RailGro
 	return groups.map((group) => ({ ...group, repositories: group.repositories.filter((repository) => `${repository.owner}/${repository.name}`.toLowerCase().includes(needle)) })).filter((group) => group.repositories.length > 0);
 }
 
-/** What a rail row shows at its end: the amber count of what asks, a running ring, and otherwise how many things it has, or that only settings are saved. */
+/**
+ * What a rail row shows at its end: the amber count of what asks and a running ring. A quiet one shows
+ * no count (its name is dimmer), only "saved" where nothing but settings is saved for it.
+ */
 export function railBadge(entry: Pick<RailRepository, "running" | "needs" | "agents" | "items" | "saved">): { needs: number; running: boolean; count: number | null; saved: boolean } {
 	const count = entry.agents + entry.items;
-	return { needs: entry.needs, running: entry.running > 0, count: entry.needs === 0 && entry.running === 0 && count > 0 ? count : null, saved: entry.saved && count === 0 };
+	return { needs: entry.needs, running: entry.running > 0, count: null, saved: entry.saved && count === 0 };
+}
+
+/** The repositories with something running or asking, what asks first, then the one used last: the rail's "Active now". */
+export function activeRepositories(groups: readonly RailGroup[]): RailRepository[] {
+	return groups
+		.flatMap((group) => group.repositories)
+		.filter((repository) => repository.running > 0 || repository.needs > 0)
+		.sort((a, b) => Number(b.needs > 0) - Number(a.needs > 0) || b.usedAt - a.usedAt || a.name.localeCompare(b.name));
+}
+
+const OWNERS_KEY = "wlp.workspace.folded-owners";
+
+/** The owners whose repositories the viewer folded away in the rail, as this browser kept them. */
+export function loadFoldedOwners(storage: Pick<Storage, "getItem"> | null = safeStorage()): Set<string> {
+	try {
+		const value: unknown = JSON.parse(storage?.getItem(OWNERS_KEY) ?? "[]");
+		return new Set(Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []);
+	} catch {
+		return new Set();
+	}
+}
+
+export function saveFoldedOwners(owners: ReadonlySet<string>, storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage()): void {
+	try {
+		if (owners.size === 0) storage?.removeItem(OWNERS_KEY);
+		else storage?.setItem(OWNERS_KEY, JSON.stringify([...owners].sort()));
+	} catch {
+		// Kept for this visit only.
+	}
 }

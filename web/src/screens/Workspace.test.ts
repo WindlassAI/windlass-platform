@@ -33,6 +33,7 @@ beforeEach(() => {
 	root = null;
 	localStorage.removeItem("wlp.workspace.filters");
 	localStorage.removeItem("wlp.workspace.rail");
+	localStorage.removeItem("wlp.workspace.folded-owners");
 });
 
 afterEach(() => {
@@ -56,7 +57,8 @@ async function show(path: string): Promise<void> {
 }
 
 const rail = () => host.querySelector('nav.ws-rail[aria-label="Repositories"]') as HTMLElement;
-const owners = () => [...rail().querySelectorAll(".ws-rail-group")].map((group) => ({ owner: group.querySelector(".ws-rail-owner")?.textContent ?? "", names: [...group.querySelectorAll(".ws-rail-name")].map((name) => name.textContent) }));
+const owners = () => [...rail().querySelectorAll(".ws-rail-group")].map((group) => ({ owner: group.querySelector(".ws-rail-owner-name")?.textContent ?? "", names: [...group.querySelectorAll(".ws-rail-name")].map((name) => name.textContent) }));
+const ownerRow = (owner: string) => [...rail().querySelectorAll<HTMLButtonElement>(".ws-rail-owner-row")].find((button) => button.querySelector(".ws-rail-owner-name")?.textContent === owner) as HTMLButtonElement;
 const row = (name: string) => [...rail().querySelectorAll<HTMLAnchorElement>("a.ws-rail-row")].find((link) => link.querySelector(".ws-rail-name")?.textContent === name) as HTMLAnchorElement;
 const current = () => rail().querySelector('a.ws-rail-row[aria-current="page"] .ws-rail-name')?.textContent;
 const press = (key: string, init: KeyboardEventInit = {}, target: EventTarget = document.body) => act(() => void target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })));
@@ -73,21 +75,58 @@ describe("the rail", () => {
 		const tops = [...rail().querySelectorAll(".ws-rail-rows")][0] as HTMLElement;
 		expect([...tops.querySelectorAll(".ws-rail-name")].map((name) => name.textContent)).toEqual(["Everything", "No repository"]);
 		expect(current()).toBe("Everything");
-		expect(rail().querySelector(".ws-rail-foot")?.textContent).toMatch(/Sandbox today .* kept/);
+		expect(rail().querySelector(".ws-rail-foot")?.textContent).toMatch(/Sandbox today.* kept/);
 		expect(rail().querySelector(".ws-rail-foot")?.getAttribute("href")).toBe("/usage?mock=1");
 	});
 
-	it("badges each repository: the amber count of what asks, a ring while something runs, a count, or saved", async () => {
+	it("badges each repository: the amber count of what asks, a ring while something runs, nothing for a quiet one, or saved", async () => {
 		await show("/");
 		const harbor = row("harbor");
 		expect(Number(harbor.querySelector(".ws-badge-needs")?.textContent)).toBeGreaterThan(0);
 		expect(harbor.querySelector(".ws-badge-running")).not.toBeNull();
 		expect(harbor.textContent).toMatch(/needs? you/);
+		// Each row has the repository's tile.
+		expect(harbor.querySelector(".repo-tile")?.textContent).toBe("Ha");
 		expect(row("quay").querySelector(".ws-badge-saved")?.textContent).toBe("saved");
-		expect(row("signal-flags").querySelector(".ws-badge-count")?.textContent).toMatch(/^\d+$/);
+		// A quiet repository shows no count, and its row steps back.
+		expect(row("signal-flags").querySelector(".ws-badge-count")).toBeNull();
+		expect(row("signal-flags").parentElement?.classList.contains("ws-rail-quiet")).toBe(true);
+		expect(harbor.parentElement?.classList.contains("ws-rail-quiet")).toBe(false);
 		// Each row has its actions: a new agent there, and its saved settings.
 		const actions = [...(harbor.parentElement?.querySelectorAll(".ws-rail-action") ?? [])].map((link) => link.getAttribute("href"));
 		expect(actions).toEqual(["/repositories/7101/new", "/repositories/7101/settings"]);
+	});
+
+	it("repeats the repositories with something running or asking under Active now", async () => {
+		await show("/");
+		const active = [...rail().querySelectorAll(".ws-rail-active .ws-rail-name")].map((name) => name.textContent);
+		expect(active).toEqual(expect.arrayContaining(["harbor", "tide-tables"]));
+		expect(active).not.toContain("quay");
+		expect(active).not.toContain("signal-flags");
+	});
+
+	it("folds an owner's repositories away from its row, which this browser remembers, and shows them again for a search", async () => {
+		await show("/");
+		const acme = ownerRow("acme");
+		expect(acme.getAttribute("aria-expanded")).toBe("true");
+		expect(acme.querySelector("img.owner-avatar")?.getAttribute("src")).toBe("https://github.com/acme.png?size=40");
+		act(() => acme.click());
+		expect(ownerRow("acme").getAttribute("aria-expanded")).toBe("false");
+		expect(owners().find((group) => group.owner === "acme")?.names).toEqual([]);
+		expect(JSON.parse(localStorage.getItem("wlp.workspace.folded-owners") ?? "[]")).toEqual(["acme"]);
+		const search = rail().querySelector(".ws-search input") as HTMLInputElement;
+		act(() => {
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "harb");
+			search.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(owners()).toEqual([{ owner: "acme", names: ["harbor"] }]);
+		act(() => {
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "");
+			search.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => ownerRow("acme").click());
+		expect(owners().find((group) => group.owner === "acme")?.names.length).toBeGreaterThan(0);
+		expect(localStorage.getItem("wlp.workspace.folded-owners")).toBeNull();
 	});
 
 	it("puts the focus in its search with /, finds by name, opens the first match with Enter, and moves through the rows with the arrow keys", async () => {
@@ -133,6 +172,29 @@ describe("the rail", () => {
 		act(() => (host.querySelector(".ws-unfold") as HTMLButtonElement).click());
 		expect(rail().hidden).toBe(false);
 		expect(localStorage.getItem("wlp.workspace.rail")).toBeNull();
+	});
+});
+
+describe("Everything", () => {
+	it("is one feed: Needs you, Working now and Recent, each newest first, the repository a label on each row, and no list by repository", async () => {
+		await show("/");
+		const pane = host.querySelector(".ws-pane") as HTMLElement;
+		expect([...pane.querySelectorAll(".feed-heading")].map((heading) => heading.firstChild?.textContent)).toEqual(["Needs you", "Working now", "Recent"]);
+		expect(pane.textContent).not.toContain("By repository");
+		expect(pane.querySelectorAll(".agent-group-head")).toHaveLength(0);
+		for (const section of pane.querySelectorAll(".feed")) {
+			const times = [...section.querySelectorAll(".feed-time")].map((time) => Date.parse(time.getAttribute("datetime") ?? ""));
+			expect(times).toEqual([...times].sort((a, b) => b - a));
+		}
+		// What asks: Answer for an agent, Open for a work item; each with its repository's tile and name, or none.
+		const needs = pane.querySelector(".feed-needs") as HTMLElement;
+		for (const row of needs.querySelectorAll(".feed-row")) expect(row.querySelector(".feed-button")?.textContent).toBe((row as HTMLElement).dataset.kind === "agent" ? "Answer" : "Open");
+		expect(needs.querySelectorAll(".feed-row").length).toBeGreaterThan(0);
+		const itemRow = needs.querySelector('.feed-row[data-kind="item"]') as HTMLElement;
+		expect(itemRow.querySelector(".feed-repo .repo-tile")).not.toBeNull();
+		expect(itemRow.querySelector(".feed-repo")?.getAttribute("href")).toMatch(/^\/repositories\/\d+$/);
+		// The filter sits on Recent's heading.
+		expect(pane.querySelector(".feed-recent .ws-filter-button")).not.toBeNull();
 	});
 });
 
@@ -219,15 +281,15 @@ describe("the filters", () => {
 		localStorage.setItem("wlp.workspace.filters", JSON.stringify({ status: [], agent: [], place: [], kind: ["item"] }));
 		await show("/");
 		expect(rail().querySelector(".ws-filter-button")?.getAttribute("aria-label")).toBe("Filter, 1 on");
-		expect(host.querySelector("#home-items")?.textContent).toMatch(/^Work items/);
-		// Only work items: no agent stands in the lists.
-		expect(host.querySelectorAll(".agent-row-session")).toHaveLength(0);
+		// Only work items: no agent stands in the feed.
+		expect(host.querySelectorAll('.feed-row[data-kind="item"]').length).toBeGreaterThan(0);
+		expect(host.querySelectorAll('.feed-row[data-kind="agent"]')).toHaveLength(0);
 		const chip = host.querySelector(".ws-chip") as HTMLButtonElement;
 		expect(chip.textContent).toBe("Work items");
 		act(() => chip.click());
 		await settle(2);
 		expect(localStorage.getItem("wlp.workspace.filters")).toBeNull();
-		expect(host.querySelectorAll(".agent-row-session").length).toBeGreaterThan(0);
+		expect(host.querySelectorAll('.feed-row[data-kind="agent"]').length).toBeGreaterThan(0);
 		expect(rail().querySelector(".ws-filter-button")?.getAttribute("aria-label")).toBe("Filter");
 	});
 

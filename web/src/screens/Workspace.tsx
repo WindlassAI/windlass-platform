@@ -4,13 +4,16 @@
  * The repository chosen is in the address (`/repositories/<GitHub's id>`), so a reload, a link or the
  * back button lands on it.
  *
- * The rail groups the repositories by owner, each with its live state: a ring while something on it
- * runs, an amber count of what asks the user, otherwise how many agents and work items it has, or
- * "saved" for one that only has saved settings. "Everything" and "No repository" stand at its top, a
- * search at the very top (`/` reaches it from anywhere on the page), and the day's sandbox time, what
- * is at work and the sandboxes kept at its foot. The arrow keys move between its rows; Ctrl+B (⌘B on
- * a Mac) folds it away and back, which this browser remembers. On a phone the rail is a sheet, opened
- * from a switcher at the top of the page, with a strip of the repositories under it.
+ * The rail groups the repositories by owner, each owner row with their GitHub picture, folding away
+ * (this browser remembers which), and each repository with its tile and its live state: a lime ring
+ * while something on it runs, an amber count of what asks the user; one with neither is quiet, its
+ * name dimmer and no count ("saved" for one that only has saved settings). Above the owners, "Active
+ * now" repeats the repositories with something running or asking. "Everything" and "No repository"
+ * stand at its top, a search at the very top (`/` reaches it from anywhere on the page), and the day's
+ * sandbox time, what is at work and the sandboxes kept at its foot. Hovering a repository shows a new
+ * agent there and its saved settings. The arrow keys move between its rows; Ctrl+B (⌘B on a Mac)
+ * folds it away and back, which this browser remembers. On a phone the rail is a sheet, opened from a
+ * switcher at the top of the page, with a strip of the repositories under it.
  *
  * The lists can be filtered (lib/workspace.ts): by status, agent, where it runs and kind. The filters
  * are the viewer's own, remembered in this browser, and narrow the rail and the lists alike.
@@ -18,13 +21,14 @@
 import { USAGE_LOW_SHARE, type GithubId, type MachineSummary, type UsageNumbers } from "@contract";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon, RepoIcon, RingIcon, SearchIcon, SlidersIcon } from "../components/Icons";
+import { OwnerAvatar, RepoTile } from "../components/RepoTile";
 import { FilterMenu } from "../components/WorkspaceFilters";
 import { Sheet } from "../components/ui/Sheet";
 import { PHONE_QUERY, useMediaQuery } from "../components/ui/useMediaQuery";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
 import { workingCounts } from "../lib/repositories";
 import { linkProps, navigate, type RepositoryPaneView, type Route } from "../lib/router";
-import { filterCount, loadFilters, loadRailFolded, railBadge, railOf, saveFilters, saveRailFolded, searchRail, type Filters, type Rail, type RailRepository, type RailTotals } from "../lib/workspace";
+import { activeRepositories, filterCount, loadFilters, loadFoldedOwners, loadRailFolded, railBadge, railOf, saveFilters, saveFoldedOwners, saveRailFolded, searchRail, type Filters, type Rail, type RailRepository, type RailTotals } from "../lib/workspace";
 import { useApp } from "../state/app";
 import { allowanceState, useAllowance, useFactoryLimits, useSessions } from "../state/hooks";
 import { Home, useSavedRepositories } from "./Home";
@@ -122,7 +126,7 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 				{selection.kind === "repository" ? (
 					<RepositorySide key={selection.id} id={selection.id} view={selection.view} launching={selection.launching ?? false} items={items} filters={filters} onFilters={setFilters} machines={machineList} />
 				) : (
-					<Home state={state} items={platform.info?.items ? items.list : []} saved={saved} usage={usage} scope={selection.kind === "none" ? "none" : "all"} filters={filters} onFilters={setFilters} machines={machineList} />
+					<Home state={state} items={platform.info?.items ? items.list : []} usage={usage} scope={selection.kind === "none" ? "none" : "all"} filters={filters} onFilters={setFilters} machines={machineList} />
 				)}
 			</div>
 			{phone ? (
@@ -171,8 +175,18 @@ function moveFocus(event: ReactKeyboardEvent<HTMLElement>, list: HTMLElement | n
 
 function RailBody({ rail, selection, filters, onFilters, machines, search, onFold }: { rail: Rail; selection: Selection; filters: Filters; onFilters(filters: Filters): void; machines: readonly MachineSummary[]; search?: RefObject<HTMLInputElement | null>; onFold?: () => void }) {
 	const [query, setQuery] = useState("");
+	const [foldedOwners, setFoldedOwners] = useState<ReadonlySet<string>>(() => loadFoldedOwners());
 	const list = useRef<HTMLDivElement>(null);
 	const groups = searchRail(rail.groups, query);
+	const searching = query.trim() !== "";
+	const active = searching ? [] : activeRepositories(rail.groups);
+	const toggleOwner = (owner: string) => {
+		const next = new Set(foldedOwners);
+		if (next.has(owner)) next.delete(owner);
+		else next.add(owner);
+		setFoldedOwners(next);
+		saveFoldedOwners(next);
+	};
 	const chosen = selection.kind === "repository" ? String(selection.id) : null;
 	const first = groups[0]?.repositories[0] ?? null;
 	const onSearchKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -215,16 +229,44 @@ function RailBody({ rail, selection, filters, onFilters, machines, search, onFol
 						<ScopeRow route={{ name: "home", scope: "none" }} current={selection.kind === "none"} label="No repository" icon={<PlusIcon size={13} />} totals={rail.none} />
 					</ul>
 				) : null}
-				{groups.map((group) => (
-					<section key={group.owner} className="ws-rail-group" aria-label={group.owner || "Repositories"}>
-						{group.owner ? <h3 className="ws-rail-owner">{group.owner}</h3> : null}
+				{active.length > 0 ? (
+					<section className="ws-rail-active" aria-label="Active now">
+						<h3 className="ws-rail-label">
+							<RingIcon size={11} className="ws-ring" />
+							Active now
+						</h3>
 						<ul className="ws-rail-rows">
-							{group.repositories.map((repository) => (
-								<RepoRow key={String(repository.id)} repository={repository} current={chosen === String(repository.id)} />
+							{active.map((repository) => (
+								<RepoRow key={String(repository.id)} repository={repository} current={chosen === String(repository.id)} owned />
 							))}
 						</ul>
 					</section>
-				))}
+				) : null}
+				{groups.map((group) => {
+					// A search shows every match, folded owner or not; the chosen repository keeps its owner open.
+					const shut = !searching && group.owner !== "" && foldedOwners.has(group.owner) && !group.repositories.some((repository) => chosen === String(repository.id));
+					return (
+						<section key={group.owner} className={`ws-rail-group${shut ? " ws-rail-group-shut" : ""}`} aria-label={group.owner || "Repositories"}>
+							{group.owner ? (
+								<h3 className="ws-rail-owner">
+									<button type="button" className="ws-rail-owner-row" data-rail-row="" aria-expanded={!shut} onClick={() => toggleOwner(group.owner)} title={shut ? `Show ${group.owner}'s repositories` : `Fold ${group.owner}'s repositories`}>
+										<ChevronDownIcon size={12} className="ws-rail-chevron" />
+										<OwnerAvatar owner={group.owner} />
+										<span className="ws-rail-owner-name">{group.owner}</span>
+										<span className="ws-rail-owner-count">{group.repositories.length}</span>
+									</button>
+								</h3>
+							) : null}
+							{shut ? null : (
+								<ul className="ws-rail-rows">
+									{group.repositories.map((repository) => (
+										<RepoRow key={String(repository.id)} repository={repository} current={chosen === String(repository.id)} />
+									))}
+								</ul>
+							)}
+						</section>
+					);
+				})}
 				{groups.length === 0 && query.trim() !== "" ? <p className="ws-rail-empty">No repository matches “{query.trim()}”.</p> : null}
 				{groups.length === 0 && query.trim() === "" && filterCount(filters) > 0 ? <p className="ws-rail-empty">No repository has anything the filters leave.</p> : null}
 			</div>
@@ -257,21 +299,24 @@ function ScopeRow({ route, current, label, icon, totals }: { route: Route; curre
 			<a className="ws-rail-row" data-rail-row="" aria-current={current ? "page" : undefined} {...linkProps(route)}>
 				<span className="ws-rail-icon">{icon}</span>
 				<span className="ws-rail-name">{label}</span>
-				<Badges running={totals.running > 0 ? totals.running : false} needs={totals.needs} count={totals.running === 0 && totals.needs === 0 ? totals.count : null} label={label} />
+				<Badges running={totals.running > 0 ? totals.running : false} needs={totals.needs} count={null} label={label} />
 			</a>
 		</li>
 	);
 }
 
-function RepoRow({ repository, current }: { repository: RailRepository; current: boolean }) {
+/** A repository's row: its tile, its name and its state; `owned` (in "Active now") says its owner too, quietly. */
+function RepoRow({ repository, current, owned = false }: { repository: RailRepository; current: boolean; owned?: boolean }) {
 	const badge = railBadge(repository);
 	const name = `${repository.owner ? `${repository.owner}/` : ""}${repository.name}`;
+	const quiet = !badge.running && badge.needs === 0;
 	return (
-		<li className="ws-rail-item ws-rail-item-repo">
+		<li className={`ws-rail-item ws-rail-item-repo${quiet ? " ws-rail-quiet" : ""}`}>
 			<a className="ws-rail-row" data-rail-row="" aria-current={current ? "page" : undefined} title={name} {...linkProps({ name: "repository", id: repository.id })}>
 				<span className="ws-rail-icon">
-					<RepoIcon size={13} />
+					<RepoTile name={repository.name} />
 				</span>
+				{owned && repository.owner ? <span className="visually-hidden">{repository.owner}/</span> : null}
 				<span className="ws-rail-name">{repository.name}</span>
 				<Badges running={badge.running} needs={badge.needs} count={badge.count} saved={badge.saved} label={name} />
 			</a>
@@ -298,24 +343,39 @@ function RailFoot({ usage, working, ceiling, onMachines }: { usage: UsageNumbers
 	return (
 		<a className={`ws-rail-foot${state !== "plenty" ? " ws-rail-foot-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: sandbox time and sandboxes">
 			<span className="ws-foot-time">
-				Sandbox today <strong>{usage === null ? "–" : sandboxTime(spent)}</strong>
-				{allowance === null ? null : ` of ${sandboxTime(allowance)}`}
-				{usage !== null && state !== "plenty" && usage.leftSeconds !== null ? <span className="ws-foot-left">{state === "used" ? `, used up until ${localTime(usage.resetsAt)}` : `, ${sandboxTime(usage.leftSeconds)} left`}</span> : null}
+				<span>Sandbox today</span>
+				<span>
+					<strong>{usage === null ? "–" : sandboxTime(spent)}</strong>
+					{allowance === null ? null : ` of ${sandboxTime(allowance)}`}
+				</span>
+				{usage !== null && state !== "plenty" && usage.leftSeconds !== null ? <span className="ws-foot-left">{state === "used" ? `Used up until ${localTime(usage.resetsAt)}` : `${sandboxTime(usage.leftSeconds)} left`}</span> : null}
 			</span>
 			{share === null ? null : (
-				<span className="home-meter ws-foot-meter" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowance ?? 0} aria-valuenow={Math.min(spent, allowance ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance ?? 0)}`}>
-					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
+				<span className="ws-foot-bar" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowance ?? 0} aria-valuenow={Math.min(spent, allowance ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance ?? 0)}`}>
+					<span className="ws-foot-bar-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
 				</span>
 			)}
 			<span className="ws-foot-facts">
 				<span>
-					<strong>{working}</strong>
-					{ceiling === null ? "" : ` of ${ceiling}`} working{onMachines > 0 ? `, ${onMachines} on your machines` : ""}
+					{working > 0 ? <RingIcon size={11} className="ws-ring" /> : null}
+					<span>
+						<strong>{working}</strong>
+						{ceiling === null ? "" : ` of ${ceiling}`} working{onMachines > 0 ? `, ${onMachines} on your machines` : ""}
+					</span>
 				</span>
 				{sandboxes === null ? null : (
 					<span className={full ? "ws-foot-full" : undefined}>
-						<strong>{count(sandboxes.kept)}</strong>
-						{sandboxes.limit === null ? (sandboxes.kept === 1 ? " sandbox kept" : " sandboxes kept") : ` of ${count(sandboxes.limit)} kept`}
+						<span>
+							<strong>{count(sandboxes.kept)}</strong>
+							{sandboxes.limit === null ? (sandboxes.kept === 1 ? " sandbox kept" : " sandboxes kept") : ` of ${count(sandboxes.limit)} kept`}
+						</span>
+						{sandboxes.limit !== null && sandboxes.limit <= 10 ? (
+							<span className="ws-foot-slots" aria-hidden="true">
+								{Array.from({ length: sandboxes.limit }, (_, index) => (
+									<i key={index} className={index < sandboxes.kept ? "ws-foot-slot-on" : undefined} />
+								))}
+							</span>
+						) : null}
 						{full ? <span className="visually-hidden"> (the most an account may keep)</span> : null}
 					</span>
 				)}
