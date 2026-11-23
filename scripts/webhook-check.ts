@@ -858,21 +858,59 @@ async function run() {
 				} finally { await stop(item.id); }
 			});
 		}
-		for (const association of ["NONE","COLLABORATOR"]) {
-			await check("G4 permission preflight for "+association,async()=>{
+		// GitHub's permission decides, never the association a payload or the App's read shows: to an App, a private organisation
+		// member reads as NONE or CONTRIBUTOR however much they may do, and an association can say COLLABORATOR of a reader.
+		for (const [association, level] of [["NONE","write"],["CONTRIBUTOR","write"],["COLLABORATOR","read"],["MEMBER","none"]] as const) {
+			await check("G4 permission decides for "+association+" with "+level+" access",async()=>{
 				const item=await feedbackItem();
 				try {
-					const person=standin.addUser("g4-"+association.toLowerCase());
-					projectG2.access.set(person.login, association==="NONE" ? "write" : "read");
+					const person=standin.addUser("g4-"+association.toLowerCase()+"-"+level);
+					if (level !== "none") projectG2.access.set(person.login, level);
 					const prior=item.pull.comments.length;
-					await delivered("issue_comment",commentFields(item.pr,45671,person,association));
+					const id=45671+item.pr;
+					item.pull.comments.push({id,body:"/windlass Handle the empty input.",user:{...person,type:"User"},author_association:association,created_at:new Date().toISOString()});
+					await delivered("issue_comment",commentFields(item.pr,id,person,association));
 					const view=await item.view();
-					assert.deepEqual(view.feedback,{batches:[],notTaken:1});
-					assert.equal(standin.requests.filter(r=>r.path.endsWith("/collaborators/"+person.login+"/permission")).length,association==="NONE"?0:1);
-					assert.equal(item.pull.comments.length,prior);
+					assert.equal(standin.requests.filter(r=>r.path.endsWith("/collaborators/"+person.login+"/permission")).length,1);
+					if (level === "write") {
+						assert.equal(view.feedback.notTaken,0);
+						assert.deepEqual(view.feedback.batches.flatMap(b=>b.entries.map(e=>[e.id,e.access,e.body])),[["issue_comment:"+id,"write","Handle the empty input."]]);
+					} else {
+						assert.deepEqual(view.feedback,{batches:[],notTaken:1});
+						assert.equal(item.pull.comments.length,prior+1);
+					}
 				} finally { await stop(item.id); }
 			});
 		}
+		// The owner of an organisation's repository whose membership is private: GitHub tells the App CONTRIBUTOR or NONE for them.
+		await check("G4 owner as a private organisation member: a review and its line comment are taken",async()=>{
+			const item=await feedbackItem();
+			try {
+				const r=standin.submitReview(projectG2,item.pull,writer,"changes_requested","Rename sum to add.",["/windlass and in the doc comment"]);
+				for (const row of [r.review, ...r.lines]) row.author_association="CONTRIBUTOR";
+				await delivered("pull_request_review",reviewFields(item.pr,r.review));
+				await delivered("pull_request_review_comment",{action:"created",sender:r.lines[0].user,pull_request:{number:item.pr},comment:r.lines[0]});
+				const view=await until("private member's review taken",async()=>{const v=await item.view();return v.feedback.batches.some(b=>b.state==="taken") ? v : null;});
+				assert.equal(view.feedback.notTaken,0);
+				assert.deepEqual(view.feedback.batches[0].entries.map(e=>[e.kind,e.access]),[["changes_requested","owner"],["review_comment","owner"]]);
+				assert.equal(view.run?.n,2);
+				await until("eyes on the line",async()=>standin.reactions.has("pulls:"+r.lines[0].id));
+			} finally { await stop(item.id); }
+		});
+		await check("G4 owner as a private organisation member: a /windlass comment is taken",async()=>{
+			const item=await feedbackItem();
+			try {
+				// The webhook says MEMBER and the App's own read of the comment says NONE, as on the live repositories.
+				const id=46000+item.pr;
+				item.pull.comments.push({id,body:"/windlass also export sum from index.js",user:{...writer,type:"User"},author_association:"NONE",created_at:new Date().toISOString()});
+				assert.equal((await delivered("issue_comment",commentFields(item.pr,id,writer,"MEMBER"))).state,"done");
+				const pending=await item.view();
+				assert.deepEqual(pending.feedback.batches.map(b=>[b.state,b.entries.map(e=>[e.id,e.access])]),[["pending",[["issue_comment:"+id,"owner"]]]]);
+				await item.clock().checkAdvance("feedback",200_000);
+				await until("private member's comment taken",async()=>(await item.view()).run?.n===2);
+				await until("eyes on the comment",async()=>standin.reactions.has("issues:"+id));
+			} finally { await stop(item.id); }
+		});
 		await check("G4 approval is logged once and a Bot approval never reaches the inbox",async()=>{
 			const item=await feedbackItem();
 			try {

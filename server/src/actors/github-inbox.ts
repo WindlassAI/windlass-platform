@@ -141,17 +141,20 @@ export type FeedbackSubject = {
 	kind: "review" | "review_comment" | "issue_comment"; id: string; sender: GithubUser; association: string;
 };
 export type FeedbackNotice = { installationId: GithubId; repositoryId: GithubId; pr: number; entries: FeedbackEntry[]; denied?: string; approval?: { id: string; author: string } };
-const associated = (association: string) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(association);
 export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + subject.id;
 
-/** Both webhook and poll go through this preflight and authoritative subject read. */
+/**
+ * Both webhook and poll go through this preflight and authoritative subject read. Who may send the item
+ * back is decided as issue intake decides it: someone GitHub says may write to the repository (the
+ * collaborator permission API, with the App's token); the item's own person (their linked account) is
+ * told apart from others with write access.
+ * `author_association` decides nothing: GitHub reckons it for the reader, and to an App a private
+ * organisation member, the organisation's owner among them, can read as CONTRIBUTOR or NONE.
+ */
 export async function readFeedback(c: Pick<Ctx, "client">, uid: string, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, pollingOwner?: GithubId): Promise<FeedbackNotice | null> {
 	const { repositoryId, installationId, pr } = target;
 	const denied = { ...target, entries: [], denied: feedbackId(subject) };
-	if (!associated(subject.association)) return denied;
 	const params = { params: serviceParams() };
-	const directory = c.client().githubRepository.get([String(repositoryId)], params);
-	const write = await directory.internalIssuePermission(installationId, subject.sender) === "write";
 	// Without webhooks there is no account directory. The poll has already resolved
 	// this item's own connection against its bound installation and repository.
 	let owner = pollingOwner === subject.sender.id;
@@ -161,7 +164,8 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string, target: 
 			owner = link?.uid === uid && link.installations.includes(installationId);
 		} catch (e) { if (!missingActor(e)) throw e; }
 	}
-	if (!write && !owner) return denied;
+	// The item's person needs write access too, as issue intake asks of them: an owner GitHub has since shut out sends nothing back.
+	if (await c.client().githubRepository.get([String(repositoryId)], params).internalIssuePermission(installationId, subject.sender) !== "write") return denied;
 	const app = githubApp();
 	if (!app) throw new Error("GitHub App unavailable.");
 	try {
@@ -171,7 +175,7 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string, target: 
 			const entry = (kind: FeedbackEntry["kind"], id: string, body: string, at: number, url: string, author: string): FeedbackEntry => ({
 				id, author, access: owner ? "owner" : "write", kind, body: cleanFeedback(body).slice(0, 16000), at, url, commit: null, path: null, line: null,
 			});
-			const valid = (r: { author: GithubUser; at: number; association: string }) => r.author.id === subject.sender.id && associated(r.association) && recentSubject(r.at);
+			const valid = (r: { author: GithubUser; at: number }) => r.author.id === subject.sender.id && recentSubject(r.at);
 			if (subject.kind === "issue_comment") {
 				const r = await app.issueCommand(token, repo, pr, subject.id);
 				if (!r || !valid(r)) return null;
@@ -223,7 +227,8 @@ async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	const { sender, issue } = d.data;
 	const params = { params: serviceParams() };
 	if (d.event === "issue_comment" || d.action === "labeled") {
-		if (d.event === "issue_comment" && (d.data.isPullRequest || !["OWNER", "MEMBER", "COLLABORATOR"].includes(sender.association))) return "no item";
+		// Who may file is decided by the sender's linked account and GitHub's permission (github-intake.ts), never by `author_association`.
+		if (d.event === "issue_comment" && d.data.isPullRequest) return "no item";
 		let link;
 		try { link = await c.client().githubAccount.get([String(sender.id)], params).internalWho(); }
 		catch (error) { if (!missingActor(error)) throw error; }
