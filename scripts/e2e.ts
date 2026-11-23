@@ -373,6 +373,7 @@ async function serviceUser(server: Server, uid: string) {
 		internalSessionChanged(summary: SessionSummary): Promise<void>;
 		internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 		internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
+		internalSweepSandboxes(): Promise<void>;
 	};
 }
 
@@ -2527,6 +2528,7 @@ async function main(server: Server | null): Promise<void> {
 		"a sandbox found gone is replaced only with a place of its own: at the cap the replacement is refused",
 		"a free with a prompt sent at the same moment: the prompt's sandbox and its place survive",
 		"a prompt refused for a place gives its running slot back at once, and a late release leaves a newer claim",
+		"a sandbox that outlived its session's delete holds no place, and the sweep removes it",
 	];
 	if (server && FAKE) {
 		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
@@ -2667,6 +2669,28 @@ async function main(server: Server | null): Promise<void> {
 			} finally {
 				await theirs.deleteSession(holder.id).catch(() => undefined);
 				await theirs.deleteSession(refusedOne.id).catch(() => undefined);
+			}
+		});
+
+		await check(OWNER_CHECKS[4], async () => {
+			// Its removal at the delete is lost (the fake's "(outlive-delete)"), as an orphan's was: the session is gone, the sandbox is not.
+			const orphaned = await theirs.createSession({ profile: availableProfile as never, title: "Outlives its delete" });
+			assert((await turnOf(orphaned.id, "Write a short program (outlive-delete)")).outcome === "succeeded", "the turn failed");
+			await theirs.deleteSession(orphaned.id);
+			assert(lines(`\\[wlp\\] fake sandbox removal lost id=`).length >= 1, "the delete's removal was not lost");
+			// With the cap at 1, the orphan would hold the one place: another agent starts all the same.
+			const next = await theirs.createSession({ profile: availableProfile as never, title: "After the orphan" });
+			try {
+				const ended = await turnOf(next.id, "Write a short program");
+				assert(ended.outcome === "succeeded", `the next agent's turn ended ${ended.outcome}: ${ended.message}`);
+				await (await serviceUser(server, someone.profile.uid)).internalSweepSandboxes();
+				const removed = lines(`\\[wlp\\] sandbox\\.orphan_removed uid=\\S+ id=\\S+ session=${orphaned.id}`);
+				assert(removed.length === 1, `${removed.length} orphan removals logged`);
+				const usage = await theirs.usage();
+				assert(usage.sandboxes.kept === 1 && usage.kept.every((kept) => kept.sessionId !== orphaned.id), `kept: ${plain(usage.kept.map((k) => k.sessionId))}`);
+				return removed[0]!.replace(/^.*sandbox\.orphan_removed /, "");
+			} finally {
+				await theirs.deleteSession(next.id).catch(() => undefined);
 			}
 		});
 	} else {

@@ -204,6 +204,11 @@ export interface Sandboxes {
 	 */
 	list(uid: string): Promise<ListedSandbox[]>;
 	/**
+	 * The users that have sandboxes of this deployment at the provider: whose actors the server asks, every 30
+	 * minutes, to remove the ones whose session is gone (user.ts `reconcileKept`). Hosted layers only.
+	 */
+	owners?(): Promise<string[]>;
+	/**
 	 * Whether Windlass's data directory, and with it Windlass's own sessions, is on the sandbox's own disk
 	 * and goes when the sandbox does. False on Docker, where it is a volume of the user's that outlives
 	 * every sandbox. True on E2B: a sandbox made in place of one that is gone has no Windlass session to

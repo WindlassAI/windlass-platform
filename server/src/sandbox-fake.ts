@@ -34,6 +34,7 @@
  *   "(invalid-effort)" the Responses API rejects the reasoning effort with HTTP 400
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
  *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
+ *   "(outlive-delete)" the sandbox's first removal is lost: it outlives its session's delete, an orphan
  *   "(big-memory)"    Windlass's session grows by two mebibytes in this turn, for a copy that is over
  *                     the limit (with WLP_FAKE_BACKUP_DIR, below)
  *
@@ -199,6 +200,8 @@ const PROFILES: SandboxProfile[] = [
 
 interface FakeSandbox {
 	reviewCloneFailed?: boolean;
+	/** "(outlive-delete)": its next removal is lost, and it stays. */
+	outlives?: boolean;
 	privateData: boolean;
 	screenshots: boolean;
 	id: string;
@@ -486,6 +489,10 @@ class FakeSandboxes implements Sandboxes {
 		return [...this.all.values()].filter((sandbox) => sandbox.uid === uid).map((sandbox) => ({ id: sandbox.id, sessionId: sandbox.sessionId, state: sandbox.state }));
 	}
 
+	async owners(): Promise<string[]> {
+		return [...new Set([...this.all.values()].map((sandbox) => sandbox.uid))];
+	}
+
 	async suspend(id: string): Promise<void> {
 		const sandbox = this.all.get(id);
 		if (sandbox) sandbox.state = "paused";
@@ -495,6 +502,12 @@ class FakeSandboxes implements Sandboxes {
 		if (this.settings.delayMs > 0) {
 			console.log(`[wlp] fake sandbox removal started id=${id}`);
 			await delay(this.settings.delayMs);
+		}
+		const sandbox = this.all.get(id);
+		if (sandbox?.outlives) {
+			sandbox.outlives = false;
+			console.log(`[wlp] fake sandbox removal lost id=${id}`);
+			return;
 		}
 		this.all.delete(id);
 	}
@@ -1245,6 +1258,7 @@ class FakeWindlass implements Windlass {
 			if (text.includes("(change-setup-fixture)")) files?.set("index/setup.sh", "echo child-setup\n");
 			if (text.includes("(consume-setup-fixture)")) files?.set("search/result.txt", "second subtask\n");
 			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
+if (text.includes("(outlive-delete)")) { const kept = this.sandboxes.all.get(sandbox.id); if (kept) kept.outlives = true; }
 
 			let failure: RunTurnResult["failure"] = null;
 			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };

@@ -574,6 +574,12 @@ export class E2bSandboxes implements Sandboxes {
 		return pricePerSecond(this.size.cpuCount, this.size.memoryMB);
 	}
 
+	/** The users with sandboxes of this deployment, by E2B's own list. */
+	async owners(): Promise<string[]> {
+		const found = await this.client.list({ metadata: { [META.deployment]: this.settings.deployment } });
+		return [...new Set(found.filter((info) => info.metadata[META.deployment] === this.settings.deployment).map((info) => info.metadata[META.uid] ?? "").filter((uid) => NAME.test(uid)))];
+	}
+
 	/** The user's sandboxes of this deployment, by E2B's own list: running and paused. */
 	async list(uid: string): Promise<ListedSandbox[]> {
 		if (!NAME.test(uid)) return [];
@@ -1065,7 +1071,9 @@ export class E2bSandboxes implements Sandboxes {
 	private stoppedByItself(id: string, known: Known, what: string): void {
 		if (known.runningSince === null) return;
 		const until = Math.min(this.now(), known.deadline);
-		this.log(`[wlp] e2b.sandbox.timed_out id=${id} uid=${known.uid} session=${known.session}: it ${what} by its own timeout; it ran at most ${describeUsage(Math.max(0, until - known.runningSince) / 1000, known.cpuCount, known.memoryMB)}`);
+		// A sandbox that is gone may have been killed from outside (the E2B console, a cleanup), not only by its timeout.
+		const how = what === "is gone" ? "is gone: removed outside this server, or by its own timeout" : `${what} by its own timeout`;
+		this.log(`[wlp] e2b.sandbox.${what === "is gone" ? "gone" : "timed_out"} id=${id} uid=${known.uid} session=${known.session}: it ${how}; it ran at most ${describeUsage(Math.max(0, until - known.runningSince) / 1000, known.cpuCount, known.memoryMB)}`);
 		known.runningSince = null;
 	}
 

@@ -795,7 +795,17 @@ type UsageEntryRow = { day: number; session: string; hold: string; kind: string;
 type UsageHoldRow = { id: string; session: string; day: number; seconds: number; started_at: number; expires_at: number };
 
 /** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
-async function readUsage(db: RawAccess, limits: UsageLimits): Promise<UsageBook> {
+/** A work item's reviewer shares its builder's place among the kept sandboxes (`UsageBook.sharing`): an item counts as one. */
+export function itemSharing(sessions: ReadonlyMap<string, SessionSummary>): (session: string) => string | undefined {
+	return (session) => {
+		const item = sessions.get(session)?.item;
+		if (item?.role !== "reviewer") return undefined;
+		for (const other of sessions.values()) if (other.item?.id === item.id && other.item.role !== "reviewer") return other.id;
+		return undefined;
+	};
+}
+
+async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyMap<string, SessionSummary>): Promise<UsageBook> {
 	const today = dayOf(Date.now());
 	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
 	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
@@ -809,6 +819,7 @@ async function readUsage(db: RawAccess, limits: UsageLimits): Promise<UsageBook>
 		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, startedAt: row.started_at, expiresAt: row.expires_at })),
 		kept,
 	});
+	book.sharing = itemSharing(sessions);
 	const at = Date.now();
 	book.noteModelTokens(at, await tokensOn(db, at));
 	return book;
@@ -862,7 +873,7 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 		for (const session of change.released) await c.db.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
 		for (const claim of change.kept) await c.db.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
 	} catch (error) {
-		const restored = await readUsage(c.db, c.vars.usage.limits).catch(() => c.vars.usage);
+		const restored = await readUsage(c.db, c.vars.usage.limits, c.vars.sessions).catch(() => c.vars.usage);
 		const now = Date.now();
 		restored.noteModelTokens(now, c.vars.usage.modelTokens(now));
 		c.vars.usage = restored;
@@ -890,7 +901,18 @@ async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 	if (!force && c.vars.listed !== null && Date.now() - c.vars.listed.at < KEPT_FRESH_MS) return;
 	try {
 		const { sandboxes } = await getLayer();
-		const listed = await sandboxes.list(c.key[0]!);
+		const found = await sandboxes.list(c.key[0]!);
+		// A sandbox whose session this user no longer has (deleted, or lost with an older deployment) is an orphan: nobody
+		// can use or free it from a page, so it is removed, and it holds no place meanwhile. A session's own sandboxes are
+		// the session's to sweep (agent-session.ts `sweepSandboxes`). Reviewers are among the sessions, hidden or not.
+		const orphans = found.filter((sandbox) => sandbox.sessionId !== "" && !c.vars.sessions.has(sandbox.sessionId));
+		const listed = found.filter((sandbox) => !orphans.includes(sandbox));
+		for (const orphan of orphans) {
+			await sandboxes.destroy(orphan.id).then(
+				() => console.warn(`[wlp] sandbox.orphan_removed uid=${c.key[0]} id=${orphan.id} session=${orphan.sessionId} state=${orphan.state}: its session no longer exists`),
+				(error: unknown) => c.log.warn({ msg: "an orphaned sandbox could not be removed", id: orphan.id, session: orphan.sessionId, error: String(error) }),
+			);
+		}
 		const now = Date.now();
 		c.vars.listed = { at: now, sandboxes: listed };
 		const done = await changeUsage(c, (book) =>
@@ -924,7 +946,10 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 			const session = c.vars.sessions.get(claim.session);
 			return {
 				sessionId: claim.session,
-				title: session?.title ?? null,
+				// A work item's reviewer is named for its item, and shares its builder's place (`itemSharing`).
+				title: session ? (session.item?.role === "reviewer" ? `Reviewer of “${session.title}”` : session.title) : null,
+				...(session?.item && { item: { id: session.item.id, role: session.item.role ?? "builder" } }),
+				...(book.shares(claim.session) && { sharesPlace: true as const }),
 				state: listed.get(claim.session)?.state ?? (session && session.sandbox !== "none" ? session.sandbox : ("starting" as const)),
 				usedAt: session?.updatedAt ?? null,
 				busy: session !== undefined && session.status !== "idle",
@@ -1444,7 +1469,7 @@ export const user = actor({
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
 		const items = await loadItems(c.db);
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, effectiveUserLimits(items.limits.overrides).usage), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, effectiveUserLimits(items.limits.overrides).usage, sessions), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
 	events: {
@@ -2731,7 +2756,13 @@ export const user = actor({
 			return { known: done.known };
 		},
 
-		internalRelease: async (c, sessionId: string): Promise<void> => {
+		/** The server's sweep (index.ts): the user's hosted sandboxes whose session is gone are removed, and the count held against the rest. */
+internalSweepSandboxes: async (c): Promise<void> => {
+	requireService(c);
+	await reconcileKept(c, true);
+},
+
+internalRelease: async (c, sessionId: string): Promise<void> => {
 			requireService(c);
 			await changeUsage(c, (book) => ({ change: book.release(approvalText(sessionId, 200)) }));
 		},
