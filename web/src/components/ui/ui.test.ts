@@ -7,7 +7,7 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Menu, type MenuSpec } from "./Menu";
-import { Pill } from "./Pill";
+import { agentBadge, Pill } from "./Pill";
 import { place } from "./position";
 import { Sheet } from "./Sheet";
 import { Tooltip } from "./Tooltip";
@@ -282,5 +282,14 @@ describe("a tooltip", () => {
 		expect(button.getAttribute("aria-describedby")).toBe(tip.id);
 		act(() => button.blur());
 		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+	});
+});
+
+describe("agent badges", () => {
+	it("gives each agent its own badge, by its id or its name", () => {
+		const badges = ["windlass", "claude", "opencode", "codex"].map(agentBadge);
+		expect(badges).toEqual(["W", "CC", "OC", "C"]);
+		expect(new Set(badges).size).toBe(badges.length);
+		expect(agentBadge("Claude Code")).toBe("CC");
 	});
 });

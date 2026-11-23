@@ -4,6 +4,7 @@
  * Menu's trigger props on it.
  */
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
+import { HARNESS_NAMES } from "../../lib/acp";
 import { ChevronDownIcon } from "../Icons";
 
 export interface PillProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -35,11 +36,22 @@ export function Pill({ icon, secondary, dot = null, dotLabel, chevron = true, ou
 	);
 }
 
-/** An agent's glyph: its harness's initial in a small square ("W", "C"). */
+/**
+ * An agent's badge, from its name (server/src/sandbox/harnesses.ts): the capitals of a name of two words or
+ * two parts ("Claude Code" CC, "OpenCode" OC), the initial of a name of one (Windlass W, Codex C). No two
+ * agents share one. Takes the harness's id ("claude") or its name.
+ */
+export function agentBadge(harness: string): string {
+	const name = (HARNESS_NAMES as Record<string, string | undefined>)[harness] ?? harness;
+	const capitals = name.match(/[A-Z]/g) ?? [];
+	return capitals.length >= 2 ? capitals.slice(0, 2).join("") : name.slice(0, 1).toUpperCase();
+}
+
+/** An agent's glyph: its badge in a small square (`agentBadge`). */
 export function AgentGlyph({ harness, accent = false }: { harness: string; accent?: boolean }) {
 	return (
 		<span className={`ui-glyph${accent ? " ui-glyph-accent" : ""}`} aria-hidden="true">
-			{harness.slice(0, 1).toUpperCase()}
+			{agentBadge(harness)}
 		</span>
 	);
 }
