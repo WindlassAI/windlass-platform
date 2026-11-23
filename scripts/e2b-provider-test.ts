@@ -36,12 +36,12 @@ import { DEFAULT_MAX_RUNNING, type E2bSettings, HOBBY_MAX_RUNNING, readE2bConfig
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
-import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, RESTARTED_NOTICE, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
-import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, guestDnsArgv, hostedNetworkText, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
+import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, guestDnsArgv, guestNetworkStep, hostedNetworkText, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
 import { personalServerReach } from "../server/src/server-question.js";
 import { choosePlacement } from "../server/src/factory/placement.js";
 import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
@@ -468,8 +468,8 @@ await section("suspend, resume, destroy", async () => {
 	const handle = await w.sandboxes.connect(id);
 	expect("connect resumes it", handle !== undefined && w.fake.sandboxes.get(id)?.state === "running" && w.lines.some((line) => line.includes(`e2b.sandbox.resumed id=${id}`)));
 	expect(
-		"a resumed sandbox is tidied first: a Windlass a cut-off turn left is looked for, and its token file removed",
-		machine.commands[0]?.command === "wlp-run tags-of windlass" && machine.commands.some((entry) => entry.command === `rm -f -- ${path} ${path}.tmp`),
+		"a resumed sandbox is tidied first, once one command shows it answers: a Windlass a cut-off turn left is looked for, and its token file removed",
+		machine.commands[0]?.command === "true" && machine.commands[0].options.root === true && machine.commands[1]?.command === "wlp-run tags-of windlass" && machine.commands.some((entry) => entry.command === `rm -f -- ${path} ${path}.tmp`),
 		machine.commands.map((entry) => entry.command).join(" | "),
 	);
 	expect("the ten minutes it was paused are not running time", w.fake.ranMs(id) === 90_000);
@@ -509,6 +509,93 @@ await section("suspend, resume, destroy", async () => {
 		noPause.fake.sandboxes.size === 0 && noPause.lines.some((line) => line.includes(`e2b.sandbox.killed id=${brief}`) && line.includes("the files in its workspace and its Windlass session are lost")),
 		noPause.lines.join(" | "),
 	);
+});
+
+await section("a sandbox that does not answer", async () => {
+	// What happened on the live server: an agent's command used all of a 1 GiB sandbox's memory. Commands still started
+	// and none ended, and the pause kept that memory, so every resume brought the same wedged guest back and every
+	// turn failed at its network. The connect now finds that out first and starts the sandbox again from its disk.
+	class Wedged extends ScriptedMachine {
+		wedged = false;
+		/** Whether a start from the disk cures it (a memory image that wedges the guest) or not. */
+		curedByReboot = true;
+		reboots = 0;
+		constructor() {
+			super((command) => (/ wlp-network [a-z]+ /.test(command) ? { stdout: `network ${/ wlp-network ([a-z]+) /.exec(command)?.[1]}\n` } : command.includes("windlass --version") ? { stdout: "Windlass 0.4.0+test (linux-x64)\n" } : undefined));
+		}
+		override async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
+			if (!this.wedged) return super.start(command, options);
+			this.commands.push({ command, options, stdin: "" });
+			return { pid: 9, sendStdin: async () => {}, closeStdin: async () => {}, wait: () => new Promise(() => {}), disconnect: async () => {}, kill: async () => {} };
+		}
+		async rebooted(): Promise<void> {
+			this.reboots += 1;
+			if (this.curedByReboot) this.wedged = false;
+		}
+	}
+	const restrictedNetwork = readE2bNetwork({ WLP_E2B_NETWORK: "restricted" });
+	const setup = (settings: Partial<E2bSettings> = {}) => {
+		const lines: string[] = [];
+		const machines = new Map<string, Wedged>();
+		const fake = new FakeE2b({ machine: (id) => { const machine = new Wedged(); machines.set(id, machine); return machine; } });
+		const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, network: restrictedNetwork, ...settings }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50, networkMs: 100 });
+		return { lines, fake, machines, sandboxes };
+	};
+
+	for (const paused of [true, false]) {
+		const w = setup();
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		const machine = w.machines.get(id)!;
+		if (paused) await w.sandboxes.suspend(id);
+		machine.wedged = true;
+		machine.commands.length = 0;
+		w.fake.calls.length = 0;
+		const handle = await w.sandboxes.connect(id).catch((error: unknown) => error as Error);
+		const ok = handle !== undefined && !(handle instanceof Error);
+		const names = machine.commands.findIndex((entry) => entry.command.includes(" wlp-network restricted "));
+		expect(
+			`${paused ? "a resumed" : "a running"} sandbox that starts commands and ends none is paused and started again from its disk, then set up`,
+			ok && machine.reboots === 1 && callsOf(w.fake, "pause").length === 1 && callsOf(w.fake, "connect").at(-1) === `connect ${id} ${SETTINGS.idleTimeoutMs} reboot` && names > 0 && w.fake.sandboxes.get(id)?.state === "running",
+			handle instanceof Error ? handle.message : `${machine.reboots} reboots; ${w.fake.calls.join(" | ")}`,
+		);
+		expect(`${paused ? "resumed" : "running"}: the turn's timeline is told, and the log says what did not answer`, ok && (handle as E2bSandboxHandle).notice === RESTARTED_NOTICE && w.lines.some((line) => line.includes(`e2b.sandbox.unresponsive id=${id}`) && line.includes("did not end within 0.05 s")) && w.lines.some((line) => line.includes(`e2b.sandbox.rebooted id=${id}`)), w.lines.join("\n"));
+	}
+
+	{
+		const w = setup();
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		const machine = w.machines.get(id)!;
+		const fine = (await w.sandboxes.connect(id)) as E2bSandboxHandle;
+		expect("a sandbox that answers is not restarted, and its timeline is told nothing", fine.notice === undefined && machine.reboots === 0 && !w.lines.some((line) => line.includes("unresponsive")));
+		machine.wedged = true;
+		machine.curedByReboot = false;
+		const error = await w.sandboxes.connect(id).then(() => null, (failure: unknown) => failure as Error);
+		expect("one that still does not answer after a start from its disk fails the connect, saying both", error !== null && /does not answer \(a command started in it and did not end within 0\.05 s\), and still did not after it was started again from its disk/.test(error.message), error?.message);
+	}
+
+	{
+		const w = setup({ pause: false });
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		w.machines.get(id)!.wedged = true;
+		const error = await w.sandboxes.connect(id).then(() => null, (failure: unknown) => failure as Error);
+		expect("without pauses (WLP_E2B_PAUSE=0) it is not killed in passing: the connect fails and says why", error !== null && /WLP_E2B_PAUSE=0/.test(error.message) && w.fake.sandboxes.has(id), error?.message);
+	}
+
+	{
+		// The names script itself hangs, after its first step: the error says how far it got.
+		const w = setup();
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		const machine = w.machines.get(id)!;
+		const start = machine.start.bind(machine);
+		machine.start = async (command, options) => {
+			if (!command.includes(" wlp-network ")) return start(command, options);
+			options.onStdout?.("step lock\n");
+			return { pid: 9, sendStdin: async () => {}, closeStdin: async () => {}, wait: () => new Promise(() => {}), disconnect: async () => {}, kill: async () => {} };
+		};
+		const error = await w.sandboxes.connect(id).then(() => null, (failure: unknown) => failure as Error);
+		expect("a names script that hangs says which part hung", error !== null && /the script started \(in [\d.]+ s\) and did not end within 0\.1 s; it was waiting for its lock/.test(error.message), error?.message);
+	}
+	expect("a names script that printed nothing never ran its first line", guestNetworkStep("") === "it printed nothing, so the sandbox never ran its first line" && guestNetworkStep("step lock\nstep hosts\n") === "it was writing /etc/hosts");
 });
 
 await section("the handle", async () => {
@@ -674,7 +761,7 @@ await section("network modes", async () => {
 	w.fake.calls.length = 0;
 	await w.sandboxes.connect(id);
 	const updates = callsOf(w.fake, "updateNetwork");
-	expect("restricted: each connect sets E2B's configuration again and pins the names again", updates.length === 1 && updates[0] === `updateNetwork ${id} ${JSON.stringify(config)}` && (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root).length === 2, updates.join(" | "));
+	expect("restricted: each connect sets E2B's configuration again and pins the names again", updates.length === 1 && updates[0] === `updateNetwork ${id} ${JSON.stringify(config)}` && (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root).map((entry) => (entry.command === "true" ? "probe" : entry.command.includes("wlp-network") ? "names" : entry.command)).join() === "names,probe,names", updates.join(" | "));
 	await w.sandboxes.suspend(id);
 	await w.sandboxes.connect(id);
 	expect("restricted: a resumed sandbox is set again too", callsOf(w.fake, "updateNetwork").length === 2 && w.fake.sandboxes.get(id)?.state === "running");

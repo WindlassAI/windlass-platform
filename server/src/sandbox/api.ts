@@ -122,6 +122,11 @@ export interface SandboxHandle {
 	 */
 	readonly ownData?: boolean;
 	/**
+	 * What the provider had to do to this sandbox on this connect, for the turn's timeline (E2B: it did not
+	 * answer and was started again from its disk). Absent when nothing out of the way happened.
+	 */
+	readonly notice?: string;
+	/**
 	 * What a runner said of making this sandbox, on the first connect after its create, to a server that
 	 * named `start-times` (StartTimes.image, pulled, runnerCreate). Absent elsewhere.
 	 */

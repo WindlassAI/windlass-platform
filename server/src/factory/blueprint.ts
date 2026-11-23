@@ -85,6 +85,8 @@ export const RULES = {
 	turnBackstop: 60,
 	/** Cut-off turns of one step (deploys, restarts) before it asks: the infrastructure's, not the agent's. */
 	interruptions: 3,
+	/** Turns of one step whose sandbox could not be prepared, tried again on their own before the person is asked. */
+	sandboxRetries: 1,
 	/** Automatic tries after a provider's usage limit, each waiting for its reset. */
 	providerRetries: 3,
 	publishTries: 3,
@@ -536,6 +538,10 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 			if (fact.key !== key || c.item.wait?.reason !== "provider" || (!fact.loginChanged && fact.at < (c.item.wait.retryAt ?? Infinity))) return false;
 			nextTurn(c, fact.plan);
 			return true;
+		case "sandbox_freed":
+			if (fact.key !== key || c.item.question || step.turn !== null) return false;
+			nextTurn(c, fact.plan);
+			return true;
 		case "turn_waiting": {
 			if (fact.key !== key || step.turn !== "delivered") return false;
 			const now = c.item.wait;
@@ -641,6 +647,15 @@ function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, no
 		return { ...IMPLEMENT, text: text + "\n\nOwner-approved plan (quoted data):\n" + sections.join("\n\n").slice(0, MAX_ITEM_BODY_CHARS), ...marked(untrusted) };
 	}
 	return { ...IMPLEMENT, text, ...marked(untrusted) };
+}
+
+/** Said first to an agent that goes on with a step it has no conversation of (`Delivery.fresh`). */
+export const FRESH_START = "Your earlier conversation about this task is gone, and so is any work that was not pushed: this turn starts without them. Work on the task from the start:";
+
+/** The prompt for a builder that goes on with a step and lost its conversation: the run's first turn's task, as it was marked. Null for a feature's planning. */
+function freshPlan(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> | null {
+	const first = firstPlan(item, null);
+	return first.kind === "refine" ? null : { text: `${FRESH_START}\n\n${first.text}`, ...marked(first.untrusted) };
 }
 
 const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\nThe person adds: ${note}`);
@@ -837,6 +852,8 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	c.state(item.state === "queued" || item.place.kind === "machine" ? "queued" : "working");
 	// A planning turn is told its budget figures each time, from the item as it is now.
 	const delivery = { kind: "deliver" as const, key: c.key, text: plan.kind === "refine" ? plan.text + plannerBudgetText(item) : plan.text, fetchBase: plan.fetchBase, ...(plan.feedbackQuote && { feedbackQuote: plan.feedbackQuote }) };
+	// A builder's turn that goes on with its step also carries the step's whole task, for an agent that lost its conversation.
+	const fresh = plan.to !== "review" && !plan.newStep && ASKING.has(plan.kind) ? freshPlan(item) : null;
 	if (plan.to === "review") {
 		if (!plan.checkout || !run.ci || !run.review) throw new Error("a reviewer turn needs its checkout and verdict");
 		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
@@ -847,7 +864,9 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		// One question a turn, which the session holds to; a run asks as often as its turns do, each a stop that waits for the person.
 		const asking = ASKING.has(plan.kind) ? { asksLeft: 1 } : {};
 		const untrusted = marked(plan.untrusted);
-		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted) });
+		// The whole task goes with its own sources: the session sends one text or the other, with the sources of that one.
+		const freshPrompt = fresh && { fresh: { text: fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
+		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);
@@ -857,6 +876,24 @@ function checkTurn(c: Change): void {
 	const step = c.run.step;
 	step.checks += 1;
 	c.effects.push({ kind: "check_turn", key: `${c.key}/check${step.checks}`, turn: c.key, at: c.at + RULES.turnCheckMs, ...(step.kind === "review" && { to: "review" }) });
+}
+
+/**
+ * The session could not prepare the turn's sandbox (`sandboxFailed`): the agent never ran, so this is not one of the
+ * step's cut-offs. Tried once more on its own; after that the person is asked, and may start the step in a new sandbox.
+ */
+function sandboxFailed(c: Change, said: string, resume: TurnPlan): void {
+	const step = c.run.step;
+	step.sandboxFailures = (step.sandboxFailures ?? 0) + 1;
+	const reason = said.trim().replace(/[.\s]+$/, "");
+	if (step.sandboxFailures <= RULES.sandboxRetries) {
+		c.say(`The sandbox could not be prepared for the turn (${reason}); the step is tried again.`);
+		return nextTurn(c, resume);
+	}
+	// "Try again" gets its own retry.
+	step.sandboxFailures = 0;
+	const text = `The sandbox could not be prepared for the turn, twice in a row: ${reason}. The agent did not run. Try again in the same sandbox, or start this step on a fresh sandbox: that one starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it.`;
+	ask(c, "sandbox_failed", text, [choice("again"), choice("fresh_sandbox"), ...handOverAny(c.item), choice("give_up")], null, resume);
 }
 
 const OUTCOME_WORDS: Partial<Record<TurnOutcome, string>> = { stopped: "was stopped", failed: "failed", interrupted: "was cut off", error: "could not run" };
@@ -903,7 +940,10 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	// A turn whose tokens should count but were not reported stops the item: another turn would run unbounded by its token budget.
 	// One the session refused before the agent ran used none.
-	const unmeasured = fact.refused ? null : unmeasuredTurn(fact.spend, itemAgent(item));
+	const unmeasured = fact.refused || fact.sandboxFailed ? null : unmeasuredTurn(fact.spend, itemAgent(item));
+	// The sandbox could not be prepared: the agent never ran, so nothing of the turn is judged and it is no cut-off.
+	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) });
+	delete step.sandboxFailures;
 	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
 	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
@@ -1370,6 +1410,8 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	spendTurn(c, fact.spend, fact.providerRefusal);
 	if (fact.refused) return readForHandoff(c, ci, skippedReview(fact.refused));
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, reviewPlan(c));
+	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, { ...reviewPlan(c), newStep: false });
+	delete c.run.step.sandboxFailures;
 	if (CUT_SHORT.has(fact.outcome)) {
 		c.run.step.interruptions += 1;
 		c.say(`The review ${OUTCOME_WORDS[fact.outcome]}.`);
@@ -1756,6 +1798,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
 	run_anyway: "Run it anyway",
+	fresh_sandbox: "Start on a fresh sandbox",
 };
 const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
 /**
@@ -1952,6 +1995,13 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			nextTurn(c, { ...resume, text: withNote(resume.text, note) });
 			break;
 		}
+		case "fresh_sandbox":
+			if (question.kind !== "sandbox_failed" || resume === null) return false;
+			// The old sandbox goes first; `sandbox_freed` starts the step once it is gone.
+			c.say("The sandbox is removed, and the step starts again in a new one.");
+			c.state(item.place.kind === "machine" ? "queued" : "working");
+			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: { ...resume, text: withNote(resume.text, note) }, ...(resume.to === "review" && { to: "review" as const }) });
+			break;
 		case "reply":
 			// An answer needs words: the page does not send one without them.
 			if (question.kind !== "agent_ask" || resume === null || note === null) return false;

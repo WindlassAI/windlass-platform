@@ -1499,6 +1499,8 @@ export interface ItemStep {
 	checks: number;
 	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
 	interruptions: number;
+	/** Turns of this step whose sandbox could not be prepared (`sandboxFailed`) since the last that could: one is tried again, the next asks. */
+	sandboxFailures?: number;
 	/** Consecutive automatic retries after a provider refusal on this step. */
 	providerRetries?: number;
 	/** The person was asked in this step about the hosted cap on kept sandboxes (question "sandboxes"): not asked again. */
@@ -1569,7 +1571,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment";
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment" | "sandbox_failed";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1581,8 +1583,9 @@ export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "f
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  *   reply       "Answer the agent" (an `agent_ask` question): the note is the answer, and is needed
+ *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway" | "fresh_sandbox";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {

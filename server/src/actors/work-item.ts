@@ -1026,6 +1026,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	const key = currentKey(item);
 	switch (effect.kind) {
 		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
+		case "fresh_sandbox": return effect.key === key && !item.question && run.step.turn === null;
 		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
 		case "integration":
 		case "poll_integration": return effect.key === key && run.step.kind === "integration" && !item.question && item.integration?.attempt === effect.attempt;
@@ -1407,11 +1408,16 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
 			return true;
 		}
 		case "release_review":
 			await session.internalFreeSandbox(effect.run);
+			return true;
+		case "fresh_sandbox":
+			// The person chose a new sandbox for a step whose sandbox could not be prepared: the session's is removed, as "Free" does.
+			await session.internalFreeSandbox();
+			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan });
 			return true;
 		case "withdraw":
 			await session.internalWithdraw(effect.key);

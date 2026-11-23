@@ -109,6 +109,33 @@ export function reportedModelUsage(event: WindlassEvent): TurnUsage | null {
 		cachedInputTokens: number(usage.cachedInputTokens), reasoningTokens: number(usage.reasoningTokens) };
 }
 
+/**
+ * What a turn cut off with its server used, from the request events it recorded before the cut: their sum, the same
+ * figures the turn summary would have added up. Null where none of them reported usage (an agent whose events carry
+ * none, or a cut before its first request ended). A request still under way at the cut reported nothing and is not in it.
+ */
+export function cutTurnUsage(events: Iterable<WindlassEvent>): TurnUsage | null {
+	let total: TurnUsage | null = null;
+	for (const event of events) {
+		const used = reportedModelUsage(event);
+		if (used === null) continue;
+		total = total === null ? used : {
+			inputTokens: total.inputTokens + used.inputTokens,
+			cachedInputTokens: total.cachedInputTokens + used.cachedInputTokens,
+			outputTokens: total.outputTokens + used.outputTokens,
+			reasoningTokens: total.reasoningTokens + used.reasoningTokens,
+		};
+	}
+	return total;
+}
+
+/** The timeline's sentence about a cut-off turn's tokens: what is counted of it, or that nothing could be. */
+export function cutTurnUsageNote(usage: TurnUsage | null): string {
+	if (usage === null) return "No model request of this turn reported its tokens before the cut, so none are counted for it.";
+	const tokens = usage.inputTokens + usage.outputTokens;
+	return `The ${tokens.toLocaleString("en-US")} tokens this turn's finished model requests reported before the cut are counted; a request still under way at the cut is not.`;
+}
+
 export const TOKEN_USAGE_TABLE = `CREATE TABLE IF NOT EXISTS token_usage (
 	day INTEGER NOT NULL, session TEXT NOT NULL, seq INTEGER NOT NULL, tokens INTEGER NOT NULL,
 	PRIMARY KEY (day, session, seq))`;
