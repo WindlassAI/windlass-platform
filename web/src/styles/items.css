@@ -310,6 +310,13 @@
 	background: var(--accent-text);
 	animation: item-now 1.8s ease-in-out infinite;
 }
+/* Where a waiting item stands: not done, and not moving. */
+.item-stage-at .item-stage-bar {
+	background: var(--line-strong);
+}
+.item-stage-at .item-stage-name {
+	color: var(--ink);
+}
 .item-stage-now .item-stage-name,
 .item-stages-yours .item-stage-name {
 	color: var(--accent-text);

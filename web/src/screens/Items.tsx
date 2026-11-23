@@ -285,10 +285,12 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 	return (
 		<ol className={`item-stages item-stages-${track.tone}`} aria-label="Where it is on its way to you">
 			{track.stages.map((stage, index) => {
-				const done = index < track.at - 1 || (index === track.at - 1 && !track.now);
+				// The step's own stage is not done while the item works or waits in it (a question while it builds): it is where it stands.
+				const standing = at !== null && index === track.at - 1;
+				const done = index < track.at - 1 || (index === track.at - 1 && !track.now && !standing);
 				const now = index === track.at - 1 && track.now;
 				return (
-					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
+					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : standing ? " item-stage-at" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
 						<span className="item-stage-bar" aria-hidden="true" />
 						<span className="item-stage-name">{stage}</span>
 					</li>
