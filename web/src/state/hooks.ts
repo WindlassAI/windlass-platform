@@ -186,11 +186,12 @@ const ALLOWANCE_EVERY_MS = 60_000;
  * after that, and whenever `key` changes (a turn ended, a prompt was refused). Null until they are
  * known and when they cannot be read: the screens then say nothing rather than something stale.
  */
-export function useAllowance(key: unknown = 0): UsageNumbers | null {
+export function useAllowance(key: unknown = 0, enabled = true): UsageNumbers | null {
 	const { client } = useApp();
 	const auth = useAuth();
 	const [numbers, setNumbers] = useState<UsageNumbers | null>(null);
 	useEffect(() => {
+		if (!enabled) return;
 		let current = true;
 		const read = () => {
 			client
@@ -207,7 +208,7 @@ export function useAllowance(key: unknown = 0): UsageNumbers | null {
 			current = false;
 			clearInterval(timer);
 		};
-	}, [client, auth, key]);
+	}, [client, auth, key, enabled]);
 	return numbers;
 }
 

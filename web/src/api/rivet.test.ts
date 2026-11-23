@@ -15,10 +15,16 @@ const rivet = vi.hoisted(() => ({
 	calls: [] as string[],
 	connects: 0,
 	disposed: 0,
+	status: "connected",
+	onError: undefined as ((error: unknown) => void) | undefined,
+	onStatus: undefined as ((status: string) => void) | undefined,
+	resolve: vi.fn(async () => "actor-id"),
+	load: vi.fn(async (): Promise<unknown> => []),
 }));
 
 vi.mock("rivetkit/client", () => {
 	const handle = () => ({
+		resolve: rivet.resolve,
 		action: async ({ name }: { name: string }) => {
 			rivet.calls.push(name);
 			const next = rivet.script[Math.min(rivet.calls.length - 1, rivet.script.length - 1)];
@@ -27,11 +33,11 @@ vi.mock("rivetkit/client", () => {
 		connect: () => {
 			rivet.connects += 1;
 			return {
-				connStatus: "connected",
+				get connStatus() { return rivet.status; },
 				on: () => () => undefined,
-				onStatusChange: () => () => undefined,
-				onError: () => () => undefined,
-				action: async () => [],
+				onStatusChange: (cb: typeof rivet.onStatus) => { rivet.onStatus = cb; return () => { rivet.onStatus = undefined; }; },
+				onError: (cb: typeof rivet.onError) => { rivet.onError = cb; return () => { rivet.onError = undefined; }; },
+				action: rivet.load,
 				dispose: async () => {
 					rivet.disposed += 1;
 				},
@@ -75,6 +81,9 @@ beforeEach(() => {
 	rivet.calls.length = 0;
 	rivet.connects = 0;
 	rivet.disposed = 0;
+	rivet.status = "connected";
+	rivet.load.mockClear();
+	rivet.resolve.mockClear();
 });
 
 describe("the RivetKit client", () => {
@@ -161,6 +170,44 @@ describe("a feed", () => {
 		await settle();
 		expect(rivet.connects).toBe(1);
 		expect(states).toEqual(["connecting", "connected"]);
+		close();
+		expect(rivet.disposed).toBe(1);
+	});
+
+	it("confirms a missing actor over HTTP when the WebSocket upgrade has no status", async () => {
+		vi.useFakeTimers();
+		try {
+			rivet.status = "connecting";
+			rivet.resolve.mockRejectedValueOnce({ group: "actor", code: "not_found", message: "Gone" });
+			const { source: from } = source({ endpoint: null, namespace: "default", tokens: false });
+			const api = createRivetClient("http://engine.test", "http://platform.test", from).session(AUTH, "gone");
+			const onConnection = vi.fn();
+			const close = api.open({ onConnection, onSnapshot: vi.fn(), onItem: vi.fn(), onDelta: vi.fn(), onSummary: vi.fn(), onQuestion: vi.fn() });
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(rivet.resolve).toHaveBeenCalledTimes(1);
+			expect(rivet.load).not.toHaveBeenCalled();
+			expect(rivet.disposed).toBe(1);
+			expect(onConnection).toHaveBeenLastCalledWith("failed", expect.objectContaining({ code: "not_found" }));
+			close();
+		} finally { vi.useRealTimers(); }
+	});
+
+	it.each(["socket", "snapshot"])("stops watching a deleted session after a %s refusal", async (path) => {
+		const { source: from } = source({ endpoint: null, namespace: "default", tokens: false });
+		const api = createRivetClient("http://engine.test", "http://platform.test", from).session(AUTH, "gone");
+		const onConnection = vi.fn();
+		const gone = { group: "actor", code: "not_found", message: "The actor does not exist or was destroyed." };
+		if (path === "snapshot") rivet.load.mockRejectedValueOnce({ ...gone, group: "user", code: "session_not_found" });
+		const close = api.open({ onConnection, onSnapshot: vi.fn(), onItem: vi.fn(), onDelta: vi.fn(), onQuestion: vi.fn(), onSummary: vi.fn() });
+		await settle();
+		if (path === "socket") rivet.onError!(gone);
+		rivet.onStatus?.("idle");
+		rivet.onStatus?.("connected");
+		api.resync();
+		await settle();
+		expect(onConnection.mock.calls.filter(([state]) => state === "failed")).toEqual([["failed", expect.objectContaining({ code: "not_found" })]]);
+		expect(rivet.load).toHaveBeenCalledTimes(1);
+		expect(rivet.disposed).toBe(1);
 		close();
 		expect(rivet.disposed).toBe(1);
 	});

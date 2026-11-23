@@ -51,7 +51,7 @@ export function toPlatformError(error: unknown, endpoint: string): PlatformError
 			return new PlatformError("internal", `The server at ${endpoint} refused the connection.`, { cause: error });
 		}
 		if (UNAUTHORIZED_CODES.has(code)) return new PlatformError("unauthorized", message || "This sign-in is no longer accepted. Sign in again.", { cause: error });
-		if (code === "not_found" || (group === "actor" && code.startsWith("destroyed"))) return new PlatformError("not_found", "There is no agent at this address.", { cause: error });
+		if (code === "not_found" || (group === "actor" && (code === "destroying" || code.startsWith("destroyed"))) || (group === "user" && code === "session_not_found")) return new PlatformError("not_found", "There is no agent at this address.", { cause: error });
 		// ASSUMPTION 10: the UserError's own code (`no_question`, `steer_unavailable`) arrives as `code`.
 		if (group === "user") return new PlatformError("user", message, { cause: error, reason: code });
 		if (group === "client") return new PlatformError("network", `The server at ${endpoint} could not be reached.`, { cause: error });

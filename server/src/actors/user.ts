@@ -175,7 +175,7 @@ import { readE2bSettings } from "../sandbox/e2b/config.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildResult } from "./internal.js";
-import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
+import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
@@ -1214,15 +1214,22 @@ interface EnvironmentCtx extends CreateCtx {
 	schedule: { at(at: number, action: string, ...args: unknown[]): Promise<unknown> };
 }
 
+/** Forget the durable index and its launch and submission keys after the actor is gone. */
+async function forgetSession(c: UserCtx, id: string): Promise<void> {
+	await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
+	c.vars.sessions.delete(id);
+	c.vars.launchUntil.delete(id);
+	c.vars.launchClaim.delete(id);
+	for (const [key, made] of c.vars.created) if (made.id === id) c.vars.created.delete(key);
+	broadcastSessions(c);
+}
+
 /** A session leaves the user's index and its actor goes: `deleteSession` without the caller's checks, for build sessions. */
 async function removeSession(c: CreateCtx, uid: string, id: string): Promise<void> {
 	if (!c.vars.sessions.delete(id)) return;
 	try { await sessionActor(c, uid, id).internalDestroy(); }
-	catch (error) { if (!isActorGone(error)) c.log.error({ msg: "a build session could not be removed", session: id, error: String(error) }); }
-	c.vars.launchUntil.delete(id);
-	c.vars.launchClaim.delete(id);
-	await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
-	broadcastSessions(c);
+	catch (error) { if (!isSessionGone(error)) c.log.error({ msg: "a build session could not be removed", session: id, error: String(error) }); }
+	await forgetSession(c, id);
 }
 
 /** The user actor as user-environments.ts takes it. */
@@ -1311,7 +1318,7 @@ async function closeRevokedFeeds(c: RevocationContext, generation: number, lastT
 			try {
 				await sessionActor(c, c.key[0], id).internalDisconnectRevoked(generation);
 			} catch (error) {
-				if (!isActorGone(error)) return null;
+				if (!isSessionGone(error)) return null;
 			}
 			return id;
 		}));
@@ -1793,7 +1800,7 @@ export const user = actor({
 			try {
 				summary = await sessionActor(c, profile.uid, id).internalRename(clean);
 			} catch (error) {
-				if (isActorGone(error)) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
+				if (isSessionGone(error)) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 				throw clientError(c.log, error, "The agent could not be renamed. Try again.");
 			}
 			await storeReport(c, summary);
@@ -1812,7 +1819,7 @@ export const user = actor({
 			try {
 				await sessionActor(c, profile.uid, id).internalDestroy();
 			} catch (error) {
-				if (!isActorGone(error)) {
+				if (!isSessionGone(error)) {
 					if (!c.vars.sessions.has(id)) c.vars.sessions.set(id, existing);
 					// What the session itself refused (its machine could not record the sandbox's removal) is said in its words.
 					const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as { group?: unknown; code?: unknown; message?: unknown };
@@ -1820,14 +1827,9 @@ export const user = actor({
 					throw clientError(c.log, error, "The agent could not be deleted. Try again.");
 				}
 			}
-			c.vars.launchUntil.delete(id);
-			c.vars.launchClaim.delete(id);
-			await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
-		// The key it was created with went with its row: the same key makes a new session from here.
-		for (const [key, made] of c.vars.created) if (made.id === id) c.vars.created.delete(key);
+			await forgetSession(c, id);
 			// A session with no repository was its own project: what was approved for it goes with it.
 			await changeApprovals(c, (book) => book.forgetProject(sessionProjectKey(id))).catch((error) => c.log.warn({ msg: "could not forget the deleted session's approvals of MCP servers", session: id, error: String(error) }));
-			broadcastSessions(c);
 		},
 
 		// --- sandbox time and kept sandboxes (usage.ts) ---------------------------------------------
@@ -1868,7 +1870,7 @@ export const user = actor({
 					await sessionActor(c, profile.uid, id)
 						.internalFreeSandbox()
 						.catch((error: unknown) => {
-							if (isActorGone(error)) {
+							if (isSessionGone(error)) {
 								gone = true;
 								return;
 							}
@@ -2741,12 +2743,13 @@ export const user = actor({
 			if (c.vars.launchUntil.get(id) !== until) return;
 			const entry = c.vars.sessions.get(id);
 			if (!entry) return;
-			const fresh = await sessionActor(c, c.key[0], id).internalSummary().catch((error: unknown): SessionSummary => {
-				if (isActorGone(error)) return { ...entry, status: "idle", sandbox: "none" };
+			const fresh = await sessionActor(c, c.key[0], id).internalSummary().catch((error: unknown) => {
+				if (isSessionGone(error)) return null;
 				throw error;
 			});
 			if (c.vars.launchUntil.get(id) !== until) return;
-			await storeReport(c, fresh, until);
+			if (fresh) await storeReport(c, fresh, until);
+			else if (c.vars.sessions.get(id) === entry) await forgetSession(c, id);
 			queueChanged(c);
 		},
 
@@ -2770,8 +2773,9 @@ export const user = actor({
 						try {
 							fresh = await sessionActor(c, uid, stale.id).internalSummary();
 						} catch (error) {
-							if (isActorGone(error)) fresh = { ...stale, status: "idle", sandbox: "none" };
-							else c.log.warn({ msg: "could not refresh a session's summary", session: stale.id, error: String(error) });
+							if (isSessionGone(error)) {
+								if (c.vars.sessions.get(stale.id) === stale) await forgetSession(c, stale.id);
+							} else c.log.warn({ msg: "could not refresh a session's summary", session: stale.id, error: String(error) });
 						}
 						if (fresh && c.vars.sessions.get(stale.id) === stale) await storeReport(c, fresh, checkedAt);
 					}),

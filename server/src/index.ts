@@ -11,9 +11,10 @@
  * See config.ts for the variables.
  */
 
+import { debuglog } from "node:util";
 import { createClient, type Registry } from "./client.js";
 import { serviceParams } from "./auth.js";
-import { isActorGone } from "./actors/internal.js";
+import { isActorGone, isSessionGone } from "./actor-errors.js";
 import { RETENTION_PATH } from "./runner/frame-auth.js";
 
 import { runnerResponse } from "./runner-routes.js";
@@ -34,7 +35,12 @@ import type { SandboxLayer } from "./sandbox/api.js";
 import { getSignIns } from "./signin/index.js";
 import { reportWebhook, startupProblem, warnAboutConnectionTokens } from "./startup.js";
 
+const debug = debuglog("wlp");
 process.on("unhandledRejection", (reason) => {
+	if (isSessionGone(reason)) {
+		debug("A call outlived its actor.");
+		return;
+	}
 	console.error("[wlp] unhandled promise rejection:", reason);
 });
 

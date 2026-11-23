@@ -563,6 +563,11 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 			c.state("waiting", wait);
 			return true;
 		}
+		case "session_deleted":
+			if (fact.key !== key || c.item.question?.kind === "turn_refused") return false;
+			step.turn = null;
+			ask(c, "turn_refused", "This agent was deleted.", [...handOver(c.item), choice("give_up")], null, null);
+			return true;
 		case "turn_started":
 			if (fact.key !== key || step.turn !== "delivered") return false;
 			step.turn = "started";
