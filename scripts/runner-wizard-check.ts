@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACK, CANCEL, type Answer, type Choice, type Prompter } from "../runner/src/setup-prompt.js";
-import { startFlags, validChoices, type SetupChoices } from "../runner/src/setup-choices.js";
+import { fromFlags, startFlags, validChoices, type SetupChoices } from "../runner/src/setup-choices.js";
 import { runWizard, type Mode, type WizardEffects, type SignInState } from "../runner/src/setup-wizard.js";
 import type { MachineHarness } from "../runner/src/policy.js";
 
@@ -255,6 +255,10 @@ test("the start flags come from the choices", () => {
 	["--platform", platform, "--harness", "claude", "--screenshots", "--allow-profile", "docker-hardened", "--allow-profile", "docker-windlass-sandbox", "--egress", "open", "--slot-cpus", "2"]);
 	assert.deepEqual(startFlags(platform, { network: { mode: "restricted", allow: ["a.internal"] }, limits: { slots: 3, snapshotDisk: "5GB", keepFree: "40000MB" } }),
 		["--platform", platform, "--allow-profile", "docker-hardened", "--egress", "restricted", "--egress-allow", "a.internal", "--slots", "3", "--snapshot-disk", "5GB"]);
+	// The Machines page's commands: the sandbox box turned off says --allow-profile docker-hardened, and setup starts with it off.
+	assert.equal(fromFlags({ "allow-profile": ["docker-hardened"] }, { windlassSandbox: true }).windlassSandbox, false);
+	assert.equal(fromFlags({ "allow-profile": ["docker-windlass-sandbox"] }, {}).windlassSandbox, true);
+	assert.equal(fromFlags({}, {}).windlassSandbox, undefined);
 	assert.equal(validChoices({ agents: ["windlass"] }), null);
 	assert.equal(validChoices({ limits: { slots: 0 } }), null);
 	assert.equal(validChoices({ network: { mode: "everything" } }), null);

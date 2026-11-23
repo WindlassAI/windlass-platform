@@ -75,3 +75,25 @@ export function networkLine(n: NetworkChoice | undefined): string {
 	if (!n || n.mode === "restricted") return n?.domains?.length ? "Only these public hosts: " + n.domains.join(", ") : "Restricted: public sites through the runner's proxy";
 	return n.mode === "open" ? "Open: the internet and your local network" : "None: no network";
 }
+
+/** What the flags given to this setup say, over what is saved. */
+export function fromFlags(values: Record<string, string | boolean | string[] | undefined>, base: SetupChoices): SetupChoices {
+	const c = structuredClone(base);
+	const profiles = values["allow-profile"] as string[] | undefined;
+	if (profiles) c.windlassSandbox = profiles.includes("docker-windlass-sandbox");
+	const mode = values.egress as string | undefined, allow = values["egress-allow"] as string | undefined, domains = values["egress-domains"] as string | undefined;
+	if (mode !== undefined || allow !== undefined || domains !== undefined) {
+		c.network = { mode: (mode ?? "restricted") as "restricted" | "open" | "none",
+			...(allow && { allow: allow.split(",").map(s => s.trim().toLowerCase()) }), ...(domains && { domains: domains.split(",").map(s => s.trim()).filter(Boolean) }) };
+	}
+	const slots = (values.slots ?? values["max-turns"]) as string | undefined;
+	if (slots !== undefined || values["snapshot-disk"] !== undefined || values["keep-free"] !== undefined)
+		c.limits = { ...c.limits, ...(slots !== undefined && { slots: Number(slots) }),
+			...(values["snapshot-disk"] !== undefined && { snapshotDisk: values["snapshot-disk"] as string }),
+			...(values["keep-free"] !== undefined && { keepFree: values["keep-free"] as string }) };
+	if (values.screenshots) c.screenshots = true;
+	const extra = PASSED_ON.flatMap(flag => values[flag] === undefined ? [] : ["--" + flag, values[flag] as string]);
+	if (process.env.WLP_RUNNER_CPUS !== undefined && values["slot-cpus"] === undefined) extra.push("--slot-cpus", process.env.WLP_RUNNER_CPUS);
+	if (extra.length) c.extra = extra;
+	return c;
+}

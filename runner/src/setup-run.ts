@@ -21,7 +21,7 @@ import { changeProviderLogin, currentProvider, installedProvider, storeProvider,
 import { requestLoginReport } from "./pair-command.js";
 import { harnessImage, prepareImages, type MachineHarness } from "./policy.js";
 import { laterLogin, setupImageAndMounts, shellCommand } from "./setup.js";
-import { HARNESSES, PASSED_ON, validChoices, type SetupChoices } from "./setup-choices.js";
+import { HARNESSES, fromFlags, validChoices, type SetupChoices } from "./setup-choices.js";
 import { LinePrompter } from "./setup-lines.js";
 import { TuiPrompter } from "./setup-tui.js";
 import { SECTIONS, runWizard, type Mode, type PairEvent, type Section, type WizardEffects } from "./setup-wizard.js";
@@ -42,28 +42,6 @@ export function pairEvent(line: string): PairEvent {
 	if ((m = /^Machine key: ([^.\s]+)\./.exec(line))) return { kind: "key", key: m[1]! };
 	if ((m = /^Paired with (.*)\. If that is not you/.exec(line))) return { kind: "paired", account: m[1]! };
 	return { kind: "line", text: line };
-}
-
-/** What the flags given to this setup say, over what is saved. */
-function fromFlags(values: Values, base: SetupChoices): SetupChoices {
-	const c = structuredClone(base);
-	const profiles = values["allow-profile"] as string[] | undefined;
-	if (profiles) c.windlassSandbox = profiles.includes("docker-windlass-sandbox");
-	const mode = values.egress as string | undefined, allow = values["egress-allow"] as string | undefined, domains = values["egress-domains"] as string | undefined;
-	if (mode !== undefined || allow !== undefined || domains !== undefined) {
-		c.network = { mode: (mode ?? "restricted") as "restricted" | "open" | "none",
-			...(allow && { allow: allow.split(",").map(s => s.trim().toLowerCase()) }), ...(domains && { domains: domains.split(",").map(s => s.trim()).filter(Boolean) }) };
-	}
-	const slots = (values.slots ?? values["max-turns"]) as string | undefined;
-	if (slots !== undefined || values["snapshot-disk"] !== undefined || values["keep-free"] !== undefined)
-		c.limits = { ...c.limits, ...(slots !== undefined && { slots: Number(slots) }),
-			...(values["snapshot-disk"] !== undefined && { snapshotDisk: values["snapshot-disk"] as string }),
-			...(values["keep-free"] !== undefined && { keepFree: values["keep-free"] as string }) };
-	if (values.screenshots) c.screenshots = true;
-	const extra = PASSED_ON.flatMap(flag => values[flag] === undefined ? [] : ["--" + flag, values[flag] as string]);
-	if (process.env.WLP_RUNNER_CPUS !== undefined && values["slot-cpus"] === undefined) extra.push("--slot-cpus", process.env.WLP_RUNNER_CPUS);
-	if (extra.length) c.extra = extra;
-	return c;
 }
 
 /** The saved choices, or for a machine set up before setup.json what its pairing keeps. */
