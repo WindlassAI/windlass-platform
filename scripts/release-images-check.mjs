@@ -35,9 +35,18 @@ test("release permissions and immutable action references", t => {
 });
 test("release scan rejects embedded material and source maps", t => {
 	const file = join(scratch(t), "runner.cjs");
-	for (const marker of ["/home/", "@gmail", "-----BEGIN", "WLP_SECRET", "onrivet", "sourceMappingURL="]) {
+	for (const marker of ["/home/", "@gmail", "WLP_SECRET", "onrivet", "sourceMappingURL="]) {
 		writeFileSync(file, "/* " + marker + " */");
 		assert.throws(() => node("scripts/release-check.ts","scan",file), /bundle contains/);
+	}
+	// Recognition literals are not key material; a PEM header followed by a synthetic
+	// base64 body must still be rejected, with either real or bundled line breaks.
+	const header = "-----BEGIN PRIVATE KEY-----";
+	writeFileSync(file, JSON.stringify(header));
+	assert.doesNotThrow(() => node("scripts/release-check.ts","scan",file));
+	for (const newline of ["\n", "\\n"]) {
+		writeFileSync(file, header + newline + "A".repeat(64));
+		assert.throws(() => node("scripts/release-check.ts","scan",file), /bundle contains a PEM block/);
 	}
 	writeFileSync(file, ""); writeFileSync(file+".map", "{}");
 	assert.throws(() => node("scripts/release-check.ts","scan",file), /has a source map/);
