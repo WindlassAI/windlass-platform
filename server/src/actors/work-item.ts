@@ -196,7 +196,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.asked && { asked: item.question.asked }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),

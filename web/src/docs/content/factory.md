@@ -183,6 +183,22 @@ An item also stops and asks you when it keeps failing:
 
 The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently.
 
+### When a check can't run
+
+Sometimes a check fails because the sandbox can't run its command, not because of the agent's code. The item doesn't send the agent back for that, and doesn't try again on its own. It asks you, under **It asks you**, with the check's command, the first line that shows why, and the end of what the check printed.
+
+It counts as the environment only when every failing check failed in one of these ways:
+
+- **The package manager refused to run.** For example pnpm's `ERR_PNPM_BAD_PM_VERSION`, when the sandbox's pnpm isn't the version the repository pins, or one of corepack's own errors.
+- **A tool couldn't be fetched.** A network refusal (no DNS, connection refused, unreachable) while corepack or a package registry was being reached. In a sandbox without network this is the sandbox, not the code.
+- **The command wasn't found.** The check exited with status 127.
+
+Anything else that fails, a type error or a failing test, still goes back to the agent. If one check failed for the code and another for the environment, the agent is sent back for the code one only.
+
+Fix the environment, for example the sandbox image, then choose **Run the step again**. The agent goes on in the same session and sandbox, and is asked to run the check's command and fix the code only if it fails for the code. This uses no round of fixing. If the environment still can't run it, the item asks you again. You can also **Hand it over as it is**, when the run has pushed something, or **Give up**.
+
+When the platform runs the checks itself (Claude Code, OpenCode, Codex), it doesn't send the agent back within the turn for such a check either. Windlass runs its own checks inside the turn, so a Windlass agent may still be sent back there before the item asks you.
+
 ### When the agent asks you
 
 A builder can stop and ask you a question when it can't go on without your decision, for example which of two approaches the task means. It is told to ask only about what it can't settle from the repository, the task and its acceptance criteria. Otherwise it decides and says what it decided in its report.

@@ -39,7 +39,7 @@
 
 import { isDeepStrictEqual } from "node:util";
 import { ASK_LIMITS } from "../agent-publish.js";
-import { MAX_ITEM_BODY_CHARS, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
+import { MAX_ITEM_BODY_CHARS, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
@@ -52,6 +52,7 @@ import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provid
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
+import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
@@ -934,6 +935,10 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	c.enter("gate");
 	run.gate = { turn: fact.key, outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
 	if (result === "fail" && fact.verified !== null) {
+		// Every check that failed did so because the sandbox could not run it: that says nothing about the code, and
+		// another turn of fixing would only fail the same way. The person is asked instead.
+		const environment = environmentChecks(fact.verified);
+		if (environment.length && !failingNames(fact.verified)) return askEnvironment(c, kind, environment);
 		const failing = failingNames(fact.verified);
 		c.say(`The checks failed: ${failing}.`);
 		return nextTurn(c, { ...IMPLEMENT, kind, text: `Your turn ended with checks still failing: ${failing}. Continue fixing until they pass.`, charge: "gate", fingerprint: gateFingerprint(fact.verified) });
@@ -963,11 +968,50 @@ export function sandboxEscapeQuestion(item: Pick<FactoryItem, "agent">, note: st
 /** The next turn's message after the person answered the agent's question: their own words, trusted as a note is. */
 const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;
 
+/** The checks that failed for the agent's code: started, did not pass, and not for their environment (check-environment.ts). */
 function failingNames(verified: Verified): string {
 	return (verified.run?.checks ?? [])
-		.filter((check) => check.status !== "passed" && check.startError === undefined)
+		.filter((check) => check.status !== "passed" && check.startError === undefined && environmentFailure(check) === null)
 		.map((check) => check.name)
 		.join(", ");
+}
+
+/** The checks of the gate's run that failed because the sandbox could not run them, each with why. */
+function environmentChecks(verified: Verified): Array<{ check: VerifiedCheck; failure: EnvironmentFailure }> {
+	return (verified.run?.checks ?? []).flatMap((check) => {
+		const failure = environmentFailure(check);
+		return failure ? [{ check, failure }] : [];
+	});
+}
+
+const ENVIRONMENT_WORDS: Record<EnvironmentFailure["kind"], string> = {
+	package_manager: "its package manager refused to run",
+	network: "a tool it needs could not be fetched over the network",
+	not_found: "the shell did not find the command",
+};
+
+/**
+ * The question of a gate whose only failing checks could not run in the sandbox: names the first one's command and the
+ * line that shows why. "Run the step again" resumes this step in the same session and sandbox once the person fixed it;
+ * no round is charged, and nothing loops: each such failure asks again.
+ */
+export function environmentQuestion(failed: ReadonlyArray<{ check: Pick<VerifiedCheck, "name" | "command">; failure: EnvironmentFailure }>): string {
+	const [{ check, failure }] = failed;
+	const others = failed.length > 1 ? ` ${failed.length - 1 === 1 ? "One more check" : `${failed.length - 1} more checks`} failed the same way.` : "";
+	const line = failure.line ? ` It printed “${failure.line}”.` : "";
+	return `The check “${check.name}” (${check.command}) could not run in the sandbox: ${ENVIRONMENT_WORDS[failure.kind]}.${line}${others} That says nothing about the agent's code, so the agent was not sent back. Fix the environment, then run the step again.`;
+}
+
+function askEnvironment(c: Change, kind: TurnStepKind, failed: Array<{ check: VerifiedCheck; failure: EnvironmentFailure }>): void {
+	const [{ check, failure }] = failed;
+	const names = failed.map(({ check }) => check.name).join(", ");
+	c.say(`The checks could not run in the sandbox: ${names}. The agent was not sent back.`);
+	const resume: TurnPlan = {
+		...IMPLEMENT, kind,
+		text: `The platform's checks could not run in your sandbox: ${failed.map(({ check }) => `${check.name} (\`${check.command}\`)`).join(", ")}. That was the environment, not your code, and the person has now fixed it. Run ${failed.length === 1 ? "that command" : "those commands"} yourself; if it fails because of the code, fix the code. Then end your turn.`,
+	};
+	ask(c, "check_environment", environmentQuestion(failed), [{ id: "again", label: "Run the step again" }, ...handOver(c.item), choice("give_up")], null, resume, undefined, undefined,
+		{ name: check.name, command: check.command, exitCode: check.exitCode, kind: failure.kind, line: failure.line, excerpt: outputExcerpt(check.output) });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1710,10 +1754,10 @@ function askRemoved(c: Change): void {
 	ask(c, "machine_removed", "Your machine was removed. This item can no longer work on it.", [...handOver(c.item), choice("give_up")], null, null);
 }
 
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, asked?: Question["asked"]): void {
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, asked?: Question["asked"], check?: Question["check"]): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
-	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...(asked && { asked }) };
+	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...(asked && { asked }), ...(check && { check }) };
 	item.question = question;
 	c.state("waiting", { reason: kind === "budget" ? "budget" : "person", sentence, retryAt: null });
 	c.say(`Asked: ${text}`);

@@ -279,6 +279,66 @@ drive("a third distinct required-check failure asks the person after two fix tur
 	{ fact: failedGate("typecheck", "Missing return value"), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "rounds" && o.item.question.cause === "gate", "the gate ran out of fix turns") },
 ]);
 
+// ---------------------------------------------------------------------------------------------
+// A check the sandbox could not run (check-environment.ts): asked of the person, never sent back as a code failure
+// ---------------------------------------------------------------------------------------------
+
+const { environmentFailure, outputExcerpt } = await import("../server/src/factory/check-environment.js");
+const { environmentQuestion } = await import("../server/src/factory/blueprint.js");
+const BAD_PM = " ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0\n\nIf you want to bypass this version check, you can set the \"package-manager-strict\" configuration to \"false\" or set the \"COREPACK_ENABLE_STRICT\" environment variable to \"0\"";
+const failedWith = (output: string, exitCode: number | null = 1): VerifiedCheck => ({ ...check("typecheck", "failed", output), command: "corepack pnpm -s typecheck", exitCode });
+for (const [label, given, kind, line] of [
+	["pnpm refuses its version", failedWith(BAD_PM), "package_manager", /^ERR_PNPM_BAD_PM_VERSION {2}This project is configured to use v11\.25\.0 of pnpm\. Your current pnpm is v12\.21\.0$/],
+	["corepack refuses the packageManager field", failedWith('Usage Error: This project is configured to use yarn because /workspace/package.json has a "packageManager" field'), "package_manager", /^Usage Error: This project/],
+	["corepack's internal error", failedWith("Internal Error: Something went wrong; for troubleshooting help, see https://github.com/nodejs/corepack#troubleshooting"), "package_manager", /^Internal Error/],
+	["corepack cannot verify a signature", failedWith("Error: Cannot find matching keyid: {\"signatures\":[]}\n    at verifySignature (/usr/lib/node_modules/corepack/dist/lib/corepack.cjs:1:1)"), "package_manager", /^Error: Cannot find matching keyid/],
+	["the shell did not find the command", failedWith("sh: 1: pnpm: not found", 127), "not_found", /^sh: 1: pnpm: not found$/],
+	["exit 127 with no output", failedWith("", 127), "not_found", /^$/],
+	["corepack cannot fetch pnpm with no network", failedWith("Internal Error: Error when performing the request to https://registry.npmjs.org/pnpm/-/pnpm-11.25.0.tgz; for troubleshooting help, see https://github.com/nodejs/corepack#troubleshooting\n    at fetch\n  [cause]: Error: getaddrinfo EAI_AGAIN registry.npmjs.org"), "network", /getaddrinfo EAI_AGAIN registry\.npmjs\.org$/],
+	["npx cannot reach the registry", failedWith("npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org/tsx failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org"), "network", /^npm error code ENOTFOUND$/],
+] as const) {
+	const got = environmentFailure(given);
+	expect(`environment: ${label}`, got?.kind === kind && line.test(got.line), JSON.stringify(got));
+}
+for (const [label, given] of [
+	["a type error", failedWith("src/add.ts(3,10): error TS2322: Type 'string' is not assignable to type 'number'.")],
+	["a failing test", failedWith("FAIL src/add.test.ts\nError: expected 3, got -1")],
+	["a test that cannot reach its own server", failedWith("Error: connect ECONNREFUSED 127.0.0.1:8080\nFAIL src/server.test.ts")],
+	["a passed check", { ...check("test", "passed"), output: BAD_PM }],
+	["a timed-out check", { ...check("test", "timed_out"), output: BAD_PM }],
+	["a check that was not started", { ...check("test", "could_not_start"), exitCode: null, startError: "the sandbox went" }],
+] as const) expect(`environment: ${label} is the code's, or no failure`, environmentFailure(given) === null, JSON.stringify(environmentFailure(given)));
+expect("environment: the excerpt is the end of the output", outputExcerpt(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n")).split("\n").length === 20 && outputExcerpt("a\n\x1b[31mb\x1b[0m\n") === "a\nb");
+
+const ENVIRONMENT = verified("unresolved", [failedWith(BAD_PM), check("lint", "passed")], { unresolved: { reason: "environment", said: null } });
+const question = environmentQuestion([{ check: { name: "typecheck", command: "corepack pnpm -s typecheck" }, failure: environmentFailure(failedWith(BAD_PM))! }]);
+expect("environment: the question names the command and the first error line",
+	question === "The check “typecheck” (corepack pnpm -s typecheck) could not run in the sandbox: its package manager refused to run. It printed “ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0”. That says nothing about the agent's code, so the agent was not sent back. Fix the environment, then run the step again.", question);
+drive("a check the sandbox could not run asks the person, and runs the step again in the same session", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", ENVIRONMENT), state: "waiting", wait: "person", effects: ["ask"], also: (o) => {
+		const q = o.item.question;
+		return holds(q?.kind === "check_environment" && q.text === question && o.item.wait?.sentence === question && o.item.run?.rounds.gate === 0
+			&& isDeepStrictEqual(q.choices, [{ id: "again", label: "Run the step again" }, { id: "give_up", label: "Give up" }])
+			&& q.check?.command === "corepack pnpm -s typecheck" && q.check.kind === "package_manager" && q.check.excerpt.includes("ERR_PNPM_BAD_PM_VERSION")
+			&& !o.effects.some((e) => e.kind === "deliver"), `asked ${JSON.stringify(q)}`);
+	} },
+	{ fact: answer("again", { note: "Rebuilt the image." }), state: "working", effects: ["deliver", "check_turn"], also: (o) => {
+		const text = effect(o, "deliver")?.text ?? "";
+		return holds(/could not run in your sandbox: typecheck \(`corepack pnpm -s typecheck`\)/.test(text) && text.includes("Rebuilt the image.") && !text.includes("ERR_PNPM") && o.item.run?.rounds.gate === 0 && o.item.run.step.kind === "implement", text);
+	} },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", ENVIRONMENT), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "check_environment", "the same failure asks again instead of looping") },
+	{ fact: answer("give_up"), state: "failed", effects: [] },
+]);
+drive("a check that failed for the code beside one the sandbox could not run still sends the agent back", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", verified("unresolved", [failedWith(BAD_PM), check("test", "failed", "Error: expected 3, got -1")], { unresolved: { reason: "max_rounds", said: null } })), state: "working", effects: ["deliver", "check_turn"], also: (o) =>
+		holds(/still failing: test\. Continue/.test(effect(o, "deliver")?.text ?? "") && o.item.run?.rounds.gate === 1, effect(o, "deliver")?.text ?? "") },
+]);
+
 const failingCi = (log: string) => ciRead([{ name: "build", state: "passed" }, { name: "e2e", state: "failed", log }]);
 const ciFix: Row[] = [
 	{ fact: started(), state: "working", effects: ["check_turn"] },

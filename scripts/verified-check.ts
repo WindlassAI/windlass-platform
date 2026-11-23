@@ -292,6 +292,16 @@ expect(
 	plain(someStarted),
 );
 
+// A check that ran and failed because the sandbox could not run its command (the platform's checks end the turn with `environment`).
+const envRun = resting(evidence(["test", "npm test", "failed", { ...mineRequired, exitCode: 127, outputTail: { text: "sh: 1: npm: not found" } }]), AT_START);
+const environment = log([...ran("w1", envRun), succeeded({ status: "unresolved", reason: "environment", failing: ["test"], acknowledgement: null, evidence: envRun })]).verified(1, [TEST], REQUIRED, null);
+expect(
+	"a check the sandbox could not run: the ending's reason is kept, the agent was not sent back, and the sentence says it is not the code",
+	environment.state === "unresolved" && plain(environment.unresolved) === plain({ reason: "environment", said: null }) && environment.run?.checks[0]?.sentBack === 0 &&
+		verifiedSection({ verified: environment, flags: [], during: null, login: "ada" }).includes("The agent's turn 1 ended with a check still failing: the sandbox could not run its command, which says nothing about the code, so the agent was not sent back."),
+	verifiedSection({ verified: environment, flags: [], during: null, login: "ada" }),
+);
+
 // Keys this code does not know, in the evidence, in a check, in the end of an output and in an ending, change nothing.
 const later = (value: unknown): unknown => (Array.isArray(value) ? value.map(later) : isPlain(value) ? { ...Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, later(inner)])), laterKey: { any: "thing" } } : value);
 const isPlain = (value: unknown): value is Data => typeof value === "object" && value !== null && !Array.isArray(value);

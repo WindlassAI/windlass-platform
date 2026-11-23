@@ -33,7 +33,7 @@ import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlan
 import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
-import { InlineMarkdown } from "../components/Blocks";
+import { InlineMarkdown, Output } from "../components/Blocks";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
@@ -479,6 +479,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 				</span>
 			</p>
 			<p className="item-question-text">{question.text}</p>
+			{question.check ? <EnvironmentCheck check={question.check} /> : null}
 			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} onPick={setNote} /> : null}
 			{raising ? (
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />
@@ -508,6 +509,25 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 				</>
 			)}
 			<Failure error={acting.error} />
+		</section>
+	);
+}
+
+/** A check the sandbox could not run (`check_environment`): its command and the end of what it printed, as the session shows a check's result. */
+function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]> }) {
+	return (
+		<section className="item-check" aria-label={`The check ${check.name}`}>
+			<ul className="check-list">
+				<li>
+					<WarnIcon size={13} className="tone-warn" />
+					<span className="check-name">{check.name}</span>
+					<code>{check.command}</code>
+					<span className="tone-warn">
+						could not run{check.exitCode !== null && check.exitCode !== 0 ? `, exit ${check.exitCode}` : ""}
+					</span>
+				</li>
+			</ul>
+			{check.excerpt !== "" ? <Output text={check.excerpt} tail label={`Output of ${check.name}`} limit={12} /> : null}
 		</section>
 	);
 }

@@ -1211,6 +1211,18 @@ async function platformChecksCheck(state: string) {
 		ok("checks that keep failing: two rounds, then the turn ends unresolved with the failing run recorded");
 	}
 
+	// The shell did not find the command (exit 127): the sandbox could not run it, so the agent is not sent back, and the turn ends at once.
+	{
+		const { result, verified, notes } = await turn([127, 0]);
+		assert.equal(result.acp?.checks, "unresolved");
+		assert.equal(prompts.length, 1, "no prompt of the platform's: the agent was not sent back");
+		assert.equal(ran.length, 1);
+		assert.deepEqual([verified.state, verified.unresolved?.reason], ["unresolved", "environment"]);
+		assert.deepEqual(verified.run?.checks.map(c => [c.name, c.status, c.exitCode, c.sentBack]), [["test", "failed", 127, 0]]);
+		assert.match(notes.at(-1)!, /The sandbox could not run test, which says nothing about the code, so Claude Code was not sent back\./);
+		ok("a check whose command the shell did not find: the turn ends without sending the agent back");
+	}
+
 	// Nothing changed, nothing covered, nothing saved: no check runs, and each is said as Windlass says it.
 	{
 		still = true;

@@ -125,6 +125,7 @@ const repository = (id: number, owner: string, name: string, isPrivate: boolean)
 /** Repositories of the mock's GitHub connection (mock.ts). Each item has an agent session of its own, made with the seeded items (`seededSession`). */
 const HARBOR = { repository: repository(7101, "acme", "harbor", true) };
 const TIDES = { repository: repository(7102, "ada", "tide-tables", false) };
+const ENVIRONMENT_QUESTION = "The check “typecheck” (corepack pnpm -s typecheck) could not run in the sandbox: its package manager refused to run. It printed “ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0”. That says nothing about the agent's code, so the agent was not sent back. Fix the environment, then run the step again.";
 const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
@@ -445,6 +446,29 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[12, "Started.", undefined, true],
 				[11, `Asked: The agent's turn could not start. ${OLD_SANDBOX}`, [1, 1, "implement"]],
 			],
+		},
+		// A check the sandbox could not run: the person is asked, with the check's command and the end of its output.
+		{
+			n: 81,
+			title: "Show the station's timezone",
+			body: "Show each station's timezone next to its name on the chart.",
+			on: TIDES,
+			state: "waiting",
+			filed: 25,
+			question: {
+				kind: "check_environment",
+				text: ENVIRONMENT_QUESTION,
+				choices: [{ id: "again", label: "Run the step again" }, { id: "give_up", label: "Give up" }],
+				asked: 3,
+				check: { name: "typecheck", command: "corepack pnpm -s typecheck", exitCode: 1, kind: "package_manager", line: "ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0", excerpt: " ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0\n\nIf you want to bypass this version check, you can set the \"package-manager-strict\" configuration to \"false\" or set the \"COREPACK_ENABLE_STRICT\" environment variable to \"0\"" },
+			},
+			run: { n: 1, started: 24, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "gate", started: 3 } },
+			events: [
+				[25, "Started.", undefined, true],
+				[3, "The checks could not run in the sandbox: typecheck. The agent was not sent back.", [1, 2, "gate"]],
+				[3, `Asked: ${ENVIRONMENT_QUESTION}`, [1, 2, "gate"]],
+			],
+			spent: { tokens: 210_000, turns: 1, activeSeconds: 21 * 60, hostedSeconds: 21 * 60 },
 		},
 		// The builder asked its person (`ask_person`): the platform's sentence, and the agent's own words beside it.
 		{
@@ -1110,7 +1134,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		acceptance: seed.acceptance ?? [],
 	})) as Verdict[];
 	const last = verdicts[verdicts.length - 1];
-	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }) } : null;
+	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }), ...(seed.question.check && { check: seed.question.check }) } : null;
 	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
 	const run: ItemView["run"] = seed.run
 		? {
