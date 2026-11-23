@@ -567,7 +567,7 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		act(() => checkbox("Enable Codex").click());
 		expect(command()).toContain("docker run -it --rm --log-driver none");
 		expect(command()).toContain("--harness codex");
-		const background = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;
+		const background = () => host.querySelector('pre[aria-label="The background command"]')?.textContent;
 		expect(background()).toContain("--harness claude --harness opencode");
 		expect(command()).toContain("--harness opencode");
 		expect(command()).not.toContain("/import/opencode");
