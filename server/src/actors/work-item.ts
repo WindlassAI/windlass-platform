@@ -356,12 +356,12 @@ type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckE
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number }, { baseSha, nudged, issue, overflow }: { overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
+async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number } | { kind: "network_reported"; at: number }, { baseSha, nudged, issue, overflow }: { overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
 	const stored = c.vars.stored;
 	if (!stored) return false;
 	// From here to the write being queued nothing is awaited: the decision is one step.
 	const before = stored.item;
-	const outcome: ReturnType<typeof advance> = fact.kind === "issue_note" || fact.kind === "check_recorded" ? { item: { ...before, revision: before.revision + 1 }, effects: [], events: [] } : advance(before, fact);
+	const outcome: ReturnType<typeof advance> = fact.kind === "issue_note" || fact.kind === "network_reported" || fact.kind === "check_recorded" ? { item: { ...before, revision: before.revision + 1 }, effects: [], events: [] } : advance(before, fact);
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
@@ -1729,7 +1729,7 @@ export const workItem = actor({
 				return;
 			}
 			(meta.blockedSessions ??= {})[receipt.sessionId] = receipt;
-			await take(c, { kind: "issue_note", at: Date.now() });
+			await take(c, { kind: "network_reported", at: Date.now() });
 		},
 		internalView: async (c): Promise<ItemView> => {
 			requireService(c);

@@ -895,8 +895,9 @@ function scheduleWrite(c: Ctx): void {
 }
 
 function numberItem(c: Ctx, item: NewItem): TimelineItem {
+	// Network observations scrub their free text before aggregation. Keep protocol enum values intact.
 	const redactor = c.vars.turn?.secrets?.redactor;
-	const numbered = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	const numbered = { ...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
 	return numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
 }
 
@@ -1308,16 +1309,16 @@ function blockedRecorder(c: Ctx, meta: SessionMeta, turn: number) {
 	let row: NetworkBlockedItem | undefined;
 	let saved = JSON.stringify(emptyNetwork());
 	return async (snapshot: BlockedNetwork) => {
-		const network = limitNetwork(before, unionNetwork(snapshot));
+		const network = limitNetwork(before, snapshot);
 		const signature = JSON.stringify(network);
 		if (signature === saved) return;
 		const blocked = { revision: (meta.blocked?.revision ?? 0) + 1, network: unionNetwork(before, network) };
 		if (!row) {
 			meta.blocked = blocked;
-			row = append(c, { kind: "network.blocked", turn, ...network }) as NetworkBlockedItem;
+			row = append(c, { kind: "network.blocked", revision: blocked.revision, turn, ...network }) as NetworkBlockedItem;
 			await serial(c, () => writeItems(c));
 		} else {
-			const item = { ...row, ...network };
+			const item = { ...row, ...network, revision: blocked.revision };
 			await serial(c, async () => {
 				await writeItems(c);
 				await c.db.transaction(async tx => {
@@ -1340,15 +1341,21 @@ export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sa
 	if (!proxy && !dns) return;
 	const save = blockedRecorder(c, meta, turn);
 	const lookups = emptyNetwork();
+	let broker: string | undefined;
+	let previousBrokers = emptyNetwork(), current = emptyNetwork();
 	return watchNetwork(async () => {
 		if (proxy) {
-			const snapshot = await proxy(turn);
+			const retained = meta.blocked?.network.hosts.map(({ host, port }) => ({ host, port })) ?? [];
+			const snapshot = await proxy(turn, retained);
+			if (broker && broker !== snapshot.broker) previousBrokers = unionNetwork(previousBrokers, current);
+			broker = snapshot.broker;
 			const redactor = c.vars.turn?.secrets?.redactor;
 			const name = c.vars.runner?.known?.name || meta.machineName || (meta.place.kind === "machine" ? meta.place.machineId : "");
-			await save({ ...snapshot, hosts: snapshot.hosts.map(entry => {
+			current = { overflow: snapshot.overflow, hosts: snapshot.hosts.map(entry => {
 				const host = entry.host && redactor && redactor.text(entry.host) !== entry.host ? null : entry.host;
 				return { ...entry, host, machineNames: [redactor?.text(name) ?? name], allow: entry.reason === "machine_policy" && host && isHostName(host) ? "machine" : "never" };
-			}) });
+			}) };
+			await save(unionNetwork(previousBrokers, current));
 		} else {
 			await noteBlockedHosts(c, meta, turn, sandbox, layer, names => {
 				const at = Date.now();
@@ -5527,6 +5534,9 @@ export const agentSession = actor({
 			requireService(c);
 			const meta = liveMeta(c);
 			const row = await inboxRow(c.db, String(input?.turn));
+			// Polling for the turn end follows the same order as the outbox. A publish that follows
+			// this answer must already have the session's final network receipt.
+			if (meta.blocked && (await c.db.execute("SELECT 1 FROM outbox WHERE json_extract(message, '$.to') = 'network' LIMIT 1")).length) return null;
 			if (row?.state === "ended") return await endedFact(c.db, row.key);
 			if (row?.state !== "started") return null;
 			if (c.vars.turn?.item?.row.key === row.key || c.vars.closingItem === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };

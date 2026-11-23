@@ -155,7 +155,7 @@ class Conversation {
 				}
 				case "blockedNetwork":
 					if (!o.blockedNetwork || box.egress !== "restricted") throw new Refusal("This sandbox does not report blocked network requests.");
-					return await o.network.blocked(box.raw, op.args.turn);
+					return await o.network.blocked(box.raw, op.args.turn, op.args.retained);
 				case "readTextFile": {
 					const text = await h.readTextFile(op.args.path);
 					return box.harness ? cleanClaudeOutput(text) : text;

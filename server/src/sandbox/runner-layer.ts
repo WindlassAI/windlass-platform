@@ -466,12 +466,12 @@ class RunnerHandle implements TurnSandbox {
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
-		if (blockedNetwork) this.blockedNetwork = turn => link.request("blockedNetwork", { id, turn }, { signal: AbortSignal.timeout(5_000) });
+		if (blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
 		if (relay) this.modelRelay = () => this.openRelay();
 	}
 
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
-	readonly blockedNetwork?: (turn: number) => Promise<Value<"blockedNetwork">>;
+	readonly blockedNetwork?: TurnSandbox["blockedNetwork"];
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
 
 	/** Not repeated: a lease lost with its conversation was ended by the runner (its `orphan`), and the turn fails. */

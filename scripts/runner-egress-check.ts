@@ -362,5 +362,11 @@ test("proxy refusals carry only bounded destination counts, reasons and times", 
 		assert.equal(counts.read(2).hosts[0].count, 1);
 		assert.equal(counts.read(2).overflow, 1);
 		assert.deepEqual(counts.read(1), { hosts: [], overflow: 0 }, "a late old turn cannot reset the ledger");
+		const replacement = refusalLedger();
+		replacement.read(3, snapshot.hosts.concat(Array.from({ length: 46 }, (_, i) => ({ host: "prior" + i + ".example", port: 80 }))));
+		replacement.record(new URL("http://new.example"), "machine_policy");
+		replacement.record(new URL("http://registry.example"), "machine_policy");
+		assert.equal(replacement.read(3).overflow, 1);
+		assert.equal(replacement.read(3).hosts[0].host, "registry.example");
 	} finally { proxy.close(); }
 });

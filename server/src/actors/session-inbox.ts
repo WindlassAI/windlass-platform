@@ -320,7 +320,9 @@ const OUTBOX_RETRY_MOST_MS = 5 * 60_000;
 // Spending must settle before slot release. A turn end must also follow its network receipt,
 // so an item publishing immediately can include the final counts even after a retry.
 const sendable = `(json_extract(message, '$.to') = 'tokens' OR NOT EXISTS (
-	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') IN ('tokens', 'network')))`;
+	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'tokens'))
+	AND (json_extract(message, '$.to') <> 'item' OR NOT EXISTS (
+	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'network'))`;
 
 /**
  * Sends what is due in the outbox, oldest first; removes each once it was acknowledged, and sets the

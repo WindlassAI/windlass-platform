@@ -71,12 +71,13 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 // Every harness gets refusal observations from its sandbox handle on the same session socket.
 {
 	const { validArgs, validValue } = await import("../server/src/runner/protocol.js");
+	const broker = "a".repeat(64);
 	const entry = { host: "registry.example", port: 443, reason: "machine_policy", firstAt: 1, lastAt: 2, count: 3 };
-	assert.ok(validArgs("blockedNetwork", { id: "box", turn: 1 }));
-	assert.ok(validValue("blockedNetwork", { hosts: [entry], overflow: 0 }));
+	assert.ok(validArgs("blockedNetwork", { id: "box", turn: 1, retained: [] }));
+	assert.ok(validValue("blockedNetwork", { broker, hosts: [entry], overflow: 0 }));
 	for (const change of [{ host: "host/path" }, { host: "host?token" }, { headers: {} }, { reason: "unknown" }, { port: 65536 }, { count: 0 }])
-		assert.equal(validValue("blockedNetwork", { hosts: [{ ...entry, ...change }], overflow: 0 }), false);
-	assert.equal(validValue("blockedNetwork", { hosts: Array(51).fill(entry), overflow: 0 }), false);
+		assert.equal(validValue("blockedNetwork", { broker, hosts: [{ ...entry, ...change }], overflow: 0 }), false);
+	assert.equal(validValue("blockedNetwork", { broker, hosts: Array(51).fill(entry), overflow: 0 }), false);
 }
 
 // One capability record per agent (harnesses.ts): the platform and the screens decide by these flags, never by the agent's id.

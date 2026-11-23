@@ -2540,7 +2540,7 @@ export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolea
  * An entry of a session's timeline. `seq` is the platform's own numbering, dense and increasing
  * within a session, and has nothing to do with a Windlass event's `seq`.
  */
-export type NetworkBlockedItem = { seq: number; at: number; turn: number; kind: "network.blocked" } & BlockedNetwork;
+export type NetworkBlockedItem = { seq: number; at: number; turn: number; kind: "network.blocked"; revision: number } & BlockedNetwork;
 
 export type TimelineItem =
 	/** One row per turn. Its first snapshot arrives on item, replacements on networkBlocked with the same seq. */
@@ -2961,7 +2961,7 @@ export interface AgentSessionActions {
 }
 
 export interface AgentSessionEvents {
-	/** Replace the network.blocked row with this seq. Counts are cumulative for its turn. */
+	/** Replace the network.blocked row with this seq if revision is newer. Counts are cumulative for its turn. */
 	networkBlocked: NetworkBlockedItem;
 	/** A stored timeline entry, in `seq` order. */
 	item: TimelineItem;

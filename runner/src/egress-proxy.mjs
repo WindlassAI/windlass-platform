@@ -16,11 +16,15 @@ export function refusalLedger() {
 	const slots = new Map();
 	let turn = 0, overflow = 0;
 	return {
-		read(number) {
+		read(number, retained) {
 			if (number > turn) {
 				turn = number;
 				overflow = 0;
-				for (const key of slots.keys()) slots.set(key, null);
+				// A resumed sandbox can have a fresh broker. Reserve the session's previously admitted slots.
+				if (retained) {
+					slots.clear();
+					for (const { host, port } of retained) slots.set(JSON.stringify([host, port]), null);
+				} else for (const key of slots.keys()) slots.set(key, null);
 			}
 			return number === turn ? { hosts: [...slots.values()].filter(Boolean), overflow } : { hosts: [], overflow: 0 };
 		},
@@ -273,10 +277,19 @@ function broker(allow, denied, device = false, domains = null) {
 		// Separate Unix socket in the helpers' volume. The sandbox can only reach the HTTP forwarder.
 		const path = "/workspace/observe.sock";
 		rmSync(path, { force: true });
-		http.createServer((req, res) => {
+		http.createServer(async (req, res) => {
 			const turn = Number(req.url.slice(1));
 			if (!Number.isSafeInteger(turn) || turn <= 0) { res.writeHead(400); return res.end(); }
-			res.end(JSON.stringify(ledger.read(turn)));
+			try {
+				let input = "";
+				for await (const chunk of req) {
+					input += chunk;
+					if (input.length > 16384) throw Error();
+				}
+				const retained = JSON.parse(input);
+				if (!Array.isArray(retained) || retained.length > 50) throw Error();
+				res.end(JSON.stringify(ledger.read(turn, retained)));
+			} catch { res.writeHead(400); res.end(); }
 		}).listen(path);
 	}
 	const server = proxyServer(allow, denied, device, domains, ledger.record);

@@ -1,4 +1,4 @@
-import { validValue, type Value } from "../../server/src/runner/protocol.js";
+import { validValue, type Args, type Value } from "../../server/src/runner/protocol.js";
 import { RUNNER_HTTP_PROXY as proxy } from "../../server/src/runner/egress.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -136,12 +136,12 @@ export class EgressNetwork {
 			source, mounts, [this.policy.mode, ...(harness ? [nonce] : []), ...(harness === "codex" ? ["codex"] : [])], probes, brokerId);
 	}
 	/** Read in the broker's namespace. Nothing in the agent can issue observation requests. */
-	async blocked(raw: string, turn: number): Promise<Value<"blockedNetwork">> {
+	async blocked(raw: string, turn: number, retained: Args<"blockedNetwork">["retained"]): Promise<Value<"blockedNetwork">> {
 		const broker = await this.helper(this.prefix + "-broker-" + raw, "broker");
 		if (!broker?.running) throw new Refusal("The network broker is unavailable.");
-		const read = 'require("node:http").get({socketPath:"/workspace/observe.sock",path:"/"+process.argv[1]}, r => r.pipe(process.stdout)).on("error", () => process.exit(1))';
-		const result = await docker(["exec", broker.id, "node", "-e", read, String(turn)], { check: true, timeoutMs: 4000 });
-		const value: unknown = JSON.parse(result.stdout);
+		const read = 'process.stdin.pipe(require("node:http").request({method:"POST",socketPath:"/workspace/observe.sock",path:"/"+process.argv[1]}, res => res.pipe(process.stdout)).on("error", () => process.exit(1)))';
+		const result = await docker(["exec", "-i", broker.id, "node", "-e", read, String(turn)], { stdin: JSON.stringify(retained), check: true, timeoutMs: 4000 });
+		const value: unknown = { ...JSON.parse(result.stdout), broker: broker.id };
 		if (!validValue("blockedNetwork", value)) throw new Refusal("The network broker returned an invalid snapshot.");
 		return value;
 	}

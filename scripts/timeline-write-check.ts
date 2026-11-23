@@ -85,7 +85,7 @@ test("a running turn updates a single durable refusal row and flushes once more 
 	let reads = 0;
 	const read = async () => {
 		reads++;
-		return { hosts: reasons.map((reason, i) => ({ reason, host: "test" + i + ".example", port: 443, firstAt: 12, lastAt: 12 + reads, count: reads })), overflow: reads };
+		return { broker: reads <= 2 ? "first" : "replacement", hosts: reasons.map((reason, i) => ({ reason, host: "test" + i + ".example", port: 443, firstAt: 12, lastAt: 12 + reads, count: reads <= 2 ? reads : 1 })), overflow: reads <= 2 ? reads : 1 };
 	};
 	try {
 		const finish = await observeNetwork(c as never, f.vars.meta as never, 1, { blockedNetwork: read } as never, {} as never);
@@ -105,6 +105,7 @@ test("a running turn updates a single durable refusal row and flushes once more 
 		t.mock.timers.tick(10000);
 		assert.equal(reads, 3);
 		assert.equal(f.items.length, 1);
+		assert.deepEqual([first, ...replacements].map(i => i.revision), [1, 2, 3]);
 		assert.deepEqual(replacements.map(item => [item.seq, item.hosts[0]?.count, item.overflow]), [[first.seq, 2, 2], [first.seq, 3, 3]]);
 		assert.deepEqual(f.stored(), [replacements[1]]);
 		const legacy = fromSnapshot({ timeline: [...f.stored(), { seq: first.seq + 1, at: 16, turn: 1, kind: "platform", level: "info", text: "still running" }], pending: [], windlassSessionId: null });

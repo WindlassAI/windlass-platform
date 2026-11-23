@@ -137,7 +137,7 @@ export interface SandboxHandle {
 	 */
 	blockedHosts?(skip?: Iterable<string>): Promise<string[]>;
 	/** A restricted runner proxy. The first read opens the turn, subsequent reads repeat its cumulative counts. */
-	blockedNetwork?(turn: number): Promise<{ hosts: ProxyBlockedHost[]; overflow: number }>;
+	blockedNetwork?(turn: number, retained: Pick<ProxyBlockedHost, "host" | "port">[]): Promise<{ broker: string; hosts: ProxyBlockedHost[]; overflow: number }>;
 	/**
 	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
 	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
