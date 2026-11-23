@@ -41,7 +41,8 @@ export class FakeDodo {
 			if (fail.took && parsed.pathname === "/events/ingest") this.take(body);
 			return Response.json({ code: "INTERNAL", message: "customer jane@example.com card 4242" }, { status: fail.status });
 		}
-		if (init.method === "POST" && parsed.pathname === "/checkouts") {
+		if (init.method === "POST" && parsed.pathname === "/customers" && body.name && body.email) return Response.json({ customer_id: "cus_1" });
+		if (init.method === "POST" && parsed.pathname === "/checkouts" && body.customer?.customer_id) {
 			const id = `cks_${randomBytes(6).toString("hex")}`;
 			return Response.json({ session_id: id, checkout_url: `https://test.checkout.dodopayments.com/session/${id}` });
 		}

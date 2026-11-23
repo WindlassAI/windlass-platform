@@ -2,7 +2,7 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor } from "./auth.js";
 import { config } from "./config.js";
-import { capMinutes, planLimits, type BillingState } from "./billing/plans.js";
+import { planLimits, type BillingState } from "./billing/plans.js";
 import { MAX_MACHINES, type FactoryLimits } from "./contract.js";
 import { ATTACHMENT_LIMITS } from "./factory/attachments.js";
 
@@ -42,7 +42,8 @@ export function effectiveUserLimits(overrides: Overrides, billing: BillingState 
 		githubItemsPerDay: value("githubItemsPerDay", plan?.githubItemsPerDay ?? defaults.githubItemsPerDay),
 		item, attachments,
 	};
-	const usage = { ...config.usage, monthlySeconds: null as number | null, includedSeconds: null as number | null, plan: plan?.plan.id ?? null };
+	const subscription = plan?.plan.id === "pro" && billing ? { period: billing.period, periodStart: billing.periodStart, periodEnd: billing.periodEnd } : null;
+	const usage = { ...config.usage, subscription, monthlySeconds: null as number | null, includedSeconds: null as number | null, plan: plan?.plan.id ?? null };
 	// With a plan, the month's hosted minutes take the place of the day's allowance, unless the operator set one for the user.
 	if (plan) {
 		usage.dailySeconds = null;
@@ -55,7 +56,7 @@ export function effectiveUserLimits(overrides: Overrides, billing: BillingState 
 		const minutes = overrides.hostedMinutes;
 		usage.includedSeconds = minutes === null ? null : minutes * 60;
 		// The operator's minutes are the included ones: a plan's spend cap still pays for overage past them.
-		usage.monthlySeconds = minutes === null ? null : (minutes + (plan && billing ? capMinutes(plan.plan, billing.capCents) : 0)) * 60;
+		usage.monthlySeconds = minutes === null ? null : minutes * 60 + (plan ? plan.monthlySeconds - plan.includedSeconds : 0);
 	}
 	const machines = value("machines", plan?.machines ?? MAX_MACHINES);
 	return { factory, usage, machines, plan: plan?.plan ?? null };

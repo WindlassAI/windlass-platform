@@ -17,8 +17,14 @@ export function monthReset(month: HostedMonth): string {
 	return `${date.getUTCDate()} ${date.toLocaleString("en-US", { month: "long", timeZone: "UTC" })}`;
 }
 
-/** "November 2026". */
+/** Billing-period wording for the usage meter and notices. */
+export function periodWords(month: HostedMonth): string {
+	return month.plan === "pro" ? `for the period ending ${monthReset(month)}` : "this month";
+}
+
+/** Calendar month for Free, allowance reset for Pro. */
 export function monthName(month: HostedMonth): string {
+	if (month.plan === "pro") return `Resets ${monthReset(month)}`;
 	const [year, number] = month.month.split("-").map(Number) as [number, number];
 	return new Date(Date.UTC(year, number - 1, 1)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 }
@@ -47,15 +53,15 @@ export function monthSentence(numbers: Pick<UsageNumbers, "hosted" | "startSecon
 	const state = monthState(numbers ?? null);
 	if (!month || state === "plenty") return null;
 	const used = month.usedSeconds + month.heldSeconds;
-	const of = withOverage(month) ? `${minutes(month.limitSeconds)} hosted minutes this month, your spend cap included` : `${minutes(month.includedSeconds)} hosted minutes this month`;
+	const of = withOverage(month) ? `${minutes(month.limitSeconds)} hosted minutes ${periodWords(month)}, your spend cap included` : `${minutes(month.includedSeconds)} hosted minutes ${periodWords(month)}`;
 	if (state === "low") return `You've used ${minutes(used)} of ${of}. Your own machines are never counted.`;
 	if (launch) {
-		const more = month.plan === "free" && pro ? ` Or move to Pro for ${count(pro.hostedMinutes)} a month.` : withOverage(month) ? " Or raise your spend cap in Settings." : "";
+		const more = month.plan === "free" && pro ? ` Or move to Pro for ${count(pro.hostedMinutes)} a month.` : month.period === "year" ? " Or switch to monthly Pro for overage." : withOverage(month) ? " Or raise your spend cap in Settings." : "";
 		return `You've used all ${of}. A hosted agent launched now is created, and waits until ${monthReset(month)}; one on your own machine starts at once, and is never counted.${more}`;
 	}
 	const way = month.plan === "free" && pro
 		? `Run agents on your own machines, which are never counted, or move to Pro for ${count(pro.hostedMinutes)} a month.`
-		: withOverage(month)
+		: month.period === "year" ? "Switch to monthly Pro for overage, or run agents on your own machines." : withOverage(month)
 			? "Raise your spend cap in Settings, or run agents on your own machines, which are never counted."
 			: "Run agents on your own machines, which are never counted.";
 	return `You've used all ${of}, so hosted agents can't start until ${monthReset(month)}. ${way}`;

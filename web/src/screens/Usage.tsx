@@ -276,10 +276,10 @@ export function Usage() {
 			{view.hosted ? (
 				<section className="usage-section" aria-labelledby="usage-month">
 					<h2 className="usage-title" id="usage-month">
-						Hosted minutes this month
+						Hosted minutes{view.hosted.plan === "pro" ? "" : " this month"}
 						<span className="usage-count">{monthName(view.hosted)}</span>
 					</h2>
-					<p className="usage-lede">One hosted minute is a minute of a standard sandbox; a small one counts half, a large one twice. Agents on your own machines are never counted. The month starts again on {monthReset(view.hosted)}, 00:00 UTC.</p>
+					<p className="usage-lede">One hosted minute is a minute of a standard sandbox; a small one counts half, a large one twice. Agents on your own machines are never counted. The allowance resets on {monthReset(view.hosted)} at {new Date(view.hosted.resetsAt).toISOString().slice(11, 16)} UTC.</p>
 					<HostedNotice numbers={view} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
 					<div className="usage-card billing-card">
 						<div className="billing-month">
@@ -288,7 +288,7 @@ export function Usage() {
 					</div>
 					{platform.info?.billing ? (
 						<p className="usage-note">
-							Your plan, its spend cap and billing are in{" "}
+							Manage your plan in{" "}
 							<a className="link" {...linkProps({ name: "settings" })}>
 								Settings
 							</a>

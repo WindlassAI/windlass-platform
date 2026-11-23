@@ -16,7 +16,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { applyBillingEvent, billingTables, readBilling, reportOverage, setCapCents, overageMinutes } from "../server/src/billing/account.js";
 import { billing, readBillingConfig } from "../server/src/billing/config.js";
 import { DodoProvider, type DodoSettings } from "../server/src/billing/dodo.js";
-import { monthOf, nextMonthStart, previousMonth, sessionWeight, SIZE_WEIGHT } from "../server/src/billing/meter.js";
+import { meterPeriod, monthOf, shiftMonths, type MeterPeriod, sessionWeight, SIZE_WEIGHT } from "../server/src/billing/meter.js";
 import { capMinutes, DEFAULT_CAP_CENTS, effectivePlan, NO_SUBSCRIPTION, planAllowsSize, PLANS, type BillingState } from "../server/src/billing/plans.js";
 import type { BillingEvent } from "../server/src/billing/provider.js";
 import { verify } from "../server/src/billing/standard-webhooks.js";
@@ -57,8 +57,8 @@ const SETTINGS: DodoSettings = { apiKey: FAKE_KEY, webhookSecret: FAKE_SECRET, e
 const GRACE = 7 * DAY_MS;
 /** 2026-11-23 12:00 UTC. */
 const NOW = Date.UTC(2026, 10, 23, 12);
-const event = (over: Partial<BillingEvent>): BillingEvent => ({ id: `e${Math.random()}`, kind: "active", occurredAt: NOW, uid: "u_check", customerId: "cus_1", subscriptionId: "sub_1", period: "month", periodEnd: NOW + 30 * DAY_MS, cancelAtPeriodEnd: false, type: "subscription.active", ...over });
-const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRIPTION, plan: "pro", status: "active", period: "month", customerId: "cus_1", subscriptionId: "sub_1", ...over });
+const event = (over: Partial<BillingEvent>): BillingEvent => ({ id: `e${Math.random()}`, kind: "active", occurredAt: NOW, uid: "u_check", customerId: "cus_1", subscriptionId: "sub_1", period: "month", periodStart: NOW, periodEnd: NOW + 30 * DAY_MS, cancelAtPeriodEnd: false, type: "subscription.active", ...over });
+const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRIPTION, plan: "pro", status: "active", period: "month", periodStart: Date.UTC(2026, 10, 5, 12), periodEnd: Date.UTC(2026, 11, 5, 12), customerId: "cus_1", subscriptionId: "sub_1", ...over });
 
 // --- Billing off: today's behaviour --------------------------------------------------------------------------------
 {
@@ -107,7 +107,7 @@ const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRI
 	book.settle(NOW + 600_000, { session: "small", hold: "s1", seconds: 600 });
 	book.reserve(NOW, { id: "l1", session: "large", fresh: true });
 	book.settle(NOW + 300_000, { session: "large", hold: "l1", seconds: 300 });
-	expect("10 min small + 5 min large count 5 + 10 hosted minutes", book.usedInMonth(monthOf(NOW)) === 300 + 600);
+	expect("10 min small + 5 min large count 5 + 10 hosted minutes", book.usedInPeriod(meterPeriod(null, NOW)) === 300 + 600);
 	expect("the day's real seconds are not weighted", book.usedOn(dayOf(NOW)) === 900);
 	const numbers = book.numbers(NOW + 600_000);
 	expect("the numbers carry the month: 15 of 120 used", numbers.hosted?.month === "2026-11" && numbers.hosted.usedSeconds === 900 && numbers.hosted.leftSeconds === 7200 - 900 && numbers.hosted.resetsAt === Date.UTC(2026, 11, 1));
@@ -148,9 +148,9 @@ const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRI
 	expect("a hold at 23:58 on the 30th stops at midnight", late.ok && late.hold.seconds === 120 && monthOf(late.hold.day * DAY_MS) === "2026-11");
 	roll.settle(end + 120_000, { session: "x", hold: "r1", seconds: 120 });
 	const next = roll.reserve(end + 120_000, { id: "r2", session: "x", fresh: true });
-	expect("the hold after it is December's, from a whole allowance", next.ok && monthOf(next.hold.day * DAY_MS) === "2026-12" && roll.usedInMonth("2026-12") === 0 && roll.usedInMonth("2026-11") === 120);
+	expect("the hold after it is December's, from a whole allowance", next.ok && monthOf(next.hold.day * DAY_MS) === "2026-12" && roll.usedInPeriod(meterPeriod(null, end + 120_000)) === 0 && roll.usedInPeriod(meterPeriod(null, end)) === 120);
 	expect("December's numbers start at 0 and reset on 1 January", roll.numbers(end + 121_000).hosted?.usedSeconds === 0 && roll.numbers(end + 121_000).hosted?.resetsAt === Date.UTC(2027, 0, 1));
-	expect("month helpers: previous of January is December", previousMonth("2027-01") === "2026-12" && nextMonthStart(Date.UTC(2026, 11, 31, 23)) === Date.UTC(2027, 0, 1));
+	expect("Free resets on 1 January", meterPeriod(null, Date.UTC(2026, 11, 31, 23)).end === Date.UTC(2027, 0, 1));
 }
 
 // --- The hard stop on Free and the cap on Pro ----------------------------------------------------------------------
@@ -170,7 +170,7 @@ const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRI
 
 	const capped = new UsageBook({ ...effectiveUserLimits({}, pro({ capCents: 6 }), NOW).usage, holdSeconds: 3600 });
 	capped.weightOf = () => 1;
-	let clock = Date.UTC(2026, 10, 2), granted = 0, refused = false;
+	let clock = Date.UTC(2026, 10, 6), granted = 0, refused = false;
 	for (let n = 0; n < 100 && !refused; n++) {
 		const hold = capped.reserve(clock, { id: `p${n}`, session: "a", fresh: true });
 		if (!hold.ok) { refused = true; break; }
@@ -182,6 +182,34 @@ const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRI
 	expect("past the cap nothing starts: enforced on the server", refused);
 	expect("the cap's stop says to raise the cap", /spend cap/.test(allowanceRefusal(capped.numbers(clock))));
 	expect("overage minutes never pass what the cap pays for", overageMinutes(pro({ capCents: 6 }), (1800 + 50) * 60, 1800 * 60, NOW) === 10);
+}
+
+// --- Subscription-anniversary allowances ---------------------------------------------------------------------------
+{
+	const start = pro().periodStart!, end = pro().periodEnd!;
+	const limits = effectiveUserLimits({ hostedMinutes: 2 }, pro(), start).usage;
+	const book = new UsageBook({ ...limits, holdSeconds: 60 });
+	book.reserve(start - 60_000, { id: "before", session: "a" });
+	book.settle(start + 500, { session: "a", hold: "before", seconds: 60 });
+	book.reserve(start, { id: "first", session: "a" });
+	book.settle(start + 60_000, { session: "a", hold: "first", seconds: 60 });
+	expect("midday signup excludes the preceding hold and 1 December does not reset Pro",
+		book.month(Date.UTC(2026, 11, 1)).usedSeconds === 60 && book.month(start).resetsAt === end);
+	const last = book.reserve(end - 10_000, { id: "last", session: "a" });
+	book.sweep(end + DAY_MS);
+	book.settle(end + DAY_MS, { session: "a", hold: "last", seconds: 7 });
+	expect("a hold stops at the provider reset and a late correction stays with the original period",
+		last.ok && last.hold.seconds === 10 && book.month(end).usedSeconds === 0 && book.month(end - 1).usedSeconds === 67);
+	const jan = Date.UTC(2027, 0, 31, 13);
+	const annual = pro({ period: "year", periodStart: jan, periodEnd: shiftMonths(jan, 12) });
+	const yearly = new UsageBook(effectiveUserLimits({}, annual, jan).usage, { entries: [
+		{ day: dayOf(jan), session: "s", hold: "h", kind: "used", weight: 1, seconds: 1800 * 60, at: jan + DAY_MS, startedAt: jan, note: null },
+	] });
+	const feb = Date.UTC(2027, 1, 28, 13);
+	expect("yearly Pro stops at 1,800, suggests monthly Pro, and resets on the monthly anniversary",
+		!yearly.reserve(jan + DAY_MS, { id: "refused", session: "s" }).ok && yearly.month(jan).limitSeconds === 1800 * 60 &&
+		/monthly Pro/.test(allowanceRefusal(yearly.numbers(jan + DAY_MS))) && yearly.month(jan).resetsAt === feb &&
+		yearly.month(feb).leftSeconds === 1800 * 60 && yearly.month(feb).resetsAt === Date.UTC(2027, 2, 31, 13));
 }
 
 // --- Webhooks -----------------------------------------------------------------------------------------------------
@@ -205,19 +233,25 @@ const dodo = new DodoProvider(SETTINGS, fake.fetch, "https://test.dodopayments.c
 	};
 	const month = subscriptionData({ productId: PRODUCTS.month });
 	const [active] = parse("subscription.active", month);
-	expect("subscription.active → active, monthly, with ids, renewal date and the uid", active?.kind === "active" && active.period === "month" && active.uid === "u_check" && active.customerId === "cus_1" && active.subscriptionId === "sub_1" && active.periodEnd === Date.parse("2026-12-23T00:00:00Z"));
+	expect("subscription.active → active, monthly, with ids, renewal date and the uid", active?.kind === "active" && active.period === "month" && active.uid === "u_check" && active.customerId === "cus_1" && active.subscriptionId === "sub_1" && active.periodStart === Date.parse("2026-11-23T00:00:00Z") && active.periodEnd === Date.parse("2026-12-23T00:00:00Z"));
 	expect("subscription.renewed → active; yearly by its product", parse("subscription.renewed", subscriptionData({ productId: PRODUCTS.year }))[0]?.period === "year");
 	expect("subscription.updated with cancel at the next billing date → changed", parse("subscription.updated", subscriptionData({ productId: PRODUCTS.month, cancelAtNext: true }))[0]?.kind === "changed" && parse("subscription.updated", subscriptionData({ productId: PRODUCTS.month, cancelAtNext: true }))[0]?.cancelAtPeriodEnd === true);
 	expect("subscription.plan_changed → changed", parse("subscription.plan_changed", month)[0]?.kind === "changed");
 	expect("subscription.on_hold and .past_due → payment_failed", parse("subscription.on_hold", subscriptionData({ productId: PRODUCTS.month, status: "on_hold" }))[0]?.kind === "payment_failed" && parse("subscription.past_due", subscriptionData({ productId: PRODUCTS.month, status: "past_due" }))[0]?.kind === "payment_failed");
 	expect("payment.failed of a subscription → payment_failed", parse("payment.failed", paymentData({ uid: "u_check" }))[0]?.kind === "payment_failed");
 	expect("payment.failed of no subscription → nothing", parse("payment.failed", paymentData({ subscriptionId: null })).length === 0);
-	for (const type of ["subscription.cancelled", "subscription.expired", "subscription.failed", "subscription.paused"]) expect(`${type} → ended`, parse(type, subscriptionData({ productId: PRODUCTS.month, status: "cancelled" }))[0]?.kind === "ended");
+	for (const type of ["subscription.cancelled", "subscription.expired", "subscription.failed"]) expect(`${type} → ended`, parse(type, subscriptionData({ productId: PRODUCTS.month, status: "cancelled" }))[0]?.kind === "ended");
+	const paused = parse("subscription.updated", subscriptionData({ productId: PRODUCTS.month, status: "paused" }))[0]!;
+	const pausedDb = await memoryDbWithTables();
+	await applyBillingEvent(pausedDb, event({}), NOW, GRACE);
+	const grace = (await applyBillingEvent(pausedDb, { ...paused, occurredAt: NOW }, NOW, GRACE)).state;
+	expect("an active subscription updated to paused keeps Pro through grace and falls back to Free at its end",
+		grace.status === "paused" && effectivePlan(grace, NOW + GRACE - 1) === "pro" && effectivePlan(grace, NOW + GRACE) === "free");
 	expect("subscription.updated to cancelled → ended", parse("subscription.updated", subscriptionData({ productId: PRODUCTS.month, status: "cancelled" }))[0]?.kind === "ended");
 	expect("another product's subscription → nothing", parse("subscription.active", subscriptionData({ productId: "pdt_other" })).length === 0);
 	expect("payment.succeeded and refunds → nothing", parse("payment.succeeded", paymentData({})).length === 0 && parse("refund.succeeded", {}).length === 0);
 	expect("the uid on the customer's metadata is read too", parse("subscription.active", subscriptionData({ productId: PRODUCTS.month, uidOn: "customer" }))[0]?.uid === "u_check");
-	expect("no uid anywhere: uid null, for the route to drop", parse("subscription.active", subscriptionData({ productId: PRODUCTS.month, uidOn: "none" }))[0]?.uid === null);
+	expect("no metadata uid leaves the customer id for routing", parse("subscription.active", subscriptionData({ productId: PRODUCTS.month, uidOn: "none" }))[0]?.uid === null);
 }
 
 // --- Applying events: once, in order, grace then downgrade ----------------------------------------------------------
@@ -263,9 +297,9 @@ async function memoryDbWithTables() {
 {
 	const db = memoryDb();
 	await billingTables(db);
-	const month = monthOf(NOW);
+	const start = pro().periodStart!;
 	let used = 1800 * 60;
-	const input = (state: BillingState, now = NOW) => ({ uid: "u_check", state, now, usedSeconds: (m: string) => (m === month ? used : 0), includedSeconds: 1800 * 60 });
+	const input = (state: BillingState, now = NOW) => ({ uid: "u_check", state, now, usedSeconds: (period: MeterPeriod) => (period.start === start ? used : 0), includedSeconds: 1800 * 60 });
 	expect("within the included minutes: nothing reported", (await reportOverage(db, dodo, input(pro()))).length === 0 && fake.ingested.size === 0);
 	used = (1800 + 12.9) * 60;
 	const sent = await reportOverage(db, dodo, input(pro()));
@@ -296,25 +330,35 @@ async function memoryDbWithTables() {
 	expect("never past the cap: a 30¢ cap pays for 50 minutes", fake.minutes === 50);
 	await reportOverage(db, dodo, input(pro({ capCents: 0 })));
 	expect("a cap lowered under what was reported reports nothing more, and takes nothing back", fake.minutes === 50);
-	// The month after: last month's rest is reported with this month's first.
-	const december = Date.UTC(2026, 11, 1, 0, 10);
+	const end = pro().periodEnd!;
+	const renewed = (await applyBillingEvent(db, event({ periodStart: start, periodEnd: end }), NOW, GRACE)).state;
+	await applyBillingEvent(db, event({ periodStart: end, periodEnd: shiftMonths(end, 1), occurredAt: end }), end, GRACE);
+	const after = await readBilling(db);
 	used = (1800 + 60) * 60;
-	await reportOverage(db, dodo, { ...input(pro({ capCents: 2000 }), december), usedSeconds: (m: string) => (m === month ? used : 0) });
-	expect("on 1 December, November's last minutes are still reported", fake.minutes === 60);
+	const rollover = await reportOverage(db, dodo, { ...input(after, end), usedSeconds: period => period.start === start ? used : 1810 * 60 });
+	expect("5 December renewal reports the old remainder and the new overage under distinct period ids",
+		renewed.periodStart === start && rollover.length === 2 && rollover[0]!.minutes === 10 && rollover[1]!.minutes === 10 &&
+		rollover[0]!.eventId.includes(`sub_1_${start}_`) && rollover[1]!.eventId.includes(`sub_1_${end}_`) && fake.minutes === 70);
+	const legacyDb = await memoryDbWithTables();
+	await legacyDb.execute("INSERT INTO billing_usage VALUES ('2026-11', 2, 4, 'legacy_pending')");
+	const migrated = await reportOverage(legacyDb, dodo, { ...input(pro()), usedSeconds: () => 1805 * 60 });
+	expect("the new period key credits four possibly billed legacy minutes and sends only one", migrated[0]?.minutes === 1);
+	const calls = fake.calls.length;
+	expect("yearly Pro never sends an overage event", !(await reportOverage(db, dodo, input(pro({ period: "year" })))).length && fake.calls.length === calls);
 }
 
 // --- Checkout and the portal against the fake ------------------------------------------------------------------------
 {
-	const { url } = await dodo.createCheckout({ uid: "u_check", period: "year", customerId: null, returnUrl: "https://app.example/settings?billing=checkout#plan" });
+	const { url } = await dodo.createCheckout({ uid: "u_check", period: "year", customerId: "cus_1", returnUrl: "https://app.example/settings?billing=checkout#plan" });
 	const call = fake.calls.at(-1)!;
-	expect("checkout: POST /checkouts with the yearly product, return_url and the uid in metadata", call.path === "/checkouts" && call.body.product_cart[0].product_id === PRODUCTS.year && call.body.product_cart[0].quantity === 1 && call.body.return_url.startsWith("https://app.example/") && call.body.metadata.wlp_uid === "u_check" && call.body.customer === undefined && url.startsWith("https://test.checkout.dodopayments.com/"));
+	expect("checkout: POST /checkouts with the yearly product, return_url and the uid in metadata", call.path === "/checkouts" && call.body.product_cart[0].product_id === PRODUCTS.year && call.body.product_cart[0].quantity === 1 && call.body.return_url.startsWith("https://app.example/") && call.body.metadata.wlp_uid === "u_check" && call.body.customer.customer_id === "cus_1" && url.startsWith("https://test.checkout.dodopayments.com/"));
 	await dodo.createCheckout({ uid: "u_check", period: "month", customerId: "cus_1", returnUrl: "https://app.example/settings" });
 	expect("an existing customer is named by id", fake.calls.at(-1)!.body.customer.customer_id === "cus_1" && fake.calls.at(-1)!.body.product_cart[0].product_id === PRODUCTS.month);
 	expect("the API key goes as a bearer token", fake.calls.at(-1)!.auth === `Bearer ${FAKE_KEY}`);
 	const portal = await dodo.portalLink({ customerId: "cus_1", returnUrl: "https://app.example/settings#plan" });
 	expect("portal: POST /customers/{id}/customer-portal/session?return_url, answers its link", fake.calls.at(-1)!.path === "/customers/cus_1/customer-portal/session" && fake.calls.at(-1)!.query.get("return_url") === "https://app.example/settings#plan" && portal.url.startsWith("https://test.customer.dodopayments.com/"));
 	const bad = new DodoProvider({ ...SETTINGS, apiKey: "dodo_test_wrong" }, fake.fetch, "https://test.dodopayments.com");
-	const refused = await rejects(bad.createCheckout({ uid: "u_check", period: "month", customerId: null, returnUrl: "https://app.example/" }));
+	const refused = await rejects(bad.createCheckout({ uid: "u_check", period: "month", customerId: "cus_1", returnUrl: "https://app.example/" }));
 	expect("a refused key throws with the status and no key", refused !== null && /401/.test(String(refused)) && !/dodo_test_wrong/.test(String(refused)));
 	expect("test mode is test.dodopayments.com, live mode live.dodopayments.com", new URL((await import("../server/src/billing/dodo.js")).dodoBaseUrl("test_mode")).host === "test.dodopayments.com" && new URL((await import("../server/src/billing/dodo.js")).dodoBaseUrl("live_mode")).host === "live.dodopayments.com");
 }
@@ -331,8 +375,22 @@ async function memoryDbWithTables() {
 	const { issueUserToken } = await import("../server/src/tokens.js");
 	const { getLayer } = await import("../server/src/layer.js");
 	const db = memoryDb();
-	const profile = { uid: "u_check", email: null, demo: false };
-	const base = { db, key: [profile.uid], broadcast: () => undefined };
+	const profile = { uid: "u_check", email: "billing@example.test", demo: false };
+	const { billingCustomers } = await import("../server/src/billing/customer-index.js");
+	const { webhookOwner } = await import("../server/src/billing/route.js");
+	const { issueServiceToken } = await import("../server/src/tokens.js");
+	const directoryDb = memoryDb();
+	if (!("db" in billingCustomers.config)) throw new Error("Missing customer directory database");
+	await billingCustomers.config.db.onMigrate(directoryDb as never);
+	const directory = () => {
+		const ctx = { db: directoryDb, key: ["dodo"], conn: { params: { token: issueServiceToken("billing") } } };
+		return {
+			claim: (id: string, uid: string) => billingCustomers.config.actions!.claim(ctx as never, id, uid),
+			lookup: (id: string) => billingCustomers.config.actions!.lookup(ctx as never, id),
+		};
+	};
+	const client = () => ({ billingCustomers: { getOrCreate: directory } });
+	const base = { db, client, key: [profile.uid], broadcast: () => undefined };
 	if (!("db" in user.config && "createVars" in user.config)) throw new Error("Missing account database");
 	const { db: schema, createVars } = user.config;
 	const reload = () => createVars(base as never, undefined);
@@ -379,6 +437,15 @@ async function memoryDbWithTables() {
 	const [one, two] = await Promise.all([checkout(), checkout()]);
 	personal.vars = await reload();
 	const retry = await checkout();
+	const customer = (await readBilling(db)).customerId!;
+	const owner = await directory().lookup(customer);
+	expect("checkout creates one customer, durably indexes its uid and passes the stored id on every checkout",
+		fake.calls.filter(call => call.path === "/customers").length === 1 && customer === "cus_1" && owner === profile.uid &&
+		fake.calls.findLast(call => call.path === "/checkouts")?.body.customer.customer_id === customer);
+	expect("customer id routes without metadata, agreeing metadata routes, and conflicting metadata is dropped",
+		webhookOwner(owner, null) === profile.uid && webhookOwner(owner, profile.uid) === profile.uid &&
+		webhookOwner(owner, "u_other") === null && webhookOwner(null, profile.uid) === profile.uid &&
+		await directory().claim(customer, "u_other") === profile.uid && await directory().lookup(customer) === profile.uid);
 	expect("simultaneous checkouts and a retry after reload return one provider link", one.url === two.url && one.url === retry.url && calls() === before + 1);
 	const [row] = await db.execute<{ session: string; opened_at: number }>("SELECT session, opened_at FROM billing_checkout");
 	expect("the open checkout records its provider id and opening time", !!row && one.url.endsWith(row.session) && row.opened_at >= now);
@@ -389,6 +456,16 @@ async function memoryDbWithTables() {
 	await applyBillingEvent(db, event({ kind: "payment_failed", occurredAt: now - 3 }), now - 3, 0);
 	personal.vars = await reload();
 	expect("a past-due subscription after grace directs checkout to Manage billing", /Manage billing/.test(String(await rejects(checkout()))) && calls() === before + 2);
+	const pause = delivery("subscription.paused", subscriptionData({ productId: PRODUCTS.month, status: "paused" }), { at: now - 3 });
+	const pausedEvent = dodo.parseWebhook(pause.headers, pause.body, now)![0]!;
+	const paused = (await applyBillingEvent(db, pausedEvent, now, GRACE)).state;
+	personal.vars = await reload();
+	expect("paused after failed payment preserves the expired grace and refuses checkout with the paused message",
+		paused.status === "paused" && effectivePlan(paused, now) === "free" &&
+		String(await rejects(checkout())).includes("Your subscription is paused. Open Manage billing in Settings."));
+	const unpause = delivery("subscription.unpaused", subscriptionData({ productId: PRODUCTS.month }), { at: now - 2 });
+	const resumed = (await applyBillingEvent(db, dodo.parseWebhook(unpause.headers, unpause.body, now)![0]!, now, GRACE)).state;
+	expect("unpaused restores the same subscription to Pro", effectivePlan(resumed, now) === "pro" && resumed.subscriptionId === paused.subscriptionId && resumed.graceUntil === null);
 	await applyBillingEvent(db, event({ kind: "ended", occurredAt: now - 2 }), now - 2, GRACE);
 	personal.vars = await reload();
 	expect("a provider-ended subscription permits a fresh checkout", (await checkout()).url !== retry.url && calls() === before + 3);

@@ -9,6 +9,8 @@
  *                        https://docs.dodopayments.com/developer-resources/subscription-integration-guide.md
  *                        POST /checkouts { product_cart: [{ product_id, quantity }], customer?, return_url, metadata }
  *                        answers { session_id, checkout_url }; a subscription product in the cart is a subscription
+ *   create customer      https://docs.dodopayments.com/api-reference/customers/create-customer.md
+ *                        POST /customers { name, email, metadata } answers { customer_id, ... }
  *   customer portal      https://docs.dodopayments.com/api-reference/customers/create-customer-portal-session.md
  *                        POST /customers/{customer_id}/customer-portal/session?return_url=… answers { link }
  *   metadata             https://docs.dodopayments.com/api-reference/metadata.md
@@ -58,6 +60,8 @@ interface DodoSubscription {
 	product_id?: string;
 	customer?: { customer_id?: string; metadata?: Record<string, unknown> };
 	metadata?: Record<string, unknown>;
+	created_at?: string;
+	previous_billing_date?: string;
 	next_billing_date?: string;
 	cancel_at_next_billing_date?: boolean;
 	payment_frequency_interval?: "Day" | "Week" | "Month" | "Year";
@@ -75,7 +79,7 @@ interface DodoPayment {
 const ACTIVE_TYPES = new Set(["subscription.active", "subscription.renewed", "subscription.unpaused"]);
 const CHANGED_TYPES = new Set(["subscription.updated", "subscription.plan_changed"]);
 const FAILED_TYPES = new Set(["subscription.on_hold", "subscription.past_due"]);
-const ENDED_TYPES = new Set(["subscription.cancelled", "subscription.expired", "subscription.failed", "subscription.paused"]);
+const ENDED_TYPES = new Set(["subscription.cancelled", "subscription.expired", "subscription.failed"]);
 
 const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 const time = (value: unknown) => {
@@ -108,10 +112,17 @@ export class DodoProvider implements BillingProvider {
 		return (raw === "" ? {} : JSON.parse(raw)) as T;
 	}
 
+	async createCustomer(uid: string, email: string): Promise<string> {
+		const answer = await this.call<{ customer_id?: string }>("POST", "/customers", { name: uid, email, metadata: { [UID_KEY]: uid } });
+		const id = text(answer.customer_id);
+		if (!id) throw new BillingProviderError(502, "no_customer_id");
+		return id;
+	}
+
 	async createCheckout(input: CheckoutInput): Promise<{ id: string; url: string }> {
 		const answer = await this.call<{ session_id?: string; checkout_url?: string | null }>("POST", "/checkouts", {
 			product_cart: [{ product_id: this.settings.products[input.period], quantity: 1 }],
-			...(input.customerId && { customer: { customer_id: input.customerId } }),
+			customer: { customer_id: input.customerId },
 			return_url: input.returnUrl,
 			metadata: { [UID_KEY]: input.uid },
 		});
@@ -139,7 +150,7 @@ export class DodoProvider implements BillingProvider {
 				event_name: this.settings.meterEvent,
 				// Dodo refuses an event older than an hour, so a retry is sent with its own time; its id keeps it one event.
 				timestamp: new Date().toISOString(),
-				metadata: { minutes: report.minutes, month: report.month, subscription_id: report.subscriptionId },
+				metadata: { minutes: report.minutes, period_start: new Date(report.periodStart).toISOString(), subscription_id: report.subscriptionId },
 			}],
 		});
 	}
@@ -164,22 +175,24 @@ export class DodoProvider implements BillingProvider {
 		if (type === "payment.failed") {
 			// A payment of no subscription is not ours to act on.
 			if (base.subscriptionId === null) return [];
-			return [{ ...base, kind: "payment_failed", period: null, periodEnd: null, cancelAtPeriodEnd: false }];
+			return [{ ...base, kind: "payment_failed", period: null, periodStart: null, periodEnd: null, cancelAtPeriodEnd: false }];
 		}
 		if (!type.startsWith("subscription.")) return [];
 		const period = this.period(data);
 		// A subscription to another product of the same Dodo account is not Pro.
 		if (period === null) return [];
-		const facts = { period, periodEnd: time(data.next_billing_date), cancelAtPeriodEnd: data.cancel_at_next_billing_date === true };
+		const facts = { period, periodStart: time(data.previous_billing_date) ?? time(data.created_at), periodEnd: time(data.next_billing_date), cancelAtPeriodEnd: data.cancel_at_next_billing_date === true };
 		const status = data.status;
 		let kind: BillingEvent["kind"] | null = null;
 		if (ACTIVE_TYPES.has(type)) kind = status === undefined || status === "active" ? "active" : null;
 		else if (FAILED_TYPES.has(type)) kind = "payment_failed";
+		else if (type === "subscription.paused") kind = "paused";
 		else if (ENDED_TYPES.has(type)) kind = "ended";
 		else if (CHANGED_TYPES.has(type)) {
 			kind = status === "active" ? "changed"
 				: status === "on_hold" || status === "past_due" ? "payment_failed"
-				: status === "cancelled" || status === "expired" || status === "failed" || status === "paused" ? "ended"
+				: status === "paused" ? "paused"
+				: status === "cancelled" || status === "expired" || status === "failed" ? "ended"
 				: null;
 		}
 		return kind === null ? [] : [{ ...base, kind, ...facts }];

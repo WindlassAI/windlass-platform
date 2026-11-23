@@ -32,7 +32,7 @@ A token works until you revoke it. Choose **Revoke token** to stop it at once. W
 
 ### Plans and billing
 
-Where the platform has plans, **Plan** at the top of Settings shows your plan, the hosted minutes you've used this calendar month, and **Upgrade to Pro** or **Manage billing**.
+Where the platform has plans, **Plan** at the top of Settings shows your plan, the hosted minutes you've used since your last reset, and **Upgrade to Pro** or **Manage billing**.
 
 A **hosted minute** is one minute of a standard sandbox on the platform (2 vCPU, 4 GiB). A small one counts half and a large one twice. Agents on your own machines are never counted, on any plan.
 
@@ -45,14 +45,15 @@ A **hosted minute** is one minute of a standard sandbox on the platform (2 vCPU,
 | Sandbox sizes | Small, standard | Small, standard, large |
 | Features over two repositories | No | Yes |
 | Items filed from GitHub | 20 a day | 100 a day |
-| Past the included minutes | Hosted agents stop until the month resets | $0.006 a minute, up to your spend cap |
+| Past the included minutes | Hosted agents stop until the month resets | Monthly Pro bills $0.006 a minute up to your spend cap. Yearly Pro stops at 1,800 minutes a month. |
 
-- **The month** is the calendar month in UTC. The minutes start again at 00:00 UTC on the 1st.
+- **Reset dates.** Free resets at 00:00 UTC on the first of the month. Pro starts when your subscription starts. Monthly Pro resets at the end of your billing period. Yearly Pro resets on each monthly anniversary, on the last day of a shorter month. Settings shows your next reset.
 - **Near the limit** the Agents page shows how many of your minutes you've used. **At the limit** hosted agents can't start, and a running turn stops when the time it holds is over, with its files kept. Agents on your own machines keep running.
-- **Spend cap.** On Pro, minutes past the included 1,800 are billed at $0.006 each, up to the cap. The cap starts at $20 a month. Set it lower under **Spend cap**, or to $0 for no overage. At the cap hosted agents stop until the month resets, so you're never billed past it.
+- **Spend cap.** On monthly Pro, minutes past the included 1,800 are billed at $0.006 each, up to the cap. The cap starts at $20 per billing period. Set it lower under **Spend cap**, or to $0 for no overage. At the cap hosted agents stop until the period resets, so you're never billed past it.
+- **Yearly Pro** has no overage or spend cap. Switch to monthly Pro for overage.
 - **Upgrade** opens the payment provider's checkout. Choose **Monthly** or **Yearly** on the **Plans** page first. Pro's limits apply as soon as the payment goes through.
 - **Manage billing** opens the provider's portal, where you change your card or cancel. A cancelled plan stays Pro until the end of the period you paid for.
-- **If a payment fails**, Pro's limits stay for a grace period (seven days unless the platform says otherwise), and Settings says until when. Then the account moves to Free's limits. Nothing is deleted. Kept sandboxes, machines and items stay, and only what can start next follows Free's limits.
+- **If a payment fails or the subscription is paused**, Pro's limits stay for a grace period (seven days unless the platform says otherwise), and Settings says until when. Then the account moves to Free's limits. Nothing is deleted. Kept sandboxes, machines and items stay, and only what can start next follows Free's limits. Use **Manage billing** to resume a paused subscription.
 
 Without plans, the platform's operator sets your limits, and **Usage** shows them.
 

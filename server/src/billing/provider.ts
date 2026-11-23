@@ -14,24 +14,26 @@
 import type { BillingPeriod } from "../contract.js";
 
 /**
- * What a webhook told us, in our words. `uid` is the account it is for, as the checkout put it in the subscription's
- * metadata; null when the provider's payload does not say, which the route logs and drops.
+ * The customer id identifies the account. The optional uid in checkout metadata is a fallback and must agree
+ * with the customer directory when both are present.
  *
  *   active          a subscription for Pro is paid and running: it started, renewed, or recovered from a failed payment
  *   changed         it changed (period, renewal date, cancel at period end) and is still running
- *   ended           it ended: cancelled, expired, failed for good, or paused. Free's limits from now
+ *   ended           it ended: cancelled, expired or failed for good. Free's limits from now
+ *   paused          resumable; same grace as a failed payment, new checkout blocked
  *   payment_failed  a payment failed: the grace period starts, if it has not
  */
 export interface BillingEvent {
 	/** The provider's id of this delivery: the same id again is the same event (webhook retries). */
 	id: string;
-	kind: "active" | "changed" | "ended" | "payment_failed";
+	kind: "active" | "changed" | "ended" | "paused" | "payment_failed";
 	/** When the provider says it happened, ms since the epoch: an older one arriving later changes nothing. */
 	occurredAt: number;
 	uid: string | null;
 	customerId: string | null;
 	subscriptionId: string | null;
 	period: BillingPeriod | null;
+	periodStart: number | null;
 	periodEnd: number | null;
 	cancelAtPeriodEnd: boolean;
 	/** The provider's own event type, for the log. */
@@ -42,7 +44,7 @@ export interface CheckoutInput {
 	uid: string;
 	period: BillingPeriod;
 	/** The account's customer at the provider when it has one, so that a second subscription is the same customer's. */
-	customerId: string | null;
+	customerId: string;
 	/** Where the provider sends the browser back to. */
 	returnUrl: string;
 }
@@ -52,14 +54,15 @@ export interface UsageReport {
 	eventId: string;
 	customerId: string;
 	subscriptionId: string;
-	/** "2026-11": the calendar month the minutes were used in. */
-	month: string;
+	/** UTC start of the subscription period the minutes belong to. */
+	periodStart: number;
 	/** Overage minutes to add: whole minutes, above zero. */
 	minutes: number;
 }
 
 export interface BillingProvider {
 	readonly name: string;
+	createCustomer(uid: string, email: string): Promise<string>;
 	createCheckout(input: CheckoutInput): Promise<{ id: string; url: string }>;
 	portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
 	/** Null for a signature that does not verify, or a delivery too old. An empty list for events billing does not use. */

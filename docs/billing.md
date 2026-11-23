@@ -16,7 +16,7 @@ and no page shows anything about billing. A self-hosted deployment needs none of
 | Sizes | small, standard | small, standard, large |
 | Features over two repositories | no | yes |
 | Items filed from GitHub a day | 20 | 100 |
-| Past the included minutes | hard stop | $0.006 a minute, up to the spend cap (default and most $20 a month) |
+| Past the included minutes | hard stop | Monthly Pro bills $0.006 a minute up to the spend cap (default and maximum $20 per period). Yearly Pro stops at 1,800 minutes a month. |
 
 The plans live in `server/src/billing/plans.ts`. Team and Enterprise are not built. They would be more `PlanId`s, with their
 limits pooled over an org's seats.
@@ -27,7 +27,7 @@ allowance (`WLP_DAILY_SANDBOX_SECONDS`), unless an operator set `dailySeconds` f
 explain and to price. The daily one stays exactly as it was wherever billing is off.
 
 **Which plan applies** is decided at each step from the subscription and the clock. An active subscription means Pro. So
-does a past-due one within the grace period (`WLP_BILLING_GRACE_DAYS`, 7). Otherwise the account is on Free. Falling
+does a paused or past-due one within the grace period (`WLP_BILLING_GRACE_DAYS`, 7). Otherwise the account is on Free. Falling
 back to Free deletes nothing: kept sandboxes, machines and items stay, and only what starts next is held to Free's limits.
 
 ## Hosted minutes
@@ -35,11 +35,11 @@ back to Free deletes nothing: kept sandboxes, machines and items stay, and only 
 - **The unit.** One hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB). Small counts 0.5 and large counts 2.
 - **What is counted.** The minutes are counted from the same ledger as sandbox time (`server/src/usage.ts`). Each entry is weighted by its session's size (`server/src/billing/meter.ts`, `sessionSize`).
 - **The size** is the session's `hostedSize`. A session from before sizes has none and counts as small, the size it ran at. On Free, large is not offered: a launch that asks for it is refused, and a saved default of large steps down to standard.
-- **Months** are UTC calendar months. A hold never reaches past midnight UTC, so the first hold of a month is the new month's.
+- **Resets.** Free resets at midnight UTC on the first of the calendar month. Monthly Pro starts at Dodo’s previous billing date and resets at its next billing date, including the time of day. Yearly Pro resets on each monthly anniversary within its paid term, on the last day in shorter months. The next month uses the original anniversary day again.
+- **Holds** count in the period when they open, including late settlements and corrections. The ledger entries stay as written. A separate index retains the opening instant. For entries settled before the index existed, the meter estimates the start from the settlement time and duration within the recorded UTC day.
 - **Machines are not metered.** Runs on users' own machines never enter the ledger.
 
-**The cap is enforced on the server.** The user actor will not give a hold past the month's limit. On Free that limit is
-the included minutes. On Pro it is the included minutes plus what the spend cap pays for. A running turn is stopped
+**The cap is enforced on the server.** The user actor will not give a hold past the period’s limit. Free and yearly Pro stop at their included minutes. On monthly Pro the limit is the included minutes plus what the spend cap pays for. A running turn is stopped
 when the hold it has is over, with its files kept, the same as at the daily allowance.
 
 ## Payment provider
@@ -62,7 +62,8 @@ Do this in **test mode** first. The API key, products and webhook are separate i
    - $15.00 USD, billed every 1 month.
    - Under **Usage Based Billing** → **Associated Meters**, add the meter with **Price Per Unit** $0.006 and **Free Threshold** 0. The platform reports only minutes past the included ones, so the threshold must stay 0.
    - Its id (`pdt_…`) is `WLP_DODO_PRODUCT_PRO_MONTHLY`.
-4. **Pro, yearly.** The same product at $144.00 USD, billed every 1 year, with the same meter at $0.006 and threshold 0. Its id is `WLP_DODO_PRODUCT_PRO_YEARLY`.
+4. **Pro, yearly.** A subscription at $144.00 USD, billed every year. Leave its associated meters empty. Its id is `WLP_DODO_PRODUCT_PRO_YEARLY`.
+   - Turn off public payment links for both Pro products. Start subscriptions through the platform checkout so each customer is linked to an account.
 5. **Customer portal.** Settings → Customer Portal: allow cancelling and updating the payment method. Each portal session sets its own return address.
 6. **Webhook.** Developer → Webhooks → Add endpoint:
    - URL `https://<your public address>/billing/webhook`.
@@ -95,7 +96,7 @@ WLP_DODO_PRODUCT_PRO_YEARLY=pdt_...
 
 - **Webhooks.**
   - **Verified first.** Signatures are checked by the Standard Webhooks spec: `webhook-id`, `webhook-timestamp` and `webhook-signature`, HMAC-SHA256, five minutes of tolerance. A delivery that fails gets 401.
-  - **Routed by account.** The account comes from the `wlp_uid` metadata the checkout sets. A delivery naming no account of this deployment is logged (`billing.unmatched`) and answered 200.
+  - **Routed by account.** Checkout creates a customer with the signed-in account email (or reuses its saved customer id), binds the id to the uid in the durable service directory, and sends it to Dodo. Webhooks look up this customer id first. Older checkouts can use `wlp_uid` metadata as a fallback. When both identify an account, they must agree. A disagreement is logged by ids and dropped. Existing customer ids enter the directory when their account next opens or a matching webhook arrives. A delivery naming no account of this deployment is logged (`billing.unmatched`) and answered 200.
   - **Applied once.** Each delivery is applied once: its id is written in the same transaction as the change. An older event that arrives late changes nothing.
   - **Mismatches are logged and ignored.** This covers another customer's event, and a second subscription while one runs. Refund such a second subscription by hand.
   - **Retries.** 5xx means "send it again"; Dodo retries with backoff for about a day and a half.
@@ -106,13 +107,14 @@ WLP_DODO_PRODUCT_PRO_YEARLY=pdt_...
   | `subscription.active`, `.renewed`, `.unpaused` | Pro, active |
   | `subscription.updated`, `.plan_changed` | changed, mapped by the status it carries |
   | `subscription.on_hold`, `.past_due`, `payment.failed` | payment failed; the grace period starts |
-  | `subscription.cancelled`, `.expired`, `.failed`, `.paused` | ended; Free from now |
+  | `subscription.paused` | same grace as a failed payment, then Free limits. Manage billing can resume the subscription. Checkout stays blocked until the subscription ends. |
+  | `subscription.cancelled`, `.expired`, `.failed` | ended; Free from now |
 
   Subscriptions to other products of the same Dodo account are ignored.
 - **Overage.**
-  - **Only while a subscription runs** (active, or in grace) with a customer and a subscription id. Never on Free.
+  - **Only while a monthly Pro subscription runs** (active, or in grace) with a customer and a subscription id. Free and yearly Pro have no overage.
   - **Whole minutes,** rounded down, and never more than the cap pays for.
-  - **Recorded before it is sent.** The minutes not yet reported are written down as pending under one `event_id`, then sent to `POST /events/ingest`. They are sent again under the same id until Dodo takes them; Dodo ignores an `event_id` it has already seen. Last month's remainder is reported in the first days of the next.
+  - **Recorded before it is sent.** The minutes not yet reported are written down as pending under one `event_id`, then sent to `POST /events/ingest`. They are sent again under the same id until Dodo takes them; Dodo ignores an `event_id` it has already seen. The event id includes the subscription id and period start. A late settlement for the preceding period uses that period’s id and allowance. When upgrading from calendar-month reporting, the meter credits all reported or pending minutes in overlapping legacy months before issuing a new period charge. This can favor the account when the old total straddles a reset.
   - **The log line** is `billing.usage_reported`.
 - **Logs** carry ids only: account, customer, subscription, delivery and event. They never carry names, emails, cards or addresses, and never the provider's own error text.
 

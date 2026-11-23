@@ -55,11 +55,14 @@ export function overageCents(plan: PlanInfo, minutes: number): number {
 export interface BillingState {
 	/** The plan the subscription is for; "free" without one. */
 	plan: PlanId;
-	status: "none" | "active" | "past_due" | "ended";
+	status: "none" | "active" | "past_due" | "paused" | "ended";
 	period: BillingPeriod | null;
 	customerId: string | null;
 	subscriptionId: string | null;
+	periodStart: number | null;
 	periodEnd: number | null;
+	/** The last completed monthly Pro period, for late settlements after renewal. */
+	previousPeriod: { start: number; end: number } | null;
 	cancelAtPeriodEnd: boolean;
 	/** Set at the first failed payment, and not moved by the ones after it: when Pro's limits stop. */
 	graceUntil: number | null;
@@ -70,14 +73,14 @@ export interface BillingState {
 
 export const NO_SUBSCRIPTION: BillingState = {
 	plan: "free", status: "none", period: null, customerId: null, subscriptionId: null,
-	periodEnd: null, cancelAtPeriodEnd: false, graceUntil: null, capCents: DEFAULT_CAP_CENTS, eventAt: 0,
+	periodStart: null, periodEnd: null, previousPeriod: null, cancelAtPeriodEnd: false, graceUntil: null, capCents: DEFAULT_CAP_CENTS, eventAt: 0,
 };
 
 /** The plan whose limits apply at `now`. */
 export function effectivePlan(state: BillingState, now: number): PlanId {
 	if (state.plan === "free") return "free";
 	if (state.status === "active") return state.plan;
-	if (state.status === "past_due" && state.graceUntil !== null && now < state.graceUntil) return state.plan;
+	if ((state.status === "past_due" || state.status === "paused") && state.graceUntil !== null && now < state.graceUntil) return state.plan;
 	return "free";
 }
 
@@ -115,6 +118,6 @@ export function planLimits(state: BillingState, now: number): PlanLimits {
 		maxKept: plan.keptSandboxes,
 		machines: plan.machines,
 		includedSeconds: plan.hostedMinutes * 60,
-		monthlySeconds: (plan.hostedMinutes + capMinutes(plan, state.capCents)) * 60,
+		monthlySeconds: (plan.hostedMinutes + (state.period === "month" ? capMinutes(plan, state.capCents) : 0)) * 60,
 	};
 }

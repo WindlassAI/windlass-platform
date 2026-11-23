@@ -3,15 +3,13 @@
  *
  * One hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB). A small sandbox counts half, a large one
  * twice. They are counted from the ledger of sandbox time (usage.ts), whose entries say which session's sandbox ran how
- * many seconds on which UTC day: a month's hosted seconds are the sum of its days' entries, each times the weight when its hold
- * opened. Runs on the user's own machines never reach that ledger, so they are never metered.
+ * many seconds. Each hold counts at the weight it opened with. Runs on the user's own machines never reach that ledger, so they are never metered.
  *
- * Months are UTC calendar months. A hold never reaches past midnight UTC (usage.ts), so none reaches past the end of a
- * month either, and the first hold of a month is the new month's.
+ * Free follows UTC calendar months. Pro follows Dodo's billing dates, with monthly allowances within a yearly term.
  */
 
 import type { SessionSummary } from "../contract.js";
-import type { SandboxSize } from "./plans.js";
+import type { BillingState, SandboxSize } from "./plans.js";
 
 const DAY_MS = 86_400_000;
 const dayOf = (ms: number) => Math.floor(ms / DAY_MS);
@@ -39,20 +37,38 @@ export function monthOf(ms: number): string {
 	return monthOfDay(dayOf(ms));
 }
 
-/** The first UTC day of the month `ms` is in, as a day number (usage.ts `dayOf`). */
-export function monthStartDay(ms: number): number {
-	const date = new Date(ms);
-	return dayOf(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+export interface MeterPeriod { start: number; end: number }
+export type SubscriptionDates = Pick<BillingState, "periodStart" | "periodEnd" | "period">;
+
+/** UTC anniversary, clamped to the last day of a shorter month. Always offset from the original anchor. */
+export function shiftMonths(anchor: number, months: number): number {
+	const date = new Date(anchor);
+	const day = date.getUTCDate();
+	date.setUTCDate(1);
+	date.setUTCMonth(date.getUTCMonth() + months);
+	const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+	date.setUTCDate(Math.min(day, last));
+	return date.getTime();
 }
 
-/** Midnight UTC on the first of the next month. */
-export function nextMonthStart(ms: number): number {
-	const date = new Date(ms);
-	return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+function anniversaryPeriod(anchor: number, now: number): MeterPeriod {
+	const first = new Date(anchor), date = new Date(now);
+	let months = (date.getUTCFullYear() - first.getUTCFullYear()) * 12 + date.getUTCMonth() - first.getUTCMonth();
+	if (shiftMonths(anchor, months) > now) months--;
+	return { start: shiftMonths(anchor, months), end: shiftMonths(anchor, months + 1) };
 }
 
-/** The month before "2026-11": "2026-10". */
-export function previousMonth(month: string): string {
-	const [year, number] = month.split("-").map(Number) as [number, number];
-	return new Date(Date.UTC(year, number - 2, 1)).toISOString().slice(0, 7);
+export function meterPeriod(dates: SubscriptionDates | null, now: number): MeterPeriod {
+	if (!dates) {
+		const date = new Date(now);
+		const start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+		return { start, end: shiftMonths(start, 1) };
+	}
+	const end = dates.periodEnd;
+	// Older account rows stored only the renewal date. The next subscription webhook supplies the exact start.
+	const start = dates.periodStart ?? (end === null ? now : shiftMonths(end, dates.period === "year" ? -12 : -1));
+	if (end !== null && now >= end) return anniversaryPeriod(end, now);
+	if (dates.period === "month" && end !== null) return { start, end };
+	const window = anniversaryPeriod(start, Math.max(start, now));
+	return { start: window.start, end: Math.min(end ?? window.end, window.end) };
 }

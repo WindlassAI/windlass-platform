@@ -1277,7 +1277,7 @@ export interface UsageNumbers {
 export interface HostedMonth {
 	/** "2026-11". */
 	month: string;
-	/** Midnight UTC on the first of the next month, ms since the epoch: when the month's minutes start again. */
+	/** End of the hosted allowance period, ms since the epoch. */
 	resetsAt: number;
 	/** What the plan includes. */
 	includedSeconds: number;
@@ -1289,6 +1289,8 @@ export interface HostedMonth {
 	heldSeconds: number;
 	/** What is left of `limitSeconds`, never below 0. */
 	leftSeconds: number;
+	/** Subscription cadence for Pro. */
+	period?: BillingPeriod;
 	/** The plan these are of, where the deployment has billing; absent where the operator set the allowance. */
 	plan?: PlanId;
 }
@@ -1321,7 +1323,7 @@ export type BillingView = { enabled: false } | {
 	/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
 	plan: PlanId;
 	/** The subscription's state: "none" without one; "past_due" after a failed payment, until `graceUntil`; "ended" after it ended. */
-	status: "none" | "active" | "past_due" | "ended";
+	status: "none" | "active" | "past_due" | "paused" | "ended";
 	period: BillingPeriod | null;
 	/** When the subscription renews, or ends where `cancelAtPeriodEnd`. */
 	periodEnd: number | null;

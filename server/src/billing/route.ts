@@ -9,10 +9,10 @@
 
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "../actors/internal.js";
-import { describeError } from "../auth.js";
 import { ownEngineEndpoint } from "../config.js";
 import type { Registry } from "../registry.js";
 import { issueServiceToken } from "../tokens.js";
+import { customerDirectory } from "./customer-index.js";
 import { billing } from "./config.js";
 
 export const BILLING_WEBHOOK_PATH = "/billing/webhook";
@@ -20,6 +20,13 @@ const MAX_BODY_BYTES = 256 * 1024;
 const UID = /^u_[A-Za-z0-9_-]{1,62}$/;
 
 const answer = (status: number, text: string) => new Response(`${text}\n`, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+
+/** Resolve verified deliveries using the durable customer owner, with metadata for older checkouts. */
+export function webhookOwner(owner: string | null, metadata: string | null): string | null {
+	if (owner !== null && metadata !== null && owner !== metadata) return null;
+	const uid = owner ?? metadata;
+	return uid !== null && UID.test(uid) ? uid : null;
+}
 
 export async function billingWebhookRoute(request: Request): Promise<Response> {
 	const settings = billing();
@@ -38,24 +45,31 @@ export async function billingWebhookRoute(request: Request): Promise<Response> {
 	try {
 		for (const event of events) {
 			const ids = `id=${event.id} type=${event.type} customer=${event.customerId ?? "-"} subscription=${event.subscriptionId ?? "-"}`;
-			if (event.uid === null || !UID.test(event.uid)) {
+			const params = { token: issueServiceToken("billing") };
+			const owner = event.customerId === null ? null : await customerDirectory(client).lookup(event.customerId);
+			const uid = webhookOwner(owner, event.uid);
+			if (uid === null) {
+				if (owner && event.uid !== null) {
+					console.warn(`[wlp] billing.customer_mismatch ${ids} owner=${owner} metadata=${UID.test(event.uid) ? event.uid : "-"}`);
+					continue;
+				}
 				console.warn(`[wlp] billing.unmatched ${ids}: the event names no account of this deployment`);
 				continue;
 			}
 			try {
-				const outcome = await client.user.get([event.uid], { params: { token: issueServiceToken("billing") } }).internalBillingEvent(event);
-				console.log(`[wlp] billing.event uid=${event.uid} ${ids} kind=${event.kind} outcome=${outcome}`);
+				const outcome = await client.user.get([uid], { params }).internalBillingEvent(event);
+				console.log(`[wlp] billing.event uid=${uid} ${ids} kind=${event.kind} outcome=${outcome}`);
 			} catch (error) {
 				if (isActorGone(error)) {
-					console.warn(`[wlp] billing.unmatched uid=${event.uid} ${ids}: no such account`);
+					console.warn(`[wlp] billing.unmatched uid=${uid} ${ids}: no such account`);
 					continue;
 				}
 				throw error;
 			}
 		}
 		return answer(200, "OK");
-	} catch (error) {
-		console.error(`[wlp] billing.webhook_failed: ${describeError(error)}`);
+	} catch {
+		console.error("[wlp] billing.webhook_failed");
 		return answer(500, "Not applied; send it again.");
 	} finally {
 		await client.dispose().catch(() => undefined);

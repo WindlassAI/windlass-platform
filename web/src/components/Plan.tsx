@@ -7,7 +7,7 @@
 import type { BillingPeriod, BillingView, HostedMonth, PlanInfo, UsageNumbers } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
 import { count } from "../lib/format";
-import { dollars, minutes, monthName, monthReset, monthSentence, monthState, withOverage } from "../lib/hosted";
+import { dollars, minutes, monthName, monthReset, monthSentence, monthState, periodWords, withOverage } from "../lib/hosted";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { CheckIcon, InfoIcon, WarnIcon } from "./Icons";
@@ -55,7 +55,7 @@ function MonthMeter({ month }: { month: HostedMonth }) {
 	const scale = Math.max(month.limitSeconds, used, 1);
 	const share = (seconds: number) => `${Math.min(100, (seconds / scale) * 100)}%`;
 	return (
-		<div className="usage-meter billing-meter" role="meter" aria-label="Hosted minutes used this month" aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(used, month.limitSeconds)} aria-valuetext={`${minutes(used)} of ${minutes(month.limitSeconds)} hosted minutes`}>
+		<div className="usage-meter billing-meter" role="meter" aria-label={`Hosted minutes used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(used, month.limitSeconds)} aria-valuetext={`${minutes(used)} of ${minutes(month.limitSeconds)} hosted minutes`}>
 			{month.usedSeconds > 0 ? <span className="usage-meter-used" style={{ width: share(month.usedSeconds) }} /> : null}
 			{month.heldSeconds > 0 ? <span className="usage-meter-held" style={{ width: share(month.heldSeconds) }} /> : null}
 			{withOverage(month) ? <span className="billing-meter-mark" style={{ left: share(month.includedSeconds) }} aria-hidden="true" /> : null}
@@ -136,13 +136,15 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 	const plan = view.plans.find((one) => one.id === view.plan)!;
 	const pro = view.plans.find((one) => one.id === "pro") ?? null;
 	const month = view.month;
-	const date = (at: number) => new Date(at).toLocaleDateString("en-US", { day: "numeric", month: "long" });
+	const date = (at: number) => new Date(at).toLocaleDateString("en-US", { day: "numeric", month: "long", timeZone: "UTC" });
 	return (
 		<>
 			<p className="usage-lede">
-				Hosted minutes count the time your agents' sandboxes run on the platform, by the calendar month in UTC: a minute of a standard sandbox is one, a small one counts half and a large one twice. Agents on your own machines are never counted.
+				Hosted minutes count the time your agents' sandboxes run on the platform, {view.plan === "pro" ? "from your subscription’s monthly reset date" : "by the calendar month in UTC"}. A minute of a standard sandbox is one, a small one counts half and a large one twice. Agents on your own machines are never counted.
 			</p>
-			{view.status === "past_due" && view.graceUntil !== null ? (
+			{view.status === "paused" ? (
+				<p className="callout callout-warn" role="status">Your subscription is paused. {view.plan === "pro" && view.graceUntil ? `Pro’s limits stay until ${date(view.graceUntil)}. ` : ""}Open Manage billing to resume it.</p>
+			) : view.status === "past_due" && view.graceUntil !== null ? (
 				<p className="callout callout-warn billing-callout" role="status">
 					<WarnIcon />
 					<span>
@@ -174,15 +176,15 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 					{month ? (
 						<div>
 							<dt>Resets</dt>
-							<dd>{monthReset(month)}, 00:00 UTC</dd>
+							<dd>{monthReset(month)}, {new Date(month.resetsAt).toISOString().slice(11, 16)} UTC</dd>
 						</div>
 					) : null}
-					{plan.overageCentsPer1000 !== null ? (
+					{view.period === "month" && plan.overageCentsPer1000 !== null ? (
 						<>
 							<div>
 								<dt>Overage</dt>
 								<dd>
-									{count(view.overageMinutes)} {view.overageMinutes === 1 ? "minute" : "minutes"} this month, {dollars(Math.ceil((view.overageMinutes * plan.overageCentsPer1000) / 1000))}
+									{count(view.overageMinutes)} {view.overageMinutes === 1 ? "minute" : "minutes"} {month ? periodWords(month) : "this billing period"}, {dollars(Math.ceil((view.overageMinutes * plan.overageCentsPer1000) / 1000))}
 									<span className="billing-gloss"> · ${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute past the included ones</span>
 								</dd>
 							</div>
@@ -196,13 +198,13 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 					) : (
 						<div>
 							<dt>At the limit</dt>
-							<dd>Hosted agents stop until the month resets. Agents on your own machines keep running.</dd>
+							<dd>{view.plan === "pro" && view.period === "year" ? "Yearly Pro has no overage, so no spend cap applies. Switch to monthly Pro for overage." : "Hosted agents stop until the month resets."} Agents on your own machines keep running.</dd>
 						</div>
 					)}
 				</dl>
 			</div>
 			<div className="billing-actions">
-				{view.plan === "free" ? (
+				{view.plan === "free" && view.status !== "paused" && view.status !== "past_due" ? (
 					<>
 						<a className="button button-primary" {...linkProps({ name: "plans" })}>
 							Upgrade to Pro
@@ -274,7 +276,7 @@ function CapForm({ view, plan, onSaved }: { view: Enabled; plan: PlanInfo; onSav
 	);
 }
 
-const FEATURES: Array<{ label: string; of(plan: PlanInfo): string | boolean }> = [
+const FEATURES: Array<{ label: string; of(plan: PlanInfo, period: BillingPeriod): string | boolean }> = [
 	{ label: "Your own machines", of: (plan) => `Unlimited runs, up to ${plan.machines} machines` },
 	{ label: "Hosted minutes", of: (plan) => `${count(plan.hostedMinutes)} a month` },
 	{ label: "Hosted at once", of: (plan) => String(plan.hostedRunning) },
@@ -282,7 +284,7 @@ const FEATURES: Array<{ label: string; of(plan: PlanInfo): string | boolean }> =
 	{ label: "The Factory", of: () => "All of it: plan first, checks, CI fixes, review" },
 	{ label: "Features over two repositories", of: (plan) => plan.crossRepo },
 	{ label: "Items filed from GitHub", of: (plan) => `${count(plan.githubItemsPerDay)} a day` },
-	{ label: "Past the included minutes", of: (plan) => (plan.overageCentsPer1000 === null ? "Hosted agents stop until the month resets" : `$${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute, up to a spend cap you set (default $20)`) },
+	{ label: "Past the included minutes", of: (plan, period) => (plan.overageCentsPer1000 === null ? "Hosted agents stop until the month resets" : period === "year" ? "No overage: hosted agents stop at 1,800 minutes a month" : `$${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute, up to a spend cap you set (default $20)`) },
 ];
 
 /** Free and Pro side by side, with monthly or yearly, and Upgrade. */
@@ -322,7 +324,7 @@ export function PlanCompare({ view }: { view: Enabled }) {
 							</header>
 							<ul className="billing-offer-list">
 								{FEATURES.map((feature) => {
-									const value = feature.of(plan);
+									const value = feature.of(plan, period);
 									if (value === false) return (
 										<li key={feature.label} className="billing-offer-no">
 											<span className="billing-offer-label">{feature.label}</span>
@@ -339,7 +341,7 @@ export function PlanCompare({ view }: { view: Enabled }) {
 							</ul>
 							<div className="billing-offer-action">
 								{plan.id === "pro" ? (
-									current ? (
+									current || view.status === "paused" || view.status === "past_due" ? (
 										<Button variant="secondary" disabled={busy !== null || !view.portal} onClick={() => void go("portal")}>
 											{busy === "portal" ? "Opening…" : "Manage billing"}
 										</Button>
@@ -396,7 +398,7 @@ export function HostedNotice({ numbers, pro }: { numbers: UsageNumbers | null; p
 						</a>
 					) : month.plan === "pro" ? (
 						<a className="link" {...linkProps({ name: "settings" })}>
-							Spend cap in Settings
+							{month.period === "year" ? "Manage billing in Settings" : "Spend cap in Settings"}
 						</a>
 					) : null}
 				</p>

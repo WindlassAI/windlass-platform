@@ -134,7 +134,6 @@ import {
 	type SavedRepository,
 	type SecretScope,
 	type SessionSummary,
-	USAGE_HISTORY_DAYS,
 	type UsageNumbers,
 	type UsageView,
 	type UserProfile,
@@ -176,9 +175,10 @@ import { readE2bSettings } from "../sandbox/e2b/config.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildResult } from "./internal.js";
-import { AccountCheckout, CheckoutBlocked, applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
+import { customerDirectory } from "../billing/customer-index.js";
+import { AccountCheckout, CheckoutBlocked, CheckoutEmailRequired, applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
 import { billing } from "../billing/config.js";
-import { monthStartDay, nextMonthStart, sessionWeight } from "../billing/meter.js";
+import { sessionWeight } from "../billing/meter.js";
 import { effectivePlan, hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 import type { BillingEvent } from "../billing/provider.js";
 import type { BillingPeriod, BillingView } from "../contract.js";
@@ -809,7 +809,7 @@ interface UsageCtx extends UserCtx {
 	keepAwake?<T>(promise: Promise<T>): Promise<T>;
 }
 
-type UsageEntryRow = { day: number; session: string; hold: string; kind: string; seconds: number; weight: number | null; at: number; note: string | null };
+type UsageEntryRow = { started_at: number | null; day: number; session: string; hold: string; kind: string; seconds: number; weight: number | null; at: number; note: string | null };
 type UsageHoldRow = { id: string; session: string; day: number; seconds: number; weight: number | null; started_at: number; expires_at: number };
 
 /** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
@@ -827,15 +827,16 @@ async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyM
 	const today = dayOf(Date.now());
 	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
 	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
+	await db.execute("DELETE FROM usage_start WHERE day < ?", today - USAGE_KEPT_DAYS);
 	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
 	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
-	// The days the usage page shows, and last month and this one whole, for the monthly hosted minutes (billing/meter.ts).
-	const since = Math.min(today - USAGE_HISTORY_DAYS, monthStartDay(nextMonthStart(Date.now()) - 40 * DAY_MS) - 1);
-	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, weight, at, note FROM usage_entry WHERE day > ? ORDER BY id", since);
+	// Reload the retained ledger, including both sides of a subscription renewal.
+	const since = today - USAGE_KEPT_DAYS - 1;
+	const entries = await db.execute<UsageEntryRow>("SELECT e.*, s.started_at FROM usage_entry e LEFT JOIN usage_start s USING (hold) WHERE e.day > ? ORDER BY e.id", since);
 	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, weight, started_at, expires_at FROM usage_hold");
 	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
 	const book = new UsageBook(limits, {
-		entries: entries.map((row) => ({ day: row.day, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, weight: row.weight, at: row.at, note: row.note })),
+		entries: entries.map((row) => ({ day: row.day, startedAt: row.started_at ?? undefined, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, weight: row.weight, at: row.at, note: row.note })),
 		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, weight: row.weight, startedAt: row.started_at, expiresAt: row.expires_at })),
 		kept,
 	});
@@ -887,6 +888,7 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 	if (isEmptyChange(change)) return done;
 	try {
 		for (const entry of change.entries) {
+			if (entry.startedAt !== undefined) await c.db.execute("INSERT OR IGNORE INTO usage_start (hold, day, started_at) VALUES (?, ?, ?)", entry.hold, entry.day, entry.startedAt);
 			await c.db.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, weight, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.weight!, entry.at, entry.note);
 		}
 		for (const id of change.closed) await c.db.execute("DELETE FROM usage_hold WHERE id = ?", id);
@@ -918,18 +920,18 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 function queueOverageReport(c: UsageCtx): void {
 	const settings = billing();
 	const state = c.vars.items.limits.billing;
-	if (!settings || !state || effectivePlan(state, Date.now()) === "free") return;
+	if (!settings || !state || state.period !== "month" || accountLimits(c.vars.items.limits).usage.includedSeconds === null || effectivePlan(state, Date.now()) === "free") return;
 	c.vars.overageReport = c.vars.overageReport.then(async () => {
 		try {
 			const now = Date.now();
 			const sent = await reportOverage(c.db, settings.provider, {
 				uid: c.key[0]!, state: c.vars.items.limits.billing ?? state, now,
-				usedSeconds: (month) => c.vars.usage.usedInMonth(month),
+				usedSeconds: period => c.vars.usage.usedInPeriod(period),
 				includedSeconds: accountLimits(c.vars.items.limits).usage.includedSeconds ?? 0,
 			});
-			for (const report of sent) console.log(`[wlp] billing.usage_reported uid=${c.key[0]} month=${report.month} minutes=${report.minutes} event=${report.eventId}`);
-		} catch (error) {
-			console.warn(`[wlp] billing.usage_report_failed uid=${c.key[0]}: ${error instanceof Error ? error.message : "unknown error"}; it is sent again with the next report`);
+			for (const report of sent) console.log(`[wlp] billing.usage_reported uid=${c.key[0]} period=${report.periodStart} event=${report.eventId}`);
+		} catch {
+			console.warn(`[wlp] billing.usage_report_failed uid=${c.key[0]}`);
 		}
 	});
 	void c.keepAwake?.(c.vars.overageReport);
@@ -1621,6 +1623,8 @@ export const user = actor({
 					note TEXT
 				)
 			`);
+			// Preserve the opening instant for period attribution without changing the usage ledger.
+			await db.execute("CREATE TABLE IF NOT EXISTS usage_start (hold TEXT PRIMARY KEY, day INTEGER NOT NULL, started_at INTEGER NOT NULL)");
 			await db.execute("CREATE INDEX IF NOT EXISTS usage_entry_day ON usage_entry (day)");
 			// The holds of sandboxes that run now, one per session, each counted in full at `expires_at` unless settled before.
 			await db.execute(`
@@ -1671,6 +1675,12 @@ export const user = actor({
 		const items = await loadItems(c.db);
 		// Where the deployment has billing, the account's subscription sets its plan's limits (billing/plans.ts).
 		items.limits.billing = billing() ? await readBilling(c.db) : null;
+		// Backfill customers from before checkout populated the directory.
+		if (items.limits.billing?.customerId) {
+			const id = items.limits.billing.customerId;
+			const owner = await customerDirectory(c.client()).claim(id, c.key[0]!);
+			if (owner !== c.key[0]) console.warn(`[wlp] billing.customer_mismatch customer=${id} uid=${c.key[0]} owner=${owner}`);
+		}
 		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), checkout: new AccountCheckout(), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
@@ -1973,8 +1983,15 @@ export const user = actor({
 			const origin = billingOrigin(input?.origin);
 			if (profile.demo) throw new UserError("The demo account cannot subscribe.", { code: "billing_off" });
 			try {
-				return await c.vars.checkout.open(c.db, settings.provider, { uid: c.key[0]!, period: input.period, returnUrl: `${origin}/settings?billing=checkout#plan` }, Date.now());
+				const checkout = await c.vars.checkout.open(c.db, settings.provider, {
+					uid: profile.uid, email: profile.email, period: input.period,
+					returnUrl: `${origin}/settings?billing=checkout#plan`,
+					claimCustomer: async id => (await customerDirectory(c.client()).claim(id, profile.uid)) === profile.uid,
+				}, Date.now());
+				c.vars.items.limits.billing = await readBilling(c.db);
+				return checkout;
 			} catch (error) {
+				if (error instanceof CheckoutEmailRequired) throw new UserError(error.message, { code: "bad_input" });
 				if (error instanceof CheckoutBlocked) throw new UserError(error.message, { code: "already_subscribed" });
 				console.warn(`[wlp] billing.checkout_failed uid=${c.key[0]}`);
 				throw new UserError("The checkout could not be opened. Try again in a moment.", { code: "billing_unavailable" });
@@ -1985,12 +2002,12 @@ export const user = actor({
 			requireUser(c);
 			const settings = billingOn();
 			const origin = billingOrigin(input?.origin);
-			const customerId = c.vars.items.limits.billing?.customerId ?? null;
+			const { customerId } = await readBilling(c.db);
 			if (customerId === null) throw new UserError("There is no subscription to manage yet.", { code: "no_customer" });
 			try {
 				return await settings.provider.portalLink({ customerId, returnUrl: `${origin}/settings#plan` });
-			} catch (error) {
-				console.warn(`[wlp] billing.portal_failed uid=${c.key[0]} customer=${customerId}: ${error instanceof Error ? error.message : "unknown error"}`);
+			} catch {
+				console.warn(`[wlp] billing.portal_failed uid=${c.key[0]} customer=${customerId}`);
 				throw new UserError("The billing portal could not be opened. Try again in a moment.", { code: "billing_unavailable" });
 			}
 		},
@@ -2004,7 +2021,7 @@ export const user = actor({
 				if (error instanceof RangeError) throw new UserError(error.message, { code: "bad_input" });
 				throw error;
 			}
-			console.log(`[wlp] billing.cap uid=${c.key[0]} cents=${c.vars.items.limits.billing.capCents}`);
+			console.log(`[wlp] billing.cap uid=${c.key[0]}`);
 			billingChanged(c);
 			return billingAnswer(c);
 		},
@@ -2013,7 +2030,8 @@ export const user = actor({
 		internalBillingEvent: async (c, event: BillingEvent): Promise<string> => {
 			requireServiceFor(c, "billing");
 			const settings = billingOn();
-			const done = await applyBillingEvent(c.db, event, Date.now(), settings.graceMs);
+			const done = await applyBillingEvent(c.db, event, Date.now(), settings.graceMs, async id =>
+				(await customerDirectory(c.client()).claim(id, c.key[0]!)) === c.key[0]);
 			if (done.outcome === "applied") {
 				c.vars.items.limits.billing = done.state;
 				billingChanged(c);

@@ -1,3 +1,4 @@
+import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
 /**
  * The mock `PlatformClient`: the whole backend in memory, with no network.
@@ -1352,7 +1353,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	let usageState: MockUsageState = options.usage ?? "plenty";
 	const billingState: MockBillingState = options.billing ?? "off";
 	/** The account's subscription in the mock: what Settings and the upgrade page show, and what Upgrade changes. */
+	const realNow = options.now ?? (() => Date.now());
 	const billing = {
+		period: "month" as BillingPeriod,
+		start: realNow(),
 		plan: (billingState.startsWith("pro") ? "pro" : "free") as PlanId,
 		status: (billingState === "pro-past-due" ? "past_due" : billingState.startsWith("pro") ? "active" : "none") as "none" | "active" | "past_due" | "ended",
 		capCents: 2000,
@@ -1364,11 +1368,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const plan = billingPlan();
 		const date = new Date(at);
 		const included = plan.hostedMinutes * 60;
-		const extra = plan.overageCentsPer1000 === null ? 0 : Math.floor((billing.capCents * 1000) / plan.overageCentsPer1000) * 60;
+		const extra = billing.period === "year" || plan.overageCentsPer1000 === null ? 0 : Math.floor((billing.capCents * 1000) / plan.overageCentsPer1000) * 60;
 		const used = billing.usedMinutes * 60;
 		return {
 			month: date.toISOString().slice(0, 7),
-			resetsAt: Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1),
+			resetsAt: plan.id === "pro" ? shiftMonths(billing.start, 1) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1),
+			...(plan.id === "pro" && { period: billing.period }),
 			includedSeconds: included, limitSeconds: included + extra, usedSeconds: used, heldSeconds: 0,
 			leftSeconds: Math.max(0, included + extra - used), plan: plan.id,
 		};
@@ -1377,11 +1382,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (billingState === "off") return { enabled: false };
 		const month = hostedMonth(at);
 		const plan = billingPlan();
-		const overage = plan.overageCentsPer1000 === null ? 0 : Math.min(Math.floor(Math.max(0, month.usedSeconds - month.includedSeconds) / 60), Math.floor((billing.capCents * 1000) / plan.overageCentsPer1000));
+		const overage = billing.period === "year" || plan.overageCentsPer1000 === null ? 0 : Math.min(Math.floor(Math.max(0, month.usedSeconds - month.includedSeconds) / 60), Math.floor((billing.capCents * 1000) / plan.overageCentsPer1000));
 		return {
 			enabled: true, plan: billing.plan, status: billing.status,
-			period: billing.plan === "pro" ? "month" : null,
-			periodEnd: billing.plan === "pro" ? at + 12 * 86_400_000 : null,
+			period: billing.plan === "pro" ? billing.period : null,
+			periodEnd: billing.plan === "pro" ? shiftMonths(billing.start, billing.period === "year" ? 12 : 1) : null,
 			cancelAtPeriodEnd: false,
 			graceUntil: billing.status === "past_due" ? at + 5 * 86_400_000 : null,
 			capCents: billing.capCents, maxCapCents: 2000,
@@ -1391,7 +1396,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		};
 	}
 	const profiles = options.sandbox === "e2b" ? MOCK_E2B_PROFILES : MOCK_PROFILES;
-	const realNow = options.now ?? (() => Date.now());
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
 	/** Set while history is being written in the past (the seeded sessions). */
 	let clock: number | null = null;
@@ -3998,6 +4002,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// The mock has no checkout page: it plays one that was paid at once and comes back to Settings.
 				billing.plan = "pro";
 				billing.status = "active";
+				billing.period = input.period;
+				billing.start = realNow();
+				billing.usedMinutes = 0;
 				return { url: `${input.origin}/settings?mock=1&billing=pro&checkout=${input.period}#plan` };
 			},
 			async billingPortal(input: { origin: string }): Promise<{ url: string }> {
@@ -4007,6 +4014,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async setOverageCap(input: { cents: number }): Promise<BillingView> {
 				await latency(300);
+				if (billing.period === "year") throw new PlatformError("user", "Yearly Pro has no overage spend cap.", { reason: "bad_input" });
 				if (!Number.isSafeInteger(input.cents) || input.cents < 0 || input.cents > 2000) throw new PlatformError("user", "Set the cap in whole cents from 0 to 2000.", { reason: "bad_input" });
 				billing.capCents = input.cents;
 				return billingView(realNow());

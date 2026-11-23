@@ -14,7 +14,7 @@
  *
  * The filters of the home (lib/workspace.ts) narrow the feed; they are set from the Recent heading.
  */
-import { minutes, monthReset } from "../lib/hosted";
+import { periodWords, minutes, monthReset } from "../lib/hosted";
 import { HostedNotice } from "../components/Plan";
 import { USAGE_LOW_SHARE, type ItemSummary, type MachineSummary, type SavedRepository, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useState } from "react";
@@ -118,11 +118,11 @@ function MonthMeter({ numbers }: { numbers: UsageNumbers }) {
 	return (
 		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: hosted minutes and sandboxes">
 			<span className="home-usage-time">
-				Hosted this month <strong>{minutes(spent)}</strong> of {minutes(month.limitSeconds)} min
+				Hosted {periodWords(month)} <strong>{minutes(spent)}</strong> of {minutes(month.limitSeconds)} min
 				{state !== "plenty" ? <span className="home-usage-left">{state === "used" ? `, used up until ${monthReset(month)}` : `, ${minutes(month.leftSeconds)} left`}</span> : null}
 			</span>
 			{share === null ? null : (
-				<span className="home-meter" role="meter" aria-label="Hosted minutes used this month" aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(spent, month.limitSeconds)} aria-valuetext={`${minutes(spent)} of ${minutes(month.limitSeconds)} hosted minutes`}>
+				<span className="home-meter" role="meter" aria-label={`Hosted minutes used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(spent, month.limitSeconds)} aria-valuetext={`${minutes(spent)} of ${minutes(month.limitSeconds)} hosted minutes`}>
 					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
 				</span>
 			)}

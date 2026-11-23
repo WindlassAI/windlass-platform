@@ -57,6 +57,21 @@ describe("the mock's billing", () => {
 		expect((await client.user(auth).allowance()).hosted).toBeUndefined();
 	});
 
+	it("shows the yearly stop, its reset date and the way to monthly Pro", async () => {
+		const start = Date.UTC(2026, 10, 5, 12);
+		const client = createMockClient({ pace: 0, billing: "free", now: () => start });
+		const user = client.user(await client.login.demo());
+		await user.billingCheckout({ period: "year", origin: "http://app.test" });
+		const hosted = (await user.allowance()).hosted!;
+		expect(hosted.resetsAt).toBe(Date.UTC(2026, 11, 5, 12));
+		expect(hosted.limitSeconds).toBe(1800 * 60);
+		await expect(user.setOverageCap({ cents: 500 })).rejects.toThrow("Yearly Pro");
+		const stop = monthSentence({ hosted: { ...hosted, usedSeconds: hosted.limitSeconds, leftSeconds: 0 }, startSeconds: 30 }, pro);
+		expect(stop).toContain("period ending 5 December");
+		expect(stop).toContain("monthly Pro");
+		expect(stop).not.toContain("spend cap");
+	});
+
 	it("plays Free, then Pro after a checkout, with the cap held to $0 to $20", async () => {
 		const client = createMockClient({ pace: 0, billing: "free", origin: "http://app.test" });
 		expect((await client.info()).billing?.plans.map((plan) => plan.id)).toEqual(["free", "pro"]);
@@ -64,7 +79,7 @@ describe("the mock's billing", () => {
 		const free = await user.billing();
 		expect(free.enabled && free.plan).toBe("free");
 		expect((await user.allowance()).hosted?.includedSeconds).toBe(7200);
-		const { url } = await user.billingCheckout({ period: "year", origin: "http://app.test" });
+		const { url } = await user.billingCheckout({ period: "month", origin: "http://app.test" });
 		expect(url.startsWith("http://app.test/settings")).toBe(true);
 		const paid = await user.billing();
 		expect(paid.enabled && paid.plan).toBe("pro");

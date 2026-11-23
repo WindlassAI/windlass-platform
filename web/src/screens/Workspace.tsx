@@ -346,7 +346,7 @@ function RailFoot({ usage, working, ceiling, onMachines }: { usage: UsageNumbers
 	return (
 		<a className={`ws-rail-foot${state !== "plenty" ? " ws-rail-foot-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: sandbox time and sandboxes">
 			<span className="ws-foot-time">
-				<span>{month ? "Hosted this month" : "Sandbox today"}</span>
+				<span>{month ? (month.plan === "pro" ? `Hosted · resets ${monthReset(month)}` : "Hosted this month") : "Sandbox today"}</span>
 				<span>
 					<strong>{usage === null ? "–" : month ? minutes(spent) : sandboxTime(spent)}</strong>
 					{allowance === null ? null : month ? ` of ${minutes(allowance)} min` : ` of ${sandboxTime(allowance)}`}

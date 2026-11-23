@@ -126,7 +126,7 @@ function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text
 	const resets = localTime(numbers.resetsAt);
 	// The month's hosted minutes, where a plan sets them: one on the user's own machine is never counted.
 	// Near the limit the page's own notice says so (components/Plan.tsx); at it, what launching here does, unless that notice is on the page too.
-	if (numbers.hosted && monthState(numbers) === "used") return hostedNotice ? null : { warn: true, text: `This month's hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
+	if (numbers.hosted && monthState(numbers) === "used") return hostedNotice ? null : { warn: true, text: `Hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
 	if (left === "used") return { warn: true, text: `Today's sandbox time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
 	const { kept, limit } = numbers.sandboxes;
 	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} hosted sandboxes, the most an account may have. An agent launched here now is created, and cannot start working until you free one. One on your own machine is not counted.` };
