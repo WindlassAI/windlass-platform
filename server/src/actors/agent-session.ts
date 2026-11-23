@@ -233,7 +233,7 @@ import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
-import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -3541,8 +3541,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
-	const untrusted = active.item?.row.untrusted ?? [];
-	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+	let untrusted = active.item?.row.untrusted ?? [];
+	let handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+	/** Refuses the turn on "Docker, hardened" for someone else's text in `retryText`; the item asks, and can run it anyway. */
+	const refuseUntrusted = (item: NonNullable<ActiveTurn["item"]>, stop: Extract<typeof handling, { kind: "stop" }>, retryText: string): never => {
+		item.refused = stop.reason;
+		item.untrustedRefusal = { sources: stop.sources, retry: { text: retryText, fetchBase: item.row.fetchBase, untrusted } };
+		throw new TurnProblem(stop.reason);
+	};
 	const unmarked = (text: string) => {
 		if (meta.untrustedUnmarkedNoted) return;
 		meta.untrustedUnmarkedNoted = true;
@@ -3637,13 +3643,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
 		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
-		if (active.item && handling.kind === "stop") {
-			const { reason, sources: outside } = handling;
-			const { text: retryText, fetchBase } = active.item.row;
-			active.item.refused = reason;
-			active.item.untrustedRefusal = { sources: outside, retry: { text: retryText, fetchBase, untrusted } };
-			throw new TurnProblem(reason);
-		}
+		if (active.item && handling.kind === "stop") refuseUntrusted(active.item, handling, active.item.row.text);
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
@@ -3670,6 +3670,19 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
+		// A step that goes on, in an agent that has no conversation of it (a new sandbox, a memory that was lost): "continue
+		// from where you were" would mean nothing to it, so it is given the step's whole task instead.
+		if (active.item) {
+			const chosen = itemTurnText(active.item.row, text, resumed);
+			if (chosen.fresh) {
+				// The whole task's sources are its own (a GitHub issue's text), and go by the same rule as any turn's.
+				text = chosen.text;
+				untrusted = chosen.untrusted;
+				handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: chosen.unsandboxed });
+				if (handling.kind === "stop") refuseUntrusted(active.item, handling, chosen.text);
+				note(c, turn, "info", "The agent no longer has its earlier conversation of this step, so it was given the whole task again.");
+			}
+		}
 		if (!signal.aborted && meta.status === "starting") {
 			meta.status = "running";
 			publish(c);
@@ -3861,7 +3874,7 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				prompt: notes.text + text,
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
-				...(handling.kind === "marked" && { untrusted: handling.sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(handling.sources)); } }),
+				...(handling.kind === "marked" && ((sources) => ({ untrusted: sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(sources)); } }))(handling.sources)),
 				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
 				...(item && { unaskedUntilTainted: true }),
 				reportScreenshots: browser,
@@ -4737,6 +4750,8 @@ export const agentSession = actor({
 			// Rows from before the marker carry no sources: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "untrusted")) await db.execute("ALTER TABLE inbox ADD COLUMN untrusted TEXT NOT NULL DEFAULT '[]'");
 			if (!inboxColumns.some(col => col.name === "unsandboxed")) await db.execute("ALTER TABLE inbox ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0");
+			// Rows from before it have no whole-task prompt: their turns go as they did.
+			if (!inboxColumns.some(col => col.name === "fresh")) await db.execute("ALTER TABLE inbox ADD COLUMN fresh TEXT");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
 		},
 	}),

@@ -1061,6 +1061,41 @@ drive("a sandbox that cannot be prepared: Try again gets its own retry", newItem
 	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "sandbox_failed" && o.item.run?.step.interruptions === 0, `${o.item.question?.kind}, ${o.item.run?.step.interruptions} interruptions`) },
 ]);
 
+// Found on the live item after the fix above: the person freed the broken sandbox and chose Try again; the step ran in a
+// new sandbox whose agent had no memory of it, was told only "Continue from where you were", and changed nothing. Every
+// delivery that goes on with a builder's step carries the step's whole task, which the session gives an agent without
+// the step's conversation.
+{
+	const { INBOX_TABLES, deliveryOf, inboxRow, itemTurnText, receive } = await import("../server/src/actors/session-inbox.js");
+	const { FRESH_START } = await import("../server/src/factory/blueprint.js");
+	const fromIssue = { ...newItem(), untrusted: ["the GitHub issue #12 by @someone"] };
+	let item = advance(fromIssue, { kind: "start", at: T0, by: "person:u1" }).item;
+	const first = advance(fromIssue, { kind: "start", at: T0, by: "person:u1" }).effects.find((one) => one.kind === "deliver");
+	expect("a step's first turn has the task as its text and no second prompt", first?.kind === "deliver" && first.text.startsWith("Fix add()") && first.fresh === undefined);
+	item = advance(item, { kind: "turn_started", at: T0 + 1, key: currentKey(item)! }).item;
+	const cut = advance(item, { kind: "turn_ended", at: T0 + 2, key: currentKey(item)!, outcome: "interrupted", verified: null, flags: [], changes: false, report: null, spend: { tokens: 0, hostedSeconds: 0 } });
+	const resume = cut.effects.find((one) => one.kind === "deliver");
+	expect(
+		"a resumed step's delivery carries the whole task, marked as the task is, beside its continue prompt, which stays unmarked",
+		resume?.kind === "deliver" && /Continue from where you were/.test(resume.text) && resume.fresh?.text.startsWith(FRESH_START) === true && resume.fresh.text.includes("add(1, 2) returns -1.") && resume.fresh.text.includes("add(1, 2) is 3") && resume.fresh.untrusted.includes("the GitHub issue #12 by @someone") && !resume.untrusted?.length,
+		JSON.stringify(resume),
+	);
+	if (resume?.kind === "deliver") {
+		const sql = new DatabaseSync(":memory:");
+		const db = { async execute<T>(query: string, ...args: unknown[]): Promise<T[]> { return sql.prepare(query).all(...args as SQLInputValue[]) as T[]; } };
+		for (const table of INBOX_TABLES) sql.exec(table);
+		const delivery = deliveryOf({ key: resume.key, itemId: item.id, title: "Fix add()", text: resume.text, agent: null, maxSteps: 60, fetchBase: null, untrusted: resume.untrusted, fresh: resume.fresh });
+		await receive(db as never, delivery!, T0);
+		const row = (await inboxRow(db as never, resume.key))!;
+		const freed = itemTurnText(row, row.text, null);
+		const kept = itemTurnText(row, row.text, "ses_1");
+		expect("after a freed sandbox (no conversation to resume) the agent gets the task text, not \"Continue from where you were\"", freed.fresh && freed.text === resume.fresh?.text && freed.untrusted.includes("the GitHub issue #12 by @someone") && !/Continue from where you were/.test(freed.text), freed.text.slice(0, 120));
+		expect("an agent that still has the conversation is told to continue, with no source", !kept.fresh && /Continue from where you were/.test(kept.text) && kept.untrusted.length === 0);
+		const old = itemTurnText({ untrusted: [], unsandboxed: false, fresh: null }, "You were interrupted. Continue from where you were.", null);
+		expect("a row stored before it goes as it did", !old.fresh);
+	}
+}
+
 const usage = (left: number): UsageNumbers => ({ at: T0, day: "2026-11-19", resetsAt: MIDNIGHT, allowanceSeconds: 8 * 3600, usedSeconds: 8 * 3600 - left, heldSeconds: 0, leftSeconds: left, startSeconds: 30, sandboxes: { kept: 4, limit: 20 } });
 const hosted = (left: number) => ({ kind: "hosted" as const, usage: usage(left), running: 0, needsSandbox: false, deploymentFull: null });
 

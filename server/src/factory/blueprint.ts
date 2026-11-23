@@ -649,6 +649,15 @@ function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, no
 	return { ...IMPLEMENT, text, ...marked(untrusted) };
 }
 
+/** Said first to an agent that goes on with a step it has no conversation of (`Delivery.fresh`). */
+export const FRESH_START = "Your earlier conversation about this task is gone, and so is any work that was not pushed: this turn starts without them. Work on the task from the start:";
+
+/** The prompt for a builder that goes on with a step and lost its conversation: the run's first turn's task, as it was marked. Null for a feature's planning. */
+function freshPlan(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> | null {
+	const first = firstPlan(item, null);
+	return first.kind === "refine" ? null : { text: `${FRESH_START}\n\n${first.text}`, ...marked(first.untrusted) };
+}
+
 const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\nThe person adds: ${note}`);
 
 function beginRun(c: Change, plan: TurnPlan): void {
@@ -843,6 +852,8 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	c.state(item.state === "queued" || item.place.kind === "machine" ? "queued" : "working");
 	// A planning turn is told its budget figures each time, from the item as it is now.
 	const delivery = { kind: "deliver" as const, key: c.key, text: plan.kind === "refine" ? plan.text + plannerBudgetText(item) : plan.text, fetchBase: plan.fetchBase, ...(plan.feedbackQuote && { feedbackQuote: plan.feedbackQuote }) };
+	// A builder's turn that goes on with its step also carries the step's whole task, for an agent that lost its conversation.
+	const fresh = plan.to !== "review" && !plan.newStep && ASKING.has(plan.kind) ? freshPlan(item) : null;
 	if (plan.to === "review") {
 		if (!plan.checkout || !run.ci || !run.review) throw new Error("a reviewer turn needs its checkout and verdict");
 		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
@@ -853,7 +864,9 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		// One question a turn, which the session holds to; a run asks as often as its turns do, each a stop that waits for the person.
 		const asking = ASKING.has(plan.kind) ? { asksLeft: 1 } : {};
 		const untrusted = marked(plan.untrusted);
-		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted) });
+		// The whole task goes with its own sources: the session sends one text or the other, with the sources of that one.
+		const freshPrompt = fresh && { fresh: { text: fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
+		c.effects.push({ ...delivery, agent: plan.kind === "summary" ? "summary" : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);

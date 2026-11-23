@@ -184,6 +184,8 @@ An item also stops and asks you when it is stuck. There is no cap on rounds of f
 
 A turn whose sandbox could not be prepared is not a cut-off: the agent never ran. The item tries that turn once more by itself. If it fails again, the item asks you and says what went wrong. **Try again** uses the same sandbox. **Start on a fresh sandbox** removes the old sandbox and starts the step in a new one, from the repository on GitHub. Anything that was not pushed from the old sandbox is lost.
 
+When a step goes on in an agent that no longer has its conversation, for example in a new sandbox or after its memory was lost, the agent is given the whole task again, not "continue from where you were". It is also told that its earlier conversation and any work that was not pushed are gone. The timeline says when that happened.
+
 The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently, and no choice throws away the sandbox's work.
 
 ### When the budget is used

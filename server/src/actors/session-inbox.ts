@@ -49,6 +49,7 @@ export const INBOX_TABLES = [
 		asks_left INTEGER,
 		untrusted TEXT NOT NULL DEFAULT '[]',
 		unsandboxed INTEGER NOT NULL DEFAULT 0,
+		fresh TEXT,
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -100,6 +101,19 @@ export interface Delivery {
 	 * on "Docker, hardened" the turn then goes labelled only instead of being refused.
 	 */
 	unsandboxed?: boolean;
+	/**
+	 * A builder's turn that goes on with its step: the prompt for when its agent no longer has the step's
+	 * conversation (a new sandbox, a memory that was lost), which `text` assumes it has: the step's whole task, with
+	 * the outside sources of that text and whether the person let them run (as `untrusted` and `unsandboxed` are
+	 * for `text`). Absent (null in the row) for a step's first turn, which carries the task already, and for rows stored before it.
+	 */
+	fresh?: FreshPrompt | null;
+}
+
+export interface FreshPrompt {
+	text: string;
+	untrusted: string[];
+	unsandboxed?: boolean;
 }
 
 export interface InboxRow extends Delivery {
@@ -143,13 +157,13 @@ interface InboxCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; unsandboxed: number | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; unsandboxed: number | null; fresh: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), unsandboxed: row.unsandboxed === 1, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), unsandboxed: row.unsandboxed === 1, fresh: row.fresh ? freshOf(JSON.parse(row.fresh)) : null, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended FROM inbox";
 
 /** The sources of a delivery or a row: strings, each kept to Windlass's length, at most a handful; anything else is none. */
 export function untrustedOf(value: unknown): string[] {
@@ -179,7 +193,24 @@ export function deliveryOf(input: unknown): Delivery | null {
 	const checkout = given.checkout as ReviewDelivery | undefined;
 	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
 	const asksLeft = typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0 ? given.asksLeft : null;
-	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted), unsandboxed: given.unsandboxed === true };
+	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted), unsandboxed: given.unsandboxed === true, fresh: freshOf(given.fresh) };
+}
+
+/** A whole-task prompt of a delivery or a row, checked; null for none or one that cannot be taken. */
+function freshOf(value: unknown): FreshPrompt | null {
+	if (typeof value !== "object" || value === null) return null;
+	const given = value as Record<string, unknown>;
+	if (typeof given.text !== "string" || given.text.trim() === "") return null;
+	return { text: given.text, untrusted: untrustedOf(given.untrusted), ...(given.unsandboxed === true && { unsandboxed: true }) };
+}
+
+/**
+ * What an item's turn gives its agent: the row's text and its sources, or its whole-task prompt (`fresh`) when the
+ * agent has no conversation to go on with (no session id to resume: a new sandbox, a memory that was lost).
+ */
+export function itemTurnText(row: Pick<InboxRow, "untrusted" | "unsandboxed" | "fresh">, text: string, resumed: string | null | undefined): { text: string; untrusted: string[]; unsandboxed?: boolean; fresh: boolean } {
+	if (row.fresh && !resumed) return { ...row.fresh, fresh: true };
+	return { text, untrusted: row.untrusted, unsandboxed: row.unsandboxed, fresh: false };
 }
 
 /** Writes the delivery's row, in one statement. False when a row of that key was there: the delivery came before. */
@@ -187,7 +218,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -199,6 +230,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		delivery.asksLeft ?? null,
 		JSON.stringify(delivery.untrusted ?? []),
 		delivery.unsandboxed ? 1 : 0,
+		delivery.fresh ? JSON.stringify(delivery.fresh) : null,
 		delivery.startsRun ? 1 : 0,
 		now,
 	);
