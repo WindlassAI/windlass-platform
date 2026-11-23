@@ -258,7 +258,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 				needs: { type: "object", additionalProperties: false, properties: {
 					tags: { type: "array", items: { type: "string" } }, screenshots: { type: "boolean" },
 					egress: { enum: ["open", "restricted"] }, profile: { enum: ["docker-hardened", "docker-windlass-sandbox"] },
-					cpus: { type: "number", exclusiveMinimum: 0 }, memoryGiB: { type: "number", exclusiveMinimum: 0 },
+					cpus: { type: "number", description: "More than 0." }, memoryGiB: { type: "number", description: "More than 0." },
 				} },
 				agent: { type: "object", additionalProperties: false, required: ["harness"], properties: {
 					harness: { enum: ["windlass", ...SUBTASK_AGENTS.map(h => h.id)] }, model: { type: "string", maxLength: 200 }, effort: { type: "string", maxLength: 64 },
