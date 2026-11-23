@@ -94,9 +94,9 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 				throw translated(error);
 			}
 		},
-		async connect(sandboxId, timeoutMs) {
+		async connect(sandboxId, timeoutMs, options = {}) {
 			try {
-				return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs }));
+				return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs, ...(options.reboot ? { onResume: "reboot" as const } : {}) }));
 			} catch (error) {
 				if (error instanceof NotFoundError) return undefined;
 				// Its snapshot was taken while the sandbox was hung: E2B will not restore that memory. Booted from its disk the

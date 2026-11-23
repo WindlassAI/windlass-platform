@@ -207,7 +207,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { agentTurn, turnTokens } from "../factory/budget.js";
-import { reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
@@ -545,7 +545,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string };
 }
 
 /**
@@ -1309,6 +1309,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	if (handle?.ownData) meta.ownDataSandbox = handle.id;
 	if (handle) {
 		if (meta.sandbox === "paused") note(c, turn, "info", "Resuming sandbox");
+		if (handle.notice) note(c, turn, "warn", handle.notice);
 		noteSandbox(c, meta, "running");
 	} else {
 		if (meta.sandboxId) {
@@ -3579,6 +3580,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let events = 0;
 	let open = true;
 	let used: SandboxHandle | null = null;
+	/** While `openSandbox` runs: an error then is the sandbox's, not the agent's (`sandboxFailed`). */
+	let opening = false;
 	/** The meter's use when the turn ended (`meterAfterTurn`). */
 	let meterUse: string | null = null;
 	/** A request of the agent's to publish or push, kept until it is handled: the turn does not close under it. */
@@ -3644,7 +3647,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
+		opening = true;
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
+		opening = false;
 		clock.opened();
 		used = sandbox;
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
@@ -3960,6 +3965,9 @@ fi`, { signal, timeoutMs: 5000 });
 			// An error's text is the sandbox's or the provider's: the repository's saved values are taken out of it before it is logged or shown.
 			const clean = (text: string) => active.secrets?.redactor.text(text) ?? text;
 			problem = clean(error instanceof TurnProblem || isSandboxUserError(error) ? error.message : `The sandbox failed: ${describeError(error)}`);
+			// The sandbox could not be prepared (connect, resume, its network, a clone): the agent never ran. A deployment that
+			// is full or a machine away have their own handling above; a turn the session refused is no sandbox's fault.
+			if (active.item && opening && !active.item.refused && !(error instanceof TurnProblem) && !(error instanceof DeploymentFull) && !(error instanceof MachineUnreachable)) active.item.sandboxFailed = clean(isSandboxUserError(error) ? error.message : describeError(error));
 			if (error instanceof TurnProblem) c.log.warn({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error.message) });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
@@ -4640,6 +4648,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
+	if (item.sandboxFailed) fact.sandboxFailed = item.sandboxFailed;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () => c.db.execute("INSERT OR REPLACE INTO attachment_filing VALUES (?,?)", row.key, JSON.stringify(fact)));
@@ -4674,9 +4683,19 @@ async function finishItemTurn(c: Ctx, meta: SessionMeta, row: InboxRow, fallback
 }
 
 /** Recover a completed filing across the ledger/outbox boundary, or report a cut-off turn. */
-async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow): Promise<Fact> {
-	if (meta.origin?.role === "reviewer") return finishItemTurn(c, meta, row, reviewEndedFactOf(row.key, "interrupted", meta.review, null, null, null));
-	return finishItemTurn(c, meta, row, endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, null));
+/** The Windlass events the timeline holds of one turn, in order. */
+async function windlassEventsOf(c: Ctx, turn: number): Promise<WindlassEvent[]> {
+	const events: WindlassEvent[] = [];
+	for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
+		const item = JSON.parse(row.item) as TimelineItem;
+		if (item.kind === "windlass") events.push(item.event);
+	}
+	return events;
+}
+
+async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow, usage: TurnUsage | null): Promise<Fact> {
+	if (meta.origin?.role === "reviewer") return finishItemTurn(c, meta, row, reviewEndedFactOf(row.key, "interrupted", meta.review, null, null, usage));
+	return finishItemTurn(c, meta, row, endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, usage));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4839,16 +4858,17 @@ export const agentSession = actor({
 			// The process that ran this turn is gone, and the turn with it; so is a question it was waiting on.
 			const turn = meta.turns;
 			note(c, turn, "warn", "The server stopped while this turn was running, so the turn was cut short.");
+			const events = await windlassEventsOf(c, turn);
 			// What the turn recorded before it was cut off says whether it changed the workspace after the checks last ran.
 			if (capabilitiesOf(meta.harness).checks === "none") meta.verified = null;
 			else {
 				const cut = new VerificationLog();
-				for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
-					const item = JSON.parse(row.item) as TimelineItem;
-					if (item.kind === "windlass") cut.note(item.event);
-				}
+				for (const event of events) cut.note(event);
 				meta.verified = cut.cutOff(turn, meta.verified ?? null);
 			}
+			// The tokens its finished model requests reported: the turn row and an item's spend count them, as the account's ledger already did.
+			const usage = cutTurnUsage(events);
+			note(c, turn, "info", cutTurnUsageNote(usage));
 			append(c, {
 				turn,
 				kind: "turn.ended",
@@ -4856,7 +4876,7 @@ export const agentSession = actor({
 				exitCode: null,
 				steps: null,
 				durationMs: meta.turnStartedAt ? Math.max(0, Date.now() - meta.turnStartedAt) : 0,
-				usage: null,
+				usage,
 				cachedShare: null,
 				message: null,
 				verified: meta.verified,
@@ -4879,7 +4899,7 @@ export const agentSession = actor({
 				));
 			}
 			const taken = await rowOfTurn(c.db, turn);
-			if (taken) await closeCutTurn(c, meta, taken);
+			if (taken) await closeCutTurn(c, meta, taken, usage);
 			await persist(c);
 			publish(c);
 		}
@@ -5460,7 +5480,7 @@ export const agentSession = actor({
 			if (row?.state !== "started") return null;
 			if (c.vars.turn?.item?.row.key === row.key || c.vars.closingItem === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
-			return await closeCutTurn(c, meta, row);
+			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
 		},
 
 		internalPublish: async (c, input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {

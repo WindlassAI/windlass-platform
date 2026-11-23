@@ -330,14 +330,17 @@ while True:
  */
 export const GUEST_DNS_SCRIPT = `set -eu
 mode=$1; addr=$2; shift 2
+echo "step lock"
 umask 077
 exec 9>>/run/wlp-network.lock
 flock -w 25 9 || { echo "another change of the sandbox's network held its lock for 25 s" >&2; exit 1; }
+echo "step hosts"
 umask 022
 tmp=$(mktemp /run/wlp-hosts.XXXXXX)
 trap 'rm -f "$tmp"' EXIT
 { grep -v ' # wlp-network$' /etc/hosts || true; for host in "$@"; do printf '%s %s # wlp-network\\n' "$addr" "$host"; done; } > "$tmp"
 cat "$tmp" > /etc/hosts
+echo "step resolver"
 running() { [ -f /run/wlp-dns.pid ] && kill -0 "$(cat /run/wlp-dns.pid)" 2>/dev/null; }
 if [ "$mode" = open ]; then
   if running; then kill "$(cat /run/wlp-dns.pid)" 2>/dev/null || true; fi
@@ -347,6 +350,7 @@ else
   [ -f /etc/resolv.conf.wlp ] || cp /etc/resolv.conf /etc/resolv.conf.wlp
   printf 'nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n' > /etc/resolv.conf
   if ! running && command -v python3 >/dev/null 2>&1; then
+    echo "step stub"
     cat > /run/wlp-dns.py <<'WLP_DNS_STUB'
 ${DNS_STUB}WLP_DNS_STUB
     setsid python3 -I /run/wlp-dns.py 53 ${DNS_LOG} </dev/null >/dev/null 2>&1 9>&- &
@@ -372,6 +376,20 @@ export function blockedLookups(log: string, skipped: Iterable<string>, limit = 5
 		if (out.length >= limit) break;
 	}
 	return out;
+}
+
+/** Words for where `GUEST_DNS_SCRIPT` got to, from what it printed: each part announces itself with `step <name>` first. */
+const GUEST_STEPS: Record<string, string> = {
+	lock: "it was waiting for its lock (another change of the network)",
+	hosts: "it was writing /etc/hosts",
+	resolver: "it was writing /etc/resolv.conf",
+	stub: "it was starting the lookup stub",
+};
+export function guestNetworkStep(stdout: string): string {
+	const steps = [...stdout.matchAll(/^step (\w+)$/gm)].map((match) => match[1]!);
+	const last = steps.at(-1);
+	if (last === undefined) return "it printed nothing, so the sandbox never ran its first line";
+	return GUEST_STEPS[last] ?? `its last step was ${last}`;
 }
 
 export function guestDnsArgv(network: E2bNetwork, address = PIN_ADDRESS): string[] {

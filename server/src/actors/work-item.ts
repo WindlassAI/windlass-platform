@@ -1017,6 +1017,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	const key = currentKey(item);
 	switch (effect.kind) {
 		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
+		case "fresh_sandbox": return effect.key === key && !item.question && run.step.turn === null;
 		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
 		case "integration":
 		case "poll_integration": return effect.key === key && run.step.kind === "integration" && !item.question && item.integration?.attempt === effect.attempt;
@@ -1403,6 +1404,11 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		}
 		case "release_review":
 			await session.internalFreeSandbox(effect.run);
+			return true;
+		case "fresh_sandbox":
+			// The person chose a new sandbox for a step whose sandbox could not be prepared: the session's is removed, as "Free" does.
+			await session.internalFreeSandbox();
+			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan });
 			return true;
 		case "withdraw":
 			await session.internalWithdraw(effect.key);

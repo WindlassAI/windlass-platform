@@ -17,7 +17,7 @@
  */
 
 import type { E2bNetworkConfig } from "./network.js";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo, type E2bState } from "./client.js";
+import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnectOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo, type E2bState } from "./client.js";
 
 /** What runs a fake sandbox's commands. */
 export interface FakeMachine {
@@ -27,6 +27,8 @@ export interface FakeMachine {
 	/** The sandbox was paused: nothing in it runs until `resumed`. */
 	paused?(): Promise<void>;
 	resumed?(): Promise<void>;
+	/** The sandbox was started from its disk (`connect` with `reboot`): what ran in it before is gone. Default `resumed`. */
+	rebooted?(): Promise<void>;
 	/** The sandbox is gone. */
 	killed?(): Promise<void>;
 	/** What E2B now lets out of the sandbox: at create, and at every `updateNetwork`. Null: E2B's default. */
@@ -212,8 +214,8 @@ export class FakeE2b implements E2bClient {
 		return this.connection(id);
 	}
 
-	async connect(sandboxId: string, timeoutMs: number): Promise<E2bConnection | undefined> {
-		this.calls.push(`connect ${sandboxId} ${timeoutMs}`);
+	async connect(sandboxId: string, timeoutMs: number, options: E2bConnectOptions = {}): Promise<E2bConnection | undefined> {
+		this.calls.push(`connect ${sandboxId} ${timeoutMs}${options.reboot ? " reboot" : ""}`);
 		await this.settle();
 		const sandbox = this.sandboxes.get(sandboxId);
 		if (sandbox === undefined) return undefined;
@@ -226,7 +228,8 @@ export class FakeE2b implements E2bClient {
 			// A resume starts the sandbox's running time again.
 			sandbox.startedAt = now;
 			sandbox.endAt = now + timeoutMs;
-			await sandbox.machine.resumed?.();
+			if (options.reboot && sandbox.machine.rebooted) await sandbox.machine.rebooted();
+			else await sandbox.machine.resumed?.();
 		} else {
 			// "Sandbox.connect() only ever extends the sandbox's lifetime."
 			sandbox.endAt = Math.max(sandbox.endAt, now + timeoutMs);

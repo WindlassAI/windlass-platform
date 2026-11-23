@@ -182,6 +182,8 @@ An item also stops and asks you when it is stuck. There is no cap on rounds of f
 
 **Try it once more** goes on in the same run. Choose **Hand it over as it is** to take the work as it is, or **Give up**.
 
+A turn whose sandbox could not be prepared is not a cut-off: the agent never ran. The item tries that turn once more by itself. If it fails again, the item asks you and says what went wrong. **Try again** uses the same sandbox. **Start on a fresh sandbox** removes the old sandbox and starts the step in a new one, from the repository on GitHub. Anything that was not pushed from the old sandbox is lost.
+
 The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently, and no choice throws away the sandbox's work.
 
 ### When the budget is used

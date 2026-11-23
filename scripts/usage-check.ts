@@ -12,7 +12,7 @@
  * claimed in one step, given back, and held against what the provider lists.
  */
 
-import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, dayOf, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
+import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, cutTurnUsage, cutTurnUsageNote, dayOf, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -274,6 +274,23 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	expect("a hold that is not renewed stops its sandbox 30 s before the book stops counting it", holdDeadline(at(0), 600) === at(600 + HOLD_GRACE_SECONDS - 30) && hold.ok && holdDeadline(at(0), hold.hold.seconds) < hold.hold.expiresAt);
 	expect("not at the end of the hold: the book still counts what runs past it until then", holdDeadline(at(0), 600) > at(600) + 60_000);
 	expect("a lease without grace stops the same margin before it runs out", holdDeadline(at(0), 180, 0) === at(150));
+}
+
+
+// A turn cut off with its server: what its finished model requests reported is its usage, as the summary would have summed it.
+{
+	const ev = (type: string, usage: unknown) => ({ type, v: 1, seq: 0, time: 0, data: { messageId: "m", usage } }) as never;
+	const used = cutTurnUsage([
+		ev("step.started", null),
+		ev("step.ended", { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 50, reasoningTokens: 10 }),
+		ev("step.failed", { inputTokens: 200, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }),
+		ev("compaction.ended", { inputTokens: 300, cachedInputTokens: 0, outputTokens: 40, reasoningTokens: 0 }),
+		ev("step.ended", null),
+		ev("tool.ended", { inputTokens: 9999, cachedInputTokens: 0, outputTokens: 9999, reasoningTokens: 0 }),
+	]);
+	expect("a cut-off turn's usage is the sum of its finished requests' reports", used !== null && used.inputTokens === 1500 && used.cachedInputTokens === 800 && used.outputTokens === 90 && used.reasoningTokens === 10, JSON.stringify(used));
+	expect("a cut-off turn whose requests reported nothing has no usage, not zero", cutTurnUsage([ev("step.started", null), ev("step.ended", null)]) === null);
+	expect("the timeline says what of a cut-off turn is counted", /1,590 tokens/.test(cutTurnUsageNote(used)) && /none are counted/.test(cutTurnUsageNote(null)));
 }
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);

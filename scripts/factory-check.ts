@@ -22,7 +22,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentReport } from "../server/src/agent-publish.js";
 import type { ItemReview, ReviewRecommendation, UsageNumbers, Verified, VerifiedCheck } from "../server/src/contract.js";
 import type { CiReading } from "../server/src/github/ci.js";
-import type { Effect, Fact, FactoryItem, ItemState, Outcome, Verdict, WaitReason } from "../server/src/factory/types.js";
+import type { Effect, Fact, FactoryItem, ItemState, Outcome, TurnPlan, Verdict, WaitReason } from "../server/src/factory/types.js";
 import { GithubStandin } from "./github-standin.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "wlp-factory-check-"));
@@ -1030,6 +1030,35 @@ drive("a deploy in the middle of the implement step", newItem(), [
 	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+]);
+
+// The live case: a turn cut off by a deploy, then a sandbox that could not be prepared on every later turn. Those are no
+// cut-offs (the agent never ran): one is tried again, the next asks, and the person can start the step on a fresh sandbox.
+const unprepared: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, sandboxFailed: "could not set the sandbox's network: the sandbox does not answer", spend: { tokens: 0, hostedSeconds: 0 } });
+let freshPlan: TurnPlan | undefined;
+drive("a sandbox that cannot be prepared is not a cut-off", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"] },
+	{ fact: unprepared, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.run?.step.interruptions === 1 && o.item.run.step.sandboxFailures === 1 && o.events.some(e => /could not be prepared .*the step is tried again/.test(e.said)), `interruptions ${o.item.run?.step.interruptions}, sandbox failures ${o.item.run?.step.sandboxFailures}: ${o.events.map(e => e.said).join(" | ")}`) },
+	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "sandbox_failed" && o.item.question.cause === null && o.item.run?.step.interruptions === 1
+		&& o.item.question.text.includes("does not answer") && o.item.question.text.includes("fresh sandbox") && ["again", "fresh_sandbox", "give_up"].every(id => o.item.question!.choices.some(c => c.id === id)), `asked ${o.item.question?.kind} (${o.item.question?.cause}): ${o.item.question?.text}; interruptions ${o.item.run?.step.interruptions}`) },
+	{ fact: answer("fresh_sandbox"), state: "working", effects: ["fresh_sandbox"], also: (o) => {
+		freshPlan = effect(o, "fresh_sandbox")?.plan;
+		return holds(freshPlan?.newStep === false && /could not start/.test(freshPlan.text), `plan ${JSON.stringify(freshPlan)}`);
+	} },
+	{ fact: (k) => ({ kind: "sandbox_freed", key: k.key, plan: freshPlan! }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/Carry on with the task/.test(effect(o, "deliver")?.text ?? ""), "the step is delivered again, in full") },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"], also: (o) => holds(o.item.run?.step.sandboxFailures === undefined, "a turn that ran forgets the failures") },
+]);
+drive("a sandbox that cannot be prepared: Try again gets its own retry", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	// No turn of it started, so it stays queued for its place.
+	{ fact: unprepared, state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: answer("again"), state: "working", effects: ["deliver", "check_turn"] },
+	{ fact: unprepared, state: "working", effects: ["deliver", "check_turn"] },
+	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "sandbox_failed" && o.item.run?.step.interruptions === 0, `${o.item.question?.kind}, ${o.item.run?.step.interruptions} interruptions`) },
 ]);
 
 const usage = (left: number): UsageNumbers => ({ at: T0, day: "2026-11-19", resetsAt: MIDNIGHT, allowanceSeconds: 8 * 3600, usedSeconds: 8 * 3600 - left, heldSeconds: 0, leftSeconds: left, startSeconds: 30, sandboxes: { kept: 4, limit: 20 } });

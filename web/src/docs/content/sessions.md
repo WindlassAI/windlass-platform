@@ -32,6 +32,8 @@ If the agent asks you something while its tab is in the background, the tab's ti
 
 When a turn ends, its outcome is one of **done**, **done, checks unresolved**, **failed**, **stopped**, **interrupted** or **error**.
 
+A turn is **interrupted** when the server stops while it runs. For a Windlass turn, its tokens are the ones its finished model requests reported before the cut. They count toward the turn, a work item's budget and your daily cap, and the timeline says how many there were. A request still under way at the cut is not counted. Other agents report their tokens only when a turn ends, so an interrupted turn of theirs counts none, and the timeline says so.
+
 ## The timeline
 
 The timeline shows everything the agent does, live: your prompts, its reasoning (**thinking**, then **thought**), its tool calls and its answers. Each tool call shows its state, such as **running**, **done**, **failed** or **refused**.
@@ -175,6 +177,8 @@ The side panel's **MCP servers** section lists each server with its command, its
 A repository's hooks do not run, and its language servers do not start.
 
 ## Sandboxes after the work
+
+A hosted sandbox that has stopped answering commands, most often because something in it used all of its memory, is restarted from its disk when the next turn starts. The files in the workspace are kept, and the programs that were running in it are not. The timeline says when that happened.
 
 A sandbox is paused 10 minutes after its last turn. A paused sandbox uses no sandbox time. On this platform it is removed after 7 days without use. The timeline stays either way. If the sandbox is gone, the next prompt starts a new one.
 

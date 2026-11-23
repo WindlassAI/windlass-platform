@@ -85,7 +85,7 @@ import { ADOPT_SCRIPT, AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, RECORD_SCRIPT, S
 import { DEFERRED_INPUTS, HASH, SHA, type SnapshotSource } from "../snapshot-key.js";
 import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings } from "./config.js";
 import { describeUsage, pricePerSecond } from "./pricing.js";
-import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, networkConfig, withHosts } from "./network.js";
+import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, guestNetworkStep, networkConfig, withHosts } from "./network.js";
 import type { EgressMode } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
@@ -117,6 +117,18 @@ export const ACCOUNT_LIMIT = "E2B refused to start another sandbox: its account 
 export const E2B_BUSY = "E2B could not start a sandbox just now. Try again in a minute.";
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * How long `true`, the first command of every connect, may take. A guest that is out of memory (a command of
+ * the agent's took all of it) still starts commands and never finishes one, and E2B's pause keeps that memory:
+ * every resume brings the same wedged guest back. Ten seconds is far beyond what `true` takes in a sandbox that works.
+ */
+const PROBE_MS = 10_000;
+/** How long the sandbox's name files may take (`guestNetwork`): its lock waits 25 s at most. */
+const GUEST_NETWORK_MS = 30_000;
+
+/** What the turn's timeline says when a sandbox that did not answer was started again from its disk (`E2bSandboxes.restart`). */
+export const RESTARTED_NOTICE = "The sandbox had stopped answering commands, most likely because something in it used all of its memory. It was restarted from its disk: the files in the workspace are kept, the programs that were running in it are not.";
 
 function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -156,6 +168,10 @@ export interface E2bSandboxesOptions {
 	onVersion?: (version: string) => void;
 	/** Where the sandbox's pinned names point (network.ts `PIN_ADDRESS`). The Docker stand-in of the tests names its own filter. */
 	pinAddress?: string;
+	/** How long the first command of a connect may take before the sandbox counts as not answering (`answers`). Default `PROBE_MS`. */
+	probeMs?: number;
+	/** How long the sandbox's name files may take (`guestNetwork`). Default `GUEST_NETWORK_MS`. */
+	networkMs?: number;
 }
 
 /** The profiles a sandbox on E2B can be made with. */
@@ -198,6 +214,8 @@ export class E2bSandboxHandle implements TurnSandbox {
 
 	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bSandboxes` before the handle is handed out. */
 	snapshot?: SnapshotSource;
+	/** `SandboxHandle.notice`: set when this connect started the sandbox again from its disk. */
+	notice?: string;
 
 	/** One of the provider's own fixed scripts as root (snapshots.ts): never a command of a session's. Its last line of output, or null. */
 	async rootAnswer(script: string, args: string[], options: { stdin?: string; timeoutMs: number }): Promise<{ code: number | null; stdout: string } | null> {
@@ -664,11 +682,84 @@ export class E2bSandboxes implements Sandboxes {
 		const mode = network.mode;
 		let stdout = "";
 		let stderr = "";
-		const command = await connection.start(guestDnsArgv(network, this.options.pinAddress).map(shellQuote).join(" "), { root: true, cwd: "/", stdin: false, onStdout: (text) => (stdout += text), onStderr: (text) => (stderr += text) });
+		const starting = this.now();
+		let command: E2bCommand;
+		try {
+			command = await connection.start(guestDnsArgv(network, this.options.pinAddress).map(shellQuote).join(" "), { root: true, cwd: "/", stdin: false, onStdout: (text) => (stdout += text), onStderr: (text) => (stderr += text) });
+		} catch (error) {
+			throw new Error(`could not set the sandbox's names for WLP_E2B_NETWORK=${mode}: E2B did not start the script (${messageOf(error)})`);
+		}
+		const startMs = this.now() - starting;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const result = await Promise.race([command.wait(), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), 30_000)))]).finally(() => clearTimeout(timer));
+		const limit = this.options.networkMs ?? GUEST_NETWORK_MS;
+		const result = await Promise.race([command.wait(), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), limit)))]).finally(() => clearTimeout(timer));
 		if (result === null) await command.kill().catch(() => undefined);
-		if (result === null || result.exitCode !== 0 || !stdout.includes(`network ${mode}`)) throw new Error(`could not set the sandbox's names for WLP_E2B_NETWORK=${mode} (${result === null ? "it took longer than 30 s" : stderr.trim().slice(-300) || `exit ${result.exitCode}`})`);
+		if (result === null) throw new Error(`could not set the sandbox's names for WLP_E2B_NETWORK=${mode}: the script started (in ${Math.round(startMs / 100) / 10} s) and did not end within ${limit / 1000} s; ${guestNetworkStep(stdout)}`);
+		if (result.exitCode !== 0 || !stdout.includes(`network ${mode}`)) throw new Error(`could not set the sandbox's names for WLP_E2B_NETWORK=${mode} (${stderr.trim().slice(-300) || `exit ${result.exitCode}`}; ${guestNetworkStep(stdout)})`);
+	}
+
+	/**
+	 * Null when the sandbox runs a command to its end within `probeMs`; otherwise what went wrong, in words
+	 * for a log line and an error. As root, so that nothing of a session's (its process limit, its files) is in the way.
+	 */
+	private async answers(connection: E2bConnection): Promise<string | null> {
+		const limit = this.options.probeMs ?? PROBE_MS;
+		const deadline = this.now() + limit;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), limit)));
+		let command: E2bCommand | undefined;
+		try {
+			const started = connection.start("true", { root: true, cwd: "/", stdin: false });
+			started.catch(() => undefined);
+			const first = await Promise.race([started, late]);
+			if (first === "late") return `E2B did not start a command in it within ${limit / 1000} s`;
+			command = first;
+			const done = command.wait();
+			done.catch(() => undefined);
+			const end = await Promise.race([done, late]);
+			if (end === "late") return `a command started in it and did not end within ${limit / 1000} s`;
+			return end.exitCode === 0 ? null : `\`true\` ended with exit code ${end.exitCode}${end.error ? ` (${end.error})` : ""}`;
+		} catch (error) {
+			return `a command in it failed: ${messageOf(error)}`;
+		} finally {
+			clearTimeout(timer);
+			if (command !== undefined && this.now() >= deadline) void command.kill().catch(() => undefined);
+		}
+	}
+
+	/**
+	 * The sandbox does not answer (`answers`): it is paused and started again from its disk, without the memory
+	 * the pause kept (`onResume: "reboot"`, E2B's rescue for a wedged guest). The workspace's files stay; no
+	 * process of before runs, so a turn that was cut off is gone with them. Throws when it still does not answer.
+	 */
+	private async restart(info: E2bSandboxInfo, why: string): Promise<E2bConnection> {
+		const id = info.sandboxId;
+		// Without pauses (WLP_E2B_PAUSE=0) there is no start from the disk: only a new sandbox, which the person chooses.
+		if (!this.settings.pause) throw new Error(`the sandbox does not answer (${why}); with WLP_E2B_PAUSE=0 it cannot be started again from its disk`);
+		this.log(`[wlp] e2b.sandbox.unresponsive id=${id} session=${info.metadata[META.session] ?? ""}: ${why}; it is paused and started again from its disk`);
+		for (let attempt = 1; ; attempt += 1) {
+			try {
+				await this.client.pause(id);
+				break;
+			} catch (error) {
+				if (!(error instanceof E2bBusyError) || attempt >= PAUSE_TRIES) throw new Error(`the sandbox does not answer (${why}), and it could not be paused to start it again: ${messageOf(error)}`);
+				await this.sleep(PAUSE_RETRY_MS);
+			}
+		}
+		this.ended({ ...info, state: "running" }, "paused", "to be started again from its disk");
+		let fresh: E2bConnection | undefined;
+		try {
+			fresh = await this.client.connect(id, this.settings.idleTimeoutMs, { reboot: true });
+		} catch (error) {
+			if (error instanceof E2bLimitError) throw new SandboxUserError(ACCOUNT_LIMIT);
+			if (error instanceof E2bBusyError) throw new SandboxUserError(E2B_BUSY);
+			throw new Error(`the sandbox does not answer (${why}), and it could not be started again from its disk: ${messageOf(error)}`);
+		}
+		if (fresh === undefined) throw new Error("the sandbox was gone after it was paused to be started again");
+		const still = await this.answers(fresh);
+		if (still !== null) throw new Error(`the sandbox does not answer (${why}), and still did not after it was started again from its disk (${still})`);
+		this.log(`[wlp] e2b.sandbox.rebooted id=${id}: started again from its disk, and it answers`);
+		return fresh;
 	}
 
 	profile(id: SandboxProfileId): SandboxProfile {
@@ -766,6 +857,7 @@ export class E2bSandboxes implements Sandboxes {
 		// Starting a paused sandbox adds one to those that run, as creating one does.
 		if (paused) await this.assertRoom();
 		let connection: E2bConnection | undefined;
+		const connectedAt = this.now();
 		try {
 			connection = await this.client.connect(id, this.settings.idleTimeoutMs);
 		} catch (error) {
@@ -774,15 +866,24 @@ export class E2bSandboxes implements Sandboxes {
 			throw new Error(`could not start the sandbox: ${messageOf(error)}`);
 		}
 		if (connection === undefined) return undefined;
+		// Before anything else: a sandbox that starts commands and never finishes one would hang every step below.
+		const silent = await this.answers(connection);
+		let restarted = false;
+		if (silent !== null) {
+			// A paused one has run only since this connect.
+			connection = await this.restart(paused ? { ...info, startedAt: connectedAt } : info, silent);
+			restarted = true;
+		}
 		const now = this.now();
 		const known = this.remember(info);
 		// The profile the sandbox was made with, as E2B keeps it: whichever server connects runs Windlass the same way.
 		const made = sandboxProfile(info.metadata);
 		const network = this.networkFor(`id=${id}`, options.network);
 		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval, network, info.metadata[META.session]);
+		if (restarted) handle.notice = RESTARTED_NOTICE;
 		const from = info.metadata[SNAP_META.from];
 		if (from) handle.snapshot = await this.sourceFor(handle, info, from);
-		if (paused) {
+		if (paused || restarted) {
 			const running = await this.running().catch(() => null);
 			if (running !== null && running.length > this.settings.maxRunning) {
 				await this.client.pause(id).catch(() => undefined);
@@ -791,7 +892,7 @@ export class E2bSandboxes implements Sandboxes {
 			}
 			known.runningSince = now;
 			known.deadline = now + this.settings.idleTimeoutMs;
-			this.log(`[wlp] e2b.sandbox.resumed id=${id} uid=${known.uid} session=${known.session}`);
+			if (paused) this.log(`[wlp] e2b.sandbox.resumed id=${id} uid=${known.uid} session=${known.session}`);
 			await this.tidy(handle);
 		} else {
 			known.runningSince ??= info.startedAt;

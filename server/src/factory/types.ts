@@ -441,9 +441,16 @@ export type Fact =
 			 * (Codex on "Docker + Windlass sandbox"): the platform's note, never the agent's words.
 			 */
 			escaped?: string;
+			/**
+			 * Set when the session could not prepare the turn's sandbox (connect, resume, its network, a clone): the
+			 * session's sentence. The agent never ran, so it is no cut-off: the step is tried once more, then the person is asked.
+			 */
+			sandboxFailed?: string;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; spend: TurnSpend }
+	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; spend: TurnSpend }
+	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
+	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
@@ -492,6 +499,8 @@ export type Effect =
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }
+	/** Remove the session's sandbox (the person chose a fresh one); `sandbox_freed` with `plan` follows. */
+	| { kind: "fresh_sandbox"; key: string; plan: TurnPlan; to?: "review" }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
