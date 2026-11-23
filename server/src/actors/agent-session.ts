@@ -226,6 +226,7 @@ import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
 import { itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, takesUntrustedMarker } from "../sandbox/harnesses.js";
+import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
@@ -3700,6 +3701,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				onReport,
 				onAsk,
 				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: held.redactor },
+				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
+				// and records them as Windlass's gate would be; and the step limit, which the platform counts (platform-steps.ts).
+				checks: planner || reviewer ? [] : held.checks,
+				onChecks: (event, said) => {
+					active.checks.note(event);
+					if (open && said) note(c, turn, said.level, said.text);
+				},
+				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				harnessModels: meta.harnessModels,
 				onAcpNote: text => {
 					if (open) note(c, turn, "warn", text);
@@ -3944,8 +3953,13 @@ fi`, { signal, timeoutMs: 5000 });
 				message = result?.failure?.message ?? problem;
 				// Codex asked to leave its sandbox (acp-harness.ts): the step ends, and the item asks with the platform's note.
 				if (result?.failure?.reason === SANDBOX_ESCAPE_REFUSED && active.item) active.item.escaped = result.failure.message;
+			} else if (result?.acp?.stepLimit !== undefined && !result.aborted && !signal.aborted) {
+				// The platform stopped the turn at its step limit (platform-steps.ts), as Windlass stops at its own.
+				outcome = "unresolved";
+				note(c, turn, "warn", stepLimitNote(machineHarness(meta.harness)?.name ?? "The agent", result.acp.stepLimit));
 			} else if (reason === "cancelled" || result?.aborted || signal.aborted) outcome = "stopped";
-			else if (reason === "end_turn") outcome = "succeeded";
+			// Checks the platform ran still failed, or could not start: the turn ends as Windlass's does then.
+			else if (reason === "end_turn") outcome = result?.acp?.checks === "unresolved" ? "unresolved" : "succeeded";
 			else if (reason === "max_tokens" || reason === "max_turn_requests") outcome = "unresolved";
 			else if (reason === "refusal") outcome = "failed";
 			else { outcome = "error"; message = `${meta.harness === "codex" ? "Codex" : meta.harness === "opencode" ? "OpenCode" : "Claude Code"} ended without a recognized stop reason.`; }
@@ -4042,7 +4056,7 @@ fi`, { signal, timeoutMs: 5000 });
 			kind: "turn.ended",
 			outcome,
 			exitCode: result?.exitCode ?? null,
-			steps: typeof summary?.steps === "number" ? summary.steps : null,
+			steps: typeof summary?.steps === "number" ? summary.steps : typeof result?.acp?.steps === "number" ? result.acp.steps : null,
 			durationMs: typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
 			usage,
 			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),

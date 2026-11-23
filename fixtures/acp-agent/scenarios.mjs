@@ -85,6 +85,16 @@ export const scenarios = {
 		yield message(`Answered: ${edit.optionId ?? edit.outcome}, ${test.optionId ?? test.outcome}.`);
 		return { stopReason: "end_turn", usage: { inputTokens: 1000, outputTokens: 400, thoughtTokens: 100, cachedReadTokens: 30000, cachedWriteTokens: 2000, totalTokens: 33500 } };
 	},
+	// Five tool calls with a pause after each, so that a stop at the platform's step limit arrives while the turn runs.
+	*steps() {
+		for (let i = 1; i <= 5; i++) {
+			const execute = call("execute", `step ${i}`);
+			yield { sessionUpdate: "tool_call", ...execute };
+			yield progress(execute.toolCallId, "completed", output(`step ${i} done`));
+			yield { delay: 20 };
+		}
+		yield message("All five steps ran.");
+	},
 	// A builder's turn with the platform's tools (MCP over ACP): list them, file a report, ask twice, try a tool it was not given, and a wrong server.
 	*platformtools() {
 		const said = (outcome) => outcome?.result?.content?.[0]?.text ?? JSON.stringify(outcome);

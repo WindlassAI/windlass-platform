@@ -48,4 +48,7 @@ describe("itemAgentLine", () => {
 		expect(itemAgentLine("codex", "docker-windlass-sandbox")).toMatch(/^Codex works in its own sandbox, without network, and runs Quick\. A request to leave the sandbox ends the step\./);
 		expect(itemAgentLine("claude", "docker-hardened")).toMatch(/^Claude Code works in the hardened container, without asking/);
 	});
+	it("says the platform runs the repository's saved checks for every machine agent", () => {
+		for (const harness of ["claude", "opencode", "codex"] as const) expect(itemAgentLine(harness, "docker-hardened")).toMatch(/The platform runs your repository's saved checks when it ends a turn/);
+	});
 });

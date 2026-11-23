@@ -1112,6 +1112,27 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	const windlassPosted = handoff && claudeOutcome ? summaryOf(handoff.verdict, null, (claudeOutcome as Outcome).item.spent, (claudeOutcome as Outcome).item.budget, "https://wlp.invalid/items/i", itemAgent(agentItem("windlass"))) : "";
 	const openCodePosted = handoff && claudeOutcome ? summaryOf(handoff.verdict, null, (claudeOutcome as Outcome).item.spent, (claudeOutcome as Outcome).item.budget, "https://wlp.invalid/items/i", itemAgent(agentItem("opencode"))) : "";
 	expect("a Windlass or OpenCode item's summary names that agent", windlassPosted.startsWith("Windlass at ") && openCodePosted.startsWith("OpenCode at "), [windlassPosted, openCodePosted].map(p => p.split("\n", 1)[0]).join(" | "));
+	// The platform runs the repository's saved checks for Claude Code (sandbox/platform-checks.ts) and records them as Windlass's gate is:
+	// the item's verdict reads them as it reads Windlass's.
+	const checkedEnded = (outcome: "succeeded" | "unresolved", evidence: Verified): Row["fact"] => k => ({ ...agentEnded(claudeTurn)(k), outcome, verified: evidence } as FactBody);
+	drive("a Claude Code item whose platform-run checks passed: the verdict says they passed, and CI is read as for Windlass", agentItem("claude"), [
+		{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: checkedEnded("succeeded", PASSED), state: "working", effects: ["publish"] },
+		{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+		{ fact: ci(H(1), ciRead([{ name: "build", state: "passed" }])), after: 60_000, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o => {
+			const words = effect(o, "handoff")?.words ?? "";
+			return holds(/The 2 checks that applied passed when the agent's turn/.test(words) && !/CI decides/.test(words) && effect(o, "handoff")?.verdict.result === "pass", words);
+		} },
+	]);
+	drive("a Claude Code item whose platform-run checks still fail is sent back by the gate, as a Windlass item is", agentItem("claude"), [
+		{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		// On a machine the fix turn waits for its slot again (queued), as any of its turns does.
+		{ fact: checkedEnded("unresolved", FAILING), state: "queued", effects: ["deliver", "check_turn"], also: o => holds(/still failing: test\b/.test(effect(o, "deliver")?.text ?? "") && o.item.run?.rounds.gate === 1, "a continue-fixing turn names the failing check") },
+		{ fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: checkedEnded("succeeded", PASSED), state: "working", effects: ["publish"] },
+	]);
 	const afterTurn = (item: FactoryItem, spend: ReturnType<typeof turnSpend>) => {
 		let o = advance(item, { kind: "start", at: T0, by: "person:u1" });
 		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });

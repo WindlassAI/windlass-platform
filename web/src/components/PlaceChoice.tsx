@@ -146,7 +146,7 @@ export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: 
 	const how = worksWithoutAsking(harness, profile)
 		? `${name} works in the hardened container, without asking, and runs Quick.`
 		: `${name} works in its own sandbox, without network, and runs Quick. A request to leave the sandbox ends the step.`;
-	return `${how} It does not run your repository's checks: CI decides.`;
+	return `${how} The platform runs your repository's saved checks when it ends a turn, and sends it back with what fails.`;
 }
 
 /**
@@ -187,7 +187,7 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 			{offered.map((harness) => (
 				<HarnessState key={harness.id} harness={harness} machine={machine} hardened={hardened} />
 			))}
-			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+			{chosen === "claude" ? <p className="field-note">Claude Code runs in this container with your Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.</p> : null}
 		</div>
 	);
 }

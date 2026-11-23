@@ -678,8 +678,8 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(JSON.stringify(chunks.map(u => u.content)) === JSON.stringify([{ type: "text", text: "I'll inspect the files." }, { type: "text", text: "The files are ready." }]), JSON.stringify(chunks));
 				const deltas = watch.deltas.filter(d => d.turn === turn && "acp" in d);
 				assert(deltas.length === 8 && new Set(deltas.map(d => "messageKey" in d && d.messageKey)).size === 2, "expected eight deltas across two keys");
-				assert(!(await snapshot()).pending.length && end.outcome === "succeeded" && end.verified === null && end.usage === null && end.cachedShare === null, JSON.stringify(end));
-				return "eight live chunks, two stored items, no pending chunks or verification";
+				assert(!(await snapshot()).pending.length && end.outcome === "succeeded" && end.verified?.state === "none_set" && end.verified.run === null && end.steps === 0 && end.usage === null && end.cachedShare === null, JSON.stringify(end));
+				return "eight live chunks, two stored items, no pending chunks, no checks set and no steps";
 			});
 			await check("a generated title replaces the first prompt's opening words", async () => {
 				const { summary } = await snapshot();

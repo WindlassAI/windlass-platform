@@ -922,8 +922,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: agentGroups,
 		footer: (
 			<>
-				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's. It does not run this repository's checks, so CI decides, and there is no second reviewer on a machine.</p> : null}
-				{!item && other === "Claude Code" ? <p className="ui-menu-note">Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.</p> : null}
+				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's. The platform runs this repository's saved checks when it ends a turn, and there is no second reviewer on a machine.</p> : null}
+				{!item && other === "Claude Code" ? <p className="ui-menu-note">Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.</p> : null}
 				<p className="ui-menu-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
 				{modelChanged ? (
 					<button type="button" className="ui-menu-action start-back" onClick={() => setModel("")}>

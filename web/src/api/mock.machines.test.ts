@@ -400,7 +400,7 @@ describe("the start composer's agent picker", () => {
 		agents();
 		agent("claude");
 		agents();
-		expect(text()).toContain("Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. It does not run this repository's checks; CI's result is on the pull request.");
+		expect(text()).toContain("Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.");
 		expect(value("on")).toContain("nas");
 		expect(value("sandbox")).toContain('Hardened Docker on your machine "nas"');
 		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.

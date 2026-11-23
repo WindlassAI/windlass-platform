@@ -162,7 +162,9 @@ ends the step (`turn_ended.escaped`). The reviewer stays Windlass and runs only 
 items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
 snapshot), and of the platform's tools `report` and `ask_person`, over MCP
 ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)); never `push` or `fetch_base`,
-so the item's publish step pushes everything. CI decides the verdict.
+so the item's publish step pushes everything. The platform runs the repository's saved checks and
+holds the turn to its step limit ([Checks and steps for Claude Code, OpenCode and Codex](#checks-and-steps-for-claude-code-opencode-and-codex)),
+and the verdict reads them as it reads Windlass's gate.
 Where the sign-in method decides how tokens count (Codex, `itemTokens: "sign-in"`), the filing keeps
 the machine's method (`ItemAgent.signIn`), takes only `itemSignIns` (ChatGPT for now), and refuses a turn
 when the machine reports another (`itemSignInChanged`).
@@ -182,6 +184,49 @@ orchestrated one starts with a planner ([Feature orchestration](#feature-orchest
 ```sh
 cd server && npx tsx ../scripts/factory-check.ts                          # the sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
 cd server && npx tsx ../scripts/factory-e2e.ts                          # items through the real actors, on fake sandboxes and the GitHub stand-in
+```
+
+### Checks and steps for Claude Code, OpenCode and Codex
+
+Windlass runs the user's saved checks itself (its verification gate, as required checks) and stops at
+`_meta["windlass/maxSteps"]`. The ACP agents have neither, so the platform does both
+(`HarnessCapabilities.checks: "platform"`, `steps: "platform"`), in every turn of theirs, a person's session's
+as well as an item's:
+
+- **When.** The ACP harness (`sandbox/acp-harness.ts`) takes a snapshot of the workspace before the prompt
+  goes, and again when the prompt is answered with `end_turn`. A snapshot is a git tree written from a
+  private copy of the index (the real index is not touched); `git diff` between two gives the changed paths.
+  No change: no check, `not_needed`/`turn_unchanged`. Otherwise the checks whose `when` patterns match a
+  changed path run (Bun.Glob, as Windlass reads them: `*` within a directory, `**` at any depth), every one
+  where git cannot say what changed. None saved: nothing runs, and the turn is `none_set`.
+- **How.** `sandbox/platform-checks.ts` runs each with `sandbox.run` (`bash -c`) in the session's
+  directory, as the agent's user, for its `timeoutSeconds` (120 when unset), in the saved order, with no
+  saved secret: these agents' own commands get none either. Saved values are taken out of the output, also
+  split over two pieces of it.
+- **Sending back.** A failing check (or one that timed out) sends the agent one more `session/prompt` in the
+  same platform turn. The prompt says it is the platform's, and fences each failing check's command and the
+  end of its output as data (`fence`/`data` of `factory/reviewer-task.ts`: no line of it can close the fence).
+  That is the run's own text, like CI logs: no marker exists for these agents, so it is labelled only. At
+  most `PLATFORM_CHECK_ROUNDS` (2) such prompts; a check still failing then ends the turn `unresolved`
+  (`max_rounds`). A check that could not start is not sent back; when only such checks did not pass the
+  turn ends `unresolved` (`not_started`). Steering is refused while checks run (the message waits for the
+  next prompt), and stopping the turn stops the running check.
+- **Codex on `docker-windlass-sandbox`** runs no check: a check would run what Codex changed outside its
+  sandbox, with the container's network. Each check that applies is recorded as not started, with that
+  reason (`unavailable`), as Windlass records a required check where no sandbox can run it.
+- **The record.** What happened is handed to the session as the events Windlass records of its gate
+  (`snapshot.taken`, `checks.finished` with `evidence`, `synthetic.appended` of origin `check_report`,
+  `step.started`, `execution.succeeded` with `verification`; `RunTurnInput.onChecks`), which the turn's
+  `VerificationLog` reads, so `meta.verified` and `turn.ended.verified` have the same shape as a Windlass
+  turn's, and the item's gate and verdict read them the same way. The timeline gets a note per run. A turn
+  whose checks ended `unresolved` ends `unresolved`.
+- **Steps.** `sandbox/platform-steps.ts` counts each `tool_call` update with a new call id, over every
+  prompt of the turn. The limit is the item's `maxSteps` (`RULES.maxSteps`, 60; the reviewer's 40). When the
+  agent starts the call past it, the harness sends `session/cancel`, the turn ends `unresolved` with a
+  timeline note, and no check runs. `turn.ended.steps` is the count in every ACP turn.
+
+```sh
+cd server && npx tsx ../scripts/harness-check.ts   # checks pass, fail then pass in round 2, fail to the end, nothing to run, Codex's sandbox, the step limit
 ```
 
 ### The platform's tools for every agent

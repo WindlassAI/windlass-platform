@@ -519,9 +519,15 @@ export interface RunTurnInput {
 	servers?: TurnPersonalServer[];
 	/**
 	 * The checks the session's user saved for its repository (repository-checks.ts), for this turn.
-	 * Windlass takes these as required checks each time the session opens.
+	 * Windlass takes these as required checks each time the session opens. An agent whose capabilities say
+	 * `checks: "platform"` has them run by the platform when its prompt ends (platform-checks.ts).
 	 */
 	checks?: RepositoryCheck[];
+	/**
+	 * For `checks: "platform"`: what the platform's run of the checks came to, as the events Windlass records
+	 * of its own gate (for `VerificationLog`), each with the timeline's note where there is one.
+	 */
+	onChecks?: (event: WindlassEvent, note?: import("./platform-checks.js").ChecksNote) => void;
 	/**
 	 * Called when the layer has answered Windlass's question about a tool call itself, with "once",
 	 * because the call is of a tool of one of the user's own servers whose tools run without asking
@@ -610,7 +616,10 @@ export interface RunTurnInput {
 	onPush?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** The agent has the session's base branch fetched into the workspace (`fetch_base`). Given with `onPush`. */
 	onFetchBase?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
-	/** The most model steps the turn may take (`_meta["windlass/maxSteps"]` on its prompt); a turn at the limit ends. Left out: Windlass's own. */
+	/**
+	 * The most model steps the turn may take (`_meta["windlass/maxSteps"]` on its prompt); a turn at the limit ends. Left out: Windlass's own.
+	 * For `steps: "platform"`, the most tool calls, counted by the platform (platform-steps.ts).
+	 */
 	maxSteps?: number;
 }
 
@@ -627,6 +636,12 @@ export interface RunTurnResult {
 		tokens?: TurnUsage | null;
 		/** The Claude 5h window at the turn's first usage update; `usage.fiveHourUsedPct` is its last. */
 		fiveHourAtStart?: number;
+		/** The tool calls the agent started in the turn (platform-steps.ts). */
+		steps?: number;
+		/** Set when the platform stopped the turn at this many tool calls (`maxSteps`). */
+		stepLimit?: number;
+		/** How the platform's checks ended the turn (platform-checks.ts): "unresolved" when checks did not pass. */
+		checks?: string | null;
 	};
 	/** Whether the ACP session could be continued when a previous id was supplied. */
 	resumed?: boolean;

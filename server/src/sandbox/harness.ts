@@ -36,8 +36,8 @@ export interface HarnessCapabilities {
 	userServers: "config-file" | "session-new" | "none";
 	/** Whether a project's own MCP servers wait for the person's approval before they start. */
 	projectServerApproval: boolean;
-	/** The user's saved checks, run before the turn is called done. */
-	checks: "required" | "none";
+	/** The user's saved checks, run before the turn is called done: by Windlass as required checks, by the platform between the agent's prompts (platform-checks.ts), or not at all. */
+	checks: "required" | "platform" | "none";
 	/** Named variables withheld from commands, and credential-looking ones passed to them (`withholdEnv`, `passEnv`). */
 	envLists: boolean;
 	/** A home of the session's own for its commands. */
@@ -52,6 +52,8 @@ export interface HarnessCapabilities {
 	backups: boolean;
 	/** A step limit per turn (`RunTurnInput.maxSteps`). */
 	stepLimit: boolean;
+	/** Who holds a turn to `maxSteps`: the engine itself (Windlass's model steps), the platform counting tool calls (platform-steps.ts), or nobody. */
+	steps: "engine" | "platform" | "none";
 	/** A scripted model for a demo session (`Windlass.demoScript`). */
 	demo: boolean;
 }
@@ -82,6 +84,7 @@ const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	signIn: "chatgpt",
 	backups: true,
 	stepLimit: true,
+	steps: "engine",
 	demo: true,
 });
 

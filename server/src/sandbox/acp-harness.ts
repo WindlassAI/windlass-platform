@@ -9,6 +9,8 @@ import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harn
 import { isTurnSandbox, type SandboxProcess } from "./provider.js";
 import { ASK_TOOL, REPORT_TOOL } from "../agent-publish.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
+import { PlatformChecks } from "./platform-checks.js";
+import { StepCounter } from "./platform-steps.js";
 
 import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, SANDBOX_ESCAPE_REFUSED, sandboxEscapeNote } from "./codex-modes.js";
 
@@ -16,17 +18,16 @@ export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
 	// Over MCP: only the tools that may be served from inside the sandbox (platform-tools.ts, `TOOL_REACH`).
 	platformTools: Object.freeze([REPORT_TOOL, ASK_TOOL] as const), reportScreenshots: false, restrictedReview: false, userServers: "none", projectServerApproval: false,
-	checks: "none", envLists: false, sessionHome: false, usage: "context", models: "harness",
-	signIn: "machine", backups: false, stepLimit: false, demo: false,
+	checks: "platform", envLists: false, sessionHome: false, usage: "context", models: "harness",
+	signIn: "machine", backups: false, stepLimit: true, steps: "platform", demo: false,
 });
 
 function unsupported(input: RunTurnInput): string | undefined {
-	if (input.checks?.length) return "checks";
 	if (input.servers?.length) return "servers";
 	if (input.secrets && (Object.keys(input.secrets.env).length || input.secrets.withholdEnv.length || input.secrets.passEnv.length)) return "saved environment variables";
 	if (input.reportScreenshots) return "report screenshots";
 	// A tool that must not be served from inside the sandbox is refused, not left out: the turn would run without what its caller counts on.
-	return (["script", "maxSteps", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onPlan", "onReview", "onPush", "onFetchBase"] as const)
+	return (["script", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onPlan", "onReview", "onPush", "onFetchBase"] as const)
 		.find(key => input[key] !== undefined);
 }
 
@@ -112,6 +113,12 @@ export function promptUsage(raw: unknown): TurnUsage | null {
 		outputTokens: count("outputTokens") + reasoningTokens,
 		reasoningTokens,
 	};
+}
+
+/** Two prompts' tokens as one turn's: the platform's follow-ups after its checks are part of the turn. */
+function addUsage(a: TurnUsage | null | undefined, b: TurnUsage | null): TurnUsage | null {
+	if (!a || !b) return b ?? a ?? null;
+	return { inputTokens: a.inputTokens + b.inputTokens, cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens, outputTokens: a.outputTokens + b.outputTokens, reasoningTokens: a.reasoningTokens + b.reasoningTokens };
 }
 
 /** Only a definite refusal to inject can safely be submitted again as a normal prompt. */
@@ -212,7 +219,13 @@ export class AcpHarness implements Harness {
 		let outputSeen = false;
 		let run: SandboxProcess | undefined;
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
-		let phase: "setup" | "running" | "ended" = "setup";
+		// "checking": a prompt was answered with `end_turn` and the platform runs the repository's checks (platform-checks.ts), maybe to prompt again.
+		let phase: "setup" | "running" | "checking" | "ended" = "setup";
+		const steps = new StepCounter(input.maxSteps);
+		const gate = new PlatformChecks(handle, input.checks ?? [], (event, note) => input.onChecks?.(event, note), {
+			agent: profile.name, redactor, signal: input.signal,
+			unavailable: profile.sandboxedOn.includes(handle.profile) ? `${profile.name} runs its commands in its own sandbox without network here, and the platform does not run what the agent changed outside it. CI decides.` : undefined,
+		});
 		let configs = optionsOf([]);
 		let modes = modeSelection(null, []);
 		// A Codex mode the profile does not allow, reported by the agent: the turn ends and the process is stopped.
@@ -232,7 +245,7 @@ export class AcpHarness implements Harness {
 		};
 		const rpc = new AcpConnection(line => run?.write(line + "\n") ?? false, {
 			notification: (method, params) => {
-				if (phase === "ended" || method !== "session/update" || !result.windlassSessionId || params.sessionId !== result.windlassSessionId) return;
+				if (phase === "ended" || phase === "checking" || method !== "session/update" || !result.windlassSessionId || params.sessionId !== result.windlassSessionId) return;
 				const update = object(params.update);
 				if (typeof update.sessionUpdate !== "string") return;
 				// The agent's first output after the prompt: text, thinking, or a tool call.
@@ -269,9 +282,11 @@ export class AcpHarness implements Harness {
 					}
 				}
 				stream.push(isKnownUpdate(update) ? update : { ...update, sessionUpdate: "unknown", originalSessionUpdate: update.sessionUpdate });
+				// The platform's step limit (platform-steps.ts): the call past it is shown, and the turn is stopped.
+				if (phase === "running" && steps.count(update)) stopAtLimit();
 			},
 			request: async (method, params, withdrawn) => {
-				if (method === "mcp/message" && mcp && phase !== "ended") return mcp.handle(params, AbortSignal.any([questions.signal, withdrawn]));
+				if (method === "mcp/message" && mcp && phase !== "ended" && phase !== "checking") return mcp.handle(params, AbortSignal.any([questions.signal, withdrawn]));
 				if (method !== "session/request_permission") throw new MethodNotFound(method);
 				if (phase !== "running" || params.sessionId !== result.windlassSessionId) return { outcome: { outcome: "cancelled" } };
 				if (profile.id === "codex" && refusesSandboxEscape(handle.profile)) {
@@ -289,6 +304,14 @@ export class AcpHarness implements Harness {
 		const endForEscape = (note: string) => {
 			if (escaped !== null) return;
 			escaped = note;
+			questions.abort();
+			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
+			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+		};
+		// The agent went past the turn's step limit (above): the turn is stopped, and ends unresolved.
+		const stopAtLimit = () => {
+			if (acp.stepLimit !== undefined || escaped !== null) return;
+			acp.stepLimit = input.maxSteps;
 			questions.abort();
 			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
 			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
@@ -412,9 +435,11 @@ export class AcpHarness implements Harness {
 				}
 			}
 			const prompt = (value: string) => ({ sessionId, prompt: [{ type: "text", text: value }] });
+			// The state the turn's changes are measured from, for the repository's checks; nothing runs where there are none.
+			await gate.begin();
 			phase = "running";
 			mark("prompted");
-			const answer = rpc.request<Fields>("session/prompt", prompt(input.prompt), { onResult: () => { phase = "ended"; } });
+			const answer = rpc.request<Fields>("session/prompt", prompt(input.prompt), { onResult: () => { phase = "checking"; } });
 			input.onControl?.({
 				steer: async value => {
 					if (phase !== "running" || !canSteer || input.signal?.aborted) throw new AcpPromptRequired();
@@ -423,9 +448,20 @@ export class AcpHarness implements Harness {
 				},
 				cancelCall: async () => ({ stopped: false, message: `${profile.name} cannot stop one call; stop the turn instead.` }),
 			});
-			const answered = await answer;
-			acp.stopReason = text(answered.stopReason) || null;
-			acp.tokens = promptUsage(answered.usage);
+			let answered = await answer;
+			for (;;) {
+				acp.stopReason = text(answered.stopReason) || null;
+				acp.tokens = addUsage(acp.tokens, promptUsage(answered.usage));
+				// The agent called its work done: the platform runs the checks, and may send it back in this turn (platform-checks.ts).
+				if (acp.stopReason !== "end_turn" || steps.reached || escaped !== null || input.signal?.aborted) break;
+				const again = await gate.settle();
+				if (again === null || input.signal?.aborted) break;
+				phase = "running";
+				gate.sent();
+				answered = await rpc.request<Fields>("session/prompt", prompt(again), { onResult: () => { phase = "checking"; } });
+			}
+			acp.checks = gate.ended;
+			if (gate.ended === null) await gate.close();
 		} catch (error) {
 			if (!input.signal?.aborted) {
 				const info = profile.id === "codex" && error instanceof AcpError ? error.codexErrorInfo : undefined;
@@ -447,6 +483,7 @@ export class AcpHarness implements Harness {
 			clearTimeout(cancelDeadline);
 			input.signal?.removeEventListener("abort", cancel);
 			phase = "ended";
+			acp.steps = steps.steps;
 			if (escaped !== null && !input.signal?.aborted) result.failure = { reason: SANDBOX_ESCAPE_REFUSED, message: escaped };
 			questions.abort();
 			stream.flush();
