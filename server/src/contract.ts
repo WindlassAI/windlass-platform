@@ -1616,8 +1616,6 @@ export interface ItemFeed {
 	 * subtask's page and the lists read to stay current while subtasks run. Absent from servers before it.
 	 */
 	children?: ItemSummary[];
-	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
-	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
 }
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of

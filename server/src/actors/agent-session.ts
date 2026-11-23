@@ -1375,8 +1375,7 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 	} else if (meta.origin?.childBranch) {
 		head = await putOnWork(sandbox, ".", meta.origin.childBranch.name, meta.origin.childBranch.start);
 		repo.baseSha = head;
-	}
-	else head = await putOnWork(sandbox, ".", repo.branch);
+	} else head = await putOnWork(sandbox, ".", repo.branch);
 	if (head !== plan.commit) {
 		// The branch moved during startup. Decide using the immutable tree we actually checked out.
 		const latest = await setupRevision(app, connection, repo, head);

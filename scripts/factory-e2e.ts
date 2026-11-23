@@ -444,7 +444,9 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(read.status === 200 && Array.isArray(read.body.children) && read.body.children.length === 2, "The feature API omitted its children.");
 			assert(done.children?.length === 2 && done.children.every(s => s.verdict?.ci === "passed" && s.state === "done" && !s.pullRequest && s.review?.state === "off"), "Children did not finish as branches.");
 			assert(standin.fileOn(harbor, "windlass/feature-" + feature.id, "notes/turn-1.md") !== null, "Neither child built files on the feature branch");
-			assert(done.spent.turns === 6 && done.budget.tokens === 3*single.tokens, "Unexpected feature spend " + JSON.stringify(done.spent));
+			const approvedTokens = single.tokens + checkedPlan.subtasks.reduce((sum, child) => sum + child.budget.tokens, 0);
+			assert(done.spent.turns === 6 && done.budget.tokens === approvedTokens,
+				"Unexpected feature spend or budget " + JSON.stringify({ spent: done.spent, budget: done.budget, approvedTokens }));
 			await waitFor("one successful feature check", () => standin.checks.find(r => r.external_id === done.verdicts.at(-1)?.id && r.conclusion === "success"), 30_000);
 			assert(standin.checks.filter(r => r.external_id.includes(feature.id)).length === 1 && !standin.checks.some(r => done.children!.some(child => r.external_id.includes(child.id))), "Extra feature or child checks were posted");
 			const [first, secondChild] = done.children;
