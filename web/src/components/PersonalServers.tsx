@@ -32,6 +32,7 @@ import { absoluteTime, day } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { WarnIcon } from "./Icons";
+import { Check } from "./ui/Check";
 
 const EXAMPLE = `{
   "command": "tracker-mcp",
@@ -440,15 +441,11 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 						) : null}
 					</div>
 				)}
-				<label className={`check${unasked ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={unasked} disabled={busy !== null} onChange={(event) => setUnasked(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Run this server's tools without asking</span>
-						<span className="check-means">{UNASKED_MEANS}</span>
-						<span className="check-means">{UNASKED_KEEPS}</span>
-					</span>
-				</label>
+				<Check checked={unasked} disabled={busy !== null} onChange={(on) => setUnasked(on)}>
+					<span className="check-name">Run this server's tools without asking</span>
+					<span className="check-means">{UNASKED_MEANS}</span>
+					<span className="check-means">{UNASKED_KEEPS}</span>
+				</Check>
 				<div className="server-ask-details" id={ids.gets}>
 					<p className="label">What it gets</p>
 					<p>Windlass starts it without asking, in every agent of yours, from each agent's next turn. No question is put first, as one is put for a server a repository names.</p>

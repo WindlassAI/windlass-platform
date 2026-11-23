@@ -41,11 +41,12 @@ The **agent** chip shows the agent, the model and the effort, for example **Wind
 
 ### The agent
 
-There are three agents:
+There are four agents, each shown by its own logo. The row of logos at the top of the **agent** menu switches to another agent the place offers in one press, on that agent's default model.
 
-- **Windlass** runs everywhere. Work items always use it.
+- **Windlass** runs everywhere.
 - **Claude Code** runs only on one of your machines whose runner offers it. It runs with your Claude subscription.
 - **OpenCode** runs only on one of your machines whose runner offers it. It runs with the model providers you signed it in with, or OpenCode's free public models.
+- **Codex** runs only on one of your machines whose runner offers it. It runs with the ChatGPT sign-in or API key you signed it in with on that machine.
 
 Choose the machine under **on** first. Claude Code and OpenCode run in the hardened Docker profile only. They do not run the repository's checks; CI's result is on the pull request. The **agent** chip groups the models under each agent's name, with its sign-in state. An agent offered only on another machine of yours says "choose that machine first". Under **Terminal sign-in commands** are the commands that sign each one in.
 
@@ -53,11 +54,11 @@ See [Agents on your machine](/docs/machines#agents-on-your-machine) to set them 
 
 ### The model
 
-**Model** lists the models you can choose. The default one is marked **default**. For Windlass, these are the models of your ChatGPT plan, as the platform read them for your account. For Claude Code and OpenCode, they are the models the machine's runner reported: for OpenCode, those of the providers it is signed in with. Until the runner has reported them, the chip offers the agent's default model. With many models, type in **Filter models…** to find one. You can change the model with any later prompt.
+**Model** lists the models you can choose. The default one is marked **default**. For Windlass, these are the models of your ChatGPT plan, as the platform read them for your account. For Claude Code, OpenCode and Codex, they are the models the machine's runner reported: for OpenCode, those of the providers it is signed in with. Until the runner has reported them, the chip offers the agent's default model. With many models, type in **Filter models…** to find one. You can change the model with any later prompt.
 
 ### The effort
 
-**Effort** sets how hard the model reasons. Choose **default**, or one of the levels the chosen model offers. The levels come from your plan, so they differ between models.
+**Effort** sets how hard the model reasons. It is its own control beside the **agent** chip, shown when the chosen model has levels: choose **default**, or one of the levels the chosen model offers. The levels come from your plan, so they differ between models.
 
 ## Choose the mode
 
@@ -88,6 +89,12 @@ Once the machine reports Claude Code's own list of modes, the chip shows that li
 ### OpenCode modes
 
 OpenCode starts in **build**. Its modes are the ones OpenCode reports, for example **build**, which runs tools as OpenCode's permissions allow, and **plan**, which allows no edits. On Windlass, OpenCode asks you before it runs a command, edits a file or works outside the workspace.
+
+### Codex modes
+
+Codex's modes depend on the sandbox: **Container access** on Docker, hardened, and **Read-only** or **Workspace access** (the default) on Docker + Windlass sandbox. See [Codex sign-in](/docs/runner#codex-sign-in) for what each allows.
+
+**Plan mode** is a separate choice in the session's composer, beside the effort and the model. With **Plan mode · on**, the next prompt asks Codex for a plan and it changes nothing. Set it back to **off** to have it do the work. It applies to a prompt that starts a turn, not to a message that steers a running one, and it can't be changed while a turn runs. It is not the work items' **Plan first**.
 
 > **Careful** **Full** and **Bypass permissions** let the agent run commands without asking. Use them in a sandbox you trust with the repository and its secrets.
 

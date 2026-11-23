@@ -33,9 +33,10 @@ import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js
 import { ChevronIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
-import { Pill } from "../components/ui/Pill";
+import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placementWait, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
+import { plural } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { useModels } from "../state/hooks";
 import { effortChoices, effortsOf, modelLabel, type ReportedOptions } from "../lib/models";
@@ -45,6 +46,7 @@ import { useMachines } from "./Machines";
 import { budgetProblems, closingReserve, PLAN_FIELDS, subtaskFloor, subtaskPool, sumBudgets, type PlanField } from "../lib/feature";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
+import { Check } from "../components/ui/Check";
 
 /** The page's actions on the item (Item.tsx, `useActing`), with how the last one failed. */
 export interface PlanActing {
@@ -149,7 +151,11 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const answered = Object.entries(answers).filter(([, text]) => text.trim() !== "");
 	const placesDirty = plan ? plan.subtasks.some((task) => places[task.key] !== undefined && placeChanged(task, places[task.key]!)) || overflow !== (plan.overflow ?? false) : false;
 	const agentsDirty = plan ? plan.subtasks.some((task) => task.key in agents && agentChanged(task, agents[task.key])) : false;
-	const dirty = budgetsChanged || answered.length > 0 || placesDirty || agentsDirty;
+	/** Changes to the plan itself (budgets, places, agents): these are saved as a new version before anything is approved. */
+	const edits = budgetsChanged || placesDirty || agentsDirty;
+	const dirty = edits || answered.length > 0;
+	/** Only answers typed: they go with the approval, in one press, as the new version it approves. */
+	const answersOnly = !edits && answered.length > 0;
 	/** A subtask as it would be saved: its budget, place and agent as edited. */
 	const edited = (task: PlanSubtask): PlanSubtask => {
 		const place = places[task.key];
@@ -170,6 +176,15 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const approve = () => {
 		if (view?.question?.kind === "single_suggested") return acting.act({ kind: "answer", question: view.question.id, choice: "run_single" });
 		return plan ? acting.act({ kind: "approve_plan", version: plan.version, ...(unattended.length > 0 && { agents: unattended.filter((key) => confirmed.includes(key)) }) }) : Promise.resolve(false);
+	};
+	/** Answers only: saved as the next version, which is then approved (one implementer, where the planner suggested that), in one press. */
+	const approveWithAnswers = async () => {
+		if (!plan) return false;
+		const single = view?.question?.kind === "single_suggested";
+		const agentsConfirmed = unattended.filter((key) => confirmed.includes(key));
+		if (!(await save())) return false;
+		if (single) return acting.act({ kind: "run_single" });
+		return acting.act({ kind: "approve_plan", version: plan.version + 1, ...(unattended.length > 0 && { agents: agentsConfirmed }) });
 	};
 	const reset = () => {
 		if (plan) {
@@ -208,11 +223,14 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		pool,
 		problems,
 		dirty,
+		edits,
+		answersOnly,
 		/** Questions with no answer saved and none typed. */
 		unansweredLeft: plan ? plan.questions.filter((question) => !question.answer && !answers[question.id]?.trim()).length : 0,
 		unanswered,
 		save,
 		approve,
+		approveWithAnswers,
 		reset,
 	};
 }
@@ -251,7 +269,8 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 	const refused = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
 	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines, review.models);
 	const unconfirmed = single ? 0 : review.unconfirmed.length;
-	const blocked = review.problems.any ? "Fix the figures marked below first." : review.dirty ? "Save your changes, then approve this version." : review.unanswered > 0 ? `Answer ${review.unanswered === 1 ? "the question" : `the ${review.unanswered} questions`} and save first.` : unconfirmed > 0 ? `Confirm ${unconfirmed === 1 ? "the agent that works" : `the ${unconfirmed} agents that work`} without asking first.` : null;
+	// Answers alone go with the approval; changes to budgets, places or agents are saved as a version first.
+	const blocked = review.problems.any ? "Fix the figures marked below first." : review.edits ? "Save your changes, then approve this version." : review.unansweredLeft > 0 ? `Answer ${review.unansweredLeft === 1 ? "the question" : `the ${review.unansweredLeft} questions`} first.` : unconfirmed > 0 ? `Confirm ${unconfirmed === 1 ? "the agent that works" : `the ${unconfirmed} agents that work`} without asking first.` : null;
 	// The owner's choice: a place no allowed machine can ever take holds approval back, with the server's words. A busy or offline one does not.
 	const placeBlocked = blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
 	const revise = view.question.choices.find((choice) => choice.id === "revise");
@@ -264,12 +283,12 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 			</p>
 			<p className="item-question-text">
 				{single ? view.question.text : <>{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.</>}
-				<span className="plan-version"> Version {plan.version}</span>
+				{" "}<span className="plan-version">Version {plan.version}</span>
 			</p>
 
 			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
 
-			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.dirty} /> : null}
+			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.edits} /> : null}
 
 			{plan.questions.length > 0 ? (
 				<div className="plan-asks">
@@ -301,7 +320,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 			) : null}
 
 			<div className="item-choices">
-				{review.dirty ? (
+				{review.edits ? (
 					<>
 						<button type="button" className="button button-primary" disabled={busy || review.problems.any} onClick={() => void review.save()}>
 							{acting.busy === "edit_plan" ? "Saving…" : `Save as version ${plan.version + 1}`}
@@ -311,11 +330,11 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						</button>
 					</>
 				) : (
-					<button type="button" className="button button-primary" disabled={busy || blocked !== null || placeBlocked !== null} onClick={() => void review.approve()} aria-describedby={blocked || placeBlocked ? `${ids.title}-why` : undefined}>
-						{single ? "Approve for one implementer" : acting.busy === "approve_plan" ? "Approving…" : `Approve version ${plan.version}`}
+					<button type="button" className="button button-primary" disabled={busy || blocked !== null || placeBlocked !== null} onClick={() => void (review.answersOnly ? review.approveWithAnswers() : review.approve())} aria-describedby={blocked || placeBlocked ? `${ids.title}-why` : undefined}>
+						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : review.answersOnly ? "Approve" : `Approve version ${plan.version}`}
 					</button>
 				)}
-				{single && !review.dirty && view.question.choices.some(option => option.id === "orchestrate_anyway") && (
+				{single && !review.edits && view.question.choices.some(option => option.id === "orchestrate_anyway") && (
 					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "orchestrate_anyway" })}>
 						Ask for subtasks
 					</button>
@@ -325,22 +344,22 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						{acting.busy === "run_single" ? "Starting…" : "Run as a single item"}
 					</button>
 				) : null}
-				{revise && !review.dirty ? (
+				{revise && !review.edits ? (
 					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "revise" })}>
 						{acting.busy === "revise" ? "Sending…" : "Ask for a new plan"}
 					</button>
 				) : null}
-				{giveUp && !review.dirty ? (
+				{giveUp && !review.edits ? (
 					<button type="button" className="button button-quiet" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "give_up" })}>
 						{acting.busy === "give_up" ? "Sending…" : giveUp.label}
 					</button>
 				) : null}
 			</div>
-			{blocked && !review.dirty ? (
+			{blocked && !review.edits ? (
 				<p className="field-note" id={`${ids.title}-why`}>
 					{blocked}
 				</p>
-			) : placeBlocked && !review.dirty ? (
+			) : placeBlocked && !review.edits ? (
 				<p className="field-note plan-blocked-place" id={`${ids.title}-why`}>
 					<span className="plan-blocked-dot" aria-hidden="true" />
 					<span>
@@ -348,33 +367,64 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 					</span>
 				</p>
 			) : null}
-			{!single && <p className="field-note">Sizing beyond one slot is not supported by current runners.</p>}
+			{/* Said only of a plan that sizes a subtask: a runner that reports no slots cannot give it more than one. */}
+			{!single && plan.subtasks.some((task) => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) ? <p className="field-note">Sizing beyond one slot is not supported by current runners.</p> : null}
 		</section>
 	);
 }
 
 /** One of the plan's own questions: its options as a choice, or a line to write. */
+/**
+ * A plan question as the owner reads it: the question in one short bold line; the background folded under
+ * "Why it asks"; the options as rows of radio buttons. An older plan has no `why`, and may have put the
+ * background in its text: a long text is split there, its question sentence shown and the rest folded.
+ */
+export function questionParts(question: Pick<FeaturePlan["questions"][number], "text" | "why">): { ask: string; why: string | null } {
+	if (question.why) return { ask: question.text, why: question.why };
+	if (question.text.length <= ASK_SHORT) return { ask: question.text, why: null };
+	const sentences = question.text.match(/[^.?!]+(?:[.?!]+["”’)]?|$)\s*/g)?.filter((one) => one.trim() !== "") ?? [question.text];
+	const asking = [...sentences].reverse().find((one) => one.trim().endsWith("?")) ?? sentences[0]!;
+	const rest = sentences.filter((one) => one !== asking).join("").trim();
+	return { ask: asking.trim(), why: rest || null };
+}
+
+/** How long a question may be and still be the whole bold line. */
+const ASK_SHORT = 160;
+
 function PlanAsk({ question, value, disabled, onChange }: { question: FeaturePlan["questions"][number]; value: string; disabled: boolean; onChange(text: string): void }) {
 	const id = useId();
+	const { ask, why } = questionParts(question);
+	const background = why ? (
+		<details className="plan-ask-why">
+			<summary>
+				<ChevronIcon size={11} className="plan-task-more-chevron" />
+				Why it asks
+			</summary>
+			<p>{why}</p>
+		</details>
+	) : null;
 	if (question.answer) {
 		return (
 			<div className="plan-ask plan-ask-answered">
-				<p className="plan-ask-text">{question.text}</p>
+				<p className="plan-ask-text">{ask}</p>
 				<p className="plan-ask-answer">{question.answer}</p>
+				{background}
 			</div>
 		);
 	}
 	return (
 		<div className="plan-ask">
 			<p className="plan-ask-text" id={id}>
-				{question.text}
+				{ask}
 			</p>
+			{background}
 			{question.options?.length ? (
-				<div className="segmented plan-ask-options" role="radiogroup" aria-labelledby={id}>
+				<div className="plan-ask-options" role="radiogroup" aria-labelledby={id}>
 					{question.options.map((option) => (
-						<label key={option} className={`segment${value === option ? " segment-chosen" : ""}`}>
-							<input className="segment-radio" type="radio" name={id} value={option} checked={value === option} disabled={disabled} onChange={() => onChange(option)} />
-							{option}
+						<label key={option} className={`plan-ask-option${value === option ? " plan-ask-chosen" : ""}`}>
+							<input className="check-input" type="radio" name={id} value={option} checked={value === option} disabled={disabled} onChange={() => onChange(option)} />
+							<span className="plan-ask-dot" aria-hidden="true" />
+							<span className="plan-ask-label">{option}</span>
 						</label>
 					))}
 				</div>
@@ -492,16 +542,25 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 				<Inline text={plan.spec.goal} />
 			</p>
 
-			<dl className="plan-spec">
-				{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" kind="requirements" lines={plan.spec.requirements} /> : null}
-				{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} /> : null}
-				{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} /> : null}
-			</dl>
+			{/* The goal stands; the rest of the spec is folded under one line that counts it. */}
+			{specParts(plan).length > 0 ? (
+				<details className="plan-spec-fold">
+					<summary>
+						<ChevronIcon size={11} className="plan-spec-fold-chevron" />
+						{specParts(plan).join(" · ")}
+					</summary>
+					<dl className="plan-spec">
+						{plan.spec.requirements.length > 0 ? <SpecList term="Requirements" kind="requirements" lines={plan.spec.requirements} /> : null}
+						{plan.spec.acceptance.length > 0 ? <SpecList term="Done when" kind="acceptance" lines={plan.spec.acceptance} /> : null}
+						{plan.spec.outOfScope.length > 0 ? <SpecList term="Not in it" kind="out" lines={plan.spec.outOfScope} /> : null}
+					</dl>
+				</details>
+			) : null}
 
 			{view.mode !== "single" && plan.subtasks.length > 0 ? (
 				<div className="usage-card plan-card">
 					<p className="plan-card-head">
-						Subtasks <span className="plan-card-count">{plan.subtasks.length}, in order</span>
+						Subtasks <span className="plan-card-count">{plan.subtasks.length}</span>
 					</p>
 					{placing || editing ? <FeaturePlacement parent={parentPlaceName(view.place, machines)} editing={editing} overflow={editing ? review.overflow : plan.overflow === true} disabled={acting.busy !== null} onOverflow={review.setOverflow} /> : null}
 					<ol className="plan-tasks" aria-label="Subtasks">
@@ -543,6 +602,12 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 			) : null}
 		</>
 	);
+}
+
+/** The spec's parts in a few words, for the line it is folded under: "5 requirements · 3 done when · 2 not in it". */
+function specParts(plan: FeaturePlan): string[] {
+	const { requirements, acceptance, outOfScope } = plan.spec;
+	return [requirements.length > 0 ? plural(requirements.length, "requirement") : null, acceptance.length > 0 ? `${acceptance.length} done when` : null, outOfScope.length > 0 ? `${outOfScope.length} not in it` : null].filter((part): part is string => part !== null);
 }
 
 /** One part of the spec: its name in the margin, its lines as a list, the first few shown and the rest behind "Show more". */
@@ -612,45 +677,57 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 					)}
 					<span className="plan-task-key">{task.key}</span>
 					{task.dependsOn.length > 0 ? (
-						<span className="plan-task-after">
-							after{" "}
-							{task.dependsOn.map((key, index) => (
-								<span key={key}>
-									{index > 0 ? ", " : null}
-									{numbers.has(key) ? `${numbers.get(key)} ` : null}
-									<span className="plan-task-key">{key}</span>
-								</span>
-							))}
+						<span className="plan-task-after" title={`After ${task.dependsOn.join(", ")}`}>
+							after {task.dependsOn.map((key) => numbers.get(key) ?? key).join(", ")}
 						</span>
 					) : null}
+					{task.owns.length > 0 ? <span className="plan-task-files">{plural(task.owns.length, "file")}</span> : null}
 				</div>
-				<p className="plan-task-brief">{task.brief}</p>
+				{/* Two lines of the brief; the whole of it, its files, checks and the place's reason under Details. */}
+				<p className="plan-task-brief plan-task-brief-short">{task.brief}</p>
 				<dl className="plan-task-facts">
-					<div>
-						<dt>owns</dt>
-						<dd className="plan-paths">
-							{task.owns.map((path) => (
-								<code key={path} className="plan-path">
-									{path}
-								</code>
-							))}
-						</dd>
-					</div>
-					<div>
-						<dt>checked by</dt>
-						<dd>
-							<ul className="plan-checks">
-								{task.acceptance.map((line, index) => (
-									<li key={index}>
-										<Inline text={line} />
-									</li>
-								))}
-							</ul>
-						</dd>
-					</div>
 					{place ? <SubtaskPlace task={task} child={child} row={place} editing={editing} disabled={disabled} /> : null}
 					<SubtaskAgentFact title={task.title} child={child} row={agent} editing={editing && !child} disabled={disabled} />
 				</dl>
+				<details className="plan-task-more">
+					<summary>
+						<ChevronIcon size={11} className="plan-task-more-chevron" />
+						Details
+					</summary>
+					<p className="plan-task-brief">{task.brief}</p>
+					<dl className="plan-task-more-facts">
+						{placeReason(task, child, place) ? (
+							<div>
+								<dt>why there</dt>
+								<dd className="plan-place-why">{placeReason(task, child, place)}</dd>
+							</div>
+						) : null}
+						{task.owns.length > 0 ? (
+							<div>
+								<dt>owns</dt>
+								<dd className="plan-paths">
+									{task.owns.map((path) => (
+										<code key={path} className="plan-path">
+											{path}
+										</code>
+									))}
+								</dd>
+							</div>
+						) : null}
+						<div>
+							<dt>checked by</dt>
+							<dd>
+								<ul className="plan-checks">
+									{task.acceptance.map((line, index) => (
+										<li key={index}>
+											<Inline text={line} />
+										</li>
+									))}
+								</ul>
+							</dd>
+						</div>
+					</dl>
+				</details>
 				{editing && drafts ? (
 					<div className="plan-budget" role="group" aria-label={`Budget of ${task.title}`}>
 						{fields.map((field) => {
@@ -702,6 +779,15 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 			</div>
 		</li>
 	);
+}
+
+/** Why the subtask runs where it does, as its Details say: where it ran, or the place the planner or the owner chose. */
+function placeReason(task: PlanSubtask, child: ItemSummary | null, row: PlaceRow | null): string | null {
+	if (child?.placement) return child.placement.reason || null;
+	if (!row) return null;
+	const prefer = row.draft.prefer;
+	if (prefer !== (task.place?.prefer ?? null)) return prefer === null ? null : OWNER_REASON;
+	return task.place?.reason ?? null;
 }
 
 /** What a subtask's row needs to say where it runs. */
@@ -818,7 +904,6 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 	const allow = (editing ? row.draft.allow : (task.place?.allow ?? [])).filter((name) => name !== prefer);
 	const preferMoved = editing && prefer !== (task.place?.prefer ?? null);
 	const allowMoved = editing && JSON.stringify(allow) !== JSON.stringify((task.place?.allow ?? []).filter((name) => name !== prefer));
-	const reason = preferMoved ? (prefer === null ? null : OWNER_REASON) : task.place?.reason;
 	const childWait = child?.wait?.reason === "machine" ? child.wait : null;
 	const ended = child && ["done", "failed", "cancelled"].includes(child.state);
 	return (
@@ -829,7 +914,6 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 					<dd>
 						<strong className="plan-place-name">{placedWords(child.placement)}</strong>
 						<SecretsTag sent={child.placement.sendSecrets} done={ended === true} />
-						<span className="plan-place-why">{child.placement.reason}</span>
 					</dd>
 				</div>
 			) : (
@@ -858,7 +942,6 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 								) : null}
 							</>
 						)}
-						{reason ? <span className="plan-place-why">{reason}</span> : null}
 					</dd>
 				</div>
 			)}
@@ -992,6 +1075,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 			<div className="plan-agent">
 				<dt>agent</dt>
 				<dd>
+					<AgentGlyph harness={child.agent.harness} size={11} inline />
 					<strong className="plan-agent-name">{words.name}</strong>
 					<span className="tone-dim"> · {child.agent.model}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
 					{words.unattended ? <UnattendedTag /> : null}
@@ -1010,13 +1094,14 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 			<dd>
 				{editing ? (
 					<span className="plan-place-picks">
-						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
+						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" icon={<AgentGlyph harness={harness} size={11} />} aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
 						<Menu spec={modelMenu(row, harness)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Model: ${parts.model}`}>{parts.model}</Pill>} />
 						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</span>
 				) : (
 					<>
+						<AgentGlyph harness={harness} size={11} inline />
 						<strong className="plan-agent-name">{parts.name}</strong>
 						<span className="tone-dim"> · {parts.model}{parts.effort ? ` · ${parts.effort} effort` : ""}</span>
 						{parts.unattended ? <UnattendedTag /> : null}
@@ -1048,12 +1133,17 @@ function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; revi
 					const name = agentParts(task.agent, null).name;
 					return (
 						<li key={task.key}>
-							<label className="plan-unattended-row">
-								<input type="checkbox" checked={review.confirmed.includes(task.key)} disabled={disabled} onChange={(event) => review.setConfirmed(task.key, event.target.checked)} />
-								<span>
-									Run <strong>{task.title}</strong> on {name}, which {UNATTENDED_WORDS}
-								</span>
-							</label>
+							<Check
+								className="plan-unattended-row"
+								checked={review.confirmed.includes(task.key)}
+								disabled={disabled}
+								onChange={(on) => review.setConfirmed(task.key, on)}
+								label={
+									<>
+										Run <strong>{task.title}</strong> on {name}, which {UNATTENDED_WORDS}
+									</>
+								}
+							/>
 						</li>
 					);
 				})}
@@ -1114,8 +1204,8 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 							</span>
 							<div className="plan-route-main">
 								<p className="plan-route-title">{task.title}</p>
-								<p className="plan-route-why">{route.inherited ? "Names no place: it runs where the feature does." : route.reason}</p>
 								<p className="plan-route-agent">
+									<AgentGlyph harness={harness} size={11} inline />
 									<span className="plan-agent-name">{agent.name}</span>
 									<span className="tone-dim"> · {agent.model}{agent.effort ? ` · ${agent.effort} effort` : ""}</span>
 									{agent.unattended ? <UnattendedTag /> : null}

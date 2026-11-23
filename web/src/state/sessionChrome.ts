@@ -6,26 +6,57 @@
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
-const publishListeners = new Set<(sessionId: string) => void>();
+/** What the bar asks of the panel: "publish" opens the dialog where it can; "show" brings the pull request section into view. */
+export type PublishRequest = "publish" | "show";
 
-/** The bar asks the session's panel to publish: it opens its dialog, or shows why it cannot. */
-export function requestPublish(sessionId: string): void {
-	for (const listener of publishListeners) listener(sessionId);
+const publishListeners = new Set<(sessionId: string, request: PublishRequest) => void>();
+
+/** The bar asks the session's panel to publish: it opens its dialog, or says why it cannot (`usePublishFeedback`). */
+export function requestPublish(sessionId: string, request: PublishRequest = "publish"): void {
+	for (const listener of publishListeners) listener(sessionId, request);
 }
 
 /** Called with each request for `sessionId`, for as long as the caller is mounted. */
-export function usePublishRequests(sessionId: string, onRequest: () => void): void {
+export function usePublishRequests(sessionId: string, onRequest: (request: PublishRequest) => void): void {
 	const latest = useRef(onRequest);
 	latest.current = onRequest;
 	useEffect(() => {
-		const listener = (id: string) => {
-			if (id === sessionId) latest.current();
+		const listener = (id: string, request: PublishRequest) => {
+			if (id === sessionId) latest.current(request);
 		};
 		publishListeners.add(listener);
 		return () => {
 			publishListeners.delete(listener);
 		};
 	}, [sessionId]);
+}
+
+/**
+ * What the panel answers the bar's "Publish pull request" with, shown at the button so a press is never
+ * silent: "reading" while the panel still reads what there is to publish (the dialog opens by itself once
+ * it can), "refused" with why it cannot open. Null once the dialog opened or the answer was dismissed.
+ */
+export type PublishFeedback = { kind: "reading" } | { kind: "refused"; reason: string } | null;
+
+const feedback = new Map<string, PublishFeedback>();
+const feedbackListeners = new Set<() => void>();
+
+export function setPublishFeedback(sessionId: string, value: PublishFeedback): void {
+	if ((feedback.get(sessionId) ?? null) === value) return;
+	if (value === null) feedback.delete(sessionId);
+	else feedback.set(sessionId, value);
+	for (const listener of feedbackListeners) listener();
+}
+
+export function usePublishFeedback(sessionId: string): PublishFeedback {
+	return useSyncExternalStore(
+		(listener) => {
+			feedbackListeners.add(listener);
+			return () => feedbackListeners.delete(listener);
+		},
+		() => feedback.get(sessionId) ?? null,
+		() => null,
+	);
 }
 
 const PANEL_KEY = "wlp.session.panel";

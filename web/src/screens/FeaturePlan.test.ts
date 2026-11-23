@@ -17,6 +17,8 @@ import { compact } from "../lib/format";
 import { budgetProblems, subtaskFloor } from "../lib/feature";
 import { machineDetailsProblem, tagsOf } from "../lib/machines";
 import { AppProvider } from "../state/app";
+import { PLAN_QUESTION_WHY_CHARS, validatePlan } from "../../../server/src/factory/feature-plan";
+import { questionParts } from "./FeaturePlan";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.setConfig({ testTimeout: 30_000 });
@@ -147,34 +149,37 @@ describe("the Factory composer's mode choice", () => {
 });
 
 describe("a feature's plan on its page", () => {
-	it("asks its questions first, saves the answer as the next version, and approves the version shown", async () => {
+	it("asks its questions first, and approves with the answers in one press, as the next version", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");
 		await show(`/items/${feature.id}`);
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v2 · proposed");
 		expect([...host.querySelectorAll(".plan-task-title")].map((title) => title.textContent)).toEqual(["Build the search index at release", "Add the search command", "Document search in the README"]);
-		expect(host.querySelector(".plan-task:nth-child(2) .plan-task-after")?.textContent).toBe("after 1 index");
+		expect(host.querySelector(".plan-task:nth-child(2) .plan-task-after")?.textContent).toBe("after 1");
+		expect(host.querySelector(".plan-task:first-child .plan-task-files")?.textContent).toBe("2 files");
 		expect([...host.querySelectorAll(".plan-task:first-child .plan-path")].map((path) => path.textContent)).toEqual(["src/search/index/**", "scripts/release.ts"]);
-		// Not approvable until the question is answered and saved.
+		// Not approvable until the question is answered.
 		expect(button("Approve version 2")?.disabled).toBe(true);
-		expect(host.querySelector(".plan-question .field-note")?.textContent).toBe("Answer the question and save first.");
+		expect(host.querySelector(".plan-question .field-note")?.textContent).toBe("Answer the question first.");
+		// The options are radio rows under the question.
+		expect(host.querySelectorAll('.plan-ask-options [type="radio"]').length).toBeGreaterThan(1);
 		const option = [...host.querySelectorAll(".plan-ask-options input")].find((input) => (input as HTMLInputElement).value === "No, 2.0 and later") as HTMLInputElement;
 		act(() => option.click());
-		await act(async () => button("Save as version 3")?.click());
-		await settle();
-		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v3 · proposed");
-		expect(host.querySelector(".plan-ask-answer")?.textContent).toBe("No, 2.0 and later");
-		const approve = button("Approve version 3") as HTMLButtonElement;
+		// An answer is not an edit of the plan: no "Save as version", one Approve that sends both.
+		expect(button("Save as version 3")).toBeUndefined();
+		const approve = button("Approve") as HTMLButtonElement;
 		expect(approve.disabled).toBe(false);
 		await act(async () => approve.click());
 		await settle();
 		const after = await api().item(feature.id);
+		expect(after.plan?.version).toBe(3);
+		expect(after.plan?.questions[0]?.answer).toBe("No, 2.0 and later");
 		expect(after.plan?.status).toBe("approved");
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v3 · approved");
 		expect(host.querySelector(".plan-task:first-child .plan-task-title")?.tagName).toBe("A");
 	});
 
-	it("saves a single suggestion’s answers before approving one implementer", async () => {
+	it("sends a single suggestion’s answers with the approval of one implementer", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");
 		const edited = await api().actOnItem(feature.id, { kind: "edit_plan", version: feature.plan!.version,
@@ -183,8 +188,7 @@ describe("a feature's plan on its page", () => {
 		expect(host.querySelector(".plan-question")?.textContent).toContain("Which database?");
 		expect(button("Approve for one implementer")?.disabled).toBe(true);
 		type(host.querySelector(".plan-asks input")!, "SQLite");
-		await act(async () => button("Save as version " + (edited.plan!.version + 1))?.click());
-		await settle();
+		expect(button("Save as version " + (edited.plan!.version + 1))).toBeUndefined();
 		expect(button("Approve for one implementer")?.disabled).toBe(false);
 		await act(async () => button("Approve for one implementer")?.click());
 		await settle();
@@ -196,17 +200,17 @@ describe("a feature's plan on its page", () => {
 		const feature = await featureNamed("Search the docs from the command line");
 		await show(`/items/${feature.id}`);
 		act(() => ([...host.querySelectorAll(".plan-ask-options input")][1] as HTMLInputElement).click());
-		await act(async () => button("Save as version 3")?.click());
-		await settle();
-		// Another tab changes a budget meanwhile: version 4, which the page has not read when it approves 3.
-		meanwhile = async (id, action) => {
-			if (action.kind !== "approve_plan") return;
+		// Another tab changes a budget meanwhile: version 4, which the page has not read when it approves 3, the answers' version.
+		const otherTab = async (id: string, action: ItemAction) => {
+			// The page's own save of the answers goes first: the other tab acts before its approval.
+			if (action.kind !== "approve_plan") return void (meanwhile = otherTab);
 			const view = await api().item(id);
 			const plan = structuredClone(view.plan!);
 			plan.subtasks[2]!.budget.turns = 3;
 			await api().actOnItem(id, { kind: "edit_plan", version: view.plan!.version, plan });
 		};
-		await act(async () => button("Approve version 3")?.click());
+		meanwhile = otherTab;
+		await act(async () => button("Approve")?.click());
 		await settle();
 		expect(host.querySelector(".plan-question .callout-warn")?.textContent).toBe("The plan changed while you read it, here or in another tab: version 4 is shown now. Check it, then approve again.");
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v4 · proposed");
@@ -379,6 +383,8 @@ describe("the rules the page checks before sending", () => {
 describe("placement in a feature's plan", () => {
 	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === key) as HTMLElement;
 	const fact = (key: string, term: string) => [...row(key).querySelectorAll(".plan-task-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent ?? null;
+	/** Why the subtask runs where it does: under its Details, not repeated in its row. */
+	const why = (key: string) => [...row(key).querySelectorAll(".plan-task-more-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === "why there")?.querySelector("dd")?.textContent ?? null;
 	const pill = (label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === label) as HTMLButtonElement;
 	/** The places of the approval card's row `n`, each with its secrets words. */
 	const routePlaces = (n: number) => [...(host.querySelectorAll(".plan-question .plan-route")[n]?.querySelectorAll(".plan-route-places > li") ?? [])].map((place) => place.textContent!.replace(/\s+/g, " ").trim());
@@ -391,7 +397,7 @@ describe("placement in a feature's plan", () => {
 		expect(host.querySelector(".plan-placement")?.textContent).toContain("A subtask with no place runs where the feature does: nas.");
 		expect(pill("Runs on: nas")).toBeTruthy();
 		expect(fact("fixtures", "needs")).toBe("4 CPUs6 GiB memory");
-		expect(fact("capture", "runs on")).toContain("The only machine that reports screenshots.");
+		expect(why("capture")).toBe("The only machine that reports screenshots.");
 		expect(pill("Alternatives: nas")).toBeTruthy();
 		// Before approval, from the server's own check; "studio" is busy, which is a wait and not a refusal.
 		expect(fact("compare", "can't place")).toBe("‘ci-box’: owner placement policy is never.");
@@ -415,7 +421,7 @@ describe("placement in a feature's plan", () => {
 		act(() => menuRow("studio").click());
 		await settle(2);
 		expect(fact("compare", "can't place")).toBeNull();
-		expect(fact("compare", "runs on")).toContain("Chosen in plan review.");
+		expect(why("compare")).toBe("Chosen in plan review.");
 		// "studio" is busy: a wait, which approval allows.
 		expect(fact("compare", "if approved")).toBe("Waiting for 1 free slot on ‘studio’. 0 free now.");
 		await act(async () => button("Save as version 2")?.click());
@@ -431,7 +437,8 @@ describe("placement in a feature's plan", () => {
 		const after = await api().item(feature.id);
 		expect(after.plan?.status).toBe("approved");
 		expect(after.children?.[0]?.placement).toMatchObject({ name: "nas", units: 2, reason: "Big builds, and both its slots are free." });
-		expect(fact("fixtures", "runs on")).toBe("nas · 2 slots secrets sentBig builds, and both its slots are free.");
+		expect(fact("fixtures", "runs on")).toBe("nas · 2 slots secrets sent");
+		expect(why("fixtures")).toBe("Big builds, and both its slots are free.");
 	});
 
 	it("turns overflow off as a plan change, and says the alternatives are not used", async () => {
@@ -447,7 +454,7 @@ describe("placement in a feature's plan", () => {
 		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas not used: overflow off"]);
 	});
 
-	it("lists on the approval card where each subtask runs, why, its alternatives and whether secrets go there", async () => {
+	it("lists on the approval card where each subtask runs, its alternatives and whether secrets go there, its reasons left to the rows", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Visual regression checks for the tide chart");
 		expect(feature.placementReview).toEqual([{ name: "nas", sendSecrets: true }, { name: "studio", sendSecrets: true }, { name: "ci-box", sendSecrets: false }]);
@@ -455,7 +462,9 @@ describe("placement in a feature's plan", () => {
 		const card = host.querySelector(".plan-question .plan-routes") as HTMLElement;
 		expect(card.querySelector(".plan-routes-overflow")?.textContent).toBe("overflow allowed");
 		expect([...card.querySelectorAll(".plan-route-title")].map((title) => title.textContent)).toEqual(["Record the chart fixtures", "Capture the chart in both themes", "Compare captures against the baseline"]);
-		expect([...card.querySelectorAll(".plan-route-why")].map((why) => why.textContent)).toEqual(["Big builds, and both its slots are free.", "The only machine that reports screenshots.", "Idle, with four slots free."]);
+		// The reasons are each row's, under its Details: the card does not repeat them.
+		expect(card.querySelector(".plan-route-why")).toBeNull();
+		expect(why("compare")).toBe("Idle, with four slots free.");
 		expect(routePlaces(0)).toEqual(["nas secrets sent"]);
 		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas secrets sent"]);
 		expect(routePlaces(2)).toEqual(["ci-box no secrets"]);
@@ -474,15 +483,16 @@ describe("placement in a feature's plan", () => {
 		const search = await featureNamed("Search the docs from the command line");
 		await show(`/items/${search.id}`);
 		expect(routePlaces(0)).toEqual(["this platform the feature's secrets sent"]);
-		expect(host.querySelector(".plan-question .plan-route-why")?.textContent).toBe("Names no place: it runs where the feature does.");
+		expect(routePlaces(0)[0]).toContain("the feature's");
 	});
 
 	it("says where each subtask ran and why, and which machine the next one waits for", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Nightly tide table as a PDF");
 		await show(`/items/${feature.id}`);
-		expect(fact("query", "ran on")).toBe("nas secrets were sentSame place as the feature");
-		expect(fact("render", "ran on")).toBe("nas secrets were sentApproved overflow from ‘studio’");
+		expect(fact("query", "ran on")).toBe("nas secrets were sent");
+		expect(why("query")).toBe("Same place as the feature");
+		expect(why("render")).toBe("Approved overflow from ‘studio’");
 		expect(fact("proof", "waits")).toBe("Waiting for 2 free slots on ‘studio’. 0 free now.");
 		expect(row("proof").querySelector(".plan-task-word")?.textContent).toBe("waits for a machine");
 		expect(pill("Runs on: studio")).toBeUndefined();
@@ -568,7 +578,7 @@ describe("a subtask the feature could not place", () => {
 });
 
 describe("one implementer suggested with the planner's questions open", () => {
-	it("shows the questions and approves only once both are answered and saved", async () => {
+	it("shows the questions and approves, with both answers, only once both are answered", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Round tide heights to centimetres");
 		await show(`/items/${feature.id}`);
@@ -577,11 +587,9 @@ describe("one implementer suggested with the planner's questions open", () => {
 		expect([...card.querySelectorAll(".plan-ask-text")].map((one) => one.textContent)).toEqual(["Round half up, or half to even?", "Should the CSV export round too, or keep the raw millimetres?"]);
 		const approve = button("Approve for one implementer")!;
 		expect(approve.disabled).toBe(true);
-		expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toBe("Answer the 2 questions and save first.");
+		expect(document.getElementById(approve.getAttribute("aria-describedby")!)?.textContent).toBe("Answer the 2 questions first.");
 		act(() => (card.querySelector('.plan-ask-options input[value="Half to even"]') as HTMLInputElement).click());
 		type(card.querySelector(".plan-asks input:not([type])") as HTMLInputElement, "Keep the raw millimetres.");
-		await act(async () => button("Save as version 2")?.click());
-		await settle();
 		expect(button("Approve for one implementer")?.disabled).toBe(false);
 		await act(async () => button("Approve for one implementer")?.click());
 		await settle();
@@ -727,5 +735,27 @@ describe("agents in a feature's plan", () => {
 		const card = host.querySelector(".plan-question") as HTMLElement;
 		expect(card.querySelector(".plan-route-problem")?.textContent).toBe("Can't be placed: ‘nas’: it does not offer OpenCode.");
 		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: 2, agents: ["templates"] })).rejects.toThrow("Write the alert email templates: ‘nas’: it does not offer OpenCode.");
+	});
+});
+
+describe("a plan question's background", () => {
+	it("keeps the planner's why, cut to its length, and refuses one that is not text", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Search the docs from the command line");
+		const plan = feature.plan!;
+		const long = "Because the index is rebuilt at release. ".repeat(20);
+		const checked = validatePlan({ ...plan, questions: [{ id: "why", text: "Index at release?", options: ["Yes", "No"], why: long }] }, plan.compare.singleBudget, plan.budget);
+		expect(checked.questions[0]?.why?.length).toBe(PLAN_QUESTION_WHY_CHARS);
+		expect(checked.questions[0]?.why?.endsWith("…")).toBe(true);
+		// An older plan has none, and stays as it was.
+		expect(validatePlan({ ...plan, questions: [{ id: "old", text: "Index at release?" }] }, plan.compare.singleBudget, plan.budget).questions[0]).toEqual({ id: "old", text: "Index at release?" });
+		expect(() => validatePlan({ ...plan, questions: [{ id: "bad", text: "Index at release?", why: 3 }] }, plan.compare.singleBudget, plan.budget)).toThrow();
+	});
+
+	it("shows an older plan's long question as its question sentence, the rest folded as its background", () => {
+		const text = "Work-item feedback on Docker, hardened stops until its owner chooses Run it anyway. Personal sessions have no equivalent question. Recommended: hold it and ask the owner. Is this exception to automatic next-prompt execution acceptable?";
+		expect(questionParts({ text })).toEqual({ ask: "Is this exception to automatic next-prompt execution acceptable?", why: "Work-item feedback on Docker, hardened stops until its owner chooses Run it anyway. Personal sessions have no equivalent question. Recommended: hold it and ask the owner." });
+		expect(questionParts({ text: "Round half up?" })).toEqual({ ask: "Round half up?", why: null });
+		expect(questionParts({ text: "Round half up?", why: "Money is rounded so." })).toEqual({ ask: "Round half up?", why: "Money is rounded so." });
 	});
 });

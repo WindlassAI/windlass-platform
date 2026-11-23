@@ -19,24 +19,24 @@
  * machine says it is not signed in, the line above the composer shows the machine terminal command.
  */
 import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, Mark, PullRequestIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, Mark, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
 import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
-import { Tooltip } from "../components/ui";
+import { AgentGlyph, Popover, Tooltip } from "../components/ui";
 import { clockDuration, localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
 import { allowanceState, useAllowance, useModels, useNow, type useSession } from "../state/hooks";
-import { requestPublish, setPanelHidden, usePanelHidden } from "../state/sessionChrome";
+import { requestPublish, setPanelHidden, setPublishFeedback, usePanelHidden, usePublishFeedback } from "../state/sessionChrome";
 import { clockTime, useMachines } from "./Machines";
 import { machineLabel } from "../lib/machines";
 
@@ -91,14 +91,45 @@ function BarPublish({ summary }: { summary: SessionSummary }) {
 			</a>
 		);
 	}
+	return <BarPublishButton summary={summary} />;
+}
+
+/**
+ * "Publish pull request": never a silent press. While the panel reads what there is to publish (on a machine,
+ * through its runner, for seconds), it says so and the dialog opens by itself; where the dialog cannot open,
+ * why not, in a small popover at the button, with the way to the panel's section.
+ */
+function BarPublishButton({ summary }: { summary: SessionSummary }) {
+	const button = useRef<HTMLButtonElement>(null);
+	const feedback = usePublishFeedback(summary.id);
 	const busy = summary.status !== "idle";
+	const reading = feedback?.kind === "reading";
+	const close = () => setPublishFeedback(summary.id, null);
+	const refused = feedback?.kind === "refused";
+	const control = (
+		<button ref={button} type="button" className="bar-button" onClick={() => (busy || reading ? undefined : requestPublish(summary.id))} aria-disabled={busy || reading || undefined} aria-busy={reading || undefined}>
+			{reading ? <RefreshIcon size={14} className="spin" /> : <PullRequestIcon size={14} />}
+			<span className="bar-button-label">{reading ? "Reading changes…" : "Publish pull request"}</span>
+		</button>
+	);
 	return (
-		<Tooltip content={busy ? "Available when this turn ends" : "Commit, push and open a pull request"}>
-			<button type="button" className="bar-button" onClick={() => (busy ? undefined : requestPublish(summary.id))} aria-disabled={busy || undefined}>
-				<PullRequestIcon size={14} />
-				<span className="bar-button-label">Publish pull request</span>
-			</button>
-		</Tooltip>
+		<>
+			{/* No tooltip over the popover that says why. */}
+			{refused ? control : <Tooltip content={busy ? "Available when this turn ends" : reading ? "Reading what the workspace has to publish" : "Commit, push and open a pull request"}>{control}</Tooltip>}
+			<Popover open={refused} onClose={close} anchor={button} align="end" maxWidth={320} role="dialog" label="Why the pull request cannot be published now" initialFocus="none" className="bar-publish-why">
+				<p className="bar-publish-why-text">{feedback?.kind === "refused" ? feedback.reason : null}</p>
+				<button
+					type="button"
+					className="link"
+					onClick={() => {
+						close();
+						requestPublish(summary.id, "show");
+					}}
+				>
+					Open the pull request section
+				</button>
+			</Popover>
+		</>
 	);
 }
 
@@ -167,7 +198,17 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 			</nav>
 			<div className="crumb-end">
 				<p className="crumb-facts">
-					{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : summary ? <span>{harnessName ?? "Windlass"}</span> : null}
+					{place?.kind === "machine" ? (
+						<span className="chip crumb-place">
+							{harnessName ? <AgentGlyph harness={harness ?? "windlass"} size={11} inline /> : null}
+							{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}
+						</span>
+					) : summary ? (
+						<span>
+							<AgentGlyph harness={harness ?? "windlass"} size={11} inline />
+							{harnessName ?? "Windlass"}
+						</span>
+					) : null}
 					{summary ? <CrumbModel summary={summary} /> : null}
 				</p>
 				{summary ? <BarPublish summary={summary} /> : null}
@@ -347,9 +388,6 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
-				{summary.capabilities.planMode && <label>Plan mode <select value={planMode ? "plan" : "default"} onChange={e => setPlanMode(e.target.value === "plan")}>
-					<option value="default">Off</option><option value="plan">On</option>
-				</select></label>}
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
 				) : (
@@ -362,6 +400,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						modes={sessionModes(summary, profile)}
 						mode={summary.mode}
 						onMode={setMode}
+						planMode={summary.capabilities.planMode ? { on: planMode, onChange: setPlanMode } : null}
 						initial={handover}
 						suggestion={suggestion}
 						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}

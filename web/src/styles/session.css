@@ -212,6 +212,40 @@
 .to-details {
 	display: none;
 }
+/* Why "Publish pull request" cannot open its dialog now, at the button. */
+.bar-publish-why {
+	display: grid;
+	gap: 8px;
+	padding: 12px 14px;
+	font-size: var(--size-small);
+}
+.bar-publish-why-text {
+	color: var(--ink);
+}
+.bar-publish-why .link {
+	justify-self: start;
+}
+
+/* An agent's sign-in on its machine (HarnessStatus): in the composer's column, above it. */
+.session-notice {
+	flex: none;
+	width: min(var(--transcript, var(--measure)), 100%);
+	margin: 0 auto;
+	padding: 6px var(--gutter) 0;
+}
+.session-notice .machine-command {
+	margin-top: 8px;
+}
+.session-notice-quiet {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.session-notice-quiet summary {
+	cursor: pointer;
+}
+.session-notice-quiet[open] summary {
+	color: var(--ink);
+}
 
 /* ---- conversation --------------------------------------------------------------------------- */
 
@@ -1794,6 +1828,13 @@ button.output-more:hover {
 	flex-wrap: wrap;
 	gap: 4px;
 	padding: 4px 8px 8px;
+	container-type: inline-size;
+}
+/* An agent with a plan mode has one pill more: in a narrow box the key hints (shown only while typing) give way, so Send stays on the row. */
+@container (max-width: 800px) {
+	.composer-tools:has([data-picker="plan-mode"]) .composer-keys {
+		display: none;
+	}
 }
 .composer-tools-end {
 	display: flex;

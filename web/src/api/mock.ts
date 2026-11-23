@@ -209,7 +209,7 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "claude-unchecked", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -250,7 +250,7 @@ const MOCK_OPENCODE_MODES = [
 ];
 
 /** What the mock's runners say they are, and what its platform asks of them. */
-const MOCK_RUNNER_VERSION = "0.2.1";
+const MOCK_RUNNER_VERSION = "0.3.3";
 const MOCK_MIN_RUNNER_VERSION = "0.2.0";
 const MOCK_RUNNER_IMAGE = "registry.example.com/windlass-runner@sha256:6b1f0c2d9e4a8b7c3f5e1d0a9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b";
 
@@ -2516,7 +2516,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		session.run = null;
 		session.pending = [];
 		const outcome = acpOutcome(stopReason);
-		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: stopReason === "end_turn" ? MOCK_ACP_TOKENS : null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null });
+		// The agent's own session id (`session/new`) comes with the turn's end, as the server sends it.
+		store(session, { turn: state.turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: now() - state.startedAt, usage: stopReason === "end_turn" ? MOCK_ACP_TOKENS : null, cachedShare: null, message: null, verified: null, context: state.acp?.context ?? null, ...(session.windlassSessionId && { sessionId: session.windlassSessionId }) });
 		// Once it has run, the session has the models Claude Code listed.
 		setSummary(world, session, { status: "idle", turns: state.turn, lastOutcome: outcome, updatedAt: now(), startTimes: mockStartTimes(session.summary, state.turn, state.startedAt), harnessModels: { ...(session.summary.harness === "codex" ? MOCK_CODEX_MODELS : session.summary.harness === "opencode" ? MOCK_OPENCODE_MODELS : MOCK_CLAUDE_MODELS), fetchedAt: now() } });
 		if (clock === null) {
@@ -2667,7 +2668,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			repository: sessionRepository("acme", "harbor", "release/2.4"),
 			pull: { number: 38, state: "open", hoursAgo: 20 },
 		});
-		history("unattended", "Run a command with nobody to approve it", "docker-hardened", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
+		// Recorded in Auto, where Windlass asks before a command runs outside its sandbox: on the profile that has Auto, so the panel says what the run did.
+		history("unattended", "Run a command with nobody to approve it", "docker-windlass-sandbox", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
 		history("probe", "Check what the sandbox allows", "docker-windlass-sandbox", 2 * HOUR, [{ text: "check the sandbox", script: "sandboxed" }]);
 		history(
 			"add-test",
@@ -2945,7 +2947,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** What the demo's hosted sandboxes reach anyway: a deployment with WLP_E2B_NETWORK=restricted and the default presets. */
-	const MOCK_HOSTED = { mode: "restricted" as const, hosts: ["api.openai.com", "codeload.github.com", "files.pythonhosted.org", "github.com", "objects.githubusercontent.com", "pypi.org", "raw.githubusercontent.com", "registry.npmjs.org", "registry.yarnpkg.com", "release-assets.githubusercontent.com"] };
+	// Model calls go through the platform's model relay, so the model provider is not among them.
+	const MOCK_HOSTED = { mode: "restricted" as const, hosts: ["codeload.github.com", "files.pythonhosted.org", "github.com", "objects.githubusercontent.com", "pypi.org", "raw.githubusercontent.com", "registry.npmjs.org", "registry.yarnpkg.com", "release-assets.githubusercontent.com"] };
 
 	/** A repository's network list as the server answers it (server/src/repository-network.ts). */
 	function networkOf(world: World, repositoryId: GithubId): RepositoryNetwork {
@@ -3274,6 +3277,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({ machineId: "m_workshop", name: "workshop", egress: "restricted", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
 			case "claude-signed-out":
 				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
+			// The runner could not check Claude Code's sign-in: it may well run.
+			case "claude-unchecked":
+				return [nas({ harnesses: [{ ...claude, signIn: "unknown" }] })];
 			case "pairing":
 				return [nas({ status: "waiting", slots: undefined, since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, storeLimits: undefined, profiles: [], harnesses: undefined })];
 			case "outdated":

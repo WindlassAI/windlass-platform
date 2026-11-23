@@ -646,6 +646,12 @@ h3 {
 	font-size: var(--size-small);
 	color: var(--ink-dim);
 }
+/* A short choice in one plain line (`Check`'s `label`). */
+.check-label {
+	font-size: var(--size-small);
+	line-height: 1.5;
+	color: var(--ink);
+}
 /* The footer while a deletion is confirmed: the question on the left, as a dialog's error is. */
 .secret-confirm {
 	color: var(--ink);

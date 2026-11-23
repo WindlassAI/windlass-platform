@@ -1597,6 +1597,11 @@ export interface ItemEvent {
 	/** The step it happened in; null outside a run. */
 	step: { run: number; n: number; kind: StepKind; attempt: number } | null;
 	said: string;
+	/**
+	 * On the entry of an `agent_ask` question: the agent's own words (`Question.asked.text`), kept after the
+	 * question is answered. Untrusted, as there: shown quoted, as the agent's, in plain text; never in `said`.
+	 */
+	asked?: string;
 }
 
 /** A check run or commit status of CI, as the verdict lists it. */
@@ -2050,7 +2055,11 @@ export interface FeaturePlanEdit {
 	earlyChecks?: EarlyCheck[];
 	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
-	questions: { id: string; text: string; options?: string[]; answer?: string }[];
+	/**
+	 * The plan's questions to the owner: `text` one short sentence, `options` short answers to choose from,
+	 * `why` the background in a few sentences (shown folded under the question). Older plans have no `why`.
+	 */
+	questions: { id: string; text: string; options?: string[]; why?: string; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
 	singleSuggested: string | null;
@@ -2608,6 +2617,8 @@ export type TimelineItem =
 			/** What the session's work rests on after this turn. */
 			verified: Verified | null;
 			context?: AcpContext | null;
+			/** Another agent's own session id, which it names only once a turn has opened it (ACP `session/new`); the panel shows it at once. */
+			sessionId?: string;
 	  };
 
 /**

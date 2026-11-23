@@ -4,6 +4,7 @@ import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses
 import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
+import { answeredWords } from "../../../server/src/factory/answered.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -191,7 +192,7 @@ interface Seed {
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"]; interruptions?: number } };
 	/** Where its second review is (`ItemSummary.review`); null when left out. */
 	review?: ItemSummary["review"];
-	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
+	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean, asked?: string]>;
 	/**
 	 * `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`);
 	 * none when left out.
@@ -229,6 +230,11 @@ function ciRuns(count: number, conclusion: string): VerdictRun[] {
 	return names.slice(0, count).map((name, index) => ({ name, app: "github-actions", conclusion, url: `https://github.com/acme/harbor/actions/runs/${9100 + index}` }));
 }
 
+/** The tide store's builder asked its person (`ask_person`): its own words, on the question and on its log entry. */
+const TIDE_STORE_ASKED: NonNullable<ItemQuestion["asked"]> = {
+	text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
+	options: ["SQLite", "Postgres", "One JSON file per station"],
+};
 const userChecks = (...statuses: Array<[name: string, status: Verdict["gate"]["required"][number]["status"], sentBack?: number]>): Verdict["gate"]["required"] => statuses.map(([name, status, sentBack]) => ({ name, status, sentBack: sentBack ?? 0 }));
 const passingGate: Verdict["gate"] = { state: "passed", required: userChecks(["unit tests", "passed"], ["lint", "passed"]) };
 
@@ -392,7 +398,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			state: "waiting",
 			filed: 300,
 			pr: 49,
-			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 75 },
+			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: [{ id: "raise", label: "Try the fix once more" }, ...choices("retry", "hand_over", "give_up")], asked: 75 },
 			run: { n: 1, started: 299, stopReason: null, rounds: { plan: 0, gate: 0, ci: 1, conflict: 0 }, step: { n: 5, kind: "ci_fix", started: 75 } },
 			events: [
 				[299, "Started.", undefined, true],
@@ -483,15 +489,12 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				text: "The agent stopped to ask you a question before it goes on.",
 				choices: choices("reply", "give_up"),
 				asked: 7,
-				asked_: {
-					text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
-					options: ["SQLite", "Postgres", "One JSON file per station"],
-				},
+				asked_: TIDE_STORE_ASKED,
 			},
 			run: { n: 1, started: 39, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 39 } },
 			events: [
 				[40, "Started.", undefined, true],
-				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"]],
+				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"], false, TIDE_STORE_ASKED.text],
 			],
 			spent: { tokens: 380_000, turns: 1, activeSeconds: 32 * 60, hostedSeconds: 32 * 60 },
 		},
@@ -1147,7 +1150,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 				caps: ROUND_CAPS,
 			}
 		: null;
-	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said }));
+	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person, asked]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said, ...(asked !== undefined && { asked }) }));
 	const updatedAt = events.length > 0 ? Math.max(...events.map((event) => event.at)) : ago(seed.filed);
 	return {
 		id,
@@ -1442,7 +1445,7 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		},
 		[],
 		[
-			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"] },
+			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"], why: "Half to even keeps averages of many readings unbiased; half up is what the tide tables printed on paper use." },
 			{ id: "csv", text: "Should the CSV export round too, or keep the raw millimetres?" },
 		],
 	);
@@ -1484,7 +1487,53 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		null,
 	);
 
-	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail];
+	// 10. Two long subtasks, as a planner writes them for a large change: long briefs, many files and checks, a reason for each place,
+	// and two questions with their background. The plan card and the plan's section show them compactly.
+	const feedbackPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Take `/windlass` feedback on pull requests opened from a session, as queued turns of that session.",
+			requirements: [
+				"A personal session's pull request is registered with its repository when it is published, and again when the session wakes.",
+				"Feedback on it queues a turn of that session; it never steers a running turn.",
+				"A duplicate or replayed delivery queues nothing twice.",
+				"Feedback from someone other than the owner waits for the owner's consent on Docker, hardened.",
+				"Item-owned sessions keep their own feedback path.",
+			],
+			outOfScope: ["Backfilling pull requests of sessions that stay dormant.", "Feedback on pull requests opened outside the platform."],
+			acceptance: ["`pnpm --filter @windlass-platform/server typecheck` passes.", "The webhook check's session cases pass.", "The docs build passes."],
+		},
+		[
+			{ key: "session-feedback", title: "Persist session PR targets and admit feedback as queued session turns", brief: "Add a separate personal-session pull request registration and lookup to githubRepository, leaving internalFind's item semantics unchanged. Wire registration into the panel's and the agent's successful publication in agent-session.ts and repair it on wake; persist and retry a failed registration, and clean up or invalidate stale and deleted targets. Bind to the installation actually used to publish, not merely the stored hint. Add a service-only session feedback action that checks the repository, installation and pull request and refuses item-owned sessions, then durably deduplicates and queues the notices. Drain when idle and after a turn fully closes, keeping the personal session's admission, redaction and usage. Do not use prompt(), which steers. Persist the taken subject with the turn's admission so retries and wakes cannot take it twice.",
+				acceptance: ["`pnpm --filter @windlass-platform/server typecheck` passes.", "Webhook-check cases prove a personal session's publication registers the right repository, installation and session, while an item's publication is not registered as a competing target.", "Service-action tests prove idle delivery starts one normal turn, busy delivery waits without steering, and duplicates do not add timeline entries.", "Tests verify the destination refuses a foreign repository, installation or pull request, deleted sessions and work-item origins.", "Prompt assertions cover owner attribution and untrusted metadata."],
+				dependsOn: [], owns: ["server/src/actors/agent-session.ts", "server/src/actors/github-repository.ts", "server/src/actors/session-feedback.ts", "server/src/github/publish.ts", "server/src/factory/feedback.ts", "server/src/contract.ts", "scripts/webhook-check.ts", "scripts/github-standin.ts"],
+				budget: { tokens: 2_400_000, turns: 8, activeSeconds: 90 * 60, hostedSeconds: 30 * 60 },
+				place: { prefer: "nas", reason: "Online, lower load and more free memory than the other machine; the local checks need no open egress. One runner slot." } },
+			{ key: "route-feedback", title: "Route webhook feedback, acknowledge it, and verify and document the full path", brief: "Route a pull request comment that starts with /windlass to the session that opened the pull request, through the registration from the first subtask. Acknowledge it on the pull request with a reaction, and say in a reply when it waits for the owner's consent. Extend the fake GitHub to deliver comments for a session's pull request, and add end-to-end cases from delivery to the queued turn. Document the behaviour for people in the sessions page of the docs, and for operators in the webhook notes.",
+				acceptance: ["The webhook check's routing cases pass.", "A comment on a session's pull request queues one turn of that session in the end-to-end check.", "The docs build passes."],
+				dependsOn: ["session-feedback"], owns: ["server/src/github/webhook.ts", "server/src/github/routes.ts", "scripts/webhook-check.ts", "scripts/e2e.ts", "web/src/docs/content/sessions.md", "docs/webhooks.md"],
+				budget: { tokens: 1_600_000, turns: 6, activeSeconds: 60 * 60, hostedSeconds: 20 * 60 },
+				place: { prefer: "nas", reason: "Same one-slot environment as the implementation; the fake GitHub and webhook checks and the docs build need no live GitHub or screenshots." } },
+		],
+		[
+			{ id: "dormant", text: "Is wake-time repair enough for sessions that stay dormant across the upgrade?", options: ["Yes: register new publications and repair on wake", "No: backfill every existing session pull request first"],
+				why: "There is no index from a repository to its sessions today: only the session holds its pull request. Repairing on wake covers every session that runs again; a backfill covers dormant ones too, and needs its own verified migration before unmatched replies can be trusted." },
+			{ id: "hardened", text: "Should someone else's feedback wait for your consent on Docker, hardened?", options: ["Yes: hold it until you consent", "No: refuse it on hardened profiles"],
+				why: "On Docker, hardened a work item stops for someone else's feedback until its owner chooses Run it anyway. Personal sessions have no such question yet; holding the feedback and asking uses the session's existing question." },
+		],
+	);
+	const sessionFeedback = feature(
+		{ n: 78, title: "Take /windlass feedback on pull requests opened from a session", on: HARBOR, state: "waiting", filed: 6, body: "Comments starting with /windlass on a session's pull request should reach that session.", acceptance: feedbackPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "plan_approval", text: approvalText(feedbackPlan), choices: choices("revise", "give_up"), asked: 2 },
+			run: { n: 1, started: 5, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 4 } },
+			events: [[5, "Started.", undefined, true], [4, "The planner's turn started.", [1, 1, "refine"]], [2, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 240_000, turns: 1, activeSeconds: 9 * 60, hostedSeconds: 0 } },
+		feedbackPlan,
+		null,
+	);
+
+	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
@@ -1781,7 +1830,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!picked) throw conflict("That is not one of the question's answers.");
 				const note = action.note?.trim() || null;
 				if (action.choice === "reply" && note === null) throw new PlatformError("user", "Write your answer to the agent.", { reason: "bad_input" });
-				const said = `Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`;
+				const said = answeredWords(picked, note);
 				// A subtask that could not be placed (blueprint.ts, `askPlacement`): the planner files the rest again, the approved places are checked again, or the subtask is given up and the rest re-planned.
 				if (question.kind === "placement_refused" && plan) {
 					const sub = plan.subtasks.find((one) => question.text.startsWith(one.title + ": "));

@@ -360,10 +360,12 @@ describe("filing a work item from the Factory page", () => {
 	it("files the effort chosen with the item's agent and model", async () => {
 		await show("/factory");
 		act(() => (pill("agent") as HTMLButtonElement).click());
-		act(() => void pop()?.querySelector('[data-value="windlass:gpt-6.1-sol"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
-		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
-		act(() => (document.querySelector('.ui-pop-sub [data-value="high"]') as HTMLElement).click());
-		expect(pill("agent")?.getAttribute("data-value")).toBe("Windlass · gpt-6.1-sol · high");
+		act(() => (pop()?.querySelector('[data-value="windlass:gpt-6.1-sol"]') as HTMLElement).click());
+		// The effort is its own picker in the tray, beside the agent's.
+		act(() => (pill("effort") as HTMLButtonElement).click());
+		act(() => (pop()?.querySelector('[data-value="high"]') as HTMLElement).click());
+		expect(pill("agent")?.getAttribute("data-value")).toBe("Windlass · gpt-6.1-sol");
+		expect(pill("effort")?.getAttribute("data-value")).toBe("high");
 		write("Rename the tide table columns");
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();

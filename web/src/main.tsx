@@ -52,7 +52,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
 		// `?account=empty` a user who has saved nothing for their account,
 		// `?models=unavailable` one whose ChatGPT plan's models could not be read, so that the stand-in list is offered,
-		// `?machine=none|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
+		// `?machine=none|claude-signed-out|claude-unchecked|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
 		// `?machineSession=answering|not_answering|offline|removed` how the agent on the machine "nas" finds it (`MockMachineSession`),
 		// `?items=few|features|none|full|many|loading|failed|off` the user's work items and API tokens in that state (`MockItemsState`), `off` a deployment without them,
 		// and `?reviewer=off` a deployment without the second review.

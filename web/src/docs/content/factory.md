@@ -63,7 +63,7 @@ The body names the repository, the title, the body and, optionally, the acceptan
 
 An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code**, **OpenCode** or **Codex** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those, and an item is refused where the machine does not report the agent signed in. If the agent is signed out by the time a turn would start, the turn does not run: the item asks you, with the `windlass-runner login` command to run. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
 
-An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code and OpenCode alike. The composer offers it in the agent's menu, beside each model, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
+An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code, OpenCode and Codex alike. The composer offers it as its own control beside the agent and model, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
 
 **Codex** can run Quick items too, on a machine that offers it signed in with **ChatGPT**. It is not offered for **Plan first** or as a subtask's agent. See [Codex items](#codex-items).
 
@@ -206,11 +206,11 @@ When the platform runs the checks itself (Claude Code, OpenCode, Codex), it does
 A builder can stop and ask you a question when it can't go on without your decision, for example which of two approaches the task means. It is told to ask only about what it can't settle from the repository, the task and its acceptance criteria. Otherwise it decides and says what it decided in its report.
 
 - **Where.** The item waits under **Needs you**: "The agent stopped to ask you a question before it goes on." Below that, the page shows the agent's own question, marked as the agent's and quoted as plain text, with up to 4 answers it suggests.
-- **Answering.** Write your answer under **Your answer** and choose **Answer the agent**. A suggested answer only fills the box, so you can change it before you send it. The agent gets your answer as its next message, in the same conversation and the same step, and goes on from where it stopped. Its work stays as it was while it waits. You can also **Hand it over as it is**, when the run has pushed something, or **Give up**.
+- **Answering.** Write your answer under **Your answer** and choose **Answer the agent**. A suggested answer only fills the box, so you can change it before you send it. The agent gets your answer as its next message, in the same conversation and the same step, and goes on from where it stopped. Its work stays as it was while it waits. You can also **Hand it over as it is**, when the run has pushed something, or **Give up**. Once answered, **What happened** keeps the agent's question, quoted as its words, and your answer.
 - **How often.** At most 1 question per turn and 3 per run. After that, the agent is told to decide for itself.
 - **How long.** The question waits until you answer, for days if need be. If the item's budget has run out by the time you answer, an item that is not a subtask asks you to raise the limit first, and keeps your answer for the turn it resumes. A subtask can't raise its own limit: it stops, and starting it again begins a new run without your answer.
 - **Read it as the agent's.** The agent may have read issue text or repository files written by someone else, and those can steer what it asks. Its question is never written for it by the platform, never answered for you, and never posted to GitHub. Check what it asks before you agree to anything. A question over 1,000 characters is refused, and the agent is told to shorten it. Control, invisible and other hidden characters are taken out before you see it, and a suggested answer can't carry hidden text into your reply.
-- **Who can ask.** A builder, whether it runs Windlass, Claude Code or OpenCode: the turns that implement, fix checks or CI, merge the base, or answer a review. The planner files its questions with its plan, and the second reviewer asks through its review.
+- **Who can ask.** A builder, whether it runs Windlass, Claude Code, OpenCode or Codex: the turns that implement, fix checks or CI, merge the base, or answer a review. The planner files its questions with its plan, and the second reviewer asks through its review.
 - **What another program can do with these tools.** Claude Code, OpenCode and Codex reach the platform's tools through a connection inside the sandbox, which another program running there could also use. The worst it could do is file a wrong report, which is never the verdict (checks and CI decide that), ask you one question within the same limits, or push what is in the workspace to the item's own branch, at most 5 times a turn. A push never goes to another branch and never replaces someone else's commit, and nothing there gets a credential. The timeline says of each push that another program may have made it.
 
 ### What you can do with an item
@@ -316,20 +316,20 @@ The planner reads what you wrote about your machines under [Say when to use it](
 
 When the plan is ready, the item waits under **Needs you**: "Its plan waits for your approval." Its page shows **It asks you**, "Review the plan: N subtasks, X tokens of the Y the feature may spend", and the plan below it.
 
-- Answer the plan's questions, if it has any.
+- Answer the plan's questions, if it has any. Each is one short question with its choices, or a box for your answer; **Why it asks** opens the planner's background.
 - Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. You can also change where it runs, see [Placement](#placement), and which agent, model and effort it runs, see [Each subtask's agent](#each-subtasks-agent). **Allotted to subtasks** shows the proposed total against what the subtasks may share. Once children exist, it also shows their actual spend.
-- Choose **Save as version N** to keep your changes, or **Discard changes**.
+- Choose **Save as version N** to keep changes to budgets, places or agents, or **Discard changes**. Answers alone need no saving.
 - Tick each subtask listed under **Agents that work without asking**, if there are any.
-- Choose **Approve version N** to start the subtasks.
+- Choose **Approve version N** to start the subtasks. With answers typed and nothing else changed, the button is **Approve**: it saves your answers as the next version and approves that version in one press.
 - Choose **Ask for a new plan** to have the planner try again, or **Give up**.
 
 If approval is refused because the repository lacks checks or push CI, **Run as a single item** turns the feature into one ordinary item and starts it. The tokens spent on planning stay counted.
 
 ### Placement
 
-Each subtask says where it **runs on**: the place the planner prefers and why, and, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
+Each subtask is one compact row: its title, **after N** when it waits for another subtask, how many files it owns, two lines of its brief, where it **runs on** and its agent. **Details** opens the whole brief, **why there** (the planner's reason for the place), the files and its checks. The spec under the plan's goal is folded the same way. A subtask's row says, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
 
-The approval card lists, under **Where each subtask runs**, each subtask's place, the planner's reason, its alternatives, whether overflow is allowed and, for every place, whether the repository's secrets are sent there: **secrets sent** or **no secrets**. This platform always gets them; a machine gets them only while its **Send saved secrets** switch is on. The planner may have read an issue anyone could file, so check this before you approve.
+The approval card lists, under **Where each subtask runs**, each subtask's place, its agent, its alternatives, whether overflow is allowed and, for every place, whether the repository's secrets are sent there: **secrets sent** or **no secrets**. This platform always gets them; a machine gets them only while its **Send saved secrets** switch is on. The planner may have read an issue anyone could file, so check this before you approve.
 
 While the plan is open you can change a subtask's place from your machines or this platform, its alternatives, and overflow, then save them with the budgets as the next version. A place the platform would refuse, for example a machine whose owner chose **Never** under [Let features use it](/docs/machines#let-features-use-it), or one without screenshots for a subtask that needs them, shows **can't place** and the reason. A refused approval shows the same reason under the subtask. A busy or offline machine is not refused: the subtask waits for it.
 

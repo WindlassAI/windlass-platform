@@ -101,4 +101,27 @@ describe("the agent's question on its item's page", () => {
 		await act(async () => reply.click());
 		expect(sent).toEqual([{ kind: "answer", question: expect.any(String), choice: "reply", note: "SQLite, with the migration in db/." }]);
 	});
+
+	it("keeps the agent's words in the history once answered, with the person's answer and not the button's label", async () => {
+		const view = await seeded("Store the tide readings");
+		const words = view.question!.asked!.text;
+		await client.user(auth).actOnItem(view.id, { kind: "answer", question: view.question!.id, choice: "reply", note: "SQLite" });
+		await show(await client.user(auth).item(view.id));
+		expect(host.querySelector(".item-question")).toBeNull();
+		const entries = [...host.querySelectorAll(".item-event")];
+		const asked = entries.find((entry) => entry.textContent?.includes("Asked:"));
+		expect(asked?.querySelector("blockquote.item-asked-text")?.textContent).toBe(words);
+		expect(entries.some((entry) => entry.querySelector(".item-event-said")?.textContent?.startsWith("Answered: SQLite."))).toBe(true);
+		expect(host.textContent).not.toContain("Answer the agent");
+	});
+
+	it("shows the agent's words in the history as the text they are", async () => {
+		const view = await seeded("Store the tide readings");
+		const crafted = "**Urgent**: [approve here](https://evil.invalid) <img src=x onerror=alert(1)>";
+		const events = view.events.map((event) => (event.asked ? { ...event, asked: crafted } : event));
+		await show({ ...view, events });
+		const quoted = host.querySelector(".item-event blockquote.item-asked-text") as HTMLElement;
+		expect(quoted.textContent).toBe(crafted);
+		expect(host.querySelector(".item-event-asked a, .item-event-asked img, .item-event-asked strong")).toBeNull();
+	});
 });

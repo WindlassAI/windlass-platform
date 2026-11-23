@@ -17,6 +17,7 @@ import { MachineState } from "../screens/Machines";
 import { HarnessStatus } from "./HarnessStatus";
 import { machineLabel } from "../lib/machines";
 import { capabilitiesOf, checksSentence, itemModeOf, itemProfiles, machineAgentLine, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
+import { AgentGlyph } from "./ui/Pill";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -192,6 +193,7 @@ export function HarnessChoice({ machine, chosen, hardened, disabled = false, onC
 				{options.map((option) => (
 					<label key={option.id} className={`segment${chosen === option.id ? " segment-chosen" : ""}${option.usable ? "" : " segment-unavailable"}`}>
 						<input className="segment-radio" type="radio" name={group} value={option.id} checked={chosen === option.id} disabled={disabled || !option.usable} onChange={() => onChoose(option.id)} />
+						<AgentGlyph harness={option.id} size={11} inline />
 						{HARNESS_NAMES[option.id]}
 					</label>
 				))}

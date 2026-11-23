@@ -310,6 +310,13 @@
 	background: var(--accent-text);
 	animation: item-now 1.8s ease-in-out infinite;
 }
+/* Where a waiting item stands: not done, and not moving. */
+.item-stage-at .item-stage-bar {
+	background: var(--line-strong);
+}
+.item-stage-at .item-stage-name {
+	color: var(--ink);
+}
 .item-stage-now .item-stage-name,
 .item-stages-yours .item-stage-name {
 	color: var(--accent-text);
@@ -913,11 +920,28 @@
 	min-width: 0;
 	overflow-wrap: anywhere;
 }
+/* The agent's question on its log entry: under the sentence, quoted as the question card quotes it. */
+.item-event-asked {
+	grid-column: 3;
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+	margin: 6px 0 2px;
+	padding: 2px 0 2px 12px;
+	border-left: 2px solid var(--line-strong);
+}
 
 /* ---- usage and settings ----------------------------------------------------------------------- */
 
 .factory-limits > div {
 	grid-template-columns: 112px 132px minmax(0, 1fr);
+}
+/* A limit in words rather than one figure: it takes the number's column and the gloss's, as one line where it fits. */
+.factory-limit-text {
+	grid-column: 2 / -1;
+	font-size: var(--size-small);
+	line-height: 1.45;
+	color: var(--ink);
 }
 .factory-cost .tone-faint {
 	font-size: var(--size-mono-small);
@@ -957,6 +981,9 @@
 	.factory-limits .usage-number {
 		text-align: left;
 	}
+	.factory-limits .factory-limit-text {
+		grid-column: 1;
+	}
 	.item-raise-fields {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -993,7 +1020,8 @@
 	.item-event-step:empty {
 		display: none;
 	}
-	.item-event-said {
+	.item-event-said,
+	.item-event-asked {
 		grid-column: 2;
 	}
 }
@@ -1464,9 +1492,88 @@ a.plan-task-title:hover {
 	line-height: 1.5;
 	color: var(--ink-dim);
 }
+/* In the row, two lines of the brief: the whole of it is under Details. */
+.plan-task-brief-short {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+}
+.plan-task-files {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-faint);
+}
 .plan-task-facts {
 	display: grid;
 	gap: 6px;
+	margin-top: 8px;
+}
+/* A subtask's Details: the whole brief, why it runs where it does, its files and its checks. */
+.plan-task-more {
+	margin-top: 8px;
+	font-size: var(--text-13);
+}
+.plan-task-more summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	color: var(--ink-faint);
+	list-style: none;
+}
+.plan-task-more summary::-webkit-details-marker,
+.plan-spec-fold summary::-webkit-details-marker {
+	display: none;
+}
+.plan-task-more summary:hover,
+.plan-task-more[open] summary {
+	color: var(--ink-dim);
+}
+.plan-task-more-chevron,
+.plan-spec-fold-chevron {
+	transition: transform var(--dur-hover) var(--ease);
+}
+.plan-task-more[open] .plan-task-more-chevron,
+.plan-spec-fold[open] .plan-spec-fold-chevron {
+	transform: rotate(90deg);
+}
+.plan-task-more > .plan-task-brief {
+	margin-top: 8px;
+}
+.plan-task-more-facts {
+	display: grid;
+	gap: 6px;
+	margin-top: 10px;
+}
+.plan-task-more-facts > div {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+}
+.plan-task-more-facts dt {
+	font-size: 12px;
+	color: var(--ink-faint);
+}
+.plan-task-more-facts .plan-place-why {
+	color: var(--ink-dim);
+}
+/* The spec under the goal: one line that counts its parts, open for the lists. */
+.plan-spec-fold {
+	margin-top: 8px;
+}
+.plan-spec-fold summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+	list-style: none;
+}
+.plan-spec-fold[open] > .plan-spec {
 	margin-top: 10px;
 }
 .plan-task-facts > div {
@@ -1783,19 +1890,10 @@ a.plan-task-title:hover {
 	margin: 8px 0 0;
 }
 .plan-unattended-row {
-	display: flex;
-	align-items: baseline;
-	gap: 8px;
 	padding: 4px 0;
-	font-size: var(--text-13);
-	line-height: 1.5;
-	color: var(--ink);
-	cursor: pointer;
 }
-.plan-unattended-row input {
-	flex: none;
-	transform: translateY(2px);
-	accent-color: var(--ink);
+.plan-unattended-row .check-label {
+	font-size: var(--text-13);
 }
 .plan-unattended-row strong {
 	font-weight: var(--weight-medium);
@@ -1943,26 +2041,32 @@ a.plan-task-title:hover {
 
 /* The approval question: the plan's own questions, each its options as a choice. */
 .plan-version {
+	white-space: nowrap;
 	font-family: var(--font-mono);
 	font-size: 11.5px;
 	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
 }
+/* The plan's own questions: each a short bold question, its background folded, its options as radio rows. */
 .plan-asks {
 	display: grid;
-	gap: 12px;
-	padding-top: 12px;
+	gap: 16px;
+	padding-top: 14px;
 	border-top: 1px solid var(--line);
 }
 .plan-ask {
 	display: grid;
-	gap: 6px;
+	gap: 8px;
+	max-width: 74ch;
 }
 .plan-ask-text {
 	font-size: var(--text-14);
+	font-weight: var(--weight-strong);
 	line-height: 1.45;
+	color: var(--ink);
 }
 .plan-ask-answered .plan-ask-text {
+	font-weight: var(--weight-medium);
 	color: var(--ink-dim);
 }
 .plan-ask-answer {
@@ -1973,9 +2077,80 @@ a.plan-task-title:hover {
 	content: "→ ";
 	color: var(--ink-faint);
 }
+.plan-ask-why {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.plan-ask-why summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	color: var(--ink-faint);
+	list-style: none;
+}
+.plan-ask-why summary::-webkit-details-marker {
+	display: none;
+}
+.plan-ask-why[open] .plan-task-more-chevron {
+	transform: rotate(90deg);
+}
+.plan-ask-why summary:hover,
+.plan-ask-why[open] summary {
+	color: var(--ink-dim);
+}
+.plan-ask-why p {
+	margin-top: 4px;
+	line-height: 1.5;
+}
 .plan-ask-options {
-	justify-self: start;
-	flex-wrap: wrap;
+	display: grid;
+	gap: 2px;
+}
+.plan-ask-option {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 6px 8px;
+	border-radius: var(--r-control);
+	font-size: var(--text-13);
+	line-height: 1.45;
+	color: var(--ink-dim);
+	cursor: pointer;
+}
+.plan-ask-option:hover {
+	background: var(--bg-hover);
+	color: var(--ink);
+}
+.plan-ask-chosen {
+	color: var(--ink);
+}
+/* The radio circle, drawn as the checkbox's box is (base.css .check-box), round. */
+.plan-ask-dot {
+	flex: none;
+	width: 16px;
+	height: 16px;
+	margin-top: 1px;
+	border: 1.5px solid var(--ink-faint);
+	border-radius: 50%;
+	transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+.plan-ask-chosen .plan-ask-dot {
+	border-color: var(--accent);
+	box-shadow: inset 0 0 0 3px var(--bg), inset 0 0 0 10px var(--accent);
+}
+.plan-ask-option:has(.check-input:focus-visible) .plan-ask-dot {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+.plan-ask-option:has(.check-input:disabled) {
+	cursor: default;
+	opacity: 0.6;
+}
+.plan-ask-label {
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 .eyebrow-link {
 	color: var(--ink-dim);

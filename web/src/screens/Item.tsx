@@ -46,6 +46,7 @@ import { useNow } from "../state/hooks";
 import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
+import { AgentGlyph } from "../components/ui/Pill";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -784,7 +785,10 @@ function Cost({ view }: { view: ItemView }) {
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
-			<p className="usage-note">Built by {agentLine(view.agent)}.</p>
+			<p className="usage-note">
+				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
+				{agentLine(view.agent)}.
+			</p>
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
 			{agentFacts(view.agent).length > 0 ? (
 				<dl className="usage-facts item-facts">
@@ -839,6 +843,13 @@ function LogEntry({ event, now, uid }: { event: ItemEvent; now: number; uid: str
 				<InlineMarkdown text={event.said} />
 				{person ? <span className="tone-faint"> · {event.by === `person:${uid}` ? "you" : "a person"}</span> : null}
 			</p>
+			{/* The agent's own question, kept after it was answered: its words in plain text, as `AgentAsked` shows them. */}
+			{event.asked ? (
+				<figure className="item-event-asked">
+					<figcaption className="item-asked-who">The agent asked:</figcaption>
+					<blockquote className="item-asked-text">{event.asked}</blockquote>
+				</figure>
+			) : null}
 		</li>
 	);
 }

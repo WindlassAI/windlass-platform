@@ -9,7 +9,8 @@ import { clockDuration } from "../lib/format";
 import type { SessionView, TurnView } from "../lib/timeline";
 import { liveStep } from "../lib/workGroups";
 import { useNow } from "../state/hooks";
-import { PlatformPrompts, Turn } from "./Blocks";
+import { sessionModelWords } from "../lib/acp";
+import { ModelLabel, PlatformPrompts, Turn } from "./Blocks";
 import { ArrowDownIcon, AskIcon, Mark } from "./Icons";
 
 /** How close to the end counts as "at the bottom", in pixels. */
@@ -78,6 +79,8 @@ export function Conversation({ view, summary, profile, onSuggest }: { view: Sess
 	const content = useRef<HTMLDivElement>(null);
 	const following = useRef(true);
 	const [away, setAway] = useState(false);
+	const { harness, harnessModels } = summary;
+	const modelLabel = useCallback((model: string) => sessionModelWords({ harness, harnessModels, model }), [harness, harnessModels]);
 
 	const toEnd = useCallback((smooth = false) => {
 		const element = scroller.current;
@@ -122,9 +125,11 @@ export function Conversation({ view, summary, profile, onSuggest }: { view: Sess
 					{view.turns.length === 0 && !active ? <Empty summary={summary} profile={profile} onSuggest={onSuggest} /> : null}
 					{/* An item's second reviewer takes only the platform's prompts: they stand as the platform's, never as a person's. */}
 					<PlatformPrompts.Provider value={summary.item?.role === "reviewer"}>
-						{view.turns.map((turn) => (
-							<Turn key={turn.turn} turn={turn} />
-						))}
+						<ModelLabel.Provider value={modelLabel}>
+							{view.turns.map((turn) => (
+								<Turn key={turn.turn} turn={turn} />
+							))}
+						</ModelLabel.Provider>
 					</PlatformPrompts.Provider>
 					{active ? <Working summary={summary} turn={last && last.end === null ? last : null} /> : null}
 				</div>

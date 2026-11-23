@@ -12,6 +12,7 @@ import { useNow } from "../state/hooks";
 import { CopyButton } from "./Copy";
 import { Dialog } from "./Dialog";
 import { WarnIcon } from "./Icons";
+import { Check } from "./ui/Check";
 
 const SCOPES: Array<{ scope: ApiTokenScope; name: string; means: string }> = [
 	{ scope: "items:create", name: "File work items", means: "POST /api/items: on your repositories, as you would from a repository's page." },
@@ -109,14 +110,10 @@ function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: Ap
 					{SCOPES.map(({ scope, name: label, means }) => {
 						const on = scopes.includes(scope);
 						return (
-							<label key={scope} className={`check${on ? " check-on" : ""}`}>
-								<input className="check-input" type="checkbox" checked={on} disabled={busy} onChange={(event) => setScopes((now) => (event.target.checked ? [...now, scope] : now.filter((one) => one !== scope)))} />
-								<span className="check-box" aria-hidden="true" />
-								<span className="check-text">
-									<span className="check-name">{label}</span>
-									<span className="check-means">{means}</span>
-								</span>
-							</label>
+							<Check key={scope} checked={on} disabled={busy} onChange={(on) => setScopes((now) => (on ? [...now, scope] : now.filter((one) => one !== scope)))}>
+								<span className="check-name">{label}</span>
+								<span className="check-means">{means}</span>
+							</Check>
 						);
 					})}
 				</fieldset>

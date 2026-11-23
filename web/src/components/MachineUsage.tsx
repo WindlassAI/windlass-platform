@@ -37,26 +37,27 @@ export function MachineUsage() {
 					Your machines could not be read: {error}
 				</p>
 			) : (
-				<ul className="usage-kept">
+				<ul className="usage-machines">
 					{list.map((machine) => (
-						<li key={machine.machineId} className="usage-kept-row machine-row">
-							<div className="usage-kept-main">
-								<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
-								<p className="agent-meta">
-									Sandboxes: {sandboxLimit(machine)}
-									{machine.storeLimits ? <>; snapshots and mirrors: {storeLimits(machine.storeLimits)}</> : null}
-								</p>
-								{machine.sandboxes.length === 0 ? (
-									<p className="agent-meta">no sandbox on it</p>
-								) : (
-									<ul className="machine-sandboxes">
-										{machine.sandboxes.map((sandbox) => (
-											<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} />
-										))}
-									</ul>
-								)}
+						<li key={machine.machineId} className="usage-machine">
+							<div className="usage-machine-head">
+								<h3 className="usage-machine-name">{machineLabel(machine)}</h3>
+								<MachineState machine={machine} now={now} />
 							</div>
-							<MachineState machine={machine} now={now} />
+							{/* The only limits a machine has: the ones its owner set on its runner. */}
+							<p className="usage-machine-limits">
+								Sandboxes: {sandboxLimit(machine)}
+								{machine.storeLimits ? <>; snapshots and mirrors: {storeLimits(machine.storeLimits)}</> : null}
+							</p>
+							{machine.sandboxes.length === 0 ? (
+								<p className="usage-machine-empty">No sandbox on it.</p>
+							) : (
+								<ul className="machine-sandboxes usage-machine-sandboxes">
+									{machine.sandboxes.map((sandbox) => (
+										<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} />
+									))}
+								</ul>
+							)}
 						</li>
 					))}
 				</ul>

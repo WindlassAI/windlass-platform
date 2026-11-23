@@ -888,6 +888,8 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 	});
 	const context = item.context === undefined ? null : contextOf(item.context);
 	if (context) draft.set({ context });
+	// Another agent's session id comes with the turn's end: the panel shows it without a reload.
+	if (typeof item.sessionId === "string" && item.sessionId !== "" && draft.view.windlassSessionId !== item.sessionId) draft.set({ windlassSessionId: item.sessionId });
 }
 
 // ---------------------------------------------------------------------------------------------

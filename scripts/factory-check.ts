@@ -545,7 +545,7 @@ drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
 drive("review: a rounds question can hand over failing CI", reviewerOn(), [...begun,
 	...pushedAndFailed(reviewHead, "build failed"),
 	{ fact: published(H(2)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
-	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated", "expected a rounds question") },
+	{ fact: ci(H(2), failingCi("build failed")), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.cause === "repeated" && o.item.question.choices[0]?.label === "Try the fix once more", "expected a rounds question that tries the fix once more") },
 	...personHandover(ci(H(2), failingCi("build failed"))),
 ]);
 const prAt = (sha: string): Row["fact"] => ({ key }) => ({ kind: "pr_read", webhooks: false, key, state: "open", prHead: sha });
@@ -861,6 +861,8 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 		if (q?.kind !== "agent_ask") return `asked ${q?.kind}`;
 		if (q.asked?.text !== "Which store should the readings go in? With SQLite I add a migration." || q.asked.options.join() !== "SQLite,Postgres") return `the agent's words are ${JSON.stringify(q.asked)}`;
 		if (q.text.includes("SQLite") || o.item.wait?.sentence.includes("SQLite") || o.events.some(e => e.said.includes("SQLite"))) return "the agent's words reached the platform's sentence, the wait or the log";
+		// The agent's words stay on the log's entry, apart from its sentence, for after the answer.
+		if (o.events.find(e => e.said.startsWith("Asked: "))?.asked !== q.asked.text) return `the log's entry kept ${JSON.stringify(o.events.map(e => e.asked))}`;
 		if (q.choices.map(c => `${c.id}:${c.label}`).join() !== "reply:Answer the agent,give_up:Give up") return `choices ${q.choices.map(c => c.id).join()}`;
 		if (o.item.run?.gate !== null || o.item.run.step.kind !== "implement") return "the gate read a turn that asked";
 		return holds(o.item.run.asks === n && q.resume?.newStep === false && q.resume.kind === "implement", `run.asks ${o.item.run.asks}, resume ${JSON.stringify(q.resume)}`);
@@ -868,6 +870,8 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 	const replies = (left: number, note = "Use Postgres"): Row => ({ fact: answer("reply", { note }), state: "working", effects: ["deliver", "check_turn"], also: o => {
 		const d = deliverOf(o);
 		if (!d?.text.startsWith("The person answered your question:\n\n" + note) || !d.text.endsWith("Go on with the task.")) return `delivered ${JSON.stringify(d?.text)}`;
+		// The log says the person's answer, not the button's label.
+		if (!o.events.some(e => e.said === `Answered: ${note}.`)) return `logged ${JSON.stringify(o.events.map(e => e.said))}`;
 		return holds(d.asksLeft === left && o.item.run?.step.kind === "implement" && o.item.run.step.n === 1 && o.item.run.step.attempt === 2 + (3 - left - 1), `asksLeft ${d.asksLeft}, step ${JSON.stringify(o.item.run?.step)}`);
 	} });
 

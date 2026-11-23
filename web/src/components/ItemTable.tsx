@@ -14,10 +14,7 @@ import { STATE_WORD } from "../screens/Items";
 import { CheckIcon, MergedIcon, PullRequestIcon } from "./Icons";
 import { AgentGlyph } from "./ui/Pill";
 
-/**
- * An agent's mark beside its work. The one place the home draws it, so that the shared logo
- * component replaces the initial here alone.
- */
+/** An agent's mark beside its work: the shared agent badge (`AgentGlyph`), its logo. */
 export function AgentMark({ harness }: { harness: HarnessId }) {
 	return (
 		<span className="ws-agent-mark" title={HARNESS_NAMES[harness]}>

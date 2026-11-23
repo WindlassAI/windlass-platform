@@ -4103,6 +4103,7 @@ fi`, { signal, timeoutMs: 5000 });
 			durationMs: typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
 			usage,
 			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),
+			...(caps.events === "acp" && meta.windlassSessionId ? { sessionId: meta.windlassSessionId } : {}),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
 			message,
 			verified,

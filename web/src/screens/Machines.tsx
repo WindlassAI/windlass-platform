@@ -22,13 +22,15 @@ import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
-import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
+import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
+import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -244,18 +246,14 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 	};
 	return (
 		<div>
-			<label className={`check${machine.sendSecrets ? " check-on" : ""}`}>
-				<input className="check-input" type="checkbox" checked={machine.sendSecrets} disabled={busy} onChange={(event) => set(event.target.checked)} />
-				<span className="check-box" aria-hidden="true" />
-				<span className="check-text">
-					<span className="check-name">Send saved secrets to this machine</span>
-					<span className="check-means">
-						{machine.sendSecrets
-							? "Each turn of an agent here gets the saved secrets it is allowed, the repository's and the account's. Turned off, none are sent, and what needs one fails on this machine."
-							: "No saved secret is sent here, so what needs one fails on this machine. Turned on, each agent gets them from its next turn."}
-					</span>
+			<Check checked={machine.sendSecrets} disabled={busy} onChange={(on) => set(on)}>
+				<span className="check-name">Send saved secrets to this machine</span>
+				<span className="check-means">
+					{machine.sendSecrets
+						? "Each turn of an agent here gets the saved secrets it is allowed, the repository's and the account's. Turned off, none are sent, and what needs one fails on this machine."
+						: "No saved secret is sent here, so what needs one fails on this machine. Turned on, each agent gets them from its next turn."}
 				</span>
-			</label>
+			</Check>
 			{error ? (
 				<p className="field-note tone-bad" role="alert">
 					{error}
@@ -369,7 +367,10 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 				const command = loginCommand(harness);
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
-						<span className="machine-agent-name">{HARNESS_NAMES[harness.id]}</span>
+						<span className="machine-agent-name">
+							<AgentGlyph harness={harness.id} size={11} inline />
+							{HARNESS_NAMES[harness.id]}
+						</span>
 						{harness.signIn === "token" ? (
 							<span className="machine-agent-state">
 								{" "}
@@ -377,11 +378,11 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
 						) : harness.signIn === "none" ? (
-							<span className="machine-agent-state">: sign in needed</span>
+							<span className="machine-agent-state">: {signInWords(harness)}</span>
 						) : (
 							// Unknown is the runner's check failing, not a sign-in to redo: its reason, where it gave one, and no login prompt.
 							<span className="machine-agent-state" title={harness.signInReason}>
-								: couldn't check the sign-in{harness.signInReason ? ` (${harness.signInReason})` : ""}
+								: {signInWords(harness)}{harness.signInReason ? ` (${harness.signInReason})` : ""}
 							</span>
 						)}
 						{harness.signIn === "unknown" ? null : (
@@ -734,23 +735,19 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 					<div className="machine-key">
 						<p className="eyebrow">Machine key</p>
 						<p className="machine-key-value">{claim.keyFingerprint ?? <span className="tone-faint">not known</span>}</p>
-						<label className={`check${keyMatches ? " check-on" : ""}`}>
-							<input className="check-input" type="checkbox" checked={keyMatches} disabled={busy} onChange={(event) => setKeyMatches(event.target.checked)} ref={aim} />
-							<span className="check-box" aria-hidden="true" />
-							<span className="check-text">
-								{claim.keyPrinted ? (
-									<>
-										<span className="check-name">The runner's terminal shows the same machine key</span>
-										<span className="check-means">The runner prints it under the code. If it shows another key, or someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
-									</>
-								) : (
-									<>
-										<span className="check-name">I started this runner myself, in the last few minutes</span>
-										<span className="check-means">Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer runner prints it under the code. If someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
-									</>
-								)}
-							</span>
-						</label>
+						<Check checked={keyMatches} disabled={busy} onChange={(on) => setKeyMatches(on)} inputRef={aim}>
+							{claim.keyPrinted ? (
+								<>
+									<span className="check-name">The runner's terminal shows the same machine key</span>
+									<span className="check-means">The runner prints it under the code. If it shows another key, or someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+								</>
+							) : (
+								<>
+									<span className="check-name">I started this runner myself, in the last few minutes</span>
+									<span className="check-means">Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer runner prints it under the code. If someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+								</>
+							)}
+						</Check>
 					</div>
 					<div>
 						<p className="eyebrow">What the machine says about itself</p>
@@ -852,12 +849,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 					<div>
 						<p className="machine-step">Set it up</p>
 						<div className="machine-setup-agents">
-							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
-							{offersCodex && <label><input type="checkbox" checked={codex} onChange={e => setCodex(e.target.checked)} /> Enable Codex</label>}
-							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
+							{offersClaude && <Check checked={claude} onChange={setClaude} label="Enable Claude Code" />}
+							{offersCodex && <Check checked={codex} onChange={setCodex} label="Enable Codex" />}
+							{offersOpenCode && <Check checked={openCode} onChange={setOpenCode} label="Enable OpenCode" />}
 							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
-							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
-							<label><input type="checkbox" checked={windlassSandbox} onChange={event => setWindlassSandbox(event.target.checked)} /> Allow Windlass's command sandbox (recommended for Windlass and Codex)</label>
+							{agents.openCode && <Check checked={importKeys} onChange={setImportKeys} label="Import existing OpenCode API keys during setup" />}
+							<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow Windlass's command sandbox (recommended for Windlass and Codex)" />
 							{windlassSandbox && <p>Adds <code>--allow-profile docker-windlass-sandbox</code>: sessions may also run each command in a sandbox without network. Their container is loosened so that the sandbox can run inside it.</p>}
 						</div>
 						<Command text={setup} label="The setup command" />
@@ -928,14 +925,10 @@ function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary
 					: `${agents === 1 ? "The agent on it keeps its conversation" : `The ${agents} agents on it keep their conversations`} here but cannot run again; ${agents === 1 ? "its" : "their"} files stay on the machine unless you also remove its sandboxes.`}
 			</p>
 			{agents > 0 || machine.sandboxes.length > 0 ? (
-				<label className={`check machine-remove-check${sandboxes ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={sandboxes} disabled={busy} onChange={(event) => setSandboxes(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Also remove the agents' sandboxes on it</span>
-						<span className="check-means">{machine.status === "online" ? "Its runner removes them now." : "Its runner removes them when it is next online."}</span>
-					</span>
-				</label>
+				<Check className="machine-remove-check" checked={sandboxes} disabled={busy} onChange={(on) => setSandboxes(on)}>
+					<span className="check-name">Also remove the agents' sandboxes on it</span>
+					<span className="check-means">{machine.status === "online" ? "Its runner removes them now." : "Its runner removes them when it is next online."}</span>
+				</Check>
 			) : null}
 			{error ? (
 				<p className="callout callout-bad" role="alert">

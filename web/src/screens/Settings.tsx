@@ -29,6 +29,8 @@ import { useMachines } from "./Machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels } from "../state/hooks";
+import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
 
 /**
  * Where a new agent runs, which agent it is, and its mode: not saved on purpose, but where the last
@@ -63,7 +65,10 @@ function LastStartLine({ lastStart, forget, onForgotten }: { lastStart: LastStar
 					<>
 						<span>{where}</span>
 						<span className="last-start-sep" aria-hidden="true">·</span>
-						<span>{HARNESS_NAMES[lastStart.harness]}</span>
+						<span>
+							<AgentGlyph harness={lastStart.harness} size={11} inline />
+							{HARNESS_NAMES[lastStart.harness]}
+						</span>
 						<span className="last-start-sep" aria-hidden="true">·</span>
 						<span>{modeName(lastStart.harness, lastStart.mode)}</span>
 						<button type="button" className="link last-start-forget" onClick={() => void run()} disabled={busy}>
@@ -236,9 +241,7 @@ function SessionSettings() {
 					</>}>
 					<p>You’ll need to sign in again on every device, including this one. Your running agents will keep working.</p>
 					<p>Paired machines keep working. You can remove them on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.</p>
-					<label>
-						<input type="checkbox" checked={revokeApiTokens} disabled={busy} onChange={event => setRevokeApiTokens(event.target.checked)} /> Also revoke all API tokens
-					</label>
+					<Check checked={revokeApiTokens} disabled={busy} onChange={setRevokeApiTokens} label="Also revoke all API tokens" />
 					{error && <p className="callout callout-warn" role="alert">{error}</p>}
 				</Dialog>
 			)}

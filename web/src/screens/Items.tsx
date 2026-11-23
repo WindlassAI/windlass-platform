@@ -37,6 +37,8 @@ import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
+import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
 
 export interface ItemsState {
 	/** What the feed holds, open items first: every open item and the newest ended ones. Null until it was read, and when it could not be. */
@@ -142,8 +144,10 @@ export function inSecondReview(item: Pick<ItemSummary, "review">): boolean {
 /**
  * Where an item stands beside its row: the verdict's word once it is handed over, with the second
  * reviewer's recommendation; while the reviewer runs or waits to, a quiet working word in its place.
+ * A merged item has nothing left to review: its glyph and track say done, and no word stands there.
  */
-export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict">; reviewer?: boolean }) {
+export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict" | "state">; reviewer?: boolean }) {
+	if (item.state === "done") return null;
 	if (reviewer && inSecondReview(item)) return <ReviewWord item={item} />;
 	return (
 		<>
@@ -285,10 +289,12 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 	return (
 		<ol className={`item-stages item-stages-${track.tone}`} aria-label="Where it is on its way to you">
 			{track.stages.map((stage, index) => {
-				const done = index < track.at - 1 || (index === track.at - 1 && !track.now);
+				// The step's own stage is not done while the item works or waits in it (a question while it builds): it is where it stands.
+				const standing = at !== null && index === track.at - 1;
+				const done = index < track.at - 1 || (index === track.at - 1 && !track.now && !standing);
 				const now = index === track.at - 1 && track.now;
 				return (
-					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
+					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : standing ? " item-stage-at" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
 						<span className="item-stage-bar" aria-hidden="true" />
 						<span className="item-stage-name">{stage}</span>
 					</li>
@@ -392,7 +398,12 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
-					{item.agent && item.agent.harness !== "windlass" ? <span>{HARNESS_NAMES[item.agent.harness]}</span> : null}
+					{item.agent && item.agent.harness !== "windlass" ? (
+						<span>
+							<AgentGlyph harness={item.agent.harness} size={11} inline />
+							{HARNESS_NAMES[item.agent.harness]}
+						</span>
+					) : null}
 					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
 					{item.state === "draft" ? null : (
 						<span>
@@ -850,20 +861,16 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						</p>
 					</div>
 				) : null}
-				<label className={`check${start ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={start} disabled={busy} onChange={(event) => setStart(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Start now</span>
-						<span className="check-means">
-							{start
-								? chosenMachine
-									? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
-									: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
-								: "It is kept as a draft until you start it from its page."}
-						</span>
+				<Check checked={start} disabled={busy} onChange={(on) => setStart(on)}>
+					<span className="check-name">Start now</span>
+					<span className="check-means">
+						{start
+							? chosenMachine
+								? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
+								: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
+							: "It is kept as a draft until you start it from its page."}
 					</span>
-				</label>
+				</Check>
 				{error ? (
 					<p className="callout callout-bad" role="alert">
 						<WarnIcon />

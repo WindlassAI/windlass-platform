@@ -13,6 +13,7 @@ import { absoluteTime, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { asking } from "../screens/Items";
 import { ChevronRightIcon } from "./Icons";
+import { AgentGlyph } from "./ui/Pill";
 
 /** The lamp left on: a still amber dot with a slow ring round it. */
 function Lamp() {
@@ -40,6 +41,7 @@ function AgentNeed({ session, now }: { session: SessionSummary; now: number }) {
 				<p className="needs-what">Its agent asks before it goes on. The question is on its page, under the call it is about.</p>
 				<p className="needs-meta">
 					<span>
+						<AgentGlyph harness={session.harness ?? "windlass"} size={11} inline />
 						{acpHarnessName(session) ?? "Windlass"} · {sessionModelWords(session)}
 					</span>
 					{session.repository ? <span>{session.repository.name}</span> : null}

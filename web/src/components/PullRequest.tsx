@@ -23,9 +23,11 @@ import { acpHarnessName } from "../lib/acp";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
-import { usePublishRequests } from "../state/sessionChrome";
+import { createPortal } from "react-dom";
+import { setPanelHidden, setPublishFeedback, usePanelHidden, usePublishRequests } from "../state/sessionChrome";
 import { Dialog } from "./Dialog";
 import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
+import { Check } from "./ui/Check";
 
 /** What letting the agent publish without asking means, in one sentence, as the panel says it. */
 export const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
@@ -69,15 +71,11 @@ export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agen
 		);
 	}
 	return (
-		<label className={`check${checked ? " check-on" : ""}`}>
-			<input className="check-input" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-			<span className="check-box" aria-hidden="true" />
-			<span className="check-text">
-				<span className="check-name">Let the agent publish without asking</span>
-				<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
-				<span className="check-means">{AGENT_PUSH_MEANS}</span>
-			</span>
-		</label>
+		<Check checked={checked} disabled={disabled} onChange={(on) => onChange(on)}>
+			<span className="check-name">Let the agent publish without asking</span>
+			<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
+			<span className="check-means">{AGENT_PUSH_MEANS}</span>
+		</Check>
 	);
 }
 
@@ -249,6 +247,7 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	const [dialog, setDialog] = useState(false);
 	const [flash, setFlash] = useState(false);
 	const section = useRef<HTMLElement>(null);
+	const panelHidden = usePanelHidden();
 	const repository = summary.repository ?? null;
 	const idle = summary.status === "idle";
 	// The second reviewer of an item only reads: the server refuses it a push and a pull request.
@@ -284,27 +283,6 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 		return load();
 	}, [load, repository?.id, turnsEnded, idle, summary.sandbox, files]);
 
-	// "Publish pull request" in the bar: the dialog when it can open, otherwise this section, which says why not.
-	usePublishRequests(sessionId, () => {
-		const can = repository !== null && !reviewer && state !== null && error === null && (state.blocked ?? null) === null && idle;
-		const pending = files !== null && files > 0 ? true : state?.changes;
-		if (can && state && (pending !== false || opensFromPushed(summary.pullRequest ?? state.pullRequest ?? null, state.pushed, pending === false))) {
-			setDialog(true);
-			return;
-		}
-		const element = section.current;
-		if (!element) return;
-		element.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-		element.querySelector<HTMLElement>(".panel-title")?.focus({ preventScroll: true });
-		setFlash(true);
-	});
-	useEffect(() => {
-		if (!flash) return;
-		const timer = setTimeout(() => setFlash(false), 1400);
-		return () => clearTimeout(timer);
-	}, [flash]);
-
-	if (!repository) return null;
 	// The summary is told of a new pull request and of a change of its state; the panel's own read has the rest.
 	const pull = summary.pullRequest ?? state?.pullRequest ?? null;
 	const open = isOpen(pull);
@@ -316,6 +294,65 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 	const unknown = blocked === null && changes === null;
 	// Pushed with no pull request: "Open pull request" opens one from the branch, though nothing is new.
 	const fromPushed = blocked === null && state !== null && opensFromPushed(pull, state.pushed, nothing);
+
+	/** Brings this section into view, the side panel shown first where the user hid it, and flashes it. */
+	const show = () => {
+		const reveal = () => {
+			const element = section.current;
+			if (!element) return;
+			element.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+			element.querySelector<HTMLElement>(".panel-title")?.focus({ preventScroll: true });
+			setFlash(true);
+		};
+		if (panelHidden) {
+			setPanelHidden(false);
+			// Drawn once the panel is shown again.
+			requestAnimationFrame(reveal);
+		} else reveal();
+	};
+
+	// A press on "Publish pull request" waits here while the state is read, and is answered once it is.
+	const [asked, setAsked] = useState(false);
+	/** The bar's press, answered: the dialog where it can open; otherwise why not, at the button (it does not rely on the panel being shown). */
+	const answer = () => {
+		const can = repository !== null && !reviewer && state !== null && error === null && blocked === null && idle;
+		const pending = files !== null && files > 0 ? true : state?.changes;
+		if (can && state && (pending !== false || opensFromPushed(pull, state.pushed, pending === false))) {
+			setPublishFeedback(sessionId, null);
+			setDialog(true);
+			return;
+		}
+		const reason = reviewer
+			? REVIEWER_PUBLISHES_NOTHING
+			: !idle
+				? "Available when this turn ends."
+				: (error ?? blocked ?? (state ? situation({ pull, branch: state.branch, pushed: state.pushed, nothing, unknown }) : "The pull request's state could not be read."));
+		setPublishFeedback(sessionId, { kind: "refused", reason });
+	};
+	usePublishRequests(sessionId, (request) => {
+		if (request === "show") return show();
+		// Still reading (a machine's git read goes through its runner, and takes seconds): said at the button, answered when read.
+		if (repository !== null && error === null && (state === null || loading)) {
+			setAsked(true);
+			setPublishFeedback(sessionId, { kind: "reading" });
+			return;
+		}
+		answer();
+	});
+	useEffect(() => {
+		if (!asked || loading || (state === null && error === null)) return;
+		setAsked(false);
+		answer();
+	});
+	// Nothing said at the button outlives the page.
+	useEffect(() => () => setPublishFeedback(sessionId, null), [sessionId]);
+	useEffect(() => {
+		if (!flash) return;
+		const timer = setTimeout(() => setFlash(false), 1400);
+		return () => clearTimeout(timer);
+	}, [flash]);
+
+	if (!repository) return null;
 
 	return (
 		<section className={`panel-section${flash ? " panel-section-flash" : ""}`} aria-labelledby="panel-pull" ref={section}>
@@ -377,7 +414,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 			) : (
 				<AgentPublishing sessionId={sessionId} summary={summary} profile={profile} />
 			)}
-			{dialog && state && !reviewer ? (
+			{/* At the page's end, not in the panel: a hidden panel (display: none) would hide the dialog with it. */}
+			{dialog && state && !reviewer ? createPortal(
 				<PublishDialog
 					sessionId={sessionId}
 					state={state}
@@ -389,7 +427,8 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 						setDialog(false);
 						onPublished();
 					}}
-				/>
+				/>,
+				document.body,
 			) : null}
 		</section>
 	);
