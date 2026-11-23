@@ -151,7 +151,7 @@ else process.exitCode=2;
 			await assert.rejects(run('status','--name','example'), /with setup, run or pair/);
 			await assert.rejects(run('pair','--egress','none'), /with setup or run/);
 			refuseSetup = true;
-			await assert.rejects(run('setup','--platform',origin), error => {
+			await assert.rejects(run('setup','--platform',origin,'--harness','claude'), error => {
 				assert.match(error.stdout, /re-run the setup command/);
 				assert.doesNotMatch(error.stdout, /restart the container/);
 				return true;
