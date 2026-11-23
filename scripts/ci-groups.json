@@ -48,7 +48,8 @@
         "scripts/e2b-snapshot-check.ts",
         "server/src/factory/placement.ts",
         "server/src/snapshot-places.ts",
-        "scripts/workflow-lint.ts"
+        "scripts/workflow-lint.ts",
+        "scripts/runner-signin-check.ts"
       ],
       "checks": {
         "access": "tsx ../scripts/access-check.ts",
@@ -64,6 +65,7 @@
         "reviewer-task": "tsx ../scripts/reviewer-task-check.ts",
         "runner-control": "tsx ../scripts/runner-control-check.ts",
         "runner-protocol": "tsx ../scripts/runner-protocol-check.ts",
+        "runner-signin": "tsx ../scripts/runner-signin-check.ts",
         "secrets": "tsx ../scripts/secrets-check.ts",
         "setup": "tsx ../scripts/setup-check.ts",
         "git-config": "tsx ../scripts/git-config-check.ts",

@@ -254,7 +254,7 @@ None of these agents has a tool to publish: open the pull request from the sessi
 
 ## Sign agents in
 
-Agents are signed in only in a terminal on the machine, never on the platform's pages. The Machines page lists each agent the machine offers, with its state: **signed in**, **sign in needed** or **sign-in not reported**. Beside it is the command that signs it in, with a copy button:
+Agents are signed in only in a terminal on the machine, never on the platform's pages. The Machines page lists each agent the machine offers, with its state: **signed in**, **sign in needed** or **couldn't check the sign-in**, with the runner's reason when it gives one. The last is the runner's check failing, not a sign-out: turns still run if the agent is signed in, and the runner checks again after 10 s, 30 s and 60 s, then every minute. Beside it is the command that signs it in, with a copy button:
 
 ```sh
 docker exec -it windlass-runner windlass-runner login claude

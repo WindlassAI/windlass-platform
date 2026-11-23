@@ -29,7 +29,7 @@ import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker,
 import { localSizing } from "./sizing.js";
 const legacyLoginLabel = LABEL + ".claude-login=1";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { claudeLoginGeneration, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
+import { claudeLoginGeneration, dockerReason, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
 import { open, type Egress } from "./egress-policy.js";
 import { EgressNetwork } from "./egress-network.js";
 import { loadPair, Refusal, RunnerError, type Identity } from "./state.js";
@@ -70,6 +70,7 @@ async function dockerOutput(args: string[]) {
 }
 
 const INVENTORY_TTL_MS = 6 * 60 * 60_000;
+const SIGN_IN_RETRIES_MS = [10_000, 30_000, 60_000];
 const INVENTORY_RETRY_MS = 5 * 60_000;
 
 export class Executor extends MachineDocker {
@@ -98,6 +99,11 @@ export class Executor extends MachineDocker {
 	private claudeOptions?: HarnessOptions;
 	private claudeGeneration?: string;
 	private signIn: "none" | "token" | "unknown" = "unknown";
+/** Why the Claude Code sign-in could not be checked, while it could not (`signIn` "unknown"): for the log and the report. */
+private signInReason?: string;
+/** Quick checks again while the sign-in is unknown: 10 s, 30 s, then 60 s; after that the report's refresh, every minute. */
+private signInRetry?: ReturnType<typeof setTimeout>;
+private signInRetries = 0;
 	private enforceEgress = false;
 	private inventoryStarted = false;
 	private egressError?: string;
@@ -223,10 +229,36 @@ export class Executor extends MachineDocker {
 			if ((this.opencodeLogin?.generation ?? "signed-out") !== this.probedLogin) this.opencodeOptions = undefined;
 		}
 		if (!this.claudePin) return;
+		let reason: string | undefined;
 		await withLoginVolume(this, async () => {
-			this.signIn = await loginFileState(this);
+			this.signIn = await loginFileState(this, { start: true, why: why => { reason = why; } });
 			this.claudeGeneration = this.signIn === "token" ? claudeLoginGeneration(this) : undefined;
-		}).catch(() => { this.signIn = "unknown"; });
+		}).catch((error: unknown) => {
+			this.signIn = "unknown";
+			reason = error instanceof RunnerError ? error.message : `the check could not run: ${error instanceof Error ? dockerReason(error.message) : "no reason given"}`;
+		});
+		this.signInChecked(reason);
+	}
+	/** Logs a new reason the sign-in could not be checked, once, and checks again soon while it is unknown. */
+	private signInChecked(reason: string | undefined) {
+		if (this.signIn !== "unknown") {
+			if (this.signInReason !== undefined) console.log(`Claude Code sign-in checked: ${this.signIn === "token" ? "signed in" : "not signed in"}.`);
+			this.signInReason = undefined;
+			this.signInRetries = 0;
+			clearTimeout(this.signInRetry);
+			this.signInRetry = undefined;
+			return;
+		}
+		const why = reason ?? "no reason given";
+		if (why !== this.signInReason) console.log(`Could not check the Claude Code sign-in: ${why}`);
+		this.signInReason = why;
+		if (this.signInRetry !== undefined || this.signInRetries >= SIGN_IN_RETRIES_MS.length) return;
+		const delay = SIGN_IN_RETRIES_MS[this.signInRetries++]!;
+		this.signInRetry = setTimeout(() => {
+			this.signInRetry = undefined;
+			void this.serial(() => this.refreshLogin()).then(() => this.publishReport?.(), () => {});
+		}, delay);
+		this.signInRetry.unref?.();
 	}
 	async loginChanged(signedIn: boolean) {
 		await this.refreshLogin();
@@ -420,6 +452,7 @@ export class Executor extends MachineDocker {
 			audit(null, null, "docker", category);
 			this.dockerHealth = { ok: false, reason };
 			this.signIn = "unknown";
+			this.signInReason = `Docker is not reachable: ${reason}`;
 		}
 	}
 	/** The welcome's `gitHost`, which an --egress-domains list takes in place of github.com. */
@@ -503,6 +536,7 @@ export class Executor extends MachineDocker {
 		if (this.claudePin) harnesses.push({
 			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn, loginGeneration: this.claudeGeneration,
+...(this.signIn === "unknown" && this.signInReason && { signInReason: this.signInReason.slice(0, 300) }),
 			...(this.claudeOptions && { options: this.claudeOptions }),
 		});
 		if (this.codexPin) harnesses.push({

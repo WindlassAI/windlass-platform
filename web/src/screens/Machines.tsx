@@ -376,13 +376,20 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 								<CheckIcon size={13} />
 								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
+						) : harness.signIn === "none" ? (
+							<span className="machine-agent-state">: sign in needed</span>
 						) : (
-							<span className="machine-agent-state">: {harness.signIn === "none" ? "sign in needed" : "sign-in not reported"}</span>
+							// Unknown is the runner's check failing, not a sign-in to redo: its reason, where it gave one, and no login prompt.
+							<span className="machine-agent-state" title={harness.signInReason}>
+								: couldn't check the sign-in{harness.signInReason ? ` (${harness.signInReason})` : ""}
+							</span>
 						)}
-						<span className="machine-agent-command">
-							<code>{command}</code>
-							<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
-						</span>
+						{harness.signIn === "unknown" ? null : (
+							<span className="machine-agent-command">
+								<code>{command}</code>
+								<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
+							</span>
+						)}
 					</li>
 				);
 			})}

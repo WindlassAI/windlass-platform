@@ -1319,7 +1319,8 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	/** `signInReason`: with `signIn` "unknown", why the runner could not check the sign-in (runner 0.3.4 and later). */
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
