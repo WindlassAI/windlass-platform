@@ -51,7 +51,7 @@ const NOT_JSON_KEPT = 20;
 
 export class AcpConnection {
 	private nextId = 1;
-	private readonly incoming = new Map<number | string, AbortController>();
+	private readonly incoming = new Map<number | string, { controller: AbortController; method: string; params: Record<string, unknown> }>();
 	private readonly waiting = new Map<number, Waiting>();
 	private ended: string | null = null;
 	/** Lines that were not protocol messages, the latest ones. */
@@ -106,6 +106,41 @@ export class AcpConnection {
 		});
 	}
 
+	/** The id the last request was sent with. */
+	get lastId(): number {
+		return this.nextId - 1;
+	}
+
+	/**
+	 * What a connection taken up again on a restarted server needs (`restore`): the next id, the agent's
+	 * requests not answered yet, and the requests of ours still waiting. The params are as `clean` left them.
+	 */
+	state(): { nextId: number; incoming: Array<[number | string, string, Record<string, unknown>]>; waiting: Array<[number, string]> } {
+		return {
+			nextId: this.nextId,
+			incoming: [...this.incoming].map(([id, { method, params }]) => [id, method, params]),
+			waiting: [...this.waiting].map(([id, { method }]) => [id, method]),
+		};
+	}
+
+	/** Continues the numbering of a connection a server before a restart had with the same process. */
+	restore(nextId: number): void {
+		this.nextId = Math.max(this.nextId, nextId);
+	}
+
+	/** A request sent before a restart, as `request` would wait for it: its answer settles what this returns. */
+	expect<T>(id: number, method: string): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			if (this.ended !== null) return reject(new AcpError(this.ended, 0, "closed"));
+			this.waiting.set(id, { method, reject, timer: undefined, resolve: (value) => resolve(value as T) });
+		});
+	}
+
+	/** A request of the agent's that a server before a restart had not answered: it is answered now, under the same id. */
+	answerAgain(id: number | string, method: string, params: Record<string, unknown>): void {
+		if (this.ended === null && !this.incoming.has(id)) void this.answer(id, method, params);
+	}
+
 	notify(method: string, params: Record<string, unknown>): void {
 		this.send({ jsonrpc: "2.0", method, params });
 	}
@@ -125,7 +160,7 @@ export class AcpConnection {
 		if (method === "$/cancel_request" && id == null) {
 			// Correlate using the wire id, including its type, before redacting payload strings.
 			const requestId = (message as { params?: { requestId?: unknown } }).params?.requestId;
-			if (typeof requestId === "number" || typeof requestId === "string") this.incoming.get(requestId)?.abort();
+			if (typeof requestId === "number" || typeof requestId === "string") this.incoming.get(requestId)?.controller.abort();
 			return;
 		}
 		const { params, result, error } = this.clean(message as { params?: unknown; result?: unknown; error?: unknown });
@@ -155,7 +190,7 @@ export class AcpConnection {
 	end(why: string): void {
 		if (this.ended !== null) return;
 		this.ended = why;
-		for (const controller of this.incoming.values()) controller.abort();
+		for (const { controller } of this.incoming.values()) controller.abort();
 		this.incoming.clear();
 		for (const [id, entry] of this.waiting) {
 			this.waiting.delete(id);
@@ -166,7 +201,8 @@ export class AcpConnection {
 
 	private async answer(id: number | string, method: string, params: Record<string, unknown>): Promise<void> {
 		const controller = new AbortController();
-		this.incoming.set(id, controller);
+		const entry = { controller, method, params };
+		this.incoming.set(id, entry);
 		try {
 			const result = await this.handlers.request(method, params, controller.signal);
 			this.send({ jsonrpc: "2.0", id, result: result ?? null });
@@ -174,7 +210,7 @@ export class AcpConnection {
 			const message = error instanceof Error ? error.message : String(error);
 			this.send({ jsonrpc: "2.0", id, error: { code: error instanceof MethodNotFound ? -32601 : -32603, message } });
 		} finally {
-			if (this.incoming.get(id) === controller) this.incoming.delete(id);
+			if (this.incoming.get(id) === entry) this.incoming.delete(id);
 		}
 	}
 
@@ -220,6 +256,16 @@ function formatSeconds(ms: number): string {
 export class LineSplitter {
 	private rest = "";
 	constructor(private readonly line: (text: string) => void) {}
+
+	/** The start of a line whose end has not come yet. */
+	get pending(): string {
+		return this.rest;
+	}
+
+	/** Takes up a stream whose last line had begun before a restart. */
+	resume(rest: string): void {
+		this.rest = rest;
+	}
 
 	push(chunk: string): void {
 		const parts = (this.rest + chunk).split("\n");

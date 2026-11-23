@@ -215,6 +215,11 @@
  *                              points reads `config.machines` once, and nothing else does. The `machine`
  *                              actors and the tables are there either way, so turning it off and on
  *                              again loses nothing
+ *   WLP_RUNNER_DURABLE_TURNS=1 keep each machine session's runner conversation and its running turn's
+ *                              protocol state in the session's storage, so a server that restarts within
+ *                              the runner's grace (ten minutes) takes the same agent process up again
+ *                              (runner/journal.ts, docs/machines.md). Default off. A graceful stop keeps
+ *                              the turn running only with a runner that reports `resumable-conversation`
  *   WLP_RUNNER_IMAGE           the runner image the Machines page tells users to install, pinned by
  *                              digest: <name>@sha256:<64 hex>. Unset: none is published yet, and the
  *                              page says so
@@ -294,6 +299,8 @@ export interface MachinesConfig {
 	runnerImage: string | null;
 	/** WLP_PUBLIC_URL as an origin, without a trailing slash. */
 	publicUrl: string;
+	/** WLP_RUNNER_DURABLE_TURNS=1: a machine turn can outlive its server (runner/journal.ts). */
+	durableTurns?: boolean;
 }
 
 export interface Config {
@@ -765,7 +772,7 @@ function readMachines(httpPort: number): MachinesConfig | null {
 		if (fit) publicUrl = url!.origin;
 		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
 	}
-	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
+	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl, durableTurns: process.env.WLP_RUNNER_DURABLE_TURNS === "1" };
 }
 
 function readAccountEmails(): ReadonlyMap<string, string> {
