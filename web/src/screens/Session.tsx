@@ -347,9 +347,6 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
-				{summary.capabilities.planMode && <label>Plan mode <select value={planMode ? "plan" : "default"} onChange={e => setPlanMode(e.target.value === "plan")}>
-					<option value="default">Off</option><option value="plan">On</option>
-				</select></label>}
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
 				) : (
@@ -362,6 +359,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						modes={sessionModes(summary, profile)}
 						mode={summary.mode}
 						onMode={setMode}
+						planMode={summary.capabilities.planMode ? { on: planMode, onChange: setPlanMode } : null}
 						initial={handover}
 						suggestion={suggestion}
 						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}

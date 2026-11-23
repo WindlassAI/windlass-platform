@@ -75,6 +75,11 @@ export interface ComposerProps {
 	mode?: string | null;
 	/** Puts the agent in a mode from its next prompt; rejects with what the client threw. */
 	onMode?(mode: string): Promise<void>;
+	/**
+	 * The agent's own plan mode, where it has one (`SessionCapabilities.planMode`): whether the next turn that starts
+	 * plans and changes nothing. No picker without it.
+	 */
+	planMode?: { on: boolean; onChange(on: boolean): void } | null;
 }
 
 /** Why nothing can be sent right now. */
@@ -153,7 +158,7 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 	);
 }
 
-export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode }: ComposerProps) {
+export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode, planMode = null }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -378,6 +383,36 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			/>
 		) : null;
 
+	// The agent's plan mode for the next turn that starts: a steer joins the running turn, which keeps its own.
+	const planMenu: MenuSpec | null = planMode
+		? {
+				label: "Plan mode",
+				width: 260,
+				groups: [
+					{
+						id: "plan",
+						label: "Plan mode",
+						items: [
+							{ id: "off", label: "Off", description: "The agent works on the task", checked: !planMode.on, onSelect: () => planMode.onChange(false) },
+							{ id: "on", label: "On", description: "The agent plans and changes nothing", checked: planMode.on, onSelect: () => planMode.onChange(true) },
+						],
+					},
+				],
+			}
+		: null;
+	const planPill =
+		planMode && planMenu ? (
+			<Menu
+				spec={planMenu}
+				side="top"
+				trigger={(props) => (
+					<Pill {...props} data-picker="plan-mode" data-value={planMode.on ? "on" : "off"} disabled={!idle || !!closed} secondary={planMode.on ? "· on" : "· off"} aria-label={`Plan mode: ${planMode.on ? "on" : "off"}${idle ? "" : ". For the next turn; the running turn keeps its own"}`}>
+						Plan mode
+					</Pill>
+				)}
+			/>
+		) : null;
+
 	return (
 		<form
 			className={`composer${busy ? " composer-busy" : ""}${steering ? " composer-steering" : ""}`}
@@ -473,6 +508,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 							</span>
 						</>
 					)}
+					{planPill}
 					{modelPicker && standIn && models ? (
 						<span className="mini-note" title={modelsNote(models)}>
 							{modelsNoteShort(models)}

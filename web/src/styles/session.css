@@ -1794,6 +1794,13 @@ button.output-more:hover {
 	flex-wrap: wrap;
 	gap: 4px;
 	padding: 4px 8px 8px;
+	container-type: inline-size;
+}
+/* An agent with a plan mode has one pill more: in a narrow box the key hints (shown only while typing) give way, so Send stays on the row. */
+@container (max-width: 800px) {
+	.composer-tools:has([data-picker="plan-mode"]) .composer-keys {
+		display: none;
+	}
 }
 .composer-tools-end {
 	display: flex;

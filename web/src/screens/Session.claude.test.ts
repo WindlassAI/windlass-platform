@@ -92,8 +92,10 @@ const text = () => host.textContent ?? "";
 it.each(["claude", "opencode", "codex"] as const)("shows %s models and modes in the idle composer and panel before its first turn", async harness => {
 	await open({ harness });
 	// Codex's own plan mode (`capabilities.planMode`), not the items' Plan first.
-	if (harness === "codex") expect(host.textContent).toContain("Plan mode");
+	// It is one of the composer's pickers, not a control of its own outside the composer.
+	if (harness === "codex") expect(pickers()).toContain("plan-mode");
 	else expect(host.textContent).not.toContain("Plan mode");
+	expect(host.querySelector(".session-main select")).toBeNull();
 	expect(host.textContent).not.toContain("Plan first");
 	const names = harness === "codex" ? ["6.2 Sol (default)"] : harness === "claude" ? ["Default (recommended)", "Opus", "Haiku"] : ["OpenAI/GPT-5.4 (default)", "OpenAI/GPT-5.4 mini"];
 	const modeNames = harness === "codex" ? ["Container access"] : harness === "claude" ? ["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"] : ["build", "plan"];
