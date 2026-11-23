@@ -32,9 +32,9 @@ import { type AccessTokens, type ChatgptLogins, DeploymentFull, type RunTurnResu
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
-import { DEFAULT_MAX_RUNNING, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, HOBBY_MAX_RUNNING, offeredSize, readE2bConfig, readE2bSettings, templateFor } from "../server/src/sandbox/e2b/config.js";
+import { DEFAULT_MAX_RUNNING, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, HOBBY_MAX_CPUS, HOBBY_MAX_MEMORY_MB, HOBBY_MAX_RUNNING, offeredSize, refusesSize, readE2bConfig, readE2bSettings, templateFor } from "../server/src/sandbox/e2b/config.js";
 import { E2bSnapshots } from "../server/src/sandbox/e2b/snapshots.js";
-import { outOfMemoryWords } from "../server/src/contract.js";
+import { HOSTED_SIZE_SPECS, outOfMemoryWords } from "../server/src/contract.js";
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
@@ -633,6 +633,15 @@ await section("sizes", async () => {
 	const smallOnly = new E2bSandboxes(fallback, SETTINGS, { log: () => {}, sleep: async () => {} });
 	const asked = await smallOnly.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "large" });
 	expect("a deployment that built only small offers one size, and makes small for any size asked", smallOnly.sizes().length === 1 && fallback.sandboxes.get(asked)?.template === "windlass-platform-sandbox");
+
+	// The account's plan refuses a size: the person reads the plan's limits, not E2B's words alone.
+	const refusing = Object.assign(Object.create(fake) as FakeE2b, { create: async () => { throw new Error("400: memory 8192 MB exceeds the maximum allowed for your team's plan"); } });
+	const planLines: string[] = [];
+	const onPlan = new E2bSandboxes(refusing, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => planLines.push(line), now: () => clock.now, sleep: async () => {} });
+	const refusal = await userError(() => onPlan.create({ uid: "u1", sessionId: "s9", profile: "e2b", hostedSize: "large" }));
+	expect("a size the plan refuses names the plan's limits, the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and 8 GiB a sandbox, 10 sandboxes at once") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
+	expect("no size is beyond the Hobby plan's 8 vCPU and 8 GiB", Object.values(HOSTED_SIZE_SPECS).every((spec) => spec.cpus <= HOBBY_MAX_CPUS && spec.memoryMiB <= HOBBY_MAX_MEMORY_MB) && HOSTED_SIZE_SPECS.large.cpus === 4 && HOSTED_SIZE_SPECS.large.memoryMiB === 8192);
+	expect("a template that is not there, or the account's count of sandboxes, is no size refusal", !refusesSize("404: template 'windlass-platform-sandbox-large' not found") && !refusesSize("429: rate limit exceeded"));
 
 	// A snapshot is of one template's sandbox: its key differs by size, so one size's never starts another's.
 	const store = new E2bSnapshots(fake, { ...SETTINGS, sizes: ["small", "standard"], snapshots: DEFAULT_SNAPSHOT_LIMITS }, () => {}, () => clock.now);

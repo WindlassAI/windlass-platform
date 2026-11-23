@@ -83,7 +83,7 @@ import { openRelayLease } from "../relay-leases.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError } from "./client.js";
 import { ADOPT_SCRIPT, AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, RECORD_SCRIPT, SNAP_META, type SnapshotRecord } from "./snapshots.js";
 import { DEFERRED_INPUTS, HASH, SHA, type SnapshotSource } from "../snapshot-key.js";
-import { DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, offeredSize, offeredSizes, templateFor } from "./config.js";
+import { DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, offeredSize, offeredSizes, planRefusal, refusesSize, templateFor } from "./config.js";
 import { describeUsage, estimatedCostUsd, pricePerSecond } from "./pricing.js";
 import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, guestNetworkStep, networkConfig, withHosts } from "./network.js";
 import { type EgressMode, HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
@@ -119,7 +119,7 @@ export function capReached(limit: number): string {
 	return `This deployment runs at most ${limit} ${limit === 1 ? "sandbox" : "sandboxes"} at the same time, and ${limit === 1 ? "it is" : "all of them are"} in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended.`;
 }
 /** E2B itself refused: the account's own limit, whatever this deployment's is. */
-export const ACCOUNT_LIMIT = "E2B refused to start another sandbox: its account is at the limit of its plan (sandboxes running at once, or sandboxes started per second). Try again in a few minutes.";
+export const ACCOUNT_LIMIT = "E2B refused to start another sandbox: its account is at the limit of its plan (on Hobby, 10 sandboxes running at once for every deployment on the account together, or one started per second). Try again in a few minutes.";
 export const E2B_BUSY = "E2B could not start a sandbox just now. Try again in a minute.";
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -873,6 +873,11 @@ export class E2bSandboxes implements Sandboxes {
 			if (selected?.hit) {
 				this.log(`[wlp] e2b.snapshot.miss name=${selected.name} session=${input.sessionId}: a sandbox could not be made from it (${messageOf(error).slice(0, 200)}), so setup runs`);
 				return this.create({ ...input, fromSnapshot: undefined });
+			}
+			// A size the account's plan does not allow: said with the plan's limits, to the person and in the log.
+			if (refusesSize(messageOf(error))) {
+				this.log(`[wlp] e2b.size_refused size=${size} template=${template}: ${messageOf(error).slice(0, 300)}`);
+				throw new SandboxUserError(planRefusal(size, messageOf(error).slice(0, 300)));
 			}
 			// A size the deployment lists without its template built at E2B: said with what to do, not as E2B's words alone.
 			if (size !== "small" && /not.?found|template/i.test(messageOf(error))) throw new Error(`could not create a ${size} sandbox from the template "${template}" (${messageOf(error)}): build it (sandbox/e2b/build.sh with WLP_E2B_SIZE=${size}), or leave ${size} out of WLP_E2B_SIZES`);

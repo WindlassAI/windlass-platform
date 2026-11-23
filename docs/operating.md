@@ -181,8 +181,19 @@ Build each with `WLP_SANDBOX_VARIANT=shots` too where screenshots are on. The se
 size asked for that is not listed gets the largest listed below it. Work items default to standard, a person's
 agents to the repository's saved size, else small. `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE` and
 `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `_LARGE` override the names. Post-setup snapshots are per template, so per
-size. The Hobby plan allows up to 8 vCPUs and 8 GiB, 10 sandboxes at once and one hour without a pause, so
-large fits; a larger size uses the credit faster.
+size.
+
+**The account's plan.** The account is on E2B's Hobby plan: at most 8 vCPUs and 8 GiB of memory a sandbox, 10 GB of
+disk each, 10 sandboxes running at once and one hour without a pause. Large (4 vCPU, 8 GiB) is the most the platform
+offers, and no size goes beyond 8 GiB: the server refuses to start with one that would, and `sandbox/e2b/build.sh`
+refuses `WLP_E2B_CPU` or `WLP_E2B_MEMORY_MB` beyond the plan. Where E2B refuses a size for the plan anyway, the person
+reads "E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and
+8 GiB a sandbox, …" with E2B's own words, and the log has `e2b.size_refused`.
+
+The 10 sandboxes running at once are the account's, not one deployment's: every deployment and script on the account
+(`WLP_E2B_DEPLOYMENT`, `scripts/e2b-check.ts`) counts toward it, whatever their sizes. `WLP_E2B_MAX_RUNNING` caps
+one deployment and must stay under 10 less what the others run; at E2B's own ceiling a person reads that the account
+is at its plan's limit. A larger size uses the credit faster, not more of that count.
 
 `sandbox/e2b/build.sh --print` shows what E2B would be asked to build and needs no key. The template is made
 from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a container has: the user `agent`,

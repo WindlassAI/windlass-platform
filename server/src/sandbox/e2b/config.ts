@@ -101,6 +101,23 @@ export type E2bSettings = Omit<E2bConfig, "apiKey">;
 
 /** E2B's own limit on Hobby: ten sandboxes running at once. The default cap stays well under it. */
 export const HOBBY_MAX_RUNNING = 10;
+/** E2B's Hobby plan's most for one sandbox (the owner's dashboard, 2026-11-23): 8 vCPUs and 8 GiB of memory, 10 GB of disk. No size goes beyond it. */
+export const HOBBY_MAX_CPUS = 8;
+export const HOBBY_MAX_MEMORY_MB = 8192;
+for (const [size, spec] of Object.entries(HOSTED_SIZE_SPECS)) {
+	if (spec.cpus > HOBBY_MAX_CPUS || spec.memoryMiB > HOBBY_MAX_MEMORY_MB) throw new Error(`the ${size} size (${spec.cpus} vCPU, ${spec.memoryMiB} MiB) is beyond E2B's Hobby plan (${HOBBY_MAX_CPUS} vCPU, ${HOBBY_MAX_MEMORY_MB} MiB a sandbox)`);
+}
+
+/** What a user and the log read when E2B refused a size for the account's plan. */
+export function planRefusal(size: HostedSize, said: string): string {
+	const spec = HOSTED_SIZE_SPECS[size];
+	return `E2B refused a ${size} sandbox (${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB) for the account's plan: the Hobby plan allows at most ${HOBBY_MAX_CPUS} vCPU and ${HOBBY_MAX_MEMORY_MB / 1024} GiB a sandbox, ${HOBBY_MAX_RUNNING} sandboxes at once and one hour without a pause. E2B said: ${said}`;
+}
+
+/** Whether E2B's words refuse a size for the plan, rather than the account's count of running sandboxes. */
+export function refusesSize(said: string): boolean {
+	return /\b(cpu|vcpu|memory|ram|mib|mb|gib|gb)\b/i.test(said) && /\b(limit|exceed|maximum|max|plan|tier|quota|allowed|upgrade)\b/i.test(said);
+}
 export const DEFAULT_MAX_RUNNING = 3;
 export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60_000;
 export const DEFAULT_TURN_LEASE_MS = 3 * 60_000;
