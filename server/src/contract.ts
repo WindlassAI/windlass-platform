@@ -2055,7 +2055,11 @@ export interface FeaturePlanEdit {
 	earlyChecks?: EarlyCheck[];
 	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
-	questions: { id: string; text: string; options?: string[]; answer?: string }[];
+	/**
+	 * The plan's questions to the owner: `text` one short sentence, `options` short answers to choose from,
+	 * `why` the background in a few sentences (shown folded under the question). Older plans have no `why`.
+	 */
+	questions: { id: string; text: string; options?: string[]; why?: string; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
 	singleSuggested: string | null;

@@ -75,7 +75,7 @@ export function approvalText(plan: FeaturePlan): string {
 			plan.releaseGate === "wait" ? "Ends when the owner's release is adopted." : "Ends at a tested set of pull requests and a release request; adopting a release is a separate feature.",
 			"Reserved for the combined run — " + words(integrationReserve(plan)),
 		] : []),
-		"Sizing beyond one slot is not supported by current runners.",
+		...(plan.subtasks.some(s => s.needs?.cpus !== undefined || s.needs?.memoryGiB !== undefined) ? ["Sizing beyond one slot is not supported by current runners."] : []),
 		"Reserved for summary and review — " + words(closingReserve(plan.compare.singleBudget)), "Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }
@@ -102,6 +102,14 @@ function record(value: unknown): Record<string, unknown> {
 function text(value: unknown, max = MAX_NOTE_CHARS): string {
 	requirePlan(typeof value === "string" && value.trim() && value.length <= max, `Expected nonempty text of at most ${max} characters.`);
 	return value.trim();
+}
+
+/** The most a plan question's background (`why`) keeps: it is cut there, never refused, so a long one costs the plan nothing. */
+export const PLAN_QUESTION_WHY_CHARS = 400;
+
+/** Text cut to `max` characters, with an ellipsis where it was cut. */
+function cut(value: string, max: number): string {
+	return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}…`;
 }
 
 function lines(value: unknown, min = 0, max = MAX_ACCEPTANCE_CRITERIA): string[] {
@@ -308,7 +316,9 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 	requirePlan(Array.isArray(p.questions) && p.questions.length <= 16, "Use at most 16 plan questions.");
 	const questions = p.questions.map(raw => {
 		const q = record(raw);
-		return { id: keyOf(q.id), text: text(q.text), ...(q.options !== undefined && { options: lines(q.options, 1, 12) }), ...(q.answer && { answer: text(q.answer) } || {}) };
+		requirePlan(q.why == null || typeof q.why === "string", "A question's why must be text.");
+		const why = typeof q.why === "string" ? cut(q.why.trim(), PLAN_QUESTION_WHY_CHARS) : "";
+		return { id: keyOf(q.id), text: text(q.text), ...(q.options !== undefined && { options: lines(q.options, 1, 12) }), ...(why && { why }), ...(q.answer && { answer: text(q.answer) } || {}) };
 	});
 	unique(questions.map(q => q.id));
 	requirePlan(Array.isArray(p.subtasks) && (singleSuggested && p.subtasks.length === 0 || p.subtasks.length >= 2 && p.subtasks.length <= 6), "Propose two to six subtasks or suggest one single item.");
