@@ -32,7 +32,9 @@ import { type AccessTokens, type ChatgptLogins, DeploymentFull, type RunTurnResu
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
-import { DEFAULT_MAX_RUNNING, type E2bSettings, HOBBY_MAX_RUNNING, readE2bConfig, readE2bSettings } from "../server/src/sandbox/e2b/config.js";
+import { DEFAULT_MAX_RUNNING, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, HOBBY_MAX_CPUS, HOBBY_MAX_MEMORY_MB, HOBBY_MAX_RUNNING, offeredSize, refusesSize, readE2bConfig, readE2bSettings, templateFor } from "../server/src/sandbox/e2b/config.js";
+import { E2bSnapshots } from "../server/src/sandbox/e2b/snapshots.js";
+import { HOSTED_SIZE_SPECS, outOfMemoryWords } from "../server/src/contract.js";
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
@@ -598,6 +600,93 @@ await section("a sandbox that does not answer", async () => {
 	expect("a names script that printed nothing never ran its first line", guestNetworkStep("") === "it printed nothing, so the sandbox never ran its first line" && guestNetworkStep("step lock\nstep hosts\n") === "it was writing /etc/hosts");
 });
 
+await section("sizes", async () => {
+	const plain = (value: unknown) => JSON.stringify(value);
+	// E2B fixes a sandbox's CPUs and memory when its template is built: each size is a template of its own.
+	expect("WLP_E2B_SIZES: small alone by default, small always among them, in size order", plain(readE2bSettings({}).sizes) === plain(["small"]) && plain(readE2bSettings({ WLP_E2B_SIZES: "large, standard" }).sizes) === plain(["small", "standard", "large"]));
+	expect("a size that is not one is refused at startup", (() => { try { readE2bSettings({ WLP_E2B_SIZES: "small,huge" }); return false; } catch (error) { return /WLP_E2B_SIZES/.test(String(error)); } })());
+	const named = readE2bSettings({ WLP_E2B_TEMPLATE_LARGE: "big-one" });
+	expect("each size's templates by default, and by their own variables", templateFor(named, "standard", false) === "windlass-platform-sandbox-standard" && templateFor(named, "standard", true) === "windlass-platform-sandbox-standard-shots" && templateFor(named, "large", false) === "big-one" && templateFor(named, "small", false) === "windlass-platform-sandbox");
+	expect("a size not offered gets the largest offered below it", offeredSize({ sizes: ["small", "standard"] }, "large") === "standard" && offeredSize({ sizes: ["small", "large"] }, "standard") === "small" && offeredSize({}, "large") === "small");
+
+	const lines: string[] = [];
+	const clock = { now: Date.parse("2026-11-15T12:00:00Z") };
+	const fake = new FakeE2b({ now: () => clock.now, machine: () => imageLike(), templateSizes: { "windlass-platform-sandbox-standard": { cpuCount: 2, memoryMB: 4096 }, "windlass-platform-sandbox-large-shots": { cpuCount: 4, memoryMB: 8192 } } });
+	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {} });
+	const standard = await sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "standard" });
+	const made = fake.sandboxes.get(standard)!;
+	expect("a standard sandbox is made from the standard template, and says its size in its metadata and the log", made.template === "windlass-platform-sandbox-standard" && made.metadata[META.size] === "standard" && lines.some((line) => line.includes(`e2b.sandbox.created id=${standard}`) && line.includes("size=standard")), lines.join("\n"));
+	const shots = await sandboxes.create({ uid: "u1", sessionId: "s2", profile: "e2b", hostedSize: "large", screenshots: true });
+	expect("screenshots in a large one: the large size's shots template", fake.sandboxes.get(shots)?.template === "windlass-platform-sandbox-large-shots");
+	const small = await sandboxes.create({ uid: "u1", sessionId: "s3", profile: "e2b" });
+	expect("no size asked: small, from the template it always was", fake.sandboxes.get(small)?.template === "windlass-platform-sandbox" && fake.sandboxes.get(small)?.metadata[META.size] === "small");
+	const handle = (await sandboxes.connect(standard)) as E2bSandboxHandle;
+	expect("its handle knows its size", handle.size === "standard");
+	clock.now += 100_000;
+	await sandboxes.suspend(standard);
+	expect("the cost line of a pause is at the size's own figures", lines.some((line) => line.includes(`e2b.sandbox.paused id=${standard}`) && line.includes(describeUsage(100, 2, 4096))), lines.filter((line) => line.includes("paused")).join("\n"));
+	const sizes = sandboxes.sizes();
+	expect("the sizes offered, each with its price an hour", plain(sizes.map((size) => size.id)) === plain(["small", "standard", "large"]) && Math.abs((sizes[1]?.usdPerHour ?? 0) - estimatedCostUsd(3600, 2, 4096)) < 1e-9 && (sizes[2]?.usdPerHour ?? 0) > (sizes[1]?.usdPerHour ?? 0));
+	expect("the usage page's base price stays the small size's", Math.abs(sandboxes.price().usdPerSecond - estimatedCostUsd(1, 1, 1024)) < 1e-12);
+
+	const fallback = new FakeE2b({ machine: () => imageLike() });
+	const smallOnly = new E2bSandboxes(fallback, SETTINGS, { log: () => {}, sleep: async () => {} });
+	const asked = await smallOnly.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "large" });
+	expect("a deployment that built only small offers one size, and makes small for any size asked", smallOnly.sizes().length === 1 && fallback.sandboxes.get(asked)?.template === "windlass-platform-sandbox");
+
+	// The account's plan refuses a size: the person reads the plan's limits, not E2B's words alone.
+	const refusing = Object.assign(Object.create(fake) as FakeE2b, { create: async () => { throw new Error("400: memory 8192 MB exceeds the maximum allowed for your team's plan"); } });
+	const planLines: string[] = [];
+	const onPlan = new E2bSandboxes(refusing, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => planLines.push(line), now: () => clock.now, sleep: async () => {} });
+	const refusal = await userError(() => onPlan.create({ uid: "u1", sessionId: "s9", profile: "e2b", hostedSize: "large" }));
+	expect("a size the plan refuses names the plan's limits, the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and 8 GiB a sandbox, 10 sandboxes at once") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
+	expect("no size is beyond the Hobby plan's 8 vCPU and 8 GiB", Object.values(HOSTED_SIZE_SPECS).every((spec) => spec.cpus <= HOBBY_MAX_CPUS && spec.memoryMiB <= HOBBY_MAX_MEMORY_MB) && HOSTED_SIZE_SPECS.large.cpus === 4 && HOSTED_SIZE_SPECS.large.memoryMiB === 8192);
+	expect("a template that is not there, or the account's count of sandboxes, is no size refusal", !refusesSize("404: template 'windlass-platform-sandbox-large' not found") && !refusesSize("429: rate limit exceeded"));
+
+	// A snapshot is of one template's sandbox: its key differs by size, so one size's never starts another's.
+	const store = new E2bSnapshots(fake, { ...SETTINGS, sizes: ["small", "standard"], snapshots: DEFAULT_SNAPSHOT_LIMITS }, () => {}, () => clock.now);
+	const request = { repo: "123", generation: "a".repeat(64), inputs: "b".repeat(64) };
+	expect("snapshot keys differ by size, and each size's look-up is of its own template", store.key(request, "u1", "e2b", false, "build-1", "small") !== store.key(request, "u1", "e2b", false, "build-1", "standard") && store.templateOf(false, "standard") === "windlass-platform-sandbox-standard");
+});
+
+await section("a sandbox that ran out of memory", async () => {
+	const plain = (value: unknown) => JSON.stringify(value);
+	const lines: string[] = [];
+	class Wedged extends ScriptedMachine {
+		wedged = false;
+		constructor() {
+			super((command) => (command.includes("windlass --version") ? { stdout: "Windlass 0.6.0 (linux-x64)\n" } : command.includes("/proc/vmstat") ? { stdout: "oom_kill 3\ntotal_kib 1000448\n" } : undefined));
+		}
+		override async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
+			if (!this.wedged) return super.start(command, options);
+			this.commands.push({ command, options, stdin: "" });
+			return { pid: 9, sendStdin: async () => {}, closeStdin: async () => {}, wait: () => new Promise(() => {}), disconnect: async () => {}, kill: async () => {} };
+		}
+		async rebooted(): Promise<void> {
+			this.wedged = false;
+		}
+	}
+	const machines = new Map<string, Wedged>();
+	const fake = new FakeE2b({ machine: (id) => { const machine = new Wedged(); machines.set(id, machine); return machine; } });
+	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, sizes: ["small", "standard"] }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50 });
+	const id = await sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+	// The incident's figures: 942 of 977 MiB, as E2B sampled them while the guest answered nothing.
+	const MiB = 2 ** 20;
+	fake.samples.set(id, [{ at: Date.now() - 60_000, memUsed: 400 * MiB, memTotal: 977 * MiB }, { at: Date.now() - 30_000, memUsed: 942 * MiB, memTotal: 977 * MiB }]);
+	machines.get(id)!.wedged = true;
+	const handle = (await sandboxes.connect(id)) as E2bSandboxHandle;
+	expect(
+		"a sandbox that stopped answering with its memory used up says so, with the figures and the next size, and is restarted",
+		handle.notice?.startsWith("The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB.") === true && plain(handle.outOfMemory) === plain({ usedMiB: 942, totalMiB: 977, size: "small" }) && lines.some((line) => line.includes("e2b.sandbox.unresponsive") && line.includes("memory=942/977MiB")),
+		handle.notice ?? lines.join("\n"),
+	);
+	const events = await handle.memoryEvents();
+	expect("the guest's own count of programs killed for memory, and its memory", plain(events) === plain({ oomKills: 3, totalMiB: 977 }), JSON.stringify(events));
+	fake.samples.set(id, [{ at: Date.now(), memUsed: 300 * MiB, memTotal: 977 * MiB }]);
+	expect("samples far from the total are no running out", (await handle.memoryPeak(0)) === null);
+	expect("the largest size says to use less memory instead", /largest size this deployment has: have the agent's commands use less memory/.test(outOfMemoryWords({ usedMiB: 8000, totalMiB: 8100, size: "large" })) && /Large · 4 vCPU, 8 GiB/.test(outOfMemoryWords({ usedMiB: 4000, totalMiB: 4000, size: "standard" })));
+});
+
 await section("the handle", async () => {
 	const secrets: string[] = [];
 	const w = world({}, { machine: () => imageLike((command, stdin) => (command.includes("umask 077") ? (secrets.push(stdin()), {}) : command === "cat /etc/hostname" ? { stdout: "sandbox\n" } : undefined)) });
@@ -662,7 +751,7 @@ await section("cleanup", async () => {
 	expect("a dry run lists the deployment's sandboxes, running and paused, and changes nothing", dry.found.length === 2 && dry.killed.length === 0 && w.fake.sandboxes.size === 4 && !w.fake.calls.some((call) => call.startsWith("kill ")), dry.lines.join(" | "));
 	expect(
 		"each line names the sandbox, its user and session, and what it has cost at most",
-		dry.lines.some((line) => line.startsWith(`${a}  uid=u1 session=s1  running, at most 300 s at 1 vCPU and 1024 MiB, $0.0055 (estimated) so far: would be killed`)) && dry.lines.some((line) => line.startsWith(`${b}  uid=u2 session=s2  paused`)) && /A dry run: nothing was changed/.test(dry.lines.at(-1) ?? ""),
+		dry.lines.some((line) => line.startsWith(`${a}  uid=u1 session=s1 size=small  running, at most 300 s at 1 vCPU and 1024 MiB, $0.0055 (estimated) so far: would be killed`)) && dry.lines.some((line) => line.startsWith(`${b}  uid=u2 session=s2 size=small  paused`)) && /A dry run: nothing was changed/.test(dry.lines.at(-1) ?? ""),
 		dry.lines.join(" | "),
 	);
 	const real = await cleanupDeployment(w.fake, "test", { kill: true, now: () => w.clock.now });
@@ -872,6 +961,15 @@ await section("network modes", async () => {
 	const placed = (hostedEgress?: "open" | "restricted" | "none") => choosePlacement(hostedTask, { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["e2b"], hostedEgress });
 	const [offline, limited] = [placed("none"), placed("restricted")];
 	expect("the factory places no repository work on hosted none, and places it on restricted", "refused" in offline && /no network for repositories/.test(offline.refused ?? "") && "decision" in limited, JSON.stringify(offline));
+	// A plan's cpus and memoryGiB pick the least hosted size that has them.
+	const sized = (needs: { cpus?: number; memoryGiB?: number }, hostedSizes?: ("small" | "standard" | "large")[]) => choosePlacement({ ...hostedTask, needs }, { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["e2b"], hostedSizes });
+	const all = ["small", "standard", "large"] as ("small" | "standard" | "large")[];
+	const [two, eight, plainTask, unsized, tooBig, notBuilt] = [sized({ cpus: 2 }, all), sized({ memoryGiB: 6 }, all), sized({}, all), sized({ cpus: 1 }), sized({ cpus: 16 }, all), sized({ memoryGiB: 8 }, ["small", "standard"])];
+	expect(
+		"hosted takes cpus and memoryGiB as a size: the least that has them, none without them, and refuses what no offered size has",
+		two.decision?.hostedSize === "standard" && eight.decision?.hostedSize === "large" && plainTask.decision !== undefined && plainTask.decision.hostedSize === undefined && unsized.decision !== undefined && unsized.decision.hostedSize === undefined && /at most 4 vCPU and 8 GiB/.test(tooBig.refused ?? "") && /no large sandbox/.test(notBuilt.refused ?? ""),
+		JSON.stringify([two, eight, plainTask, unsized, tooBig, notBuilt]),
+	);
 });
 
 await section("the template", async () => {

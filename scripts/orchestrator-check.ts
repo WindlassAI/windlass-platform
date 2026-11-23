@@ -776,10 +776,10 @@ test("placement 3 measures requested CPU and memory in sandbox units", () => {
 		assert.throws(() => placementFeature([legacy], needs), /Mac.*sizing beyond one slot/i);
 	}
 	// Said only of a plan that sizes a subtask.
-	assert.doesNotMatch(proposed(proposal()).question!.text, /sizing beyond one slot/i);
+	assert.doesNotMatch(proposed(proposal()).question!.text, /cpus and memoryGiB choose/i);
 	const sizedPlan = proposal();
 	sizedPlan.subtasks[0]!.needs = { cpus: 8 };
-	assert.match(proposed(sizedPlan).question!.text, /sizing beyond one slot/i);
+	assert.match(proposed(sizedPlan).question!.text, /On hosted, cpus and memoryGiB choose the least sandbox size/i);
 });
 test("placement 4 waits for slots unless both overflow and that alternative are approved", () => {
 	const full = machineReport("Mac", macId, { turns: { running: 4, max: 4, queued: 1 } });

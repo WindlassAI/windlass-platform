@@ -147,6 +147,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	reply: "Answer the agent",
 	run_anyway: "Run it anyway",
 	fresh_sandbox: "Start on a fresh sandbox",
+	larger_sandbox: "Go on in a larger sandbox",
 };
 const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
 /** A budget question's choices, as the server words them (blueprint.ts, `askBudget`): "Give it N more", hand over, give up. */

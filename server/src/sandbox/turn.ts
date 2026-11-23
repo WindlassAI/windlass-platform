@@ -112,7 +112,7 @@ import type { TurnUsage, WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
-import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
+import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, TURN_DEADLINE_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
 import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, StartMark, TurnAnswer, TurnCheckpoint, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
@@ -605,8 +605,9 @@ class Turn {
 			} else {
 				await sandbox.removeFiles(files);
 			}
-			// With the engine gone: the servers it was handed for this turn are not left for the next.
+			// With the engine gone: the servers it was handed for this turn are not left for the next, nor its deadline.
 			await this.withdrawServers();
+			if (this.input.endsAt !== undefined) await sandbox.removeFiles([TURN_DEADLINE_FILE]).catch(() => undefined);
 			await release?.().catch(() => undefined);
 		}
 
@@ -752,6 +753,7 @@ class Turn {
 		}
 
 		// Before a session is opened: the engine reads its configuration then, and starts what its user's own file names.
+		if ((await this.unlessAborted(this.writeDeadline())) === "aborted" || this.abortRequested) return;
 		if ((await this.unlessAborted(this.writeServers())) === "aborted" || this.abortRequested) return;
 
 		try {
@@ -1120,6 +1122,20 @@ class Turn {
 		if (next.written !== null) await this.sandbox.writeTextFile(PLATFORM_SERVERS_FILE, next.written);
 		if (next.changed) await this.sandbox.writeTextFile(WINDLASS_CONFIG_FILE, next.config);
 		if (next.written === null && had.written !== null) await this.sandbox.removeFiles([PLATFORM_SERVERS_FILE]);
+	}
+
+	/**
+	 * When the turn ends, by the sandbox's own clock (its seconds since the epoch, plus what is left by this
+	 * server's), for the platform's hook (windlass-config.ts `TURN_TIME_HOOK`). One that cannot be written is removed:
+	 * the hook then refuses nothing. Never throws.
+	 */
+	private async writeDeadline(): Promise<void> {
+		const endsAt = this.input.endsAt;
+		if (endsAt === undefined) return;
+		const left = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
+		const script = 'mkdir -p "$(dirname "$2")" && echo $(( $(date +%s) + $1 )) > "$2.tmp" && mv -f "$2.tmp" "$2"';
+		const said = await this.sandbox.ask(["sh", "-c", script, "sh", String(left), TURN_DEADLINE_FILE], { timeoutMs: DEFINITION_TIMEOUT_MS }).catch(() => null);
+		if (said === null || said.code !== 0) await this.sandbox.removeFiles([TURN_DEADLINE_FILE]).catch(() => undefined);
 	}
 
 	/** Writes the user's MCP servers and reads the project's check settings before opening the session. */

@@ -18,7 +18,7 @@ import {
 	PUSH_CAP_MS, PUSH_DEBOUNCE_MS, readEnvironments, RETRY_MS, stateOf, usable, type EnvironmentRow,
 } from "../server/src/environments.js";
 import { edge } from "../server/src/github/events.js";
-import { buildResult, environmentsView, nudge, pushed, rebuild, saveSchedule, sessionEnvironment, settingsChanged, tick, type BuildRequest, type EnvironmentHost } from "../server/src/actors/user-environments.js";
+import { buildResult, environmentsView, nudge, pushed, rebuild, sameSize, saveSchedule, sessionEnvironment, settingsChanged, tick, type BuildRequest, type EnvironmentHost } from "../server/src/actors/user-environments.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail: unknown = ""): void {
@@ -194,6 +194,29 @@ async function run(): Promise<void> {
 		const changed = (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === HOSTED)!;
 		expect("and builds again after the debounce", changed.dueTrigger === "change" && changed.dueAt === s.clock.now + CHANGE_DEBOUNCE_MS);
 		expect("the view says why it is stale", (await environmentsView(s.host, PROJECT)).environments.find(e => e.place === HOSTED)?.note?.includes("setup command") === true);
+	}
+
+	// Hosted sizes: an image starts only sandboxes of its own size, so the record keeps the size its build was made in.
+	{
+		const s = stand();
+		const sessions = s.host.sessions();
+		(sessions[0] as { hostedSize?: string }).hostedSize = "large";
+		const startBuild = s.host.startBuild;
+		s.host.startBuild = async (request) => {
+			const id = await startBuild(request);
+			sessions.push({ id, place: { kind: "hosted" }, profile: request.profile, harness: "windlass", repository: { id: 7101 }, updatedAt: s.clock.now, environmentBuild: {}, hostedSize: request.hostedSize } as unknown as SessionSummary);
+			return id;
+		};
+		await rebuild(s.host, PROJECT, HOSTED);
+		expect("a hosted build asks for the size of the repository's latest session there", s.started[0]?.hostedSize === "large", s.started);
+		await buildResult(s.host, "s_env_1", passed());
+		const ready = (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === HOSTED)?.ready;
+		expect("the record keeps the size the build was made in", ready?.hostedSize === "large", ready);
+		expect("a session of that size may start from it; one of another size starts cold",
+			(await sessionEnvironment(s.host, PROJECT, HOSTED, "npm ci", CHECKS, "large"))?.usable === true && (await sessionEnvironment(s.host, PROJECT, HOSTED, "npm ci", CHECKS, "small"))?.usable === false);
+		await nudge(s.host, PROJECT, HOSTED, "missed", "small");
+		expect("a session of another size that started cold does not make the environment stale", (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === HOSTED)?.stale === null);
+		expect("a record without a size is small's, as is a session without one", (await sessionEnvironment(s.host, PROJECT, "m_box", "npm ci", CHECKS)) === undefined && sameSize({}, undefined) && sameSize({}, "small") && !sameSize({}, "standard"));
 	}
 
 	// A red main: promoted, with the checks that failed on its code.

@@ -121,6 +121,22 @@ The **lock** in the line, and the foot of **Options**, say the chosen sandbox's 
 
 The sandboxes on offer depend on the platform and on the machine. Read [Sandboxes and security](/docs/security) for what each one protects. A sandbox that cannot be used is listed under **Listed, but not usable on this deployment**, with the reason.
 
+## Hosted sizes
+
+Where the platform offers more than one, **Options**, the sliders icon, lists the hosted sizes for a hosted sandbox, each with its estimated price an hour:
+
+| Size | CPUs | Memory |
+| --- | --- | --- |
+| Small | 1 vCPU | 1 GiB |
+| Standard | 2 vCPU | 4 GiB |
+| Large | 4 vCPU | 8 GiB |
+
+A new agent starts on the repository's saved size (**Saved settings**, **Hosted size**), else on **Small**. The foot of **Options** says the size and its price. A sandbox keeps its size for its life: an agent that exists keeps the size it was launched with, and another size means a new sandbox. The daily sandbox time counts every size the same; a larger one costs more.
+
+A sandbox that runs out of memory stops answering, and every command in it hangs. The timeline then says "The sandbox ran out of memory (942 of 977 MiB)", restarts it from its disk, and names the next size up. Large builds, type checks and test suites of a big repository need **Standard** or more.
+
+A machine has no hosted sizes: the runner sets the memory of each slot (`--slot-memory`, see [Runner reference](/docs/runner#run-options)), and a slot that is too small runs out of memory the same way.
+
 ## Defaults
 
 A new agent starts from saved defaults, so you rarely need to change the choices. When a choice differs from the default, its menu offers **Back to the default**.

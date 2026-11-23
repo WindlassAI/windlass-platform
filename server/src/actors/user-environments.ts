@@ -8,7 +8,8 @@
  */
 
 import type { RawAccess } from "rivetkit/db";
-import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
+import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
+import { ITEM_HOSTED_SIZE } from "../contract.js";
 import {
 	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule,
 	BUILD_LOST_MS, RETRY_MS, usable, writeEnvironment, defaultSchedule, type DueBuild, type EnvironmentRow, type PlaceFacts,
@@ -19,7 +20,16 @@ type Db = Pick<RawAccess, "execute">;
 /** What is saved for a repository that a build depends on. */
 export interface SavedInputs { command: string; checks: RepositoryCheck[]; secrets: number; defaults: RepositoryDefaults; label: string }
 
-export interface BuildRequest { project: string; place: EnvironmentPlace; profile: string; screenshots: boolean; trigger: EnvironmentTrigger; repositoryId: string }
+export interface BuildRequest { project: string; place: EnvironmentPlace; profile: string; screenshots: boolean; trigger: EnvironmentTrigger; repositoryId: string; /** Hosted: the size the build's sandbox is asked for (`makeSession` holds it to the sizes offered). */ hostedSize?: HostedSize }
+
+/**
+ * Whether a hosted environment was built in a session's size. A sandbox's image starts only sandboxes of its own size
+ * (e2b/snapshots.ts keys it by template), and one recorded without a size, or a session without one, is small: the
+ * only size there was before sizes, and the only one where the deployment offers one.
+ */
+export function sameSize(built: Pick<EnvironmentBuild, "hostedSize"> | null | undefined, session: HostedSize | undefined): boolean {
+	return (built?.hostedSize ?? "small") === (session ?? "small");
+}
 
 export interface EnvironmentHost {
 	db: Db;
@@ -108,14 +118,18 @@ async function rearm(host: EnvironmentHost): Promise<void> {
 	if (wake !== null) await host.arm(Math.max(wake, host.now()));
 }
 
-/** The profile and screenshots a build at a place uses: those of the repository's latest Windlass session there, else its defaults. */
-function buildSandbox(host: EnvironmentHost, project: string, place: EnvironmentPlace, saved: SavedInputs): { profile: string; screenshots: boolean } | null {
+/**
+ * The profile, screenshots and hosted size a build at a place uses: those of the repository's latest Windlass session
+ * there, else its defaults (the size: the repository's saved one, else a work item's, which most builds serve).
+ */
+function buildSandbox(host: EnvironmentHost, project: string, place: EnvironmentPlace, saved: SavedInputs): { profile: string; screenshots: boolean; hostedSize?: HostedSize } | null {
 	const latest = host.sessions()
 		.filter(s => !s.environmentBuild && String(s.repository?.id ?? "") === repoOf(project) && placeOf(s) === place && (s.harness ?? "windlass") === "windlass")
 		.sort((a, b) => b.updatedAt - a.updatedAt)[0];
 	// Only an item's sandbox is made with the screenshots image (internal.ts `sessionSandboxInput`): a build for items matches it.
-	if (latest) return { profile: latest.profile, screenshots: !!latest.item && saved.defaults.screenshots };
-	return saved.defaults.profile ? { profile: saved.defaults.profile, screenshots: saved.defaults.screenshots } : null;
+	const hostedSize = place === HOSTED ? (latest?.hostedSize ?? saved.defaults.hostedSize ?? ITEM_HOSTED_SIZE) : undefined;
+	if (latest) return { profile: latest.profile, screenshots: !!latest.item && saved.defaults.screenshots, ...(hostedSize && { hostedSize }) };
+	return saved.defaults.profile ? { profile: saved.defaults.profile, screenshots: saved.defaults.screenshots, ...(hostedSize && { hostedSize }) } : null;
 }
 
 /**
@@ -156,7 +170,7 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	const sandbox = buildSandbox(host, due.project, due.place, saved);
 	if (!sandbox) return later("Choose a sandbox under Defaults for new agents, or run an agent on this repository here first.");
 	const inputs = environmentInputs(saved.command, saved.checks);
-	const attempt: EnvironmentBuild = { trigger: due.trigger, startedAt: now, finishedAt: null, commit: "", image: "", ...inputs, profile: sandbox.profile, checks: [], failure: null, snapshot: false };
+	let attempt: EnvironmentBuild = { trigger: due.trigger, startedAt: now, finishedAt: null, commit: "", image: "", ...inputs, profile: sandbox.profile, checks: [], failure: null, snapshot: false };
 	let session: string;
 	try {
 		session = await host.startBuild({ project: due.project, place: due.place, ...sandbox, trigger: due.trigger, repositoryId: repoOf(due.project) });
@@ -165,12 +179,15 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 		console.log(`[wlp] environment.waiting uid=${host.uid} project=${due.project} place=${due.place}: ${error instanceof Error ? error.message.slice(0, 200) : "refused"}`);
 		return later(error instanceof Error ? error.message.slice(0, 300) : "The build could not start.");
 	}
+	// The size the build's session was made in, as makeSession held it to what is offered: what sessions are matched against.
+	const made = host.sessions().find(s => s.id === session)?.hostedSize;
+	if (made) attempt = { ...attempt, hostedSize: made };
 	await writeEnvironment(host.db, { ...row, attempt, session, note: null, dueAt: null, dueTrigger: null, firstPush: null });
 	await host.watchPushes(repoOf(due.project));
 }
 
 /** A build's session reports how it ended. Promoted only when every check passed; the session is then deleted. */
-export async function buildResult(host: EnvironmentHost, sessionId: string, result: Omit<EnvironmentBuild, "trigger" | "startedAt" | "setupHash" | "checksHash" | "profile">): Promise<boolean> {
+export async function buildResult(host: EnvironmentHost, sessionId: string, result: Omit<EnvironmentBuild, "trigger" | "startedAt" | "setupHash" | "checksHash" | "profile" | "hostedSize">): Promise<boolean> {
 	const row = (await readEnvironments(host.db)).find(r => r.session === sessionId);
 	if (!row?.attempt) return false;
 	const build: EnvironmentBuild = { ...row.attempt, ...result, finishedAt: result.finishedAt ?? host.now(),
@@ -233,10 +250,13 @@ export async function rebuild(host: EnvironmentHost, project: string, place?: En
  * changed, or the store evicted it), so it is stale and builds again; `cold`, it started cold where the repository
  * has no environment yet, so one is built.
  */
-export async function nudge(host: EnvironmentHost, project: string, place: EnvironmentPlace, kind: "missed" | "cold"): Promise<void> {
+export async function nudge(host: EnvironmentHost, project: string, place: EnvironmentPlace, kind: "missed" | "cold", hostedSize?: HostedSize): Promise<void> {
 	const saved = await host.saved(project);
 	if (unavailable(host, saved)) return;
 	const row = await rowFor(host, project, place);
+	// A session of another size than the environment's starts cold by design: that is no missing image, and building
+	// for it would only take the environment away from the size the repository's latest work runs in.
+	if (place === HOSTED && row.ready && !sameSize(row.ready, hostedSize)) return;
 	if (kind === "missed") {
 		if (!row.ready) return;
 		await writeEnvironment(host.db, { ...row, stale: "Its prepared image is no longer at this place: the image changed or was removed.", dueAt: row.dueAt ?? host.now() + 60_000, dueTrigger: row.dueTrigger ?? "image" });
@@ -250,10 +270,10 @@ export async function nudge(host: EnvironmentHost, project: string, place: Envir
 }
 
 /** What a session at a place is told: whether it may start from the ready image, and of what. */
-export async function sessionEnvironment(host: Pick<EnvironmentHost, "db">, project: string, place: EnvironmentPlace, command: string, checks: RepositoryCheck[]): Promise<{ usable: boolean; commit: string; validatedAt: number; checks: number } | undefined> {
+export async function sessionEnvironment(host: Pick<EnvironmentHost, "db">, project: string, place: EnvironmentPlace, command: string, checks: RepositoryCheck[], hostedSize?: HostedSize): Promise<{ usable: boolean; commit: string; validatedAt: number; checks: number } | undefined> {
 	const row = (await readEnvironments(host.db, project)).find(r => r.place === place);
 	if (!row?.ready) return undefined;
-	return { usable: usable(row, environmentInputs(command, checks)), commit: row.ready.commit, validatedAt: row.ready.finishedAt ?? row.ready.startedAt, checks: row.ready.checks.length };
+	return { usable: usable(row, environmentInputs(command, checks)) && (place !== HOSTED || sameSize(row.ready, hostedSize)), commit: row.ready.commit, validatedAt: row.ready.finishedAt ?? row.ready.startedAt, checks: row.ready.checks.length };
 }
 
 /** The Settings section's view. */

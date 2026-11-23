@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the E2B template sessions' sandboxes are made from, `windlass-platform-sandbox`, from the same
+# Builds an E2B template sessions' sandboxes are made from, `windlass-platform-sandbox` (small), from the same
 # Dockerfile and helpers as the Docker image (sandbox/Dockerfile, wlp-run, wlp-pnpm and, for shots, wlp-shot) and the x86_64
 # Windlass. It is to E2B what sandbox/build.sh is to Docker.
 #
@@ -13,12 +13,18 @@
 #                                                  fetches; sandbox/e2b/build-windlass-x64.sh makes one
 #                                                  from a local checkout, for a Windlass not released yet)
 #   WLP_SANDBOX_VARIANT=shots                     build the screenshots template (default variant: base)
-#   WLP_E2B_SHOTS_TEMPLATE=<name>                  override windlass-platform-sandbox-shots
-#   WLP_E2B_TEMPLATE=<name>                        another name than windlass-platform-sandbox; the server
-#                                                  reads the same variable
-#   WLP_E2B_CPU, WLP_E2B_MEMORY_MB                 the size of every sandbox made from it (default 1 vCPU,
-#                                                  1024 MiB: E2B sets a sandbox's size when its template
-#                                                  is built, and bills for it by the second)
+#   WLP_E2B_SIZE=small|standard|large              the size (default small): 1 vCPU and 1 GiB, 2 and 4 GiB,
+#                                                  4 and 8 GiB. E2B sets a sandbox's size when its template
+#                                                  is built, so each size is a template of its own:
+#                                                  windlass-platform-sandbox, -standard, -large (each with
+#                                                  -shots for the screenshots variant). The server offers a
+#                                                  size once WLP_E2B_SIZES lists it.
+#   WLP_E2B_TEMPLATE=<name>                        another name than windlass-platform-sandbox for small;
+#                                                  WLP_E2B_TEMPLATE_STANDARD, _LARGE for the others, and
+#                                                  WLP_E2B_SHOTS_TEMPLATE[_STANDARD|_LARGE] for shots. The
+#                                                  server reads the same variables
+#   WLP_E2B_CPU, WLP_E2B_MEMORY_MB                 override the size's figures, for a test build under
+#                                                  another name only: the server prices a size at its own
 #
 # E2B's microVMs are x86_64 whatever this machine is, so an executable for another machine is refused
 # here and not at the first turn.

@@ -14,7 +14,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryDefaults, type SandboxProfile } from "../server/src/contract.js";
-import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -80,7 +80,7 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 
 {
 	const { db, rows } = database();
-	expect("nothing is kept for a repository nobody saved anything for", plain(await readDefaults(db, HARBOR)) === plain({ screenshots: false, profile: null, model: null, updatedAt: null }) && rows().length === 0);
+	expect("nothing is kept for a repository nobody saved anything for", plain(await readDefaults(db, HARBOR)) === plain({ screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 0);
 	expect("a change that names no field keeps nothing either", values(await saveDefaults(db, HARBOR, "acme/harbor", {}, 1)) === plain([null, null]) && rows().length === 0);
 	expect("screenshot opt-in is stored without other defaults", (await saveDefaults(db, HARBOR, "", cleanDefaults({ screenshots: true }, PROFILES, MODELS), 2)).screenshots && (await readDefaults(db, HARBOR)).screenshots);
 	expect("opting out restores the repository default", (await saveDefaults(db, HARBOR, "", { screenshots: false }, 3)).screenshots === false && rows().length === 0);
@@ -96,7 +96,33 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	const cleared = await saveDefaults(db, HARBOR, "", { profile: null }, 50);
 	expect("clearing one field keeps the other", values(cleared) === plain([null, "gpt-6.1-sol"]) && rows().length === 2);
 	const gone = await saveDefaults(db, HARBOR, "", { model: null }, 60);
-	expect("clearing the last one leaves no row", plain(gone) === plain({ screenshots: false, profile: null, model: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
+	expect("clearing the last one leaves no row", plain(gone) === plain({ screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
+}
+
+// ---- the hosted size ------------------------------------------------------------------------------
+
+{
+	const { db, rows } = database();
+	const sizes = ["small", "standard", "large"] as const;
+	expect("a hosted size is taken only where the deployment offers it", cleanDefaults({ hostedSize: "large" }, PROFILES, MODELS, sizes).hostedSize === "large" && cleanDefaults({ hostedSize: null }, PROFILES, MODELS, sizes).hostedSize === null);
+	expect("one it does not offer, or that is no size, is refused", ["huge", 4].every((raw) => { try { cleanDefaults({ hostedSize: raw }, PROFILES, MODELS, sizes); return false; } catch (error) { return error instanceof DefaultsProblem && error.code === "bad_input"; } }) && (() => { try { cleanDefaults({ hostedSize: "standard" }, PROFILES, MODELS, ["small"]); return false; } catch { return true; } })());
+	const saved = await saveDefaults(db, HARBOR, "acme/harbor", { hostedSize: "standard" }, 10);
+	expect("a size saved alone is a row of its own", saved.hostedSize === "standard" && saved.profile === null && rows().length === 1, plain(saved));
+	const model = await saveDefaults(db, HARBOR, "", { model: "gpt-6-luna" }, 20);
+	expect("a model saved after it leaves the size as it is", model.hostedSize === "standard" && model.model === "gpt-6-luna");
+	await saveDefaults(db, HARBOR, "", { model: null }, 30);
+	expect("clearing the model keeps the row for the size", (await readDefaults(db, HARBOR)).hostedSize === "standard" && rows().length === 1);
+	const gone = await saveDefaults(db, HARBOR, "", { hostedSize: null }, 40);
+	expect("clearing the size, the last field, leaves no row", gone.hostedSize === null && rows().length === 0);
+	// A table from before sizes: the column is added, and its rows read as no size.
+	const old = new DatabaseSync(":memory:");
+	old.exec("CREATE TABLE repository_defaults (project TEXT PRIMARY KEY, label TEXT NOT NULL, screenshots INTEGER NOT NULL DEFAULT 0, profile TEXT, model TEXT, updated_at INTEGER NOT NULL)");
+	old.exec("INSERT INTO repository_defaults VALUES ('github:7101', 'acme/harbor', 0, 'docker-hardened', NULL, 5)");
+	const oldDb: DefaultsDb = { async execute<Row extends Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]> { return old.prepare(query).all(...(args as Array<string | number | null>)) as Row[]; } };
+	await migrateDefaults(oldDb);
+	await migrateDefaults(oldDb);
+	const read = await readDefaults(oldDb, HARBOR);
+	expect("an older table gets the column once, and its rows have no size", read.profile === "docker-hardened" && read.hostedSize === null && (await saveDefaults(oldDb, HARBOR, "", { hostedSize: "large" }, 6)).hostedSize === "large");
 }
 
 // ---- two saves at once ---------------------------------------------------------------------------

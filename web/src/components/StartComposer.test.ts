@@ -166,6 +166,15 @@ describe("the start composer", () => {
 		expect(location.pathname).toMatch(/^\/agents\/[0-9a-f]+$/);
 	});
 
+	it("sends the hosted size chosen in the options, and the default for agents otherwise", async () => {
+		await show();
+		write("Run the typecheck");
+		open("options");
+		await act(async () => ([...pop().querySelectorAll('[role="menuitemradio"]')].find((row) => row.textContent?.startsWith("Large")) as HTMLElement).click());
+		await enter();
+		expect(created[0]?.hostedSize).toBe("large");
+	});
+
 	it("does nothing on Enter with an empty task, and creates without a prompt from the line under it", async () => {
 		await show();
 		await enter();
@@ -247,9 +256,10 @@ describe("the start composer's one-line tray", () => {
 		await show();
 		const lock = pill("lock") as HTMLButtonElement;
 		const sentence = lock.getAttribute("aria-label") ?? "";
-		expect(sentence).toMatch(/Runs hosted\.$/);
+		// Where the deployment offers hosted sizes, the sentence names the size and its price, and the options list them first.
+		expect(sentence).toMatch(/Runs hosted, Small \(1 vCPU, 1 GiB, about \$0\.067\/h\)\.$/);
 		open("options");
-		expect(pop().querySelector(".ui-menu-group-label b")?.textContent).toBe("Mode");
+		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Hosted size", "Mode"]);
 		expect(pop().querySelector(".tray-safety")?.textContent).toBe(sentence);
 	});
 });

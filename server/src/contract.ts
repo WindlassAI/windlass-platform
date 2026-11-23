@@ -89,6 +89,11 @@ export interface PlatformInfo {
 	 */
 	hostedEgress?: "restricted" | "none";
 	/**
+	 * The hosted sandbox sizes this deployment offers (E2B, `WLP_E2B_SIZES`), smallest first. Absent where
+	 * hosted sandboxes have one size (Docker): nothing of sizes is shown then.
+	 */
+	hostedSizes?: HostedSizeOption[];
+	/**
 	 * Set when this deployment has a GitHub App: users can connect GitHub, launch agents on their own
 	 * repositories and open pull requests. Absent or null when it has none: the web app then shows
 	 * nothing of it.
@@ -388,6 +393,8 @@ export interface SessionSummary {
 	title: string;
 	place: SandboxPlace;
 	profile: SandboxProfileId;
+	/** Hosted, where the deployment offers sizes: the size of its sandboxes. */
+	hostedSize?: HostedSize;
 	model: string;
 	/** A git repository cloned into the workspace when the sandbox was created, if any. */
 	repoUrl: string | null;
@@ -450,6 +457,8 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 export interface CreateSessionInput {
 	/** Machine sandbox size in slots. A personal session defaults to one. */
 	size?: 1 | 2 | 4;
+	/** Hosted only, where `PlatformInfo.hostedSizes` offers it: the sandbox's size. Left out: the repository's saved size, else small. */
+	hostedSize?: HostedSize;
 	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
 	mode?: string;
 	harness?: HarnessId;
@@ -712,6 +721,8 @@ export interface EnvironmentBuild {
 	setupHash: string;
 	checksHash: string;
 	profile: string;
+	/** Hosted, where the deployment offers sizes: the size it was built in. Its image starts only sandboxes of this size. */
+	hostedSize?: HostedSize;
 	checks: EnvironmentCheckResult[];
 	/** Why it did not pass; null when it did or while it runs. */
 	failure: { kind: EnvironmentFailureKind; check: string | null; line: string; excerpt: string } | null;
@@ -1050,6 +1061,8 @@ export interface RepositoryDefaults {
 	profile: SandboxProfileId | null;
 	/** The model; null when none is saved. */
 	model: string | null;
+	/** The hosted sandbox size of the repository's agents and work items; null when none is saved (agents small, work items standard). */
+	hostedSize?: HostedSize | null;
 	/** When either was last saved, ms since the epoch; null when neither is. */
 	updatedAt: number | null;
 }
@@ -1103,7 +1116,7 @@ export interface SavedRepository {
  * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
  * it says so.
  */
-export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
+export type AccountDefaults = Omit<RepositoryDefaults, "screenshots" | "hostedSize">;
 
 /**
  * Where the user's newest agent was started, with which agent and in which mode, as the server
@@ -1256,6 +1269,8 @@ export interface UsageSession {
 	unreportedSeconds: number;
 	/** Seconds its sandbox holds now; 0 when it does not run. */
 	heldSeconds: number;
+	/** The size of its sandbox, where the deployment offers sizes: what its seconds are priced at. */
+	hostedSize?: HostedSize;
 }
 
 /** One UTC day of the history. */
@@ -1285,6 +1300,8 @@ export interface KeptSandbox {
 	repository: string | null;
 	/** Whether the platform has pushed work of this agent to GitHub: that much is cloned again into a new sandbox. */
 	pushed: boolean;
+	/** Its size, where the deployment offers sizes. */
+	hostedSize?: HostedSize;
 }
 
 /** What a second of a running sandbox is estimated to cost. */
@@ -1306,8 +1323,10 @@ export interface UsageView extends UsageNumbers {
 	days: UsageDay[];
 	/** The sandboxes the user keeps, as the provider lists them, the most recently used first. */
 	kept: KeptSandbox[];
-	/** Null where running a sandbox is not billed by the second (local Docker): no cost is estimated then. */
+	/** Null where running a sandbox is not billed by the second (local Docker): no cost is estimated then. The smallest size's, where there are sizes. */
 	price: UsagePrice | null;
+	/** The hosted sizes and what an hour of each costs, as `PlatformInfo.hostedSizes`. The allowance is in seconds whatever the size. */
+	hostedSizes?: HostedSizeOption[];
 	/**
 	 * What becomes of an agent's memory of its conversation when its sandbox is freed. "kept": it is
 	 * stored outside the sandbox. "copied": a copy is saved after every turn and put into the next
@@ -1379,6 +1398,68 @@ export interface MachineSlotCapacity {
 	max: number;
 	unit: { cpus: number; memoryBytes: number; pids: number };
 	reserve: { cpus: number; memoryBytes: number };
+}
+
+// --- Hosted sandbox sizes ------------------------------------------------------------------------
+
+/**
+ * The size of a hosted sandbox (E2B). E2B fixes a sandbox's CPUs and memory when its template is built,
+ * so each size is a template of its own (sandbox/e2b/build.sh, `WLP_E2B_SIZE`), and a sandbox keeps its size
+ * for life: another size is a new sandbox. Machines have no sizes of this kind: a machine's slot is
+ * set by its runner (`--slot-memory`).
+ */
+export type HostedSize = "small" | "standard" | "large";
+export const HOSTED_SIZES: readonly HostedSize[] = ["small", "standard", "large"];
+export const HOSTED_SIZE_SPECS: Readonly<Record<HostedSize, { cpus: number; memoryMiB: number }>> = {
+	small: { cpus: 1, memoryMiB: 1024 },
+	standard: { cpus: 2, memoryMiB: 4096 },
+	large: { cpus: 4, memoryMiB: 8192 },
+};
+/** A work item's sandbox, where nothing else is chosen. */
+export const ITEM_HOSTED_SIZE: HostedSize = "standard";
+/** A person's own agent, where neither the launch form nor the repository says. */
+export const SESSION_HOSTED_SIZE: HostedSize = "small";
+
+export function isHostedSize(value: unknown): value is HostedSize {
+	return typeof value === "string" && (HOSTED_SIZES as readonly string[]).includes(value);
+}
+
+/** "Standard · 2 vCPU, 4 GiB". */
+export function hostedSizeWords(size: HostedSize): string {
+	const spec = HOSTED_SIZE_SPECS[size];
+	return `${size.charAt(0).toUpperCase()}${size.slice(1)} · ${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB`;
+}
+
+/** The least size that has a plan's `cpus` and `memoryGiB`; null when even the largest has not. */
+export function hostedSizeFor(needs: { cpus?: number; memoryGiB?: number }): HostedSize | null {
+	if (needs.cpus === undefined && needs.memoryGiB === undefined) return null;
+	return HOSTED_SIZES.find((size) => (needs.cpus ?? 0) <= HOSTED_SIZE_SPECS[size].cpus && (needs.memoryGiB ?? 0) * 1024 <= HOSTED_SIZE_SPECS[size].memoryMiB) ?? null;
+}
+
+/** The next size up, or null for the largest. */
+export function largerHostedSize(size: HostedSize): HostedSize | null {
+	return HOSTED_SIZES[HOSTED_SIZES.indexOf(size) + 1] ?? null;
+}
+
+/**
+ * "The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB." What the
+ * turn's row and a work item's question say. `offered`: the deployment's sizes, so that only one it has is named.
+ */
+export function outOfMemoryWords(memory: { usedMiB: number; totalMiB: number; size?: HostedSize }, offered: readonly HostedSize[] = HOSTED_SIZES): string {
+	const said = `The sandbox ran out of memory (${memory.usedMiB.toLocaleString("en-US")} of ${memory.totalMiB.toLocaleString("en-US")} MiB).`;
+	const from = memory.size ?? HOSTED_SIZES.find((size) => HOSTED_SIZE_SPECS[size].memoryMiB >= memory.totalMiB) ?? "large";
+	const larger = HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(from) + 1).find((size) => offered.includes(size));
+	if (larger) return `${said} A larger size has more room: ${hostedSizeWords(larger)}.`;
+	return `${said} ${memory.size ? "This is the largest size this deployment has" : "No larger size is offered here"}: have the agent's commands use less memory at once (fewer tests or workers in parallel).`;
+}
+
+/** A size this deployment's hosted layer offers, with its estimated price. */
+export interface HostedSizeOption {
+	id: HostedSize;
+	cpus: number;
+	memoryMiB: number;
+	/** Estimated US dollars per hour of running, at the provider's published prices; null when not billed by time. */
+	usdPerHour: number | null;
 }
 
 /** Large sandboxes use two or four slots, limited by the machine's configured capacity. */
@@ -1653,7 +1734,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment" | "sandbox_failed";
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment" | "sandbox_failed" | "out_of_memory";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1666,8 +1747,9 @@ export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "f
  *   give_up     the item fails
  *   reply       "Answer the agent" (an `agent_ask` question): the note is the answer, and is needed
  *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
+ *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway" | "fresh_sandbox";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox";
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1689,6 +1771,8 @@ export interface ItemQuestion {
 	 * output is the command's, shown as output, in plain text.
 	 */
 	check?: { name: string; command: string; exitCode: number | null; kind: "package_manager" | "network" | "not_found"; line: string; excerpt: string };
+	/** An `out_of_memory` question's next hosted size: what "Go on in a larger sandbox" makes. */
+	largerSize?: HostedSize;
 }
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */
@@ -2119,6 +2203,8 @@ export interface ChildPlacement {
 	profile?: SandboxProfileId;
 	/** A machine harness the subtask asked for (`needs.harness`); absent: Windlass. */
 	harness?: HarnessId;
+	/** Hosted: the size its `cpus` and `memoryGiB` chose (`hostedSizeFor`). Absent: the feature's size. */
+	hostedSize?: HostedSize;
 }
 
 export interface PlanSubtask {
@@ -2282,6 +2368,8 @@ export interface CreateItemInput {
 	harness?: HarnessId;
 	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
 	place?: SandboxPlace;
+	/** Hosted only: the size of the item's sandboxes. Left out: the repository's saved size, else standard. A Plan-first subtask whose plan names `cpus` or `memoryGiB` gets the least size that has them, if larger. */
+	hostedSize?: HostedSize;
 	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */
 	start?: boolean;
 	/** As `CreateSessionInput.idempotencyKey`: the same key again answers with the item the first attempt made. */
@@ -2429,7 +2517,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.

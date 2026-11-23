@@ -91,9 +91,12 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | Variable | Effect |
 |---|---|
 | `E2B_API_KEY` | the E2B account's API key. Required: without it the server does not start |
-| `WLP_E2B_TEMPLATE`, `WLP_E2B_SHOTS_TEMPLATE` | the templates sandboxes are made from (defaults `windlass-platform-sandbox` and `windlass-platform-sandbox-shots`), for the build scripts and the server |
+| `WLP_E2B_TEMPLATE`, `WLP_E2B_SHOTS_TEMPLATE` | the small size's templates (defaults `windlass-platform-sandbox` and `windlass-platform-sandbox-shots`), for the build scripts and the server |
+| `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE`, `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `WLP_E2B_SHOTS_TEMPLATE_LARGE` | the other sizes' templates (defaults `windlass-platform-sandbox-standard`, `-large`, and the same with `-shots`) |
+| `WLP_E2B_SIZES` | the hosted sizes whose templates are built, comma-separated: `small`, `standard`, `large` (default `small`; small is always offered). Work items default to standard |
+| `WLP_E2B_SIZE` | `sandbox/e2b/build.sh` only: which size to build (default `small`): 1 vCPU and 1 GiB, 2 and 4 GiB, 4 and 8 GiB. None is beyond the Hobby plan's 8 vCPU and 8 GiB a sandbox |
 | `WLP_E2B_DEPLOYMENT` | marks every sandbox of this deployment in its metadata (default `default`); different for another deployment that shares the E2B account |
-| `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3) |
+| `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3). On the Hobby plan the account runs at most 10 at once, for all its deployments together: keep the sum of every deployment's cap under 10 |
 | `WLP_E2B_IDLE_TIMEOUT_MS` | a sandbox's own timeout while no turn runs in it (default two minutes) |
 | `WLP_E2B_TURN_LEASE_MS` | a sandbox's own timeout while a turn runs, renewed every third of it (default three minutes) |
 | `WLP_E2B_MAX_RUNTIME_MS` | how long the plan lets a sandbox run without a pause (default one hour, the Hobby plan's; 86400000 on Pro) |
@@ -101,7 +104,7 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | `WLP_E2B_WINDLASS_SANDBOX` | `1`: promise Windlass's own sandbox in the E2B profile, once `scripts/e2b-check.ts` has shown it works (default 0) |
 | `WLP_E2B_OPEN_PROFILE` | `1`: also offer "E2B, microVM only" (`e2b-open`) (default 0: listed, not offered) |
 | `WLP_E2B_WINDLASS_VERSION` | the Windlass version in the template, to show before the first sandbox was made (default: learned from the first sandbox). The model relay is used on E2B only when this says 0.6.0 or later |
-| `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` | `sandbox/e2b/build.sh` only: the size of every sandbox made from the template (default 1 vCPU, 1024 MiB) |
+| `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` | `sandbox/e2b/build.sh` only: override the size's CPUs and memory, for a test build under another name (the server prices a size at its own figures) |
 
 ## The bucket for agent memory and screenshots
 

@@ -136,6 +136,18 @@ export interface E2bClient {
 	deleteSnapshot(snapshotId: string): Promise<boolean>;
 	/** `Template.getTags(name)`: the build the template's tag points at now; null when the template or the tag is unknown. https://docs.e2b.dev/template/tags.md */
 	templateBuild(template: string): Promise<string | null>;
+	/**
+	 * `Sandbox.getMetrics(id, { start })`: E2B's samples of the sandbox's use since `sinceMs`, the oldest first, in bytes.
+	 * Read from outside the guest, so it answers for a guest that answers nothing. https://docs.e2b.dev/sandbox/metrics.md
+	 */
+	metrics?(sandboxId: string, sinceMs: number): Promise<E2bMetric[]>;
+}
+
+/** One of E2B's samples of a sandbox (`SandboxMetrics`): ms since the epoch, memory in bytes. */
+export interface E2bMetric {
+	at: number;
+	memUsed: number;
+	memTotal: number;
 }
 
 /** `SnapshotInfo` of the SDK: an id `create` takes, and the snapshot template's full names (`team/name:tag`). */
