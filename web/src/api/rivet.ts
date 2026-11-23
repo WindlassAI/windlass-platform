@@ -457,6 +457,12 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 							if (live) feed.onItem(item);
 							else early.push(item);
 						}),
+						// A newer revision of a turn's `network.blocked` row, with the seq it replaces: the reducer swaps it in place.
+						// Kept with the items before the snapshot, which carries a revision at least as new.
+						conn.on("networkBlocked" satisfies keyof AgentSessionEvents, (item: AgentSessionEvents["networkBlocked"]) => {
+							if (live) feed.onItem(item);
+							else early.push(item);
+						}),
 						conn.on("delta" satisfies keyof AgentSessionEvents, (delta: AgentSessionEvents["delta"]) => {
 							if (live) feed.onDelta(delta);
 						}),

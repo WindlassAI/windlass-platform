@@ -147,6 +147,7 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 	MAX_NOTE_CHARS,
+	type BlockedNetwork,
 	type HostAllowed,
 	type NetworkRequest,
 	type NetworkScan,
@@ -189,6 +190,8 @@ export interface MockOptions {
 	long?: boolean;
 	/** False plays a deployment without the second review (WLP_FACTORY_REVIEWER unset): platform info says so. Default true. */
 	reviewer?: boolean;
+	/** True seeds blocked network requests (`?blocked=1`): in both turns of "Fix the failing add test", and on the item that has a report. */
+	blocked?: boolean;
 	/** False plays a deployment with screenshots turned off (WLP_FACTORY_SCREENSHOTS=off): platform info says so. Default true. */
 	screenshots?: boolean;
 }
@@ -1343,6 +1346,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		state: options.items,
 		long: options.long,
 		reviewer: options.reviewer,
+		blocked: options.blocked,
 		now: () => realNow(),
 		latency,
 		later,
@@ -2612,6 +2616,39 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- the seeded sessions --------------------------------------------------------------------
 
+	/**
+	 * `?blocked=1`: what a sandbox's egress refused, in each turn of a session. The first turn's row is
+	 * one hosted lookup; the second's has every kind (allowed by the repository's list, by a machine's
+	 * settings, never), a lookup with no port, a malformed destination, and requests past the 50 kept.
+	 * The hosted lookups are named by their platform line too, as the server writes both.
+	 */
+	function seedBlocked(session: MockSession): void {
+		const repository = session.summary.repository;
+		const at = (turn: number) => session.timeline.findLast((item) => item.turn === turn && item.kind === "turn.ended")?.at ?? realNow();
+		const hostLine = (turn: number, host: string) => {
+			session.timeline.push({ seq: ++session.seq, at: at(turn) - 4_000, turn, kind: "platform", level: "warn", code: "host_blocked", host, ...(repository ? { repository: true } : {}), text: `A command in this sandbox could not reach ${host}: its network reaches only the hosts it is allowed.${repository ? ` Allow it for ${repository.owner}/${repository.name} to let its agents reach it.` : ""}` });
+		};
+		const row = (turn: number, revision: number, network: BlockedNetwork) => session.timeline.push({ seq: ++session.seq, at: at(turn) - 3_000, turn, kind: "network.blocked", revision, ...network });
+		const first = at(1);
+		hostLine(1, "registry.yarnpkg.com");
+		row(1, 1, { overflow: 0, hosts: [{ host: "registry.yarnpkg.com", port: null, reason: "unlisted", allow: "repository", firstAt: first - 60_000, lastAt: first - 20_000, count: 2 }] });
+		const second = at(2);
+		hostLine(2, "registry.yarnpkg.com");
+		hostLine(2, "objects.githubusercontent.com");
+		row(2, 3, {
+			overflow: 17,
+			hosts: [
+				{ host: "registry.yarnpkg.com", port: null, reason: "unlisted", allow: "repository", firstAt: second - 90_000, lastAt: second - 8_000, count: 6 },
+				{ host: "objects.githubusercontent.com", port: null, reason: "unlisted", allow: "repository", firstAt: second - 80_000, lastAt: second - 30_000, count: 3 },
+				{ host: "api.segment.io", port: 443, reason: "machine_policy", allow: "machine", machineNames: ["studio-mac"], firstAt: second - 70_000, lastAt: second - 12_000, count: 4 },
+				{ host: "169.254.169.254", port: 80, reason: "private", allow: "never", firstAt: second - 60_000, lastAt: second - 50_000, count: 2 },
+				{ host: "10.0.3.7", port: 5432, reason: "private", allow: "never", firstAt: second - 55_000, lastAt: second - 54_000, count: 1 },
+				{ host: "smtp.mailgun.org", port: 25, reason: "provider", allow: "never", firstAt: second - 40_000, lastAt: second - 40_000, count: 1 },
+				{ host: null, port: null, reason: "malformed", allow: "never", firstAt: second - 30_000, lastAt: second - 30_000, count: 1 },
+			],
+		});
+	}
+
 	function seed(world: World): void {
 		const start = realNow();
 		const history = (
@@ -2674,7 +2711,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		// Recorded in Auto, where Windlass asks before a command runs outside its sandbox: on the profile that has Auto, so the panel says what the run did.
 		history("unattended", "Run a command with nobody to approve it", "docker-windlass-sandbox", 3 * HOUR, [{ text: "check the sandbox", script: "refused" }]);
 		history("probe", "Check what the sandbox allows", "docker-windlass-sandbox", 2 * HOUR, [{ text: "check the sandbox", script: "sandboxed" }]);
-		history(
+		const tide = history(
 			"add-test",
 			"Fix the failing add test",
 			"docker-windlass-sandbox",
@@ -2685,6 +2722,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			],
 			{ sandbox: "running", repository: sessionRepository("ada", "tide-tables") },
 		);
+		if (options.blocked) seedBlocked(tide);
 
 		// Three agents that pushed their own branch, or asked to, on acme/signal-flags: one pushed with no pull request open,
 		// so "Open pull request" opens one from what is there; one pushed and then changed more; one named main, and was refused.

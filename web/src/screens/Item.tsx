@@ -26,7 +26,7 @@
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type StepKind, type Verdict } from "@contract";
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
@@ -39,6 +39,8 @@ import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "..
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { GithubFeedback } from "../components/GithubFeedback";
+import { ItemNetwork } from "../components/ItemNetwork";
+import type { AllowHostContext } from "../components/BlockedNetwork";
 import { reviewShots, SecondReview } from "../components/SecondReview";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -1010,6 +1012,30 @@ function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
 
 // ---- the page -----------------------------------------------------------------------------------
 
+/**
+ * "Allow for this repository" on the item's Network block, sent through its builder's session, whose
+ * repository is the item's. None for a feature over several repositories, which names no repository for
+ * a host, or before the item has a session.
+ */
+function useAllowHost(view: ItemView | null): AllowHostContext | null {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const sessionId = view?.sessionId ?? "";
+	const several = (view?.repositories?.length ?? 1) > 1;
+	const repositoryId = view?.repository.id ?? null;
+	const allow = useCallback(
+		async (host: string) => {
+			try {
+				return await client.session(auth, sessionId).allowHost(host);
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+		},
+		[client, auth, sessionId, explain],
+	);
+	return useMemo(() => (several || !sessionId || repositoryId === null ? null : { allow, repositoryId }), [several, sessionId, repositoryId, allow]);
+}
+
 export function Item({ page }: { page: ItemPage }) {
 	const now = useNow(30_000);
 	const { view } = page;
@@ -1033,6 +1059,7 @@ export function Item({ page }: { page: ItemPage }) {
 	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
 	const machine = useSessionMachine(view?.place);
 	const { platform } = useApp();
+	const allowContext = useAllowHost(view);
 	// A subtask's feature, for its siblings: read as the feature's own page is, and kept current by the feed.
 	const feature = useItem(view?.parent?.itemId ?? "", Boolean(view?.parent));
 
@@ -1195,6 +1222,7 @@ export function Item({ page }: { page: ItemPage }) {
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
 			<Verdicts view={view} now={now} />
+			<ItemNetwork network={view.blockedNetwork} context={allowContext} now={now} />
 			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
 			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}

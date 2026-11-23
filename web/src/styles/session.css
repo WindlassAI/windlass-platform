@@ -3235,3 +3235,96 @@ dd.kv-clip > svg {
 .turn-end-fold-open {
 	transform: rotate(90deg);
 }
+
+/*
+ * Blocked network requests (BlockedNetwork.tsx): a turn's row in the timeline and the item page's
+ * Network block. One quiet line per destination, its count and last time, then what can be done.
+ */
+.timeline > .turn > .block > .blocked > .system > .system-rule {
+	display: none;
+}
+.blocked-list {
+	max-width: 760px;
+}
+.blocked-hosts {
+	margin: 2px 0 0;
+	padding: 0;
+	list-style: none;
+}
+.blocked-host {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 4px 16px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--line);
+}
+.blocked-hosts > li:last-child > .blocked-host {
+	border-bottom: 0;
+}
+.blocked-where {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	min-width: 0;
+}
+.blocked-dest {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink);
+}
+.blocked-facts {
+	display: inline-flex;
+	flex: none;
+	gap: 10px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+}
+.blocked-why {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 12px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.blocked-why .fold-toggle {
+	margin-top: 0;
+}
+.blocked-hint {
+	flex-basis: 100%;
+	color: var(--ink-faint);
+}
+.blocked-hint code {
+	font-size: var(--size-mono-small);
+	white-space: nowrap;
+}
+.blocked-host .system-actions {
+	margin: 0;
+}
+.blocked-foot {
+	margin-top: 6px;
+	font-size: var(--size-small);
+}
+.blocked-overflow {
+	margin-top: 6px;
+	font-size: var(--size-small);
+	color: var(--ink-faint);
+}
+.item-network .blocked-list {
+	margin-top: 10px;
+}
+
+/* The side panel's line under the sandbox's facts: the current turn's count, and the way to its row. */
+.panel-blocked {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 12px;
+	margin-top: 10px;
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+}
