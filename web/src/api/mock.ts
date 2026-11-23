@@ -201,6 +201,8 @@ export interface MockOptions {
 	reviewer?: boolean;
 	/** True seeds blocked network requests (`?blocked=1`): in both turns of "Fix the failing add test", and on the item that has a report. */
 	blocked?: boolean;
+	/** True seeds a turn paused by a server restart, with a message held for it, and one that resumed after a restart (`?resume=1`). */
+	resume?: boolean;
 	/** False plays a deployment with screenshots turned off (WLP_FACTORY_SCREENSHOTS=off): platform info says so. Default true. */
 	screenshots?: boolean;
 }
@@ -235,7 +237,7 @@ export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
  * machine is offline or removed fails at once with the server's sentence, as a turn that could not run.
  * Seeded where the user's machines are listed with "nas" as reported, and for "removed" wherever machines are offered.
  */
-export const MOCK_MACHINE_SESSIONS = ["answering", "not_answering", "offline", "removed"] as const;
+export const MOCK_MACHINE_SESSIONS = ["answering", "not_answering", "offline", "removed", "paused"] as const;
 export type MockMachineSession = (typeof MOCK_MACHINE_SESSIONS)[number];
 
 /** Claude Code as a runner started with `--harness claude` reports it (server/src/runner/control.ts, `report.harnesses`). */
@@ -2761,6 +2763,32 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		fromEnvironment.summary = { ...fromEnvironment.summary, environment: { commit: "4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a39", validatedAt: start - 9 * HOUR + 4 * MINUTE, checks: 2 } };
 		history("push-refused", "Fix add() and push it to main", "docker-windlass-sandbox", 90 * MINUTE, [{ text: "The add test is failing. Fix it and push it to main.", script: "agentPushRefused", effort: "low" }], { repository: sessionRepository("acme", "signal-flags") });
 
+		// `?resume=1`: a turn paused by a server restart, with a message held for it, and one that resumed after a restart and finished.
+		if (options.resume) {
+			const resumed = history("resumed", "Bump the parser and fix the tests", "docker-windlass-sandbox", 30 * MINUTE, [{ text: "Fix the failing test.", script: "fix", effort: "low" }], { sandbox: "running" });
+			const ended = resumed.timeline.findLastIndex((item) => item.kind === "turn.ended");
+			if (ended > 0) {
+				const turn = resumed.timeline[ended]!.turn;
+				const at = resumed.timeline[ended - 1]!.at;
+				const rows: TimelineItem[] = [
+					{ seq: 0, at, turn, kind: "platform", level: "info", code: "turn_paused", text: "The server is restarting; this turn will resume by itself." },
+					{ seq: 0, at: at + 42_000, turn, kind: "platform", level: "info", code: "turn_resumed", text: "Resumed after a server restart (the turn was paused 42 seconds)." },
+				];
+				resumed.timeline.splice(ended - 1, 0, ...rows);
+				resumed.timeline.forEach((item, index) => { item.seq = index + 1; });
+				resumed.seq = resumed.timeline.length;
+			}
+			const restarting = history("restarting", "Upgrade the test runner", "docker-windlass-sandbox", 8 * MINUTE, [], { sandbox: "running" });
+			const turn = 1;
+			const pausedAt = start - 20_000;
+			const push = (at: number, item: DistributiveOmit<TimelineItem, "seq" | "at" | "turn">) => restarting.timeline.push({ ...item, seq: ++restarting.seq, at, turn } as TimelineItem);
+			push(start - 3 * MINUTE, { kind: "user", text: "Upgrade the test runner to its next major version and fix what breaks.", model: restarting.summary.model, effort: "medium" });
+			push(start - 3 * MINUTE + 3_000, { kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(restarting).name}` });
+			push(pausedAt, { kind: "platform", level: "info", code: "turn_paused", text: "The server is restarting; this turn will resume by itself." });
+			push(start - 5_000, { kind: "user", text: "Keep the old config file as a backup.", model: restarting.summary.model, effort: "medium", steer: true, held: true });
+			restarting.summary = { ...restarting.summary, turns: turn, status: "paused", paused: { reason: "restart", since: pausedAt, held: 1 }, updatedAt: start - 5_000 };
+		}
+
 		// One agent waits on a question when the user arrives: it asked half a minute ago.
 		const asking = history("headers", "Check the site's response headers", "docker-windlass-sandbox", 14 * MINUTE, [{ text: "What is 1 + 1, to be sure?", script: "answer" }], { sandbox: "running" });
 		playInstantly(plan(world, asking, { text: "Fetch the response headers of example.com and tell me what server it runs.", effort: "low" }, SCRIPTS.network), start - 30_000);
@@ -2776,6 +2804,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const reach: NonNullable<MockSession["machine"]>["reach"] = removed ? { state: "removed", since: start - 2 * HOUR } : { state: "answering", since: start - 25 * MINUTE };
 			const machine = { machineId: removed ? "m_old" : "m_nas", profile: mockMachineProfiles(removed ? "old-laptop" : "nas")[0] as SandboxProfile, reach };
 			const onNas = history("nas-tests", "Run the tests on my machine", "docker-windlass-sandbox", 25 * MINUTE, [{ text: "The add test is failing. Find out why and fix it.", script: "fix", effort: "low" }], { sandbox: machineSession === "answering" ? "running" : "paused", machine });
+			// A second turn, paused when the machine went away mid-turn, with a message held for it (WLP_TURN_RESUME).
+			if (machineSession === "paused") {
+				const turn = onNas.summary.turns + 1;
+				const pausedAt = start - 9 * MINUTE;
+				const push = (at: number, item: DistributiveOmit<TimelineItem, "seq" | "at" | "turn">) => onNas.timeline.push({ ...item, seq: ++onNas.seq, at, turn } as TimelineItem);
+				push(start - 14 * MINUTE, { kind: "user", text: "Run the full build and the tests, and tell me if they pass.", model: onNas.summary.model, effort: "medium" });
+				push(start - 14 * MINUTE + 4_000, { kind: "platform", level: "info", text: "Resuming the paused sandbox" });
+				push(pausedAt, { kind: "platform", level: "info", code: "turn_paused", text: "Your machine “nas” went offline, so this turn is paused. It resumes by itself when the machine is back." });
+				push(start - 2 * MINUTE, { kind: "user", text: "When it is back, also run the lint step.", model: onNas.summary.model, effort: "medium", steer: true, held: true });
+				onNas.summary = { ...onNas.summary, turns: turn, status: "paused", paused: { reason: "machine", since: pausedAt, held: 1 }, updatedAt: start - 2 * MINUTE };
+			}
 			// A turn under way, which waits for the machine while it does not answer (`blipMachine`).
 			if (machineSession === "not_answering") {
 				onNas.summary = { ...onNas.summary, sandbox: "running" };
@@ -3323,7 +3362,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			since: at - 3 * HOUR,
 			agents: 3,
 			sandboxes: [
-				...(machineSessionSeeded && machineSession !== "removed" ? [{ sessionId: "nas-tests", title: null, state: machineSession === "offline" ? ("paused" as const) : ("running" as const), usedAt: at - 3 * MINUTE }] : []),
+				...(machineSessionSeeded && machineSession !== "removed" ? [{ sessionId: "nas-tests", title: null, state: (machineSession === "offline" || machineSession === "paused") ? ("paused" as const) : ("running" as const), usedAt: at - 3 * MINUTE }] : []),
 				{ sessionId: "gone", title: null, state: "paused", usedAt: at - 4 * 24 * HOUR },
 			],
 			commandSandbox: { ok: true },
@@ -3347,7 +3386,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			// The agent on "nas" finds it offline: the machine went offline after the agent last used it.
 			case "online":
 				return [nas({
-					...(machineSession === "offline" && { status: "offline", since: at - 12 * MINUTE }),
+					...((machineSession === "offline" || machineSession === "paused") && { status: "offline", since: at - 12 * MINUTE }),
 				})];
 			case "fresh":
 				return [nas({ machineId: "m_workshop", name: "workshop", egress: "restricted", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
@@ -3977,6 +4016,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					return answer;
 				};
 				const status = session.summary.status;
+				// As the server: a paused turn takes no new turn; the message is held, and given to the agent when the turn resumes.
+				if (status === "paused") {
+					const turn = session.summary.turns;
+					store(session, { turn, kind: "user", text, model: session.summary.model, effort: null, steer: true, held: true });
+					const paused = session.summary.paused;
+					setSummary(world, session, { updatedAt: now(), ...(paused && { paused: { ...paused, held: paused.held + 1 } }) });
+					return take({ turn, steered: true });
+				}
 				if (status === "starting") throw new PlatformError("user", "The agent is still starting. Send this again once it is working.", { reason: "steer_unavailable" });
 				if (status === "stopping") throw new PlatformError("user", "The turn is stopping. Send this again once it has stopped.", { reason: "steer_unavailable" });
 				if ((status === "running" || status === "waiting") && session.run && session.summary.harness === "opencode")
@@ -4085,6 +4132,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async stop() {
 				await latency(90);
 				const { world, session } = find();
+				// A paused turn has nothing running: it ends now, and does not resume.
+				if (session.summary.status === "paused" && !session.run) {
+					const turn = session.summary.turns;
+					store(session, { turn, kind: "platform", level: "info", text: "You stopped the paused turn, so it will not resume." });
+					store(session, { turn, kind: "turn.ended", outcome: "stopped", exitCode: null, steps: null, durationMs: 0, usage: null, cachedShare: null, message: null, verified: null });
+					setSummary(world, session, { status: "idle", paused: undefined, lastOutcome: "stopped", updatedAt: now() });
+					return;
+				}
 				if (session.run?.acp) interruptAcp(world, session);
 				else interrupt(world, session);
 			},

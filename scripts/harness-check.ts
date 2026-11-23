@@ -531,11 +531,13 @@ async function clientCheck(state: string) {
 	}
 	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
 
-	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" | "codex-signed-out" = "normal";
+	let variant: "normal" | "load" | "no-load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" | "codex-signed-out" = "normal";
 	const configMode = (currentValue: string) => ({ id: "agent-mode", category: "mode", type: "select", currentValue,
 		options: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan", description: "Plan only" }] });
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
+	/** The text of each `session/prompt` the adapter was sent. */
+	const prompts: string[] = [];
 	const answers: unknown[] = [];
 	const updates: AcpUpdate[] = [];
 	const sandbox = {
@@ -556,6 +558,10 @@ async function clientCheck(state: string) {
 				lastSessionId = frame.result?.sessionId ?? lastSessionId;
 				if (frame.result?.agentCapabilities) {
 					if (variant === "load") delete frame.result.agentCapabilities.sessionCapabilities.resume;
+					if (variant === "no-load") {
+						delete frame.result.agentCapabilities.sessionCapabilities.resume;
+						delete frame.result.agentCapabilities.loadSession;
+					}
 					if (variant === "wrong-version") frame.result.protocolVersion = 2;
 				}
 				if (frame.result?.modes && variant === "load") frame.result.modes.availableModes = [
@@ -620,6 +626,7 @@ async function clientCheck(state: string) {
 						frame.method = "session/resume";
 					}
 					if (frame.method === "session/prompt") {
+						prompts.push(String(frame.params?.prompt?.[0]?.text ?? ""));
 						opts.onStderr!(secret.slice(0, 8));
 						opts.onStderr!(secret.slice(8));
 					}
@@ -711,6 +718,27 @@ async function clientCheck(state: string) {
 	] });
 	assert(updates.some(u => u.sessionUpdate === "current_mode_update" && u.currentModeId === "plan"));
 	ok("session/load uses the chosen mode and preserves the adapter’s current order, labels and optional descriptions");
+
+	// A turn that resumes after its adapter was killed (WLP_TURN_RESUME): each turn starts a new adapter process, so this is
+	// the adapter loading what the killed one left on disk. One that can load gets the short "carry on"; one that cannot
+	// (neither `loadSession` nor `session/resume`) opens a new session, which is given the whole task instead.
+	const fresh = { prompt: "plain: the whole task, given again" };
+	prompts.length = 0;
+	const carriedOn = await harness.runTurn(handle, { prompt: "plain: carry on", windlassSessionId: first.windlassSessionId!, fresh });
+	assert.equal(carriedOn.failure, null);
+	assert.equal(carriedOn.resumed, true);
+	assert.deepEqual(prompts, ["plain: carry on"]);
+	variant = "no-load";
+	methods.length = 0;
+	prompts.length = 0;
+	const restarted = await harness.runTurn(handle, { prompt: "plain: carry on", windlassSessionId: first.windlassSessionId!, fresh });
+	assert.equal(restarted.failure, null);
+	assert.equal(restarted.resumed, false);
+	assert(methods.includes("session/new") && !methods.includes("session/load") && !methods.includes("session/resume"), methods.join());
+	assert.deepEqual(prompts, ["plain: the whole task, given again"]);
+	assert.notEqual(restarted.windlassSessionId, first.windlassSessionId);
+	ok("a resumed turn: an adapter that loads its saved session gets the short prompt, one that cannot gets a new session and the whole task");
+	variant = "load";
 
 	for (const effort of ["high", undefined]) {
 		const prior = await harness.runTurn(handle, { prompt: "plain", model: "opus", effort: "high" });

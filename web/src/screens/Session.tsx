@@ -23,7 +23,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, Mark, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
@@ -246,7 +246,7 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
  * says what the session last found, the live list whether the machine is offline now or gone; a machine
  * the list says came back after what the snapshot found is not reported.
  */
-function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false): { text: string; removed: boolean } | null {
+function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false, paused = false): { text: string; removed: boolean } | null {
 	if (reach?.state === "removed" || machine === null) return { removed: true, text: `This agent's machine was removed. Its files were there.${item ? "" : " Start a new agent to go on."}` };
 	const named = machine ? `Your machine "${machineLabel(machine)}"` : "Your machine";
 	const back = reach != null && machine?.status === "online" && machine.since >= reach.since;
@@ -255,6 +255,8 @@ function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary 
 	}
 	const offline = machine?.status === "offline" ? machine.since : reach?.state === "offline" && !back ? reach.since : null;
 	if (offline === null) return null;
+	// A turn paused for the machine resumes by itself: nothing is to be sent again.
+	if (paused) return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}. This turn resumes by itself when it is back${item ? "" : "; what you send meanwhile is held for it"}.` };
 	return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."}${item ? "" : " Send a prompt once it is back."}` };
 }
 
@@ -380,7 +382,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	}
 
 	const { summary, profile, view } = state;
-	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined) : null;
+	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined, summary.status === "paused" && summary.paused?.reason === "machine") : null;
 
 	return (
 		<main className={`session${panelHidden ? " session-panel-hidden" : ""}`}>
@@ -415,6 +417,13 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 					<p className={`banner ${reach.removed ? "banner-bad" : "banner-warn"}`} role="status">
 						<WarnIcon size={14} />
 						{reach.text}
+						{/* A turn paused while the machine is away: it is not over, and resumes by itself when the machine is back. */}
+						{summary.status === "paused" && summary.paused?.reason === "machine" && !reach.removed ? (
+							<span className="chip banner-chip" title="The turn resumes by itself when the machine is back. Stop ends it.">
+								<PauseIcon size={11} />
+								turn paused
+							</span>
+						) : null}
 					</p>
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}

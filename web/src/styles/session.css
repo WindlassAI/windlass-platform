@@ -3339,3 +3339,51 @@ dd.kv-clip > svg {
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);
 }
+
+/* A turn that paused (its server restarted, or its machine went away) and resumed: the gap reads as one, quietly. */
+.system-resume {
+	color: var(--ink-dim);
+}
+.system-resume-mark {
+	display: inline-flex;
+	flex: none;
+	align-self: flex-start;
+	padding-top: 0.35em;
+	color: var(--ink-faint);
+}
+.system-resumed .system-resume-mark,
+.system-resumed .system-source {
+	color: var(--accent);
+}
+/* A message held for a paused turn: a steer that waits. */
+.user-held-word {
+	display: inline-flex;
+	align-items: center;
+	color: var(--ink-dim);
+}
+.user-held-word > svg {
+	margin-right: 5px;
+}
+/* A paused turn: still, and the count of what is held for it. */
+.working-paused {
+	flex-wrap: wrap;
+	row-gap: 2px;
+	color: var(--ink-dim);
+}
+.working-held {
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	font-weight: var(--weight-regular);
+	color: var(--ink-dim);
+}
+.working-held::before {
+	content: "·";
+	margin-right: 8px;
+}
+/* The turn's paused chip, beside the words of the machine's banner. */
+.banner-chip {
+	flex: none;
+	margin-left: auto;
+	color: var(--ink-dim);
+}

@@ -54,7 +54,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 		// `?account=empty` a user who has saved nothing for their account,
 		// `?models=unavailable` one whose ChatGPT plan's models could not be read, so that the stand-in list is offered,
 		// `?machine=none|claude-signed-out|claude-unchecked|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
-		// `?machineSession=answering|not_answering|offline|removed` how the agent on the machine "nas" finds it (`MockMachineSession`),
+		// `?machineSession=answering|not_answering|offline|removed|paused` how the agent on the machine "nas" finds it (`MockMachineSession`; `paused`: its turn paused while the machine is away),
+		// `?resume=1` a turn paused by a server restart and one that resumed after it,
 		// `?items=few|features|none|full|many|loading|failed|off` the user's work items and API tokens in that state (`MockItemsState`), `off` a deployment without them,
 		// `&long=1` with `items=features`, the features' texts as long as planners and agents write them,
 		// and `?reviewer=off` a deployment without the second review.
@@ -76,6 +77,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			items: MOCK_ITEMS_STATES.find((state) => state === items),
 			long: params.get("long") === "1",
 			blocked: params.get("blocked") === "1",
+			resume: params.get("resume") === "1",
 			reviewer: params.get("reviewer") !== "off",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),

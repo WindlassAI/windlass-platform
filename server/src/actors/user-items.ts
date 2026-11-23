@@ -1178,7 +1178,8 @@ export const itemActions = {
 		const now = Date.now();
 		const known = state.requests.get(key);
 		const full = typeof input.deploymentFull === "number" && input.deploymentFull > 0 ? input.deploymentFull : (known?.full ?? null);
-		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: known?.at ?? now, attempt: known?.attempt ?? 0, full, deferUntil: input.deploymentFull ? now + FULL_FOR_MS : known?.deferUntil ?? null, wait: known?.wait ?? null };
+		const resumeAt = typeof input.resumeAt === "number" && Number.isSafeInteger(input.resumeAt) && input.resumeAt > 0 ? Math.min(input.resumeAt, now) : null;
+		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: resumeAt !== null ? Math.min(resumeAt, known?.at ?? now) : (known?.at ?? now), attempt: known?.attempt ?? 0, full, deferUntil: input.deploymentFull ? now + FULL_FOR_MS : known?.deferUntil ?? null, wait: known?.wait ?? null };
 		state.requests.set(key, request);
 		await storeRequest(c.db, request);
 		const mine = await runQueue(c, key);

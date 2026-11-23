@@ -46,6 +46,9 @@ export function opened(ws: WebSocket): Promise<void> {
 
 const RECORDED: WindlassEvent[] = readFileSync(FIXTURE, "utf8").split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line) as WindlassEvent).filter((event) => event.type !== "cli.summary");
 
+/** The text of every `session/prompt` an engine of the stand-in was sent, oldest first: what a resumed turn was given. */
+export const enginePrompts: string[] = [];
+
 /** `windlass acp`, as little of it as a turn needs: it replays one recorded turn. "(slow)" in the prompt spaces its events out. */
 class Engine {
 	private session = `ses_standin${randomBytes(6).toString("hex")}`;
@@ -91,6 +94,7 @@ class Engine {
 			case "session/prompt": {
 				this.prompt = m.id;
 				const text = JSON.stringify(m.params?.prompt ?? "");
+				enginePrompts.push(((m.params?.prompt as Array<{ text?: unknown }> | undefined) ?? []).map((part) => String(part.text ?? "")).join(""));
 				if (text.includes("(session title)")) {
 					this.send({ method: "session/update", params: { sessionId: this.session, update: { sessionUpdate: "session_info_update", title: "Inspect the files" } } });
 				}

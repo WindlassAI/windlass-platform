@@ -1095,6 +1095,10 @@ h3 {
 .status-waiting {
 	color: var(--needs);
 }
+/* Paused: the turn is not over and resumes by itself. Still, and quiet. */
+.status-paused {
+	color: var(--ink-dim);
+}
 
 .status-badge {
 	display: inline-flex;
@@ -1116,6 +1120,9 @@ h3 {
 .status-badge-waiting {
 	font-weight: var(--weight-strong);
 	color: var(--needs);
+}
+.status-badge-paused {
+	color: var(--ink-dim);
 }
 
 .outcome {

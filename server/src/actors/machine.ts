@@ -171,7 +171,19 @@ async function revoke(c: Ctx, removeSandboxes: boolean, idle: boolean): Promise<
 		c.vars.live = null;
 		if (live) reject(live.ws, refuse("removed", { removeSandboxes }));
 		await publish(c, row);
+		// A turn paused while the machine was away cannot resume on it now: its session ends it.
+		wakePaused(c);
 	});
+}
+
+/** Wakes the sessions whose turn is paused while this machine was away (`internalPausedSession`): it is back, or removed. */
+function wakePaused(c: Ctx): void {
+	void c.db.execute<{ session: string }>("SELECT session FROM paused_sessions").then(
+		(rows) => {
+			for (const { session } of rows) void sessionActor(c, c.key[0], session).internalMachineBack().catch(error => machineError("wake a paused session", error));
+		},
+		(error) => machineError("read the paused sessions", error),
+	);
 }
 
 async function storeHost(db: RawAccess, sample: string | null) {
@@ -216,6 +228,8 @@ export async function machineTables(db: RawAccess) {
 	await db.execute(`UPDATE machine SET report = NULL WHERE removed_at IS NULL AND (report LIKE '%"options":%' OR json_type(report, '$.host') IS NOT NULL)`);
 	await db.execute("CREATE TABLE IF NOT EXISTS connection_budget (id INTEGER PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS turn_slots (session TEXT NOT NULL, turn INTEGER NOT NULL, running INTEGER NOT NULL, PRIMARY KEY (session, turn))");
+	// The sessions whose turn is paused while the machine is away: woken when its runner is back.
+	await db.execute("CREATE TABLE IF NOT EXISTS paused_sessions (session TEXT PRIMARY KEY, at INTEGER NOT NULL)");
 	const slotColumns = await db.execute<{ name: string }>("PRAGMA table_info(turn_slots)");
 	if (!slotColumns.some(col => col.name === "size")) await db.execute("ALTER TABLE turn_slots ADD COLUMN size INTEGER NOT NULL DEFAULT 1");
 	await db.execute("CREATE TABLE IF NOT EXISTS pending (sandbox TEXT PRIMARY KEY)");
@@ -368,6 +382,8 @@ export const machine = actor({
 					auth = accepted?.auth;
 					for (const { sandbox } of await c.db.execute<{ sandbox: string }>("SELECT sandbox FROM pending")) ws.send({ kind: "remove", sandbox });
 					await tell(c, changed);
+					// The runner is back: the turns paused while it was away resume.
+					wakePaused(c);
 				} else {
 					const live = c.vars.live;
 					if (live?.ws !== ws) return;
@@ -404,6 +420,12 @@ export const machine = actor({
 				void c.keepAwake(reapSlots(c).catch(error => machineError("check machine turn slots", error)));
 			}
 			return slot;
+		},
+		/** A session's turn paused while this machine was away (`on`), or no longer waits for it. */
+		internalPausedSession: async (c, session: string, on: boolean): Promise<void> => {
+			requireServiceFor(c, "call");
+			if (on) await c.db.execute("INSERT OR REPLACE INTO paused_sessions (session, at) VALUES (?, ?)", String(session), Date.now());
+			else await c.db.execute("DELETE FROM paused_sessions WHERE session = ?", String(session));
 		},
 		internalReleaseTurnSlot: async (c, session: string, turn: number): Promise<void> => {
 			requireServiceFor(c, "call");

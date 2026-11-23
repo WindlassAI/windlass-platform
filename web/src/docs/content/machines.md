@@ -146,7 +146,11 @@ The runner sizes its slots from the machine’s CPU and memory. A personal turn 
 
 ### When the platform restarts
 
-On a deployment that turns it on, a Windlass turn running on your machine can outlive a restart of the platform's server. The runner keeps the agent running and holds its output for up to ten minutes. When a server is back within that time, the same agent carries on, and its output appears in the timeline once, with nothing lost. You see a short gap while the server is away. Past ten minutes, or if the runner itself restarted, the turn ends as it did before, and your next prompt starts a new one. Claude Code, Codex and OpenCode turns still end on a restart.
+On a deployment that turns it on, a Windlass turn running on your machine can outlive a restart of the platform's server. The runner keeps the agent running and holds its output for up to ten minutes. When a server is back within that time, the same agent carries on, and its output appears in the timeline once, with nothing lost. You see a short gap while the server is away. Past ten minutes, or if the runner itself restarted, the turn is paused and resumes from the agent's saved session (see [When the server restarts or the machine goes away](/docs/sessions#when-the-server-restarts-or-the-machine-goes-away)). Claude Code, Codex and OpenCode turns are paused and resumed in the same way, through their own session resume.
+
+### When the machine goes away
+
+If the machine shuts down or goes to sleep during a turn, the turn is paused, not ended. It waits for the machine for as long as it takes, and resumes by itself when the runner connects again. The time offline does not count toward the turn's limit.
 
 ### CPU and memory
 

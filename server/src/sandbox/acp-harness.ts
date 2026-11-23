@@ -435,6 +435,8 @@ export class AcpHarness implements Harness {
 				}
 			}
 			if (!result.windlassSessionId) await request("session/new", settings, accept());
+			// The saved session could not be continued: a turn that resumes is given its whole task instead of a "carry on".
+			const fresh = prior && result.resumed === false ? input.fresh : undefined;
 			const sessionId = result.windlassSessionId;
 			if (!sessionId) throw new Error(`${profile.name} returned no session id.`);
 			const requested = input.mode ?? (profile.id === "codex" ? codexDefaultMode(handle.profile) : modes.select ? modes.current : "auto");
@@ -505,7 +507,7 @@ export class AcpHarness implements Harness {
 			phase = "running";
 			lastHeard = Date.now();
 			mark("prompted");
-			const answer = rpc.request<Fields>("session/prompt", prompt(input.prompt), { onResult: () => { phase = "checking"; } });
+			const answer = rpc.request<Fields>("session/prompt", prompt(fresh?.prompt ?? input.prompt), { onResult: () => { phase = "checking"; } });
 			input.onControl?.({
 				steer: async value => {
 					if (phase !== "running" || !canSteer || input.signal?.aborted) throw new AcpPromptRequired();

@@ -35,7 +35,7 @@ import { count } from "../lib/format";
 import { effortChoices, effortsOf, modelIds, saysDefault, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
-import { ArrowUpIcon, ChevronIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
+import { ArrowUpIcon, ChevronIcon, PauseIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
 import { ModePicker } from "./Modes";
 import { KeyHints } from "./ui/Kbd";
 import { Menu, type MenuSpec } from "./ui/Menu";
@@ -182,7 +182,9 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 
 	const idle = status === "idle";
 	/** A turn is under way and takes messages: what is sent steers it. */
-	const steering = status === "running" || status === "waiting";
+	/** The turn is paused (its server restarted, or its machine went away): what is sent is held, and given to the agent when it resumes. */
+	const holding = status === "paused";
+	const steering = status === "running" || status === "waiting" || holding;
 	const writable = (idle || steering) && !closed;
 	const busy = !writable || sending;
 	const currentModel = chosenModel ?? model;
@@ -451,8 +453,8 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			<div className="composer-box">
 				<div className="composer-row">
 					<label className="composer-caret" htmlFor={ids.text}>
-						{steering ? <SteerIcon size={15} /> : <ChevronIcon size={16} />}
-						<span className="visually-hidden">{steering ? "Message to the running turn" : "Prompt"}</span>
+						{holding ? <PauseIcon size={15} /> : steering ? <SteerIcon size={15} /> : <ChevronIcon size={16} />}
+						<span className="visually-hidden">{holding ? "Message held for the paused turn" : steering ? "Message to the running turn" : "Prompt"}</span>
 					</label>
 					<textarea
 						ref={area}
@@ -460,7 +462,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						className="composer-text"
 						rows={1}
 						value={text}
-						placeholder={closed ? "Nothing can be sent to this agent" : idle ? "Tell the agent what to do" : steering ? "Steer — it reads this at its next step" : status === "stopping" ? "Stopping…" : "Starting…"}
+						placeholder={closed ? "Nothing can be sent to this agent" : idle ? "Tell the agent what to do" : holding ? "Held until the turn resumes — it reads this then" : steering ? "Steer — it reads this at its next step" : status === "stopping" ? "Stopping…" : "Starting…"}
 						onChange={(event) => setText(event.target.value)}
 						onKeyDown={onKeyDown}
 						disabled={!writable || sending}
@@ -499,7 +501,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						</span>
 					) : null}
 					<span className="composer-tools-end">
-						<KeyHints id={ids.keys} className="composer-keys" hints={steering ? [["↵", "steer"]] : [["↵", "send"], ["⇧↵", "new line"]]} />
+						<KeyHints id={ids.keys} className="composer-keys" hints={holding ? [["↵", "hold"]] : steering ? [["↵", "steer"]] : [["↵", "send"], ["⇧↵", "new line"]]} />
 						{!idle ? (
 							<button type="button" className="button button-stop button-small composer-action" onClick={stop} disabled={status === "stopping" || stopping || !online} aria-label={status === "stopping" || stopping ? "Stopping" : "Stop the turn"}>
 								<StopIcon size={12} />
@@ -507,16 +509,16 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 							</button>
 						) : null}
 						{idle || steering ? (
-							<button type="submit" className={`button button-small composer-action composer-send ${idle ? "button-primary" : "button-outline composer-steer"}`} disabled={!canSend} aria-label={steering ? "Steer: send to the running turn" : sending ? "Sending" : "Send"}>
-								{steering ? <SteerIcon size={14} /> : <ArrowUpIcon size={14} />}
-								<span>{sending ? "Sending" : steering ? "Steer" : "Send"}</span>
+							<button type="submit" className={`button button-small composer-action composer-send ${idle ? "button-primary" : "button-outline composer-steer"}`} disabled={!canSend} aria-label={holding ? "Hold: given to the turn when it resumes" : steering ? "Steer: send to the running turn" : sending ? "Sending" : "Send"}>
+								{holding ? <PauseIcon size={14} /> : steering ? <SteerIcon size={14} /> : <ArrowUpIcon size={14} />}
+								<span>{sending ? "Sending" : holding ? "Hold" : steering ? "Steer" : "Send"}</span>
 							</button>
 						) : null}
 					</span>
 				</div>
 			</div>
 			<p className={`composer-hint${reason ? " composer-reason" : steering ? " composer-steer-hint" : ""}${tooLong ? " tone-bad" : ""}`} id={ids.reason} role={reason ? "status" : undefined}>
-				{tooLong ? `${count(text.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}` : (reason ?? (steering ? "The agent reads it after its current step." : null))}
+				{tooLong ? `${count(text.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}` : (reason ?? (holding ? "The turn is paused: this is held, and the agent reads it when the turn resumes." : steering ? "The agent reads it after its current step." : null))}
 			</p>
 		</form>
 	);

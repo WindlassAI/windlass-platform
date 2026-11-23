@@ -154,10 +154,15 @@ abstract class Channel {
 			this.bytes += bytes;
 		}
 		Object.assign(this.durable, { stored: from.sent, committed: from.received, saved: from.conversation });
-		this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, RUNNER_GRACE_MS);
+		this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, this.graceMs());
 	}
 
 	protected dirty(): void { this.durable?.onDirty(); }
+
+	/** How long a conversation outlasts its socket (RUNNER_GRACE_MS). */
+	protected graceMs(): number {
+		return RUNNER_GRACE_MS;
+	}
 
 	/** What a durable channel's owner writes next; null when nothing changed. Synchronous: what it says is so now. */
 	unsaved(): Unsaved | null {
@@ -218,7 +223,7 @@ abstract class Channel {
 		const socket = this.socket;
 		this.socket = null;
 		clearInterval(this.clock);
-		if (!this.grace && !this.closed && this.conversation) this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, RUNNER_GRACE_MS);
+		if (!this.grace && !this.closed && this.conversation) this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, this.graceMs());
 		socket?.close();
 	}
 
@@ -637,8 +642,21 @@ export class ServerChannel extends Channel {
 	}
 
 	protected drop(reason: string): void {
+		if (this.processes.size > 0) this.lostProcesses += 1;
 		for (const id of [...this.pending.keys()]) this.settle(id, new ConversationLost(reason));
 		for (const id of [...this.processes.keys()]) this.finish(id, { code: null, signal: null, error: new ConversationLost(reason) });
+	}
+
+	/** How many times a conversation ended with a process still running in it: a turn that sees this grow lost its machine mid-turn. */
+	get losses(): number {
+		return this.lostProcesses;
+	}
+	private lostProcesses = 0;
+
+	/** WLP_TEST_RUNNER_GRACE_MS, for checks only: how long the platform waits for a runner that went away before it lets the conversation go. */
+	protected override graceMs(): number {
+		const test = Number(process.env.WLP_TEST_RUNNER_GRACE_MS);
+		return Number.isSafeInteger(test) && test >= 1_000 ? test : RUNNER_GRACE_MS;
 	}
 }
 

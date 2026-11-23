@@ -274,7 +274,12 @@ export type SessionStatus =
 	/** A turn is running and Windlass waits for the user's answer to a question (`SessionSnapshot.question`). */
 	| "waiting"
 	/** A stop was asked for and Windlass is winding down. */
-	| "stopping";
+	| "stopping"
+	/**
+	 * The turn is not over but nothing runs it: its server restarted, or its machine went away
+	 * (`SessionSummary.paused` says which). It resumes by itself; a message sent meanwhile is held for it.
+	 */
+	| "paused";
 
 /** How a turn ended. The first five are Windlass's own outcomes (`cli.summary.outcome`). */
 export type TurnOutcome =
@@ -421,6 +426,11 @@ export interface SessionSummary {
 	/** Last prompt or turn end. */
 	updatedAt: number;
 	status: SessionStatus;
+	/**
+	 * With status "paused": why, since when, and how many messages are held for the resumed turn.
+	 * `machine`: the machine went offline (or its runner restarted) mid-turn, and the turn resumes when it is back.
+	 */
+	paused?: { reason: "restart" | "machine"; since: number; held: number };
 	turns: number;
 	lastOutcome: TurnOutcome | null;
 	/** The last few turns' start times, oldest first (StartTimes). */
@@ -1668,6 +1678,8 @@ export interface ItemStep {
 	providerRetries?: number;
 	/** The person was asked in this step about the hosted cap on kept sandboxes (question "sandboxes"): not asked again. */
 	capAsked?: true;
+	/** The person was asked in this step whether to go on waiting for a machine that stayed away (question "machine_away"): not asked again. */
+	awayAsked?: true;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
@@ -1734,7 +1746,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment" | "sandbox_failed" | "out_of_memory";
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /**
  *   approve     the plan is approved: implement it
@@ -2762,6 +2774,8 @@ export type TimelineItem =
 			 * model reads it at its next step. Absent or false for the prompt that started the turn.
 			 */
 			steer?: boolean;
+			/** A message sent while the turn was paused: held, and given to the agent when the turn resumes. */
+			held?: boolean;
 	  }
 	/** Something the platform did around a turn: "Creating sandbox", "Cloning repository". */
 	| {
@@ -2780,7 +2794,7 @@ export type TimelineItem =
 			 * about a tool of one of the user's own MCP servers whose tools run without asking
 			 * (`PersonalServer.unasked`). The `approval.answered` that follows has choice "once", and nobody was asked.
 			 */
-			code?: "question_expired" | "question_allowed" | "host_blocked";
+			code?: "question_expired" | "question_allowed" | "host_blocked" | "turn_paused" | "turn_resumed";
 			call?: { messageId: string; callId: string };
 			/**
 			 * With `code` "host_blocked": the host a command in the session's sandbox asked for and could
