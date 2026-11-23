@@ -145,6 +145,10 @@ await section("profiles", async () => {
 	expect("without WLP_E2B_OPEN_PROFILE=1 the microVM-only profile is listed, with why it cannot be chosen", notOffered?.available === false && notOffered.unavailableReason === OPEN_PROFILE_NOT_OFFERED);
 	const both = profilesFor("e2b", { windlassSandbox: true, openProfile: true });
 	const open = both.find((profile) => profile.id === "e2b-open");
+	// With the model relay a command reads the turn's token file, which holds only a placeholder: the access token is not readable.
+	const relayedOpen = profilesFor("e2b", { windlassSandbox: false, openProfile: true }, true).find((profile) => profile.id === "e2b-open");
+	expect("with the model relay, e2b-open's commands read the token file but not the access token",
+		relayedOpen?.modelRelay === true && relayedOpen.commandsCanReadAccessToken && relayedOpen.accessTokenReadable === false && open?.accessTokenReadable === undefined);
 	expect("with it, both E2B profiles are offered, the one with Windlass's sandbox first (the picker's default)", both.filter((profile) => profile.available).map((profile) => profile.id).join() === "e2b,e2b-open");
 	expect(
 		"the microVM-only profile says what it gives up: network, the access token, no questions",

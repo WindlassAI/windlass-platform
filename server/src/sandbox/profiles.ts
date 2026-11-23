@@ -225,7 +225,7 @@ export function relayPlaceholderSentences(reader: string, where: string): string
  */
 export function withModelRelay(profile: SandboxProfile, network: EgressMode = "open"): SandboxProfile {
 	const summary = relaySummary(profile, network);
-	return summary === null ? profile : { ...profile, layers: [...profile.layers], summary, modelRelay: true };
+	return summary === null ? profile : { ...profile, layers: [...profile.layers], summary, modelRelay: true, accessTokenReadable: false };
 }
 
 function relaySummary(profile: SandboxProfile, mode: EgressMode): string | null {

@@ -48,12 +48,19 @@ export interface SandboxProfile {
 	/** Runner-confirmed credential isolation for Claude sessions using this profile. */
 	claudeRelay?: true;
 	/**
-	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
-	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
-	 * cannot renew it. The sign-in itself, which is what renews tokens, is never in a sandbox: no
-	 * command can read it in any profile.
+	 * Whether commands the agent runs can read the turn's token file: the short-lived access token of the
+	 * user's ChatGPT sign-in that each turn is handed, or with the model relay (`modelRelay`) only a
+	 * placeholder for the turn, which still makes model requests through the relay while the turn runs. It
+	 * lasts about an hour, and whoever reads it cannot renew it. The sign-in itself, which is what renews
+	 * tokens, is never in a sandbox: no command can read it in any profile. Rules about what a command can do
+	 * in the agent's name read this; whether the access token itself is readable is `accessTokenReadable`.
 	 */
 	commandsCanReadAccessToken: boolean;
+	/**
+	 * Whether commands can read the access token itself: false with the model relay, where the token file
+	 * holds only a placeholder and the token never enters the sandbox. Absent: as `commandsCanReadAccessToken`.
+	 */
+	accessTokenReadable?: boolean;
 	/**
 	 * Windlass's turns in this sandbox send their model requests through the platform's model relay
 	 * (docs/model-relay.md): the token file holds a placeholder for the turn, and the access token never
