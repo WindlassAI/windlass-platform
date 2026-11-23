@@ -64,7 +64,7 @@ import { SetupField, useSetupDraft } from "./SetupCommand";
 import { HarnessStatus } from "./HarnessStatus";
 import { KeyHints, Kbd } from "./ui/Kbd";
 import { Menu, MenuSheet, PickerPanel, type MenuGroup, type MenuItem, type MenuSpec, type TriggerProps } from "./ui/Menu";
-import { AgentGlyph, Pill } from "./ui/Pill";
+import { AgentGlyph, AgentLogo, Pill } from "./ui/Pill";
 import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
@@ -874,14 +874,45 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			}];
 		}),
 	];
+	// One button a logo for each agent the chosen place offers: a press switches to it, on its default model.
+	const agentsHere = agentGroups.filter((group) => !group.id.endsWith(":elsewhere") && group.items.some((row) => !row.disabled));
+	const agentSwitch =
+		agentsHere.length > 1 ? (
+			<div className="agent-switch" role="group" aria-label="Switch agent">
+				{agentsHere.map((group) => {
+					const id = group.id as HarnessId;
+					const chosen = harness === id;
+					return (
+						<Tooltip key={id} content={HARNESS_NAMES[id]}>
+							<button
+								type="button"
+								className={`agent-switch-button${chosen ? " agent-switch-chosen" : ""}`}
+								aria-pressed={chosen}
+								aria-label={HARNESS_NAMES[id]}
+								onClick={() => {
+									if (!chosen) {
+										setHarness(id);
+										setModel("");
+									}
+									setOpen(null);
+								}}
+							>
+								<AgentLogo id={id} size={18} />
+							</button>
+						</Tooltip>
+					);
+				})}
+			</div>
+		) : null;
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
 		width: 304,
 		maxHeight: 520,
 		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
 		header:
-			offersOther || (!other && ignored.model) || harnessProblem ? (
+			agentSwitch || offersOther || (!other && ignored.model) || harnessProblem ? (
 				<>
+					{agentSwitch}
 					{chosenMachine && offersOther
 						? <details className="agent-commands">
 								<summary>Terminal sign-in commands</summary>

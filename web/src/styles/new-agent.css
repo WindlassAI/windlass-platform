@@ -72,6 +72,31 @@
 	justify-self: stretch;
 	max-width: 68ch;
 }
+/* The agent menu's first row: a logo button for each agent the place offers, one press to switch. */
+.agent-switch {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 2px 0 8px;
+}
+.agent-switch-button {
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-control);
+	background: none;
+	color: var(--ink);
+	transition: background-color var(--dur-hover) var(--ease), border-color var(--dur-hover) var(--ease);
+}
+.agent-switch-button:hover {
+	background: var(--bg-hover);
+}
+.agent-switch-chosen {
+	border-color: var(--ink-dim);
+	background: var(--bg-active);
+}
 .agent-commands summary {
 	cursor: pointer;
 }

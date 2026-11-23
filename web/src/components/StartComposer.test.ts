@@ -258,6 +258,19 @@ describe("each picker of the start composer", () => {
 		expect(created[0]?.model).toBeUndefined();
 	});
 
+	it("switches agent in one press from the logo row at the top of the agent's menu", async () => {
+		await show();
+		open("on");
+		pick("m_nas");
+		await settle();
+		open("agent");
+		const row = pop().querySelector('[aria-label="Switch agent"]') as HTMLElement;
+		expect([...row.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toContain("Claude Code");
+		expect(row.querySelector('[aria-pressed="true"]')?.getAttribute("aria-label")).toBe("Windlass");
+		act(() => (row.querySelector('[aria-label="Claude Code"]') as HTMLButtonElement).click());
+		expect(value("agent")?.startsWith("Claude Code · ")).toBe(true);
+	});
+
 	it("sends the model chosen with the agent, and the effort with its first prompt", async () => {
 		await show();
 		open("agent");

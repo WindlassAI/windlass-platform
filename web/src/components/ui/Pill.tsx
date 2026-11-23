@@ -4,8 +4,10 @@
  * Menu's trigger props on it.
  */
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
+import type { HarnessId } from "@contract";
 import { HARNESS_NAMES } from "../../lib/acp";
-import { ChevronDownIcon } from "../Icons";
+import { ClaudeLogo, CodexLogo, OpenCodeLogo } from "../AgentLogos";
+import { ChevronDownIcon, Mark } from "../Icons";
 
 export interface PillProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 	icon?: ReactNode;
@@ -36,22 +38,36 @@ export function Pill({ icon, secondary, dot = null, dotLabel, chevron = true, ou
 	);
 }
 
-/**
- * An agent's badge, from its name (server/src/sandbox/harnesses.ts): the capitals of a name of two words or
- * two parts ("Claude Code" CC, "OpenCode" OC), the initial of a name of one (Windlass W, Codex C). No two
- * agents share one. Takes the harness's id ("claude") or its name.
- */
-export function agentBadge(harness: string): string {
-	const name = (HARNESS_NAMES as Record<string, string | undefined>)[harness] ?? harness;
-	const capitals = name.match(/[A-Z]/g) ?? [];
-	return capitals.length >= 2 ? capitals.slice(0, 2).join("") : name.slice(0, 1).toUpperCase();
+/** An agent's id from its id or its name ("claude", "Claude Code"); Windlass's for one it does not know. */
+export function agentId(harness: string): HarnessId {
+	if (harness in HARNESS_NAMES) return harness as HarnessId;
+	const found = (Object.entries(HARNESS_NAMES) as Array<[HarnessId, string]>).find(([, name]) => name === harness);
+	return found?.[0] ?? "windlass";
 }
 
-/** An agent's glyph: its badge in a small square (`agentBadge`). */
-export function AgentGlyph({ harness, accent = false }: { harness: string; accent?: boolean }) {
+/**
+ * An agent's badge: its own logo in a small square (components/AgentLogos.tsx; Windlass's is the app's
+ * mark). Every agent badge is this one. Takes the harness's id ("claude") or its name.
+ */
+export function AgentGlyph({ harness, accent = false, size = 13 }: { harness: string; accent?: boolean; size?: number }) {
+	const id = agentId(harness);
 	return (
-		<span className={`ui-glyph${accent ? " ui-glyph-accent" : ""}`} aria-hidden="true">
-			{agentBadge(harness)}
+		<span className={`ui-glyph ui-glyph-logo${accent ? " ui-glyph-accent" : ""}`} aria-hidden="true" data-agent={id}>
+			<AgentLogo id={id} size={size} />
 		</span>
 	);
+}
+
+/** The logo alone, by the agent's id. */
+export function AgentLogo({ id, size = 16 }: { id: HarnessId; size?: number }) {
+	switch (id) {
+		case "claude":
+			return <ClaudeLogo size={size} />;
+		case "codex":
+			return <CodexLogo size={size} />;
+		case "opencode":
+			return <OpenCodeLogo size={size} />;
+		default:
+			return <Mark size={size} />;
+	}
 }
