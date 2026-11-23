@@ -7,7 +7,7 @@
  * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
  * hosted sandbox: an item on one of the user's machines shows none.
  */
-import { byteSize, compact, count, plural, sandboxTime, sandboxClock } from "../lib/format";
+import { byteSize, compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useItems } from "../screens/Items";
 import { useApp } from "../state/app";
@@ -48,7 +48,7 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					<dt>Each item</dt>
 					<dd className="usage-number">{compact(value.item.tokens)} tokens</dd>
 					<dd className="usage-gloss">
-						cost-weighted: cached input counts at a tenth; and {sandboxClock(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}. Used up, the item asks you for more and keeps its work
+						cost-weighted: cached input counts at a tenth; and {sandboxTime(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}. Used up, the item asks you for more and keeps its work
 					</dd>
 				</div>
 				<div>

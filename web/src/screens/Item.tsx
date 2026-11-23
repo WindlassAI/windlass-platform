@@ -492,7 +492,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 						</div>
 					) : null}
 					<div className="item-choices">
-						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").map((choice, index) => (
+						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").flatMap((choice, index) => [
 							<button
 								key={choice.id}
 								type="button"
@@ -501,13 +501,16 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 								onClick={() => answer(choice.id)}
 							>
 								{acting.busy === choice.id ? "Sending…" : choice.label}
-							</button>
-						))}
-						{question.kind === "budget" && question.choices.some((choice) => choice.id === "raise") ? (
-							<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRaising(true)}>
-								Another amount…
-							</button>
-						) : null}
+							</button>,
+							// "Give it N more" at another figure: beside it, before the other choices.
+							...(choice.id === "raise" && question.kind === "budget"
+								? [
+										<button key="amount" type="button" className="button button-quiet" disabled={busy} onClick={() => setRaising(true)}>
+											Another amount…
+										</button>,
+									]
+								: []),
+						])}
 					</div>
 				</>
 			)}

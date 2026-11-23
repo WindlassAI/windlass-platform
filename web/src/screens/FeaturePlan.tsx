@@ -577,7 +577,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 									<div key={field.key}>
 										<dt>{field.label}</dt>
 										<dd className="plan-total-number">
-											{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])} the feature may spend</span>
+											{field.spelled(total[field.key])} <span className="tone-faint">of {field.spelled(pool[field.key])}</span>
 										</dd>
 										<dd>
 											<span className="usage-meter plan-meter" aria-hidden="true">
@@ -590,7 +590,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 							})}
 						</dl>
 						<p className="usage-note plan-total-note">
-							One token figure per subtask, cost-weighted: cached input counts at a tenth. The rest of the {PLAN_FIELDS[0]!.spelled(pool.tokens)} is for planning, the summary and the review. A subtask gets at most {PLAN_FIELDS[0]!.spelled(single.tokens)}. One that uses its budget asks you for more, and what you give it adds to the feature's.
+							The feature may spend {PLAN_FIELDS[0]!.spelled(pool.tokens)} in all: its subtasks' budgets, and the rest for planning, the summary and the review. One token figure per subtask, cost-weighted: cached input counts at a tenth. A subtask gets at most {PLAN_FIELDS[0]!.spelled(single.tokens)}. One that uses its budget asks you for more, and what you give it adds to the feature's.
 						</p>
 					</div>
 				</div>

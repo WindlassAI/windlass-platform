@@ -243,7 +243,7 @@ describe("a feature's plan on its page", () => {
 		type(budgetField("docs", "tokens"), "2");
 		expect(tokens.getAttribute("aria-invalid")).toBeNull();
 		expect(host.querySelector(".plan-total-over")).toBeNull();
-		expect(host.querySelector(".plan-total-number")?.textContent).toBe("6M of 8M the feature may spend");
+		expect(host.querySelector(".plan-total-number")?.textContent).toBe("6M of 8M");
 		expect(button("Save as version 3")?.disabled).toBe(false);
 		// Discarding brings back the plan's own figures.
 		act(() => button("Discard changes")?.click());
@@ -302,9 +302,9 @@ describe("a feature's plan on its page", () => {
 		const plan = host.querySelector(".feature-plan")!;
 		expect(plan.textContent).toContain("Runs as one item after this plan");
 		expect(plan.querySelector(".plan-card")).toBeNull();
-		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens"]);
+		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens26M as reported"]);
 		const cap = stage === "suggested" ? 8.9 : 8;
-		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M · 26M as reported`]);
+		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M`]);
 		expect(parseFloat(plan.querySelector<HTMLElement>(".usage-meter-used")!.style.width)).toBeCloseTo(100 * 2.9 / cap);
 	});
 

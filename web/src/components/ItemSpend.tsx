@@ -35,11 +35,13 @@ export function ItemSpend({ spent, budget, fields, agent }: Props) {
 				const reached = used >= cap;
 				return (
 					<div key={field.key}>
-						<dt>{field.label}</dt>
+						<dt>
+							{field.label}
+							{/* Tokens count cost-weighted: what the agent reported is under them. */}
+							{field.key === "tokens" ? <span className="tone-faint item-cost-raw">{compact(spent.rawTokens ?? spent.tokens)} as reported</span> : null}
+						</dt>
 						<dd className="usage-number">
 							{field.spelled(used)} <span className="tone-faint">of {field.spelled(cap)}</span>
-							{/* Tokens count cost-weighted: what the agent reported is beside them. */}
-							{field.key === "tokens" ? <span className="tone-faint item-cost-raw"> · {compact(spent.rawTokens ?? spent.tokens)} as reported</span> : null}
 						</dd>
 						<dd className="item-cost-meter">
 							<span className="usage-meter" aria-hidden="true">

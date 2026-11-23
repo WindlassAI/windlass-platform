@@ -435,9 +435,9 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[220, "The checks passed.", [1, 6, "gate"]],
 				[219, `Pushed ${short(hex(23))} to pull request #12.`, [1, 7, "publish"]],
 				[180, "CI failed: docs.", [1, 8, "ci", 6]],
-				[130, "Asked: This item has used 4.1M of its 4M tokens.", [1, 9, "ci_fix"]],
+				[130, "Asked: This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are.", [1, 9, "ci_fix"]],
 			],
-			spent: { tokens: 4_100_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
+			spent: { tokens: 2_100_000, rawTokens: 19_300_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
 		},
 		{
 			n: 42,
@@ -743,9 +743,9 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 					[200, "The checks passed.", [1, 2, "gate"]],
 					[199, `Pushed ${short(head)} to pull request #64.`, [1, 3, "publish"]],
 					[150, "CI failed: docs.", [1, 4, "ci", 6]],
-					[21, "Asked: This item has used 10 of its 10 turns.", [1, 12, "ci_fix"]],
+					[21, "Asked: This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.", [1, 12, "ci_fix"]],
 				],
-				spent: { tokens: 2_900_000, turns: 10, activeSeconds: 3 * 3600 + 5 * 60 },
+				spent: { tokens: 1_000_000, rawTokens: 9_200_000, turns: 10, activeSeconds: 3 * 3600 + 5 * 60 },
 			});
 		}
 		const removed = "Your machine was removed. This item can no longer work on it.";
@@ -1120,8 +1120,9 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const id = `it_${hex(seed.n, 12)}`;
 	const ago = (minutes: number) => at - minutes * MINUTE;
 	const budget: ItemBudget = { ...MOCK_FACTORY_LIMITS.item, ...seed.budget };
-	// Tokens are cost-weighted; what was reported, cached input at full count, is about nine times as many where the agent rereads its context.
-	const spent: ItemSpend = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent, rawTokens: seed.spent?.rawTokens ?? Math.round((seed.spent?.tokens ?? 0) * 9.2) };
+	// A seed's tokens are as reported unless it gives both: weighted, where an agent mostly rereads its context from the cache, they come to about a fifth.
+	const reported = seed.spent?.rawTokens ?? seed.spent?.tokens ?? 0;
+	const spent: ItemSpend = { turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent, rawTokens: reported, tokens: seed.spent?.rawTokens === undefined ? Math.round(reported / 5) : seed.spent.tokens ?? 0 };
 	const head = seed.pr === undefined ? null : hex(seed.n);
 	const repository = seed.on.repository;
 	const place: SandboxPlace = seed.place ?? { kind: "hosted" };
