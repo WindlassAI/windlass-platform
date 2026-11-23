@@ -1942,7 +1942,32 @@ export interface FeedbackBatch {
 	plan: number | null;
 }
 
+/** A refused destination. DNS observations have no port and count the first lookup seen by the hosted stub.
+ * An unparseable proxy destination has no host. Times are Unix milliseconds. For repeated destinations
+ * the strongest refusal wins (private, provider, malformed, machine_policy, unlisted). Only "repository" offers allowHost.
+ * With "machine", direct the owner to --egress-domains on the named machine. "never" is blocked by design.
+ */
+export interface BlockedHost {
+	host: string | null;
+	port: number | null;
+	reason: "machine_policy" | "unlisted" | "private" | "provider" | "malformed";
+	/** Paired machine display names, including both when an item combines matching destinations. */
+	machineNames?: string[];
+	allow: "repository" | "machine" | "deployment" | "never";
+	firstAt: number;
+	lastAt: number;
+	count: number;
+}
+
+export interface BlockedNetwork {
+	hosts: BlockedHost[];
+	/** Number of requests to destinations beyond the session's first 50, including their retries. */
+	overflow: number;
+}
+
 export interface ItemView extends ItemSummary {
+	/** Union by host and port across all turns of the builder and reviewer. Absent on older servers. */
+	blockedNetwork?: BlockedNetwork;
 	feedback: { batches: FeedbackBatch[]; notTaken: number };
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
@@ -2543,7 +2568,11 @@ export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolea
  * An entry of a session's timeline. `seq` is the platform's own numbering, dense and increasing
  * within a session, and has nothing to do with a Windlass event's `seq`.
  */
+export type NetworkBlockedItem = { seq: number; at: number; turn: number; kind: "network.blocked"; revision: number } & BlockedNetwork;
+
 export type TimelineItem =
+	/** One row per turn. Its first snapshot arrives on item, replacements on networkBlocked with the same seq. */
+	| NetworkBlockedItem
 	| {
 			seq: number;
 			at: number;
@@ -2955,13 +2984,15 @@ export interface AgentSessionActions {
 	 * that is the only person who can call it at all (a session's actions are its user's), so the other
 	 * branch, which files a request (`NetworkRequest`) and answers `applied: false`, cannot run yet.
 	 * Throws a UserError with code `bad_network` for a host that is not an exact DNS name, a session with
-	 * no repository of the GitHub connection, a list that is full, or a deployment in
-	 * WLP_E2B_NETWORK=none, where no host but the model API is reached whatever the list says.
+	 * no repository of the GitHub connection, a full list, or a sandbox outside restricted hosted egress.
+	 * For blocked destinations only offer this action when BlockedHost.allow is "repository".
 	 */
 	allowHost(input: { host: string }): Promise<HostAllowed>;
 }
 
 export interface AgentSessionEvents {
+	/** Replace the network.blocked row with this seq if revision is newer. Counts are cumulative for its turn. */
+	networkBlocked: NetworkBlockedItem;
 	/** A stored timeline entry, in `seq` order. */
 	item: TimelineItem;
 	/** Streaming output of the turn in progress. */

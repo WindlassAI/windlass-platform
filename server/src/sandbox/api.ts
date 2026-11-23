@@ -102,6 +102,11 @@ export interface RunnerStartTimes {
  */
 export type StartMark = "relay" | "process" | "initialized" | "prompted" | "output";
 
+/** The runner knows which policy refused a request. The session adds the machine name and available action. */
+export type ProxyBlockedHost = Pick<import("../contract.js").BlockedHost, "host" | "port" | "firstAt" | "lastAt" | "count"> & {
+	reason: Exclude<import("../contract.js").BlockedHost["reason"], "unlisted">;
+};
+
 export interface SandboxHandle {
 	readonly id: string;
 	/** The workspace directory inside the sandbox: "/workspace". */
@@ -131,6 +136,8 @@ export interface SandboxHandle {
 	 * that many it has seen do not use up the limit and hide one it has not. Absent where nothing records them.
 	 */
 	blockedHosts?(skip?: Iterable<string>): Promise<string[]>;
+	/** A restricted runner proxy. The first read opens the turn, subsequent reads repeat its cumulative counts. */
+	blockedNetwork?(turn: number, retained: Pick<ProxyBlockedHost, "host" | "port">[]): Promise<{ broker: string; hosts: ProxyBlockedHost[]; overflow: number }>;
 	/**
 	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
 	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the

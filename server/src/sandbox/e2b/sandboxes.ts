@@ -205,12 +205,27 @@ export class E2bSandboxHandle implements TurnSandbox {
 		return result === null || result.timedOut ? null : { code: result.code, stdout: result.stdout };
 	}
 
+	// The root-owned stub only appends ASCII lines. Advance past whole lines on success so a
+	// failed read or a chunk ending mid-name can be retried at exactly the same byte.
+	private dnsOffset = 0;
+	private readonly dnsNames = new Set<string>();
+
 	/** The names its lookup stub was asked for that it may not reach (network.ts `DNS_STUB`); none in `open`, or when the log cannot be read. */
 	async blockedHosts(skip: Iterable<string> = []): Promise<string[]> {
 		if (this.network.mode === "open") return [];
-		// The whole log: the stub stops writing at 256 KiB (DNS_LOG_BYTES), so a name asked for early is still there however many came after.
-		const read = await this.ask(["tail", "-c", String(DNS_LOG_BYTES + 4096), DNS_LOG], { timeoutMs: 15_000 });
-		return read === null || read.code !== 0 ? [] : blockedLookups(read.stdout, [...this.network.hosts, ...skip]);
+		const read = await this.ask(["dd", "if=" + DNS_LOG, "bs=64K", "iflag=skip_bytes,count_bytes",
+			"skip=" + this.dnsOffset, "count=" + (DNS_LOG_BYTES + 4096), "status=none"], { timeoutMs: 15_000 });
+		if (read === null || read.code !== 0) return [];
+		const lines = read.stdout.slice(0, read.stdout.lastIndexOf("\n") + 1);
+		if (lines) {
+			this.dnsOffset += Buffer.byteLength(lines);
+			for (const host of blockedLookups(lines, this.network.hosts, 2000)) {
+				this.dnsNames.add(host);
+				if (this.dnsNames.size > 2000) this.dnsNames.delete(this.dnsNames.values().next().value!);
+			}
+		}
+		const seen = new Set(skip);
+		return [...this.dnsNames].filter(host => !seen.has(host)).slice(0, 50);
 	}
 
 	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {

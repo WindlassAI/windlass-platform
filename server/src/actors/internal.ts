@@ -186,11 +186,14 @@ export interface SessionInternal {
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
-	internalPublish(input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer>;
+	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean }): Promise<ItemPublishAnswer>;
 }
+
+export interface NetworkReceipt { sessionId: string; revision: number; network: import("../contract.js").BlockedNetwork }
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalBlockedNetwork(input: NetworkReceipt): Promise<void>;
 	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;

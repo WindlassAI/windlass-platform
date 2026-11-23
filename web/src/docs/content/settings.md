@@ -92,7 +92,9 @@ Where the platform limits its hosted sandboxes' network (**Restricted**, see Sec
 - **Asked for by its agents** lists the hosts a command in one of the repository's sandboxes looked up and could not reach. Choose **Allow** or **Dismiss**. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect. The list keeps 30 hosts; once it is full, a new one is not added, and the agent's timeline says so, until you allow or dismiss some.
 - **Look for hosts in the repository** reads the manifests, lockfiles, install scripts and CI files of the default branch, and the setup command, and lists the presets and hosts they name that the sandboxes cannot reach yet, each with where it was found, for example "package.json scripts.postinstall". Nothing is allowed until you choose **Allow** for it: a file in a repository can name any host.
 
-A change applies to each agent from its next turn. **Allow for this repository** in an agent's timeline applies at once to that agent's sandbox while a turn is running in it, and otherwise from its next turn. Only you can change this list: it is saved with your settings for the repository.
+The repository list applies to restricted E2B sandboxes. Their session timeline can offer **Allow for this repository** for a refused DNS name. On a paired machine, the machine owner controls the runner’s public host list with `--egress-domains`. Work-item pull requests include a count of observed network refusals.
+
+A change applies to each hosted agent from its next turn. **Allow for this repository** in an agent's timeline applies at once to that agent's sandbox while a turn is running in it, and otherwise from its next turn. Only you can change this list: it is saved with your settings for the repository.
 
 ### Secrets
 

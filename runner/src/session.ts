@@ -153,6 +153,9 @@ class Conversation {
 					const answer = await h.ask(op.args.argv, op.args.options);
 					return box.harness && answer ? { ...answer, stdout: cleanClaudeOutput(answer.stdout), stderr: cleanClaudeOutput(answer.stderr) } : answer;
 				}
+				case "blockedNetwork":
+					if (!o.blockedNetwork || box.egress !== "restricted") throw new Refusal("This sandbox does not report blocked network requests.");
+					return await o.network.blocked(box.raw, op.args.turn, op.args.retained);
 				case "readTextFile": {
 					const text = await h.readTextFile(op.args.path);
 					return box.harness ? cleanClaudeOutput(text) : text;

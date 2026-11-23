@@ -229,7 +229,7 @@ async function withControl(answers: Response[], exercise: (runner: {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
 		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {}, platformStoreCaps: (caps: unknown) => { storeCaps.push(caps); },
-		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true, modelRelay: true }),
+		report: () => ({ ...plainReport, slots, blockedNetwork: true, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true, modelRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
@@ -351,6 +351,29 @@ try {
 				// And makes hardened sandboxes with data of their own only then: an older server would take the data for shared.
 				assert.equal(r.owner.sessionVolumes, sent, `owner.sessionVolumes after welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
+		}
+	});
+	await checkControl("blocked-network is negotiated separately on the control and session sockets", async () => {
+		for (const capabilities of [undefined, ["sign-in-reason"], ["blocked-network"]]) {
+			const named = capabilities?.includes("blocked-network") === true;
+			await withControl([lease()], async r => {
+				const ws = await r.online(0, capabilities);
+				assert.equal(Object.hasOwn(ws.sent.find(f => f.kind === "report")!, "blockedNetwork"), named);
+				assert.equal(r.owner.blockedNetwork, named);
+			});
+			const { Executor } = await import("../runner/src/docker-executor.js");
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [] });
+			owner.blockedNetwork = named;
+			owner.discover = async () => { Object.assign(owner, { dockerHealth: { ok: true } }); };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			owner.provider.create = async () => "0123456789ab";
+			owner.provider.connect = async () => ({ cwd: "/workspace" }) as DockerSandboxHandle;
+			const id = await owner.create("s_network", "docker-hardened");
+			const found = await owner.lifecycle("connect", id, "s_network");
+			assert.ok(validValue("connect", found) && found);
+			assert.equal("blockedNetwork" in found, named);
 		}
 	});
 	await checkControl("a runner sends modelRelay, and lets turns use its relay, only for a server whose welcome names model-relay", async () => {

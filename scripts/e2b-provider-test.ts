@@ -698,13 +698,21 @@ await section("network modes", async () => {
 	expect("a sandbox whose names cannot be pinned is removed, not handed out", /could not set the sandbox's names/.test(failed) && /read-only file system/.test(failed) && [...failing.fake.sandboxes.values()].length === 0, failed);
 
 	// A repository's network list (server/src/repository-network.ts): its hosts on top of the deployment's.
-	const stubLog = "1795358136 1 cdn.example.org\n1795358136 28 registry.npmjs.org\n1795358136 1 registry.example.com\n";
+	let stubLog = "1795358136 1 cdn.example.org\n1795358136 28 registry.npmjs.org\n1795358136 1 registry.example.com\n";
+	const readBytes: number[] = [];
+	let failRead = false;
 	let listed: ScriptedMachine | undefined;
 	const order: string[] = [];
 	const r = world({ network: restricted }, {
 		machine: () =>
 			(listed = imageLike((command) => {
-				if (command.startsWith("tail ") || command.includes("'tail'")) return { stdout: stubLog };
+				if (command.includes("if=/var/log/wlp-dns.log")) {
+					const offset = /skip=(\d+)/.exec(command)?.[1];
+					if (!offset || failRead) return { exitCode: 1 };
+					const stdout = stubLog.slice(Number(offset));
+					readBytes.push(stdout.length);
+					return { stdout };
+				}
 				if (command.includes(" wlp-network ")) order.push(`names ${/ (first|second)\.example\.org/.exec(command)?.[1] ?? "-"}`);
 				return undefined;
 			})),
@@ -719,6 +727,16 @@ await section("network modes", async () => {
 	expect("a connect that names none leaves the deployment's alone", !(callsOf(r.fake, "updateNetwork").at(-1) ?? "").includes("registry.example.com"));
 	expect("blocked hosts: the names the lookup stub wrote that the sandbox may not reach", JSON.stringify(await rHandle?.blockedHosts?.()) === JSON.stringify(["cdn.example.org"]));
 	expect("blocked hosts: names the caller has seen already are left out", JSON.stringify(await rHandle?.blockedHosts?.(["cdn.example.org"])) === "[]");
+	const initialBytes = stubLog.length;
+	const partial = "1795358136 1 second.";
+	stubLog += partial;
+	expect("a partial DNS line is held until complete", JSON.stringify(await rHandle?.blockedHosts?.(["cdn.example.org"])) === "[]");
+	stubLog += "example.org\n";
+	failRead = true;
+	await rHandle?.blockedHosts?.();
+	failRead = false;
+	expect("a failed read retries from the last complete line and still supports replay", JSON.stringify(await rHandle?.blockedHosts?.()) === JSON.stringify(["cdn.example.org", "second.example.org"]));
+	expect("idle and appended DNS reads transfer only new bytes", JSON.stringify(readBytes) === JSON.stringify([initialBytes, 0, partial.length, partial.length + "example.org\n".length]));
 	r.fake.calls.length = 0;
 	const unheld = await r.sandboxes.setNetwork(rid, ["registry.example.com", "cdn.example.org"]);
 	expect("outside a turn's hold a host allowed from a session changes nothing now: no connect, which would resume or extend the sandbox with no meter", !unheld && r.fake.calls.length === 0, r.fake.calls.join(" | "));

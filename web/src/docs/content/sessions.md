@@ -46,7 +46,9 @@ You can copy a prompt, an answer (as Markdown) or a code block with the copy but
 
 ### A host the sandbox cannot reach
 
-Where the platform limits its hosted sandboxes' network, a command that looks up a host the sandbox may not reach fails at once. After the setup command and at the end of each turn, the timeline names each such host once: "A command in this sandbox could not reach registry.example.com…". On an agent with a repository, choose **Allow for this repository** to add the host to the repository's network list. While a turn is running, this agent's sandbox reaches it at once; otherwise it applies from the next turn, as it does for the repository's other hosted agents. **Network list** opens the list in the repository's settings, where the host also waits under **Asked for by its agents** until you allow or dismiss it. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+On a restricted E2B sandbox, the session timeline can show a refused DNS name with **Allow for this repository**. Choose it to allow an eligible host in the running sandbox and for other hosted agents from their next turn. The name also appears under **Asked for by its agents** in repository network settings. Allow only a host you expect.
+
+When a work item publishes a pull request, the description includes a count of observed network refusals from its builder and reviewer. A private, single-repository PR can also name the destinations. Public and cross-repository PRs show counts only. A paired machine contributes observations when its runner supports refusal reporting. Its owner controls the runner’s public host list with `--egress-domains`.
 
 ## Send a prompt
 

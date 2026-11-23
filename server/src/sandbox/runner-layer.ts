@@ -462,13 +462,16 @@ class RunnerHandle implements TurnSandbox {
 		relay = false,
 		/** What the runner said of making it (`SandboxHandle.runnerStart`), on the first connect after its create. */
 		readonly runnerStart?: RunnerStartTimes,
+		blockedNetwork = false,
 	) {
 		this.approval = findProfile(profile).approval;
 		markTurnSandbox(this);
+		if (blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
 		if (relay) this.modelRelay = () => this.openRelay();
 	}
 
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
+	readonly blockedNetwork?: TurnSandbox["blockedNetwork"];
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
 
 	/** Not repeated: a lease lost with its conversation was ended by the runner (its `orphan`), and the turn fails. */
@@ -637,7 +640,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes) : undefined;
+		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes, found.blockedNetwork === true) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */
