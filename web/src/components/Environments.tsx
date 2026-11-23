@@ -70,7 +70,7 @@ function Row({ env, now, busy, onRebuild }: { env: RepositoryEnvironment; now: n
 						{` · built ${TRIGGER_WORDS[ready.trigger]}`}
 						{ready.snapshot ? null : " · setup is quick, so sessions start cold"}
 					</>
-				) : env.state !== "building" ? "Never validated: sessions here start cold." : null}
+				) : env.state !== "building" && !failure ? "Never validated: sessions here start cold." : null}
 			</p>
 			{env.note ? <p className="env-note">{env.note}</p> : null}
 			{failure && env.attempt ? (
