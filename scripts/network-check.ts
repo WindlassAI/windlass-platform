@@ -67,7 +67,7 @@ function refusal(run: () => unknown): string | null {
 
 for (const page of ["sessions", "settings"]) {
 	const doc = readFileSync(new URL("../web/src/docs/content/" + page + ".md", import.meta.url), "utf8");
-	expect(page + " documents the hosted timeline action and PR count", doc.includes("**Allow for this repository**") && /pull requests?[^.]*count of observed network refusals/i.test(doc));
+	expect(page + " documents the hosted timeline action and PR count", doc.includes("**Allow for this repository**") && /pull requests?[^.]*(count of observed network refusals|includes? a count of (them|blocked requests))/i.test(doc));
 	expect(page + " describes only network observations the web app renders", !/Network refusals appear during the turn|refused DNS names appear during a turn/i.test(doc));
 }
 
