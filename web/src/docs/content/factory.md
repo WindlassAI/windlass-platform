@@ -13,16 +13,15 @@ A work item runs in one of two ways:
 
 ### From the Factory page
 
-1. Open **Factory** in the bar.
-2. In the composer, switch from **Agent** to **Work item**.
-3. Type the task in **What should be done?** The first line becomes the title. The rest is the body.
-4. Choose the repository under **repo**, and the machine under **on** if you like.
-5. Optionally, choose the agent and its model under the agent pill. See [Choose the agent](#choose-the-agent).
-6. Optionally, add **Acceptance criteria** under **criteria**, one per line. The agent is given them, and the verdict lists them for you to check. No machine checks them.
-7. Where the platform offers orchestration, leave **Plan first** selected or choose **Quick** under **How it runs**.
-8. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
+1. Open **Factory** in the bar. Everything its composer files is a work item; agents start from **Agents**.
+2. Type the task in **What should be done?** The first line becomes the title. The rest is the body.
+3. Choose the repository and branch in the **where** menu, and the machine there too if you like.
+4. Optionally, choose the agent, its model and its effort in the **agent** menu. See [Choose the agent](#choose-the-agent).
+5. Optionally, choose **Add done-when criteria** under the task and write them, one per line. The agent is given them, and the verdict lists them for you to check. No machine checks them. Once written, they show as a short list there; choose **Edit** to change them.
+6. Where the platform offers orchestration, the **File** button says how the item runs: **File · Plan first** or **File · Quick**. Its menu switches between them: **Plan first**, where a planner splits it into subtasks you approve, then they run; or **Quick**, where one agent goes straight to a pull request. Your browser remembers the last choice.
+7. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
 
-To file it without starting it, choose **File as a draft**, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page.
+To file it without starting it, choose **File as a draft** in the **File** menu, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page. **Options**, the sliders icon, leads to the repository's saved settings, such as screenshots.
 
 ### From a repository
 
@@ -63,7 +62,7 @@ The body names the repository, the title, the body and, optionally, the acceptan
 
 An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code**, **OpenCode** or **Codex** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those, and an item is refused where the machine does not report the agent signed in. If the agent is signed out by the time a turn would start, the turn does not run: the item asks you, with the `windlass-runner login` command to run. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
 
-An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code, OpenCode and Codex alike. The composer offers it as its own control beside the agent and model, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
+An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code, OpenCode and Codex alike. The composer offers it in the **agent** menu, under the models, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
 
 **Codex** can run Quick items too, on a machine that offers it signed in with **ChatGPT**. It is not offered for **Plan first** or as a subtask's agent. See [Codex items](#codex-items).
 

@@ -243,7 +243,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 			</header>
 
 			<section className="home-start" aria-label="File a work item">
-				<StartComposer sessions={sessions} items={list} kind="item" switchable repositoryId={filters.repository} />
+				<StartComposer sessions={sessions} items={list} kind="item" repositoryId={filters.repository} />
 			</section>
 
 			{list === null ? (

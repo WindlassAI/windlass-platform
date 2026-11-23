@@ -74,21 +74,19 @@ afterEach(() => {
 });
 
 describe("a work item's agent session", () => {
-	it("is not among the home page's agents, nor in its count of agents, and a repository's heading counts its work items", async () => {
+	it("is not among the home page's agents, nor in its count of agents: its item stands in the feed instead", async () => {
 		await render(() => createElement(Workspace, { selection: { kind: "everything" }, items: useItems(true) }));
 		expect(itemSessions().length).toBeGreaterThan(0);
-		const lists = [...host.querySelectorAll("ul.agents[aria-label^='Your agents']")];
-		expect(lists.length).toBeGreaterThan(0);
-		for (const list of lists) for (const session of itemSessions()) expect(linksTo(list, `/agents/${session.id}`)).toEqual([]);
+		const feed = host.querySelector(".home-feed") as HTMLElement;
+		expect(feed).not.toBeNull();
+		for (const session of itemSessions()) expect(linksTo(feed, `/agents/${session.id}`)).toEqual([]);
 		const own = sessions.filter((session) => session.item === undefined);
-		const rows = lists.reduce((sum, list) => sum + list.querySelectorAll("li.agent-row").length, 0);
-		expect(rows).toBeLessThanOrEqual(own.length);
+		expect(feed.querySelectorAll('.feed-row[data-kind="agent"]').length).toBeLessThanOrEqual(own.length);
+		expect(feed.querySelectorAll('.feed-row[data-kind="item"]').length).toBeGreaterThan(0);
 		expect(host.querySelector(".home-head .home-facts")?.textContent).toMatch(new RegExp(`^${own.length} agents, \\d+ of 6 working, \\d+ of them work items`));
-		// acme/lighthouse-docs has one agent of the user's own and some work items (a repository with only items keeps its heading: lib/repositories.test.ts).
-		const docs = [...host.querySelectorAll(".agent-group-head")].find((head) => head.textContent?.includes("lighthouse-docs"));
-		expect(docs?.querySelector("a")?.getAttribute("href")).toBe("/repositories/7103");
-		const onDocs = itemSessions().filter((session) => session.repository?.id === 7103).length;
-		expect(docs?.querySelector(".agent-group-count")?.textContent).toBe(`1 agent · ${onDocs} work items`);
+		// The repository is a label on each row, leading to its page: acme/lighthouse-docs is 7103.
+		const docs = [...feed.querySelectorAll<HTMLAnchorElement>(".feed-repo")].find((label) => label.textContent?.includes("lighthouse-docs"));
+		expect(docs?.getAttribute("href")).toBe("/repositories/7103");
 	});
 
 	it("is not among a repository's agents, and is reached from its item's row", async () => {

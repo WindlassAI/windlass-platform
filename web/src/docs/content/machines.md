@@ -233,7 +233,7 @@ The new mode applies to sandboxes the runner makes from then on. A kept sandbox 
 
 ### What the session shows
 
-When you choose **Hardened Docker on your machine "…"**, the **sandbox** chip and the session's **Sandbox** panel say what its commands can reach:
+When you choose **Hardened Docker on your machine "…"**, the sandbox rows of the **where** menu and the session's **Sandbox** panel say what its commands can reach:
 
 | Mode | The network fact |
 | --- | --- |
@@ -349,7 +349,7 @@ docker exec -it windlass-runner windlass-runner login opencode --provider openco
 
 Run `login opencode` again to add another provider. Each provider keeps its own login, with two exceptions: `chatgpt` and `openai` replace each other, and so do `free` and `opencode`.
 
-Once OpenCode is signed in, the runner reports the models of its providers, and the **agent** chip lists them under **OpenCode**. See [The model](/docs/start-an-agent#the-model).
+Once OpenCode is signed in, the runner reports the models of its providers, and the **agent** menu lists them under **OpenCode**. See [The model](/docs/start-an-agent#the-model).
 
 > **Note** OpenCode's free public models have a small allowance, which OpenCode counts by your machine's public IP address. Everyone behind that address shares it. When it runs out, the turn says "The provider's usage or rate limit was reached." Wait, or sign in with a provider of your own.
 
@@ -389,7 +389,7 @@ Windlass agents use your ChatGPT sign-in, which the platform keeps. A current ru
 
 So commands, MCP servers and anything left running from setup can read only the placeholder. While a turn runs, they can still use the relay to make model requests on your plan, within the limits below. The relay has the same limits as the other relays on the machine: 8 requests at once per turn, with up to 32 more waiting, and 24 at once on the machine. The relay works in every network mode, `none` included.
 
-Runners 0.3.0 and 0.3.1 don't have the relay, and a runner whose sandbox image has a Windlass older than 0.6.0 doesn't offer it. Their Windlass turns get the access token in a file in the container, as before. The machine's sandbox chip says which applies. If the relay can't be started on a runner that has it, the turn fails with "the model relay could not be started". The runner never falls back to putting the token in the container.
+Runners 0.3.0 and 0.3.1 don't have the relay, and a runner whose sandbox image has a Windlass older than 0.6.0 doesn't offer it. Their Windlass turns get the access token in a file in the container, as before. The machine's sandbox row in the **where** menu says which applies. If the relay can't be started on a runner that has it, the turn fails with "the model relay could not be started". The runner never falls back to putting the token in the container.
 
 ## Agent logins stay out of the container
 

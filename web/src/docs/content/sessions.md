@@ -1,6 +1,8 @@
 ## The Agents home
 
-**Agents** is the home page. Your repositories are in a rail on the left, grouped by owner. Each shows a ring while something on it runs, an amber count of what needs you, and otherwise how many agents and work items it has. A repository with only saved settings shows **saved**. **Everything** at the top lists all your agents by repository; **No repository** lists the agents that were launched without one.
+**Agents** is the home page. Your repositories are in a rail on the left, each with a small tile of its initials, grouped under their owner with the owner's GitHub picture. Choose an owner's row to fold its repositories away; your browser remembers it. A repository shows a lime ring while something on it runs and an amber count of what needs you. A quiet one, with neither, is dimmer and shows no count; one with only saved settings shows **saved**. **Active now**, above the owners, repeats the repositories with something running or asking. Hover a repository for **New agent here** and **Saved settings**. The foot of the rail shows today's sandbox time, what is working and the sandboxes you keep, and leads to **Usage**.
+
+**Everything** at the top of the rail is one feed of your agents and work items: **Needs you**, then **Working now**, then **Recent**, each newest first. Each row shows its agent and model, a line on where it stands, its repository and when. **Answer** opens an agent that asks you something, **Open** a work item that does, and a finished one shows its pull request. A repository with nothing going on does not appear here; choose it in the rail. **No repository** lists the agents that were launched without one.
 
 Choose a repository to open it on the right, at `/repositories/<id>`. Its head shows what is running, what needs you, its agents, its work items and its default branch, with **Pull requests** and **Saved settings**. The field under it launches an agent on that repository. **Overview** shows its agents and a table of its work items, what needs you first. **Agents** and **Work items** show all of them; **New work item…** is under **Work items**.
 
@@ -8,7 +10,7 @@ Press <kbd>/</kbd> to search the rail, and the arrow keys to move through it. <k
 
 ### Filters
 
-**Filter** narrows the lists and the rail by status (**Running**, **Needs you**, **Done**, **Failed**), by agent, by where it runs (**Hosted** or one of your machines) and by kind (agent sessions or work items). The filters that are on show as chips; choose one to take it off. Your browser remembers the filters, and whether the rail is hidden, for your next visit.
+**Filter**, on the **Recent** heading of **Everything** and on a repository's lists, narrows the lists and the rail by status (**Running**, **Needs you**, **Done**, **Failed**), by agent, by where it runs (**Hosted** or one of your machines) and by kind (agent sessions or work items). The filters that are on show as chips; choose one to take it off. Your browser remembers the filters, and whether the rail is hidden, for your next visit.
 
 ## The session page
 

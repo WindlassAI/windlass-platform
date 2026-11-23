@@ -5,7 +5,7 @@
  */
 import type { GithubId, ItemFeed, ItemSummary, SessionSummary } from "@contract";
 import { describe, expect, it } from "vitest";
-import { NO_FILTERS, filterCount, itemStatus, loadFilters, loadRailFolded, matchesItem, matchesSession, railBadge, railOf, saveFilters, saveRailFolded, searchRail, sessionStatus, toggleFilter, type Filters } from "./workspace";
+import { NO_FILTERS, activeRepositories, filterCount, itemStatus, loadFilters, loadFoldedOwners, loadRailFolded, matchesItem, matchesSession, railBadge, railOf, saveFilters, saveFoldedOwners, saveRailFolded, searchRail, sessionStatus, toggleFilter, type Filters } from "./workspace";
 
 const repo = (id: number, owner: string, name: string) => ({ provider: "github" as const, id: id as GithubId, owner, name, branch: "main", private: false, url: `https://github.com/${owner}/${name}` });
 
@@ -73,9 +73,9 @@ describe("the rail", () => {
 		expect(rail.groups[1]?.repositories[0]?.items).toBe(9);
 	});
 
-	it("badges: the amber count of what asks, a ring while it runs, how many otherwise, and saved for settings alone", () => {
+	it("badges: the amber count of what asks, a ring while it runs, no count for a quiet one, and saved for settings alone", () => {
 		expect(railBadge({ running: 1, needs: 2, agents: 2, items: 1, saved: false })).toEqual({ needs: 2, running: true, count: null, saved: false });
-		expect(railBadge({ running: 0, needs: 0, agents: 2, items: 3, saved: false })).toEqual({ needs: 0, running: false, count: 5, saved: false });
+		expect(railBadge({ running: 0, needs: 0, agents: 2, items: 3, saved: false })).toEqual({ needs: 0, running: false, count: null, saved: false });
 		expect(railBadge({ running: 0, needs: 0, agents: 0, items: 0, saved: true })).toEqual({ needs: 0, running: false, count: null, saved: true });
 	});
 
@@ -85,6 +85,15 @@ describe("the rail", () => {
 		expect(rail.groups.flatMap((group) => group.repositories.map((one) => one.name))).toEqual(["harbor"]);
 		const kept = railOf({ sessions, items, saved: [], filters, keep: 3 as GithubId });
 		expect(kept.groups.flatMap((group) => group.repositories.map((one) => one.name))).toEqual(["harbor", "tide-tables"]);
+	});
+
+	it("puts the repositories with something running or asking in Active now, what asks first", () => {
+		const rail = railOf({ sessions, items, saved: [{ id: 7 as GithubId, name: "acme/old-pier" }] });
+		const active = activeRepositories(rail.groups);
+		expect(active.every((one) => one.running > 0 || one.needs > 0)).toBe(true);
+		expect(active.map((one) => one.name)).not.toContain("old-pier");
+		const firstQuiet = active.findIndex((one) => one.needs === 0);
+		expect(firstQuiet === -1 || active.slice(firstQuiet).every((one) => one.needs === 0)).toBe(true);
 	});
 
 	it("finds repositories by owner and name, in any case", () => {
@@ -153,5 +162,16 @@ describe("the filters", () => {
 		expect(loadRailFolded(kept)).toBe(false);
 		expect(() => saveRailFolded(true, storage(true))).not.toThrow();
 		expect(loadRailFolded(storage(true))).toBe(false);
+	});
+
+	it("keep the owners folded in the rail", () => {
+		const kept = storage();
+		expect([...loadFoldedOwners(kept)]).toEqual([]);
+		saveFoldedOwners(new Set(["ada", "acme"]), kept);
+		expect([...loadFoldedOwners(kept)].sort()).toEqual(["acme", "ada"]);
+		saveFoldedOwners(new Set(), kept);
+		expect(kept.map.size).toBe(0);
+		expect(() => saveFoldedOwners(new Set(["ada"]), storage(true))).not.toThrow();
+		expect([...loadFoldedOwners(storage(true))]).toEqual([]);
 	});
 });
