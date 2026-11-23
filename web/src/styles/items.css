@@ -936,6 +936,13 @@
 .factory-limits > div {
 	grid-template-columns: 112px 132px minmax(0, 1fr);
 }
+/* A limit in words rather than one figure: it takes the number's column and the gloss's, as one line where it fits. */
+.factory-limit-text {
+	grid-column: 2 / -1;
+	font-size: var(--size-small);
+	line-height: 1.45;
+	color: var(--ink);
+}
 .factory-cost .tone-faint {
 	font-size: var(--size-mono-small);
 }
@@ -973,6 +980,9 @@
 	}
 	.factory-limits .usage-number {
 		text-align: left;
+	}
+	.factory-limits .factory-limit-text {
+		grid-column: 1;
 	}
 	.item-raise-fields {
 		grid-template-columns: repeat(2, minmax(0, 1fr));

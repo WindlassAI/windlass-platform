@@ -6,7 +6,7 @@
  * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
  * hosted sandbox: an item on one of the user's machines shows none.
  */
-import { compact, count, plural, sandboxTime, sandboxClock } from "../lib/format";
+import { byteSize, compact, count, plural, sandboxTime, sandboxClock } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useItems } from "../screens/Items";
 import { useApp } from "../state/app";
@@ -67,15 +67,17 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 				</div>
 				<div>
 					<dt>Feature budget</dt>
-					<dd className="usage-number">{value.featureMultiplier}× the item budget</dd>
+					<dd className="factory-limit-text">{value.featureMultiplier}× the item budget</dd>
 				</div>
 				<div>
 					<dt>Items from GitHub</dt>
-					<dd>{count(value.githubItemsPerDay)} per UTC day · {count(value.githubDrafts)} open drafts</dd>
+					<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day · {count(value.githubDrafts)} open drafts</dd>
 				</div>
 				<div>
 					<dt>Screenshots</dt>
-					<dd>{count(value.attachments.bytes)} bytes each · {count(value.attachments.perItem)} per item · {count(value.attachments.accountBytes)} bytes per account · kept for {plural(value.attachments.days, "day")} after an item ends</dd>
+					<dd className="factory-limit-text">
+						{byteSize(value.attachments.bytes)} each · {count(value.attachments.perItem)} per item · {byteSize(value.attachments.accountBytes)} per account · kept for {plural(value.attachments.days, "day")} after an item ends
+					</dd>
 				</div>
 			</dl>
 
