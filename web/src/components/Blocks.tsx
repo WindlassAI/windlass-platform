@@ -1,6 +1,7 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
 import type { Verified } from "@contract";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { FOLD_WORDS, FoldToggle } from "./Fold";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
 import { linkProps } from "../lib/router";
@@ -245,20 +246,17 @@ const OUTPUT_LINES = 24;
 /** Monospace output, capped: the first lines of a finished output, or the last lines of one still arriving. */
 export function Output({ text, tail = false, limit = OUTPUT_LINES, label }: { text: string; tail?: boolean; limit?: number; label: string }) {
 	const [all, setAll] = useState(false);
+	const id = useId();
 	const lines = useMemo(() => text.replace(/\n$/, "").split("\n"), [text]);
 	const hidden = Math.max(0, lines.length - limit);
 	const shown = all || hidden === 0 ? lines : tail ? lines.slice(-limit) : lines.slice(0, limit);
 	return (
 		<div className="output">
 			{tail && hidden > 0 && !all ? <p className="output-more output-more-top">{plural(hidden, "earlier line")} above</p> : null}
-			<pre className="output-text" tabIndex={0} aria-label={label}>
+			<pre id={id} className="output-text" tabIndex={0} aria-label={label}>
 				{shown.join("\n")}
 			</pre>
-			{hidden > 0 ? (
-				<button type="button" className="output-more" onClick={() => setAll((value) => !value)}>
-					{all ? "show less" : `show ${plural(hidden, "more line")}`}
-				</button>
-			) : null}
+			{hidden > 0 ? <FoldToggle open={all} controls={id} label={FOLD_WORDS.more(hidden, hidden === 1 ? "more line" : "more lines")} onToggle={() => setAll((value) => !value)} /> : null}
 		</div>
 	);
 }
