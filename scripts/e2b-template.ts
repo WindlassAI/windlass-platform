@@ -30,7 +30,7 @@ async function main(): Promise<number> {
 	const variant = process.env.WLP_SANDBOX_VARIANT ?? "base";
 	if (variant !== "base" && variant !== "shots") throw new Error("WLP_SANDBOX_VARIANT must be base or shots");
 	const shots = variant === "shots";
-	if (context === undefined || !["Dockerfile", "wlp-run", "windlass", ...(shots ? ["wlp-shot"] : [])].every((file) => existsSync(join(context, file)))) {
+	if (context === undefined || !["Dockerfile", "wlp-run", "wlp-pnpm", "windlass", ...(shots ? ["wlp-shot"] : [])].every((file) => existsSync(join(context, file)))) {
 		console.error("e2b-template: give the build context: a directory with Dockerfile, wlp-run and windlass, plus wlp-shot for the shots variant (sandbox/e2b/build.sh makes one)");
 		return 2;
 	}

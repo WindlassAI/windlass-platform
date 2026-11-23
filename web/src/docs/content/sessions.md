@@ -139,6 +139,8 @@ For a session on one of your machines, the section adds that the checks ran on t
 
 Where the repository has a [setup command](/docs/settings#setup-command), it normally runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.
 
+**A repository that pins pnpm.** The sandbox has its own pnpm. Where `package.json` pins another version (`"packageManager": "pnpm@…"`), install with `corepack pnpm install` in the setup command: corepack then keeps that version, and the agent's `pnpm` runs it even where its commands have no network, as in Windlass's command sandbox. Without that, `pnpm` runs the sandbox's own version with a warning and never downloads the pinned one.
+
 Hosted Docker and supported machine runners can reuse Git objects from your earlier clones of the same connected repository on that machine. GitHub still supplies the branch head at launch. Each session keeps its own complete clone, including after the machine evicts the mirror.
 
 On deployments with prepared Docker sandboxes enabled, a successful setup on the repository’s default branch can be saved before the first agent turn. Setup must take at least 30 seconds and receive no repository secrets. A later session on the same machine can reuse your snapshot when its dependency files, setup command, sandbox image, and platform match. Subtasks and reviewers can reuse a prepared sandbox. Only the original builder or a personal session can save one.

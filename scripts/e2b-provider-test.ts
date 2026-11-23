@@ -775,6 +775,7 @@ await section("the template", async () => {
 	try {
 		writeFileSync(join(context, "Dockerfile"), readFileSync(join(root, "sandbox/Dockerfile"), "utf8"));
 		writeFileSync(join(context, "wlp-run"), readFileSync(join(root, "sandbox/wlp-run"), "utf8"));
+		writeFileSync(join(context, "wlp-pnpm"), readFileSync(join(root, "sandbox/wlp-pnpm"), "utf8"));
 		writeFileSync(join(context, "wlp-shot"), readFileSync(join(root, "sandbox/wlp-shot"), "utf8"));
 		writeFileSync(join(context, "windlass"), "not a real binary\n");
 		const text = describeTemplate(context);

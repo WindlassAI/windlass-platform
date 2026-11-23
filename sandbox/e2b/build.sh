@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the E2B template sessions' sandboxes are made from, `windlass-platform-sandbox`, from the same
-# Dockerfile and helpers as the Docker image (sandbox/Dockerfile, wlp-run and, for shots, wlp-shot) and the x86_64
+# Dockerfile and helpers as the Docker image (sandbox/Dockerfile, wlp-run, wlp-pnpm and, for shots, wlp-shot) and the x86_64
 # Windlass. It is to E2B what sandbox/build.sh is to Docker.
 #
 #   E2B_API_KEY=e2b_... sandbox/e2b/build.sh       build it at E2B (uses the account: a template build,
@@ -45,7 +45,7 @@ fi
 # The same small build context as sandbox/build.sh makes for Docker.
 context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-e2b-build.XXXXXX")
 trap 'rm -rf "$context"' EXIT INT TERM
-cp "$here/../Dockerfile" "$here/../wlp-run" "$context/"
+cp "$here/../Dockerfile" "$here/../wlp-run" "$here/../wlp-pnpm" "$context/"
 if [ "${WLP_SANDBOX_VARIANT:-base}" = shots ]; then cp "$here/../wlp-shot" "$context/"; fi
 ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
 

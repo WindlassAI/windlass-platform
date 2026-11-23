@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+// `pnpm` in the sandbox image (sandbox/Dockerfile). A project that pins another pnpm (`packageManager`) would make
+// the image's pnpm download that version, which a command in Windlass's sandbox cannot (it has no network), and a
+// different major cannot use the lockfile and store the pinned one made. So:
+//   - a pin that corepack holds already (a setup command that ran `corepack pnpm install` with the network) runs
+//     that pnpm through corepack, which then needs no network (COREPACK_ENABLE_NETWORK=0);
+//   - anything else runs the image's pnpm, told never to switch versions (`pmOnFail: ignore`,
+//     `manage-package-manager-versions` off): with a pin it warns and goes on.
+"use strict";
+const { existsSync, readFileSync } = require("node:fs");
+const { homedir } = require("node:os");
+const { dirname, join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+const IMAGE_PNPM = "/usr/local/bin/pnpm-image";
+
+/** The pnpm version the nearest package.json that names a package manager pins, or null. */
+function pinned(from) {
+	for (let dir = from; ; dir = dirname(dir)) {
+		let manager;
+		try { manager = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).packageManager; } catch {}
+		if (typeof manager === "string") {
+			const match = /^pnpm@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+.*)?$/.exec(manager.trim());
+			return match ? match[1] : null;
+		}
+		if (dir === dirname(dir)) return null;
+	}
+}
+
+function run(command, args, env) {
+	const result = spawnSync(command, args, { stdio: "inherit", env });
+	if (result.error) {
+		console.error(`pnpm: ${result.error.message}`);
+		process.exit(127);
+	}
+	if (result.signal) process.kill(process.pid, result.signal);
+	process.exit(result.status ?? 1);
+}
+
+const args = process.argv.slice(2);
+const version = pinned(process.cwd());
+const own = process.env.WLP_IMAGE_PNPM_VERSION;
+const corepackHome = process.env.COREPACK_HOME || join(homedir(), ".cache", "node", "corepack");
+if (version && version !== own && existsSync(join(corepackHome, "v1", "pnpm", version))) {
+	run("corepack", ["pnpm", ...args], { ...process.env, COREPACK_ENABLE_NETWORK: "0" });
+}
+run(IMAGE_PNPM, args, { ...process.env, pnpm_config_pm_on_fail: "ignore", npm_config_manage_package_manager_versions: "false" });
