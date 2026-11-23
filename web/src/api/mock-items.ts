@@ -1445,7 +1445,7 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		},
 		[],
 		[
-			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"] },
+			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"], why: "Half to even keeps averages of many readings unbiased; half up is what the tide tables printed on paper use." },
 			{ id: "csv", text: "Should the CSV export round too, or keep the raw millimetres?" },
 		],
 	);
@@ -1487,7 +1487,53 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		null,
 	);
 
-	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail];
+	// 10. Two long subtasks, as a planner writes them for a large change: long briefs, many files and checks, a reason for each place,
+	// and two questions with their background. The plan card and the plan's section show them compactly.
+	const feedbackPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Take `/windlass` feedback on pull requests opened from a session, as queued turns of that session.",
+			requirements: [
+				"A personal session's pull request is registered with its repository when it is published, and again when the session wakes.",
+				"Feedback on it queues a turn of that session; it never steers a running turn.",
+				"A duplicate or replayed delivery queues nothing twice.",
+				"Feedback from someone other than the owner waits for the owner's consent on Docker, hardened.",
+				"Item-owned sessions keep their own feedback path.",
+			],
+			outOfScope: ["Backfilling pull requests of sessions that stay dormant.", "Feedback on pull requests opened outside the platform."],
+			acceptance: ["`pnpm --filter @windlass-platform/server typecheck` passes.", "The webhook check's session cases pass.", "The docs build passes."],
+		},
+		[
+			{ key: "session-feedback", title: "Persist session PR targets and admit feedback as queued session turns", brief: "Add a separate personal-session pull request registration and lookup to githubRepository, leaving internalFind's item semantics unchanged. Wire registration into the panel's and the agent's successful publication in agent-session.ts and repair it on wake; persist and retry a failed registration, and clean up or invalidate stale and deleted targets. Bind to the installation actually used to publish, not merely the stored hint. Add a service-only session feedback action that checks the repository, installation and pull request and refuses item-owned sessions, then durably deduplicates and queues the notices. Drain when idle and after a turn fully closes, keeping the personal session's admission, redaction and usage. Do not use prompt(), which steers. Persist the taken subject with the turn's admission so retries and wakes cannot take it twice.",
+				acceptance: ["`pnpm --filter @windlass-platform/server typecheck` passes.", "Webhook-check cases prove a personal session's publication registers the right repository, installation and session, while an item's publication is not registered as a competing target.", "Service-action tests prove idle delivery starts one normal turn, busy delivery waits without steering, and duplicates do not add timeline entries.", "Tests verify the destination refuses a foreign repository, installation or pull request, deleted sessions and work-item origins.", "Prompt assertions cover owner attribution and untrusted metadata."],
+				dependsOn: [], owns: ["server/src/actors/agent-session.ts", "server/src/actors/github-repository.ts", "server/src/actors/session-feedback.ts", "server/src/github/publish.ts", "server/src/factory/feedback.ts", "server/src/contract.ts", "scripts/webhook-check.ts", "scripts/github-standin.ts"],
+				budget: { tokens: 2_400_000, turns: 8, activeSeconds: 90 * 60, hostedSeconds: 0 },
+				place: { prefer: "nas", reason: "Online, lower load and more free memory than the other machine; the local checks need no open egress. One runner slot." } },
+			{ key: "route-feedback", title: "Route webhook feedback, acknowledge it, and verify and document the full path", brief: "Route a pull request comment that starts with /windlass to the session that opened the pull request, through the registration from the first subtask. Acknowledge it on the pull request with a reaction, and say in a reply when it waits for the owner's consent. Extend the fake GitHub to deliver comments for a session's pull request, and add end-to-end cases from delivery to the queued turn. Document the behaviour for people in the sessions page of the docs, and for operators in the webhook notes.",
+				acceptance: ["The webhook check's routing cases pass.", "A comment on a session's pull request queues one turn of that session in the end-to-end check.", "The docs build passes."],
+				dependsOn: ["session-feedback"], owns: ["server/src/github/webhook.ts", "server/src/github/routes.ts", "scripts/webhook-check.ts", "scripts/e2e.ts", "web/src/docs/content/sessions.md", "docs/webhooks.md"],
+				budget: { tokens: 1_600_000, turns: 6, activeSeconds: 60 * 60, hostedSeconds: 0 },
+				place: { prefer: "nas", reason: "Same one-slot environment as the implementation; the fake GitHub and webhook checks and the docs build need no live GitHub or screenshots." } },
+		],
+		[
+			{ id: "dormant", text: "Is wake-time repair enough for sessions that stay dormant across the upgrade?", options: ["Yes: register new publications and repair on wake", "No: backfill every existing session pull request first"],
+				why: "There is no index from a repository to its sessions today: only the session holds its pull request. Repairing on wake covers every session that runs again; a backfill covers dormant ones too, and needs its own verified migration before unmatched replies can be trusted." },
+			{ id: "hardened", text: "Should someone else's feedback wait for your consent on Docker, hardened?", options: ["Yes: hold it until you consent", "No: refuse it on hardened profiles"],
+				why: "On Docker, hardened a work item stops for someone else's feedback until its owner chooses Run it anyway. Personal sessions have no such question yet; holding the feedback and asking uses the session's existing question." },
+		],
+	);
+	const sessionFeedback = feature(
+		{ n: 78, title: "Take /windlass feedback on pull requests opened from a session", on: HARBOR, state: "waiting", filed: 6, body: "Comments starting with /windlass on a session's pull request should reach that session.", acceptance: feedbackPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "plan_approval", text: approvalText(feedbackPlan), choices: choices("revise", "give_up"), asked: 2 },
+			run: { n: 1, started: 5, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 4 } },
+			events: [[5, "Started.", undefined, true], [4, "The planner's turn started.", [1, 1, "refine"]], [2, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 240_000, turns: 1, activeSeconds: 9 * 60, hostedSeconds: 0 } },
+		feedbackPlan,
+		null,
+	);
+
+	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback];
 }
 
 /** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */

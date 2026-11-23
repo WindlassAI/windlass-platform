@@ -316,20 +316,20 @@ The planner reads what you wrote about your machines under [Say when to use it](
 
 When the plan is ready, the item waits under **Needs you**: "Its plan waits for your approval." Its page shows **It asks you**, "Review the plan: N subtasks, X tokens of the Y the feature may spend", and the plan below it.
 
-- Answer the plan's questions, if it has any.
+- Answer the plan's questions, if it has any. Each is one short question with its choices, or a box for your answer; **Why it asks** opens the planner's background.
 - Change a subtask's budget: tokens, turns, working minutes and, on this platform, hosted minutes. You can also change where it runs, see [Placement](#placement), and which agent, model and effort it runs, see [Each subtask's agent](#each-subtasks-agent). **Allotted to subtasks** shows the proposed total against what the subtasks may share. Once children exist, it also shows their actual spend.
-- Choose **Save as version N** to keep your changes, or **Discard changes**.
+- Choose **Save as version N** to keep changes to budgets, places or agents, or **Discard changes**. Answers alone need no saving.
 - Tick each subtask listed under **Agents that work without asking**, if there are any.
-- Choose **Approve version N** to start the subtasks.
+- Choose **Approve version N** to start the subtasks. With answers typed and nothing else changed, the button is **Approve**: it saves your answers as the next version and approves that version in one press.
 - Choose **Ask for a new plan** to have the planner try again, or **Give up**.
 
 If approval is refused because the repository lacks checks or push CI, **Run as a single item** turns the feature into one ordinary item and starts it. The tokens spent on planning stay counted.
 
 ### Placement
 
-Each subtask says where it **runs on**: the place the planner prefers and why, and, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
+Each subtask is one compact row: its title, **after N** when it waits for another subtask, how many files it owns, two lines of its brief, where it **runs on** and its agent. **Details** opens the whole brief, **why there** (the planner's reason for the place), the files and its checks. The spec under the plan's goal is folded the same way. A subtask's row says, when it **needs** something of a place (CPUs, memory, screenshots, egress or tags), what. A subtask with no place runs where the feature does. The plan's **overflow** line says whether a subtask whose preferred machine is busy may run on one of the alternatives it lists.
 
-The approval card lists, under **Where each subtask runs**, each subtask's place, the planner's reason, its alternatives, whether overflow is allowed and, for every place, whether the repository's secrets are sent there: **secrets sent** or **no secrets**. This platform always gets them; a machine gets them only while its **Send saved secrets** switch is on. The planner may have read an issue anyone could file, so check this before you approve.
+The approval card lists, under **Where each subtask runs**, each subtask's place, its agent, its alternatives, whether overflow is allowed and, for every place, whether the repository's secrets are sent there: **secrets sent** or **no secrets**. This platform always gets them; a machine gets them only while its **Send saved secrets** switch is on. The planner may have read an issue anyone could file, so check this before you approve.
 
 While the plan is open you can change a subtask's place from your machines or this platform, its alternatives, and overflow, then save them with the budgets as the next version. A place the platform would refuse, for example a machine whose owner chose **Never** under [Let features use it](/docs/machines#let-features-use-it), or one without screenshots for a subtask that needs them, shows **can't place** and the reason. A refused approval shows the same reason under the subtask. A busy or offline machine is not refused: the subtask waits for it.
 
