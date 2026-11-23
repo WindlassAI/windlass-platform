@@ -432,12 +432,16 @@ export interface SessionSummary {
 	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Codex).
 	 */
 	item?: { id: string; role?: "builder" | "reviewer"; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" };
+	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
+	environmentBuild?: true;
+	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
+	environment?: { commit: string; validatedAt: number; checks: number };
 }
 
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
-	return sessions.filter(s => s.item?.role !== "reviewer").map(session => {
+	return sessions.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild).map(session => {
 		const reviewer = session.item && reviewers.get(session.item.id);
 		return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
 	});
@@ -672,6 +676,79 @@ export interface RepositoryChecks {
 	checks: RepositoryCheck[];
 	/** When the list was last saved, ms since the epoch; null when none is saved. */
 	updatedAt: number | null;
+}
+
+// --- A repository's prepared environments (environments.ts) ---------------------------------
+
+/** Where an environment is kept: "hosted", or the id of one of the user's machines. */
+export type EnvironmentPlace = string;
+export type EnvironmentState = "building" | "ready" | "failed" | "stale";
+/** What started a build. "first_use": a session started cold where the repository has none. */
+export type EnvironmentTrigger = "schedule" | "push" | "rebuild" | "change" | "first_use" | "image";
+/** Why the sandbox could not run a check (factory/check-environment.ts); "code": it ran and failed on the base's code. */
+export type EnvironmentFailureKind = "package_manager" | "network" | "not_found" | "code" | "setup" | "clone" | "save";
+
+/** One saved check as a build ran it. */
+export interface EnvironmentCheckResult {
+	name: string;
+	status: CheckStatus;
+	exitCode: number | null;
+	durationMs: number;
+	/** The check-environment.ts kind of a failure the sandbox caused; null for a pass or a failure of the code. */
+	environment: "package_manager" | "network" | "not_found" | null;
+}
+
+/** One build of an environment, as the record keeps it. */
+export interface EnvironmentBuild {
+	trigger: EnvironmentTrigger;
+	startedAt: number;
+	/** When setup and the checks finished; null while it runs. For the ready part, when it was validated. */
+	finishedAt: number | null;
+	/** The base commit setup ran at; "" until the clone. */
+	commit: string;
+	/** The image the sandbox was made from, as the place says it; "" where it does not (an older runner). */
+	image: string;
+	/** Digests of the setup command and of the checks as they were when the build started. */
+	setupHash: string;
+	checksHash: string;
+	profile: string;
+	checks: EnvironmentCheckResult[];
+	/** Why it did not pass; null when it did or while it runs. */
+	failure: { kind: EnvironmentFailureKind; check: string | null; line: string; excerpt: string } | null;
+	/** A prepared image was saved. A passing setup under the minimum time keeps none: sessions then start cold, quickly. */
+	snapshot: boolean;
+}
+
+/** One place's environment of a repository. */
+export interface RepositoryEnvironment {
+	place: EnvironmentPlace;
+	/** "This platform", or the machine's name. */
+	placeName: string;
+	state: EnvironmentState;
+	/** The last build that passed: the one sessions start from while it is current. */
+	ready: EnvironmentBuild | null;
+	/** The latest build, when it is newer than `ready`. */
+	attempt: EnvironmentBuild | null;
+	/** Why it is stale, or why a build is waiting ("daily sandbox time is used up"); null otherwise. */
+	note: string | null;
+	/** When the next build is due, ms since the epoch; null when none is. */
+	nextAt: number | null;
+}
+
+/** How often a repository's environments are rebuilt on a schedule: 0 is off, 24 nightly. */
+export type EnvironmentSchedule = 0 | 6 | 12 | 24;
+export const ENVIRONMENT_SCHEDULES: readonly EnvironmentSchedule[] = [24, 12, 6, 0];
+
+export interface RepositoryEnvironments {
+	/** Whether the deployment keeps prepared sandboxes at all, and why not when it does not. */
+	available: boolean;
+	unavailableReason: string | null;
+	schedule: EnvironmentSchedule;
+	/** Whether `schedule` was chosen, or is the default (nightly with a setup command, off without). */
+	scheduleChosen: boolean;
+	environments: RepositoryEnvironment[];
+	/** Places a Rebuild may name that have no environment yet. */
+	places: { place: EnvironmentPlace; placeName: string }[];
 }
 
 // --- A repository's network list -------------------------------------------------------------

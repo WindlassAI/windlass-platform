@@ -85,11 +85,14 @@ import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
+import { ENVIRONMENT_SCHEDULES } from "../contract.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
+import { serviceParams } from "../auth.js";
 import { assertOrigin, disconnectRevoked, userActorCaller, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
 import { config, githubConfig, snapshotsFor } from "../config.js";
 import { snapshotPlaces } from "../snapshot-places.js";
@@ -168,6 +171,10 @@ import { ownerOfAccount } from "./account-email.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
+import { readE2bSettings } from "../sandbox/e2b/config.js";
+import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
+import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
+import type { EnvironmentBuildOrigin, EnvironmentBuildResult } from "./internal.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isActorGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -1013,7 +1020,7 @@ const KEYED = "agent";
  * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4]): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], build?: EnvironmentBuildOrigin): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
@@ -1104,7 +1111,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			if (typeof input.mode !== "string" || !input.mode.trim() || ((harness === "windlass" || harness === "codex") && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
 		}
-		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : await modelsOf(c, profile.demo);
+		// A build runs no agent, so it asks for no model list (and needs no sign-in): the stand-in names one.
+		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
 		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
@@ -1132,10 +1140,12 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			lastOutcome: null,
 			sandbox: "none",
 			...(item ? { item: { id: item.itemId, role: item.role, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(build && { environmentBuild: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
 			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
+			...(build && { environmentBuild: build }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
 			place: summary.place,
@@ -1166,7 +1176,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	await storeSession(c, summary, submission);
 	broadcastSessions(c);
 	// What the next agent starts on. An agent the user started, not a work item's: one that cannot be remembered is still made.
-	if (!item) {
+	if (!item && !build) {
 		await recordLastStart(c.db, { place: summary.place, harness: summary.harness ?? "windlass", mode: summary.mode, startedAt: summary.createdAt }).catch((error: unknown) => {
 			c.log.error({ msg: "the last start could not be remembered", error: String(error) });
 		});
@@ -1192,6 +1202,76 @@ export async function agentModels(c: CreateCtx & { key: string[] }): Promise<Age
 		if (options !== null) (machines[m.machineId] ??= {})[h.id] = initialHarnessModels(options);
 	});
 	return { windlass, machines };
+}
+
+/** When each user actor's environment alarm is set for, while it is awake. */
+const environmentAlarms = new WeakMap<UserVars, number>();
+
+/** An action's context, as prepared environments need it: sessions can be made and the actor woken later. */
+interface EnvironmentCtx extends CreateCtx {
+	schedule: { at(at: number, action: string, ...args: unknown[]): Promise<unknown> };
+}
+
+/** A session leaves the user's index and its actor goes: `deleteSession` without the caller's checks, for build sessions. */
+async function removeSession(c: CreateCtx, uid: string, id: string): Promise<void> {
+	if (!c.vars.sessions.delete(id)) return;
+	try { await sessionActor(c, uid, id).internalDestroy(); }
+	catch (error) { if (!isActorGone(error)) c.log.error({ msg: "a build session could not be removed", session: id, error: String(error) }); }
+	c.vars.launchUntil.delete(id);
+	c.vars.launchClaim.delete(id);
+	await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
+	broadcastSessions(c);
+}
+
+/** The user actor as user-environments.ts takes it. */
+function environmentHost(c: EnvironmentCtx): EnvironmentHost {
+	const uid = c.vars.profile?.uid ?? "";
+	return {
+		db: c.db,
+		uid,
+		now: () => Date.now(),
+		sessions: () => [...c.vars.sessions.values()],
+		machines: () => listMachines(c),
+		saved: async (project) => {
+			const setup = await setupRow(c.db, project);
+			const [{ n }] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM repo_secret WHERE project = ?", project);
+			const [label] = await c.db.execute<{ label: string }>("SELECT label FROM setup_command WHERE project = ?", project);
+			return { command: setup?.command ?? "", checks: (await readChecks(c.db, project)).checks, secrets: n, defaults: await readDefaults(c.db, project), label: label?.label ?? project };
+		},
+		snapshots: { hosted: snapshotsFor({ kind: "hosted" }), machines: snapshotsFor({ kind: "machine" }) },
+		hostedUserMax: config.sandbox === "e2b" ? readE2bSettings().snapshots?.maxPerUser ?? null : null,
+		startBuild: async (request) => {
+			const profile = c.vars.profile;
+			if (!profile) throw new Error("Sign in again so the platform can build environments.");
+			const [row] = await c.db.execute<{ label: string }>("SELECT label FROM setup_command WHERE project = ?", request.project);
+			const place = request.place === HOSTED ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: request.place };
+			let summary: SessionSummary;
+			try {
+				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, repository: { id: request.repositoryId } }, null, undefined,
+					{ project: request.project, place: request.place, screenshots: request.screenshots });
+			} catch (error) {
+				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
+			}
+			try { await sessionActor(c, profile.uid, summary.id).internalBuildEnvironment(); }
+			catch (error) {
+				await removeSession(c, profile.uid, summary.id);
+				const said = (error as { group?: string; message?: string } | null);
+				throw new Error(said?.group === "user" && typeof said.message === "string" ? said.message : "The build could not start.");
+			}
+			return summary.id;
+		},
+		removeSession: (id) => removeSession(c, uid, id),
+		watchPushes: async (repositoryId) => {
+			await c.client().githubRepository.getOrCreate([repositoryId], { params: serviceParams() }).internalWatchPushes(uid).catch(() => undefined);
+		},
+		arm: async (at) => {
+			// One alarm is enough: another is set only for a time before the one that is set.
+			const set = environmentAlarms.get(c.vars);
+			if (set !== undefined && set >= Date.now() && set <= at) return;
+			environmentAlarms.set(c.vars, at);
+			await c.schedule.at(at, "internalEnvironmentTick");
+		},
+	};
 }
 
 /** `makeSession` for an item's session, as user-items.ts asks for it, with the action's own context. */
@@ -1401,6 +1481,9 @@ export const user = actor({
 			// Where a post-setup snapshot of a project was last saved (`internalSnapshotSaved`), for placement's snapshot bonus.
 			await db.execute("CREATE TABLE IF NOT EXISTS snapshot_place (project TEXT NOT NULL, place TEXT NOT NULL, saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, PRIMARY KEY (project, place))");
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
+			// A repository's prepared environments (environments.ts).
+			await db.execute(ENVIRONMENT_TABLE);
+			await db.execute(ENVIRONMENT_SCHEDULE_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
 			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
 			// tried, when it tries next, and the schedule that is to do it.
@@ -1923,7 +2006,9 @@ export const user = actor({
 			const project = setupKeyOf(input?.repositoryId);
 			const command = setupCommandOf(input?.command);
 			try {
-				return await saveSetup(c, profile.uid, project, await labelFor(c, input.repositoryId, project), command);
+				const saved = await saveSetup(c, profile.uid, project, await labelFor(c, input.repositoryId, project), command);
+				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
+				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The setup command could not be saved. Try again.");
 			}
@@ -1956,6 +2041,7 @@ export const user = actor({
 				const saved = await saveChecks(c.db, project, await labelFor(c, input.repositoryId, project), checks, Date.now());
 				// A command is the user's text and may hold what they would not want in a log: only how many there are is said.
 				console.log(`[wlp] checks.saved uid=${profile.uid} project=${project} checks=${checks.length}`);
+				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The checks could not be saved. Try again.");
@@ -2092,6 +2178,55 @@ export const user = actor({
 			const rows = await c.db.execute<{project: string; updated_at: number}>("SELECT project, updated_at FROM setup_command");
 			return rows.map(row => snapshotGeneration(row.project.slice("github:".length), row.updated_at, connection.connectedAt));
 		},
+		// --- prepared environments of repositories (environments.ts, user-environments.ts) ---------------
+
+		repositoryEnvironments: async (c, repositoryId: GithubId): Promise<RepositoryEnvironments> => {
+			requireUser(c);
+			try { return await environmentsView(environmentHost(c), setupKeyOf(repositoryId)); }
+			catch (error) { throw clientError(c.log, error, "The repository's environments could not be read. Try again."); }
+		},
+		rebuildEnvironment: async (c, input: { repositoryId: GithubId; place?: EnvironmentPlace }): Promise<RepositoryEnvironments> => {
+			requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			if (input.place !== undefined && (typeof input.place !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.place))) throw new UserError("Choose one of the places listed.", { code: "bad_input" });
+			const host = environmentHost(c);
+			try { await rebuildEnvironments(host, project, input.place); }
+			catch (error) {
+				if (error instanceof Error && !(error instanceof UserError)) throw new UserError(error.message, { code: "environment_refused" });
+				throw clientError(c.log, error, "The rebuild could not be asked for. Try again.");
+			}
+			return environmentsView(host, project);
+		},
+		saveEnvironmentSchedule: async (c, input: { repositoryId: GithubId; schedule: EnvironmentSchedule }): Promise<RepositoryEnvironments> => {
+			requireUser(c);
+			const project = setupKeyOf(input?.repositoryId);
+			if (!ENVIRONMENT_SCHEDULES.includes(input?.schedule)) throw new UserError("Choose nightly, every 12 hours, every 6 hours or off.", { code: "bad_input" });
+			const host = environmentHost(c);
+			await saveSchedule(host, project, input.schedule);
+			return environmentsView(host, project);
+		},
+		internalEnvironmentTick: async (c): Promise<void> => {
+			environmentAlarms.delete(c.vars);
+			if (!c.vars.profile) return;
+			await environmentTick(environmentHost(c)).catch((error: unknown) => c.log.warn({ msg: "environment builds could not be started", error: String(error) }));
+		},
+		internalEnvironmentResult: async (c, sessionId: string, result: EnvironmentBuildResult): Promise<void> => {
+			requireService(c);
+			const passed = await buildResult(environmentHost(c), approvalText(sessionId, 200), result);
+			console.log(`[wlp] environment.built uid=${c.key[0]} session=${sessionId} passed=${passed} failure=${result.failure?.kind ?? "none"}`);
+		},
+		internalEnvironmentNudge: async (c, sessionId: string, kind: "missed" | "cold"): Promise<void> => {
+			requireService(c);
+			const session = c.vars.sessions.get(approvalText(sessionId, 200));
+			const project = setupProjectKey(session?.repository?.id);
+			if (!session || !project || session.environmentBuild || (kind !== "missed" && kind !== "cold")) return;
+			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind);
+		},
+		internalEnvironmentPushed: async (c, repositoryId: GithubId): Promise<void> => {
+			requireService(c);
+			if (!c.vars.profile) return;
+			await environmentPushed(environmentHost(c), setupKeyOf(repositoryId));
+		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
 			return readSetup(c.db, approvalText(project, 600));
@@ -2177,7 +2312,8 @@ export const user = actor({
 			const setup = includeSnapshotSetup && snapshotsFor(session.place) && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
-			return { project, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			const environment = snapshotSetup?.command ? await sessionEnvironment(c, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, snapshotSetup.command, checks) : undefined;
+			return { project, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------
@@ -2259,6 +2395,7 @@ export const user = actor({
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_network WHERE project = ?", project);
 				await c.db.execute("DELETE FROM network_request WHERE project = ?", project);
+				await forgetEnvironments(environmentHost(c), project);
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
 				await dropHostedSnapshots(profile.uid, String(repositoryId));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);

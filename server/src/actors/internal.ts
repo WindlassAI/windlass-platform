@@ -10,7 +10,7 @@
 
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { GithubId, HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -50,13 +50,21 @@ export interface SessionCreateInput {
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
 	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number; effort?: string; signIn?: SignInMethod };
+	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
+	environmentBuild?: EnvironmentBuildOrigin;
 }
 
+/** What a build session reports: its build, without what the user actor set when it started it. */
+export type EnvironmentBuildResult = Omit<EnvironmentBuild, "trigger" | "startedAt" | "setupHash" | "checksHash" | "profile">;
+
+/** What a build session builds: `screenshots`, the image variant item sessions there use. */
+export interface EnvironmentBuildOrigin { project: string; place: string; screenshots: boolean }
+
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(size && { size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: origin?.kind === "item" && screenshots };
+	return { uid, sessionId, profile, ...(size && { size }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots) || session.environmentBuild?.screenshots === true };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -111,6 +119,12 @@ export interface UserInternal {
 	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number, place?: string): Promise<void>;
 	/** The places ("hosted", machine ids) that saved a snapshot of the repository for this user under its current setup and GitHub connection, in the last 14 days. A hint: the place may have evicted it since. */
 	internalSnapshotPlaces(repositoryId: GithubId): Promise<string[]>;
+	/** A build session's result (user-environments.ts `buildResult`); the session is deleted after it. */
+	internalEnvironmentResult(sessionId: string, result: EnvironmentBuildResult): Promise<void>;
+	/** A session found its place's ready image missing (`missed`), or started cold where the repository has no environment (`cold`). */
+	internalEnvironmentNudge(sessionId: string, kind: "missed" | "cold"): Promise<void>;
+	/** A push to a repository's default branch (github-inbox.ts). */
+	internalEnvironmentPushed(repositoryId: GithubId): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;
 	/** "Allow for this repository" from a session: `by` is who asked. Someone who may change the repository's settings allows the host; anyone else would file a request, but today only the session's own user calls it (repository-network.ts). */
 	internalAllowHost(input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: import("../contract.js").RepositoryNetwork }>;
@@ -141,6 +155,11 @@ export interface UserInternal {
 /** A repository's secrets, and what the user keeps for their account, on their way to a session: each value as the `user` actor stores it, sealed (repo-secrets.ts). */
 export interface SealedSecrets {
 	snapshotSetup?: { command: string; updatedAt: number; connectedAt: number; previouslySaved: boolean };
+	/**
+	 * The repository's prepared environment at the session's place (environments.ts): `usable` when its ready image
+	 * is current, so the session may start from it. Absent where there is none.
+	 */
+	environment?: { usable: boolean; commit: string; validatedAt: number; checks: number };
 	/** Only the server-side redactor may use these values. The machine owner disabled sending them. */
 	redactOnly?: boolean;
 	screenshots?: boolean;
@@ -173,6 +192,8 @@ export interface SessionInternal {
 	internalDisconnectRevoked(generation: number): Promise<void>;
 	internalSummary(): Promise<SessionSummary>;
 	internalRename(title: string): Promise<SessionSummary>;
+	/** A build session's one turn: clone, setup, every saved check, and a saved image only when all passed. Answers once it is accepted. */
+	internalBuildEnvironment(): Promise<void>;
 	/** Destroys the sandbox, then the actor. */
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */

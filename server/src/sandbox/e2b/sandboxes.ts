@@ -216,6 +216,8 @@ export class E2bSandboxHandle implements TurnSandbox {
 	snapshot?: SnapshotSource;
 	/** `SandboxHandle.notice`: set when this connect started the sandbox again from its disk. */
 	notice?: string;
+	/** The template build it was made from, as its metadata names it (`SandboxHandle.image`); absent where none was recorded. */
+	image?: string;
 
 	/** One of the provider's own fixed scripts as root (snapshots.ts): never a command of a session's. Its last line of output, or null. */
 	async rootAnswer(script: string, args: string[], options: { stdin?: string; timeoutMs: number }): Promise<{ code: number | null; stdout: string } | null> {
@@ -898,6 +900,8 @@ export class E2bSandboxes implements Sandboxes {
 		if (restarted) handle.notice = RESTARTED_NOTICE;
 		const from = info.metadata[SNAP_META.from];
 		if (from) handle.snapshot = await this.sourceFor(handle, info, from);
+		const build = info.metadata[SNAP_META.build];
+		if (typeof build === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(build)) handle.image = build;
 		if (paused || restarted) {
 			const running = await this.running().catch(() => null);
 			if (running !== null && running.length > this.settings.maxRunning) {

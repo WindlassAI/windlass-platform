@@ -8,7 +8,9 @@ type InstallationSender = { senderId: GithubId | null };
 type Fields = {
 	issues: { issue: number; sender: Sender; label?: string };
 	issue_comment: { issue: number; sender: Sender; commentId: string; body: string; isPullRequest: boolean };
-	pull_request: { pr: number; head: string; merged: boolean };
+	pull_request: { pr: number; head: string; merged: boolean; toDefault?: true };
+	/** A push to the repository's default branch, for its prepared environments (environments.ts). */
+	push: { head: string };
 	pull_request_review: { pr: number; reviewId: string; state: string; body: string; commitId: string; sender: Sender };
 	pull_request_review_comment: { pr: number; commentId: string; body: string; path: string; line: number | null; commitId: string; sender: Sender };
 	check_run: { head: string; runId?: string };
@@ -51,8 +53,8 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 	const repositoryId = githubId(obj(p.repository).id);
 	const action = str(p.action);
 	// Action names are also log fields. Never let arbitrary JSON text into them.
-	if (event !== "status" && !/^[a-z_]{1,64}$/.test(action)) return null;
-	const base = { ...("guid" in meta ? { guid: meta.guid, at: meta.at } : {}), installationId, repositoryId, action: event === "status" ? "" : action };
+	if (event !== "status" && event !== "push" && !/^[a-z_]{1,64}$/.test(action)) return null;
+	const base = { ...("guid" in meta ? { guid: meta.guid, at: meta.at } : {}), installationId, repositoryId, action: event === "status" || event === "push" ? "" : action };
 	if (event === "installation" || event === "installation_repositories") {
 		// The HMAC authenticates the body. The event-name header alone cannot make a comment
 		// or another repository event an installation change.
@@ -71,6 +73,12 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 		}
 		return action === "completed" && head ? { ...base, event, data: { head } } : null;
 	}
+	if (event === "push") {
+		// Only the default branch moving matters, and not its deletion.
+		const branch = str(obj(p.repository).default_branch);
+		const head = sha(p.after);
+		return branch && p.ref === "refs/heads/" + branch && p.deleted !== true && head && !/^0+$/.test(head) ? { ...base, event, data: { head } } : null;
+	}
 	if (event === "status") {
 		const head = sha(p.sha);
 		return head && ["error", "failure", "success"].includes(str(p.state)) ? { ...base, event, data: { head } } : null;
@@ -80,7 +88,7 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 	if (event === "pull_request") {
 		const head = sha(obj(pull.head).sha);
 		return pr && head && typeof pull.merged === "boolean" && ["closed", "reopened", "synchronize"].includes(action)
-			? { ...base, event, data: { pr, head, merged: pull.merged } } : null;
+			? { ...base, event, data: { pr, head, merged: pull.merged, ...(pull.merged === true && action === "closed" && str(obj(pull.base).ref) !== "" && str(obj(pull.base).ref) === str(obj(p.repository).default_branch) && { toDefault: true as const }) } } : null;
 	}
 	const author = obj(p.sender);
 	const userId = githubId(author.id);
