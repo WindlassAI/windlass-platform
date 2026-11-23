@@ -34,6 +34,7 @@ import { GithubStandin } from "./github-standin.js";
 import { sessionCapabilities } from "../server/src/sandbox/harnesses.js";
 import {
 	type AuthResult,
+	type RepositoryEnvironment,
 	type WindlassDelta,
 	MAX_PROMPT_CHARS,
 	type GithubId,
@@ -4507,6 +4508,14 @@ async function preparedSessions(server: Server) {
 		if (snapshotBenchmark) return await snapshotTimings(server, client, github, repo, uid, auth.token);
 		const command = 'test -f quick || sleep 31; mkdir -p node_modules; cp base.txt node_modules/built-at; if [ -n "${CHECK_TOKEN:-}" ]; then echo "$CHECK_TOKEN" > node_modules/secret; fi';
 		await user.saveRepositorySetup({repositoryId:repo.id, command});
+		// Only a prepared environment's build saves an image (environments.ts): ask for one and wait for how it ends.
+		async function build(): Promise<RepositoryEnvironment> {
+			await user.rebuildEnvironment({ repositoryId: repo.id, place: "hosted" });
+			return await waitFor("the environment build", async () => {
+				const env = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
+				return env && env.state !== "building" && env.attempt?.finishedAt !== null ? env : undefined;
+			}, 10 * 60_000, 2000);
+		}
 		async function turn(hit: boolean, secret = false, branch = "main") {
 			const session = await user.createSession({profile:"docker-hardened", repository:{id:repo.id, branch}});
 			try {
@@ -4521,7 +4530,7 @@ async function preparedSessions(server: Server) {
 					assert(snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("CHECK_TOKEN")), "Expected setup to receive the fixture secret");
 					assert(!snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Saving a prepared sandbox")), "Secret-bearing setup attempted a commit");
 				}
-				const notice = snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Started from a prepared sandbox") && t.text.includes(base));
+				const notice = snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Started from a validated environment") && t.text.includes(base.slice(0, 12)));
 				assert(!!setup === !hit && notice === hit, "Unexpected setup or snapshot notice: " + plain(snapshot.timeline.filter(t => t.kind === "platform" || t.kind === "setup")).slice(-1800));
 				if (hit) {
 					const name = execFileSync("docker", ["ps", "-q", "--filter", "label=dev.windlass-platform.uid="+uid, "--filter", "label=dev.windlass-platform.session="+session.id], {encoding:"utf8"}).trim();
@@ -4547,6 +4556,19 @@ async function preparedSessions(server: Server) {
 			const warm = github.gitResponseBytes - beforeWarm;
 			assert(warm > 0 && warm < seeded, "A fresh session downloaded the full repository again");
 			pass("Two hosted sessions on the same private repository reuse Git objects", `${seeded} then ${warm} Git HTTP response bytes`);
+			const unbuilt = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
+			assert(!unbuilt, "An ordinary session saved a prepared image");
+			// The build uses the repository's default sandbox; a check validates what setup made.
+			await user.saveRepositoryDefaults({ repositoryId: repo.id, profile: "docker-hardened" });
+			// The check fails once main's base.txt says "broken": the base commit's code, not the sandbox.
+			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "built", command: "test -f node_modules/built-at && ! grep -q broken base.txt" }] });
+			const ready = await build();
+			assert(ready.state === "ready" && ready.ready?.snapshot === true && ready.ready.commit === base && ready.ready.checks.every(c => c.status === "passed"), "The environment was not promoted: " + plain(ready));
+			pass("A build runs setup and the saved checks, and is promoted when they pass");
+			github.commit(repo, "main", { "base.txt": "broken" }, "Break the check");
+			const failed = await build();
+			assert(failed.state === "failed" && failed.attempt?.failure?.kind === "code" && failed.attempt.failure.check === "built" && failed.ready?.commit === base && failed.ready.snapshot, "A failed build was not recorded as one, or replaced the ready one: " + plain(failed));
+			pass("A failed build is reported with its check and keeps the last ready image");
 			github.commit(repo,"main",{"base.txt":"next", "quick":""},"Source-only change");
 			github.commit(repo, "feature", {"feature.txt": "from feature"}, "Feature source", "main");
 			await turn(true, false, "feature");
@@ -4558,6 +4580,9 @@ async function preparedSessions(server: Server) {
 			github.commit(repo,"main",{"package-lock.json":"{ }"},"Changed lockfile");
 			await turn(false);
 			pass("A real session skips setup only for matching inputs, checks out current source, and gives the base commit to Windlass");
+			const stale = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
+			assert(stale?.state === "stale", "A session that missed the ready image did not mark it stale: " + plain(stale));
+			pass("A session whose ready image no longer matches marks the environment stale");
 			await user.saveRepositorySetup({ repositoryId: repo.id, command: "true" });
 			const remaining = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
 			assert(!remaining, "Editing the setup command retained the old snapshot image");
