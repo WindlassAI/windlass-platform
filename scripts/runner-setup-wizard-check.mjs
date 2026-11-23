@@ -27,7 +27,7 @@ test('the setup wizard in lines pairs, carries on past a failed and a skipped si
 			['OpenCode provider', 'openai'],
 			['Enter the openai API key', secret],
 			['Codex: sign in now?', ''],
-			['Choose a method:', '1'],
+			['Choose a method:', '3'],
 			['Which Docker profiles', ''],
 			['What may the agents', '2'],
 			['Public hosts commands may reach [@npm,@pypi,@github]', '@npm,example.com'],
@@ -42,7 +42,8 @@ test('the setup wizard in lines pairs, carries on past a failed and a skipped si
 		assert.match(first.output, /2\. Enter {5}WXYZ-1210/);
 		assert.match(first.output, /3\. Check {5}the page shows machine key [A-Z0-9]{5}-[A-Z0-9]{5}/);
 		assert.match(first.output, /OpenCode: signed in\./);
-		assert.match(first.output, /Codex: sign-in did not finish: ChatGPT device login is pending owner verification/);
+		assert.match(first.output, /Codex was not signed in: Choose 1 or 2\. Setup carries on\. Sign it in later with: docker exec -it windlass-runner windlass-runner login codex/);
+		assert.match(first.output, /Claude Code is not signed in\. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude/);
 		assert.match(first.output, /Claude Code \(not signed in\), OpenCode \(signed in\), Codex \(sign-in failed\)/);
 		assert.match(first.output, /OK: Online/);
 		const runs = await m.serviceRuns();
@@ -91,7 +92,7 @@ test('the setup wizard in lines pairs, carries on past a failed and a skipped si
 		const quick = await m.piped(['setup', '--quick']);
 		await record('lines-quick-no-terminal', quick.output);
 		assert.equal(quick.code, 0, quick.output);
-		assert.match(quick.output, /Claude Code: signing in needs a terminal\. Run setup claude in one later\./);
+		assert.match(quick.output, /Claude Code is not signed in: signing in needs a terminal\. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude/);
 		assert.doesNotMatch(quick.output, /Machine name|Which Docker profiles|What may the agents|Limits:/);
 		assert.equal((await m.serviceRuns()).length, 3);
 		assert.deepEqual(m.asked, ['/runner/pair', '/runner/pair/poll']);

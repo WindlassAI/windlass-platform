@@ -49,7 +49,7 @@ class Script implements Prompter {
 }
 
 const platform = "https://windlass.example.org";
-function machine(o: { paired?: boolean; saved?: SetupChoices; service?: "running" | "stopped" | "absent"; signedIn?: MachineHarness[]; pairResults?: ({ ok: true } | { ok: false; message: string })[]; failSignIn?: MachineHarness[]; lock?: boolean[] } = {}) {
+function machine(o: { paired?: boolean; saved?: SetupChoices; service?: "running" | "stopped" | "absent"; signedIn?: MachineHarness[]; pairResults?: ({ ok: true } | { ok: false; message: string })[]; failSignIn?: MachineHarness[]; stopSignIn?: MachineHarness[]; lock?: boolean[] } = {}) {
 	const did: string[] = [];
 	let paired = o.paired ?? false, name: string | undefined = o.saved ? "Studio Mac" : undefined, service = o.service ?? "absent";
 	let saved = o.saved;
@@ -87,7 +87,12 @@ function machine(o: { paired?: boolean; saved?: SetupChoices; service?: "running
 		},
 		async prepare(agents) { did.push("prepare " + agents.join(",")); },
 		signInState: async (id): Promise<SignInState> => o.signedIn?.includes(id) ? "signed-in" : "signed-out",
-		async signIn(id) { did.push("sign in " + id); if (o.failSignIn?.includes(id)) throw new Error("Codex returned an unexpected verification URL."); },
+		async signIn(id) {
+			did.push("sign in " + id);
+			if (o.stopSignIn?.includes(id)) return "stopped";
+			return o.failSignIn?.includes(id) ? { ok: false, reason: "Choose 1 or 2." } : { ok: true };
+		},
+		laterLogin: id => "docker exec -it windlass-runner windlass-runner login " + id,
 		startCommand: flags => "docker run -d … run " + flags.join(" "),
 		async start(flags, replace) { did.push(`start${replace ? " replace" : ""} ${flags.join(" ")}`); service = "running"; },
 		async waitOnline() { did.push("wait online"); return { ok: true, message: "Online" }; },
@@ -127,8 +132,8 @@ test("a first setup: Back keeps choices, a failed and a skipped sign-in carry on
 	]);
 	assert.deepEqual(await run(p, fx), { outcome: "done" });
 	p.done();
-	assert.ok(p.logs.includes("error: Claude Code: sign-in did not finish: Codex returned an unexpected verification URL. Setup carries on; sign in later with setup claude."), p.logs.join("\n"));
-	assert.ok(p.logs.includes("info: Codex: skipped. Sign in later with setup codex."));
+	assert.ok(p.logs.includes("error: Claude Code was not signed in: Choose 1 or 2. Setup carries on. Sign it in later with: docker exec -it windlass-runner windlass-runner login claude"), p.logs.join("\n"));
+	assert.ok(p.logs.includes("info: Codex is not signed in. Sign it in later with: docker exec -it windlass-runner windlass-runner login codex"));
 	assert.ok(p.logs.includes("success: Paired with octocat. If that is not you, run setup again and pair again."));
 	const pairing = p.notes.find(n => n.title === "Pair this machine")!;
 	assert.deepEqual(pairing.lines.slice(0, 3), [`1. Open      ${platform}/machines/add`, "2. Enter     WXYZ-1210", "3. Check     the page shows machine key K7Q2M-XR4TD"]);
@@ -184,6 +189,14 @@ test("a re-run offers the saved answers, keeps the pairing and replaces the runn
 	assert.ok(did.some(d => d.startsWith("save ") && JSON.parse(d.slice(5)).network.allow[0] === "git.internal"));
 	assert.ok(!did.some(d => d.startsWith("lock") || d.startsWith("start") || d.startsWith("pair")), did.join("\n"));
 	assert.deepEqual(did.slice(-1), ["report login"]);
+});
+
+test("stopping a sign-in with Ctrl+C stops setup", async () => {
+	const { fx, did } = machine({ paired: true, saved: { agents: ["codex"] }, stopSignIn: ["codex"] });
+	const p = new Script([select(/Codex: sign in now/, "now")]);
+	assert.deepEqual(await run(p, fx, { kind: "section", section: "codex" }), { outcome: "cancelled" });
+	p.done();
+	assert.ok(!did.some(d => d.startsWith("save") || d.startsWith("start")), did.join("\n"));
 });
 
 test("--quick asks only what is missing", async () => {

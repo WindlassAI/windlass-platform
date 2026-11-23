@@ -20,7 +20,7 @@ import { importOpenCode } from "./opencode-import.js";
 import { changeProviderLogin, currentProvider, installedProvider, storeProvider, terminalQuestion } from "./opencode-login.js";
 import { requestLoginReport } from "./pair-command.js";
 import { harnessImage, prepareImages, type MachineHarness } from "./policy.js";
-import { setupImageAndMounts, shellCommand } from "./setup.js";
+import { laterLogin, setupImageAndMounts, shellCommand } from "./setup.js";
 import { HARNESSES, PASSED_ON, validChoices, type SetupChoices } from "./setup-choices.js";
 import { LinePrompter } from "./setup-lines.js";
 import { TuiPrompter } from "./setup-tui.js";
@@ -172,14 +172,21 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 			const stop = () => abort.abort();
 			process.on("SIGINT", stop);
 			try {
-				if (agent === "codex") return await changeCodexLogin(m, true, abort.signal);
-				if (agent === "claude") return await changeClaudeLogin(m, true, abort.signal);
-				const login = (provider?: string) => changeProviderLogin(m, true, abort.signal, provider);
-				if (launch.importFile && await importOpenCode(launch.importFile, q => terminalQuestion(q, abort.signal),
-					(provider, key) => storeProvider(m, { provider, key }), login)) return;
-				await login();
+				if (agent === "codex") await changeCodexLogin(m, true, abort.signal);
+				else if (agent === "claude") await changeClaudeLogin(m, true, abort.signal);
+				else {
+					const login = (provider?: string) => changeProviderLogin(m, true, abort.signal, provider);
+					if (!(launch.importFile && await importOpenCode(launch.importFile, q => terminalQuestion(q, abort.signal),
+						(provider, key) => storeProvider(m, { provider, key }), login))) await login();
+				}
+				return { ok: true as const };
+			} catch (error) {
+				if (abort.signal.aborted) return "stopped";
+				// Only the runner's own messages are shown: another error's text could hold a credential-bearing URL.
+				return { ok: false as const, reason: error instanceof RunnerError ? error.message : "the sign-in did not finish." };
 			} finally { process.off("SIGINT", stop); }
 		},
+		laterLogin,
 		startCommand(flags) {
 			// One option to a line, as the Machines page shows a command.
 			const words = [...launch.command, "run", ...flags];

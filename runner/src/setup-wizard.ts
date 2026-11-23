@@ -39,7 +39,13 @@ export interface WizardEffects {
 	/** Pulls the sandbox image and the images these agents need. `update` gets Docker's progress. */
 	prepare(agents: MachineHarness[], update: (line: string) => void): Promise<void>;
 	signInState(agent: MachineHarness): Promise<SignInState>;
-	signIn(agent: MachineHarness): Promise<void>;
+	/**
+	 * Signs one agent in with the `login` code. A failure is a result, not an error: setup carries on (as the
+	 * line-by-line setup does since 0.3.4); `reason` is safe to show. "stopped": the person stopped it with Ctrl+C.
+	 */
+	signIn(agent: MachineHarness): Promise<{ ok: true } | { ok: false; reason: string } | "stopped">;
+	/** The command that signs an agent in later, in the runner setup starts. */
+	laterLogin(agent: MachineHarness): string;
 	/** The whole `docker run -d …` command, for showing. */
 	startCommand(flags: string[]): string;
 	start(flags: string[], replace: boolean): Promise<void>;
@@ -156,22 +162,25 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 
 	const signInQuestion = async (agent: MachineHarness, state: SignInState): Promise<Move> => {
 		const label = HARNESS_LABELS[agent];
-		if (!p.interactive) { p.log("warn", `${label}: signing in needs a terminal. Run setup ${agent} in one later.`); signIns.set(agent, "skipped"); return "next"; }
+		const later = "Sign it in later with: " + fx.laterLogin(agent);
+		if (!p.interactive) { p.log("warn", `${label} is not signed in: signing in needs a terminal. ${later}`); signIns.set(agent, "skipped"); return "next"; }
 		const signedIn = state === "signed-in";
 		return ask(p.select({ message: `${label}: ${signedIn ? "signed in on this machine" : "sign in now?"}`, initial: signedIn ? "keep" : "now", options: signedIn
 			? [{ value: "keep", label: "Keep this sign-in" }, { value: "now", label: "Sign in again" }]
-			: [{ value: "now", label: "Sign in now" }, { value: "skip", label: "Skip for now", hint: `run setup ${agent} later` }] }),
+			: [{ value: "now", label: "Sign in now" }, { value: "skip", label: "Skip for now", hint: "sign it in later" }] }),
 		async (v): Promise<Move> => {
 			if (v === "keep") { signIns.set(agent, "kept"); return "next"; }
-			if (v === "skip") { signIns.set(agent, "skipped"); p.log("info", `${label}: skipped. Sign in later with setup ${agent}.`); return "next"; }
+			if (v === "skip") { signIns.set(agent, "skipped"); p.log("info", `${label} is not signed in. ${later}`); return "next"; }
 			p.log("step", `Signing in to ${label}. Follow its steps below.`);
-			try {
-				await fx.signIn(agent);
+			const result = await fx.signIn(agent);
+			if (result === "stopped") return "cancel";
+			if (result.ok) {
 				signIns.set(agent, "signed-in");
 				p.log("success", `${label}: signed in.`);
-			} catch (error) {
+			} else {
+				// As the line-by-line setup: the machine is paired already, so one agent does not stop the others.
 				signIns.set(agent, "failed");
-				p.log("error", `${label}: sign-in did not finish${error instanceof Error && error.message ? ": " + error.message : "."} Setup carries on; sign in later with setup ${agent}.`);
+				p.log("error", `${label} was not signed in: ${result.reason} Setup carries on. ${later}`);
 			}
 			return "next";
 		});
