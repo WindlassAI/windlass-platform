@@ -34,7 +34,7 @@ import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
 import { harnessName, machineHarness } from "./harnesses.js";
 import { describeError, serviceParams } from "../auth.js";
-import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/channel.js";
+import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerChannel } from "../runner/channel.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
@@ -149,6 +149,11 @@ export class RunnerLink {
 		private readonly machine: MachineSeam,
 		onReset: (reason: string) => void,
 		private readonly onReach?: (reach: MachineReach) => void,
+		/**
+		 * The conversation is kept in the session's storage (`ServerChannel.keepIn`, runner/journal.ts):
+		 * `from` is what a restarted server read back, `onDirty` asks the owner to save.
+		 */
+		durable?: { from: ConversationRecord | null; onDirty(): void },
 	) {
 		this.channel = new ServerChannel({
 			platform: config.machines?.identity && { ...who, identity: config.machines.identity },
@@ -157,8 +162,13 @@ export class RunnerLink {
 			onConnect: () => this.connected(),
 			onDisconnect: () => this.lost(),
 		});
+		this.durable = !!durable;
+		if (durable) this.channel.keepIn(durable.onDirty, durable.from);
 		this.initialFacts = this.facts().catch(() => null);
 	}
+
+	/** Whether the conversation is kept in storage, so that a turn's process can outlive this server. */
+	readonly durable: boolean;
 
 	/** A socket from `onWebSocket`. The channel decides by its hello whether it counts. */
 	socket(ws: RawSocket): void {
@@ -245,6 +255,75 @@ export class RunnerLink {
 	/** A process: `ready` and the channel's `start`, with what is written meanwhile held in order. */
 	start(args: Args<"start">, onOutput: (fd: 1 | 2, data: string) => void): RunnerProcess {
 		return new RunnerProcess(this, args, onOutput);
+	}
+
+	/**
+	 * A process a turn of the server before a restart started, in the conversation read back from storage:
+	 * null when the channel has no such conversation. The runner is asked back for it, again and again,
+	 * until it resumes the conversation or the grace ends it (the process has then ended with ConversationLost).
+	 */
+	adopt(id: string, args: Args<"start">, onOutput: (fd: 1 | 2, data: string) => void): RunnerProcess | null {
+		const held = this.held.get(id);
+		if (!held) return null;
+		this.held.delete(id);
+		held.to = onOutput;
+		for (const [fd, data] of held.chunks.splice(0)) onOutput(fd, data);
+		return new RunnerProcess(this, args, onOutput, { id, ended: held.ended });
+	}
+
+	/**
+	 * Takes the process a restarted server's turn will take up (`adopt`), before anything can ask for the
+	 * runner's socket: what it sends meanwhile is kept for the turn, and while it is (`holding`) nothing
+	 * received is committed, so a server that stops again before the turn took it up loses none of it.
+	 */
+	hold(id: string): boolean {
+		const entry: { chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null } = { chunks: [], ended: Promise.resolve({ code: null, signal: null, error: null }), to: null };
+		const taken = this.channel.adoptProcess(id, (fd, data) => (entry.to ? entry.to(fd, data) : entry.chunks.push([fd, data])));
+		if (!taken) return false;
+		entry.ended = taken.ended;
+		this.held.set(id, entry);
+		return true;
+	}
+
+	/** A held process nobody took up (the turn could not go on): it is stopped on the runner, and its output is no longer taken. */
+	release(): void {
+		for (const id of [...this.held.keys()]) {
+			this.held.delete(id);
+			this.channel.forgetProcess(id);
+			void this.request("signal", { process: id, sig: "KILL", who: "all" }).catch(() => undefined);
+		}
+	}
+
+	/** Whether a process is held for a turn that has not taken it up yet. */
+	get holding(): boolean {
+		return this.held.size > 0;
+	}
+
+	private readonly held = new Map<string, { chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null }>();
+
+	/** The server is going away and its storage keeps the conversation for the next (`ServerChannel.abandon`): nothing is ended. */
+	abandon(): void {
+		if (this.closed) return;
+		this.closed = true;
+		clearTimeout(this.idle);
+		clearTimeout(this.retry);
+		this.waiting?.settle(new ConversationLost(SLEPT));
+		this.channel.abandon();
+	}
+
+	/** Waits for the runner's socket for as long as the conversation lasts, not only ATTACH_WAIT_MS: it is back within the grace or not at all. */
+	async reconnect(until: Promise<unknown>): Promise<void> {
+		let over = false;
+		void until.finally(() => { over = true; });
+		while (!over && !this.closed) {
+			try {
+				await this.wait();
+				return;
+			} catch (error) {
+				if (!(error instanceof MachineUnreachable) || error.reason === "removed") throw error;
+				await Promise.race([new Promise((done) => setTimeout(done, REATTACH_MS)), until]);
+			}
+		}
 	}
 
 	/** Counts `work` as outstanding while it runs. */
@@ -395,8 +474,15 @@ class RunnerProcess implements SandboxProcess {
 		private readonly link: RunnerLink,
 		readonly args: Args<"start">,
 		onOutput: (fd: 1 | 2, data: string) => void,
+		/** A process the runner already runs (`RunnerLink.adopt`). */
+		adopted?: { id: string; ended: Promise<ProcessEnd> },
 	) {
+		if (adopted) this.id = adopted.id;
 		const ran = link.busy(async () => {
+			if (adopted) {
+				await link.reconnect(adopted.ended).catch(() => undefined);
+				return await adopted.ended;
+			}
 			await link.ready();
 			const { id, ended } = link.channel.start(args, onOutput);
 			this.id = id;
@@ -415,6 +501,11 @@ class RunnerProcess implements SandboxProcess {
 
 	get tag(): string {
 		return this.args.tag;
+	}
+
+	/** Once the runner has it, on a durable link: what a turn checkpoint names (`SandboxProcess.runnerProcess`). */
+	get runnerProcess(): string | null {
+		return this.link.durable && this.id !== null && !this.hasEnded && this.link.channel.running(this.id) ? this.id : null;
 	}
 
 	write(text: string): boolean {
@@ -470,6 +561,8 @@ class RunnerHandle implements TurnSandbox {
 		markTurnSandbox(this);
 		if (blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
 		if (relay) this.modelRelay = () => this.openRelay();
+		if (relay && link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
+		if (link.durable) this.adopt = (process, tag, { onStdout, onStderr }) => link.adopt(process, { id, tag, argv: [] }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
 	}
 
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
@@ -479,7 +572,18 @@ class RunnerHandle implements TurnSandbox {
 	/** Not repeated: a lease lost with its conversation was ended by the runner (its `orphan`), and the turn fails. */
 	private async openRelay(): Promise<TurnModelRelay> {
 		const { lease, placeholder, env } = await this.link.request("modelRelay", { id: this.id });
+		return this.relayOf({ lease, placeholder, env });
+	}
+
+	/** `TurnSandbox.resumeRelay`: the runner kept the lease with the conversation; the restarted turn hands it a token again at once. */
+	readonly resumeRelay?: TurnSandbox["resumeRelay"];
+
+	/** `TurnSandbox.adopt`, on a durable link. */
+	readonly adopt?: TurnSandbox["adopt"];
+
+	private relayOf({ lease, placeholder, env }: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay {
 		return {
+			lease,
 			placeholder,
 			env,
 			hand: async (token) => {

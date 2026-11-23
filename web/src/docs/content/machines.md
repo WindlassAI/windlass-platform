@@ -144,6 +144,10 @@ When you start an agent, choose the machine under **on**. Each machine offers tw
 
 The runner sizes its slots from the machine’s CPU and memory. A personal turn takes one slot by default. A large factory turn can take up to four. Turns wait in arrival order, so a large turn at the head waits for enough free slots before a smaller turn can start. **Stop** takes a turn out of the queue. Set the capacity with `--slots` or `--max-turns`. The platform sets no limit of its own on how many turns run on your machines: the runner's slots are the limit. See [Runner reference](/docs/runner#run-options).
 
+### When the platform restarts
+
+On a deployment that turns it on, a Windlass turn running on your machine can outlive a restart of the platform's server. The runner keeps the agent running and holds its output for up to ten minutes. When a server is back within that time, the same agent carries on, and its output appears in the timeline once, with nothing lost. You see a short gap while the server is away. Past ten minutes, or if the runner itself restarted, the turn ends as it did before, and your next prompt starts a new one. Claude Code, Codex and OpenCode turns still end on a restart.
+
 ### CPU and memory
 
 On a machine with one or two CPUs, one slot defaults to half the available CPUs, 1536 MiB of memory and 512 processes. Larger machines reserve CPU and memory for the host before dividing resources into slots. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget.

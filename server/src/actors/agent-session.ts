@@ -182,8 +182,10 @@ import { type PublishEvidence, PullProblem, type Published, type StoredRepositor
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
-import type { AccessToken, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { AccessToken, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
+import type { ConversationRecord } from "../runner/channel.js";
+import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, readConversation, saveCheckpoint, saveReceived } from "../runner/journal.js";
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
@@ -507,6 +509,10 @@ type PublishAnswer =
 
 interface ActiveTurn {
 	finishNetwork?: () => Promise<void>;
+	/** What the turn would need to be taken up again by a restarted server (`RunTurnInput.onCheckpoint`), read with each timeline write. */
+	checkpoint?: () => TurnCheckpoint | null;
+	/** A turn a restarted server takes up: its process goes on (`RunTurnInput.reattach`). */
+	reattach?: TurnCheckpoint;
 	planMode?: boolean;
 	openAcp?: () => NewItem | null;
 	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
@@ -685,6 +691,14 @@ interface SessionVars {
 	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
 	 */
 	runner: RunnerLink | null;
+	/**
+	 * With WLP_RUNNER_DURABLE_TURNS, the writer that stores the runner conversation's outgoing frames
+	 * (runner/journal.ts), and the conversation read back when the actor woke with a turn to take up.
+	 */
+	journal: OutgoingJournal | null;
+	restored: ConversationRecord | null;
+	/** When the wake that takes a machine turn up after a crash was last scheduled (`armTakeUp`). */
+	takeUpArmedAt: number;
 	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
 	setupReap: Promise<void> | null;
 	/** The running turn's start clock (start-times.ts), which `openSandbox` tells when the sandbox and the workspace are ready. */
@@ -769,9 +783,41 @@ function runnerLink(c: Ctx, machineId: string): RunnerLink {
 			(reach) => {
 				if (!c.vars.stopping) c.broadcast("machine", reach);
 			},
+			durableTurns(c) ? { from: c.vars.restored, onDirty: () => conversationDirty(c) } : undefined,
 		);
+		c.vars.restored = null;
 	}
 	return c.vars.runner;
+}
+
+/** WLP_RUNNER_DURABLE_TURNS: a machine session keeps its runner conversation and its turn's protocol state (runner/journal.ts). */
+function durableTurns(c: Ctx): boolean {
+	return config.machines?.durableTurns === true && c.vars.meta?.place.kind === "machine";
+}
+
+/** How often a turn that can be taken up after a crash re-arms the wake that would take it up. */
+const TAKE_UP_ARM_MS = 60_000;
+
+/** The runner conversation has something to store: frames to write ahead, or more received than committed. */
+function conversationDirty(c: Ctx): void {
+	const journal = c.vars.journal ??= new OutgoingJournal(c.db, () => c.vars.runner?.channel ?? null, () => {
+		// What was received is committed with the timeline it produced: a write comes soon, items or not.
+		const channel = c.vars.runner?.channel;
+		if (channel && channel.receivedCount > 0) scheduleWrite(c, true);
+	});
+	journal.dirty();
+}
+
+/**
+ * While a machine turn can be taken up, a wake is kept scheduled a minute ahead: a server that crashed
+ * runs no `onSleep`, and this brings the session back within the runner's grace on whichever server
+ * is up. A wake with nothing to take up does nothing.
+ */
+function armTakeUp(c: Ctx): void {
+	const now = Date.now();
+	if (c.vars.stopping || now - c.vars.takeUpArmedAt < TAKE_UP_ARM_MS / 2) return;
+	c.vars.takeUpArmedAt = now;
+	void c.schedule.at(now + TAKE_UP_ARM_MS, "internalTakeUp").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that takes a machine turn up after a crash", error: describeError(error) }));
 }
 
 /** The runner's own socket to the session: it proves itself in its first frame, not with a user's token. */
@@ -833,6 +879,7 @@ async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]
 
 /** Writes the waiting items, a batch per statement. Only ever called from inside the queue. */
 async function writeItems(c: Ctx): Promise<void> {
+	if (c.vars.runner?.durable) return writeDurably(c);
 	const waiting = c.vars.unwritten;
 	while (waiting.length > 0) {
 		const batch = waiting.slice(0, WRITE_BATCH);
@@ -859,6 +906,54 @@ async function writeItems(c: Ctx): Promise<void> {
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
 	}
+}
+
+/**
+ * `writeItems` for a machine session whose runner conversation is kept (runner/journal.ts): what was
+ * received, the timeline it produced and the turn's checkpoint, read in one synchronous step and written
+ * in one transaction, and only then acknowledged to the runner. A server that stops at any moment has
+ * either all of it or none: the runner sends again whatever is past the stored count, so each of its
+ * messages is taken once.
+ */
+async function writeDurably(c: Ctx): Promise<void> {
+	const channel = c.vars.runner!.channel;
+	const waiting = c.vars.unwritten;
+	// From here to the transaction nothing is awaited: the count, the items and the checkpoint say the same moment.
+	const conversation = channel.conversationId;
+	const received = channel.receivedCount;
+	const turn = c.vars.turn;
+	const checkpoint = turn?.checkpoint?.() ?? null;
+	const items = waiting.slice();
+	const meta = c.vars.meta;
+	let flush = false;
+	let stored = false;
+	await c.db.transaction(async tx => {
+		for (let at = 0; at < items.length; at += WRITE_BATCH) {
+			const batch = items.slice(at, at + WRITE_BATCH);
+			const receipts = meta && usesPlatformModel(meta.place, meta.harness) ? batch.flatMap(item => {
+				if (item.kind !== "windlass") return [];
+				const tokens = turnTokens(reportedModelUsage(item.event));
+				return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
+			}) : [];
+			const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
+			await insertItems(tx, batch);
+			for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
+			if (network && meta) {
+				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+				if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...network });
+			}
+			if (receipts.length || (network && meta?.origin)) flush = true;
+		}
+		// While a process waits to be taken up, the output kept for it is in no item yet: nothing of it counts as stored.
+		if (c.vars.runner?.holding) return;
+		stored = await saveReceived(tx, conversation, received);
+		// A checkpoint goes with the timeline of its moment; none (the turn is not one to take up) takes the old one out.
+		await saveCheckpoint(tx, turn?.number ?? 0, checkpoint);
+	}, { name: "timeline.durable" });
+	waiting.splice(0, items.length);
+	if (stored) channel.committed(conversation, received);
+	if (checkpoint) armTakeUp(c);
+	if (flush && !c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
 }
 
 /** Brings SQLite up to date with memory: the waiting items and the meta row. Never throws. */
@@ -892,9 +987,16 @@ function queueWrite(c: Ctx): void {
 	});
 }
 
-/** A turn can produce thousands of items: they are written in batches, shortly after they are made. */
-function scheduleWrite(c: Ctx): void {
+/** A turn can produce thousands of items: they are written in batches, shortly after they are made. `always`: a durable conversation's count is due, items or not. */
+function scheduleWrite(c: Ctx, always = false): void {
 	if (c.vars.flushQueued) return;
+	if (always && c.vars.unwritten.length === 0 && !c.vars.flushTimer) {
+		c.vars.flushTimer = setTimeout(() => {
+			c.vars.flushTimer = null;
+			queueWrite(c);
+		}, FLUSH_DELAY_MS);
+		return;
+	}
 	if (c.vars.unwritten.length >= FLUSH_AT) {
 		queueWrite(c);
 		return;
@@ -3838,6 +3940,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
+			// A machine turn whose conversation is kept: what it would need to be taken up after a restart, read with each timeline write.
+			...(c.vars.runner?.durable && {
+				onCheckpoint: (read: () => TurnCheckpoint | null) => { if (open) active.checkpoint = read; },
+				...(active.reattach && { reattach: active.reattach }),
+			}),
 			onStartMark: (point, ms) => clock?.mark(point, ms),
 			onAcpUpdate: update => {
 				if (!open) return;
@@ -4358,6 +4465,73 @@ async function within(promise: Promise<unknown> | null, ms: number): Promise<voi
 		}),
 	]);
 	clearTimeout(timer);
+}
+
+/**
+ * On wake, a machine turn whose server stopped while it ran: with its conversation and checkpoint in
+ * storage (runner/journal.ts), the runner may still have its process, within its grace. The process is
+ * held before anything can ask for the runner's socket, and the turn runs again from `executeTurn`
+ * with the checkpoint, which takes the process up instead of starting one. False when there is nothing
+ * to take up; what was stored is then forgotten, and the turn is cut short as always.
+ */
+async function takeUpTurn(c: Ctx, meta: SessionMeta): Promise<boolean> {
+	if (meta.place.kind !== "machine") return false;
+	try {
+		const [conversation, saved] = durableTurns(c) ? await Promise.all([readConversation(c.db), readCheckpoint<TurnCheckpoint>(c.db)]) : [null, null];
+		if (!conversation || !saved || saved.turn !== meta.turns || saved.data.harness !== (meta.harness ?? "windlass") || c.vars.runner) {
+			await forgetConversation(c.db);
+			return false;
+		}
+		c.vars.restored = conversation;
+		const link = runnerLink(c, meta.place.machineId);
+		if (!link.hold(saved.data.process)) {
+			link.close();
+			c.vars.runner = null;
+			await forgetConversation(c.db);
+			return false;
+		}
+		const row = await rowOfTurn(c.db, meta.turns);
+		const run = row ? Number(row.key.split(":")[1]) : null;
+		const active: ActiveTurn = {
+			number: meta.turns, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(),
+			reattach: saved.data,
+			...(row && { item: { row: { ...row, slot: row.slot ?? "" }, report: meta.report && meta.report.run === run ? meta.report : null, full: null, started: true, pushedAtStart: meta.pushedHead ?? null } }),
+		};
+		c.vars.turn = active;
+		console.log(`[wlp] turn.take_up session=${meta.sessionId} turn=${meta.turns} machine=${meta.place.machineId}: the server stopped while the turn ran; taking its process up again`);
+		active.done = c.keepAwake(runTurn(c, meta, active, "", takeSandbox(c)).finally(() => {
+			// A process the turn never took up (it could not go on) is stopped on the runner.
+			c.vars.runner?.release();
+		}));
+		return true;
+	} catch (error) {
+		c.log.warn({ msg: "could not take up the machine turn after the restart; it is cut short", error: describeError(error) });
+		return false;
+	}
+}
+
+/** Whether going to sleep keeps the running turn for the next server: a machine turn that can be taken up, on a runner that keeps it through the grace. */
+function keepsTurn(c: Ctx): boolean {
+	const link = c.vars.runner;
+	return !!link?.durable && link.known?.report?.resumableConversation === true && !!c.vars.turn?.checkpoint?.();
+}
+
+/**
+ * `onSleep` for a turn the runner keeps (`keepsTurn`): nothing is stopped. The timeline, the count of
+ * what was received and the checkpoint are stored, the frames being written ahead with them, and the
+ * socket is let go without ending the conversation; the runner keeps the process through its grace,
+ * and a wake shortly after takes it up on whichever server is up. False when the turn is not one to keep.
+ */
+async function keepTurn(c: Ctx): Promise<boolean> {
+	if (!keepsTurn(c)) return false;
+	const link = c.vars.runner!;
+	await persist(c);
+	await c.vars.journal?.settle();
+	await c.schedule.at(Date.now() + 3_000, "internalTakeUp").catch(() => undefined);
+	c.vars.journal?.close();
+	link.abandon();
+	console.log(`[wlp] turn.kept session=${c.key[1]} turn=${c.vars.turn?.number}: the runner keeps the turn's process through the restart`);
+	return true;
 }
 
 /** Stops the turn in progress, if any, and waits (a bounded time) until it has closed itself. */
@@ -4898,6 +5072,7 @@ export const agentSession = actor({
 			// Rows from before it have no whole-task prompt: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "fresh")) await db.execute("ALTER TABLE inbox ADD COLUMN fresh TEXT");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
+			await migrateJournal(db);
 		},
 	}),
 
@@ -4984,6 +5159,9 @@ export const agentSession = actor({
 			sandboxGen: 0,
 			carried: null,
 			runner: null,
+			journal: null,
+			restored: null,
+			takeUpArmedAt: 0,
 			setupReap: null,
 			startClock: null,
 			hostsAllowed: new Map(),
@@ -5008,7 +5186,8 @@ export const agentSession = actor({
 				// error, which ends the whole server and every other session on it. A turn still
 				// running then is stopped by `onSleep`.
 				try {
-					if (c.vars.turn) abortTurn(c, meta, c.vars.turn);
+					// A turn the runner keeps through the restart is not stopped: `onSleep` lets go of it (`keepsTurn`).
+					if (c.vars.turn && !keepsTurn(c)) abortTurn(c, meta, c.vars.turn);
 				} catch (error) {
 					console.warn(`[wlp] session=${meta.sessionId}: the actor was already stopping when its abort signal fired (${describeError(error)})`);
 				}
@@ -5016,7 +5195,9 @@ export const agentSession = actor({
 			{ once: true },
 		);
 
-		if (meta.status !== "idle") {
+		if (meta.status !== "idle" && (await takeUpTurn(c, meta))) {
+			// The turn goes on: its process kept running on the machine, and the runner resumes the conversation.
+		} else if (meta.status !== "idle") {
 			// The process that ran this turn is gone, and the turn with it; so is a question it was waiting on.
 			const turn = meta.turns;
 			note(c, turn, "warn", "The server stopped while this turn was running, so the turn was cut short.");
@@ -5091,6 +5272,8 @@ export const agentSession = actor({
 		try {
 			const meta = c.vars.meta;
 			if (!meta) return;
+			// A machine turn the runner keeps through the restart: stored where it is, and taken up on the next wake.
+			if (await keepTurn(c)) return;
 			// The order and the waits are what fits in the shutdown grace period (SHUTDOWN_GRACE_MS above).
 			await stopTurn(c);
 			await persist(c);
@@ -5567,6 +5750,11 @@ export const agentSession = actor({
 		},
 
 		// --- called by the actor's own schedule only ------------------------------------------------
+
+		/** Scheduled while a machine turn can be taken up after a crash (`armTakeUp`): the wake itself does the work (`takeUpTurn`). */
+		internalTakeUp: async (c): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+		},
 
 		internalIdle: async (c): Promise<void> => {
 			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.

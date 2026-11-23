@@ -473,7 +473,30 @@ export interface TurnControl {
 	cancelCall(messageId: string, callId: string): Promise<{ stopped: boolean; message: string | null }>;
 }
 
+/**
+ * What a running turn needs to take up its process again on a server that restarted while a machine's
+ * runner kept the process running (runner/journal.ts). Plain JSON, stored with the timeline: it holds
+ * no secret, only what the timeline and the turn's own protocol state already have. `harness` says
+ * whose `state` it is: a harness takes up only its own.
+ */
+export interface TurnCheckpoint {
+	harness: string;
+	/** The runner's id of the process (`SandboxProcess.runnerProcess`) and its wlp-run tag. */
+	process: string;
+	tag: string;
+	state: Record<string, unknown>;
+}
+
 export interface RunTurnInput {
+	/**
+	 * Told once the turn can say what it would need to be taken up again (`TurnCheckpoint`): `read`
+	 * answers that now, synchronously, or null when it cannot be taken up from here (not prompted yet,
+	 * stopping, or a provider that cannot keep a process across a restart). A harness that cannot take
+	 * up a process never calls it.
+	 */
+	onCheckpoint?: (read: () => TurnCheckpoint | null) => void;
+	/** Take up the process this checkpoint names instead of starting one: the turn goes on where it was. */
+	reattach?: TurnCheckpoint;
 	/** Told at each point of the turn's start (StartMark); `ms` with `relay`. A listener's failure does not stop the turn. */
 	onStartMark?: (mark: StartMark, ms?: number) => void;
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */

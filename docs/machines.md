@@ -481,6 +481,35 @@ conversation with the runner ends with it; the next turn, on whichever server, o
 session does not suspend a machine's sandbox on its way to sleep (`[wlp] sandbox.suspend_skipped`): the
 runner stops it after the idle time.
 
+With `WLP_RUNNER_DURABLE_TURNS=1` (default off), a Windlass turn can outlive the server instead
+(`server/src/runner/journal.ts`). The session keeps its half of the runner conversation in its own
+SQLite: the conversation's id, both sides' counts, and the frames the runner has not acknowledged.
+
+- **Written ahead.** A frame goes to the runner only once it is stored, so the runner never holds a
+  message the restarted server does not know.
+- **Acknowledged after it is stored.** What the server received is counted as received in the same
+  transaction as the timeline rows it produced and the turn's checkpoint, and only that count is
+  acknowledged. The runner holds everything past it and sends it again: each message is taken once.
+- **No secrets.** A frame that carries a token (`writeSecretFile`, `modelRelayToken`, a start or run with
+  secret variables) is stored as a cancel of its id, which a runner that never had it ignores. The
+  restarted turn writes the token file again at once, through the same relay lease.
+- **The turn checkpoint** (`turn_checkpoint`, `TurnCheckpoint` in `sandbox/api.ts`) holds the runner's id
+  of the agent process, the ACP ids, the requests of the agent's not answered yet, the part of a line
+  not ended, and the turn's own counts. It is plain JSON, written with the timeline.
+
+On wake, a session whose turn was running reads both back (`takeUpTurn`). It takes the process before it
+asks for the runner's socket, so none of its output arrives with nobody to take it, and runs the turn
+again with the checkpoint: no `stopLeftovers`, no new engine, no new prompt. The runner's hello resumes
+the conversation, it sends again what it held, and the turn goes on. While a turn can be taken up, a
+wake is kept scheduled a minute ahead (`internalTakeUp`), so a server that crashed is replaced within
+the grace without anyone opening the page.
+
+A graceful stop keeps the turn running only with a runner that reports `resumable-conversation`
+(`turn.kept` in the log); with any other it stops the turn as before. Anything that does not match
+falls back to the turn being cut short: a runner whose grace ran out or that restarted answers the
+resume with a new conversation, the process held for the turn ends, and the next turn stops what is
+left. Claude Code, Codex and OpenCode turns write no checkpoint, so they end as before.
+
 ### When the machine is offline
 
 An agent can be launched on it, and the form says that a prompt sent

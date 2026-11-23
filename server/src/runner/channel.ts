@@ -37,6 +37,46 @@ export interface ChannelSocket {
 /** The conversation an operation was sent in has ended: whether it ran is unknown. */
 export class ConversationLost extends Error {}
 
+/**
+ * What the server keeps of its conversation in durable storage, so that a server that restarts within
+ * the runner's grace resumes the same conversation (runner/journal.ts writes it in the session actor's
+ * SQLite). `received` is what the server has committed, which is all it ever acknowledges: whatever the
+ * runner sent past it, the runner still holds and sends again. `frames` are the frames sent and not
+ * acknowledged, by seq; one that carried a secret is stored as a harmless stand-in (`storable`).
+ */
+export interface ConversationRecord {
+	conversation: string;
+	sent: number;
+	acked: number;
+	received: number;
+	frames: Array<[number, string]>;
+}
+
+/** What the owner of a durable channel writes next (`ServerChannel.unsaved`). */
+export interface Unsaved {
+	/** Null: the conversation ended, and nothing of it is to be kept. */
+	conversation: string | null;
+	/** The conversation changed since the last save: what is stored of the old one goes. */
+	fresh: boolean;
+	sent: number;
+	acked: number;
+	/** The frames numbered since the last save, as they may be stored. */
+	frames: Array<[number, string]>;
+}
+
+/**
+ * Whether a message carries a secret, so that it is never stored: the token file's content, a relay
+ * token, and a process or command started with secret variables. After a restart its frame is sent
+ * again as a cancel of the same id, which a runner that never had the operation ignores; whoever wanted
+ * it (the token file, the turn) does it again on the restarted server.
+ */
+export function carriesSecret(body: Body): boolean {
+	if (body.kind !== "op") return false;
+	if (body.name === "writeSecretFile" || body.name === "modelRelayToken") return true;
+	const options = (body.args as { options?: { secretEnv?: unknown } }).options;
+	return !!options && typeof options.secretEnv === "object" && options.secretEnv !== null && Object.keys(options.secretEnv).length > 0;
+}
+
 type Output = (fd: 1 | 2, data: string) => void;
 interface Options {
 	/** The conversation ended with `reason`; everything outstanding in it has been let go. */
@@ -73,7 +113,7 @@ abstract class Channel {
 	private acked = 0;
 	private received = 0;
 	private told = 0;
-	private backlog = new Map<number, { text: string; bytes: number }>();
+	private backlog = new Map<number, { text: string; bytes: number; stored?: string }>();
 	private bytes = 0;
 	/** Messages made while there is no conversation, numbered when the next one starts. */
 	private unsent: Body[] = [];
@@ -85,8 +125,79 @@ abstract class Channel {
 	private strangers = new Map<ChannelSocket, ReturnType<typeof setTimeout>>();
 	private clock?: ReturnType<typeof setInterval>;
 	private grace?: ReturnType<typeof setTimeout>;
+	/**
+	 * A durable channel (`durable`): what may be stored of each frame numbered since the last save, the
+	 * highest seq that is stored (only those go out: written ahead), what is committed of what was
+	 * received (only that is acknowledged), and the conversation the storage holds.
+	 */
+	private durable: { frames: Array<[number, string]>; stored: number; committed: number; saved: string | null; onDirty(): void } | null = null;
 
 	constructor(private readonly base: Options & { onDrain?(): void; onDisconnect?(): void }, private readonly graceReason: string) {}
+
+	/**
+	 * Keeps the conversation in storage from now on. `onDirty` says there is something to save: frames
+	 * that wait to go out until they are stored, or more received than is committed. `from` is a
+	 * conversation read back from storage after a restart: the channel takes it up and waits up to the
+	 * grace for the runner to resume it.
+	 */
+	protected keep(onDirty: () => void, from: ConversationRecord | null): void {
+		this.durable = { frames: [], stored: 0, committed: 0, saved: null, onDirty };
+		if (!from || this.conversation) return;
+		this.conversation = from.conversation;
+		this.sent = from.sent;
+		this.acked = from.acked;
+		this.received = this.told = from.received;
+		for (const [seq, text] of from.frames) {
+			if (seq <= from.acked || seq > from.sent) continue;
+			const bytes = Buffer.byteLength(text);
+			this.backlog.set(seq, { text, bytes, stored: text });
+			this.bytes += bytes;
+		}
+		Object.assign(this.durable, { stored: from.sent, committed: from.received, saved: from.conversation });
+		this.grace = setTimeout(() => { this.grace = undefined; this.reset(this.graceReason); }, RUNNER_GRACE_MS);
+	}
+
+	protected dirty(): void { this.durable?.onDirty(); }
+
+	/** What a durable channel's owner writes next; null when nothing changed. Synchronous: what it says is so now. */
+	unsaved(): Unsaved | null {
+		const d = this.durable;
+		if (!d) return null;
+		if (!this.conversation) return d.saved === null ? null : { conversation: null, fresh: true, sent: 0, acked: 0, frames: [] };
+		const fresh = d.saved !== this.conversation;
+		if (!fresh && d.frames.length === 0 && d.stored === this.sent) return { conversation: this.conversation, fresh, sent: this.sent, acked: this.acked, frames: [] };
+		return { conversation: this.conversation, fresh, sent: this.sent, acked: this.acked, frames: d.frames.splice(0) };
+	}
+
+	/** The owner stored what `unsaved` said: those frames go out now. */
+	saved(what: Pick<Unsaved, "conversation" | "sent">): void {
+		const d = this.durable;
+		if (!d || what.conversation !== this.conversation) return;
+		d.saved = what.conversation;
+		if (what.conversation === null || what.sent <= d.stored) return;
+		const from = d.stored;
+		d.stored = what.sent;
+		if (!this.socket) return;
+		for (const [seq, frame] of this.backlog) if (seq > from && seq <= what.sent) this.transmit(frame.text);
+	}
+
+	/** How much of what was received the owner can commit now, with everything it produced. */
+	get receivedCount(): number { return this.received; }
+
+	/** The owner committed what the first `received` messages produced: that much is acknowledged. */
+	committed(conversation: string | null, received: number): void {
+		const d = this.durable;
+		if (!d || conversation === null || conversation !== this.conversation || received <= d.committed) return;
+		d.committed = Math.min(received, this.received);
+		if (this.socket) this.tick();
+	}
+
+	get conversationId(): string | null { return this.conversation; }
+
+	/** What is acknowledged: everything received, or on a durable channel what is committed of it. */
+	private get acknowledgeable(): number { return this.durable ? this.durable.committed : this.received; }
+	/** Whether a frame may go out: on a durable channel only once it is stored. */
+	private mayGo(seq: number): boolean { return !this.durable || seq <= this.durable.stored; }
 
 	get connected(): boolean { return this.socket !== null; }
 	/** What is held for the peer until it acknowledges it. */
@@ -116,6 +227,23 @@ abstract class Channel {
 		if (!this.socket) return;
 		this.detach();
 		this.base.onDisconnect?.();
+	}
+
+	/**
+	 * Lets go of the socket and of everything else without ending the conversation: a server going away
+	 * while its storage keeps the conversation for the next one (runner/journal.ts). Nothing outstanding
+	 * is settled, and nothing more is sent or taken.
+	 */
+	abandon(): void {
+		if (this.closed) return;
+		this.closed = true;
+		clearTimeout(this.grace);
+		this.grace = undefined;
+		const socket = this.socket;
+		this.socket = null;
+		clearInterval(this.clock);
+		socket?.close();
+		this.dismiss();
 	}
 
 	close(reason = "The runner channel is closed."): void {
@@ -175,7 +303,7 @@ abstract class Channel {
 	protected resumable(peerReceived: number): boolean {
 		return peerReceived >= this.acked && peerReceived <= this.sent;
 	}
-	protected get delivered(): number { return this.received; }
+	protected get delivered(): number { return this.acknowledgeable; }
 
 	/** Makes `socket` the current one, after the introduction, and sends what the peer has not received. */
 	protected adopt(socket: ChannelSocket, introduction: Hello | Welcome | null, peerReceived: number): void {
@@ -191,9 +319,9 @@ abstract class Channel {
 		if (introduction) {
 			try { socket.send(JSON.stringify(introduction)); } catch { this.lost(); return; }
 		}
-		this.told = this.received;
+		this.told = this.acknowledgeable;
 		// Resent before the release can call `onDrain`, so new output cannot overtake what the peer lacks.
-		for (const [seq, frame] of this.backlog) if (seq > peerReceived) this.transmit(frame.text);
+		for (const [seq, frame] of this.backlog) if (seq > peerReceived && this.mayGo(seq)) this.transmit(frame.text);
 		this.release(peerReceived);
 		for (const body of this.unsent.splice(0)) this.send(body);
 	}
@@ -204,11 +332,14 @@ abstract class Channel {
 		// Not numbered yet: what is withdrawn before a conversation starts must never reach the peer.
 		if (this.conversation === null) { this.unsent.push(body); return; }
 		if (this.bytes > HELD_BYTES) return this.fail("The other side does not acknowledge what it receives.");
-		const whole = JSON.stringify({ kind: "msg", seq: this.sent + 1, ack: this.received, body });
-		if (Buffer.byteLength(whole) <= MAX_FRAME_BYTES) { this.push(whole); return; }
+		const ack = this.acknowledgeable;
+		// A secret's frames are stored as a cancel of its id: a runner that never had it ignores that, and the owner asks again.
+		const standIn = this.durable && carriesSecret(body) ? (seq: number) => JSON.stringify({ kind: "msg", seq, ack, body: { kind: "cancel", id: body.id } }) : null;
+		const whole = JSON.stringify({ kind: "msg", seq: this.sent + 1, ack, body });
+		if (Buffer.byteLength(whole) <= MAX_FRAME_BYTES) { this.push(whole, standIn); return; }
 		for (let at = 0; at < json.length; at += PART_UNITS) {
 			const data = json.slice(at, at + PART_UNITS);
-			this.push(JSON.stringify({ kind: "part", seq: this.sent + 1, ack: this.received, data, last: at + PART_UNITS >= json.length }));
+			this.push(JSON.stringify({ kind: "part", seq: this.sent + 1, ack, data, last: at + PART_UNITS >= json.length }), standIn);
 		}
 	}
 
@@ -230,12 +361,14 @@ abstract class Channel {
 		this.drop(reason);
 		this.conversation = null;
 		this.sent = this.acked = this.received = this.told = this.bytes = this.partUnits = 0;
+		if (this.durable) Object.assign(this.durable, { frames: [], stored: 0, committed: 0 });
 		this.backlog.clear();
 		this.unsent = [];
 		this.parts = [];
 		this.waiting = false;
 		clearTimeout(this.grace);
 		this.grace = undefined;
+		this.durable?.onDirty();
 		if (had) this.base.onReset?.(reason);
 	}
 
@@ -245,11 +378,17 @@ abstract class Channel {
 		this.lost();
 	}
 
-	private push(text: string): void {
+	private push(text: string, standIn: ((seq: number) => string) | null = null): void {
 		const bytes = Buffer.byteLength(text);
-		this.backlog.set(++this.sent, { text, bytes });
+		const seq = ++this.sent;
+		this.backlog.set(seq, { text, bytes });
 		this.bytes += bytes;
-		this.told = this.received;
+		this.told = this.acknowledgeable;
+		if (this.durable) {
+			this.durable.frames.push([seq, standIn ? standIn(seq) : text]);
+			this.durable.onDirty();
+			return;
+		}
 		if (this.socket) this.transmit(text);
 	}
 
@@ -285,6 +424,7 @@ abstract class Channel {
 		if (frame.kind === "ack" || frame.seq <= this.received) return;
 		if (frame.seq !== this.received + 1) return this.fail("A frame is missing.");
 		this.received = frame.seq;
+		this.durable?.onDirty();
 		if (frame.kind === "msg") {
 			if (this.parts.length) return this.fail("A message ended before its last part.");
 			return this.deliver(frame.body);
@@ -305,9 +445,10 @@ abstract class Channel {
 	private tick(): void {
 		const now = Date.now();
 		if (now - this.heard >= DEAD_MS) { this.lost(); return; }
-		if (this.received > this.told || now - this.spoke >= PING_MS) {
-			this.told = this.received;
-			this.transmit(JSON.stringify({ kind: "ack", ack: this.received }));
+		const ack = this.acknowledgeable;
+		if (ack > this.told || now - this.spoke >= PING_MS) {
+			this.told = ack;
+			this.transmit(JSON.stringify({ kind: "ack", ack }));
 		}
 	}
 }
@@ -328,6 +469,32 @@ export class ServerChannel extends Channel {
 	 */
 	constructor(private readonly options: Options & { platform?: { identity: PlatformIdentity; uid: string; machineId: string; sessionId: string }; accept(hello: Hello): boolean; onConnect?(): void; onDisconnect?(): void }) {
 		super(options, "The machine did not come back within ten minutes.");
+	}
+
+	/** Keeps the conversation in storage (`Channel.keep`); `from` is the one read back after a restart. */
+	keepIn(onDirty: () => void, from: ConversationRecord | null): void {
+		this.keep(onDirty, from);
+	}
+
+	/**
+	 * A process the runner still runs for a conversation read back after a restart (`keepIn`): its output
+	 * goes to `onOutput` from here, and its end to `ended`. Null when the channel has no such conversation.
+	 * Taken before the runner's socket is asked for, so that none of its output arrives with nobody to take it.
+	 */
+	adoptProcess(id: string, onOutput: Output): { id: string; ended: Promise<ProcessEnd> } | null {
+		if (this.closed || !this.conversation || this.processes.has(id)) return null;
+		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true, held: null }));
+		return { id, ended };
+	}
+
+	/** Stops taking a process's output: one nobody took up again after a restart. */
+	forgetProcess(id: string): void {
+		this.processes.delete(id);
+	}
+
+	/** Whether the runner answered this process's `start` and it has not ended: only then can a restarted server take it up again. */
+	running(id: string): boolean {
+		return this.processes.get(id)?.held === null;
 	}
 
 	/** A socket from the gateway. It counts once its hello is accepted; one that says nothing goes after DEAD_MS. */

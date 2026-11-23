@@ -57,7 +57,11 @@ async function within<T>(what: string, promise: Promise<T>, ms: number): Promise
 /** A case that has not finished in this time fails by name, rather than holding the run until CI stops it. */
 const CHECK_MS = 5 * 60_000;
 
+/** RUNNER_E2E_ONLY=<regular expression>: only the checks whose names match it run (for a local look at a few; CI runs all). */
+const ONLY = process.env.RUNNER_E2E_ONLY ? new RegExp(process.env.RUNNER_E2E_ONLY) : null;
+
 async function check(name: string, body: () => Promise<string>): Promise<void> {
+	if (ONLY && !ONLY.test(name)) return;
 	let timer: Parameters<typeof clearTimeout>[0];
 	const limit = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`did not finish in ${CHECK_MS / 1000} s`)), CHECK_MS); });
 	try {
@@ -106,6 +110,21 @@ class Server {
 		await until("the engine's ports to be free", async () => (await free(PORT)) && (await free(HTTP)), 20_000);
 	}
 
+	/** As a crash: SIGKILL, no `onSleep`; the engine it started is stopped by its PID. */
+	async kill(): Promise<void> {
+		const child = this.child;
+		if (!child) return;
+		child.kill("SIGKILL");
+		await until("the server to exit", () => this.child === null, 20_000);
+		try {
+			const runtime = JSON.parse(readFileSync(join(this.storage, ".rivetkit", "var", "engine", "runtime.json"), "utf8")) as { pid?: number };
+			if (typeof runtime.pid === "number") process.kill(runtime.pid, "SIGKILL");
+		} catch {
+			// No engine left, which is the point.
+		}
+		await until("the engine's ports to be free", async () => (await free(PORT)) && (await free(HTTP)), 20_000);
+	}
+
 	log(): string {
 		return readFileSync(join(this.storage, "server.log"), "utf8");
 	}
@@ -119,7 +138,8 @@ class Server {
 /**
  * The server's process: the real server, whose machine actor fails `internalRemoveSandbox` while
  * `Server.refusal` exists, as one whose storage is away; and whose session has one action more,
- * `e2eMeta`, which reads its stored meta for a check (no page shows the machine's name kept at launch).
+ * `e2eMeta`, which reads its stored meta for a check (no page shows the machine's name kept at launch), and
+ * `e2eCheckpoint`, the turn whose checkpoint is stored (runner/journal.ts), or null.
  */
 async function serverNode(): Promise<void> {
 	if (process.env.WLP_TEST_MODEL_SCRIPT) {
@@ -128,7 +148,10 @@ async function serverNode(): Promise<void> {
 		SandboxWindlass.prototype.demoScript = () => script;
 	}
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
-	Object.assign(agentSession.config.actions!, { e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta });
+	Object.assign(agentSession.config.actions!, {
+		e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta,
+		e2eCheckpoint: async (c: { db: { execute<T>(sql: string): Promise<T[]> } }) => (await c.db.execute<{ turn: number }>("SELECT turn FROM turn_checkpoint"))[0]?.turn ?? null,
+	});
 	const { machine } = await import("../server/src/actors/machine.js");
 	const actions = machine.config.actions!;
 	Object.assign(actions, { e2eDestroy: (c: { destroy(): void }) => c.destroy() });
@@ -1341,6 +1364,113 @@ async function main(): Promise<void> {
 			} finally {
 				if (!closed) await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
 			}
+		});
+
+		// Turns that survive a restart (WLP_RUNNER_DURABLE_TURNS, runner/journal.ts): the same engine carries on, each event once.
+		const durable = { ...github.env(), WLP_ITEMS: "1", WLP_RUNNER_DURABLE_TURNS: "1" };
+		const eventSeqs = (timeline: TimelineItem[], number: number) => timeline.flatMap((item) => item.kind === "windlass" && item.turn === number && typeof item.event.seq === "number" ? [item.event.seq] : []);
+		/** A slow turn, the server stopped mid-turn by `stop`, started again: what the timeline and the runner say of it. */
+		const acrossRestart = async (stop: () => Promise<void>) => {
+			const watch = new Watch(client, uid, main.id, token);
+			let closed = false;
+			try {
+				const resets = runner.served.get(main.id)?.resets.length ?? 0;
+				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
+				const box = await until("the turn's engine to stream", () => watch.windlass(number) >= 3 && boxesOf(main.id).find((box) => box.engines.size === 1));
+				// A server that stops before the turn's first timeline write has nothing to take up: that is the fallback, not this check.
+				const session = client.agentSession.get([uid, main.id], { params: { token } }) as unknown as { e2eCheckpoint(): Promise<number | null> };
+				await until("the turn's checkpoint to be stored", async () => (await session.e2eCheckpoint()) === number);
+				const starts = runner.engineStarts;
+				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+				closed = true;
+				await within("the server to stop", stop(), 90_000);
+				await within("the server to start again", server.start(durable), 90_000);
+				await machineIs("online");
+				const ended = await until(`turn ${number} to end after the restart`, async () => {
+					const snapshot = await snapshotOf(client, uid, main.id, token).catch(() => null);
+					const end = snapshot?.timeline.find((item) => item.turn === number && item.kind === "turn.ended");
+					return end && snapshot ? { end, timeline: snapshot.timeline } : null;
+				}, 120_000);
+				const seqs = eventSeqs(ended.timeline, number);
+				const notes = ended.timeline.filter((item) => item.turn === number && item.kind === "platform").map((item) => (item as { text?: string }).text ?? "");
+				return { number, end: ended.end, seqs, notes, newEngines: runner.engineStarts - starts, resets: (runner.served.get(main.id)?.resets.length ?? 0) - resets };
+			} finally {
+				if (!closed) await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+			}
+		};
+		/** The engine events of an ordinary turn, as the timeline keeps them: what a turn taken up must show, each once. */
+		const baseline = async () => {
+			const { ended } = await turn(main.id, "Write the primes");
+			return eventSeqs((await snapshotOf(client, uid, main.id, token)).timeline, ended.turn);
+		};
+
+		await check("a server killed mid-turn on a machine comes back within the grace, and the same engine finishes the turn with each event once", async () => {
+			await server.stop();
+			await server.start(durable);
+			await machineIs("online");
+			const expected = await baseline();
+			const taken = await acrossRestart(() => server.kill());
+			assert(taken.end.kind === "turn.ended" && taken.end.outcome === "succeeded", `turn ${taken.number} ended ${taken.end.kind === "turn.ended" ? `${taken.end.outcome}: ${taken.end.message}` : "?"}`);
+			assert(taken.resets === 0, `the runner reset the conversation ${taken.resets} time(s)`);
+			assert(taken.newEngines === 0, `${taken.newEngines} engine(s) started after the restart`);
+			assert(new Set(taken.seqs).size === taken.seqs.length, `an engine event was taken twice: ${taken.seqs.join(",")}`);
+			assert(taken.seqs.join() === expected.join(), `events ${taken.seqs.join(",")} where an ordinary turn has ${expected.join(",")}`);
+			assert(!taken.notes.some((text) => /cut short|resumed/i.test(text)), `notes: ${taken.notes.join(" | ")}`);
+			assert(server.log().includes(`turn.take_up session=${main.id}`), "no take-up in the server's log");
+			const { ended } = await turn(main.id, "Write the primes");
+			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
+			return `turn ${taken.number}: ${taken.seqs.length} events once, no reset; the next turn succeeded`;
+		});
+
+		await check("a graceful restart keeps a machine turn running when the runner says it keeps conversations, and the turn finishes with each event once", async () => {
+			runner.fake.report.resumableConversation = true;
+			runner.report();
+			// The session reads the report when its link is made: a sleep makes a new one.
+			await forceSleep(main.id);
+			const expected = await baseline();
+			const taken = await acrossRestart(() => server.stop());
+			assert(taken.end.kind === "turn.ended" && taken.end.outcome === "succeeded", `turn ${taken.number} ended ${taken.end.kind === "turn.ended" ? `${taken.end.outcome}: ${taken.end.message}` : "?"}`);
+			assert(taken.resets === 0, `the runner reset the conversation ${taken.resets} time(s)`);
+			assert(taken.newEngines === 0, `${taken.newEngines} engine(s) started after the restart`);
+			assert(taken.seqs.join() === expected.join(), `events ${taken.seqs.join(",")} where an ordinary turn has ${expected.join(",")}`);
+			assert(server.log().includes(`turn.kept session=${main.id}`), "the sleep did not keep the turn");
+			return `turn ${taken.number} kept through SIGTERM: ${taken.seqs.length} events once`;
+		});
+		delete runner.fake.report.resumableConversation;
+		runner.report();
+
+		await check("a machine turn whose runner let the conversation go before the server came back ends cleanly, and the next turn works", async () => {
+			await server.stop();
+			await server.start(durable);
+			await machineIs("online");
+			const takeUps = server.log().split("turn.take_up session=" + main.id).length;
+			const watch = new Watch(client, uid, main.id, token);
+			let number = 0;
+			try {
+				({ turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" }));
+				await until("the turn's engine to stream", () => watch.windlass(number) >= 3);
+				const session = client.agentSession.get([uid, main.id], { params: { token } }) as unknown as { e2eCheckpoint(): Promise<number | null> };
+				await until("the turn's checkpoint to be stored", async () => (await session.e2eCheckpoint()) === number);
+				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+			} catch (error) {
+				await watch.conn.dispose().catch(() => undefined);
+				throw error;
+			}
+			await within("the server to stop", server.kill(), 90_000);
+			// What the runner does when its grace runs out: the conversation and what it ran go (the orphan rule).
+			runner.expireGrace(main.id);
+			await within("the server to start again", server.start(durable), 90_000);
+			await machineIs("online");
+			const end = await until(`turn ${number} to end`, async () => (await snapshotOf(client, uid, main.id, token).catch(() => null))?.timeline.find((item) => item.turn === number && item.kind === "turn.ended"), 120_000);
+			assert(end.kind === "turn.ended" && end.outcome !== "succeeded", `the turn ${end.kind === "turn.ended" ? end.outcome : "?"}`);
+			assert(server.log().split("turn.take_up session=" + main.id).length === takeUps + 1, "the restarted server did not try to take the turn up");
+			// Back to the default for the checks that follow; the next turn leaves the session awake, as they expect.
+			await server.stop();
+			await server.start({ ...github.env(), WLP_ITEMS: "1" });
+			await machineIs("online");
+			const { ended } = await turn(main.id, "Write the primes");
+			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
+			return `turn ${number} ${end.kind === "turn.ended" ? `${end.outcome}: ${String(end.message).split("\n")[0]}` : ""}; next turn succeeded`;
 		});
 
 		await check("a machine session put to sleep with its sandbox running is not suspended through a runner its sleep refuses, and its next prompt runs", async () => {
