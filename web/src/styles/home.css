@@ -933,7 +933,8 @@
 		z-index: 5;
 		margin: 18px calc(-1 * var(--gutter)) 0;
 		padding: 18px var(--gutter) calc(12px + env(safe-area-inset-bottom));
-		background: linear-gradient(to top, var(--bg) 72%, transparent);
+		/* Solid from the composer's first line (its limit line included) down; the fade only in the padding above it. */
+		background: linear-gradient(to top, var(--bg) calc(100% - 18px), transparent);
 	}
 	.home-agents > .home-saved {
 		order: 40;

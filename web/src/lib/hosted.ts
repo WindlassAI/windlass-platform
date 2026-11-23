@@ -38,14 +38,21 @@ export function withOverage(month: HostedMonth): boolean {
 	return month.limitSeconds > month.includedSeconds;
 }
 
-/** One sentence of where the month stands, for a composer or a notice; null while there is plenty. */
-export function monthSentence(numbers: Pick<UsageNumbers, "hosted" | "startSeconds"> | null, pro: PlanInfo | null): string | null {
+/**
+ * One sentence of where the month stands, for a composer or a notice; null while there is plenty. `launch`: said where
+ * agents are launched, so at the limit it says what launching does (a hosted agent waits, one on a machine starts).
+ */
+export function monthSentence(numbers: Pick<UsageNumbers, "hosted" | "startSeconds"> | null, pro: PlanInfo | null, { launch = false }: { launch?: boolean } = {}): string | null {
 	const month = numbers?.hosted;
 	const state = monthState(numbers ?? null);
 	if (!month || state === "plenty") return null;
 	const used = month.usedSeconds + month.heldSeconds;
 	const of = withOverage(month) ? `${minutes(month.limitSeconds)} hosted minutes this month, your spend cap included` : `${minutes(month.includedSeconds)} hosted minutes this month`;
 	if (state === "low") return `You've used ${minutes(used)} of ${of}. Your own machines are never counted.`;
+	if (launch) {
+		const more = month.plan === "free" && pro ? ` Or move to Pro for ${count(pro.hostedMinutes)} a month.` : withOverage(month) ? " Or raise your spend cap in Settings." : "";
+		return `You've used all ${of}. A hosted agent launched now is created, and waits until ${monthReset(month)}; one on your own machine starts at once, and is never counted.${more}`;
+	}
 	const way = month.plan === "free" && pro
 		? `Run agents on your own machines, which are never counted, or move to Pro for ${count(pro.hostedMinutes)} a month.`
 		: withOverage(month)

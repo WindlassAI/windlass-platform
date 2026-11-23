@@ -31,6 +31,15 @@ describe("the month's hosted minutes", () => {
 		expect(monthReset(month(0))).toBe("1 December");
 	});
 
+	it("says what launching does at the limit, where agents are launched", () => {
+		const free = monthSentence({ hosted: month(120), startSeconds: 30 }, pro, { launch: true })!;
+		expect(free).toBe("You've used all 120 hosted minutes this month. A hosted agent launched now is created, and waits until 1 December; one on your own machine starts at once, and is never counted. Or move to Pro for 1,800 a month.");
+		const capped = monthSentence({ hosted: month(5133, { plan: "pro", includedSeconds: 108_000, limitSeconds: 307_980, leftSeconds: 0 }), startSeconds: 30 }, pro, { launch: true })!;
+		expect(capped).toContain("your spend cap included");
+		expect(capped).toContain("Or raise your spend cap in Settings.");
+		expect(monthSentence({ hosted: month(97), startSeconds: 30 }, pro, { launch: true })).toBe(monthSentence({ hosted: month(97), startSeconds: 30 }, pro));
+	});
+
 	it("is what stops a turn where a plan sets it, with no daily allowance", () => {
 		const numbers = { at: 0, day: "2026-11-23", resetsAt: 0, allowanceSeconds: null, usedSeconds: 0, heldSeconds: 0, leftSeconds: null, startSeconds: 30, sandboxes: { kept: 0, limit: 2 } };
 		expect(allowanceState({ ...numbers, hosted: month(120) }, 0.2)).toBe("used");

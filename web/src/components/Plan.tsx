@@ -375,7 +375,8 @@ export function PlanCompare({ view }: { view: Enabled }) {
 export function HostedNotice({ numbers, pro }: { numbers: UsageNumbers | null; pro: PlanInfo | null }) {
 	const { platform } = useApp();
 	const state = monthState(numbers);
-	const sentence = monthSentence(numbers, pro);
+	// The composer under it leaves the month to this notice (StartComposer's `hostedNotice`), so it says what launching does.
+	const sentence = monthSentence(numbers, pro, { launch: true });
 	if (!numbers?.hosted || state === "plenty" || sentence === null) return null;
 	const month = numbers.hosted;
 	return (
