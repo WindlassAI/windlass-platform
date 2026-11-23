@@ -61,8 +61,21 @@ function sentence(value: unknown): string {
 	return typeof value === "string" && value.trim() ? value.trim() : "The provider gave no reason.";
 }
 
+/**
+ * Windlass refuses a session whose host tools it cannot use, with its own sentence (its `hostToolsProblem`: a name, a
+ * timeout, an input schema), as an invalid request. That is the platform's fault, which no retry and no other model
+ * mends: its own kind, `PLATFORM_TOOLS`, is never shown as the provider's refusal.
+ */
+export const PLATFORM_TOOLS = "platform_tools";
+const HOST_TOOL_PROBLEM = /^the (?:inputSchema|timeoutSeconds) of the host tool "|^the host tool (?:name )?"/i;
+
 /** The terminal outcome decides whether a step error, or an ACP refusal before the first step, ended this turn. */
 export function turnRefusal(outcome: TurnOutcome, result: RunTurnResult | null, step: ProviderRefusal | null): ProviderRefusal | null {
+	const refusal = providerTurnRefusal(outcome, result, step);
+	return refusal?.kind === "invalid_request" && HOST_TOOL_PROBLEM.test(refusal.message) ? { kind: PLATFORM_TOOLS, message: refusal.message } : refusal;
+}
+
+function providerTurnRefusal(outcome: TurnOutcome, result: RunTurnResult | null, step: ProviderRefusal | null): ProviderRefusal | null {
 	if (!result || result.aborted || result.timedOut || (outcome !== "failed" && outcome !== "error")) return null;
 	const failure = result.failure;
 	// A broken token hand-off or process is the platform's failure, even after a provider step error.
@@ -79,5 +92,6 @@ export function limitObservation(refusal: ProviderRefusal | null, at: number): U
 }
 
 export function refusalMessage(refusal: ProviderRefusal): string {
+	if (refusal.kind === PLATFORM_TOOLS) return `The turn did not run: Windlass could not use one of the tools the platform gives the agent. This is a fault in the platform, not a refusal by the provider, and trying again fails the same way until the platform is fixed. Windlass said: ${refusal.message}`;
 	return `The provider refused the request. ${refusal.message}` + (refusal.resetsAt !== undefined ? ` The limit resets at ${new Date(refusal.resetsAt).toISOString().slice(0, 10)} ${utcReset(refusal.resetsAt)}.` : "");
 }

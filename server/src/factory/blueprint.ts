@@ -49,7 +49,7 @@ import type { FeedbackDecision, FeedbackInput } from "./types.js";
 import { subtaskMinimum, emptyBudget, featureReserve, featureCap, singleAfterPlanning, dimensions, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem } from "./feature-plan.js";
 import { aliases, beginIntegration, boundRepos, crossFact, crossRepo, featureOpened, handOver as crossHandOver, integrationAnswer, plannerText, recordIntegrated, recordOpened, recordSeed, repoOf, type Flow } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
-import { refusalMessage } from "../provider-refusal.js";
+import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noteAgentTurn, retryAt, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
@@ -858,6 +858,8 @@ function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnP
 		c.effects.push({ kind: "provider_retry", key: c.key, at, plan: { ...plan, ...refusal.retry, newStep: false } });
 		return;
 	}
+	// The platform's own tool refused by Windlass: the same delivery fails again at once, so "Try again" is not offered.
+	if (refusal.kind === PLATFORM_TOOLS) return ask(c, "turn_refused", refusalMessage(refusal), [...handOver(c.item), choice("give_up")], null, null);
 	const message = refusalMessage({ ...refusal, resetsAt: reset })
 		+ (retries >= RULES.providerRetries ? " This step has used its three automatic provider retries." : "");
 	ask(c, "turn_refused", message, [choice("again"), ...handOver(c.item), choice("give_up")], null,

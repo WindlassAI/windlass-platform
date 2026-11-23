@@ -1617,6 +1617,13 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const step = failedStep({ kind: "auth" });
 	const result = { aborted: false, timedOut: false, exitCode: 0, stderrTail: "", summary: null, windlassSessionId: null, failure: { reason: "invalid_request", message } };
 	expect("an ACP invalid request before the first step keeps the provider's reason", isDeepStrictEqual(turnRefusal("error", result, null), { kind: "invalid_request", message }));
+	// Windlass 0.6.0 refused every planner turn so (live, file_plan's exclusiveMinimum): the platform's own fault, not the provider's.
+	const schema = 'the inputSchema of the host tool "file_plan" cannot be used: schema at .properties.subtasks.items.properties.needs.properties.cpus: unsupported keyword "exclusiveMinimum"';
+	for (const said of [schema, 'the host tool "report" is declared twice', 'the timeoutSeconds of the host tool "push" is not a whole number of seconds from 1 to 3600', 'the host tool name "a b" is not 1 to 64 letters, digits, "_" or "-"']) {
+		const refused = turnRefusal("error", { ...result, failure: { reason: "invalid_request", message: said } }, null);
+		expect(`Windlass refusing a host tool is the platform's fault: ${said.slice(0, 40)}…`, isDeepStrictEqual(refused, { kind: "platform_tools", message: said }), JSON.stringify(refused));
+	}
+	expect("the provider's own invalid request is still the provider's", turnRefusal("error", { ...result, failure: { reason: "invalid_request", message: "HTTP 400: the host tool was not used" } }, null)?.kind === "invalid_request");
 	expect("a later attempt, a successful turn and a cut connection supersede an earlier refusal",
 		stepRefusal(step, { type: "step.started" }) === null && turnRefusal("succeeded", result, step) === null
 		&& turnRefusal("interrupted", result, step) === null && turnRefusal("error", { ...result, failure: { reason: "engine", message: "closed" } }, step) === null);
@@ -1668,6 +1675,18 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		`interruptions ${failed.item.run?.step.interruptions}, effects ${failed.last.effects.map(e => e.kind)}`);
 	const again = walk(failed.item, [{ kind: "answer", choice: "again" }]);
 	expect("the owner can retry the original delivery on the same step", effect(again.last, "deliver")?.text === providerRefusal.retry.text && again.item.run?.step.attempt === 2);
+}
+
+{
+	const message = 'the inputSchema of the host tool "file_plan" cannot be used: schema at .properties.subtasks.items.properties.needs.properties.cpus: unsupported keyword "exclusiveMinimum"';
+	const running = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }]);
+	const failed = walk(running.item, [{ ...turnEnded("succeeded", null), outcome: "failed", providerRefusal: { kind: "platform_tools", message, retry: { text: "Plan the feature.", fetchBase: null } } }]);
+	const question = failed.item.question;
+	expect("a tool Windlass refused is said to be the platform's fault, not the provider's, and offers no retry that would fail again",
+		question?.kind === "turn_refused" && question.text.includes("This is a fault in the platform, not a refusal by the provider") && question.text.includes(message)
+		&& !question.text.includes("The provider refused") && !question.choices.some(choice => choice.id === "again") && question.choices.some(choice => choice.id === "give_up")
+		&& question.resume === null && !failed.last.effects.some(e => e.kind === "provider_retry"),
+		`asked “${question?.text}” offering ${question?.choices.map(choice => choice.id).join(", ")}`);
 }
 
 {
