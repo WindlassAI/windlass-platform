@@ -102,15 +102,17 @@ docker start windlass-runner
 
 ## Run options
 
+The sizing defaults below apply when all sizing options are left unset, including `WLP_RUNNER_CPUS`.
+
 These options go after the runner image, with the `run` command or with no command. `setup` takes the same options, and passes them on to the command it prints. `--name` also works with `pair`.
 
 | Option | Default | What it does |
 | --- | --- | --- |
 | `--platform URL` | The saved platform | The platform to connect to. It must be HTTPS, or HTTP on loopback. |
-| `--slots N`, `--max-turns N` | 2 on a 1–2 CPU machine, otherwise 2–16 based on available CPUs | Total turn capacity in slots (1–64). A personal session uses one slot. Large factory sessions use more. |
-| `--slot-cpus X` | Half the CPUs on a 1–2 CPU machine, otherwise 2 | CPU limit per slot. Overrides `WLP_RUNNER_CPUS`. |
-| `--slot-memory Nm\|Ng` | 1.5 GiB on a 1–2 CPU machine, otherwise a share of available memory | Memory per slot, at least 1 GiB. The swap limit equals the memory limit. |
-| `--sandbox-memory Ng` | Host memory after reserves on machines with 3 or more CPUs | Total memory budget used to size the slots. |
+| `--slots N`, `--max-turns N` | As many 2 CPU, 4 GiB slots as fit after host reserves (1–16) | Total turn capacity in slots (1–64). A personal session uses one slot. Large factory sessions use more. |
+| `--slot-cpus X` | 2, or all cores if a full slot cannot fit after reserves | CPU limit per slot. Overrides `WLP_RUNNER_CPUS`. |
+| `--slot-memory Nm\|Ng` | An even share of usable memory (4–8 GiB) in quarter-GiB steps, or up to 4 GiB if a full slot cannot fit | Memory per slot, at least 1 GiB. The swap limit equals the memory limit. |
+| `--sandbox-memory Ng` | Host memory after reserves | Total memory budget used to size the slots. |
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
 | `--snapshot-disk SIZE` | 10GB | Disk for all setup snapshots on this machine. |
@@ -150,7 +152,7 @@ See [The two Docker profiles](/docs/security#the-two-docker-profiles) for what e
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `WLP_RUNNER_CPUS` | Half the CPUs on a 1–2 CPU machine, otherwise 2 | The CPU cap of each slot. It must be at least 0.01. |
+| `WLP_RUNNER_CPUS` | 2, or all cores if a full slot cannot fit after reserves | The CPU cap of each slot. It must be at least 0.01. |
 | `WLP_RUNNER_STATE_DIR` | `/var/lib/windlass-runner` | Where the runner keeps its key and state. |
 
 Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image in the `docker run` command.

@@ -154,7 +154,7 @@ If the machine shuts down or goes to sleep during a turn, the turn is paused, no
 
 ### CPU and memory
 
-On a machine with one or two CPUs, one slot defaults to half the available CPUs, 1536 MiB of memory and 512 processes. Larger machines reserve CPU and memory for the host before dividing resources into slots. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget. A slot's memory limits what an agent's commands can use at once, as a hosted size does: a large build or test suite can run a 1.5 GiB slot out of memory. Give such work a larger `--slot-memory`, or let a subtask take more slots.
+By default, the runner fits up to 16 slots of 2 CPUs and 4–8 GiB each after reserving resources for the host. If none fits, one slot shares all cores with the host and uses up to 4 GiB, leaving at least 1 GiB or 25% of memory for the host, whichever is greater. **Details → Capacity** shows the slot count and the CPU and memory per slot. Use `--slot-cpus`, `--slot-memory` and `--sandbox-memory` to set the CPU per slot, memory per slot and total sandbox memory budget. A slot's memory limits what an agent's commands can use at once, as a hosted size does: a large build or test suite can run a 1.5 GiB slot out of memory. Give such work a larger `--slot-memory`, or let a subtask take more slots.
 
 ## Network access
 
