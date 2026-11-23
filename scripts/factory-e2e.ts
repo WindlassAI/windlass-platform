@@ -2168,6 +2168,75 @@ async function subtaskAgentChecks(): Promise<void> {
 	}
 }
 
+/**
+ * The account's cap on kept sandboxes is for hosted ones only (usage.ts `hostedLimitsApply`): sandboxes on the user's own
+ * machine count toward none of it, and the machine refuses past its owner's own `--max-sandboxes`, in its own words.
+ */
+async function keptChecks(): Promise<void> {
+	const server = new Server();
+	const runner = new StandInRunner(API, ENDPOINT);
+	try {
+		const { user, client, auth } = await world(server, standin, { WLP_MACHINES: "1", WLP_MAX_KEPT_SANDBOXES: "5" });
+		await runner.pair(user);
+		await runner.connectControl();
+		runner.report();
+		await waitFor("available machine profiles", async () => (await user.machines())[0]?.profiles.some(p => p.available), 15_000);
+		const place = { kind: "machine" as const, machineId: runner.id.machineId };
+		const session = (id: string) => client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } });
+		const turn = async (id: string) => {
+			await session(id).prompt({ text: "Write the primes" });
+			return waitFor("the turn's end", async () => (await session(id).snapshot()).timeline.find(item => item.kind === "turn.ended"), 30_000);
+		};
+		const made: string[] = [];
+		await check("machine kept: five machine sandboxes leave the hosted cap untouched, five hosted fill it, and a sixth hosted is refused", async () => {
+			for (let n = 0; n < 5; n++) {
+				const own = await user.createSession({ place, profile: "docker-hardened", title: `Machine ${n + 1}` });
+				made.push(own.id);
+				const ended = await turn(own.id);
+				assert(ended.outcome === "succeeded", `machine turn ${n + 1}: ${ended.outcome} ${ended.message ?? ""}`);
+			}
+			assert(runner.boxes.size === 5, `the machine keeps ${runner.boxes.size} sandboxes`);
+			let usage = await user.usage();
+			assert(usage.sandboxes.kept === 0 && usage.kept.length === 0, `machine sandboxes counted among the kept: ${JSON.stringify(usage.sandboxes)}`);
+			for (let n = 0; n < 5; n++) {
+				const hosted = await user.createSession({ profile: "docker-hardened", title: `Hosted ${n + 1}` });
+				made.push(hosted.id);
+				const ended = await turn(hosted.id);
+				assert(ended.outcome === "succeeded", `hosted turn ${n + 1} beside 5 machine sandboxes: ${ended.outcome} ${ended.message ?? ""}`);
+			}
+			usage = await user.usage();
+			assert(usage.sandboxes.kept === 5 && usage.sandboxes.limit === 5, JSON.stringify(usage.sandboxes));
+			const sixth = await user.createSession({ profile: "docker-hardened", title: "Hosted 6" });
+			made.push(sixth.id);
+			const message = await refused(() => session(sixth.id).prompt({ text: "Write the primes" }), "too_many_sandboxes");
+			assert(/^You keep 5 hosted sandboxes, the most an account may have/.test(message) && /on your own machines are not counted/.test(message), message);
+			return message;
+		});
+		await check("machine kept: a machine whose owner keeps at most 6 refuses a seventh with its own words, whatever the hosted cap", async () => {
+			runner.maxSandboxes = 6;
+			try {
+				const sixth = await user.createSession({ place, profile: "docker-hardened", title: "Machine 6" });
+				made.push(sixth.id);
+				assert((await turn(sixth.id)).outcome === "succeeded", "the machine's sixth sandbox was refused");
+				const seventh = await user.createSession({ place, profile: "docker-hardened", title: "Machine 7" });
+				made.push(seventh.id);
+				const ended = await turn(seventh.id);
+				assert(ended.outcome === "error" && ended.message?.includes("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.") === true
+					&& !/hosted sandboxes|the most an account may have/.test(ended.message ?? ""), `${ended.outcome}: ${ended.message}`);
+				return ended.message!;
+			} finally {
+				runner.maxSandboxes = undefined;
+			}
+		});
+		for (const id of made) await user.deleteSession(id).catch(() => {});
+	} finally {
+		await runner.setOffline(true);
+		await server.stop();
+		server.remove();
+	}
+}
+
+if (!only.length || only.some(prefix => prefix.startsWith("machine"))) await keptChecks();
 if (!only.length || only.some(prefix => prefix.startsWith("machine"))) await machineChecks();
 if (!only.length || only.some(prefix => prefix.startsWith("machine"))) await subtaskAgentChecks();
 if (only.length && only.every(prefix => prefix.startsWith("machine"))) {

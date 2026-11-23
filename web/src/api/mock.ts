@@ -363,7 +363,7 @@ export function mockAllowanceRefusal(numbers: UsageNumbers): string {
 /** server/src/usage.ts, `sandboxRefusal`. */
 export function mockSandboxRefusal(numbers: UsageNumbers): string {
 	const limit = numbers.sandboxes.limit ?? numbers.sandboxes.kept;
-	return `You keep ${limit} ${limit === 1 ? "sandbox" : "sandboxes"}, the most an account may have, and this agent needs one of its own. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again.`;
+	return `You keep ${limit} hosted ${limit === 1 ? "sandbox" : "sandboxes"}, the most an account may have, and this agent needs one of its own. Sandboxes on your own machines are not counted. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again.`;
 }
 
 /** server/src/usage.ts, `freedNote`, for a deployment that keeps a copy of the agent's memory. */

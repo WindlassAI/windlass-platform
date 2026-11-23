@@ -52,8 +52,11 @@ A saved secret's value is in the changes. Ask the agent to take it out, then pus
 **"Today's 2 h of sandbox time is used up, so nothing was started. The allowance is whole again at 00:00 UTC, in …"**\
 Wait until 00:00 UTC, or run the agent on one of your machines, where this limit does not apply.
 
-**"You keep 5 sandboxes, the most an account may have, and this agent needs one of its own. Free one on the Usage page, which says what goes with it, or delete an agent you no longer need. Then send this again."**\
-Free a sandbox on **Usage**, under **Sandboxes you keep**, or delete an agent.
+**"You keep 5 hosted sandboxes, the most an account may have, and this agent needs one of its own. …"**\
+The cap is for the platform's own sandboxes only. Free one on **Usage**, under **Hosted sandboxes you keep**, or delete an agent. Sandboxes on your own machines are not counted: a machine has only the limits its owner set on its runner.
+
+**"This machine has reached its own limit on kept sandboxes, set by --max-sandboxes."**\
+The machine's owner capped how many sandboxes it keeps. Free one of its sandboxes on **Machines**, or raise the cap with `--max-sandboxes` (`windlass-runner status` shows it).
 
 **"You already have 6 agents working, which is your limit. Wait for one to finish, or stop one."**\
 Wait, or stop an agent.

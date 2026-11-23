@@ -76,7 +76,7 @@ function diskSize(bytes: number): string {
 }
 
 /** The snapshot and Git mirror limits in force on a machine (`MachineSummary.storeLimits`). */
-function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
+export function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
 	return `${diskSize(limits.machine)} in all, ${diskSize(limits.user)} per user, keeps ${limits.free === 0 ? "no disk" : diskSize(limits.free)} free`;
 }
 
@@ -317,7 +317,7 @@ function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onCh
 
 /** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
 /** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
-function sandboxLimit(machine: MachineSummary): string {
+export function sandboxLimit(machine: MachineSummary): string {
 	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
 	return caps.length === 0 ? "no limit" : caps.join(", ");
 }

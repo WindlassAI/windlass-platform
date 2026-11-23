@@ -2571,7 +2571,7 @@ async function main(server: Server | null): Promise<void> {
 				assert((await turnOf(other.id, "Write a short program")).outcome === "succeeded", "the other session's turn failed");
 				const before = madeFor(gone.id).length;
 				const replaced = await turnOf(gone.id, "Write a short program");
-				assert(replaced.outcome === "error" && /^You keep 1 sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
+				assert(replaced.outcome === "error" && /^You keep 1 hosted sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
 				assert(madeFor(gone.id).length === before, "a sandbox was made for it past the cap");
 				const usage = await theirs.usage();
 				assert(usage.sandboxes.kept === 1 && usage.kept[0]?.sessionId === other.id, `kept: ${usage.sandboxes.kept}, ${plain(usage.kept.map((k) => k.sessionId))}`);

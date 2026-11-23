@@ -180,7 +180,7 @@ Where the platform keeps a copy of the agent's memory of the conversation, it re
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 
-On this platform you can keep up to 5 sandboxes at once. To free one, go to **Usage**, find it under **Sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
+On this platform you can keep up to 5 hosted sandboxes at once; those on your own machines are not counted. To free one, go to **Usage**, find it under **Hosted sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
 
 ## Rename or delete an agent
 

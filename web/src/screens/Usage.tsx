@@ -415,11 +415,11 @@ export function Usage() {
 
 			<section className="usage-section" aria-labelledby="usage-kept">
 				<h2 className="usage-title" id="usage-kept">
-					Sandboxes you keep
+					Hosted sandboxes you keep
 					<span className="usage-count">{limit === null ? count(kept) : `${count(kept)} of ${count(limit)}`}</span>
 				</h2>
 				<p className="usage-lede">
-					Each agent that has worked has a sandbox with its files, running or paused.{" "}
+					Each agent that has worked on the platform's own sandboxes has one with its files, running or paused. Those on your own machines are not counted here.{" "}
 					{limit === null
 						? "This deployment sets no limit on how many you keep."
 						: kept >= limit
