@@ -265,7 +265,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 			</p>
 			<p className="item-question-text">
 				{single ? view.question.text : <>{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.</>}
-				<span className="plan-version"> Version {plan.version}</span>
+				{" "}<span className="plan-version">Version {plan.version}</span>
 			</p>
 
 			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
