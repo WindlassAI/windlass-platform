@@ -205,6 +205,23 @@
 	color: var(--bad);
 	box-shadow: inset 2px 0 0 var(--bad);
 }
+/* The item waits for its person's answer: the needs hue at its edge and in its dot. */
+.banner-needs {
+	box-shadow: inset 2px 0 0 var(--needs);
+}
+.banner-needs-dot {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--needs);
+}
+.crumb .crumb-feature {
+	max-width: 24ch;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .banner .link {
 	margin-left: 6px;
 }
@@ -2425,14 +2442,6 @@ dd.kv-clip > svg {
 	color: var(--ink-dim);
 	overflow-wrap: anywhere;
 }
-/* A command of the user's own can be a whole script: three lines of it, and all of it where it is changed. */
-.server-subject-short {
-	display: -webkit-box;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 3;
-	line-clamp: 3;
-	overflow: hidden;
-}
 .server-reason {
 	margin-top: 3px;
 	font-family: var(--font-text);
@@ -2980,19 +2989,6 @@ dd.kv-clip > svg {
 	font-size: var(--size-small);
 	color: var(--ink-dim);
 	text-align: right;
-}
-button.user-platform-line {
-	color: var(--ink-dim);
-	text-decoration: none;
-}
-button.user-platform-line:hover {
-	color: var(--ink);
-}
-.user-platform-chevron {
-	transition: transform 160ms var(--ease);
-}
-.user-platform-line[aria-expanded="true"] .user-platform-chevron {
-	transform: rotate(90deg);
 }
 .user-platform-text {
 	font-size: var(--size-small);

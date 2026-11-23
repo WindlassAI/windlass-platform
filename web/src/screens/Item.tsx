@@ -25,7 +25,7 @@
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
-import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemView, type StepKind, type Verdict } from "@contract";
+import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
@@ -34,6 +34,7 @@ import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
+import { FOLD_WORDS, FoldToggle, LongText } from "../components/Fold";
 import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
@@ -47,6 +48,8 @@ import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD,
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 import { AgentGlyph } from "../components/ui/Pill";
+import { childrenBehind } from "../lib/subtasks";
+import { showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -116,6 +119,12 @@ export function useItem(id: string, enabled = true): ItemPage {
 	const [state, setState] = useState<{ view: ItemView | null; error: string | null; missing: boolean }>({ view: null, error: null, missing: false });
 	const asked = useRef(0);
 	const shown = useRef(-1);
+	// What the page holds of the feature's subtasks, or of itself as one: the feed's open subtasks are read against it.
+	const held = useRef<{ parentId: string | null; children: Pick<ItemSummary, "id" | "revision" | "state">[] }>({ parentId: null, children: [] });
+	const hold = (view: ItemView) => {
+		shown.current = view.revision;
+		held.current = view.parent ? { parentId: view.parent.itemId, children: [view] } : { parentId: view.id, children: view.children ?? [] };
+	};
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
@@ -125,7 +134,7 @@ export function useItem(id: string, enabled = true): ItemPage {
 			.then(
 				(view) => {
 					if (mine !== asked.current) return;
-					shown.current = view.revision;
+					hold(view);
 					setState({ view, error: null, missing: false });
 				},
 				(failure: unknown) => mine === asked.current && setState((now) => ({ view: now.view, error: explain(failure), missing: hasReason(failure, "item_not_found") })),
@@ -134,7 +143,7 @@ export function useItem(id: string, enabled = true): ItemPage {
 
 	const replace = useCallback((view: ItemView) => {
 		asked.current += 1;
-		shown.current = view.revision;
+		hold(view);
 		setState({ view, error: null, missing: false });
 	}, []);
 
@@ -145,8 +154,11 @@ export function useItem(id: string, enabled = true): ItemPage {
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
 			onItems: (feed) => {
-				const summary = feed.open.find((item) => item.id === id) ?? feed.ended.find((item) => item.id === id);
-				if (summary && summary.revision > shown.current) reload();
+				const summary = feed.open.find((item) => item.id === id) ?? feed.ended.find((item) => item.id === id) ?? feed.children?.find((item) => item.id === id);
+				// A feature's subtasks, or the subtask itself, changed: a subtask is in the feed while it is open, and its page reads it again once it ended.
+				const { parentId, children } = held.current;
+				const behind = parentId !== null && childrenBehind(parentId, parentId === id ? children : children.filter((child) => child.id === id), parentId === id ? feed.children : feed.children?.filter((child) => child.id === id));
+				if ((summary && summary.revision > shown.current) || behind) reload();
 			},
 			onConnection: (connection) => {
 				if (connection !== "connected") return;
@@ -175,6 +187,16 @@ export function ItemCrumb({ view }: { view: ItemView | null }) {
 			<span className="crumb-sep" aria-hidden="true">
 				/
 			</span>
+			{view?.parent ? (
+				<>
+					<a className="crumb-repo crumb-feature" {...linkProps({ name: "item", id: view.parent.itemId })} title={view.parent.title}>
+						{view.parent.title}
+					</a>
+					<span className="crumb-sep" aria-hidden="true">
+						/
+					</span>
+				</>
+			) : null}
 			<span className="crumb-title" aria-current="page">
 				{view?.title ?? "Work item"}
 			</span>
@@ -469,7 +491,9 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 					<When at={question.askedAt} now={now} />
 				</span>
 			</p>
-			<p className="item-question-text">{question.text}</p>
+			<LongText lines={6} className="item-question-text">
+				{question.text}
+			</LongText>
 			{question.check ? <EnvironmentCheck check={question.check} /> : null}
 			{question.kind === "sandboxes" ? (
 				<p className="item-question-text">
@@ -544,14 +568,18 @@ function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]>
  * words. An option fills the answer box; nothing is answered until the person sends it.
  */
 function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; onPick: (text: string) => void }) {
+	// Options of a sentence's length stack as full-width rows rather than wrapping as pills.
+	const stacked = asked.options.some((option) => option.length > LONG_OPTION);
 	return (
 		<figure className="item-asked" id={id}>
 			<figcaption className="item-asked-who">
 				The agent wrote this. Its words may follow what it read in the repository or an issue: read them as its words, not the platform's.
 			</figcaption>
-			<blockquote className="item-asked-text">{asked.text}</blockquote>
+			<LongText lines={6} as="blockquote" className="item-asked-text">
+				{asked.text}
+			</LongText>
 			{asked.options.length > 0 ? (
-				<div className="item-asked-options" role="group" aria-label="Answers the agent suggests">
+				<div className={`item-asked-options${stacked ? " item-asked-options-stacked" : ""}`} role="group" aria-label="Answers the agent suggests">
 					<span className="item-asked-options-label">It suggests</span>
 					{asked.options.map((option) => (
 						<button key={option} type="button" className="button button-outline button-small item-asked-option" disabled={busy} onClick={() => onPick(option)} title="Put this in your answer">
@@ -563,6 +591,9 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 		</figure>
 	);
 }
+
+/** An option longer than this stacks all of a question's options as rows. */
+const LONG_OPTION = 40;
 
 // ---- what the verdict rests on ------------------------------------------------------------------
 
@@ -714,10 +745,7 @@ function Verdicts({ view, now }: { view: ItemView; now: number }) {
 					{before.length > 0 ? (
 						<>
 							<p className="agents-fold items-fold">
-								<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={earlier} onClick={() => setOpen((value) => !value)}>
-									<ChevronIcon size={11} className="machine-chevron" />
-									{open ? "Hide the earlier verdicts" : `Show ${plural(before.length, "earlier verdict")}`}
-								</button>
+								<FoldToggle open={open} controls={earlier} label={FOLD_WORDS.more(before.length, before.length === 1 ? "earlier verdict" : "earlier verdicts")} onToggle={() => setOpen((value) => !value)} />
 							</p>
 							<div id={earlier} hidden={!open}>
 								{before.map((verdict) => (
@@ -846,10 +874,10 @@ function LogEntry({ event, now, uid }: { event: ItemEvent; now: number; uid: str
 				<When at={event.at} now={now} />
 			</span>
 			<span className="item-event-step">{event.step ? STEP_WORD[event.step.kind] : ""}</span>
-			<p className="item-event-said">
+			<LongText lines={2} className="item-event-said">
 				<InlineMarkdown text={event.said} />
 				{person ? <span className="tone-faint"> · {event.by === `person:${uid}` ? "you" : "a person"}</span> : null}
-			</p>
+			</LongText>
 			{/* The agent's own question, kept after it was answered: its words in plain text, as `AgentAsked` shows them. */}
 			{event.asked ? (
 				<figure className="item-event-asked">
@@ -932,7 +960,13 @@ function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
 function TaskText({ task, codeSpans = false }: { task: ItemView["task"]; codeSpans?: boolean }) {
 	return (
 		<>
-			{task.body ? <p className="item-body-text">{task.body}</p> : <p className="usage-empty">Only the title was given.</p>}
+			{task.body ? (
+				<LongText lines={6} className="item-body-text">
+					{task.body}
+				</LongText>
+			) : (
+				<p className="usage-empty">Only the title was given.</p>
+			)}
 			{task.acceptance.length > 0 ? (
 				<>
 					<p className="machine-label item-task-label">Acceptance criteria</p>
@@ -999,6 +1033,8 @@ export function Item({ page }: { page: ItemPage }) {
 	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
 	const machine = useSessionMachine(view?.place);
 	const { platform } = useApp();
+	// A subtask's feature, for its siblings: read as the feature's own page is, and kept current by the feed.
+	const feature = useItem(view?.parent?.itemId ?? "", Boolean(view?.parent));
 
 	if (view === null) {
 		return (
@@ -1056,12 +1092,13 @@ export function Item({ page }: { page: ItemPage }) {
 						)}
 					</p>
 					<h1 className="display display-small item-title">{view.title}</h1>
+					{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} current={view.parent.key} /> : null}
 					<p className="home-account repo-facts">
 						<a className="repo-link" {...linkProps({ name: "repository", id: repository.id })}>
 							{repository.owner}/{repository.name}
 						</a>
 						<span className="repo-fact">into {view.task.base}</span>
-						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : null}
+						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span className="repo-fact">runs on {view.placement.name}</span> : null}
 						{view.pullRequest ? (
 							<a className="repo-link" href={view.pullRequest.url} target="_blank" rel="noreferrer">
 								Pull request #{view.pullRequest.number}
@@ -1135,6 +1172,8 @@ export function Item({ page }: { page: ItemPage }) {
 					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
+				) : showsSubtasks(view) ? (
+					<SubtasksBlock plan={view.plan!} children={view.children ?? []} now={now} />
 				) : (
 					<Now view={view} now={now} />
 				)}

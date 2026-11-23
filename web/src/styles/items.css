@@ -135,10 +135,17 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 8px;
+	min-width: 0;
+	max-width: 100%;
 	font-family: var(--font-mono);
 	font-size: 11.5px;
 	color: var(--ink-faint);
 	white-space: nowrap;
+}
+/* A word longer than the column is cut, never run into the time beside it. */
+.item-track-word {
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 .item-track-none {
 	min-width: 0;
@@ -474,6 +481,17 @@
 	white-space: normal;
 	overflow-wrap: anywhere;
 	text-align: left;
+}
+/* Options of a sentence's length: one full-width row each, the label above them. */
+.item-asked-options-stacked {
+	flex-direction: column;
+	align-items: stretch;
+}
+.item-asked-options-stacked .item-asked-option {
+	justify-content: flex-start;
+	padding-top: 6px;
+	padding-bottom: 6px;
+	line-height: 1.4;
 }
 .item-choices {
 	display: flex;
@@ -904,7 +922,7 @@
 }
 .item-event {
 	display: grid;
-	grid-template-columns: 96px 150px minmax(0, 1fr);
+	grid-template-columns: 96px 108px minmax(0, 1fr);
 	column-gap: 14px;
 	align-items: baseline;
 	padding: 8px 16px;
@@ -921,6 +939,7 @@
 }
 .item-event-step {
 	color: var(--ink-dim);
+	white-space: normal;
 }
 .item-event-said {
 	min-width: 0;
@@ -1026,7 +1045,7 @@
 	.item-event-step:empty {
 		display: none;
 	}
-	.item-event-said,
+	.item-event > .long-text,
 	.item-event-asked {
 		grid-column: 2;
 	}
@@ -2011,7 +2030,6 @@ a.plan-task-title:hover {
 .plan-total {
 	padding: 14px 18px 16px;
 	border-top: 1px solid var(--line);
-	background: var(--bg-sunk);
 }
 .plan-total-figures {
 	display: grid;
@@ -2555,10 +2573,6 @@ a.plan-task-title:hover {
 	color: var(--ink-faint);
 	font-size: var(--size-small);
 }
-.gh-more {
-	margin-top: 4px;
-	font-size: var(--size-small);
-}
 .gh-counted {
 	margin-top: 4px;
 	padding-top: 12px;
@@ -2585,4 +2599,338 @@ a.plan-task-title:hover {
 		order: 2;
 		flex-basis: 100%;
 	}
+}
+
+/* The approved plan, folded under the subtasks block: its goal, then one line that opens it and counts what it holds. */
+.plan-folded {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	margin-top: 6px;
+	font-size: var(--text-13);
+}
+
+/* ---- a feature's subtasks as they run (Subtasks.tsx) ------------------------------------------- */
+.subtask-tally {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 2px 10px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.subtask-tally strong {
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+}
+.subtask-tally-asks,
+.subtask-tally-asks strong {
+	color: var(--needs);
+}
+.subtask-tally-stopped strong {
+	color: var(--bad);
+}
+.subtask-segments {
+	display: inline-flex;
+	gap: 3px;
+}
+.subtask-segment {
+	width: 14px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--bg-active);
+}
+.subtask-segment-running {
+	background: var(--accent-text);
+}
+.subtask-segment-asks {
+	background: var(--needs);
+}
+.subtask-segment-done {
+	background: var(--ink-faint);
+}
+.subtask-segment-stopped {
+	background: var(--bad);
+}
+
+.subtasks-block {
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.subtasks-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 14px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--line);
+}
+.subtasks-title {
+	font-size: var(--size-text);
+	font-weight: var(--weight-strong);
+}
+.subtasks-head .subtask-segments {
+	margin-left: auto;
+}
+.subtask-runs > li + li {
+	border-top: 1px solid var(--line);
+}
+.subtask-run {
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr) minmax(90px, 130px) 150px 64px;
+	column-gap: 14px;
+	align-items: start;
+	min-height: 56px;
+	padding: 10px 16px;
+}
+/* A subtask that asks: a rule in the needs hue at its edge, never a fill. */
+.subtask-run-asks-row,
+.subtask-run.subtask-run-asks {
+	box-shadow: inset 2px 0 0 var(--needs);
+}
+.subtask-run-glyph {
+	display: grid;
+	place-items: center;
+	height: 20px;
+}
+.subtask-run-main {
+	min-width: 0;
+}
+.subtask-run-title {
+	display: flex;
+	gap: 8px;
+	min-width: 0;
+	font-weight: var(--weight-medium);
+}
+.subtask-run-title > :last-child {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.subtask-run-n {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-weight: 400;
+	color: var(--ink-faint);
+	line-height: 1.7;
+}
+.subtask-run-link {
+	color: var(--ink);
+	text-decoration: none;
+}
+.subtask-run-link:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.subtask-run-doing {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 8px;
+	margin-top: 2px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.subtask-run-word {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.subtask-run-asks .subtask-run-word {
+	color: var(--needs);
+}
+.subtask-run-asks {
+	margin-top: 8px;
+	font-size: var(--text-13);
+}
+.subtask-run-answer {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 8px;
+}
+.subtask-run-place,
+.subtask-run-spend {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+	font-size: var(--text-13);
+}
+.subtask-run-place-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: var(--weight-medium);
+}
+.subtask-run-place-note {
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+.subtask-run-meter {
+	height: 4px;
+	margin-top: 7px;
+}
+.subtask-run-spent {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.subtask-run-session {
+	text-align: right;
+	font-size: var(--text-13);
+}
+.subtasks-foot {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 16px;
+	padding: 10px 16px;
+	border-top: 1px solid var(--line);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+}
+@media (max-width: 760px) {
+	/* On a phone: title and step on top, then place · spend · session on one line. */
+	.subtask-run {
+		grid-template-columns: 20px minmax(0, 1fr) auto;
+		grid-template-areas: "glyph main main" ". place session" ". spend spend";
+		row-gap: 6px;
+	}
+	.subtask-run-glyph { grid-area: glyph; }
+	.subtask-run-main { grid-area: main; }
+	.subtask-run-place { grid-area: place; display: flex; gap: 6px; align-items: baseline; }
+	.subtask-run-spend { grid-area: spend; grid-template-columns: 80px auto; align-items: center; column-gap: 10px; }
+	.subtask-run-meter { margin-top: 0; }
+	.subtask-run-session { grid-area: session; }
+}
+
+/* A subtask's place among its siblings, under its title. */
+.subtask-strip {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	margin-top: 10px;
+	font-size: var(--text-13);
+}
+.subtask-strip-at {
+	color: var(--ink-dim);
+}
+.subtask-chips {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.subtask-chip {
+	display: inline-grid;
+	place-items: center;
+	min-width: 22px;
+	height: 22px;
+	padding: 0 5px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-item);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+a.subtask-chip:hover {
+	border-color: var(--ink-faint);
+	color: var(--ink);
+}
+.subtask-chip-running {
+	border-color: var(--accent-edge);
+	color: var(--accent-text);
+}
+.subtask-chip-asks {
+	border-color: var(--needs-edge);
+	color: var(--needs);
+}
+.subtask-chip-done {
+	color: var(--ink-faint);
+}
+.subtask-chip-to_go {
+	border-style: dashed;
+	color: var(--ink-faint);
+}
+.subtask-chip-current {
+	border-width: 2px;
+	border-color: var(--ink);
+	color: var(--ink);
+	font-weight: var(--weight-strong);
+}
+.subtask-strip-steps {
+	display: inline-flex;
+	gap: 14px;
+	margin-left: auto;
+	min-width: 0;
+}
+.subtask-strip-previous,
+.subtask-strip-next {
+	display: inline-flex;
+	max-width: 22ch;
+	white-space: nowrap;
+}
+.subtask-strip-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	margin-left: 4px;
+}
+@media (max-width: 760px) {
+	.subtask-strip-steps {
+		margin-left: 0;
+		width: 100%;
+		justify-content: space-between;
+	}
+}
+
+/* Under a feature's row in the Factory: its tally, and its active subtasks. */
+.factory-subtasks {
+	margin-top: 4px;
+}
+.factory-subtasks-tally {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 12px;
+}
+.factory-subtask-list {
+	display: grid;
+	gap: 2px;
+	margin: 6px 0 2px;
+}
+.factory-subtask {
+	display: grid;
+	grid-template-columns: 8px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 10px;
+	font-size: var(--text-13);
+}
+.factory-subtask-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent-text);
+}
+.factory-subtask-asks .factory-subtask-dot {
+	background: var(--needs);
+}
+.factory-subtask-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--ink);
+	text-decoration: none;
+}
+.factory-subtask-title:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.factory-subtask-doing {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.factory-subtask-asks .factory-subtask-doing {
+	color: var(--needs);
 }
