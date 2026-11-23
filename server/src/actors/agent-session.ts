@@ -118,9 +118,11 @@ import {
 	publishRequest,
 	publishUnanswered,
 	publishUnaskedProblem,
+	publishAsksEveryTime,
 	publishedForAgent,
 	oldSandbox,
 	agentPushedLine,
+	callLine,
 	fetchedForAgent,
 	nothingToPush,
 	pushRequest,
@@ -2700,23 +2702,27 @@ function askPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, request: Turn
  * (agent-publish.ts). It goes to the session's branch and the session's pull request, by the same
  * `publishWork` a push from the panel uses, so what that refuses is refused here. Unless the
  * session lets the agent publish unasked, the user is asked first; and always where the profile
- * does not hold the agent's commands in Windlass's sandbox (`commands`), since a request there may
- * be a command's. Never rejects.
+ * does not hold the agent's commands in Windlass's sandbox (`profileCommands`), or the request came
+ * over MCP (`request.via`, from an endpoint in the container), since a request there may be a
+ * command's. Never rejects.
  */
-async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, commands: CommandSandbox, request: TurnPublishRequest, withdrawn: AbortSignal): Promise<string> {
+async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, profileCommands: CommandSandbox, request: TurnPublishRequest, withdrawn: AbortSignal): Promise<string> {
 	const turn = active.number;
+	// A call over MCP may be any process's in the container: it is asked about as where commands are not sandboxed, whatever the profile.
+	const commands: CommandSandbox = request.via === "mcp" ? "none" : profileCommands;
+	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
 	const app = githubApp();
 	if (!repo || !app) return "Not published. This session has no repository of the user's GitHub connection to publish to.";
 	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
 	const checked = publishRequest(request.arguments, { branch, base: repo.branch }, active.secrets?.redactor ?? NO_REDACTION);
 	if (!checked.ok) {
-		note(c, turn, "warn", checked.said);
+		note(c, turn, "warn", said(checked.said));
 		return checked.told;
 	}
 	// One at a time, as from the panel: a second request meanwhile is told to wait for the first.
 	if (c.vars.publishing) {
-		note(c, turn, "info", "The agent asked to publish while an earlier request of its was still being handled, so this one was refused.");
+		note(c, turn, "info", said("The agent asked to publish while an earlier request of its was still being handled, so this one was refused."));
 		return "Not published. An earlier request to publish is still being handled. Wait for its result before you ask again.";
 	}
 	c.vars.publishing = true;
@@ -2724,17 +2730,17 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 		let allowed: PublishAllowed = "unasked";
 		if (meta.publishUnasked !== true || commands !== "windlass") {
 			const open = meta.pull && (meta.pull.state === "open" || meta.pull.state === "draft") ? meta.pull : null;
-			const words = publishQuestionWords({ repository: `${repo.owner}/${repo.name}`, branch, base: repo.branch, message: checked.message, open, sandbox: commands });
+			const words = publishQuestionWords({ repository: `${repo.owner}/${repo.name}`, branch, base: repo.branch, message: checked.message, open, sandbox: commands, ...(request.via && { via: request.via }) });
 			const answer = await askPublish(c, meta, active, request, words, withdrawn);
 			if (answer.kind === "withdrawn") return PUBLISH_WITHDRAWN;
 			if (answer.kind === "expired") {
 				const unanswered = publishUnanswered(words.title, duration(config.questionTimeoutMs));
-				note(c, turn, "warn", unanswered.said);
+				note(c, turn, "warn", said(unanswered.said));
 				return unanswered.told;
 			}
 			if (answer.kind === "declined") {
 				const declined = publishDeclined(answer.note);
-				note(c, turn, "info", declined.said);
+				note(c, turn, "info", said(declined.said));
 				return declined.told;
 			}
 			allowed = answer.how;
@@ -2754,7 +2760,7 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 			c.vars.pullCheckedAt = Date.now();
 			// What went out had not been through this turn's checks: the description is written again when the turn has ended.
 			active.published = true;
-			note(c, turn, "info", `${publishAllowedWords(allowed)} ${agentPublishedLine(repo, published)} ${published.pull.url}`);
+			note(c, turn, "info", said(`${publishAllowedWords(allowed)} ${agentPublishedLine(repo, published)} ${published.pull.url}`));
 			console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${published.pull.number} opened=${published.opened} by=agent asked=${allowed !== "unasked"}`);
 			return publishedForAgent({ repository: `${repo.owner}/${repo.name}`, pull: published.pull, opened: published.opened, pushed: published.pushed, retitled: published.retitled, files: published.committedFiles });
 		} catch (error) {
@@ -2763,7 +2769,7 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 			if (!(error instanceof GithubProblem)) c.log.error({ msg: "could not publish for the agent", session: meta.sessionId, turn, error: describeError(error) });
 			else console.warn(`[wlp] github.publish_failed session=${meta.sessionId} repository=${repo.id}: ${error.code} by=agent`);
 			const failed = publishFailed(allowed, error instanceof GithubProblem ? error.message : "The platform could not push the work. Try again.");
-			note(c, turn, "warn", failed.said);
+			note(c, turn, "warn", said(failed.said));
 			return failed.told;
 		} finally {
 			// The commit changed what differs from the last commit, and what GitHub lacks: both are read again when the turn ends.
@@ -2788,17 +2794,20 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
  * (`active.published`, `describeAfterTurn`).
  *
  * Never asked about, in any profile, attended or not, whatever "Let the agent publish without asking"
- * says. A call that a command made in the agent's name, where commands can (agent-publish.ts), gains
- * nothing by it: it pushes the workspace, which any command can already change, to the session's own
+ * says. A call that a command made in the agent's name, where commands can (agent-publish.ts) and over
+ * MCP, whose endpoint any process in the container may reach (platform-tools.ts), gains nothing by it: it pushes the workspace, which any command can already change, to the session's own
  * branch, which the platform names (the agent names no branch, so the default branch is out of reach),
  * under a lease that replaces only the platform's own last push and never a commit anyone else
  * pushed (git.ts `pushScript`).
  *
  * The call is this turn's: it is refused once the turn is closing. One at a time with a publish
  * (`c.vars.publishing`), decided and taken in one step, and under the sandbox's guard (`takeSandbox`).
+ * Over MCP a turn may make at most `MCP_LIMITS.push` (platform-tools.ts), and each line in the
+ * timeline says the call may not have been the agent's (`callLine`).
  */
 async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, request: TurnPublishRequest): Promise<string> {
 	const turn = active.number;
+	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
 	const app = githubApp();
 	if (!repo || !app) return "Not pushed. This session has no repository of the user's GitHub connection to push to.";
@@ -2806,11 +2815,11 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
 	const checked = pushRequest(request.arguments, { branch, title: meta.title }, active.secrets?.redactor ?? NO_REDACTION);
 	if (!checked.ok) {
-		note(c, turn, "warn", checked.said);
+		note(c, turn, "warn", said(checked.said));
 		return checked.told;
 	}
 	if (c.vars.publishing) {
-		note(c, turn, "info", "The agent asked to push while an earlier push or request to publish was still being handled, so this one was refused.");
+		note(c, turn, "info", said("The agent asked to push while an earlier push or request to publish was still being handled, so this one was refused."));
 		return "Not pushed. An earlier push or request to publish is still being handled. Wait for its result before you push again.";
 	}
 	c.vars.publishing = true;
@@ -2824,11 +2833,11 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 		if (pushed.workspaceChanged) {
 			const line = `GitHub has ${pushed.head} on ${branch}. The workspace Git state could not be synchronized after the push. Use fetch_base and reconcile the branch before pushing again.`;
 			active.published = true;
-			note(c, turn, "warn", line);
+			note(c, turn, "warn", said(line));
 			return line;
 		}
 		if (!pushed.pushed) {
-			note(c, turn, "info", `The agent asked to push; ${branch} at GitHub already had everything in the workspace.`);
+			note(c, turn, "info", said(`The agent asked to push; ${branch} at GitHub already had everything in the workspace.`));
 			return nothingToPush(branch);
 		}
 		meta.updatedAt = Date.now();
@@ -2839,14 +2848,14 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 		if (described && meta.pull === open) meta.pull = described;
 		c.vars.pullCheckedAt = Date.now();
 		const shown = described ?? open;
-		note(c, turn, "info", agentPushedLine({ branch, head: pushed.head, forced: pushed.forced, pull: shown }));
+		note(c, turn, "info", said(agentPushedLine({ branch, head: pushed.head, forced: pushed.forced, pull: shown })));
 		console.log(`[wlp] github.pushed session=${meta.sessionId} repository=${repo.id} by=agent forced=${pushed.forced}`);
 		return pushedForAgent({ branch, head: pushed.head, forced: pushed.forced, files: pushed.committedFiles, pull: shown });
 	} catch (error) {
 		if (!(error instanceof GithubProblem)) c.log.error({ msg: "could not push for the agent", session: meta.sessionId, turn, error: describeError(error) });
 		else console.warn(`[wlp] github.push_failed session=${meta.sessionId} repository=${repo.id}: ${error.code} by=agent`);
 		const why = error instanceof GithubProblem ? error.message : "The platform could not push the work. Try again.";
-		note(c, turn, "warn", `The agent asked to push, and it did not go through: ${why}`);
+		note(c, turn, "warn", said(`The agent asked to push, and it did not go through: ${why}`));
 		return `Not pushed. ${why}`;
 	} finally {
 		// The commit changed what differs from the last commit, and what GitHub lacks: both are read again when the turn ends.
@@ -2864,7 +2873,8 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
  * that merges it), for the agent to rebase onto and push again. Never asked about: it reads. Under
  * the sandbox's guard; refused once the turn is closing. Resolves with what the agent is told.
  */
-async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle): Promise<string> {
+async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, request: TurnPublishRequest): Promise<string> {
+	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
 	const app = githubApp();
 	if (!repo || !app) return "Not fetched. This session has no repository of the user's GitHub connection.";
@@ -2873,11 +2883,11 @@ async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, san
 	try {
 		// The session's own branch too, once the platform has pushed it: what others pushed there, for the agent to merge.
 		await fetchBase(app, await githubConnection(c, meta), repo, sandbox, meta.publishBranch ?? null);
-		note(c, active.number, "info", `Fetched ${repo.branch} from GitHub into the workspace as origin/${repo.branch}, as the agent asked.`);
+		note(c, active.number, "info", said(`Fetched ${repo.branch} from GitHub into the workspace as origin/${repo.branch}, as the agent asked.`));
 		return fetchedForAgent(repo.branch, meta.publishBranch ?? null);
 	} catch (error) {
 		const why = error instanceof GithubProblem ? error.message : describeError(error);
-		note(c, active.number, "warn", `${repo.branch} could not be fetched from GitHub for the agent: ${why}`);
+		note(c, active.number, "warn", said(`${repo.branch} could not be fetched from GitHub for the agent: ${why}`));
 		return `Not fetched. ${error instanceof GithubProblem ? why : "The platform could not fetch it. Try again."}`;
 	} finally {
 		release();
@@ -3700,6 +3710,12 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			note(c, turn, taken.asked ? "info" : "warn", taken.said);
 			return taken.told;
 		} : undefined;
+		// Where there is a repository to publish to and an app to do it with, the agent may publish (a person's session), push
+		// its branch and have the base fetched to rebase onto (a person's session and an item's alike). The same handlers for
+		// every agent; over MCP each call may be any process's in the container (platform-tools.ts), which the handlers go by.
+		const repoTools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
+		const onPush: RunTurnInput["onPush"] = repoTools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined;
+		const onFetchBase: RunTurnInput["onFetchBase"] = repoTools && platformTool("fetch_base") ? (request) => agentFetchBase(c, meta, active, sandbox, request) : undefined;
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
 			if (handling.kind === "labelled") unmarked(handling.note);
@@ -3709,6 +3725,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				...(item && { unattended: true }),
 				onReport,
 				onAsk,
+				// Over MCP a publish is always put to the person, never "for this session": any process in the container may have asked.
+				onPublish: repoTools && !item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, "none", request, withdrawn)) : undefined,
+				onPush,
+				onFetchBase,
 				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: held.redactor },
 				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
 				// and records them as Windlass's gate would be; and the step limit, which the platform counts (platform-steps.ts).
@@ -3742,7 +3762,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			// Resume keeps a named agent until explicitly switched. The inbox also records planners from before this handoff was supported.
 			const clearPlanner = !!(resumed && active.item && !planner && !reviewer &&
 				(await c.db.execute("SELECT 1 FROM inbox WHERE agent IN ('planner', 'summary') AND turn IS NOT NULL LIMIT 1")).length);
-			const tools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 			const servers: ServerQuestionContext = {
 				profile,
 				demo: meta.demo,
@@ -3885,11 +3904,9 @@ fi`, { signal, timeoutMs: 5000 });
 						c.log.error({ msg: "could not record a Windlass event", error: describeError(error) });
 					}
 				},
-				// The agent may ask the platform to publish where there is a repository to publish to and an app to do it with.
-				onPublish: tools && !active.item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn)) : undefined,
-				// And push its branch, and have the base fetched to rebase onto, in a person's session and an item's alike.
-				onPush: tools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined,
-				onFetchBase: tools && platformTool("fetch_base") ? () => agentFetchBase(c, meta, active, sandbox) : undefined,
+				onPublish: repoTools && !active.item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn)) : undefined,
+				onPush,
+				onFetchBase,
 				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise; nobody can say so in an item's turn.
 				onServerQuestion: active.item
 					? async (question) => {
@@ -5219,6 +5236,8 @@ export const agentSession = actor({
 			if (!meta.repo) throw new UserError("This agent does not work on a repository of your GitHub connection, so it has nowhere to publish to.", { code: "publish_blocked" });
 			if (input.unasked) {
 				if (!capabilitiesOf(meta.harness).platformTools.includes("publish")) throw new UserError("This agent has no publish tool. Publish from the panel.", { code: "publish_blocked" });
+				// Its publish comes over MCP, which any process in the container may reach: it asks every time.
+				if (meta.harness && meta.harness !== "windlass") throw new UserError(publishAsksEveryTime(harnessName(meta.harness)), { code: "publish_blocked" });
 				const { sandboxes } = await layerOf(c, meta);
 				const problem = publishUnaskedProblem(commandSandbox(sandboxes.profile(meta.profile)));
 				if (problem !== null) throw new UserError(problem, { code: "publish_blocked" });

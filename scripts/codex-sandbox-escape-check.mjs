@@ -288,7 +288,7 @@ try {
 		const review = await turn('agent', 'text("unreached")');
 		assert.match(review.error ?? '', /approvals_reviewer|approvals reviewer|AutoReview|auto_review/i, JSON.stringify(review));
 	});
-	// The platform's tools (report, ask_person) over MCP: declared "type": "acp" in session/new, served by the image's
+	// The platform's tools over MCP: declared "type": "acp" in session/new, served by the image's
 	// wlp-acp-mcp on the one URL requirements.toml allows, each request answered on the client's ACP connection.
 	const MCP = ['WLP_MCP=1'];
 	const mcpCalls = (result) => result.mcp.split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((m) => m.method === 'tools/call').map((m) => m.params.name);
@@ -299,6 +299,20 @@ try {
 			completed(result, 'a platform tool call');
 			assert.deepEqual(mcpCalls(result), ['report'], 'the call did not reach the client: ' + result.mcp.slice(0, 300));
 			assert.match(result.outputs, /Recorded report\./);
+		});
+	// push, fetch_base and publish over the same endpoint, without asking; in Workspace access a publish answered after 320 s
+	// (it waits for the person) still reaches the model: Codex gives an MCP call 300 s unless the call's server says otherwise
+	// (wlp-codex-app-server sets an hour). An image without that gives up on it at 300 s.
+	const pushes = ['push({message:"one"})', 'push({branch:"main"})', 'fetch_base({})', 'publish({title:"From Codex"})']
+		.map((call) => `r.push(JSON.stringify(await tools.mcp__windlass_platform__${call}));`).join(' ');
+	for (const [mode, waitMs] of [['workspace-write', 320_000], ['agent-full-access', 0]])
+		await check(`${mode}: Codex calls push, fetch_base and publish without asking${waitMs ? `, and waits for a publish that takes ${waitMs / 1000} s` : ''}.`, async () => {
+			// The pragma keeps exec from yielding at its default 30 s: the call's own timeout is what is checked.
+			const result = await turn(mode, `// @exec: {"yield_time_ms": 1500000}\nconst r = []; ${pushes} text(r.join(" | "));`, [...MCP, `WLP_MCP_PUBLISH_MS=${waitMs}`]);
+			completed(result, 'push, fetch_base and publish');
+			assert.deepEqual(mcpCalls(result), ['push', 'push', 'fetch_base', 'publish'], 'the calls did not reach the client: ' + result.mcp.slice(0, 300));
+			for (const name of ['push', 'fetch_base', 'publish']) assert.match(result.outputs, new RegExp(`Recorded ${name}\\.`), name + ': ' + result.outputs.slice(0, 600));
+			assert.doesNotMatch(result.outputs, /timed out|timeout/i, 'a call timed out: ' + result.outputs.slice(0, 600));
 		});
 	await check("Workspace access: a sandboxed command cannot reach the platform's MCP endpoint.", async () => {
 		const probe = `node -e "require('net').connect(17895,'127.0.0.1').on('connect',()=>{require('fs').writeFileSync('/workspace/mcp.result','connected');process.exit(0)}).on('error',e=>{require('fs').writeFileSync('/workspace/mcp.result',String(e.code));process.exit(0)})"`;

@@ -28,9 +28,11 @@
  *
  * This file has what is the same everywhere: the tools' declarations, what a request may hold, and
  * the words of the question, of the timeline's lines and of what the agent is told. Windlass takes the
- * tools as host tools, as above; Claude Code and OpenCode take `report` and `ask_person` only, over MCP
- * on their ACP connection. platform-tools.ts maps a turn's callbacks to the tools for either transport,
- * and says why the others are never served from inside the sandbox.
+ * tools as host tools, as above; Claude Code, OpenCode and Codex take the same tools, but the planner's
+ * and the reviewer's, over MCP on their ACP connection, where any process in the container may make a
+ * call: so a publish that came that way is always put to the person (`publishQuestionWords`, `via`), and
+ * a push or a fetch is limited per turn. platform-tools.ts maps a turn's callbacks to the tools for either
+ * transport, and says why each may be served from inside the sandbox.
  */
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
@@ -99,16 +101,18 @@ const reportDescription = (screenshots: boolean, push: boolean) => [
 	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
 ].join(" ");
 
-const PUSH_DESCRIPTION = [
+/** `pushes`: at most so many a turn (over MCP), or as many as the agent wants. */
+const pushDescription = (pushes?: number) => [
 	"Push this session's branch to GitHub: the platform commits whatever is uncommitted in the workspace with your message and pushes the session's own branch. Nobody is asked.",
-	"You have no GitHub credential and `git push` does not work here: this is how your commits get to GitHub. Push whenever you want, as often as you want, for example after each piece of work worth keeping.",
+	`You have no GitHub credential and \`git push\` does not work here: this is how your commits get to GitHub. ${pushes === undefined ? "Push whenever you want, as often as you want" : `Push whenever you want, at most ${pushes} times a turn`}, for example after each piece of work worth keeping.`,
 	"The platform names the branch; you cannot choose another, and never the repository's default branch. It opens no pull request.",
 	"To bring in what changed on the branch the session started from: call `fetch_base`, rebase onto what it fetched (or merge it), and push again. A rebased branch replaces what the platform pushed last, and never a commit someone else pushed to the branch.",
 ].join(" ");
 
-const FETCH_BASE_DESCRIPTION = [
+const fetchBaseDescription = (fetches?: number) => [
 	"Fetch the branch this session started from, as it is at GitHub now, into the workspace as `origin/<that branch>`, and the session's own branch as `origin/<your branch>` once it is at GitHub (to merge what someone else pushed there). Nobody is asked.",
 	"It changes neither your working tree nor your branch: rebase or merge onto it yourself, then call `push`.",
+	...(fetches === undefined ? [] : [`At most ${fetches} times a turn.`]),
 ].join(" ");
 
 /** What a question of the agent's may hold. */
@@ -190,6 +194,8 @@ export interface PlatformToolOffer {
 	ask?: boolean;
 	/** A cross-repo feature's planning turn: `file_plan` also takes the plan's repositories, merge order and combined run. */
 	crossRepo?: boolean;
+	/** Served over MCP: how many pushes and fetches a turn may make there (platform-tools.ts, `MCP_LIMITS`), which the tools say. */
+	mcp?: { pushes: number; fetches: number };
 }
 
 /**
@@ -209,8 +215,9 @@ export interface PlatformToolOffer {
  *               in the workspace, which any command of the agent's can already change; under a lease
  *               it can replace only the platform's own last push (github/git.ts). A call made by a
  *               command instead of the model gains nothing the command did not have, so it is never
- *               asked about, in any profile, attended or not (agent-session.ts, `agentPush`). Declared
- *               `write`, Windlass would ask in `auto` and refuse it in an item's unattended turn.
+ *               asked about, in any profile, attended or not, over either transport (agent-session.ts,
+ *               `agentPush`); over MCP a turn may make at most so many (`mcp`). Declared `write`,
+ *               Windlass would ask in `auto` and refuse it in an item's unattended turn.
  *   fetch_base  reads the base branch into `origin/<base>` in the workspace, and changes nothing else.
  *   publish     opens or updates a pull request under the person's name: the person is asked, by the
  *               platform, inside the call (agent-session.ts, `agentPublish`), unless they let the
@@ -270,7 +277,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
 		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false, offer.push), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
 		...(offer.report && offer.ask ? [tool(ASK_TOOL, ASK_DESCRIPTION, ASK_SCHEMA, 30)] : []),
-		...(offer.push ? [tool(PUSH_TOOL, PUSH_DESCRIPTION, PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, FETCH_BASE_DESCRIPTION, { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
+		...(offer.push ? [tool(PUSH_TOOL, pushDescription(offer.mcp?.pushes), PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, fetchBaseDescription(offer.mcp?.fetches), { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];
 }
 
@@ -448,6 +455,18 @@ export function publishUnaskedProblem(sandbox: CommandSandbox): string | null {
 		: "In this sandbox it is not established that Windlass's sandbox holds the agent's commands, which could then ask in the agent's name, so you are asked each time the agent wants to publish.";
 }
 
+/**
+ * Why an agent that takes the platform's tools over MCP (Claude Code, OpenCode, Codex) cannot be let
+ * publish unasked: any process in its container may make the call, so every request is put to the user.
+ */
+export const publishAsksEveryTime = (agent: string) =>
+	`${agent} asks you every time it wants to publish: its publish tool is reached from inside the sandbox, where any process could call it, so it cannot publish without asking.`;
+
+/** Said in the timeline of each push, fetch and publish that came over MCP (`TurnPublishRequest.via`). */
+export const MCP_CALL_WORDS = "The call came over MCP from inside the sandbox, so any process there may have made it, not only the agent.";
+/** A timeline line about a call, with `MCP_CALL_WORDS` when it came over MCP. */
+export const callLine = (via: "mcp" | undefined, line: string) => via === "mcp" ? `${line} ${MCP_CALL_WORDS}` : line;
+
 export interface PublishQuestionInput {
 	/** "owner/name". */
 	repository: string;
@@ -458,11 +477,15 @@ export interface PublishQuestionInput {
 	open: PullRequestInfo | null;
 	/** What the session's profile promises about the agent's commands: where they are not sandboxed the question says so, and cannot be answered for the whole session. */
 	sandbox: CommandSandbox;
+	/** "mcp": the request came over MCP (`TurnPublishRequest.via`), so the question says any process may have made it, and cannot be answered for the whole session. */
+	via?: "mcp";
 }
 
 /** The question about a request of the agent's, as the session's question box shows it. */
 export function publishQuestionWords(input: PublishQuestionInput): { title: string; subject: string; details: string[]; choices: QuestionChoice[]; publish: QuestionPublish } {
 	const { open } = input;
+	// "For this session" only where no command can make the call: Windlass's sandbox holds them, and the call came by Windlass.
+	const forSession = input.sandbox === "windlass" && input.via !== "mcp";
 	return {
 		title: open ? `Allow the agent to push to pull request #${open.number}?` : "Allow the agent to open a pull request?",
 		subject: input.message.title,
@@ -472,11 +495,12 @@ export function publishQuestionWords(input: PublishQuestionInput): { title: stri
 				: "The platform commits what is uncommitted in the workspace with this message, pushes it to the session's branch, and opens the pull request under this title and description.",
 			"What is in the workspace and not yet at GitHub goes there as it is: Changes, in the session's panel, lists it.",
 			"The agent is given no GitHub access: the platform pushes, and tells the agent the pull request's address.",
-			...(input.sandbox === "windlass" ? [] : ["In this sandbox a command the agent ran could have asked this in the agent's name: its commands are not held in Windlass's sandbox."]),
+			...(input.via === "mcp" ? ["This request came over MCP from inside the sandbox: any process there could have made it in the agent's name, so it is asked every time."]
+				: input.sandbox === "windlass" ? [] : ["In this sandbox a command the agent ran could have asked this in the agent's name: its commands are not held in Windlass's sandbox."]),
 		],
 		choices: [
 			{ id: PUBLISH_ONCE, label: "Allow once", approve: true, remembers: null },
-			...(input.sandbox === "windlass" ? [{ id: PUBLISH_SESSION, label: "Allow for this session", approve: true, remembers: "publishing for the agent without asking, for the rest of this session" }] : []),
+			...(forSession ? [{ id: PUBLISH_SESSION, label: "Allow for this session", approve: true, remembers: "publishing for the agent without asking, for the rest of this session" }] : []),
 			{ id: PUBLISH_DENY, label: "Don't allow", approve: false, remembers: null },
 		],
 		publish: { repository: input.repository, branch: input.branch, base: input.base, commit: input.message.commit, title: input.message.title, description: input.message.body, pullRequest: open ? open.number : null },

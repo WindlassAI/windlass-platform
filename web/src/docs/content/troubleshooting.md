@@ -134,8 +134,8 @@ A work item runs Claude Code or OpenCode only on your machine. A Plan first feat
 **"A work item's reviewer runs only with Windlass."**\
 The second reviewer always runs Windlass, on hosted sandboxes.
 
-**"… has no publish tool. Publish from the session panel."**\
-Claude Code and OpenCode cannot open a pull request themselves. Open it from the session panel.
+**"… asks you every time it wants to publish …"**\
+Claude Code, OpenCode and Codex can't publish without asking: they reach the publish tool from inside the sandbox, where another program could call it in the agent's name. Answer each request, or publish from the session panel.
 
 **"OpenCode does not offer “…” here. Using its current mode “…”."**\
 Not an error. The mode you chose is not one OpenCode reported, so it kept its own.

@@ -781,8 +781,9 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 		{ fact: askedEnd("succeeded", null), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.kind === "plan_approval" && o.item.run?.asks === undefined, `asked ${o.item.question?.kind}`) },
 	]);
 
-	// Claude Code and OpenCode builders get ask_person and report too (over MCP, platform-tools.ts): the item's flow is the same.
-	for (const harness of ["claude", "opencode"] as const) {
+	// Claude Code, OpenCode and Codex builders get ask_person, report, push and fetch_base too (over MCP, platform-tools.ts): the
+	// item's flow is the same, and its publish step pushes what the builder left, under the platform's lease, as for Windlass.
+	for (const harness of ["claude", "opencode", "codex"] as const) {
 		const agentBuilder = createItem({
 			id: "i_00000000000000aa", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
 			reviewer: { off: "deployment" }, place: { kind: "machine", machineId: "m1" }, budget: FACTORY_DEFAULTS.item, agent: { harness, model: "default" },

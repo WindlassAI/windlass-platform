@@ -113,6 +113,25 @@ export const scenarios = {
 		const old = yield { mcp: { version: "2025-06-18", method: "tools/list" } };
 		yield message(`Old: ${old?.error?.message ?? JSON.stringify(old)}\n`);
 	},
+	// A person's turn with push, fetch_base and publish over MCP, as a process of the sandbox could make the calls: another
+	// branch, a ref, a force and a lease of its own, then more pushes and fetches than a turn may make, then a publish.
+	*platformpush() {
+		const said = (outcome) => (outcome?.result?.isError ? "error: " : "") + (outcome?.result?.content?.[0]?.text ?? JSON.stringify(outcome));
+		const tool = (name, args = {}) => ({ mcp: { method: "tools/call", params: { name, arguments: args } } });
+		const listed = yield { mcp: { method: "tools/list" } };
+		yield message(`Tools: ${(listed?.result?.tools ?? []).map((t) => t.name).join(",") || "none"}.\n`);
+		const pushes = [
+			["Plain", {}],
+			["Main", { branch: "main" }],
+			["Ref", { branch: "refs/heads/main" }],
+			["Refspec", { branch: "+HEAD:refs/heads/main" }],
+			["Forced", { message: "Rewrite", force: true, lease: "0".repeat(40), ref: "refs/heads/main", remote: "https://example.invalid/x.git" }],
+			["Sixth", {}],
+		];
+		for (const [label, args] of pushes) yield message(`${label}: ${said(yield tool("push", args))}\n`);
+		for (let n = 1; n <= 4; n++) yield message(`Fetch ${n}: ${said(yield tool("fetch_base"))}\n`);
+		yield message(`Publish: ${said(yield tool("publish", { title: "From the sandbox", description: "x" }))}\n`);
+	},
 	*usage() {
 		yield { sessionUpdate: "usage_update", used: 41000, size: 200000, cost: { amount: 0.38, currency: "USD" } };
 	},

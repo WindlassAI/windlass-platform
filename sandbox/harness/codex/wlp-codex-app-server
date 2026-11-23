@@ -19,6 +19,7 @@ const codex = '/usr/local/bin/codex';
 const home = '/opt/wlp-codex/home';
 const USER_LAYER = ['config.toml', 'managed_config.toml', 'requirements.toml', 'rules', 'hooks.json', 'hooks', 'AGENTS.md', 'AGENTS.override.md', '.env'];
 const WRITES = new Set(['config/batchWrite', 'config/value/write', 'config/write']);
+const PLATFORM = 'windlass_platform';
 const args = process.argv.slice(2);
 
 function userLayerProblem() {
@@ -58,9 +59,14 @@ if (args[0] === 'app-server') {
 			return JSON.stringify(msg);
 		}
 		const config = msg.params?.config;
-		if (config !== null && typeof config === 'object')
+		if (config !== null && typeof config === 'object') {
 			for (const key of Object.keys(config))
 				if (key === 'projects' || key.startsWith('projects.') || key === 'bypass_hook_trust') delete config[key];
+			// The platform's server, as codex-acp hands it on (url and headers only): Codex gives an MCP call 300 s, and the
+			// platform's publish waits for the person and then GitHub. One hour, the most Windlass allows a host call.
+			const platform = config.mcp_servers?.[PLATFORM];
+			if (platform !== null && typeof platform === 'object' && !Array.isArray(platform)) platform.tool_timeout_sec = 3600;
+		}
 		return JSON.stringify(msg);
 	};
 	(async () => {

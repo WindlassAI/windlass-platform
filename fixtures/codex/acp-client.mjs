@@ -2,7 +2,8 @@
 // line: the permission requests Codex sent (each answered allow_once, the most a user could do), the mode
 // the session opened in and the prompt's outcome. With WLP_MCP=1 the session is also handed the platform's
 // MCP server over ACP (`"type": "acp"`), answered here as server/src/platform-tools.ts answers it; each
-// `mcp/message` is appended to /tmp/mcp.jsonl, and the prompt answer's `usage` is printed.
+// `mcp/message` is appended to /tmp/mcp.jsonl, and the prompt answer's `usage` is printed. WLP_MCP_PUBLISH_MS: a call
+// of publish is answered only after so long, as a publish that waits for the person is.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
@@ -11,6 +12,9 @@ const VERSION = '2026-07-28';
 const TOOLS = [
 	{ name: 'report', description: 'File what you did.', inputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] } },
 	{ name: 'ask_person', description: 'Ask your person one question.', inputSchema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } },
+	{ name: 'publish', description: 'Publish the work.', inputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] } },
+	{ name: 'push', description: 'Push the branch.', inputSchema: { type: 'object', properties: { message: { type: 'string' }, branch: { type: 'string' } } } },
+	{ name: 'fetch_base', description: 'Fetch the base.', inputSchema: { type: 'object', properties: {} } },
 ].map((tool) => ({ ...tool, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } }));
 function mcpAnswer(params) {
 	if (params.serverId !== 'windlass-platform') return { error: { code: -32602, message: 'No such server on this connection.' } };
@@ -42,7 +46,8 @@ createInterface({ input: child.stdout }).on('line', (line) => {
 	const frame = JSON.parse(line);
 	if (frame.method === 'mcp/message' && mcp) {
 		appendFileSync('/tmp/mcp.jsonl', JSON.stringify(frame.params) + '\n');
-		send({ id: frame.id, result: mcpAnswer(frame.params) });
+		const late = frame.params.method === 'tools/call' && frame.params.params?.name === 'publish' ? Number(process.env.WLP_MCP_PUBLISH_MS ?? 0) : 0;
+		setTimeout(() => send({ id: frame.id, result: mcpAnswer(frame.params) }), late);
 	} else if (frame.method === 'session/request_permission') {
 		asked.push(frame.params.toolCall);
 		const allow = frame.params.options.find((o) => o.kind === 'allow_once');

@@ -1,5 +1,14 @@
 {
   "disableAllHooks": true,
   "allowManagedMcpServersOnly": true,
-  "allowedMcpServers": [{ "serverUrl": "http://127.0.0.1:*/mcp-d2luZGxhc3MtcGxhdGZvcm0" }]
+  "allowedMcpServers": [{ "serverUrl": "http://127.0.0.1:*/mcp-d2luZGxhc3MtcGxhdGZvcm0" }],
+  "permissions": {
+    "allow": [
+      "mcp__windlass_platform__report",
+      "mcp__windlass_platform__ask_person",
+      "mcp__windlass_platform__push",
+      "mcp__windlass_platform__fetch_base",
+      "mcp__windlass_platform__publish"
+    ]
+  }
 }

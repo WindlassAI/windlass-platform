@@ -16,7 +16,7 @@ allow_managed_hooks_only = true
 codex_hooks = true
 shell_snapshot = false
 
-# One MCP server only, the platform's (report and ask_person), by its exact URL: the loopback endpoint
+# One MCP server only, the platform's (report, ask_person, push, fetch_base and publish), by its exact URL: the loopback endpoint
 # wlp-acp-mcp serves in front of codex-acp, which answers each request on the platform's ACP connection.
 # Codex starts no other MCP server from any config layer; one would run outside the sandbox. The path is
 # the server's fixed id, `windlass-platform` (server/src/platform-tools.ts), in base64url.

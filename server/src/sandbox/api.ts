@@ -436,6 +436,11 @@ export interface TurnPublishRequest {
 	 * were taken out of the request they came in.
 	 */
 	arguments: Record<string, unknown>;
+	/**
+	 * "mcp": the call came over the platform's MCP server (platform-tools.ts), whose endpoint is inside the
+	 * container, so any process there may have made it, not only the agent. Absent: a Windlass host call.
+	 */
+	via?: "mcp";
 }
 
 /** A handle on a turn in progress. Its methods reject once the turn has ended. */

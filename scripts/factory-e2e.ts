@@ -1985,6 +1985,47 @@ async function machineChecks(): Promise<void> {
 			}
 		});
 
+		await check("machine: Claude Code's push, fetch_base and publish over MCP say any process may have made them, stop at a turn's limits, and a publish is asked every time", async () => {
+			const { MCP_CALL_WORDS, publishAsksEveryTime } = await import("../server/src/agent-publish.js");
+			const { overLimit } = await import("../server/src/platform-tools.js");
+			const lines = async (id: string) => waitFor("the turn's platform lines", async () => {
+				const timeline = (await client.agentSession.get([auth.profile.uid, id], { params: { token: auth.token } }).snapshot()).timeline;
+				return timeline.some(e => e.kind === "turn.ended") && timeline.flatMap(e => e.kind === "platform" ? [e.text] : []);
+			}, 60_000);
+			// The check before restores the report without a model list: the index has to have it before an item is filed.
+			await waitFor("the machine's report without a model list", async () => {
+				const claude = (await user.machines())[0]?.harnesses?.find(h => h.id === "claude");
+				return claude?.signIn === "token" && !claude.optionsDigest;
+			}, 15_000);
+			// "platformpush" (fixtures/acp-agent): six pushes, three naming another branch, then four fetches, then a publish.
+			const item = await user.createItem({ ...task, title: "Claude pushes as it goes", body: "Push as you go (platformpush).", harness: "claude", start: true });
+			const said = await lines(item.sessionId);
+			await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+			const over = said.filter(line => line.endsWith(MCP_CALL_WORDS));
+			assert(over.filter(line => line.includes("which is not this session's branch")).length === 3, "another branch was not refused three times: " + JSON.stringify(said));
+			const pushLines = over.filter(line => line.startsWith("The agent") && line.includes(" push"));
+			const fetchLines = over.filter(line => line.startsWith("Fetched ") || line.includes(" could not be fetched from GitHub for the agent"));
+			assert(pushLines.length === 5 && fetchLines.length === 3, "each push and fetch over MCP has its line: " + JSON.stringify(said));
+			assert(said.includes(overLimit("push", 5).said) && said.includes(overLimit("fetch_base", 3).said), "the limits were not said: " + JSON.stringify(said));
+
+			// A person's session: the publish is put to the person every time, never "for this session", and the setting is refused.
+			const person = await user.createSession({ place, profile: "docker-hardened", harness: "claude", repository: { id: harbor.id } });
+			const session = client.agentSession.get([auth.profile.uid, person.id], { params: { token: auth.token } });
+			try {
+				const unasked = await refused(() => session.setPublishUnasked({ unasked: true }), "publish_blocked");
+				assert(unasked === publishAsksEveryTime("Claude Code"), unasked);
+				await session.prompt({ text: "Push and publish (platformpush)." });
+				const question = await waitFor("the publish question", async () => (await session.snapshot()).question, 60_000);
+				assert(question.choices.map(c => c.id).join() === "once,deny" && question.details.some(d => d.includes("came over MCP")), JSON.stringify(question));
+				await session.answer({ questionId: question.id, choice: "deny" });
+				const personSaid = await lines(person.id);
+				assert(personSaid.some(line => line.startsWith("The agent asked to publish, and you did not allow it.") && line.endsWith(MCP_CALL_WORDS)), JSON.stringify(personSaid));
+				return `item: ${over.length} lines over MCP, both limits held; person: asked once or deny, ${unasked}`;
+			} finally {
+				await user.deleteSession(person.id);
+			}
+		});
+
 		await check("machine: offline at launch waits without spend and resumes to review", async () => {
 			await runner.setOffline(true);
 			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);

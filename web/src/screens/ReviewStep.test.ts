@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockClient, type MockClient } from "../api/mock";
 import { PlatformPrompts, platformPromptLabel, Turn } from "../components/Blocks";
-import { AGENT_PUSH_MEANS, PUBLISH_UNASKED_MEANS, PublishUnaskedCheck, REVIEWER_PUBLISHES_NOTHING } from "../components/PullRequest";
+import { AGENT_PUSH_MEANS, PUBLISH_UNASKED_MEANS, PublishUnaskedCheck, publishAskedOverMcp, REVIEWER_PUBLISHES_NOTHING } from "../components/PullRequest";
 import { saveAuth } from "../lib/authStore";
 import { ZERO_USAGE, type TurnView } from "../lib/timeline";
 import { AppProvider } from "../state/app";
@@ -216,5 +216,14 @@ describe("what the agent's own push does on GitHub", () => {
 			host.innerHTML = html;
 			expect([...host.querySelectorAll(".check-means")].map((node) => node.textContent), profile.approval).toContain(AGENT_PUSH_MEANS);
 		}
+	});
+
+	it("for an agent that reaches its tools over MCP, says it is asked every time, with no setting, in the Windlass sandbox profile too", () => {
+		const html = renderToStaticMarkup(createElement(PublishUnaskedCheck, { checked: false, disabled: false, onChange: () => undefined, profile: sandboxed, agent: "Codex" }));
+		const host = document.createElement("div");
+		host.innerHTML = html;
+		expect(host.querySelector("input")).toBeNull();
+		expect(host.querySelector(".check-name")?.textContent).toBe("You are asked each time the agent wants to publish");
+		expect([...host.querySelectorAll(".check-means")].map((node) => node.textContent)).toEqual([publishAskedOverMcp("Codex"), AGENT_PUSH_MEANS]);
 	});
 });

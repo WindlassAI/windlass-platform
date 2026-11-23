@@ -88,7 +88,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	// What the screens are sent: the same flags, read-only, and nothing of the record that is not theirs.
 	const sent = sessionCapabilities("claude");
 	assert.deepEqual(Object.keys(sent).sort(), ["cancelCall", "checks", "envLists", "models", "planMode", "platformTools", "projectServerApproval", "reportScreenshots", "usage"]);
-	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
+	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
 	assert.deepEqual(sessionCapabilities(undefined), sessionCapabilities("windlass"));
 	assert.ok(sessionCapabilities("windlass").cancelCall && sessionCapabilities("windlass").usage === "tokens" && sessionCapabilities("codex").planMode);
 	assert.equal(harnessName("codex"), "Codex");
@@ -124,7 +124,9 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
 	// Codex takes them through its image's wlp-acp-mcp (sandbox/harness/codex/requirements.toml).
-	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL], `${acp} can be given report and ask_person, and no other platform tool`);
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
+	const { MCP_TOOLS } = await import("../server/src/platform-tools.js");
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools].sort(), [...MCP_TOOLS].sort(), `${acp}'s tools are exactly those that may be served over MCP`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
 	const declared = builder.find(tool => tool.name === ASK_TOOL);
 	assert.ok(declared && declared.effect === "read" && declared.untrustedResult === false && declared.timeoutSeconds === 30, "ask_person is declared read, its result trusted, 30 s");
@@ -458,8 +460,7 @@ async function clientCheck(state: string) {
 		{ secrets: { ...secrets, env: { FIXTURE: secret } } }, { secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
 		{ script: { responses: [] } }, { reportScreenshots: true },
 		{ onEvent() {} }, { onUnasked() {} }, { onServerApproved() {} }, { onServers() {} },
-		{ onServerQuestion: async () => false }, { onPublish: async () => "" }, { onPlan: () => "" },
-		{ onReview: async () => "" }, { onPush: async () => "" }, { onFetchBase: async () => "" },
+		{ onServerQuestion: async () => false }, { onPlan: () => "" }, { onReview: async () => "" },
 	];
 	for (const guard of guards) {
 		const result = await harness.runTurn({} as SandboxHandle, { ...input, ...guard });
@@ -801,8 +802,11 @@ async function platformToolsCheck(state: string) {
 	const { ASK_AGAIN, ASK_TAKEN, REPORT_TAKEN, askPerson } = await import("../server/src/agent-publish.js");
 	const { fileReport } = await import("../server/src/factory/review.js");
 	const harness = harnessOf({ machine: { name: "Bench" } } as SandboxLayer, "claude");
-	assert.deepEqual([...tools.SANDBOX_TOOLS], ["report", "ask_person"], "only report and ask_person may be served from the sandbox");
-	for (const tool of ["publish", "push", "fetch_base", "file_plan", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
+	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "publish", "push", "fetch_base"], "all but the planner's and the reviewer's tools may be served over MCP");
+	for (const tool of ["report", "ask_person", "push", "fetch_base"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
+	assert.equal(tools.TOOL_REACH.publish, "asked", "publish is served over MCP only because it asks every time");
+	for (const tool of ["file_plan", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
+	assert.deepEqual({ ...tools.MCP_LIMITS }, { push: 5, fetch_base: 3 });
 
 	// The Claude image's managed policy allows exactly the endpoint its adapter makes for this server, and OpenCode's runs the bridge.
 	const route = `mcp-${Buffer.from(tools.PLATFORM_MCP_SERVER_ID, "utf8").toString("base64url")}`;
@@ -918,11 +922,95 @@ async function platformToolsCheck(state: string) {
 	assert.deepEqual(opened.at(-1), []);
 	assert.match(older.join(""), /cannot take the platform's tools, so this turn has no report or ask_person/);
 	// The planner's and the reviewer's filing tools are never served from the sandbox: such a turn is refused.
-	for (const guard of [{ onPlan: () => "" }, { onReview: async () => "" }, { onPush: async () => "", onFetchBase: async () => "" }]) {
+	for (const guard of [{ onPlan: () => "" }, { onReview: async () => "" }]) {
 		const refused = await harness.runTurn(handle, { prompt: "plain", ...builder, ...guard });
 		assert.match(refused.failure?.message ?? "", /which it does not take here/);
 	}
-	ok("plain sessions, planner, reviewer and host-only tools get no server; an older adapter is noted");
+	ok("plain sessions, planner and reviewer get no server; an older adapter is noted");
+
+	variant = { acp: true, late: false };
+	await mcpPushCheck(harness, handle, opened, said);
+}
+
+/**
+ * push, fetch_base and publish over MCP in a person's session, called as a process of the sandbox could call them
+ * (fixtures/acp-agent "platformpush"): the handlers are told the call came over MCP, the checks of `pushRequest` refuse
+ * another branch whatever its spelling, nothing in a call reaches the push's target, force or lease, and a turn's
+ * pushes and fetches are limited, with the timeline told. The publish question over MCP never offers "for this session".
+ */
+async function mcpPushCheck(harness: import("../server/src/sandbox/harness.js").Harness, handle: SandboxHandle, opened: unknown[], said: (updates: AcpUpdate[]) => string) {
+	const tools = await import("../server/src/platform-tools.js");
+	const publishing = await import("../server/src/agent-publish.js");
+	const branch = "windlass/fixture-0123";
+	const pushed: Array<{ via: unknown; checked: unknown }> = [];
+	const fetched: unknown[] = [];
+	const published: unknown[] = [];
+	const person: Partial<RunTurnInput> = {
+		mode: "default",
+		onPush: async request => {
+			const checked = publishing.pushRequest(request.arguments, { branch, title: "Fixture" }, new SecretRedactor([]));
+			pushed.push({ via: request.via, checked });
+			return checked.ok ? `Pushed to ${branch}.` : checked.told;
+		},
+		onFetchBase: async request => { fetched.push(request.via); return publishing.fetchedForAgent("main", branch); },
+		onPublish: async request => { published.push(request.via); return "Asked the person."; },
+	};
+	const updates: AcpUpdate[] = [];
+	const notes: string[] = [];
+	const turn = await harness.runTurn(handle, { prompt: "platformpush", ...person, onAcpUpdate: u => updates.push(u), onAcpNote: n => notes.push(n) });
+	assert.equal(turn.failure, null, JSON.stringify(turn.failure));
+	assert.deepEqual(opened.at(-1), [tools.PLATFORM_MCP_SERVER], "a person's session with a repository is opened with the platform's server");
+	const lines = said(updates).split("\n");
+	assert.equal(lines[0], "Tools: publish,push,fetch_base.");
+	const refusal = `Not pushed. This session's work can only go to the session's own branch, ${branch}; a request that names another branch is refused. Call the tool again without a branch.`;
+	assert.deepEqual(lines.slice(1, 7), [
+		`Plain: Pushed to ${branch}.`, `Main: ${refusal}`, `Ref: ${refusal}`, `Refspec: ${refusal}`, `Forced: Pushed to ${branch}.`,
+		`Sixth: error: ${tools.overLimit("push", 5).told}`,
+	]);
+	// What reached the handler: every call marked as over MCP; a force, a lease, a ref or a remote in a call is not read, so the
+	// push's target stays the session's branch, its lease the platform's own last push, and nothing else is pushed.
+	assert.deepEqual(pushed.map(p => p.via), ["mcp", "mcp", "mcp", "mcp", "mcp"], "the sixth push reached no handler");
+	assert.deepEqual(pushed[4]!.checked, { ok: true, commit: "Rewrite" }, "only the message is taken from a call");
+	assert.deepEqual(lines.slice(7, 11), [1, 2, 3].map(n => `Fetch ${n}: ${publishing.fetchedForAgent("main", branch)}`).concat(`Fetch 4: error: ${tools.overLimit("fetch_base", 3).told}`));
+	assert.deepEqual(fetched, ["mcp", "mcp", "mcp"]);
+	assert.equal(lines[11], "Publish: Asked the person.");
+	assert.deepEqual(published, ["mcp"]);
+	assert.deepEqual(notes, [tools.overLimit("push", 5).said, tools.overLimit("fetch_base", 3).said], "each refusal over the limit is said in the timeline");
+	assert.match(notes[0]!, /Any process in the sandbox may have made the call/);
+	ok("push, fetch_base and publish over MCP: marked as such, another branch refused however named, nothing in a call reaches the push's target, limits per turn");
+
+	// The declarations over MCP say the limits; a Windlass turn's do not.
+	const declared = new Map(tools.platformToolDeclarations(new Map([["push", 0], ["fetch_base", 0], ["publish", 0]]), { mcp: true }).map(d => [d.name, d.description]));
+	assert.match(declared.get("push") ?? "", /at most 5 times a turn/);
+	assert.match(declared.get("fetch_base") ?? "", /At most 3 times a turn\./);
+	assert.doesNotMatch(tools.platformToolDeclarations(new Map([["push", 0], ["fetch_base", 0]])).map(d => d.description).join(" "), /times a turn/);
+
+	// The person's question about a publish that came over MCP: asked every time, whatever the profile promises, and says why.
+	const question = (via?: "mcp") => publishing.publishQuestionWords({ repository: "ada/harbor", branch, base: "main", message: { title: "t", body: "", commit: "t" }, open: null, sandbox: "windlass", ...(via && { via }) });
+	assert.deepEqual(question().choices.map(c => c.id), ["once", "session", "deny"], "a Windlass call where commands are sandboxed may be allowed for the session");
+	assert.deepEqual(question("mcp").choices.map(c => c.id), ["once", "deny"], "a call over MCP is never allowed for the session");
+	assert.ok(question("mcp").details.some(d => /came over MCP from inside the sandbox: any process there could have made it/.test(d)));
+	assert.equal(publishing.callLine("mcp", "Pushed."), `Pushed. ${publishing.MCP_CALL_WORDS}`);
+	assert.equal(publishing.callLine(undefined, "Pushed."), "Pushed.");
+	assert.match(publishing.publishAsksEveryTime("Claude Code"), /^Claude Code asks you every time it wants to publish/);
+	ok("over MCP the tools say their limits, a publish is asked every time and never for the session, and each line says any process may have made the call");
+
+	// Counted as the step limit counts tool calls (platform-steps.ts): once per call id, over every prompt of the turn (one
+	// server serves them all, live again for the platform's follow-up after its checks); an id seen before is not run again.
+	let live = true;
+	let ran = 0;
+	const server = new tools.PlatformMcpServer(new Map([["push", () => { ran++; return "Pushed."; }]]), tools.platformToolDeclarations(new Map([["push", 0], ["fetch_base", 0]]), { mcp: true }), () => live);
+	const meta = { "io.modelcontextprotocol/protocolVersion": tools.MCP_PROTOCOL_VERSION };
+	const push = (requestId: string) => server.handle({ serverId: tools.PLATFORM_MCP_SERVER_ID, requestId, method: "tools/call", params: { name: "push", arguments: {}, _meta: meta } }, new AbortController().signal) as Promise<{ result: { content: Array<{ text: string }>; isError: boolean } }>;
+	const said2 = async (requestId: string) => (await push(requestId)).result.content[0]!.text;
+	assert.deepEqual([await said2("a"), await said2("b"), await said2("a")], ["Pushed.", "Pushed.", tools.CALL_REPEATED], "a replayed id is refused and not run");
+	live = false;
+	assert.equal(await said2("c"), tools.CALL_AFTER_TURN, "between prompts (the platform runs its checks) nothing runs");
+	live = true;
+	for (const id of ["c", "d", "e"]) assert.equal(await said2(id), "Pushed.", "the follow-up prompt goes on counting from the first");
+	assert.equal(await said2("f"), tools.overLimit("push", 5).told);
+	assert.equal(ran, 5, "five pushes ran over the turn's prompts, the replay and the sixth did not");
+	ok("MCP calls are counted per call id over every prompt of the turn, as steps are; a replayed id is not run");
 }
 
 /**

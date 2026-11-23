@@ -808,6 +808,51 @@ await section("the agent pushes: the session's branch only, no pull request, and
 	expect("the default branch was never touched by any of it", standin.branchHead(harbor, "main") === mainMoved);
 });
 
+// Over MCP any process of the sandbox may call push (platform-tools.ts): what such a process can set up in the workspace
+// before it calls, and what the push then does. The call itself names no ref, force or lease (harness-check, mcpPushCheck).
+await section("a process of the sandbox that steers the workspace and calls push reaches only the session's branch, under the platform's lease", async () => {
+	const branch = "windlass/forged-push-00eeff";
+	const sandbox = localSandbox("forged-push");
+	const repository = stored(harbor, adaInstallation);
+	await publish.cloneRepository(app, adaConnection, repository, sandbox);
+	const mainBefore = standin.branchHead(harbor, "main");
+	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_forgedpush00eeff", branch };
+	writeFileSync(join(sandbox.cwd, "FORGED.md"), "one\n");
+	const first = await publish.pushWork({ ...base, pushed: null, lease: null }, "The platform's push");
+	// The process: on a local branch called main, with a push refspec, a mirror remote, a rewrite of GitHub's address and a
+	// pre-push hook in the workspace's Git configuration, it commits and asks for a push.
+	const steered = await sandbox.run([
+		"git checkout --quiet -B main",
+		"git config remote.origin.push '+refs/heads/*:refs/heads/main'",
+		"git config remote.origin.mirror true",
+		"git config push.default matching",
+		"mkdir -p .git/hooks && printf '#!/bin/sh\\ntouch \"$PWD/.hook-ran\"\\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push",
+		"echo forged > FORGED.md && git add -A && git commit --quiet -m 'Forged on main' && git rev-parse HEAD",
+	].join(" && "));
+	// A rewrite of GitHub's address is a setting the platform does not run at all: refused before any token, nothing pushed.
+	await sandbox.run("git config url.https://example.invalid/.insteadOf https://");
+	const rewritten = await problem(() => publish.pushWork({ ...base, pushed: first.head, lease: first.head }, "unused"));
+	expect("a workspace that rewrites GitHub's address is refused before any token, and nothing is pushed",
+		rewritten?.message.includes("insteadof") === true && rewritten.message.includes("Nothing was pushed") && standin.branchHead(harbor, branch) === first.head, rewritten?.message);
+	await sandbox.run("git config --unset url.https://example.invalid/.insteadOf");
+	const forged = await publish.pushWork({ ...base, pushed: first.head, lease: first.head }, "unused");
+	expect(
+		"it pushes the workspace's commit to the session's branch and nowhere else: main at GitHub stays, the workspace's remote, refspecs, mirror setting and hooks are not used",
+		steered.exitCode === 0 && forged.pushed && standin.branchHead(harbor, branch) === steered.stdout.trim() && standin.branchHead(harbor, "main") === mainBefore && !existsSync(join(sandbox.cwd, ".hook-ran")),
+		`${steered.stderr} ${JSON.stringify(forged)} main=${standin.branchHead(harbor, "main")}`,
+	);
+	// Someone else commits to the session's branch; the process rewinds the workspace to the platform's first push (an old
+	// lease, as it were) and commits over it: the lease is the platform's own last push, so GitHub refuses it.
+	const theirs = standin.commit(harbor, branch, { "THEIRS.md": "someone else's\n" }, "Someone else's commit");
+	await sandbox.run(`git reset --quiet --hard ${first.head} && echo rewound > FORGED.md && git add -A && git commit --quiet -m 'Rewound'`);
+	const rewound = await problem(() => publish.pushWork({ ...base, pushed: forged.head, lease: forged.head }, "unused"));
+	expect(
+		"a rewound branch that would drop someone else's commit is refused under the platform's lease, and the branch keeps their commit",
+		rewound?.message.includes("has commits someone else pushed since the platform's last push") === true && standin.branchHead(harbor, branch) === theirs && standin.branchHead(harbor, "main") === mainBefore,
+		rewound?.message,
+	);
+});
+
 await section("a push that would send a saved secret's value is refused, and the platform's own commit is undone", async () => {
 	const { SecretRedactor } = await import("../server/src/repo-secrets.js");
 	const redactor = new SecretRedactor([{ name: "NPM_TOKEN", value: "npm_s3cr3t_value_000111" }]);

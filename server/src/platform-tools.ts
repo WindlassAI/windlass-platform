@@ -15,25 +15,40 @@
  *                connection, and this file answers it (`PlatformMcpServer`). Claude Code's adapter takes
  *                such a server itself; OpenCode's and Codex's harness images run `wlp-acp-mcp`, which
  *                serves it the same way (Codex's on the one URL its requirements.toml allows). Only the
- *                tools `reach` marks "sandbox".
+ *                tools `reach` does not mark "host".
  *
- * Why only some tools go over MCP. Windlass's host tools are called by the model through Windlass. An MCP
- * server is reached, in the end, through an endpoint inside the container (127.0.0.1, with a bearer token
- * held in the agent's memory), so any process there may be able to call it: the repository's setup script,
- * a test, a command the agent was talked into running. A tool served that way must be one whose worst call
- * by such a process is harmless:
+ * Which tools go over MCP, and why that is safe. Windlass's host tools are called by the model through
+ * Windlass. An MCP server is reached, in the end, through an endpoint inside the container (127.0.0.1, with a
+ * bearer token held in the agent's memory; OpenCode also has its own API there, without a password), so any
+ * process there may be able to call it: the repository's setup script, a test, a command the agent was
+ * talked into running. A tool served that way must be one whose worst call by such a process is bounded:
  *
  *   report      text for the person, taken as a claim and never as the verdict (whether the work is
  *               ready is decided from the checks and CI). A rogue call can file a wrong report, which the
  *               agent's own later call replaces, and which the person reads labelled as the agent's.
  *   ask_person  one question, with the limits Windlass's has (one per turn, `ASK_LIMITS.perRun` per run,
  *               the same cleaning), the answer coming from the person as the next turn's message.
+ *   push        commits the workspace and pushes it to the session's own branch, which the platform names
+ *               (a call that names another is refused, and nothing in a call chooses the ref, a force or a
+ *               lease), with a token that never enters the container, under a lease that replaces only the
+ *               platform's own last push. A rogue call pushes what any process could already have put in
+ *               the workspace to the session's branch, never over a commit anyone else pushed there; at
+ *               most `MCP_LIMITS.push` a turn.
+ *   fetch_base  fetches the base, and the session's branch, into `origin/*` with a read-only token, and
+ *               changes neither the working tree nor a local branch; at most `MCP_LIMITS.fetch_base` a turn.
+ *   publish     opens or updates a pull request under the person's name, so over MCP every call is put to
+ *               the person (`reach` "asked"): never unasked, never "for this session" (agent-session.ts,
+ *               `agentPublish`). A rogue call reaches a question the person answers, which says the call
+ *               may not be the agent's.
  *
- * Neither grants anything: no credential, no push, no change outside the platform's own records of the
- * turn, and a call is answered only while the turn runs. The rest stay host tools until what they need
- * holds there too (`reach`).
+ * None of them hands anything to the container: no credential, no token, nothing it could not already do
+ * there; and a call is answered only while the turn runs. The timeline says of every push, fetch and
+ * publish that came over MCP that any process in the sandbox may have made it (agent-publish.ts,
+ * `MCP_CALL_WORDS`). This is the exposure Windlass already has where it does not sandbox commands
+ * ("Docker, hardened"), whose commands can write on the engine's own connection (docs/known-limitations.md).
+ * The planner's `file_plan` and the reviewer's `file_review` stay host tools (`reach`).
  *
- * Why Windlass keeps host tools for these two as well. Windlass 0.6.0 takes no MCP server from the client
+ * Why Windlass keeps host tools for these as well. Windlass 0.6.0 takes no MCP server from the client
  * (`session/new`'s `mcpServers` are ignored, its `mcpCapabilities` say neither http nor sse), and an MCP
  * tool's result is a taint source there: from then on what can send data out asks again, and in an
  * item's unattended turn is refused. A host tool declared `read` with a trusted result runs in every
@@ -55,45 +70,52 @@ export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof ASK
 export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 
 /**
- * Where a tool may be served from. "sandbox": safe to call from any process in the container, so it may
- * be served over MCP. "host": only where the model alone can call it (Windlass's host tools). What each
- * host tool would need before it could move:
+ * Where a tool may be served from. "sandbox": its worst call by any process in the container is bounded
+ * (above), so it may be served over MCP. "asked": served over MCP only because its handler puts every call
+ * that came that way to the person (`TurnPublishRequest.via`). "host": only where the model alone can call
+ * it (Windlass's host tools):
  *
- *   publish      opens a pull request under the person's name. Today it asks the person inside the call,
- *                and a session may let it run unasked only where commands cannot make the call
- *                (`publishUnaskedProblem`). Over MCP every call could be a command's: it would have to
- *                ask every time, never "for this session", as it already does where Windlass does not
- *                sandbox commands.
- *   push         pushes the session's branch with the platform's token, under a lease on the platform's
- *                own last push. The token never leaves the platform and the branch is the platform's to
- *                name, so a command's call gains little; but a push is outward-facing, and every call would
- *                need the same branch and lease checks, a rate limit per turn, and a line in the timeline
- *                that says a process of the sandbox may have made it.
- *   fetch_base   reads the base into the workspace with a token the platform holds. Harmless as a read,
- *                but it writes refs in the workspace a command did not ask for; it would need a limit per
- *                turn and the same token handling (the token never enters the sandbox).
  *   file_plan    the planner's plan becomes subtasks the owner approves. A rogue plan would reach the
  *                owner's approval as the planner's; the planner runs only on Windlass today.
  *   file_review  the reviewer's verdict, read as a review of the change: a rogue filing could pass or
  *                block a pull request. It stays where only the model files it.
  */
-export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "host">> = Object.freeze({
+export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "host">> = Object.freeze({
 	[REPORT_TOOL]: "sandbox",
 	[ASK_TOOL]: "sandbox",
-	[PUBLISH_TOOL]: "host",
-	[PUSH_TOOL]: "host",
-	[FETCH_BASE_TOOL]: "host",
+	[PUBLISH_TOOL]: "asked",
+	[PUSH_TOOL]: "sandbox",
+	[FETCH_BASE_TOOL]: "sandbox",
 	[PLAN_TOOL]: "host",
 	[REVIEW_TOOL]: "host",
 });
 
 /** The tools that can be served over MCP, in the order they are listed. */
-export const SANDBOX_TOOLS = Object.freeze((Object.keys(TOOL_REACH) as PlatformTool[]).filter(tool => TOOL_REACH[tool] === "sandbox"));
+export const MCP_TOOLS = Object.freeze((Object.keys(TOOL_REACH) as PlatformTool[]).filter(tool => TOOL_REACH[tool] !== "host"));
+
+/**
+ * How many calls of a tool one turn may make over MCP. Each push and fetch mints a GitHub token and runs
+ * Git in the sandbox, and any process there can make the call: a turn's worth is enough for an agent that
+ * pushes after each piece of work, and bounds what a rogue process can make the platform do.
+ */
+export const MCP_LIMITS: Readonly<Partial<Record<PlatformTool, number>>> = Object.freeze({ [PUSH_TOOL]: 5, [FETCH_BASE_TOOL]: 3 });
+
+/** What the agent is told of a call over its turn's limit (`MCP_LIMITS`), and the timeline's line. */
+export function overLimit(tool: PlatformTool, limit: number): { told: string; said: string } {
+	const times = `${limit} time${limit === 1 ? "" : "s"}`;
+	const [verb, done] = tool === PUSH_TOOL ? ["push", "Not pushed"] : tool === FETCH_BASE_TOOL ? ["fetch the base", "Not fetched"] : [`call ${tool}`, "Not done"];
+	return {
+		told: `${done}. One turn may ${verb} at most ${times}, and this turn has. The work stays in the workspace as it is; do not try another way to ${verb}.`,
+		said: `A call over MCP asked to ${verb} after this turn had done so ${times}, the most one turn may, so the platform refused it. Any process in the sandbox may have made the call, not only the agent.`,
+	};
+}
 
 /** What the agent is told when the platform's own handling of a call of one of its tools failed. */
 export const CALL_NOT_HANDLED = "The platform could not handle this call. Tell the user; do not try another way to do it.";
 /** A call that came when the turn it was made in is over. */
 export const CALL_AFTER_TURN = "The turn this call was made in has ended, so the platform did nothing with it.";
+/** A call whose id an earlier call of the turn had (`PlatformMcpServer`). */
+export const CALL_REPEATED = "This call was already made in this turn, so the platform did not run it again.";
 /** A call of a tool this turn was not given. */
 export const CALL_UNKNOWN = "This session has no such tool of the platform's.";
 
@@ -101,7 +123,7 @@ export const CALL_UNKNOWN = "This session has no such tool of the platform's.";
  * The tools a turn is offered, by the callbacks it was given: the planner's `file_plan` alone, the
  * reviewer's `file_review` alone, or `publish` in a person's session and `report` (with `ask_person`
  * for a builder) in an item's, with `push` and `fetch_base` beside either. With `reach` "sandbox",
- * only those that may be served from inside the sandbox.
+ * only those that may be served over MCP (`MCP_TOOLS`).
  */
 export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox" = "host"): Map<PlatformTool, PlatformToolHandler> {
 	const tools = new Map<PlatformTool, PlatformToolHandler>();
@@ -118,17 +140,18 @@ export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox"
 			tools.set(FETCH_BASE_TOOL, input.onFetchBase);
 		}
 	}
-	if (reach === "sandbox") for (const tool of tools.keys()) if (TOOL_REACH[tool] !== "sandbox") tools.delete(tool);
+	if (reach === "sandbox") for (const tool of tools.keys()) if (TOOL_REACH[tool] === "host") tools.delete(tool);
 	return tools;
 }
 
 /** The declarations of a turn's tools (agent-publish.ts, `platformTools`). */
-export function platformToolDeclarations(tools: ReadonlyMap<string, unknown>, options: { screenshots?: boolean; crossRepo?: boolean } = {}): HostToolDeclaration[] {
+export function platformToolDeclarations(tools: ReadonlyMap<string, unknown>, options: { screenshots?: boolean; crossRepo?: boolean; mcp?: boolean } = {}): HostToolDeclaration[] {
 	const plan = tools.has(PLAN_TOOL);
 	return platformTools({
 		plan, ...(options.crossRepo && plan && { crossRepo: true }),
 		publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL),
 		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots: options.screenshots,
+		...(options.mcp && { mcp: { pushes: MCP_LIMITS[PUSH_TOOL] ?? 0, fetches: MCP_LIMITS[FETCH_BASE_TOOL] ?? 0 } }),
 	}, config.questionTimeoutMs).filter(tool => tools.has(tool.name));
 }
 
@@ -167,11 +190,18 @@ const mcpError = (code: number, message: string): McpOutcome => ({ error: { code
  * The platform's MCP server for one turn, answering the `mcp/message` requests of the agent's
  * connection. `live` says whether a call may run now: while the turn's prompt runs, and never after.
  * Listing is answered whenever the connection asks, since an agent lists a session's tools as it opens
- * it. A call is run by the same handler a Windlass host call is (`runPlatformTool`).
+ * it. A call is run by the same handler a Windlass host call is (`runPlatformTool`), marked as having
+ * come over MCP (`TurnPublishRequest.via`); one past its tool's limit for the turn (`MCP_LIMITS`) reaches
+ * no handler, and `onRefused` is given the timeline's line for it. Calls are counted as the platform's step
+ * limit counts tool calls (sandbox/platform-steps.ts): each call once, by its id, whatever came of it, over
+ * every prompt of the turn (one server serves the whole turn, the platform's follow-ups after its checks
+ * included). Each is a step as well: a refused one still counts against the turn's step limit.
  */
 export class PlatformMcpServer {
 	private readonly listed: Array<Record<string, unknown>>;
-	constructor(private readonly tools: ReadonlyMap<string, PlatformToolHandler>, declarations: HostToolDeclaration[], private readonly live: () => boolean) {
+	private readonly calls = new Map<string, number>();
+	private readonly counted = new Set<string>();
+	constructor(private readonly tools: ReadonlyMap<string, PlatformToolHandler>, declarations: HostToolDeclaration[], private readonly live: () => boolean, private readonly onRefused?: (said: string) => void) {
 		// Claude Code defers MCP tools behind its tool search unless a tool says to load it at once: these are few and short, and the agent is to know them.
 		this.listed = declarations.filter(tool => tools.has(tool.name)).map(tool => ({
 			name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
@@ -202,7 +232,21 @@ export class PlatformMcpServer {
 				const handler = this.tools.get(name);
 				if (!this.live() || signal.aborted) return text(CALL_AFTER_TURN, true);
 				if (!handler) return text(CALL_UNKNOWN, true);
-				const call: TurnPublishRequest = { messageId: "", callId: typeof params.requestId === "string" ? params.requestId : "", arguments: callArguments(inner.arguments) };
+				// Counted before the handler runs, whatever comes of the call: the limit bounds what a process can make the platform do.
+				// Once per call id, as a step is. A request sent again with an id already seen is not run again: replaying one
+				// id must not get past the limit.
+				const id = typeof params.requestId === "string" && params.requestId !== "" ? params.requestId : null;
+				if (id !== null && this.counted.has(id)) return text(CALL_REPEATED, true);
+				if (id !== null) this.counted.add(id);
+				const made = (this.calls.get(name) ?? 0) + 1;
+				this.calls.set(name, made);
+				const limit = MCP_LIMITS[name as PlatformTool];
+				if (limit !== undefined && made > limit) {
+					const refused = overLimit(name as PlatformTool, limit);
+					try { this.onRefused?.(refused.said); } catch { /* A listener's failure must not change the answer. */ }
+					return text(refused.told, true);
+				}
+				const call: TurnPublishRequest = { messageId: "", callId: typeof params.requestId === "string" ? params.requestId : "", arguments: callArguments(inner.arguments), via: "mcp" };
 				const done = await runPlatformTool(handler, call, signal);
 				return text(done.output, !done.ok);
 			}

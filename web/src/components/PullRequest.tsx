@@ -19,6 +19,7 @@
  */
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, type PublishState, type PullRequestInfo, type SandboxProfile, type SessionSummary } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { acpHarnessName } from "../lib/acp";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
@@ -49,9 +50,15 @@ export function publishAlwaysAsked(profile: Pick<SandboxProfile, "approval" | "c
 	return null;
 }
 
+/**
+ * Why an agent that reaches the platform's tools over MCP (Claude Code, OpenCode, Codex) is asked about
+ * every publish, whatever the profile: the server refuses the setting for it (`publishAsksEveryTime` there).
+ */
+export const publishAskedOverMcp = (agent: string) => `${agent} reaches its publish tool from inside the sandbox, where any process could call it in the agent's name.`;
+
 /** The setting itself: on or off, with its sentence. Where it cannot be on, what holds instead stands in its place, with why. */
-export function PublishUnaskedCheck({ checked, disabled, onChange, profile }: { checked: boolean; disabled: boolean; onChange(checked: boolean): void; profile: SandboxProfile | null }) {
-	const asked = profile === null ? null : publishAlwaysAsked(profile);
+export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agent = null }: { checked: boolean; disabled: boolean; onChange(checked: boolean): void; profile: SandboxProfile | null; agent?: string | null }) {
+	const asked = agent !== null ? publishAskedOverMcp(agent) : profile === null ? null : publishAlwaysAsked(profile);
 	if (asked !== null) {
 		return (
 			<p className="check-text">
@@ -96,7 +103,7 @@ function AgentPublishing({ sessionId, summary, profile }: { sessionId: string; s
 	};
 	return (
 		<div className="gh-agent">
-			<PublishUnaskedCheck checked={summary.publishUnasked === true} disabled={busy} onChange={set} profile={profile} />
+			<PublishUnaskedCheck checked={summary.publishUnasked === true} disabled={busy} onChange={set} profile={profile} agent={acpHarnessName(summary)} />
 			{error ? (
 				<p className="panel-empty tone-bad" role="alert">
 					<WarnIcon size={13} /> {error}

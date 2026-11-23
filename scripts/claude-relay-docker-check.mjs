@@ -125,6 +125,40 @@ async function toolsTurn(name) {
 	const port = endpoint[0].toString(16).toUpperCase().padStart(4, '0');
 	assert.equal(await cmd(['exec', name, 'sh', '-c', `grep -c '0100007F:${port} .* 0A ' /proc/net/tcp || true`]), '0', 'the endpoint outlived its adapter');
 }
+// A person's turn with push, fetch_base and publish over MCP, in Claude's mode that asks (default): the image's managed policy
+// lets the platform's tools through without Claude's own question, each call reaches the handlers as one over MCP, another
+// branch is refused, and a publish that answers after 6 minutes (it waits for the person) is not given up on by the CLI,
+// whose idle limit for an MCP call is 5 minutes unless the image's wrapper says otherwise.
+async function pushTurn(name) {
+	const { PLATFORM_MCP_SERVER } = await import('../server/src/platform-tools.ts');
+	const { pushTurnServer, PUSH_PROMPT, PUSH_REPLY } = await import('../fixtures/acp-agent/platform-push.mjs');
+	const turn = await pushTurnServer({ publishWaitMs: 6 * 60_000 });
+	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
+	child.stderr.resume();
+	let reply = '';
+	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
+		async request(method, params, withdrawn) {
+			if (method === 'mcp/message') return turn.server.handle(params, withdrawn);
+			if (method === 'session/request_permission') return turn.permission(params);
+			throw Error('No other client requests in fixture: ' + method);
+		},
+		notification(method, params) { if (method === 'session/update' && params.update.sessionUpdate === 'agent_message_chunk') reply += params.update.content.text; },
+	}, '');
+	const lines = new LineSplitter(line => rpc.receive(line));
+	child.stdout.setEncoding('utf8').on('data', s => lines.push(s));
+	child.on('close', () => rpc.end('Adapter closed'));
+	const call = (method, params, timeoutMs = 45000) => rpc.request(method, params, { timeoutMs });
+	await call('initialize', {protocolVersion:1,clientCapabilities:{}});
+	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[PLATFORM_MCP_SERVER]});
+	await call('session/set_mode',{sessionId:opened.sessionId,modeId:'default'});
+	turn.running = true;
+	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:PUSH_PROMPT}]}, 10 * 60_000);
+	turn.running = false;
+	child.stdin.end();
+	await new Promise(done => child.once('close', done));
+	assert.equal(result.stopReason, 'end_turn'); assert.equal(reply, PUSH_REPLY);
+	turn.check(await cmd(['logs',upstream]));
+}
 // A turn whose upstream reply carries unified rate-limit headers: what the pinned harness reports from them.
 async function limitTurn(name, text) {
 	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
@@ -199,6 +233,8 @@ try {
 	await turn(first, [], true);
 	await toolsTurn(first);
 	ok('A builder turn on the pinned CLI reached report and ask_person over MCP under the managed policy; a process without the token was refused.');
+	await pushTurn(first);
+	ok("A person's turn in default mode reached push, fetch_base and publish over MCP without Claude's own question; another branch was refused, and a publish answered after 6 minutes reached the model.");
 	await turn(first, ['-e','HTTP_PROXY=http://127.0.0.1:1','-e','HTTPS_PROXY=http://127.0.0.1:1','-e','http_proxy=http://127.0.0.1:1','-e','https_proxy=http://127.0.0.1:1','-e','NO_PROXY=','-e','no_proxy='], false);
 	// What the session itself receives from the relay for a refused request.
 	const limited = JSON.parse(await cmd(['exec', first, 'node', '-e', `const r=require('http').request(process.env.ANTHROPIC_BASE_URL+'/v1/messages?beta=true',

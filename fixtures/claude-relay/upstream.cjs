@@ -40,6 +40,23 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 		]) res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
 		return res.end();
 	}
+	// A person's turn with push, fetch_base and publish over MCP: a push, one that names main, a fetch, a publish, then text.
+	if (body.includes('Platform push check.') && (request.tools ?? []).some(tool => tool.name === 'mcp__windlass_platform__push')) {
+		const results = (request.messages ?? []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(block => block.type === 'tool_result');
+		const told = results.map(r => (Array.isArray(r.content) ? r.content : [{ text: r.content }]).map(c => c.text).join('')).join(' | ');
+		console.log('platform push', 'results=' + results.length, 'told=' + JSON.stringify(told));
+		const next = [['mcp__windlass_platform__push', { message: 'From the relay' }], ['mcp__windlass_platform__push', { branch: 'main' }],
+			['mcp__windlass_platform__fetch_base', {}], ['mcp__windlass_platform__publish', { title: 'Relay publish', description: 'Checked publish.' }]][results.length];
+		res.writeHead(200, { 'content-type': 'text/event-stream' });
+		const block = next ? { type: 'tool_use', id: 'toolu_p' + results.length, name: next[0], input: {} } : { type: 'text', text: '' };
+		const delta = next ? { type: 'input_json_delta', partial_json: JSON.stringify(next[1]) } : { type: 'text_delta', text: 'platform push passed' };
+		for (const event of [
+			{type:'message_start',message:{id:'msg_push',type:'message',role:'assistant',model,content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:5,output_tokens:0}}},
+			{type:'content_block_start',index:0,content_block:block}, {type:'content_block_delta',index:0,delta}, {type:'content_block_stop',index:0},
+			{type:'message_delta',delta:{stop_reason:next ? 'tool_use' : 'end_turn',stop_sequence:null},usage:{output_tokens:3}}, {type:'message_stop'},
+		]) res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
+		return res.end();
+	}
 	// A prompt that asks for a warning gets a normal reply with the 5-hour window nearly used.
 	res.writeHead(200, { 'content-type': 'text/event-stream', ...(body.includes('Rate warning check.') && {
 		'anthropic-ratelimit-unified-status': 'allowed_warning', 'anthropic-ratelimit-unified-reset': '4102444800',

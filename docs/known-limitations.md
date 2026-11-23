@@ -86,7 +86,11 @@ details.
   push is never asked about anywhere: a forged one pushes the workspace to the session's own branch, which the
   agent may do itself), so a task that is to publish while its user is away needs a profile whose commands Windlass
   sandboxes. What would close it: an engine that runs as another user than its commands, or one whose
-  connection a command cannot write to.
+  connection a command cannot write to. Claude Code, OpenCode and Codex have the same exposure on every
+  profile: they reach the platform's tools over an MCP endpoint in the container, which any process there
+  may call. So their publish is asked about every time and never unasked, their pushes and fetches are
+  limited per turn, and the timeline says of each such call that any process may have made it
+  ([The platform's tools for every agent](work-items.md#the-platforms-tools-for-every-agent)).
 - **A work item's text is its agent's prompt.** Items from the web app and the API are their own user's
   words. An item filed from a GitHub issue that someone else wrote is a draft until its person starts it,
   and its agent is told to take the text as a description of what is wanted, not as instructions.

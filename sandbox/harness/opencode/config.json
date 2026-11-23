@@ -2,6 +2,7 @@
   "autoupdate": false,
   "share": "disabled",
   "permission": { "bash": "ask", "edit": "ask", "external_directory": "ask" },
+  "experimental": { "mcp_timeout": 3600000 },
   "provider": {
     "opencode": { "options": { "baseURL": "http://127.0.0.1:17892/free" } },
     "openai": { "options": { "baseURL": "http://127.0.0.1:17892/openai" } },

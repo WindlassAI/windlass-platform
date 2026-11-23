@@ -6,4 +6,7 @@ export CLAUDE_AGENT_ACP_PROTOCOL=v1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NO
 # The TodoWrite list, not the task tools: each turn starts a new adapter, which knows only the tasks made
 # in its own turn, so a task finished in a later turn never reached the plan. TodoWrite sends the whole list.
 export CLAUDE_CODE_ENABLE_TASKS=false
+# The platform's publish waits for the person (10 minutes) and then for GitHub, and a push can take minutes:
+# the CLI would give up on an MCP call silent for 5 minutes. One hour, the most Windlass allows a host call.
+export CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=3600000 MCP_TOOL_TIMEOUT=3600000
 exec /opt/wlp-claude/node_modules/.bin/claude-agent-acp "$@"

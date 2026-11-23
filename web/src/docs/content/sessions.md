@@ -101,11 +101,11 @@ The platform does not push while the agent is working. Wait for the turn to end.
 
 The agent can also ask to publish. It then asks **Allow the agent to open a pull request?**, or **Allow the agent to push to pull request #N?** Answer **Allow once**, **Don't allow**, or, in the Windlass sandbox profile, **Allow for this session**.
 
-In the Windlass sandbox profile, the panel offers **Let the agent publish without asking**. In other profiles you are asked each time.
+In the Windlass sandbox profile, the panel offers **Let the agent publish without asking**. In other profiles you are asked each time. Claude Code, OpenCode and Codex always ask you, in every profile, and never offer **Allow for this session**: they reach the publish tool from inside the sandbox, where another program could call it in the agent's name, and the question says so.
 
 > **Note** Before it pushes, the platform looks for the values of your saved secrets in the changes. If it finds one, nothing is pushed, and it names the files.
 
-The agent can also push its work to the session's branch, and fetch the branch it started from, without asking you. It pushes only to the session's own branch, never to the default branch. A commit someone else pushed to that branch is never pushed away: the push is refused, and the agent is told to fetch and merge it first.
+The agent can also push its work to the session's branch, and fetch the branch it started from, without asking you. It pushes only to the session's own branch, never to the default branch. A commit someone else pushed to that branch is never pushed away: the push is refused, and the agent is told to fetch and merge it first. Claude Code, OpenCode and Codex can push at most 5 times and fetch at most 3 times a turn, and the timeline says of each such push or fetch that another program in the sandbox may have made it.
 
 ### What was verified
 

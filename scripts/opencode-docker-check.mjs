@@ -129,6 +129,40 @@ async function toolsTurn(name, model) {
 	const port = endpoint[0].toString(16).toUpperCase().padStart(4, '0');
 	assert.equal(await cmd(['exec', name, 'sh', '-c', `grep -c '0100007F:${port} .* 0A ' /proc/net/tcp || true`]), '0', 'the endpoint outlived its adapter');
 }
+// A person's turn with push, fetch_base and publish over MCP through wlp-acp-mcp, in Build: OpenCode does not ask about the
+// platform's tools, each call reaches the handlers as one over MCP, another branch is refused, and a publish that answers
+// after 70 s (it waits for the person) reaches the model: OpenCode gives an MCP request 60 s unless its config says otherwise.
+async function pushTurn(name, model) {
+	const { PLATFORM_MCP_SERVER } = await import('../server/src/platform-tools.ts');
+	const { pushTurnServer, PUSH_PROMPT, PUSH_REPLY } = await import('../fixtures/acp-agent/platform-push.mjs');
+	const turn = await pushTurnServer({ publishWaitMs: 70_000 });
+	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	child.stderr.resume();
+	let reply = '';
+	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
+		async request(method, params, withdrawn) {
+			if (method === 'mcp/message') return turn.server.handle(params, withdrawn);
+			if (method === 'session/request_permission') return turn.permission(params);
+			throw Error('No other client requests in fixture: ' + method);
+		},
+		notification(method, params) { if (method === 'session/update' && params.update.sessionUpdate === 'agent_message_chunk') reply += params.update.content.text; },
+	}, '');
+	const lines = new LineSplitter(line => rpc.receive(line));
+	child.stdout.setEncoding('utf8').on('data', s => lines.push(s));
+	child.on('close', () => rpc.end('Adapter closed'));
+	const call = (method, params, timeoutMs = 45000) => rpc.request(method, params, { timeoutMs });
+	await call('initialize', {protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false}});
+	const opened = await call('session/new',{cwd:'/workspace',mcpServers:[PLATFORM_MCP_SERVER]});
+	await call('session/set_config_option',{sessionId:opened.sessionId,configId:'mode',value:'build'});
+	await call('session/set_config_option',{sessionId:opened.sessionId,configId:'model',value:model});
+	turn.running = true;
+	const result = await call('session/prompt',{sessionId:opened.sessionId,prompt:[{type:'text',text:PUSH_PROMPT}]}, 5 * 60_000);
+	turn.running = false;
+	child.stdin.end();
+	await new Promise(done => child.once('close', done));
+	assert.equal(result.stopReason,'end_turn'); assert.equal(reply, PUSH_REPLY);
+	turn.check(await cmd(['logs',upstream]));
+}
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
 try {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
@@ -240,6 +274,8 @@ try {
 	await turn(both, [], true, 'opencode-go/kimi-k3');
 	await toolsTurn(both, 'opencode-go/kimi-k3');
 	ok('A builder turn through wlp-acp-mcp reached report and ask_person over MCP; a process without the token was refused.');
+	await pushTurn(both, 'opencode-go/kimi-k3');
+	ok("A person's turn through wlp-acp-mcp reached push, fetch_base and publish over MCP without asking; another branch was refused, and a publish answered after 70 s reached the model.");
 	ok('Two stored providers, native Go and GLM streaming in one restricted sandbox, blocked direct CONNECT, placeholder scans.');
 	await storeProvider(owner);
 	} catch (error) {

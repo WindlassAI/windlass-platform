@@ -65,6 +65,7 @@ import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
+import { publishAsksEveryTime } from "../../../server/src/agent-publish.js";
 import { NetworkProblem, cleanEntries, expandEntries, networkLimit, networkPresets } from "../../../server/src/repository-network.js";
 import {
 	MAX_IDEMPOTENCY_KEY_CHARS,
@@ -3470,7 +3471,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (harness !== "windlass") {
 					if (!machine) throw new PlatformError("user", `${HARNESS_NAMES[harness]} runs only on a machine of yours.`, { reason: "bad_input" });
 					if (input.profile !== "docker-hardened") throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the docker-hardened profile.`, { reason: "bad_input" });
-					if (input.publishUnasked) throw new PlatformError("user", `${HARNESS_NAMES[harness]} has no publish tool. Publish from the session panel.`, { reason: "bad_input" });
+					if (input.publishUnasked) throw new PlatformError("user", publishAsksEveryTime(HARNESS_NAMES[harness]), { reason: "bad_input" });
 					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", `This machine does not offer ${HARNESS_NAMES[harness]}.`, { reason: "bad_input" });
 				}
 				const models = harness !== "windlass" ? initialHarnessModels(options) : modelsFor(world().profile);

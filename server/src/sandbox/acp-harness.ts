@@ -18,7 +18,7 @@ function unsupported(input: RunTurnInput): string | undefined {
 	if (input.secrets && (Object.keys(input.secrets.env).length || input.secrets.withholdEnv.length || input.secrets.passEnv.length)) return "saved environment variables";
 	if (input.reportScreenshots) return "report screenshots";
 	// A tool that must not be served from inside the sandbox is refused, not left out: the turn would run without what its caller counts on.
-	return (["script", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPublish", "onPlan", "onReview", "onPush", "onFetchBase"] as const)
+	return (["script", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPlan", "onReview"] as const)
 		.find(key => input[key] !== undefined);
 }
 
@@ -200,7 +200,7 @@ export class AcpHarness implements Harness {
 		const questions = new AbortController();
 		// The platform's tools this turn is given, served over this connection (MCP over ACP), and only while its prompt runs.
 		const tools = turnPlatformTools(input, "sandbox");
-		const mcp = tools.size ? new PlatformMcpServer(tools, platformToolDeclarations(tools, { screenshots: false }), () => phase === "running") : null;
+		const mcp = tools.size ? new PlatformMcpServer(tools, platformToolDeclarations(tools, { screenshots: false, mcp: true }), () => phase === "running", said => input.onAcpNote?.(said)) : null;
 		const stream = updateStream(redactor, update => input.onAcpUpdate?.(update));
 		const stderr = new RedactingStream(redactor);
 		const keepError = (piece: string) => { result.stderrTail = (result.stderrTail + piece).slice(-4096); };

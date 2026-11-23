@@ -66,6 +66,8 @@ export interface HarnessCapabilities {
 
 /** The platform's tools by name (platform-tools.ts); literal here so that this file imports nothing of the server's. */
 const tools = (...names: PlatformToolName[]): readonly PlatformToolName[] => Object.freeze(names);
+/** What an ACP agent takes over MCP: every tool platform-tools.ts's `TOOL_REACH` does not keep to Windlass's host tools (harness-check holds them equal). */
+const MCP_PLATFORM_TOOLS = tools("report", "ask_person", "publish", "push", "fetch_base");
 
 export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "windlass", resume: "windlass", steer: true, cancelCall: true, questions: true,
@@ -140,7 +142,7 @@ export const CLAUDE: AcpProfile = {
 	// Offered where the adapter is not root (the container's agent user is uid 1000) and the managed settings do not disable it.
 	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "subscription", items: true, subtasks: true,
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
-	capabilities: acpCapabilities({ platformTools: tools("report", "ask_person") }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
 	signedInWith: "your Claude subscription",
 };
 
@@ -150,7 +152,7 @@ export const OPENCODE: AcpProfile = {
 	// Its permission config asks before edits and commands; an item's turn answers those itself (acp-harness.ts, `unattended`).
 	itemModes: { "docker-hardened": "build" }, sandboxedOn: [], itemTokens: "budget", items: true, subtasks: true,
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
-	capabilities: acpCapabilities({ platformTools: tools("report", "ask_person") }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
 	signedInWith: "the provider sign-in kept on this machine",
 };
 
@@ -168,7 +170,7 @@ export const CODEX: AcpProfile = {
 	// Its image's wlp-acp-mcp serves the platform's MCP server on the one URL its requirements.toml allows; an older
 	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
 	// chosen per prompt.
-	capabilities: acpCapabilities({ platformTools: tools("report", "ask_person"), planMode: true }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true }),
 	signedInWith: "the ChatGPT or API-key sign-in kept on this machine",
 };
 

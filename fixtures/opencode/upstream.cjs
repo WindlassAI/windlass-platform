@@ -75,6 +75,17 @@ https.createServer({key:fs.readFileSync('/fixture/key.pem'),cert:fs.readFileSync
 			for (const [delta,finish_reason] of steps) res.write('data: '+JSON.stringify({id:'msg-tools',created:1,model:request.model,object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason}]})+'\n\n');
 			return res.end('data: [DONE]\n\n');
 		}
+		// A person's turn with push, fetch_base and publish over MCP: a push, one that names main, a fetch, a publish, then text.
+		if (body.includes('Platform push check.') && (request.tools ?? []).some(tool => tool.function?.name === 'windlass_platform_push')) {
+			const results = (request.messages ?? []).filter(m => m.role === 'tool');
+			console.log('platform push', 'results=' + results.length, 'told=' + JSON.stringify(results.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' | ')));
+			const next = [['windlass_platform_push', { message: 'From the relay' }], ['windlass_platform_push', { branch: 'main' }],
+				['windlass_platform_fetch_base', {}], ['windlass_platform_publish', { title: 'Relay publish', description: 'Checked publish.' }]][results.length];
+			const steps = next ? [[{role:'assistant',tool_calls:[{index:0,id:'call_p'+results.length,type:'function',function:{name:next[0],arguments:JSON.stringify(next[1])}}]},null],[{},'tool_calls']]
+				: [[{role:'assistant',content:'platform push passed'},null],[{},'stop']];
+			for (const [delta,finish_reason] of steps) res.write('data: '+JSON.stringify({id:'msg-push',created:1,model:request.model,object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason}]})+'\n\n');
+			return res.end('data: [DONE]\n\n');
+		}
 		for (const [delta,finish_reason] of [[{role:'assistant',content:'relay proof'},null],[{},'stop']]) {
 			res.write('data: '+JSON.stringify({id:'msg-free',created:1,model:JSON.parse(body).model,
 				object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason}]})+'\n\n');

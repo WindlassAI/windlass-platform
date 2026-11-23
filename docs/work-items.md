@@ -160,9 +160,10 @@ harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`)
 agent still asks for is allowed once, except Codex's on `docker-windlass-sandbox`, which is refused and
 ends the step (`turn_ended.escaped`). The reviewer stays Windlass and runs only hosted, so these
 items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
-snapshot), and of the platform's tools `report` and `ask_person`, over MCP
-([The platform's tools for every agent](#the-platforms-tools-for-every-agent)); never `push` or `fetch_base`,
-so the item's publish step pushes everything. The platform runs the repository's saved checks and
+snapshot), and of the platform's tools `report`, `ask_person`, `push` and `fetch_base`, over MCP
+([The platform's tools for every agent](#the-platforms-tools-for-every-agent)): it may push its branch
+mid-turn, and the item's publish step pushes what is left, under the platform's lease, as for a Windlass
+builder. The platform runs the repository's saved checks and
 holds the turn to its step limit ([Checks and steps for Claude Code, OpenCode and Codex](#checks-and-steps-for-claude-code-opencode-and-codex)),
 and the verdict reads them as it reads Windlass's gate.
 Where the sign-in method decides how tokens count (Codex, `itemTokens: "sign-in"`), the filing keeps
@@ -234,14 +235,15 @@ cd server && npx tsx ../scripts/harness-check.ts   # checks pass, fail then pass
 One layer holds the platform's tools for every agent (`server/src/platform-tools.ts`): which a turn is
 offered (`turnPlatformTools`, by the callbacks the session gives it), their declarations (`platformTools`
 in `agent-publish.ts`), how a call runs (`runPlatformTool`), and where each may be served from
-(`TOOL_REACH`). The handlers are the session's (`onReport`, `onAsk` in `agent-session.ts`), built once for
-any agent, with the same cleaning and limits (`askPerson`, `fileReport`). Only the transport differs:
+(`TOOL_REACH`). The handlers are the session's (`onReport`, `onAsk`, `onPush`, `onFetchBase`, `onPublish` in
+`agent-session.ts`), built once for any agent, with the same cleaning and checks (`askPerson`, `fileReport`,
+`pushRequest`, `publishRequest`). Only the transport differs:
 
 - **Windlass** takes every tool as a host tool (`_meta.windlass.hostTools`, `_windlass/host_call` on the
   engine's connection). Windlass 0.6.0 ignores the MCP servers a client passes in `session/new`, and an MCP
   tool's result taints its session, after which an unattended turn's calls that send data out are refused.
   A host tool declared `read` with a trusted result runs in every approval mode, after taint, on every
-  profile, so Windlass keeps host tools for these two as well.
+  profile, so Windlass keeps host tools for all of them.
 - **Claude Code, OpenCode and Codex** are given one MCP server, `windlass_platform`, declared `"type": "acp"` in
   `session/new` (MCP over ACP): each MCP request comes back as an `mcp/message` request on the agent's own
   ACP connection, which the platform answers (`PlatformMcpServer`). Claude Code's adapter (0.109.0) takes
@@ -253,38 +255,63 @@ any agent, with the same cleaning and limits (`askPerson`, `fileReport`). Only t
   `acp` servers, swaps each for a loopback HTTP endpoint with an HMAC bearer token, and sends each request
   on as `mcp/message`. Codex's image runs the same bridge (`sandbox/harness/shared/`) in front of
   codex-acp, on the fixed port its `requirements.toml` allows ([docs/codex.md](codex.md#work-items)). An
-  adapter that takes no `acp` server (an older image) gets none, and the timeline says the turn has no
-  `report` or `ask_person`.
+  adapter that takes no `acp` server (an older image) gets none, and the timeline says which tools the
+  turn lacks. Each image gives a call of the platform's tools up to an hour (Windlass's limit for a host
+  call), since a publish waits for the person: Claude Code's wrapper sets `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`,
+  OpenCode's config `experimental.mcp_timeout`, and `wlp-codex-app-server` the server's `tool_timeout_sec`.
+  Claude Code's managed policy allows the five tools by name, so Claude does not ask about them before the
+  platform does.
 
-Only a builder's item turn is given them: not a person's session, not the planner, the summary or the
-reviewer (the same turns a Windlass builder gets `ask_person` in). A call is answered only while the
-turn's prompt runs; one before it or after it reaches no handler.
+Which turn is given which: a builder's item turn `report`, `ask_person`, `push` and `fetch_base`; a
+person's session with a repository `publish`, `push` and `fetch_base`; never the planner, the summary or
+the reviewer, whose `file_plan` and `file_review` stay host tools of Windlass's. A call is answered only
+while the turn's prompt runs; one before it or after it reaches no handler. Over MCP one turn may push
+at most 5 times and fetch the base at most 3 times (`MCP_LIMITS`); a call past that reaches no handler,
+the agent is told plainly, and the timeline says so. Every push, fetch and publish that came over MCP
+says in its timeline line that any process in the sandbox may have made it (`MCP_CALL_WORDS`).
 
-**Why only these two go over MCP.** A Windlass host tool is called by the model through Windlass. The MCP
-endpoint is in the container, and any process there may be able to call it: the repository's setup
-script, a test, a command the agent was talked into running. Its token is in the agent's memory only
-(Claude Code's adapter hands it to the CLI over stdin; `wlp-acp-mcp` in the session's parameters), and
-never on disk or on a command line, but a process of the same user could read it from that memory. OpenCode
-also runs its own HTTP API on 127.0.0.1:4096 in the container, without a password, through which any
-process there can drive the agent, and so reach these tools the same way. So each tool served this way
-has to be harmless when such a process calls it:
+**What any process in the container can do, and why it is bounded.** A Windlass host tool is called by
+the model through Windlass. The MCP endpoint is in the container, and any process there may be able to
+call it: the repository's setup script, a test, a command the agent was talked into running. Its token
+is in the agent's memory only (Claude Code's adapter hands it to the CLI over stdin; `wlp-acp-mcp` in
+the session's parameters), and never on disk or on a command line, but a process of the same user could
+read it from that memory. OpenCode also runs its own HTTP API on 127.0.0.1:4096 in the container, without
+a password, through which any process there can drive the agent, and so reach these tools the same way.
+So each tool served this way has to be bounded when such a process calls it:
 
 - `report` files text for the person, which is a claim and never the verdict: whether the work is ready is
   decided from the checks and CI. The worst is a wrong report, which the agent's own later call replaces.
 - `ask_person` puts one question to the person, with Windlass's limits (one a turn, 3 a run, the same
   redaction and hidden-character stripping). The worst is one wrong question a run's limit already counts.
   The person's answer is the next turn's message and stays trusted (`factory/untrusted.ts`).
+- `push` commits the workspace and pushes it to the session's own branch, which the platform names. A
+  call that names another branch is refused, however it spells it, and nothing else in a call is read but
+  the commit message: no ref, force, lease or remote. The token is the platform's, minted for the one
+  push and never in the container. The push runs from a private copy of the objects the platform staged
+  and scanned for saved secrets, not from the workspace's Git configuration, so its remotes, refspecs and
+  hooks are not used, and a workspace that rewrites GitHub's address is refused before any token. Under
+  the platform's lease it replaces only the platform's own last push, never a commit anyone else pushed
+  (`pushScript` in `server/src/github/git.ts`). So the worst is pushing what any process could already
+  have put in the workspace to a branch that holds only this session's work: at most 5 times a turn, each
+  of which runs the repository's push CI, as the agent's own pushes do.
+- `fetch_base` fetches the base and the session's branch into `origin/*` with a read-only token, and
+  changes neither the working tree nor a local branch. The worst is 3 fetches a turn.
+- `publish` opens or updates a pull request under the person's name. Over MCP every call is put to the
+  person, in any profile, never "for this session" and never unasked: the question says the request
+  came from inside the sandbox and may not be the agent's (`agentPublish`, `publishQuestionWords` with
+  `via`). The session's "Let the agent publish without asking" is refused for these agents. The worst is a
+  question the person declines.
 
-Neither grants anything: no credential and no token reaches the container, and nothing changes outside
-the platform's own record of the turn. The endpoint lives as long as the adapter process, which is one
-turn, so its token is worth nothing afterwards, and it reaches only these two tools.
+None of them hands anything to the container: no credential and no token, and nothing a process there
+could not already do to the workspace. The endpoint lives as long as the adapter process, which is one
+turn, so its token is worth nothing afterwards. This is the exposure Windlass already has on "Docker,
+hardened", where its commands can write on the engine's connection and so call its host tools
+([Known limitations](known-limitations.md)): there too a push is never asked about and a publish always
+is. `server/src/github/git.ts` is what makes a forged push harmless, and `scripts/github-check.ts`
+("a process of the sandbox that steers the workspace and calls push") checks it with real Git.
 
-`publish`, `push`, `fetch_base`, `file_plan` and `file_review` stay host tools (`TOOL_REACH` says what
-each would need to move): `publish` would have to ask the person every time, as it does where commands are
-not sandboxed; `push` and `fetch_base` would need their branch, lease and token handling (the token never
-enters the sandbox) plus a limit per turn and a timeline line that says a process may have made the call;
-a rogue `file_plan` or `file_review` would reach the owner's approval or a pull request's verdict as the
-agent's.
+`file_plan` and `file_review` stay host tools (`TOOL_REACH`): a rogue plan or review would reach the
+owner's approval or a pull request's verdict as the agent's.
 
 ## Feature orchestration
 
