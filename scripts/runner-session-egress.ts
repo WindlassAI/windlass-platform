@@ -75,6 +75,12 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 				const { turn } = await conn.prompt({ text: "plain" });
 				const end = await until("turn end", () => items.find(i => i.kind === "turn.ended" && i.turn === turn), 180_000);
 				assert(end.kind === "turn.ended" && end.outcome === "succeeded", JSON.stringify(items.slice(-5)));
+				const observations = (await conn.snapshot()).timeline.filter(i => i.kind === "network.blocked" && i.turn === turn);
+				assert.equal(observations.length, 1, "one final refusal snapshot for this sandbox's turn");
+				const blocked = observations[0];
+				assert.ok(blocked.kind === "network.blocked");
+				for (const host of ["169.254.169.254", "10.0.0.1", "172.17.0.1"])
+					assert.ok(blocked.hosts.some(h => h.host === host && h.port === 80 && h.count === 1 && h.reason === "private" && h.allow === "never"));
 				const name = await docker("ps", "--filter", "label=" + MACHINE_LABEL + "=" + machineId, "--filter", "label=" + LABEL + ".session=" + session.id, "--format", "{{.Names}}");
 				assert(name.startsWith(prefix + "agent-"));
 				const result = await docker("exec", name, "cat", "/tmp/proof-output");

@@ -1264,7 +1264,11 @@ await section("an item's step after its agent pushed everything: the open pull r
 	const branch = "windlass/item-shown-00eeff";
 	const base = { app, connection: adaConnection, repository, sandbox, sessionId: "s_itemshown00eeff", branch, evidence: NOTHING_VERIFIED };
 	writeFileSync(join(sandbox.cwd, "ITEM.md"), "- one\n");
-	const opened = await publish.publishWork({ ...base, pull: null, pushed: null, message: { title: "The item", body: "Round one." } });
+	const network: import("../server/src/contract.js").BlockedNetwork = { hosts: [{ host: "registry.example", port: 443, count: 3, firstAt: 1, lastAt: 3, reason: "machine_policy", allow: "machine", machineNames: ["Build box"] }], overflow: 0 };
+	const opened = await publish.publishWork({ ...base, blockedNetwork: network, pull: null, pushed: null, message: { title: "The item", body: "Round one." } });
+	const description = standin.pulls.find(p => p.repository === harbor.id && p.number === opened.pull.number)!.body;
+	expect("an item PR includes the blocked destination and count once, without offering a repository fix for machine policy", description.split("Blocked network requests during this work: registry.example:443 (3).").length === 2 && !description.includes("repository network settings"));
+	expect("the network line belongs to the PR description alone", !standin.lastCommit(harbor, branch).message.includes("Blocked network"));
 	writeFileSync(join(sandbox.cwd, "ITEM.md"), "- one\n- two\n");
 	const pushed = await publish.pushWork({ ...base, pushed: opened.head, lease: opened.head }, "The fix of round two");
 	const refused = await problem(() => publish.publishWork({ ...base, pull: opened.pull, pushed: pushed.head, message: { title: "unused", body: "" } }));

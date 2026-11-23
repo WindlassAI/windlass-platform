@@ -417,7 +417,7 @@ export class ServerChannel extends Channel {
 			if (!validArgs(name, args)) return reject(new Error(`Invalid arguments for the runner's ${name}.`));
 			if (this.pending.size >= MAX_OPS_IN_FLIGHT) return reject(new Error("Too many operations are waiting on the machine."));
 			const own = (args as { options?: { timeoutMs?: number } }).options?.timeoutMs;
-			const timer = setTimeout(() => this.settle(id, new ConversationLost("The machine did not answer in time.")), (own ?? OP_MS) + RUNNER_GRACE_MS);
+			const timer = setTimeout(() => this.settle(id, new ConversationLost("The machine did not answer in time.")), name === "blockedNetwork" ? 5_000 : (own ?? OP_MS) + RUNNER_GRACE_MS);
 			const cancel = () => { if (this.pending.has(id)) this.send({ kind: "cancel", id }); };
 			signal?.addEventListener("abort", cancel, { once: true });
 			this.pending.set(id, { name, resolve, reject, output: onOutput, timer, forget: () => signal?.removeEventListener("abort", cancel) });

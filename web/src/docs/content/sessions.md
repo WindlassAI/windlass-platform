@@ -44,7 +44,11 @@ You can copy a prompt, an answer (as Markdown) or a code block with the copy but
 
 ### A host the sandbox cannot reach
 
-Where the platform limits its hosted sandboxes' network, a command that looks up a host the sandbox may not reach fails at once. After the setup command and at the end of each turn, the timeline names each such host once: "A command in this sandbox could not reach registry.example.com…". On an agent with a repository, choose **Allow for this repository** to add the host to the repository's network list. While a turn is running, this agent's sandbox reaches it at once; otherwise it applies from the next turn, as it does for the repository's other hosted agents. **Network list** opens the list in the repository's settings, where the host also waits under **Asked for by its agents** until you allow or dismiss it. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+Network refusals appear during the turn and are checked again when it ends. On a paired machine with a reporting runner in restricted mode, the session records the destination host and port, first and last refusal times, reason and count. It keeps 50 distinct destinations and counts further refusals together. Paths, query strings, headers and bodies are excluded. If the machine’s public host list blocked a name, its owner can add it with `--egress-domains` when starting that runner. A repository setting cannot override private-address, metadata or agent-provider restrictions.
+
+On restricted E2B sandboxes, the timeline reports the first refused DNS lookup for each name the sandbox records. DNS supplies neither a destination port nor a count of connection attempts. Choose **Allow for this repository** to apply an eligible host to the running hosted sandbox and to other hosted agents from their next turn. The name also appears under **Asked for by its agents** in repository network settings. Allow only a host you expect.
+
+A work item combines observations from its builder and reviewer. When the item publishes a pull request, its description includes a short count of blocked network requests.
 
 ## Send a prompt
 

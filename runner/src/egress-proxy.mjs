@@ -6,6 +6,42 @@ import http from "node:http";
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 
+function refuse(reason) {
+	throw Object.assign(Error("blocked"), { reason });
+}
+
+const severity = { machine_policy: 0, malformed: 1, provider: 2, private: 3 };
+/** Trusted broker memory. Keep the same 50 destination slots across turns, but report only this turn's counts. */
+export function refusalLedger() {
+	const slots = new Map();
+	let turn = 0, overflow = 0;
+	return {
+		read(number) {
+			if (number > turn) {
+				turn = number;
+				overflow = 0;
+				for (const key of slots.keys()) slots.set(key, null);
+			}
+			return number === turn ? { hosts: [...slots.values()].filter(Boolean), overflow } : { hosts: [], overflow: 0 };
+		},
+		record(url, reason, at = Date.now()) {
+			if (!turn) return;
+			const name = url?.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
+			const host = name && (net.isIP(name) || (name.length <= 253 && name.split(".").every(label => LABEL.test(label)))) ? name : null;
+			const port = host ? (url.port ? Number(url.port) : url.protocol === "http:" ? 80 : url.protocol === "https:" ? 443 : null) : null;
+			const key = JSON.stringify([host, port]);
+			const entry = slots.get(key);
+			if (entry) {
+				entry.count++;
+				entry.lastAt = at;
+				if (severity[reason] > severity[entry.reason]) entry.reason = reason;
+			} else if (slots.has(key) || slots.size < 50) {
+				slots.set(key, { host, port, reason, firstAt: at, lastAt: at, count: 1 });
+			} else overflow++;
+		},
+	};
+}
+
 const socket = "/workspace/egress.sock";
 /** Where the model relay's forwarder says it holds its port: a tmpfs of the forwarder's own container. */
 export const MODEL_FORWARD_READY = "/run/wlp-model/ready/listening";
@@ -24,7 +60,7 @@ const blocked = subnets(["0.0.0.0/8", "127.0.0.0/8", "100.64.0.0/10", "169.254.0
 const globalV6 = subnets(["2000::/3"]);
 // `privateOnly`: an --egress-allow name that is not on the owner's list of public hosts may reach only the private network.
 export async function selectAddress(host, allow, resolve = lookup, interfaces = networkInterfaces(), denied = [], privateOnly = false) {
-	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase().replace(/\.$/, "")))) throw Error("blocked");
+	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase().replace(/\.$/, "")))) refuse("provider");
 	const answers = net.isIP(host) ? [{ address: host }] : await resolve(host, { all: true });
 	const hostAndBridges = new net.BlockList();
 	for (const [name, entries] of Object.entries(interfaces)) {
@@ -39,9 +75,10 @@ export async function selectAddress(host, allow, resolve = lookup, interfaces = 
 		const family = net.isIPv4(address) ? "ipv4" : "ipv6";
 		const privateLan = lan.check(address, family);
 		if (!net.isIP(address) || blocked.check(address, family) || hostAndBridges.check(address, family)
-			|| (privateLan && !allow.includes(host)) || (privateOnly && !privateLan) || (family === "ipv6" && !privateLan && !globalV6.check(address, family))
+			|| (privateLan && !allow.includes(host)) || (family === "ipv6" && !privateLan && !globalV6.check(address, family))
 			|| (family === "ipv6" && address.toLowerCase().startsWith("::ffff:")))
-			throw Error("blocked");
+			refuse("private");
+		if (privateOnly && !privateLan) refuse("machine_policy");
 	}
 	if (!answers.length) throw Error("unresolved");
 	// Dial the checked IP. A second DNS lookup, even inside http.request, would reopen rebinding.
@@ -134,26 +171,32 @@ function headers(input) {
 // The address a request may go to. `tunnel`: a CONNECT (whose port is always explicit) rather than plain HTTP.
 export async function targetAddress(url, tunnel, allow, denied, domains = null, device = false, resolve = lookup, interfaces = networkInterfaces()) {
 	const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
-	if (device && (host !== "auth.openai.com" || url.port !== "443")) throw Error("blocked");
-	if (!host || url.username || url.password) throw Error("blocked");
+	if (!host || url.username || url.password) refuse("malformed");
+	if (device && (host !== "auth.openai.com" || url.port !== "443")) refuse("provider");
+	if (net.isIP(host)) {
+		const family = net.isIPv4(host) ? "ipv4" : "ipv6";
+		if (blocked.check(host, family) || lan.check(host, family) && !allow.includes(host) || family === "ipv6" && !lan.check(host, family) && !globalV6.check(host, family)) refuse("private");
+	}
+	if (denied.length && (net.isIP(host) || denied.includes(host.toLowerCase()))) refuse("provider");
 	// A list also limits the ports: HTTPS tunnels to 443, plain HTTP to 80. A name only in --egress-allow
 	// passes it, but then only to a private address: the allow list never adds a public host.
 	let privateOnly = false;
 	if (domains) {
-		if (url.port !== (tunnel ? "443" : "")) throw Error("blocked");
+		if (url.port !== (tunnel ? "443" : "") || net.isIP(host) || !host.split(".").every(label => LABEL.test(label)) || host.length > 253) refuse("malformed");
 		if (!listedHost(host, domains)) {
-			if (!allow.includes(host.toLowerCase())) throw Error("blocked");
+			if (!allow.includes(host.toLowerCase())) refuse("machine_policy");
 			privateOnly = true;
 		}
 	}
 	return selectAddress(host, allow, resolve, interfaces, denied, privateOnly);
 }
-function broker(allow, denied, device = false, domains = null) {
+export function proxyServer(allow, denied, device = false, domains = null, record = () => {}) {
 	const target = (url, tunnel) => targetAddress(url, tunnel, allow, denied, domains, device);
 	const server = http.createServer(async (req, res) => {
+		let url;
 		try {
-			const url = new URL(req.url);
-			if (device || url.protocol !== "http:") throw Error("blocked");
+			url = URL.parse(req.url);
+			if (!url || device || url.protocol !== "http:") refuse("malformed");
 			const ip = await target(url, false);
 			if (res.destroyed) return;
 			const out = http.request({ hostname: ip, port: url.port || 80, method: req.method,
@@ -167,15 +210,18 @@ function broker(allow, denied, device = false, domains = null) {
 			res.on("close", () => out.destroy());
 			req.pipe(out);
 		} catch (error) {
+			if (error.reason) record(url, error.reason);
 			res.writeHead(error.message === "blocked" ? 403 : 502);
 			res.end(error.message === "blocked" ? "blocked by runner egress policy\n" : "upstream unavailable\n");
 		}
 	});
 	server.on("connect", async (req, client, head) => {
 		client.on("error", () => client.destroy());
+		let url;
 		try {
-			if (!/^(?:\[[0-9a-f:]+\]|[a-z0-9.-]+):[0-9]{1,5}$/i.test(req.url)) throw Error("blocked");
-			const url = new URL("http://" + req.url);
+			if (!/^(?:\[[0-9a-f:]+\]|[a-z0-9.-]+):[0-9]{1,5}$/i.test(req.url)) refuse("malformed");
+			url = URL.parse("http://" + req.url);
+			if (!url) refuse("malformed");
 			const ip = await target(url, true);
 			if (client.destroyed) return;
 			const out = net.connect(Number(url.port || 80), ip);
@@ -191,7 +237,7 @@ function broker(allow, denied, device = false, domains = null) {
 				// Only a TLS ClientHello naming the tunnel's own host is sent on.
 				const host = url.hostname.replace(/\.$/, "").toLowerCase();
 				let data = head;
-				const refuse = () => { clearTimeout(timer); client.destroy(); out.destroy(); };
+				const refuse = () => { record(url, "malformed"); clearTimeout(timer); client.destroy(); out.destroy(); };
 				const timer = setTimeout(refuse, 5_000);
 				const read = chunk => {
 					if (chunk) data = Buffer.concat([data, chunk]);
@@ -209,10 +255,31 @@ function broker(allow, denied, device = false, domains = null) {
 				read();
 			});
 		} catch (error) {
+			if (error.reason) record(url, error.reason);
 			client.end(error.message === "blocked" ? "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n" : "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
 		}
 	});
+	// Node can reject a malformed request before either HTTP handler sees it. Never inspect its raw packet.
+	server.on("clientError", (error, client) => {
+		if (!client.destroyed && error.code?.startsWith("HPE_")) record(null, "malformed");
+		client.destroy();
+	});
 	server.maxConnections = 256;
+	return server;
+}
+function broker(allow, denied, device = false, domains = null) {
+	const ledger = refusalLedger();
+	if (!device) {
+		// Separate Unix socket in the helpers' volume. The sandbox can only reach the HTTP forwarder.
+		const path = "/workspace/observe.sock";
+		rmSync(path, { force: true });
+		http.createServer((req, res) => {
+			const turn = Number(req.url.slice(1));
+			if (!Number.isSafeInteger(turn) || turn <= 0) { res.writeHead(400); return res.end(); }
+			res.end(JSON.stringify(ledger.read(turn)));
+		}).listen(path);
+	}
+	const server = proxyServer(allow, denied, device, domains, ledger.record);
 	rmSync(socket, { force: true });
 	server.listen(socket);
 }

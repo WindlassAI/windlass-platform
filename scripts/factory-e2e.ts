@@ -919,6 +919,25 @@ async function memoryChecks(): Promise<void> {
 		return { c, db, raw: memory.raw, holdWrites: memory.holdWrites, failOnce: memory.failOnce, jobs, schedules, publishes, drain: () => drained(jobs) };
 	};
 
+	await check("memory: blocked network totals on the item survive retries and combine builder and reviewer counts", async () => {
+		const actor = await itemActor(machine().item, { freeReviewer: async () => {} });
+		const receipt = (sessionId: string, revision: number, count: number, name: string) => ({
+			sessionId, revision, network: { hosts: [{ host: "registry.example", port: 443, firstAt: 1, lastAt: count, count, reason: "machine_policy", allow: "machine", machineNames: [name] }], overflow: revision },
+		});
+		await actions.internalBlockedNetwork(actor.c, receipt("s", 2, 3, "Builder"));
+		await actions.internalBlockedNetwork(actor.c, receipt("s", 1, 1, "Builder"));
+		await actions.internalBlockedNetwork(actor.c, receipt("s", 2, 3, "Builder"));
+		await actions.internalBlockedNetwork(actor.c, receipt("review-session", 1, 2, "Reviewer"));
+		await actions.internalBlockedNetwork(actor.c, receipt("other", 8, 9, "Other"));
+		await actor.drain();
+		actor.c.vars = await createVars(actor.c, undefined);
+		const view = await actions.internalView(actor.c);
+		const { hosts, overflow } = view.blockedNetwork;
+		assert(hosts.length === 1 && hosts[0].count === 5 && overflow === 3, "the item did not union the two sessions exactly once");
+		assert(hosts[0].machineNames.join() === "Builder,Reviewer" && hosts[0].allow === "machine", "missing machine owner settings");
+		return undefined;
+	});
+
 	const publishedItem = () => {
 		const m = machine();
 		m.send({ kind: "start" });

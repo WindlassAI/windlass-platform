@@ -118,7 +118,7 @@ export interface TurnRelease {
 }
 
 /** What the outbox sends: a fact to the item, or a slot given back to the user's turn queue. */
-export type OutboxMessage = { to: "tokens"; receipt: TokenReceipt } | { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
+export type OutboxMessage = { to: "network"; itemId: string; revision: number; network: import("../contract.js").BlockedNetwork } | { to: "tokens"; receipt: TokenReceipt } | { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
 
 /** What a slot request hands the user's turn queue (user-items.ts `internalRequestTurn`). */
 export interface TurnRequest {
@@ -317,10 +317,10 @@ export async function settleTokenReceipts(c: InboxCtx, uid: string): Promise<voi
 const OUTBOX_RETRY_FIRST_MS = 10_000;
 const OUTBOX_RETRY_MOST_MS = 5 * 60_000;
 
-// Do not release a slot or advance the item past unacknowledged spending, even during a
-// receipt's retry delay. Unrelated earlier facts can still be sent.
+// Spending must settle before slot release. A turn end must also follow its network receipt,
+// so an item publishing immediately can include the final counts even after a retry.
 const sendable = `(json_extract(message, '$.to') = 'tokens' OR NOT EXISTS (
-	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'tokens'))`;
+	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') IN ('tokens', 'network')))`;
 
 /**
  * Sends what is due in the outbox, oldest first; removes each once it was acknowledged, and sets the
@@ -333,7 +333,8 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 		for (const row of rows) {
 			const message = JSON.parse(row.message) as OutboxMessage;
 			try {
-				if (message.to === "item") await itemActor(c, uid, message.itemId).internalFact(message.fact);
+				if (message.to === "network") await itemActor(c, uid, message.itemId).internalBlockedNetwork({ sessionId: c.key[1]!, revision: message.revision, network: message.network });
+				else if (message.to === "item") await itemActor(c, uid, message.itemId).internalFact(message.fact);
 				else if (message.to === "tokens") await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt: message.receipt });
 				else await userActor(c, uid).internalTurnDone({ sessionId: c.key[1] as string, ...message.done });
 				await c.db.execute("DELETE FROM outbox WHERE id = ?", row.id);

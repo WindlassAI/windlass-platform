@@ -1,3 +1,4 @@
+import { validValue, type Value } from "../../server/src/runner/protocol.js";
 import { RUNNER_HTTP_PROXY as proxy } from "../../server/src/runner/egress.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -87,21 +88,22 @@ export class EgressNetwork {
 		if (!this.owns(labels) || labels[roleLabel] !== role) throw new Refusal("The egress helper name belongs to another container.");
 		return { id, running: running === "true", revision: labels[revisionLabel] };
 	}
-	private async ensure(role: "broker" | "forward", name: string, revision: string, network: string, source: string, mounts: string[], args: string[], probes: string[]) {
+	private async ensure(role: "broker" | "forward", name: string, revision: string, network: string, source: string, mounts: string[], args: string[], probes: string[], brokerId?: string) {
 		const existing = await this.helper(name, role);
-		if (existing?.revision === revision && existing.running) return;
-		if (existing) await checked(["rm", "-f", existing.id]);
+		if (existing?.revision === revision && existing.running) return existing.id;
+		if (existing) await checked(["rm", "-fv", existing.id]);
 		// A runner upgrade may restore a kept session before welcome prepares the new pin.
 		await this.machine.ensureImage();
 		const started = await checked(["run", "-d", "--pull", "never", "--name", name,
 			"--label", LABEL_ARG, ...this.machine.pairingLabelFlags, "--label", roleLabel + "=" + role,
 			"--label", revisionLabel + "=" + revision, "--network", network, "--user", "agent", "--cap-drop", "ALL",
 			"--read-only", "--security-opt", "no-new-privileges", "--pids-limit", "32", "--memory", "128m", "--cpus", "0.5",
-			...NO_LOGS, ...mounts.flatMap(mount => ["--mount", mount]),
+			...NO_LOGS, ...(brokerId ? ["--volumes-from", brokerId + ":ro"] : []), ...mounts.flatMap(mount => ["--mount", mount]),
 			image, "node", "--input-type=module", "-e", source, "--", "wlp-egress-" + role, ...args]);
 		const id = started.stdout.trim();
 		try { for (const probe of probes) await waitForListener(id, probe); }
-		catch (err) { await checked(["rm", "-f", id]); throw err; }
+		catch (err) { await checked(["rm", "-fv", id]); throw err; }
+		return id;
 	}
 	async attach(raw: string, container: string) {
 		const proxyEnabled = this.policy.mode === "restricted";
@@ -111,13 +113,12 @@ export class EgressNetwork {
 		const denied = !proxyEnabled ? [] : harness === "codex" ? ["api.openai.com", "auth.openai.com", "chatgpt.com"] : harness === "opencode" ? providerHosts : [];
 		const revision = createHash("sha256").update(JSON.stringify([image, source, this.policy, this.domains() ?? null, denied])).digest("hex");
 		const mounts: string[] = [], probes: string[] = [];
+		let brokerId: string | undefined;
 		if (proxyEnabled) {
-			const broker = denied.length ? `${this.prefix}-${harness}-broker` : this.prefix;
-			const volume = broker + "-socket";
-			await this.machine.ownedVolume(true, volume);
-			const mount = `type=volume,src=${volume},dst=/workspace`;
-			await this.ensure("broker", broker, revision, "host", source, [mount], [JSON.stringify(this.policy.allow), JSON.stringify(denied), JSON.stringify(this.domains() ?? null)], ["/workspace/egress.sock"]);
-			mounts.push(mount + ",readonly");
+			// Each sandbox has a broker and an anonymous socket volume. Its trusted forwarder is the only
+			// other container mounting that volume. Removing both helpers removes the volume with them.
+			brokerId = await this.ensure("broker", this.prefix + "-broker-" + raw, revision, "host", source, ["type=volume,dst=/workspace"],
+				[JSON.stringify(this.policy.allow), JSON.stringify(denied), JSON.stringify(this.domains() ?? null)], ["/workspace/egress.sock"]);
 			probes.push("17891");
 		}
 		// The nonce is an immutable runner-issued container label, outside the agent filesystem.
@@ -131,21 +132,36 @@ export class EgressNetwork {
 			mounts.push(`type=volume,src=${volume},dst=/run/wlp-relay,readonly,volume-nocopy`);
 			probes.push("17892");
 		}
-		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, nonce].join("-"), "container:" + container,
-			source, mounts, [this.policy.mode, ...(harness ? [nonce] : []), ...(harness === "codex" ? ["codex"] : [])], probes);
+		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, nonce, brokerId].join("-"), "container:" + container,
+			source, mounts, [this.policy.mode, ...(harness ? [nonce] : []), ...(harness === "codex" ? ["codex"] : [])], probes, brokerId);
+	}
+	/** Read in the broker's namespace. Nothing in the agent can issue observation requests. */
+	async blocked(raw: string, turn: number): Promise<Value<"blockedNetwork">> {
+		const broker = await this.helper(this.prefix + "-broker-" + raw, "broker");
+		if (!broker?.running) throw new Refusal("The network broker is unavailable.");
+		const read = 'require("node:http").get({socketPath:"/workspace/observe.sock",path:"/"+process.argv[1]}, r => r.pipe(process.stdout)).on("error", () => process.exit(1))';
+		const result = await docker(["exec", broker.id, "node", "-e", read, String(turn)], { check: true, timeoutMs: 4000 });
+		const value: unknown = JSON.parse(result.stdout);
+		if (!validValue("blockedNetwork", value)) throw new Refusal("The network broker returned an invalid snapshot.");
+		return value;
 	}
 	async detach(raw: string) {
 		const helper = await this.helper(this.prefix + "-" + raw, "forward");
-		if (helper) await checked(["rm", "-f", helper.id]);
+		if (helper) await checked(["rm", "-fv", helper.id]);
+		const broker = await this.helper(this.prefix + "-broker-" + raw, "broker");
+		if (broker) await checked(["rm", "-fv", broker.id]);
 	}
 	async reconcile(running: Set<string>) {
 		const flags = Object.entries(this.machine.labels).flatMap(([k, v]) => ["--filter", "label=" + k + "=" + v]);
 		const rows = await checked(["ps", "-a", "--filter", "label=" + LABEL_ARG, ...flags, "--filter", "label=" + roleLabel, "--format", "{{.Names}}"]);
 		for (const name of rows.stdout.trim().split("\n").filter(Boolean)) {
 			if (name === this.prefix || name === this.prefix + "-opencode-broker" || name === this.prefix + "-codex-broker") {
-				if (this.policy.mode === "restricted" && running.size) continue;
+				// Shared brokers from earlier releases have been replaced by attach().
 				const helper = await this.helper(name, "broker");
-				if (helper) await checked(["rm", "-f", helper.id]);
+				if (helper) await checked(["rm", "-fv", helper.id]);
+			} else if (name.startsWith(this.prefix + "-broker-")) {
+				const raw = name.slice((this.prefix + "-broker-").length);
+				if (!running.has(raw)) await this.detach(raw);
 			} else if (name.startsWith(this.prefix + "-")) {
 				const raw = name.slice(this.prefix.length + 1);
 				if (!running.has(raw)) await this.detach(raw);

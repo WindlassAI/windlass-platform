@@ -170,6 +170,8 @@ import {
 	type WorkspaceFile,
 	WIDE_HOSTS,
 } from "../contract.js";
+import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../blocked-network.js";
+import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
@@ -419,6 +421,8 @@ interface SessionMeta {
 	networkHosts?: string[];
 	/** The blocked hosts the timeline named for the sandbox it has now: each is named once per sandbox (`noteBlockedHosts`). */
 	hostsNoted?: string[];
+	/** Lifetime totals and a monotone receipt for the item actor. */
+	blocked?: { revision: number; network: BlockedNetwork };
 	snapshotCommit?: string | null;
 	cloneDirectory?: string;
 	/** A cross-repo feature's planning turn put its other repositories' trees in the workspace (`planningInputs`). */
@@ -495,6 +499,7 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
+	finishNetwork?: () => Promise<void>;
 	planMode?: boolean;
 	openAcp?: () => NewItem | null;
 	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
@@ -696,6 +701,7 @@ interface Ctx {
 }
 
 type NewItem =
+	| Omit<NetworkBlockedItem, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "user" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "platform" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "acp" }>, "seq" | "at">
@@ -824,14 +830,19 @@ async function writeItems(c: Ctx): Promise<void> {
 			const tokens = turnTokens(reportedModelUsage(item.event));
 			return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
 		}) : [];
-		if (receipts.length) {
+		const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
+		if (receipts.length || network) {
 			// These are the model requests summed by the turn summary. Keep their original UTC day
 			// and sequence number, including when a turn is interrupted or a delivery is retried.
 			await c.db.transaction(async tx => {
 				await insertItems(tx, batch);
 				for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
+				if (network && meta) {
+					await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+					if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...network });
+				}
 			}, { name: "timeline.usage" });
-			if (!c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
+			if (!c.vars.stopping && (receipts.length || meta?.origin)) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
 		} else await insertItems(c.db, batch);
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
@@ -1255,7 +1266,7 @@ const MAX_HOSTS_NOTED = 40;
  * requests on its repository's network list. Only where the deployment's hosted sandboxes are
  * `restricted`, where a list can help. Never throws: it only reports.
  */
-async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
+async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer, observed: (hosts: string[]) => void): Promise<void> {
 	if (meta.place.kind !== "hosted" || !sandbox.blockedHosts || layer.sandboxes.egress?.() !== "restricted") return;
 	const allowed = new Set(meta.networkHosts ?? []);
 	const noted = new Set(meta.hostsNoted ?? []);
@@ -1268,8 +1279,9 @@ async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox
 		c.log.warn({ msg: "could not read which hosts the sandbox could not reach", error: describeError(error) });
 		return;
 	}
-	const named = found.filter((host) => !allowed.has(host) && !noted.has(host)).slice(0, MAX_HOSTS_NOTED - noted.size);
+	const named = found.filter((host) => !allowed.has(host) && !noted.has(host) && (!c.vars.turn?.secrets || c.vars.turn.secrets.redactor.text(host) === host)).slice(0, MAX_HOSTS_NOTED - noted.size);
 	if (named.length === 0) return;
+	observed(named);
 	meta.hostsNoted = [...noted, ...named];
 	const project = setupProjectOf(meta);
 	for (const host of named) append(c, { turn, kind: "platform", level: "warn", text: blockedHostNote(host, project?.label ?? null), code: "host_blocked", host, ...(project ? { repository: true } : {}) });
@@ -1287,6 +1299,64 @@ async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox
 		if (left.length > 0) note(c, turn, "info", `${left.length === 1 ? "1 host was" : `${left.length} hosts were`} not filed as a request for ${project.label}: it has as many waiting as it keeps. Allow or dismiss some in its network list to make room.`);
 	}
 	void persist(c);
+}
+
+/** Only the first version consumes a sequence number. A replacement is durable before its live event.
+ * The session totals and the item's outbox receipt commit alongside the same timeline version. */
+function blockedRecorder(c: Ctx, meta: SessionMeta, turn: number) {
+	const before = meta.blocked?.network ?? emptyNetwork();
+	let row: NetworkBlockedItem | undefined;
+	let saved = JSON.stringify(emptyNetwork());
+	return async (snapshot: BlockedNetwork) => {
+		const network = limitNetwork(before, unionNetwork(snapshot));
+		const signature = JSON.stringify(network);
+		if (signature === saved) return;
+		const blocked = { revision: (meta.blocked?.revision ?? 0) + 1, network: unionNetwork(before, network) };
+		if (!row) {
+			meta.blocked = blocked;
+			row = append(c, { kind: "network.blocked", turn, ...network }) as NetworkBlockedItem;
+			await serial(c, () => writeItems(c));
+		} else {
+			const item = { ...row, ...network };
+			await serial(c, async () => {
+				await writeItems(c);
+				await c.db.transaction(async tx => {
+					await insertItems(tx, [item]);
+					await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify({ ...meta, blocked }));
+					if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...blocked });
+				}, { name: "session.network" });
+				meta.blocked = blocked;
+			});
+			c.broadcast("networkBlocked", item);
+			if (meta.origin) await flushOutbox(c, meta.uid);
+		}
+		saved = signature;
+	};
+}
+
+export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer) {
+	const proxy = sandbox.blockedNetwork?.bind(sandbox);
+	const dns = meta.place.kind === "hosted" && sandbox.blockedHosts && layer.sandboxes.egress?.() === "restricted";
+	if (!proxy && !dns) return;
+	const save = blockedRecorder(c, meta, turn);
+	const lookups = emptyNetwork();
+	return watchNetwork(async () => {
+		if (proxy) {
+			const snapshot = await proxy(turn);
+			const redactor = c.vars.turn?.secrets?.redactor;
+			const name = c.vars.runner?.known?.name || meta.machineName || (meta.place.kind === "machine" ? meta.place.machineId : "");
+			await save({ ...snapshot, hosts: snapshot.hosts.map(entry => {
+				const host = entry.host && redactor && redactor.text(entry.host) !== entry.host ? null : entry.host;
+				return { ...entry, host, machineNames: [redactor?.text(name) ?? name], allow: entry.reason === "machine_policy" && host && isHostName(host) ? "machine" : "never" };
+			}) });
+		} else {
+			await noteBlockedHosts(c, meta, turn, sandbox, layer, names => {
+				const at = Date.now();
+				for (const host of names) lookups.hosts.push({ host, port: null, reason: "unlisted", allow: setupProjectOf(meta) ? "repository" : "deployment", count: 1, firstAt: at, lastAt: at });
+			});
+			await save(lookups);
+		}
+	}, error => c.log.warn({ msg: "could not read blocked network requests", error: describeError(error) }));
 }
 
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
@@ -1387,6 +1457,9 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 	}
 
+	const active = c.vars.turn;
+	if (active) active.finishNetwork = await observeNetwork(c, meta, turn, handle, layer);
+
 	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
 	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
@@ -1394,8 +1467,6 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	// The repository's setup command, once in this sandbox, before Windlass is started in it, on the base; only then the session's branch.
 	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) {
 		await runSetup(c, meta, turn, handle, signal, secrets, plan, layer);
-		// What the setup command could not reach is said before the agent starts on it.
-		await noteBlockedHosts(c, meta, turn, handle, layer);
 	}
 	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
@@ -2207,7 +2278,7 @@ const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pul
  * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
  * everything itself (`agentPush`), and then an open pull request is only described again.
  */
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -2235,7 +2306,7 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 			recordPushHead(meta, sandbox, pushed.head);
 			return { state: await afterPublish(c, meta, sandbox), opened: false };
 		}
-		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
+		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, blockedNetwork, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
 		meta.updatedAt = Date.now();
@@ -3964,6 +4035,7 @@ fi`, { signal, timeoutMs: 5000 });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
 	}
+	await active.finishNetwork?.();
 	// A turn that ended before its agent's first output keeps what it measured.
 	clock?.finish();
 	if (c.vars.startClock === clock) c.vars.startClock = null;
@@ -4080,8 +4152,6 @@ fi`, { signal, timeoutMs: 5000 });
 		if (used) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
 			const saving = caps.backups && result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
-			// What the turn's commands could not reach, named before the turn is reported as ended.
-			if (layer && !c.vars.stopping && !c.vars.destroying) await noteBlockedHosts(c, meta, turn, used, layer);
 			const copied = reviewer || c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
 			if (!copied) await dropWorkspace(c);
 			await saving;
@@ -4968,6 +5038,7 @@ export const agentSession = actor({
 	},
 
 	events: {
+		networkBlocked: event<NetworkBlockedItem>({ canSubscribe: (c) => maySubscribe(c) }),
 		item: event<TimelineItem>({ canSubscribe: (c) => maySubscribe(c) }),
 		delta: event<LiveDelta>({ canSubscribe: (c) => maySubscribe(c) }),
 		summary: event<SessionSummary>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -5356,6 +5427,7 @@ export const agentSession = actor({
 			const { sandboxes } = await layerOf(c, meta);
 			// In `none` the list applies nowhere: saying it was allowed would promise a host nothing reaches.
 			if (sandboxes.egress?.() === "none") throw new UserError(`This deployment gives hosted sandboxes no network but the model API (WLP_E2B_NETWORK=none), so a host allowed for ${project.label} would be reached by nothing here.`, { code: "bad_network" });
+			if (sandboxes.egress?.() !== "restricted" || !sandboxes.setNetwork) throw new UserError("Repository network settings apply to restricted hosted sandboxes.", { code: "bad_network" });
 			const answer = await userActor(c, meta.uid).internalAllowHost({ sessionId: meta.sessionId, host, by });
 			if (!answer.allowed) {
 				note(c, meta.turns, "info", `${host} was asked for: whoever changes the settings of ${project.label} can allow it there.`);
@@ -5462,7 +5534,7 @@ export const agentSession = actor({
 			return await closeCutTurn(c, meta, row);
 		},
 
-		internalPublish: async (c, input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {
+		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
@@ -5478,7 +5550,7 @@ export const agentSession = actor({
 			try {
 				const report = meta.report?.run === Number(input.key.split(":")[1]) ? meta.report : null;
 				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
-				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly));
+				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly, input.blockedNetwork));
 				const pull = result.state.pullRequest;
 				if (!input.branchOnly && !pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
 				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.

@@ -126,6 +126,7 @@ private signInRetries = 0;
 	modelRelays = false;
 	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
+	blockedNetwork = false;
 	/** Windlass's model relay of this machine: its container and each turn's forwarder. */
 	readonly modelRelay: DockerModelRelay;
 	/**
@@ -554,7 +555,7 @@ private signInRetries = 0;
 			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
@@ -726,6 +727,8 @@ private signInRetries = 0;
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				// Windlass's own sandboxes only, and only to a server that named `model-relay`.
 				...(this.modelRelays && this.modelRelayReady && !box.harness ? { modelRelay: true as const } : {}),
+				// Only a reporting restricted proxy on a server that opted in.
+				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
 				// Once, and only to a server that named `start-times`.
 				...(this.startTimes && box.startTimes ? { startTimes: box.startTimes } : {}),
 			};

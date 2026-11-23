@@ -1,5 +1,6 @@
 // Fast regressions, run from server with tsx ../scripts/runner-egress-check.ts.
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -316,4 +317,50 @@ test("the welcome names the platform's git host to a runner that reads it, and t
 	assert.equal(owner.report().egressDomains, 3);
 	owner.network.platformGitHost(undefined);
 	assert.deepEqual(owner.network.domains(), ["api.openai.com", "github.com", "registry.npmjs.org"], "an older platform");
+});
+
+test("proxy refusals carry only bounded destination counts, reasons and times", async () => {
+	// @ts-expect-error the broker runs as a standalone program in the helper image
+	const { proxyServer, refusalLedger, targetAddress } = await import("../runner/src/egress-proxy.mjs");
+	const { request } = await import("node:http");
+	const counts = refusalLedger();
+	counts.read(1);
+	const proxy = proxyServer([], ["provider.example"], false, [], counts.record).listen(0, "127.0.0.1");
+	await once(proxy, "listening");
+	try {
+		const ask = async (path: string, method: string) => {
+			const req = request({ port: proxy.address().port, host: "127.0.0.1", path, method, headers: { "X-Test": "header-secret" } });
+			const answer = once(req, method === "CONNECT" ? "connect" : "response");
+			req.end(method === "POST" ? "body-secret" : undefined);
+			const [res, socket] = await answer;
+			assert.equal(res.statusCode, 403);
+			socket?.destroy();
+			res.resume();
+		};
+		await ask("http://Registry.Example./private-path?token=query-secret", "POST");
+		await ask("http://registry.example/again", "GET");
+		await ask("provider.example:443", "CONNECT");
+		await ask("169.254.169.254:443", "CONNECT");
+		await ask("bad:authority/private-path", "CONNECT");
+		const snapshot = counts.read(1);
+		assert.deepEqual(snapshot.hosts.map(({ host, port, reason, count }: { host: string | null; port: number | null; reason: string; count: number }) => [host, port, reason, count]), [
+			["registry.example", 80, "machine_policy", 2], ["provider.example", 443, "provider", 1],
+			["169.254.169.254", 443, "private", 1], [null, null, "malformed", 1],
+		]);
+		assert.doesNotMatch(JSON.stringify(snapshot), /private-path|token|secret|again|authority/);
+		assert.ok(snapshot.hosts.every((entry: { firstAt: number; lastAt: number }) => entry.firstAt > 0 && entry.lastAt >= entry.firstAt));
+		await assert.rejects(targetAddress(new URL("http://listed.example"), false, [], [], ["listed.example"], false, async () => [{ address: "10.0.0.4" }], {}), { reason: "private" });
+		for (let i = 0; i < 47; i++) counts.record(new URL("http://h" + i + ".example"), "machine_policy", 1000 + i);
+		counts.record(new URL("http://h46.example"), "machine_policy", 2000);
+		counts.record(new URL("http://registry.example"), "machine_policy", Date.now());
+		assert.equal(counts.read(1).hosts.length, 50);
+		assert.equal(counts.read(1).overflow, 2);
+		assert.equal(counts.read(1).hosts[0].count, 3);
+		assert.deepEqual(counts.read(2), { hosts: [], overflow: 0 });
+		counts.record(new URL("http://registry.example"), "private", 3000);
+		counts.record(new URL("http://h46.example"), "machine_policy", 3001);
+		assert.equal(counts.read(2).hosts[0].count, 1);
+		assert.equal(counts.read(2).overflow, 1);
+		assert.deepEqual(counts.read(1), { hosts: [], overflow: 0 }, "a late old turn cannot reset the ledger");
+	} finally { proxy.close(); }
 });

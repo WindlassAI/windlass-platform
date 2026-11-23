@@ -22,6 +22,8 @@
  * was removed.
  */
 
+import { networkBody } from "../blocked-network.js";
+import type { BlockedNetwork } from "../contract.js";
 import { mirrorOwner } from "../sandbox/git-mirrors.js";
 import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Verified } from "../contract.js";
 import type { SandboxHandle } from "../sandbox/api.js";
@@ -46,11 +48,11 @@ export function sessionRepository(app: GithubApp, connection: StoredConnection, 
 	return repo.closesIssue ? resolveBoundRepository(app, connection, repo.id, repo.installationId, need) : resolveRepository(app, connection, repo.id, need);
 }
 
-function pullBody(repo: StoredRepository, body: string, section: string) {
-	if (!repo.closesIssue) return withVerifiedSection(body, section);
+function pullBody(repo: StoredRepository, body: string, section: string, blocked?: BlockedNetwork) {
+	if (!repo.closesIssue) return withVerifiedSection(networkBody(body, blocked), section);
 	const footer = `\n\nCloses #${repo.closesIssue}.`;
 	const text = body.trimEnd();
-	return withVerifiedSection(text.endsWith(footer) ? text.slice(0, -footer.length) : text, section) + footer;
+	return withVerifiedSection(networkBody(text.endsWith(footer) ? text.slice(0, -footer.length) : text, blocked), section) + footer;
 }
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
@@ -250,6 +252,7 @@ export interface Pushed {
 }
 
 export interface PublishInput extends PushInput {
+	blockedNetwork?: BlockedNetwork;
 	/** The pull request the session has, if any. */
 	pull: PullRequestInfo | null;
 	message: PublishMessage;
@@ -454,7 +457,7 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const now = Date.now();
 	const pushed = !nothingNew;
 	const title = input.message.title.trim();
-	const body = pullBody(repository, input.message.body, said.section);
+	const body = pullBody(repository, input.message.body, said.section, input.blockedNetwork);
 	try {
 		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
 		// ("not all refs are readable"), whatever it may do with pull requests.

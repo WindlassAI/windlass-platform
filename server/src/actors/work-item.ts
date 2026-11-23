@@ -28,6 +28,8 @@
  * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
  */
 
+import { networkBody, unionNetwork } from "../blocked-network.js";
+import type { NetworkReceipt } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
 import { sources, untrustedWords } from "../factory/untrusted.js";
@@ -80,6 +82,8 @@ const capsOf = (item: FactoryItem): RoundCaps => {
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
+	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
+	blockedSessions?: Record<string, NetworkReceipt>;
 	github?: IssueBinding;
 	reviewerSessionId: string | null;
 	reviewBase: { head: string; sha: string } | null;
@@ -281,6 +285,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const completed = completedKeys(stored.item);
 	return {
 		...summaryOf(stored),
+		blockedNetwork: itemNetwork(stored.meta),
 		feedback: await feedbackView(c.db),
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: plan ?? null,
@@ -967,6 +972,10 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 	}
 }
 
+function itemNetwork(meta: Pick<ItemMeta, "blockedSessions">) {
+	return unionNetwork(...Object.values(meta.blockedSessions ?? {}).map(receipt => receipt.network));
+}
+
 /**
  * The item's lifetime hosted seconds after the ledger's latest entries for its session: each hold
  * counted once, whenever it is seen, and kept after the ledger has let it go. Decided synchronously on
@@ -1137,7 +1146,7 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 					await take(c, { kind: "feature_seed", key, sha, repo: repo.alias, at: Date.now() });
 					return;
 				}
-				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), draftOnly: true });
+				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: networkBody(withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), itemNetwork(meta)), draftOnly: true });
 				await take(c, { kind: "feature_ready", key, ...opened, repo: repo.alias, at: Date.now() });
 			});
 			return;
@@ -1147,7 +1156,7 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 		for (const repo of item.repos!) {
 			const pr = repo.pr!.number;
 			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, ({ app, token, owner, name }) =>
-				app.updatePull(token, owner, name, pr, { title: item.task.title, body: withSection(text, linkSection(item, repo.alias)) }));
+				app.updatePull(token, owner, name, pr, { title: item.task.title, body: networkBody(withSection(text, linkSection(item, repo.alias)), itemNetwork(meta)) }));
 		}
 		await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 	} catch (error) {
@@ -1332,13 +1341,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					} else if (effect.kind === "describe_feature") {
 						const report = await latestReport(c.db, item.run!.n);
 						const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
-						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body });
+						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta)) });
 						await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 					} else if (!item.seed) {
 						const sha = await refHead(app, token, owner, name, meta.repository.branch);
 						await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
 					} else {
-						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: item.featurePlan!.spec.goal });
+						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta)) });
 						await take(c, { kind: "feature_ready", key, ...opened, at: Date.now() });
 					}
 				});
@@ -1429,7 +1438,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const now = c.vars.stored;
 			if (!now || !live(now.item, effect)) return false;
 			const body = meta.github ? `${item.task.body}\n\nCloses #${meta.github.origin.issue.number}.` : item.task.body;
-			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, branchOnly: !!item.parent });
+			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, blockedNetwork: itemNetwork(meta), branchOnly: !!item.parent });
 			const receipt = { at: Date.now(), key: effect.key };
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
 			return true;
@@ -1706,6 +1715,22 @@ export const workItem = actor({
 			return summaryOf(c.vars.stored);
 		},
 
+		internalBlockedNetwork: async (c, receipt: NetworkReceipt): Promise<void> => {
+			requireService(c);
+			const meta = c.vars.stored?.meta;
+			if (!meta || !sessionsOf(meta).includes(receipt.sessionId)) return;
+			const previous = meta.blockedSessions?.[receipt.sessionId];
+			if (previous && previous.revision >= receipt.revision) {
+				// A duplicate can arrive while the original write is queued. Acknowledge durable state.
+				await queued(c, async () => {
+					const saved = (await load(c.db))?.meta.blockedSessions?.[receipt.sessionId];
+					if (!saved || saved.revision < receipt.revision) throw new Error("Network receipt was not saved.");
+				});
+				return;
+			}
+			(meta.blockedSessions ??= {})[receipt.sessionId] = receipt;
+			await take(c, { kind: "issue_note", at: Date.now() });
+		},
 		internalView: async (c): Promise<ItemView> => {
 			requireService(c);
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
