@@ -225,6 +225,24 @@
 .banner .link {
 	margin-left: 6px;
 }
+/* A banner above the composer (the machine offline, its turn paused): in the composer's column, at the width, left edge and
+   inner padding of its box, with the same border and corners; its tone is still only its words and the marker at its edge. */
+.session-banner {
+	flex: none;
+	width: min(var(--transcript, var(--measure)), 100%);
+	margin: 0 auto;
+	padding: 10px var(--gutter) 0;
+}
+.session-banner > .banner {
+	align-items: flex-start;
+	padding: 8px 12px 8px 14px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-box);
+}
+.session-banner > .banner > svg {
+	flex: none;
+	margin-top: 3px;
+}
 
 .to-details {
 	display: none;
@@ -3386,4 +3404,7 @@ dd.kv-clip > svg {
 	flex: none;
 	margin-left: auto;
 	color: var(--ink-dim);
+}
+.session-banner .banner-chip {
+	margin-top: -1px;
 }

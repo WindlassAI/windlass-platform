@@ -414,6 +414,8 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 					<Conversation view={view} summary={summary} profile={profile} onSuggest={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))} />
 				</InteractiveProvider>
 				{reach ? (
+					// In the composer's column, at its width and inner padding: it is about what the composer can do now.
+					<div className="session-banner">
 					<p className={`banner ${reach.removed ? "banner-bad" : "banner-warn"}`} role="status">
 						<WarnIcon size={14} />
 						{reach.text}
@@ -425,6 +427,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 							</span>
 						) : null}
 					</p>
+					</div>
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
