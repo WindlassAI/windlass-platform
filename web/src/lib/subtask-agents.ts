@@ -33,13 +33,13 @@ export interface AgentChoice {
 }
 
 /**
- * The agents a subtask may run at a place: Windlass everywhere; on a machine also each agent work items
- * run (not Codex) that it reports, those not signed in listed with why. Null machine: this platform.
+ * The agents a subtask may run at a place: Windlass everywhere; on a machine also each agent subtasks
+ * run (harnesses.ts `subtasks`: not Codex) that it reports, those not signed in listed with why. Null machine: this platform.
  */
 export function agentChoices(machine: MachineSummary | null): AgentChoice[] {
 	const choices: AgentChoice[] = [{ id: "windlass", name: HARNESS_NAMES.windlass, problem: null }];
 	for (const reported of machine?.harnesses ?? []) {
-		if (machineHarness(reported.id)?.items !== true) continue;
+		if (machineHarness(reported.id)?.subtasks !== true) continue;
 		const name = HARNESS_NAMES[reported.id];
 		const problem = reported.signIn === "token" ? null : reported.signIn === "none" ? `Not signed in on ${machineLabel(machine!)}.` : `${machineLabel(machine!)} could not say whether it is signed in.`;
 		choices.push({ id: reported.id, name, problem });

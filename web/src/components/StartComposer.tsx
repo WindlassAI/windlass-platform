@@ -31,7 +31,7 @@
  * switch turns it to filing one ("Work item"): the text's first line is the item's title and the rest
  * what to do (`itemOf`), a repository of the GitHub connection is required, and the pills are the
  * repository, where it runs, its agent and model and its acceptance criteria. An item runs Windlass in its profile's mode unless an agent
- * its machine is signed into is chosen (`itemHarnesses`), which runs Quick and without asking. Its effort, one its agent offers for the model, runs every turn of the item. Enter files and starts it,
+ * its machine is signed into is chosen (`itemHarnesses`), which runs Quick and without asking (Codex: in its own sandbox by default, without asking only on "Docker, hardened"). Its effort, one its agent offers for the model, runs every turn of the item. Enter files and starts it,
  * the launch menu files a draft, and the page stays where it is: filing several in a row is the
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
@@ -56,7 +56,7 @@ import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, Se
 import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { ModePicker, modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { HARNESS_PROFILE, itemHarnesses, machineUnusable, offeredHarnesses } from "./PlaceChoice";
+import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
@@ -337,27 +337,29 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					? "The machine your last agent ran on is not one of yours any more, so this one runs on this platform."
 					: `Your last agent ran on “${machineLabel(lastMachine)}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
-	// Another harness runs in the hardened container only: without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
+	// Another harness runs in the hardened container (Codex also in the Windlass sandbox): without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
 	// A work item starts on Windlass unless chosen otherwise, and only on an agent its machine is signed into.
 	const wantedHarness = harnessChoice ?? (item ? "windlass" : (started.harness ?? "windlass"));
 	const harnessesHere = (machine: MachineSummary | null) => (item ? itemHarnesses(machine) : offeredHarnesses(machine));
-	const harness: HarnessId = wantedHarness !== "windlass" && hardened && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
+	const runsHere = (id: HarnessId) => (item ? itemProfilesHere(chosenMachine, id).length > 0 : hardened);
+	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
 	// The agent the last one was, where it cannot be this one's: said in the agent's picker.
 	const harnessProblem =
 		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
 			? null
 			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "runs only on a machine of yours"}, so this one is ${HARNESS_NAMES[harness]}.`;
-	// Codex is not offered for work items (`itemHarnesses`), so an item does not fetch its catalog.
-	const catalogs = { codex: useCatalog(item ? null : chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
+	const catalogs = { codex: useCatalog(chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
 	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
 	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
 	const lastOf = last.of[harness] ?? null;
 
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
 	const hasCodexSandbox = (machine: MachineSummary | null) => harness === "codex" && machine?.harnesses?.some(h => h.id === "codex" && h.modes?.includes("workspace-write"));
-	const profile = hasCodexSandbox(chosenMachine) && profileChoice === "docker-windlass-sandbox" ? profileChoice : other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
+	// A Codex work item runs in Codex's sandbox unless "Docker, hardened" is picked (server/src/sandbox/harnesses.ts, `itemModes`).
+	const codexItemSandbox = item && hasCodexSandbox(chosenMachine) && profileChoice !== HARNESS_PROFILE;
+	const profile = hasCodexSandbox(chosenMachine) && (profileChoice === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
 	const modelList = other ? options.models : models.list;
 	const offers = (id: string) => modelList?.models.some((candidate) => candidate.id === id) === true;
 	// Another harness's "" is its own default model, the one its runner reported as that: nothing is sent for it, so the adapter starts on its own.
@@ -469,6 +471,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}),
 			// The agent and its model: Windlass on the account's model unless one was chosen here.
 			...(other ? { harness } : {}),
+			// Codex runs items in either of its profiles; the other agents only in their hardened container.
+			...(harness === "codex" && profile ? { profile } : {}),
 			...(model && (other || modelChoice !== "") ? { model } : {}),
 			// Every turn of the item runs at it; left out, at the agent's default.
 			...(effort && effort !== "default" ? { effort } : {}),

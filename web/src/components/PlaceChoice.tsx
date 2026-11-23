@@ -9,14 +9,14 @@
  * chosen. An offline machine can: an agent made there waits for it, and so does an item. An item also
  * needs a sandbox its runner reported as usable, since the server gives it the machine's first one.
  */
-import type { HarnessId, MachineSummary } from "@contract";
+import type { HarnessId, MachineSummary, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
 import { MachineState } from "../screens/Machines";
 import { HarnessStatus } from "./HarnessStatus";
 import { machineLabel } from "../lib/machines";
-import { machineHarness } from "../../../server/src/sandbox/harnesses.js";
+import { itemProfiles, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 
 export type PlacePurpose = "agent" | "item";
 
@@ -136,9 +136,28 @@ export const HARNESS_PROFILE = "docker-hardened";
 export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarness[] => machine?.harnesses ?? [];
 /**
  * The harnesses a work item can run on this machine: those work items may run (server/src/sandbox/harnesses.ts,
- * `items`; not Codex for now) that it reports signed in. An item is not watched, so one that needs a sign-in is not offered.
+ * `items`) that it reports signed in. An item is not watched, so one that needs a sign-in is not offered.
  */
 export const itemHarnesses = (machine: MachineSummary | null): ReportedHarness[] => offeredHarnesses(machine).filter((harness) => machineHarness(harness.id)?.items === true && harness.signIn === "token");
+
+/** What a machine agent's work item does in this profile, in one line (harnesses.ts, `worksWithoutAsking`). */
+export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: SandboxProfileId): string {
+	const name = HARNESS_NAMES[harness];
+	const how = worksWithoutAsking(harness, profile)
+		? `${name} works in the hardened container, without asking, and runs Quick.`
+		: `${name} works in its own sandbox, without network, and runs Quick. A request to leave the sandbox ends the step.`;
+	return `${how} It does not run your repository's checks: CI decides.`;
+}
+
+/**
+ * The profiles a work item of this harness can run in on this machine, its default first (harnesses.ts,
+ * `itemModes`): available there, and for Codex's Windlass sandbox profile only once its probe passed.
+ */
+export function itemProfilesHere(machine: MachineSummary | null, harness: HarnessId): SandboxProfileId[] {
+	const reported = offeredHarnesses(machine).find((offered) => offered.id === harness);
+	return itemProfiles(harness).filter((id) => machine?.profiles.some((profile) => profile.id === id && profile.available)
+		&& (harness !== "codex" || id !== "docker-windlass-sandbox" || reported?.modes?.includes("workspace-write") === true));
+}
 
 /**
  * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented

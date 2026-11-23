@@ -118,10 +118,15 @@ test("Codex reports its sign-in generation, so a usage limit ends with that sign
  * handshake; the permission requests are the shapes codex-acp 2.9.0 sends for `exec_command` with
  * `sandbox_permissions: "require_escalated"` and for `apply_patch` outside the writable roots.
  */
+/** What the scripted Codex adds to its `initialize` answer, and the `session/new` params it was sent. */
+let codexInit: Record<string, unknown> = {};
+let sessionNew: { mcpServers?: unknown[] } | undefined;
 async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-sandbox", during: (emit: (frame: unknown) => void, sessionId: string, promptId: unknown) => void,
 	answered: (frame: { id: unknown; result?: unknown }) => boolean,
 	/** legacy: modes only in session/new's `modes` (no mode config option), so the client uses session/set_mode. */
-	legacy?: { openIn: string; reportSetMode: boolean }) {
+	legacy?: { openIn: string; reportSetMode: boolean },
+	/** More of the turn's input: a work item's (`unattended`, its mode). */
+	more: Record<string, unknown> = {}) {
 	const { readFileSync } = await import("node:fs");
 	const { harnessOf } = await import("../server/src/sandbox/harness.js");
 	const { markTurnSandbox } = await import("../server/src/sandbox/provider.js");
@@ -148,9 +153,9 @@ async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-s
 				write(line: string) {
 					const frame = JSON.parse(line);
 					methods.push(frame.method);
-					if (frame.method === "initialize") emit({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+					if (frame.method === "initialize") emit({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {}, ...codexInit } });
 					else if (frame.method === "providers/set") emit({ id: frame.id, result: {} });
-					else if (frame.method === "session/new") emit({ id: frame.id, result: { ...opened, configOptions: options(mode), modes: { ...opened.modes, currentModeId: mode } } });
+					else if (frame.method === "session/new" && (sessionNew = frame.params)) emit({ id: frame.id, result: { ...opened, configOptions: options(mode), modes: { ...opened.modes, currentModeId: mode } } });
 					else if (frame.method === "session/set_config_option") {
 						if (frame.params.configId === "mode") mode = frame.params.value;
 						emit({ id: frame.id, result: { configOptions: options(mode) } });
@@ -160,6 +165,8 @@ async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-s
 							if (legacy) emit({ method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "current_mode_update", currentModeId: mode } } });
 						}
 						emit({ id: frame.id, result: {} });
+					} else if (frame.method === "session/cancel") {
+						emit({ id: prompt, result: { stopReason: "cancelled" } });
 					} else if (frame.method === "session/prompt") {
 						prompt = frame.id;
 						during(emit, frame.params.sessionId, frame.id);
@@ -181,6 +188,7 @@ async function scriptedCodexTurn(profile: "docker-hardened" | "docker-windlass-s
 	const result = await harnessOf({ machine: { name: "Bench" } } as never, "codex").runTurn(sandbox as never, {
 		prompt: "go", onAcpNote: (text) => notes.push(text),
 		onQuestion: async (question) => { asked.push(question); return { choice: question.choices.find((c) => c.approve)?.id ?? "" }; },
+		...more,
 	});
 	return { result, notes, permissions, asked, signals, methods };
 }
@@ -239,5 +247,64 @@ test("on the session/set_mode path a Codex mode counts only once Codex opened in
 		const turn = await scriptedCodexTurn("docker-windlass-sandbox", end, () => false, legacy);
 		assert.equal(turn.result.failure, null, JSON.stringify(legacy));
 		assert.ok(turn.methods.includes("session/prompt"));
+	}
+});
+
+test("a work item runs Codex in Workspace access on the Windlass sandbox profile and Container access on the hardened one", async () => {
+	const { itemModeOf, itemProfiles, itemProfileProblem, worksWithoutAsking } = await import("../server/src/sandbox/harnesses.js");
+	assert.deepEqual(itemProfiles("codex"), ["docker-windlass-sandbox", "docker-hardened"]);
+	assert.equal(itemModeOf("codex", "docker-windlass-sandbox"), "workspace-write");
+	assert.equal(itemModeOf("codex", "docker-hardened"), "agent-full-access");
+	assert.deepEqual([itemModeOf("claude", "docker-windlass-sandbox"), itemModeOf("windlass", "docker-hardened")], [undefined, undefined]);
+	assert.equal(itemProfileProblem("codex", "docker-windlass-sandbox"), null);
+	assert.equal(itemProfileProblem("claude", "docker-windlass-sandbox"), "A work item runs Claude Code only on “Docker, hardened”.");
+	assert.equal(initialSessionModes("docker-windlass-sandbox", "codex", true).mode, "workspace-write");
+	assert.equal(initialSessionModes("docker-hardened", "codex", true).mode, "agent-full-access");
+	// Commands run unasked only in the container; in Codex's sandbox a request to leave it ends the step.
+	assert.deepEqual([worksWithoutAsking("codex", "docker-hardened"), worksWithoutAsking("codex", "docker-windlass-sandbox"), worksWithoutAsking("claude")], [true, false, true]);
+	for (const profile of ["docker-windlass-sandbox", "docker-hardened"] as const) {
+		const chosen: string[] = [];
+		const end = (emit: (frame: unknown) => void, _: string, id: unknown) => emit({ id, result: { stopReason: "end_turn" } });
+		const turn = await scriptedCodexTurn(profile, end, () => false, undefined, { unattended: true, mode: itemModeOf("codex", profile), onAcpModes: (id: string) => { chosen.push(id); } });
+		assert.equal(turn.result.failure, null, profile + ": " + JSON.stringify(turn.result.failure));
+		assert.deepEqual(chosen, [itemModeOf("codex", profile)], profile);
+	}
+});
+test("in a work item's turn on the Windlass sandbox profile a request to leave Codex's sandbox is refused and ends the step", { timeout: 10_000 }, async () => {
+	const { SANDBOX_ESCAPE_REFUSED } = await import("../server/src/sandbox/codex-modes.js");
+	const turn = await scriptedCodexTurn("docker-windlass-sandbox", (emit, id) => emit(escalated(id)), () => false, undefined, { unattended: true, mode: "workspace-write" });
+	assert.deepEqual(turn.asked, [], "the request was put to someone");
+	// Refused although allow_once was offered: the refusal comes before an item's allow-once.
+	assert.deepEqual(turn.permissions, [{ outcome: { outcome: "selected", optionId: "cancel" } }]);
+	assert.ok(turn.methods.includes("session/cancel"), "the turn was not stopped");
+	assert.equal(turn.result.failure?.reason, SANDBOX_ESCAPE_REFUSED);
+	assert.equal(turn.result.failure?.message, "Codex asked to run a command outside its sandbox; refused on this profile.");
+	assert.deepEqual(turn.notes, ["Codex asked to run a command outside its sandbox; refused on this profile."]);
+	// A person's turn on that profile is refused the same way and goes on.
+	const watched = await scriptedCodexTurn("docker-windlass-sandbox", (emit, id) => emit(escalated(id)), () => true);
+	assert.equal(watched.result.failure, null);
+	assert.ok(!watched.methods.includes("session/cancel"));
+});
+test("in a work item's turn on the hardened profile a Codex request is allowed once without asking", async () => {
+	const turn = await scriptedCodexTurn("docker-hardened", (emit, id) => emit(escalated(id)), () => true, undefined, { unattended: true, mode: "agent-full-access" });
+	assert.equal(turn.result.failure, null);
+	assert.deepEqual(turn.asked, []);
+	assert.deepEqual(turn.permissions, [{ outcome: { outcome: "selected", optionId: "allow_once" } }]);
+});
+test("a Codex item gets the platform's MCP server only behind the image's bridge; an older image is noted", async () => {
+	const end = (emit: (frame: unknown) => void, _: string, id: unknown) => emit({ id, result: { stopReason: "end_turn" } });
+	const item = { unattended: true, mode: "workspace-write", onReport: () => "Recorded." };
+	try {
+		// codex-acp 2.9.0 alone: it takes acp servers, but on a port Codex's requirements.toml does not allow.
+		codexInit = { agentCapabilities: { mcpCapabilities: { acp: true, http: true } } };
+		const old = await scriptedCodexTurn("docker-windlass-sandbox", end, () => false, undefined, item);
+		assert.deepEqual(sessionNew?.mcpServers, []);
+		assert.deepEqual(old.notes, ["Codex here cannot take the platform's tools, so this turn has no report. A newer harness image on the machine has them."]);
+		codexInit = { ...codexInit, _meta: { "windlass-platform/acpMcp": 1 } };
+		const bridged = await scriptedCodexTurn("docker-windlass-sandbox", end, () => false, undefined, item);
+		assert.deepEqual(sessionNew?.mcpServers, [{ type: "acp", name: "windlass_platform", serverId: "windlass-platform" }]);
+		assert.deepEqual(bridged.notes, []);
+	} finally {
+		codexInit = {};
 	}
 });

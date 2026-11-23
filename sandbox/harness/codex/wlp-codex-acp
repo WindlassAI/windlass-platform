@@ -5,9 +5,13 @@ const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const { once } = require('node:events');
 // codex-acp reaches Codex through wlp-codex-app-server, which keeps a repository's .codex/ unloaded.
-const child = spawn(process.execPath, ['/opt/wlp-codex/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], {
+// wlp-acp-mcp in front of it serves the platform's MCP server (declared "type": "acp") on the one loopback
+// URL /etc/codex/requirements.toml allows; codex-acp's own bridge would pick a random port. codex-acp drops
+// a requested server that any config layer names, even the repository's .codex/ that Codex does not load:
+// DISABLE_MCP_CONFIG_FILTERING keeps the platform's, so a repository cannot take its tools away.
+const child = spawn(process.execPath, ['/usr/local/bin/wlp-acp-mcp.mjs', process.execPath, '/opt/wlp-codex/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], {
   stdio: ['pipe', 'inherit', 'inherit'],
-  env: { ...process.env, CODEX_PATH: '/usr/local/bin/wlp-codex-app-server' },
+  env: { ...process.env, CODEX_PATH: '/usr/local/bin/wlp-codex-app-server', WLP_ACP_MCP_PORT: '17895', DISABLE_MCP_CONFIG_FILTERING: 'true' },
 });
 child.on('exit', code => process.exit(code ?? 1));
 child.stdin.on('error', () => process.exit(1));

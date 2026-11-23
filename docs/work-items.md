@@ -151,15 +151,21 @@ take their subtask's agent choice, or the feature's (see [Subtask agents](#subta
 "none" and "unknown"). Each item turn checks the machine's report again before its sandbox opens
 (`itemSignInRefusal` in `agent-session.ts`): a signed-out agent refuses the turn, and the item asks
 with the login hint.
-A machine harness runs Quick items and Plan-first subtasks ([Subtask agents](#subtask-agents)), never a
-planner, only on a machine, in `docker-hardened`. It starts every turn in
-its `itemMode`, which never asks (Claude Code `bypassPermissions`, OpenCode `build`), and the ACP
+A machine harness runs Quick items and, except Codex (`subtasks`), Plan-first subtasks ([Subtask agents](#subtask-agents)),
+never a planner, only on a machine, in a profile it has an item mode for (`itemModes`): Claude Code and
+OpenCode in `docker-hardened`; Codex in `docker-windlass-sandbox` by default, or `docker-hardened` when
+the filing names it ([docs/codex.md](codex.md#work-items)). It starts every turn in that mode, which never
+asks (Claude Code `bypassPermissions`, OpenCode `build`, Codex `workspace-write` or `agent-full-access`), and the ACP
 harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
-agent still asks for is allowed once. The reviewer stays Windlass and runs only hosted, so these
+agent still asks for is allowed once, except Codex's on `docker-windlass-sandbox`, which is refused and
+ends the step (`turn_ended.escaped`). The reviewer stays Windlass and runs only hosted, so these
 items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
 snapshot), and of the platform's tools `report` and `ask_person`, over MCP
 ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)); never `push` or `fetch_base`,
 so the item's publish step pushes everything. CI decides the verdict.
+Where the sign-in method decides how tokens count (Codex, `itemTokens: "sign-in"`), the filing keeps
+the machine's method (`ItemAgent.signIn`), takes only `itemSignIns` (ChatGPT for now), and refuses a turn
+when the machine reports another (`itemSignInChanged`).
 `ItemSummary.agent` holds the harness, the model and what the agent reported: tokens counted against
 the budget (`itemTokens: "budget"`), shown but not counted for a subscription, or "not reported";
 the conversation's cost; Claude Code's 5h window at the first and latest turn, which it reports only
@@ -191,17 +197,19 @@ any agent, with the same cleaning and limits (`askPerson`, `fileReport`). Only t
   tool's result taints its session, after which an unattended turn's calls that send data out are refused.
   A host tool declared `read` with a trusted result runs in every approval mode, after taint, on every
   profile, so Windlass keeps host tools for these two as well.
-- **Claude Code and OpenCode** are given one MCP server, `windlass_platform`, declared `"type": "acp"` in
+- **Claude Code, OpenCode and Codex** are given one MCP server, `windlass_platform`, declared `"type": "acp"` in
   `session/new` (MCP over ACP): each MCP request comes back as an `mcp/message` request on the agent's own
   ACP connection, which the platform answers (`PlatformMcpServer`). Claude Code's adapter (0.109.0) takes
   such a server itself and serves it to the CLI on a loopback HTTP endpoint with a per-connection bearer
   token; the image's managed policy allows exactly that endpoint (`allowedMcpServers` by `serverUrl`, the
   server's fixed id in the path), and the tools say to load at once (`anthropic/alwaysLoad`) rather than
   behind tool search. OpenCode (1.19.6) takes MCP servers only by URL, so its image runs it under
-  `wlp-acp-mcp` (`sandbox/harness/opencode/`), which does the same: it tells the platform the agent takes
+  `wlp-acp-mcp` (`sandbox/harness/shared/`), which does the same: it tells the platform the agent takes
   `acp` servers, swaps each for a loopback HTTP endpoint with an HMAC bearer token, and sends each request
-  on as `mcp/message`. An adapter that takes no `acp` server (an older image) gets none, and the timeline
-  says the turn has no `report` or `ask_person`.
+  on as `mcp/message`. Codex's image runs the same bridge (`sandbox/harness/shared/`) in front of
+  codex-acp, on the fixed port its `requirements.toml` allows ([docs/codex.md](codex.md#work-items)). An
+  adapter that takes no `acp` server (an older image) gets none, and the timeline says the turn has no
+  `report` or `ask_person`.
 
 Only a builder's item turn is given them: not a person's session, not the planner, the summary or the
 reviewer (the same turns a Windlass builder gets `ask_person` in). A call is answered only while the

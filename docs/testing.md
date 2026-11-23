@@ -52,6 +52,7 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 | (b) Docker, base image; builds its own runner and Claude images | runner-check `--main-only` (the five-minute outage and two-minute sleep are wall time) | CI heavy: `runner-docker/runner` |
 | (b) Docker, base and screenshots images | runner-check `--profiles-only`, `--harness-only`, `--sizing-only`, `--snapshots-only`, `--screenshots-only` | CI heavy: `runner-docker/suites` |
 | (b) Docker, Claude and OpenCode images built on base (`sandbox/harness/build.sh`) | claude-relay-docker, opencode-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |
+| (b) Docker, the Codex image built on base (`sandbox/harness/build.sh codex`) | codex-docker (the relay, sign-in and modes), codex-sandbox-escape (refusals, a repository's and the user's config, and the platform's tools over MCP); both with a scripted model, no sign-in | CI heavy: `codex-docker` |
 | (c) Real services, local only | e2b-check, e2b-snapshot `--live`, e2b-backup-check, e2b-template (except `--print`), e2b-cleanup (an E2B account); backup-check `--bucket` (a real bucket); connection-check's `cluster` section and runner-socket-probe with `WLP_CHECK_ENGINE` (a real engine and its admin token) | your machine |
 | (c) A running self-hosted stack, local only | selfhost-csp, selfhost-ingress (with cloudflared), selfhost-load | the loopback demo stack of `deploy/selfhost` |
 

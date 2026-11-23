@@ -22,7 +22,7 @@
 
 import { MINUTE, providerWait } from "../provider-usage.js";
 import type { HarnessId, ItemAgent, ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
-import { machineHarness } from "../sandbox/harnesses.js";
+import { itemTokensOf, machineHarness, type SignInMethod } from "../sandbox/harnesses.js";
 import { nextUtcDay, spellSeconds, type UsageEntry } from "../usage.js";
 import type { AgentTurn, FactoryItem, FactoryLimits, ItemBudget, StopCause, TurnSpend, Wait } from "./types.js";
 
@@ -54,8 +54,8 @@ export function turnTokens(usage: TurnUsage | null): number {
 }
 
 /** An item's agent before its first turn: Windlass's tokens are counted as they come, a machine harness has reported none. */
-export function newAgent(harness: HarnessId, model: string, effort?: string | null): ItemAgent {
-	return { harness, model, ...(effort && { effort }), tokens: harness === "windlass" ? "counted" : "not_reported", reportedTokens: 0, cost: null, fiveHour: null };
+export function newAgent(harness: HarnessId, model: string, effort?: string | null, signIn?: ItemAgent["signIn"]): ItemAgent {
+	return { harness, model, ...(effort && { effort }), ...(signIn && { signIn }), tokens: harness === "windlass" ? "counted" : "not_reported", reportedTokens: 0, cost: null, fiveHour: null };
 }
 
 /** The agent of an item, also of one filed before agents could be chosen. */
@@ -66,15 +66,16 @@ export function itemAgent(item: Pick<FactoryItem, "agent" | "spent">): ItemAgent
 /**
  * What a machine harness reported of a turn, read from the turn's usage (the `session/prompt` answer) and
  * its last ACP usage update. Its tokens count against the item's budget only where the harness bills by
- * token (`itemTokens: "budget"`): a subscription's are shown, not counted. Undefined for Windlass.
+ * token (`itemTokensOf`: "budget", or an API key where the sign-in decides): a subscription's are shown,
+ * not counted. `signIn`: the method the item was filed with. Undefined for Windlass.
  */
-export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | null, context?: { cost: { amount: number; currency: string } | null; fiveHourUsedPct?: number } | null, fiveHourAtStart?: number): AgentTurn | undefined {
+export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | null, context?: { cost: { amount: number; currency: string } | null; fiveHourUsedPct?: number } | null, fiveHourAtStart?: number, signIn?: SignInMethod): AgentTurn | undefined {
 	const machine = machineHarness(harness);
 	if (!machine) return undefined;
 	const end = context?.fiveHourUsedPct;
 	return {
 		reported: usage === null ? null : turnTokens(usage),
-		counted: machine.itemTokens === "budget",
+		counted: itemTokensOf(machine, signIn) === "budget",
 		cost: context?.cost ?? null,
 		fiveHour: end === undefined ? null : { start: fiveHourAtStart ?? end, end },
 	};

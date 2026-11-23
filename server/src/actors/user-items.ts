@@ -26,7 +26,7 @@ import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from ".
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HarnessId, ItemFeed, PlanSubtask } from "../contract.js";
-import { harnessName, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
+import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -354,10 +354,26 @@ async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBr
 	return bound;
 }
 
-/** The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen. */
-async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxProfileId | null, place: SandboxPlace): Promise<SandboxProfileId> {
+/**
+ * The profile a machine harness's item asks for: the filed one where the harness has more than one item
+ * profile (Codex), else its first. Claude Code and OpenCode have one, "Docker, hardened", whatever was filed.
+ */
+function machineItemProfile(harness: HarnessId, filed: SandboxProfileId | null): SandboxProfileId {
+	const profiles = itemProfiles(harness);
+	return profiles.length > 1 && filed !== null ? filed : profiles[0] ?? "docker-hardened";
+}
+
+/**
+ * The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen.
+ * `exact`: a machine harness's profile, which is never swapped for another the machine has: makeSession refuses one it cannot use, with its reason.
+ */
+async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxProfileId | null, place: SandboxPlace, exact = false): Promise<SandboxProfileId> {
 	if (place.kind === "machine") {
 		const machine = await launchMachineProfiles(c.db, place.machineId);
+		if (exact && asked !== null) {
+			if (!machine.profiles.some(profile => profile.id === asked)) throw new UserError(`Your machine "${machine.name}" has no ${asked} profile, which this item runs in. Choose another profile for it.`, { code: "bad_profile" });
+			return asked;
+		}
 		// Honor an explicit owner-denied choice. makeSession returns the same refusal as a personal launch.
 		if (asked === "docker-windlass-sandbox" && machine.allowedProfiles && !machine.allowedProfiles.includes(asked)) return asked;
 		const available = machine.profiles.filter(profile => profile.available);
@@ -399,9 +415,10 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	}
 	try {
 		const existing = c.vars.sessions.get(sessionId);
-		// A machine harness runs only in the hardened container; makeSession refuses it elsewhere.
+		// A machine harness runs in a profile it has an item mode for: the filed one, else its first (Codex: Docker + Windlass sandbox),
+		// and only in "Docker, hardened" where that is its only one. makeSession refuses any other.
 		const harness = child?.placement.harness ?? input.harness;
-		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : "docker-hardened", input.place);
+		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : machineItemProfile(harness, input.profile), input.place, harness !== "windlass");
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
@@ -418,7 +435,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
-		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort } });
+		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort, ...(session.item?.signIn && { signIn: session.item.signIn }) } });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
 		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : []);

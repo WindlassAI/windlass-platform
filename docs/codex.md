@@ -16,6 +16,19 @@ The login volume belongs to a single machine pairing. Each session receives a si
 
 The **Plan first** control selects the collaboration mode independently.
 
+## Work items
+
+A Codex work item runs Quick only, never as a Plan-first subtask (`subtasks: false` in `server/src/sandbox/harnesses.ts`; plans and placement refuse it). Its profile picks its mode (`itemModes`):
+
+- **Windlass sandbox profile (the default): Workspace access.** Filing it needs the runner to report `workspace-write`. Every request to leave Codex's sandbox is refused, as above. One that reaches the platform during an item's turn also stops the turn (`session/cancel`), which fails with `sandbox_escape_refused` and the platform's note, never the agent's words. The item asks the person to file the work again on the hardened profile or to give up. A refusal by the image's hook never reaches the platform: Codex reports no tool call for it, so there is nothing to note, and the turn goes on.
+- **Hardened Docker profile: Container access.** Codex asks for nothing, and a request that still arrives is allowed once, as for the other agents.
+
+Tokens count by the machine's sign-in method, which the runner reports (`method`) and the item keeps (`ItemAgent.signIn`, the session's `origin.signIn`). Only ChatGPT is taken for now (`itemSignIns`): its tokens are shown, not counted. A turn whose machine now reports another method does not start. codex-acp 2.9.0 does return the turn's `usage` in its `session/prompt` answer (seen with the real image and a scripted model; the sum of each Responses request's usage), so an API-key item could be counted against its budget (`itemTokensOf` gives "budget"). It stays off until an API-key turn has been seen through the platform.
+
+The platform's `report` and `ask_person` reach Codex over MCP as for the other agents (docs/work-items.md). codex-acp takes a `"type": "acp"` server itself, but serves it on a random loopback port, and Codex starts an MCP server only if `requirements.toml` allows its exact URL. So the image runs `wlp-acp-mcp` (`sandbox/harness/shared/`) in front of codex-acp, on `127.0.0.1:17895`, which `requirements.toml` allows as `windlass_platform` and nothing else. It says so in its `initialize` answer (`_meta["windlass-platform/acpMcp"]`). An image without it gets no server, and the timeline says the turn has no `report` or `ask_person`. If another process holds the port first, the session gets no server. `DISABLE_MCP_CONFIG_FILTERING` keeps codex-acp from dropping the server when a repository's `.codex/` names one the same. The endpoint is outside Codex's sandbox, in the launcher's process: a root-owned script, started with fixed arguments, that forwards each request on the platform's ACP connection. Its bearer token stays in memory. Codex calls the two tools without asking in both modes. A command in Workspace access cannot connect to the endpoint (no network). In Container access a command can, as with the other agents, if it can read the token from a process's memory.
+
+`scripts/codex-sandbox-escape-check.mjs` checks the tools against a local image, and `scripts/runner-codex-check.ts` the item modes and the step that ends. CI runs both Codex Docker checks in the `codex-docker` group.
+
 ## A repository's `.codex/`
 
 codex-acp 2.9.0 marks the session's workspace as a trusted project. Codex 0.171 loads a trusted project's `.codex/`: `config.toml`, `hooks.json` and `rules/*.rules`. MCP servers, hooks and commands allowed by a rule run outside Codex's sandbox. A cloned repository's contents are untrusted, so the image's `wlp-codex-app-server` (between codex-acp and `codex app-server`) removes that trust setting. The workspace has no trust decision, and Codex ignores its `.codex/`. It also refuses codex-acp's writes to Codex's own config, the only way to trust a hook.
@@ -26,7 +39,7 @@ A `.codex/` written during a session stays unloaded as long as nothing trusts th
 
 A repository's `.codex/` cannot:
 
-- start an MCP server (`mcp_servers`). `requirements.toml` also sets an empty MCP allowlist, so Codex starts no MCP server from any config, including one a skill names;
+- start an MCP server (`mcp_servers`). `requirements.toml` also allows only the platform's server, by its URL, so Codex starts no other MCP server from any config, including one a skill names. A `windlass_platform` entry there does not replace the platform's;
 - run a hook (`[hooks]` in `config.toml`, or `hooks.json`). `requirements.toml` also lets only managed hooks run, which here means the image's own;
 - run a command outside the sandbox with an exec policy rule (`decision = "allow"` in `rules/*.rules`);
 - widen the sandbox with `sandbox_mode`, `approval_policy`, `approvals_reviewer`, `sandbox_workspace_write` (`writable_roots`, `network_access`), `default_permissions` or `[permissions]` profiles;

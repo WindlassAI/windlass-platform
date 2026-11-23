@@ -389,8 +389,11 @@ export interface SessionSummary {
 	 * client asks `servers()` again when `changedAt` moves. Absent for a session that has none.
 	 */
 	servers?: { count: number; changedAt: number };
-	/** Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it. */
-	item?: { id: string; role?: "builder" | "reviewer"; reviewer?: { id: string; status: SessionStatus } };
+	/**
+	 * Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it.
+	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Codex).
+	 */
+	item?: { id: string; role?: "builder" | "reviewer"; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" };
 }
 
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
@@ -1769,6 +1772,11 @@ export interface ItemAgent {
 	model: string;
 	/** The effort its turns run at (`CreateItemInput.effort`); null or absent: the agent's default. */
 	effort?: string | null;
+	/**
+	 * How the machine's agent was signed in when the item was filed, where that decides whether its tokens
+	 * count (Codex: "chatgpt", a subscription). Its turns run only while the machine reports the same. Absent elsewhere.
+	 */
+	signIn?: "api-key" | "chatgpt";
 	/**
 	 * How the item's tokens are known.
 	 * - "counted": reported, and counted against `budget.tokens` (Windlass; an agent on an API key).

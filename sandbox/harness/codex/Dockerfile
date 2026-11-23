@@ -20,11 +20,14 @@ RUN install -d -m 0755 /opt/wlp-codex/home \
 COPY LICENSE NOTICE /usr/local/share/doc/wlp-codex/
 COPY config.toml requirements.toml /etc/codex/
 COPY --chmod=0755 wlp-codex-acp wlp-codex-app-server /usr/local/bin/
+# Serves Codex the MCP server the platform declares over ACP (the platform's report and ask_person) on the
+# fixed loopback URL requirements.toml allows (wlp-codex-acp sets the port).
+COPY --from=shared --chmod=0755 wlp-acp-mcp.mjs /usr/local/bin/
 # The runner names the session's mode (sandbox/sandboxes.ts); without it a session opens in Read-only.
 ENV CODEX_HOME=/opt/wlp-codex/home CODEX_SQLITE_HOME=/opt/wlp-codex/home/sqlite \
     CODEX_PATH=/usr/local/bin/wlp-codex-app-server INITIAL_AGENT_MODE=read-only
 USER agent
 RUN --network=none test "$(codex --version)" = "codex-cli 0.171.0" \
  && test "$(/opt/wlp-codex/node_modules/.bin/codex-acp --version)" = "@agentclientprotocol/codex-acp 2.9.0" \
- && ! test -w /opt/wlp-codex/home
+ && ! test -w /opt/wlp-codex/home && node --check /usr/local/bin/wlp-acp-mcp.mjs
 LABEL dev.windlass-platform=1 dev.windlass-platform.harness=codex dev.windlass-platform.adapter="codex-acp 2.9.0"

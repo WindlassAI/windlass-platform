@@ -39,7 +39,7 @@
 
 import { isDeepStrictEqual } from "node:util";
 import { ASK_LIMITS } from "../agent-publish.js";
-import { MAX_ITEM_BODY_CHARS, type FeatureRepository, type HarnessId, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
+import { MAX_ITEM_BODY_CHARS, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory } from "./placement.js";
@@ -112,7 +112,7 @@ export interface NewItem {
 	place: FactoryItem["place"];
 	budget: ItemBudget;
 	featureMultiplier?: number;
-	agent?: { harness: HarnessId; model: string; effort?: string | null };
+	agent?: { harness: HarnessId; model: string; effort?: string | null; signIn?: ItemAgent["signIn"] };
 }
 
 /** A new item, in "draft": a `start` fact queues it. */
@@ -131,7 +131,7 @@ export function createItem(input: NewItem): FactoryItem {
 		singleBudget: input.budget,
 		budget: input.mode === "orchestrate" ? featureCap(input.budget, input.featureMultiplier) : input.budget,
 		spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
-		...(input.agent && { agent: newAgent(input.agent.harness, input.agent.model, input.agent.effort) }),
+		...(input.agent && { agent: newAgent(input.agent.harness, input.agent.model, input.agent.effort, input.agent.signIn) }),
 		workingSince: null,
 		run: null,
 		pr: null,
@@ -863,6 +863,9 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
+	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
+	// would most likely ask the same. The person files the work again where commands run unasked, or gives up.
+	if (fact.escaped) return ask(c, "turn_refused", sandboxEscapeQuestion(item, fact.escaped), [...handOver(item), choice("give_up")], null, null);
 	const result = gateResult(fact.outcome, fact.verified);
 	// Refused on "Docker, hardened" for someone else's text: the person may run that very turn anyway, labelled only.
 	if (fact.refused && fact.untrustedRefusal?.sources.length) {
@@ -927,6 +930,12 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 
 /** The platform's sentence of an `agent_ask` question. The agent's own words are beside it (`Question.asked`), never in it. */
 const AGENT_ASKS = "The agent stopped to ask you a question before it goes on.";
+
+/** The question of a step that ended because the agent asked to leave its sandbox (`turn_ended.escaped`): the platform's note, and what the person can do. */
+export function sandboxEscapeQuestion(item: Pick<FactoryItem, "agent">, note: string): string {
+	const name = harnessName(item.agent?.harness ?? "windlass");
+	return `${name} asked to leave its sandbox, which “Docker + Windlass sandbox” never allows, so the step was stopped. ${note} File the work again on “Docker, hardened”, where ${name}'s commands run in the container without asking, or give up.`;
+}
 
 /** The next turn's message after the person answered the agent's question: their own words, trusted as a note is. */
 const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;

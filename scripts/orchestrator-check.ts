@@ -1034,7 +1034,7 @@ test("a subtask's agent: the planner may propose Claude Code or OpenCode, never 
 	}
 	const codex = proposal();
 	codex.subtasks[0].agent = { harness: "codex" };
-	assert.throws(() => proposed(codex), /Start a Codex session instead/);
+	assert.throws(() => proposed(codex), /Plan-first subtasks run Windlass, Claude Code or OpenCode for now\. Codex runs Quick items only\./);
 	const windlass = proposal();
 	windlass.subtasks[0].agent = { harness: "windlass" };
 	assert.equal(proposed(windlass).featurePlan?.subtasks[0].agent, undefined);
@@ -1082,7 +1082,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	refused({ harness: "claude", model: "opus" }, agentMac(), /Claude Code: That model is not offered/);
 	refused({ harness: "claude", model: "sonnet", effort: "max" }, agentMac(), /effort for sonnet must be one of: low, high/);
 	refused({ harness: "windlass", model: "o9" }, agentMac(), /Windlass: That model is not among the ones your ChatGPT plan offers/);
-	refused({ harness: "codex" }, agentMac(), /Start a Codex session instead/);
+	refused({ harness: "codex" }, agentMac(), /Plan-first subtasks run Windlass, Claude Code or OpenCode for now\. Codex runs Quick items only\./);
 	const hosted = choosePlacement(task({ harness: "claude" }), { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["docker-hardened"] });
 	assert.match(String(hosted.refused), /this platform runs only Windlass; Claude Code runs on a machine of yours/);
 	// What the place offers is placed, in the hardened container, naming its agent.

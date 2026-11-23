@@ -26,7 +26,7 @@
  */
 
 import type { HarnessId, SandboxProfileId } from "../contract.js";
-import { harnessName } from "../sandbox/harnesses.js";
+import { harnessName, machineHarness } from "../sandbox/harnesses.js";
 
 /** The longest source Windlass takes (its docs/acp.md, `_meta["windlass/untrusted"]`). */
 export const UNTRUSTED_SOURCE_MAX = 200;
@@ -121,10 +121,10 @@ export function untrustedTurn(turn: UntrustedTurn): UntrustedHandling {
 	if (turn.profile === "docker-hardened") {
 		const outside = turn.unsandboxed ? [] : thirdParty(list);
 		if (outside.length) return { kind: "stop", sources: outside, reason: hardenedRefusal(turn.agent, outside) };
-		return { kind: "labelled", sources: list, note: turn.marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list) };
+		return { kind: "labelled", sources: list, note: turn.marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
 	}
 	if (turn.marker) return { kind: "marked", sources: list };
-	return { kind: "labelled", sources: list, note: agentUnmarkedNote(harnessName(turn.agent), list) };
+	return { kind: "labelled", sources: list, note: agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
 }
 
 /** Why a turn with someone else's text does not start on "Docker, hardened" (`untrustedTurn`), in the words of its agent. */
@@ -151,6 +151,12 @@ export const hardenedUnmarkedNote = (list: readonly string[]) =>
 export const unmarkedNote = (list: readonly string[]) =>
 	`This sandbox's Windlass cannot be told which text came from someone else (${sources(list).join("; ")}); it went to the agent as labelled text only. Windlass 0.6.0 or later marks it.`;
 
-/** Once per session, for an agent that has no marker at all (Claude Code, OpenCode, Codex). */
-export const agentUnmarkedNote = (agent: string, list: readonly string[]) =>
-	`${agent} cannot be told which text came from someone else (${sources(list).join("; ")}); it went to the agent as labelled text only, and the agent runs its commands without asking.`;
+/**
+ * Once per session, for an agent that has no marker at all (Claude Code, OpenCode, Codex). `sandboxed`: its
+ * commands run in its own sandbox without network, and a request to leave it ends the step (Codex on
+ * "Docker + Windlass sandbox", harnesses.ts `sandboxedOn`). Whether such a turn runs at all on "Docker,
+ * hardened" is decided by `untrustedTurn`, the same for every agent.
+ */
+export const agentUnmarkedNote = (agent: string, list: readonly string[], sandboxed = false) =>
+	`${agent} cannot be told which text came from someone else (${sources(list).join("; ")}); it went to the agent as labelled text only, ` +
+	(sandboxed ? "and its commands run in its own sandbox without network." : "and the agent runs its commands without asking.");

@@ -416,6 +416,11 @@ export type Fact =
 			 */
 			untrustedRefusal?: UntrustedRefusal;
 			providerRefusal?: ItemProviderRefusal;
+			/**
+			 * Set when the agent asked to leave its sandbox and the platform refused it and stopped the turn
+			 * (Codex on "Docker + Windlass sandbox"): the platform's note, never the agent's words.
+			 */
+			escaped?: string;
 			spend: TurnSpend;
 	  }
 	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; spend: TurnSpend }

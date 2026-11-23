@@ -23,7 +23,7 @@ import { markTurnSandbox, type ProcessEnd, type SandboxProcess } from "../server
 
 const { SandboxWindlass } = await import("../server/src/sandbox/turn.js");
 const { UNTRUSTED_SOURCE_MAX, untrustedTurn, agentUnmarkedNote, hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
-const { harnessName, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+const { harnessName, machineHarness, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
 const { PROFILES } = await import("../server/src/sandbox/profiles.js");
 const { deliveryOf, receive, inboxRow, INBOX_TABLES } = await import("../server/src/actors/session-inbox.js");
 
@@ -174,7 +174,7 @@ const CURRENT = ["windlass/maxSteps", MARKER];
 		expect(`${name}, docker-hardened: the run's own text goes labelled only`, decide(agent, "docker-hardened", ciRow).kind === "labelled");
 		for (const profile of PROFILES.map(p => p.id).filter(id => id !== "docker-hardened")) {
 			const got = decide(agent, profile, issueRow);
-			const ok = agent === "windlass" ? got.kind === "marked" : got.kind === "labelled" && got.note === agentUnmarkedNote(name, [ISSUE]);
+			const ok = agent === "windlass" ? got.kind === "marked" : got.kind === "labelled" && got.note === agentUnmarkedNote(name, [ISSUE], machineHarness(agent)?.sandboxedOn.includes(profile) ?? false);
 			expect(`${name}, ${profile}: nothing stops; ${agent === "windlass" ? "Windlass is told" : "labelled only, as before"}`, ok, JSON.stringify(got));
 		}
 	}

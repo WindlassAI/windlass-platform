@@ -6,7 +6,7 @@ import type { ChildPlacement, EgressMode, FeaturePlanEdit, HarnessId, MachineSum
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
-import { harnessName, itemHarnessProblem, machineHarness } from "../sandbox/harnesses.js";
+import { harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
@@ -171,8 +171,8 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		return { wait, providerUntil: limit.limitedUntil, accountKey: limit.accountKey, dailyCap };
 	};
 	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place!.prefer}’`;
-	const notForItems = itemHarnessProblem(harness);
-	if (notForItems) return { refused: notForItems, permanent: true };
+	const notForSubtasks = subtaskHarnessProblem(harness);
+	if (notForSubtasks) return { refused: notForSubtasks, permanent: true };
 	if (place.kind === "hosted") {
 		if (harness !== "windlass") return { refused: `this platform runs only Windlass; ${harnessName(harness)} runs on a machine of yours.`, permanent: true };
 		const modelProblem = agentModelProblem(task, inventory.models?.windlass, inventory.featureModel);

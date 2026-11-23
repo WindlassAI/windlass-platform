@@ -12,7 +12,7 @@ COPY LICENSE /usr/local/share/doc/opencode/LICENSE
 COPY config.json /etc/wlp-opencode/opencode/opencode.json
 COPY --chmod=0755 wlp-opencode-acp /usr/local/bin/
 # Serves OpenCode the MCP server the platform declares over ACP (the platform's report and ask_person).
-COPY --chmod=0755 wlp-acp-mcp.mjs /usr/local/bin/
+COPY --from=shared --chmod=0755 wlp-acp-mcp.mjs /usr/local/bin/
 USER agent
 RUN --network=none test "$(opencode --version)" = 1.19.6 && node --check /usr/local/bin/wlp-acp-mcp.mjs
 LABEL dev.windlass-platform=1 dev.windlass-platform.harness=opencode dev.windlass-platform.adapter="OpenCode 1.19.6"

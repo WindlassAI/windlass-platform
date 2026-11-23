@@ -61,11 +61,11 @@ The body names the repository, the title, the body and, optionally, the acceptan
 
 ## Choose the agent
 
-An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code** or **OpenCode** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those, and an item is refused where the machine does not report the agent signed in. If the agent is signed out by the time a turn would start, the turn does not run: the item asks you, with the `windlass-runner login` command to run. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
+An item's builder runs **Windlass** by default. On one of your machines, it can run **Claude Code**, **OpenCode** or **Codex** instead, where the machine's runner offers that agent and it is signed in there. The composer lists only those, and an item is refused where the machine does not report the agent signed in. If the agent is signed out by the time a turn would start, the turn does not run: the item asks you, with the `windlass-runner login` command to run. The agent's default model is used unless you choose another. Windlass items can choose any model of your account.
 
 An item can also have an **effort**: the reasoning effort every turn of it runs at, for Windlass, Claude Code and OpenCode alike. The composer offers it in the agent's menu, beside each model, and the **New work item** dialog under **Model** and **Effort**, with the efforts the agent reported for that model. Left at **Default**, the agent's own default is used. An effort the agent does not offer is refused.
 
-Codex is not offered for work items yet: the **Agent** choice does not list it, and an item filed with Codex is refused. Start a Codex session instead.
+**Codex** can run Quick items too, on a machine that offers it signed in with **ChatGPT**. It is not offered for **Plan first** or as a subtask's agent. See [Codex items](#codex-items).
 
 What changes with Claude Code or OpenCode:
 
@@ -78,6 +78,17 @@ What changes with Claude Code or OpenCode:
 - **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. The item's turns and working time bound it. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
 
 From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`, and `"effort"`, for example `"high"`. The machine's model list is on the **Machines** page. Issues filed from GitHub run Windlass.
+
+### Codex items
+
+A Codex item runs the way a Claude Code or OpenCode item does above, with these differences:
+
+- **Where.** In one of two sandboxes on your machine. **Docker + Windlass sandbox** is the default: Codex runs every command in its own sandbox without network, and may change files only in the workspace (not `.git`, `.agents`, `.codex` or `.aws`) and the temporary directories. The machine offers it once its runner's check of Codex's sandbox passed. **Docker, hardened** runs only when you choose it: commands run in the container without asking, with the machine's network, as Claude Code's do.
+- **Leaving the sandbox.** On **Docker + Windlass sandbox**, Codex asks before a command outside its sandbox or an edit outside the paths it may write, and every such request is refused. Most are refused inside Codex, which is told and goes on. One that reaches the platform ends the step: the timeline notes the request, and the item asks you to file the work again on **Docker, hardened**, or to give up. Work that needs the network in its commands, such as adding a package or running tests against a service, suits **Docker, hardened** better. The repository's setup command runs before the turns, with network, so dependencies it installs are there.
+- **Tokens.** Codex items run only with a ChatGPT sign-in for now. A ChatGPT plan is a subscription, so the tokens Codex reports are shown, not counted, and the item's turns and working time bound it. The sign-in method is kept with the item. If the machine's Codex later signs in another way, the next turn does not start and the item asks you to file the work again. A machine signed in with an API key can't take Codex items yet.
+- **Asking and reporting.** Codex gets `report` and `ask_person` like the other agents (see [When the agent asks you](#when-the-agent-asks-you)), and calls them without asking on both profiles.
+
+From the API, send `"harness": "codex"` with `"place"`, `"mode": "single"` and, to choose the hardened container, `"profile": "docker-hardened"`. Left out, the profile is `docker-windlass-sandbox`.
 
 ## The pipeline
 
@@ -244,7 +255,7 @@ What a turn with such text does depends on the item's profile and its agent:
 
 After **Run it anyway**, later turns of the item, and its subtasks, that carry no other text from someone else go the same way. Text from someone new asks again. Where the choice is offered, **Hand it over as it is** is there too, once the item has a pull request this run pushed.
 
-Claude Code and OpenCode run work items only on Docker, hardened. Read an issue someone else wrote before you choose **Run it anyway** for them.
+Claude Code and OpenCode run work items only on Docker, hardened. Read an issue someone else wrote before you choose **Run it anyway** for them. Codex runs work items on Docker + Windlass sandbox by default, where its commands stay in its own sandbox without network, and on Docker, hardened only when you pick it.
 
 A sandbox whose Windlass is older than 0.6.0 also gets labelled text only, and its timeline says so once.
 
@@ -312,6 +323,7 @@ While the plan is open you can change each subtask's agent, model and effort. Th
 
 - **This platform** runs Windlass, on any model of your account.
 - **A machine of yours** also offers Claude Code and OpenCode where its runner reports them signed in. One that is not signed in is listed but can't be chosen. The models and efforts are the ones the machine reported for that agent.
+- **Codex** is not offered for subtasks. A plan that names it is refused, and so is placing a subtask on it. Codex runs Quick items only.
 
 A subtask on Claude Code or OpenCode runs in the machine's hardened container, on its own model and effort. It never takes the feature's Windlass model: with no model chosen, it runs the agent's default. A choice the place does not offer, for example an agent the machine does not have or a model it does not list, shows **can't place** and the reason, and approval is refused the same way. If the machine changes after approval, for example the agent is signed out, the subtask can't be placed when the feature gets to it, and the feature asks you with the reason.
 

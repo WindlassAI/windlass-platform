@@ -588,11 +588,11 @@ async function clientCheck(state: string) {
 		assert.equal(initialSessionModes("docker-hardened", "claude", true, [{ id: "default", name: "Manual", description: null }]).mode, "bypassPermissions");
 		assert.equal(initialSessionModes("docker-hardened", "opencode", true).mode, "build");
 		assert.equal(initialSessionModes("docker-hardened", "claude", false).mode, "auto");
-		assert.deepEqual([CLAUDE.itemMode, OPENCODE.itemMode], ["bypassPermissions", "build"]);
+		assert.deepEqual([CLAUDE.itemModes, OPENCODE.itemModes], [{ "docker-hardened": "bypassPermissions" }, { "docker-hardened": "build" }]);
 		answers.length = 0;
 		methods.length = 0;
 		const chosen: string[] = [];
-		const item = await harness.runTurn(handle, { prompt: "itemwork", mode: CLAUDE.itemMode, unattended: true, onAcpModes: id => { chosen.push(id); } });
+		const item = await harness.runTurn(handle, { prompt: "itemwork", mode: CLAUDE.itemModes["docker-hardened"], unattended: true, onAcpModes: id => { chosen.push(id); } });
 		assert.equal(item.failure, null, JSON.stringify(item.failure));
 		assert.deepEqual(chosen, ["bypassPermissions"]);
 		assert.deepEqual(answers, [{ outcome: "selected", optionId: "allow-once" }, { outcome: "selected", optionId: "allow-once" }]);
@@ -661,19 +661,23 @@ async function clientCheck(state: string) {
 	assert.match(codex.failure.message,/Bench.*Run windlass-runner login codex/);
 	ok("Codex -32000 names the machine and its terminal sign-in command");
 
-	// Codex is not offered for work items: filing one is refused, an unattended turn never starts, and nothing is allowed in its name.
+	// Codex runs Quick items, not Plan-first subtasks. Its sign-in method decides how its tokens count; items take ChatGPT only for now.
 	{
-		const { CODEX, CLAUDE, OPENCODE, itemHarnessProblem } = await import("../server/src/sandbox/harnesses.js");
+		const { CODEX, CLAUDE, OPENCODE, itemHarnessProblem, subtaskHarnessProblem, itemSignInMethodProblem, itemSignInChanged, itemTokensOf } = await import("../server/src/sandbox/harnesses.js");
 		const { permission } = await import("../server/src/sandbox/acp-harness.js");
-		assert.equal(itemHarnessProblem("codex"), "Work items run Windlass, Claude Code or OpenCode for now. Start a Codex session instead.");
-		assert.deepEqual([itemHarnessProblem("windlass"), itemHarnessProblem("claude"), itemHarnessProblem("opencode")], [null, null, null]);
-		assert.equal(CODEX.items, false);
-		assert.equal(CODEX.itemTokens, "subscription");
-		assert.notEqual(CODEX.itemMode, "agent-full-access");
-		methods.length = 0;
-		const unattended = await harnessOf(machine, "codex").runTurn(handle, { prompt: "itemwork", unattended: true });
-		assert.equal(unattended.failure?.message, itemHarnessProblem("codex"));
-		assert.deepEqual(methods, [], "no Codex process is started for an unattended turn");
+		assert.deepEqual(["windlass", "claude", "opencode", "codex"].map(id => itemHarnessProblem(id as "codex")), [null, null, null, null]);
+		assert.deepEqual(["windlass", "claude", "opencode"].map(id => subtaskHarnessProblem(id as "codex")), [null, null, null]);
+		assert.equal(subtaskHarnessProblem("codex"), "Plan-first subtasks run Windlass, Claude Code or OpenCode for now. Codex runs Quick items only.");
+		assert.deepEqual([CODEX.items, CODEX.subtasks], [true, false]);
+		assert.deepEqual([itemTokensOf(CODEX, "chatgpt"), itemTokensOf(CODEX, "api-key"), itemTokensOf(CODEX, undefined), itemTokensOf(CLAUDE, "api-key"), itemTokensOf(OPENCODE, undefined)],
+			["subscription", "budget", "budget", "subscription", "budget"]);
+		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "chatgpt"), null);
+		assert.match(itemSignInMethodProblem(CODEX, "Bench", "api-key") ?? "", /^Codex on “Bench” signs in with an API key, and its work items run only with ChatGPT sign-in for now\./);
+		assert.match(itemSignInMethodProblem(CODEX, "Bench", undefined) ?? "", /signs in with a method it did not report/);
+		assert.equal(itemSignInMethodProblem(CLAUDE, "Bench", undefined), null);
+		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "chatgpt"), null);
+		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "api-key"), "Codex on “Bench” now signs in with an API key, not ChatGPT as when this item was filed. File the work again.");
+		assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, undefined), null);
 		const params = { sessionId: "s", toolCall: { toolCallId: "t", title: "Run tests" }, options: [
 			{ optionId: "allow-once", kind: "allow_once", name: "Allow" }, { optionId: "always", kind: "allow_always", name: "Always" },
 			{ optionId: "reject", kind: "reject_once", name: "Reject" },
@@ -682,15 +686,15 @@ async function clientCheck(state: string) {
 		const onQuestion = async () => { asked++; return { choice: "allow-once" }; };
 		const answer = async (profile: typeof CODEX, input: Partial<RunTurnInput>) =>
 			(await permission(params, { prompt: "x", ...input } as RunTurnInput, new AbortController().signal, profile)).outcome;
-		assert.deepEqual(await answer(CODEX, { unattended: true }), { outcome: "selected", optionId: "reject" });
-		assert.deepEqual(await answer(CODEX, { unattended: true, onQuestion: onQuestion as RunTurnInput["onQuestion"] }), { outcome: "selected", optionId: "reject" });
+		// On "Docker, hardened" (the only place permission() answers Codex: on the Windlass sandbox profile the refusal comes first, runner-codex-check.ts).
+		assert.deepEqual(await answer(CODEX, { unattended: true, onQuestion: onQuestion as RunTurnInput["onQuestion"] }), { outcome: "selected", optionId: "allow-once" });
 		assert.equal(asked, 0, "an unattended Codex request is not put to anyone");
 		assert.deepEqual(await answer({ ...CLAUDE, items: false }, { unattended: true }), { outcome: "selected", optionId: "reject" });
 		assert.deepEqual(await answer(OPENCODE, { unattended: true }), { outcome: "selected", optionId: "allow-once" });
 		assert.deepEqual(await answer(CODEX, { onQuestion: onQuestion as RunTurnInput["onQuestion"] }), { outcome: "selected", optionId: "allow-once" });
 		assert.equal(asked, 1);
 	}
-	ok("Codex is refused for work items, its unattended turn never starts, and item auto-approval never answers for it");
+	ok("Codex runs work items but not subtasks, counts tokens by its filed sign-in, and an item's allow-once answers it only where nothing refused first");
 }
 
 /**
@@ -828,9 +832,9 @@ async function platformToolsCheck(state: string) {
 	ok("plain sessions, planner, reviewer and host-only tools get no server; an older adapter is noted");
 }
 
-/** sandbox/harness/opencode/wlp-acp-mcp.mjs with a stand-in agent that takes MCP servers by URL, as OpenCode does. */
+/** sandbox/harness/shared/wlp-acp-mcp.mjs with a stand-in agent that takes MCP servers by URL, as OpenCode does. */
 async function bridgeCheck() {
-	const bridge = fileURLToPath(new URL("../sandbox/harness/opencode/wlp-acp-mcp.mjs", import.meta.url));
+	const bridge = fileURLToPath(new URL("../sandbox/harness/shared/wlp-acp-mcp.mjs", import.meta.url));
 	// The stand-in: on a prompt it calls the first http server it was given, with and without its token, and reports what came back.
 	const agentScript = `
 const lines = require("node:readline").createInterface({ input: process.stdin });
@@ -885,6 +889,33 @@ lines.on("line", async line => {
 	const [code] = await once(child, "exit");
 	assert.equal(code, 0);
 	ok("wlp-acp-mcp serves an acp server to an agent that takes URLs: token required, requests only, and it ends with the agent");
+
+	// WLP_ACP_MCP_PORT (Codex, whose requirements.toml allows one exact URL): that port, and never one another process holds.
+	const { createServer } = await import("node:net");
+	const listening = () => new Promise<import("node:net").Server>(resolve => { const server = createServer(); server.listen(0, "127.0.0.1", () => resolve(server)); });
+	const spare = await listening();
+	const free = (spare.address() as import("node:net").AddressInfo).port;
+	await new Promise(resolve => spare.close(resolve));
+	const holder = await listening();
+	const held = (holder.address() as import("node:net").AddressInfo).port;
+	const minimal = `require("node:readline").createInterface({ input: process.stdin }).on("line", line => { const m = JSON.parse(line);
+  const send = r => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: r }) + "\\n");
+  if (m.method === "initialize") send({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { acp: true, http: true } }, _meta: { steering: { supported: true } } });
+  if (m.method === "session/new") send({ sessionId: "s1", seen: m.params.mcpServers }); });`;
+	for (const [port, served] of [[free, true], [held, false]] as const) {
+		const fixed = spawn(process.execPath, [bridge, process.execPath, "-e", minimal], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, WLP_ACP_MCP_PORT: String(port) } });
+		const answers = createInterface({ input: fixed.stdout! })[Symbol.asyncIterator]();
+		const ask = async (m: object) => { fixed.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n"); return JSON.parse((await answers.next()).value as string).result; };
+		const init = await ask({ id: 1, method: "initialize", params: { protocolVersion: 1 } });
+		assert.deepEqual(init._meta, { steering: { supported: true }, "windlass-platform/acpMcp": 1 }, "the bridge says it is in front, and keeps the agent's own _meta");
+		const seen = (await ask({ id: 2, method: "session/new", params: { cwd: "/w", mcpServers: [{ type: "acp", name: "windlass_platform", serverId: "windlass-platform" }] } })).seen;
+		if (served) assert.deepEqual(seen.map((s: { url: string }) => s.url), [`http://127.0.0.1:${port}/mcp-d2luZGxhc3MtcGxhdGZvcm0`]);
+		else assert.deepEqual(seen, [], "a server was handed over on a port another process holds");
+		fixed.stdin!.end();
+		await once(fixed, "exit");
+	}
+	holder.close();
+	ok("with WLP_ACP_MCP_PORT the bridge serves on that port only, says it is in front, and hands over no server where the port is held");
 }
 
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));

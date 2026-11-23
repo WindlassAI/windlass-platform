@@ -224,8 +224,8 @@ import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
-import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, takesUntrustedMarker } from "../sandbox/harnesses.js";
+import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
+import { itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, takesUntrustedMarker } from "../sandbox/harnesses.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
@@ -540,7 +540,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string };
 }
 
 /**
@@ -1433,8 +1433,9 @@ const FRESH_WORKSPACE =
 
 /**
  * Why an item's turn on a machine harness cannot start: the machine's last report does not offer the
- * agent, or does not say it is signed in (`signIn` "token", as filing requires). Null where it can, and for
- * Windlass. A machine that cannot be asked is left to the turn, which waits for it.
+ * agent, does not say it is signed in (`signIn` "token", as filing requires), or names another sign-in
+ * method than the item was filed with, which would count its tokens differently (`itemSignInChanged`).
+ * Null where it can, and for Windlass. A machine that cannot be asked is left to the turn, which waits for it.
  */
 async function itemSignInRefusal(c: Ctx, meta: SessionMeta): Promise<string | null> {
 	const machine = machineHarness(meta.harness);
@@ -1443,7 +1444,7 @@ async function itemSignInRefusal(c: Ctx, meta: SessionMeta): Promise<string | nu
 	if (!facts?.report) return null;
 	const offered = facts.report.harnesses?.find(entry => entry.id === machine.id);
 	if (!offered) return `This machine does not offer ${machine.name}.`;
-	return itemSignInMessage(machine, facts.name, offered.signIn);
+	return itemSignInMessage(machine, facts.name, offered.signIn) ?? itemSignInChanged(machine, facts.name, meta.origin?.signIn, offered.method);
 }
 
 /**
@@ -3496,8 +3497,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const startedAt = Date.now();
 	const turn = active.number;
 	const effort = active.effort;
-	// A work item keeps its profile's approval (Windlass), or its agent's mode that never asks (harnesses.ts, `itemMode`).
-	const mode = meta.origin ? machineHarness(meta.harness)?.itemMode : meta.mode;
+	// A work item keeps its profile's approval (Windlass), or its agent's mode for the profile that never asks (harnesses.ts, `itemModes`).
+	const mode = meta.origin ? itemModeOf(meta.harness, meta.profile) : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
@@ -3941,6 +3942,8 @@ fi`, { signal, timeoutMs: 5000 });
 			if (result?.failure || problem) {
 				outcome = "error";
 				message = result?.failure?.message ?? problem;
+				// Codex asked to leave its sandbox (acp-harness.ts): the step ends, and the item asks with the platform's note.
+				if (result?.failure?.reason === SANDBOX_ESCAPE_REFUSED && active.item) active.item.escaped = result.failure.message;
 			} else if (reason === "cancelled" || result?.aborted || signal.aborted) outcome = "stopped";
 			else if (reason === "end_turn") outcome = "succeeded";
 			else if (reason === "max_tokens" || reason === "max_turn_requests") outcome = "unresolved";
@@ -4573,8 +4576,8 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
-		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }) };
+		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
 	if (attachmentStore()) {

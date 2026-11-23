@@ -145,7 +145,7 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { itemHarnessProblem, itemSignInMessage, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishUnaskedProblem } from "../agent-publish.js";
@@ -1001,6 +1001,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
 		if (input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
+		const profileProblem = item ? itemProfileProblem(harness, input.profile) : null;
+		if (profileProblem) throw new UserError(profileProblem, { code: "bad_input" });
 		if (input.publishUnasked) throw new UserError(`${machineHarnesses[harness].name} has no publish tool. Publish from the session panel.`, { code: "bad_input" });
 	}
 	let repoUrl = cleanRepoUrl(input.repoUrl);
@@ -1054,6 +1056,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
 		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
 		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
+		// Where the sign-in method decides how an item counts its tokens (Codex), it is kept with the item, and refused when it is not one items run with.
+		const itemSignIn = item && harness !== "windlass" && machineHarnesses[harness].itemTokens === "sign-in" ? offered?.method : undefined;
+		const methodProblem = item && harness !== "windlass" ? itemSignInMethodProblem(machineHarnesses[harness], machine?.name ?? "your machine", offered?.method) : null;
+		if (methodProblem) throw new UserError(methodProblem, { code: "bad_input" });
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
 		const chosen = profiles.find((candidate) => candidate.id === input.profile);
 		if (!chosen) throw new UserError("That sandbox does not exist.", { code: "bad_profile" });
@@ -1098,10 +1104,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			turns: 0,
 			lastOutcome: null,
 			sandbox: "none",
-			...(item ? { item: { id: item.itemId, role: item.role } } : {}),
+			...(item ? { item: { id: item.itemId, role: item.role, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
@@ -1147,7 +1153,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
  */
 export async function agentModels(c: CreateCtx & { key: string[] }): Promise<AgentModels> {
 	const profile = c.vars.profile;
-	const harnesses = [...c.vars.machines.values()].flatMap(m => (m.harnesses ?? []).filter(h => machineHarnesses[h.id]?.items).map(h => ({ m, h })));
+	const harnesses = [...c.vars.machines.values()].flatMap(m => (m.harnesses ?? []).filter(h => machineHarnesses[h.id]?.subtasks).map(h => ({ m, h })));
 	const [windlass, catalogs] = await Promise.all([
 		profile ? modelsOf(c, profile.demo).catch(() => null) : null,
 		Promise.all(harnesses.map(({ m, h }) => h.optionsDigest ? machineCatalog(c, m.machineId, h.id, h.optionsDigest).catch(() => null) : undefined)),

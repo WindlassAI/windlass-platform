@@ -32,6 +32,12 @@ export const sandboxEscapeNote = (kind: unknown) =>
 	kind === "edit"
 		? "Codex asked to edit files outside its sandbox; refused on this profile."
 		: "Codex asked to run a command outside its sandbox; refused on this profile.";
+/**
+ * A work item's turn in which Codex asked to leave its sandbox on this profile fails with this reason
+ * (`RunTurnResult.failure`), its message the note above: the request is refused and the turn is stopped,
+ * and the item asks its person to file the work again on "Docker, hardened" or to give up.
+ */
+export const SANDBOX_ESCAPE_REFUSED = "sandbox_escape_refused";
 /** The mode a Codex session starts in on this profile. */
 export function codexDefaultMode(profile: SandboxProfileId | undefined) {
 	return profile === "docker-windlass-sandbox" ? "workspace-write" : containerMode;

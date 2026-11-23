@@ -53,6 +53,7 @@ const TITLES = {
 	"runner-docker/runner": "Runner: full check",
 	"runner-docker/suites": "Runner: focused suites",
 	"runner-docker/harness": "Runner: agent images and relays",
+	"codex-docker": "Codex image: sandbox, refusals and platform tools",
 };
 const titleOf = (job) => TITLES[job] ?? job;
 
@@ -112,8 +113,10 @@ function select(argv) {
 	}
 	const jobs = picked.flatMap(jobsOf);
 	const plain = jobs.filter((j) => !j.images), docker = jobs.filter((j) => j.images);
-	const images = [...new Set(docker.flatMap((j) => j.images.split(" ")))].filter((i) => i !== "harness");
-	if (docker.some((j) => j.images.includes("harness")) && !images.includes("base")) images.push("base");
+	// The harness images are built on base in the job that needs them (`run`): only base is made ahead.
+	const builtInJob = (i) => i === "harness" || i === "codex";
+	const images = [...new Set(docker.flatMap((j) => j.images.split(" ")))].filter((i) => !builtInJob(i));
+	if (docker.some((j) => j.images.split(" ").some(builtInJob)) && !images.includes("base")) images.push("base");
 	const summary = [`### Heavy checks: ${jobs.length ? jobs.map((j) => j.job).join(", ") : "none"}`, "", `Selected by ${reason || "the files given"}.`, ...lines].join("\n");
 	console.log(summary);
 	if (env.GITHUB_OUTPUT) {
@@ -157,8 +160,9 @@ async function run([job]) {
 	const windlassDir = sh("sandbox/fetch-windlass.sh");
 	extra.WLP_WINDLASS_BIN = join(windlassDir, `windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`);
 	if (images.includes("base")) extra.WLP_CI_BASE_IMAGE = sh("docker image inspect --format '{{.Id}}' windlass-platform-sandbox:latest");
-	if (images.includes("harness")) {
-		for (const harness of ["claude", "opencode"]) {
+	const harnesses = [...(images.includes("harness") ? ["claude", "opencode"] : []), ...(images.includes("codex") ? ["codex"] : [])];
+	if (harnesses.length) {
+		for (const harness of harnesses) {
 			const started = Date.now();
 			extra[`WLP_CI_${harness.toUpperCase()}_IMAGE`] = sh(`WLP_HARNESS_TAG=ci sandbox/harness/build.sh ${harness} windlass-platform-sandbox:latest`);
 			console.log(`built the ${harness} harness image in ${Math.round((Date.now() - started) / 1000)} s`);

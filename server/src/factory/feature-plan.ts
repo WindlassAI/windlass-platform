@@ -1,6 +1,6 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent } from "../contract.js";
-import { harnessName, itemHarnessProblem, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
+import { harnessName, knownHarness, subtaskHarnessProblem, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
@@ -149,7 +149,7 @@ export function ownsPath(owns: string[], path: string): boolean {
 const MAX_AGENT_ID = 200;
 
 /**
- * A subtask's agent, checked as far as a plan can be: an agent work items run (not Codex), a model and an
+ * A subtask's agent, checked as far as a plan can be: an agent subtasks run (not Codex: `subtaskHarnessProblem`), a model and an
  * effort of plain id text. Whether its place offers them is placement's (`placement.ts`, `agentFit`).
  * Windlass with nothing chosen is no choice: the subtask inherits the feature's model.
  */
@@ -158,7 +158,7 @@ function agentOf(value: unknown): SubtaskAgent | undefined {
 	for (const key of Object.keys(a)) requirePlan(["harness", "model", "effort"].includes(key), "Unknown agent field: " + key);
 	const harness = a.harness === undefined ? "windlass" : knownHarness(a.harness);
 	requirePlan(harness !== null, "Choose a supported agent: windlass, claude or opencode.");
-	const problem = itemHarnessProblem(harness);
+	const problem = subtaskHarnessProblem(harness);
 	requirePlan(problem === null, problem!);
 	const id = (v: unknown, what: string, max: number) => {
 		requirePlan(typeof v === "string" && v.length > 0 && v.length <= max && /^[\w.:/@+\[\]-]+$/.test(v), `Name the ${what} by its id.`);

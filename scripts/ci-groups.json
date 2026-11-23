@@ -1,5 +1,5 @@
 {
-  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, and harness for the Claude and OpenCode images built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), name its own images, and ask for the full git history (history), which runner-check needs to build an older runner from its commit.",
+  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, and harness for the Claude and OpenCode images built on base, codex for the Codex image built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), name its own images, and ask for the full git history (history), which runner-check needs to build an older runner from its commit.",
   "core": [
     "package.json",
     "pnpm-lock.yaml",
@@ -31,7 +31,7 @@
         "runner/src/**",
         "sandbox/e2b/**",
         "sandbox/fetch-windlass.sh",
-        "sandbox/harness/opencode/wlp-acp-mcp.mjs",
+        "sandbox/harness/shared/wlp-acp-mcp.mjs",
         "sandbox/harness/opencode/wlp-opencode-acp",
         "sandbox/harness/claude/managed-settings.json",
         "fixtures/acp-agent/**",
@@ -349,6 +349,27 @@
         "opencode-docker": "tsx ../scripts/opencode-docker-check.mjs \"$WLP_CI_OPENCODE_IMAGE\"",
         "runner-egress-live": "tsx ../scripts/runner-egress-live.ts \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\"",
         "runner-session-egress": "tsx ../scripts/runner-e2e.ts egress \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\""
+      }
+    },
+    "codex-docker": {
+      "timeout": 30,
+      "images": ["base", "codex"],
+      "paths": [
+        "sandbox/harness/build.sh",
+        "sandbox/harness/codex/**",
+        "sandbox/harness/shared/**",
+        "sandbox/relay/codex.cjs",
+        "server/src/sandbox/codex-modes.ts",
+        "server/src/sandbox/acp-harness.ts",
+        "server/src/platform-tools.ts",
+        "runner/src/docker-executor.ts",
+        "fixtures/codex/**",
+        "scripts/codex-docker-check.mjs",
+        "scripts/codex-sandbox-escape-check.mjs"
+      ],
+      "checks": {
+        "codex-docker": "tsx ../scripts/codex-docker-check.mjs \"$WLP_CI_CODEX_IMAGE\"",
+        "codex-escape-docker": "tsx ../scripts/codex-sandbox-escape-check.mjs \"$WLP_CI_CODEX_IMAGE\""
       }
     }
   }

@@ -13,5 +13,6 @@ case "$base" in
     sha256:*) base=$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{index .RepoTags 0}}{{end}}' "$base") ;;
 esac
 image="windlass-platform-$harness:${WLP_HARNESS_TAG:-dev}"
-docker build --build-arg "SANDBOX_IMAGE=$base" --tag "$image" "$(dirname "$0")/$harness" >&2
+# shared/ holds what more than one image takes (wlp-acp-mcp.mjs), as the named context `shared`.
+docker build --build-arg "SANDBOX_IMAGE=$base" --build-context "shared=$(dirname "$0")/shared" --tag "$image" "$(dirname "$0")/$harness" >&2
 docker image inspect --format '{{.Id}}' "$image"

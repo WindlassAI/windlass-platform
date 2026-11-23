@@ -19,7 +19,8 @@ import { byFiling, nextCursor } from "../../../server/src/item-pages";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
-import { HARNESS_PROFILE, PlaceChoice, itemHarnesses, machineUnusable } from "../components/PlaceChoice";
+import { PlaceChoice, itemAgentLine, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
+import { itemProfiles } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
@@ -672,9 +673,10 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
 	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
-	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its hardened container.
+	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its default item profile (Codex: Docker + Windlass
+	// sandbox, the others their hardened container). The start composer picks another profile.
 	const [agentChoice, setAgent] = useState<HarnessId>("windlass");
-	const agents = chosenMachine && chosenMachine.profiles.some((profile) => profile.id === HARNESS_PROFILE && profile.available) ? itemHarnesses(chosenMachine) : [];
+	const agents = itemHarnesses(chosenMachine).filter((offered) => itemProfilesHere(chosenMachine, offered.id)[0] === itemProfiles(offered.id)[0]);
 	const agent: HarnessId = agents.some((offered) => offered.id === agentChoice) ? agentChoice : "windlass";
 	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
 	const mode: ItemMode = agent === "windlass" ? modeChoice : "single";
@@ -805,7 +807,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								<p className="field-note">
 									{agent === "windlass"
 										? "Windlass runs your repository's checks before it hands the work over."
-										: `${HARNESS_NAMES[agent]} works in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.`}
+										: itemAgentLine(agent, itemProfiles(agent)[0] ?? "docker-hardened")}
 								</p>
 							</div>
 						) : null}

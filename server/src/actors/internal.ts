@@ -12,6 +12,7 @@ import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
 import type { GithubId, HarnessOptions, HarnessId, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
+import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import type { ItemCreateInput, ItemPublishAnswer } from "./work-item.js";
 import type { ItemFacts } from "./user-items.js";
@@ -44,8 +45,11 @@ export interface SessionCreateInput {
 	publishUnasked?: boolean;
 	demo: boolean;
 	createdAt: number;
-	/** Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's. */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number; effort?: string };
+	/**
+	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
+	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
+	 */
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; size?: number; effort?: string; signIn?: SignInMethod };
 }
 
 /** The repository setting selects an image only for work item sessions, at sandbox creation. */

@@ -1153,6 +1153,33 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	expect("the conversation's cost so far replaces the earlier one, tokens add up", later.agent?.cost?.amount === 0.9 && later.agent.reportedTokens === 67_000);
 	const claude = afterTurn(agentItem("claude", { tokens: 1000, turns: 1 }), turnSpend(usage, claudeTurn));
 	expect("a Claude Code item is bounded by its turns and active time, never by tokens", claude.spent.tokens === 0 && budgetStop(claude.budget, claude.spent, claude.place)?.cause === "turns" && budgetStop({ ...claude.budget, turns: 9 }, claude.spent, claude.place) === null);
+
+	// A Codex item counts by the sign-in it was filed with: ChatGPT is a subscription; an API key bills by token.
+	const codexItem = (signIn: "chatgpt" | "api-key", budget: Partial<FactoryItem["budget"]> = {}) => createItem({
+		id: "i_00000000000000ab", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
+		reviewer: { off: "profile" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness: "codex", model: "default", signIn },
+	});
+	expect("a Codex item keeps the sign-in it was filed with", itemAgent(codexItem("chatgpt")).signIn === "chatgpt");
+	const chatgpt = afterTurn(codexItem("chatgpt", { tokens: 1000 }), turnSpend(usage, agentTurn("codex", usage, null, undefined, "chatgpt")));
+	expect("a ChatGPT Codex item's tokens are shown, not counted", chatgpt.spent.tokens === 0 && chatgpt.agent?.tokens === "subscription" && chatgpt.agent.reportedTokens === 33_500 && chatgpt.question === null
+		&& tokenWords(chatgpt.spent, chatgpt.budget, chatgpt.agent) === "33,500 tokens reported by Codex, not counted (subscription)", JSON.stringify(chatgpt.agent));
+	const chatgptSilent = afterTurn(codexItem("chatgpt"), turnSpend(null, agentTurn("codex", null, null, undefined, "chatgpt")));
+	expect("a ChatGPT Codex turn that reports no tokens goes on", chatgptSilent.question === null && chatgptSilent.agent?.tokens === "not_reported", JSON.stringify(chatgptSilent.question));
+	const apiKey = afterTurn(codexItem("api-key", { tokens: 30_000 }), turnSpend(usage, agentTurn("codex", usage, null, undefined, "api-key")));
+	expect("an API-key Codex item's tokens count against its budget", apiKey.spent.tokens === 33_500 && apiKey.agent?.tokens === "counted" && budgetStop(apiKey.budget, apiKey.spent, apiKey.place)?.cause === "tokens", JSON.stringify(apiKey.agent));
+	const apiKeySilent = afterTurn(codexItem("api-key"), turnSpend(null, agentTurn("codex", null, null, undefined, "api-key")));
+	expect("an API-key Codex turn that reports no tokens stops the item", apiKeySilent.question?.kind === "budget" && apiKeySilent.question.text === "Codex did not report token use, so the item's budget can't be enforced.", JSON.stringify(apiKeySilent.question));
+	// Codex asked to leave its sandbox on "Docker + Windlass sandbox": the step ends, and the person is asked to file again on "Docker, hardened" or give up.
+	{
+		let o = advance(codexItem("chatgpt"), { kind: "start", at: T0, by: "person:u1" });
+		o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });
+		const note = "Codex asked to run a command outside its sandbox; refused on this profile.";
+		const escaped = advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key: currentKey(o.item)!, outcome: "error", verified: null, flags: [], changes: true, report: null, escaped: note, spend: turnSpend(usage, agentTurn("codex", usage, null, undefined, "chatgpt")) });
+		const question = escaped.item.question;
+		expect("a Codex turn that asked to leave its sandbox ends the step and asks to file again on Docker, hardened, or give up",
+			escaped.item.state === "waiting" && question?.kind === "turn_refused" && question.text.includes(note) && /File the work again on “Docker, hardened”/.test(question.text)
+			&& isDeepStrictEqual(question.choices.map(choice => choice.id), ["give_up"]) && !escaped.effects.some(e => e.kind === "publish" || e.kind === "deliver"), JSON.stringify({ question, effects: escaped.effects.map(e => e.kind) }));
+	}
 }
 drive("removal while a machine item is still a draft", machineItem, [
 	{ fact: () => ({ kind: "machine_removed" }), state: "waiting", wait: "person", effects: ["ask"] },
@@ -1659,7 +1686,7 @@ print("\n== untrusted text: each turn says where its outside text came from");
 
 	// "Docker, hardened": what the session refuses (someone else's text) and what goes labelled only (the run's own).
 	const { thirdParty, untrustedTurn, runAnywayWords, agentUnmarkedNote, hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
-	const { harnessName, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
+	const { harnessName, machineHarness, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
 	const { newAgent } = await import("../server/src/factory/budget.js");
 	const decide = (agent: "windlass" | "claude" | "opencode" | "codex", profile: "docker-hardened" | "docker-windlass-sandbox" | "e2b", d: { untrusted?: string[]; unsandboxed?: true } | undefined) =>
 		untrustedTurn({ agent, marker: takesUntrustedMarker(agent), profile, untrusted: d?.untrusted, unsandboxed: d?.unsandboxed });
@@ -1705,7 +1732,7 @@ print("\n== untrusted text: each turn says where its outside text came from");
 		expect(`${name} on hardened: a turn with no outside text is untouched`, decide(harness, "docker-hardened", effect(trusted.last, "deliver")).kind === "none");
 		for (const profile of ["docker-windlass-sandbox", "e2b"] as const) {
 			const elsewhere = decide(harness, profile, first);
-			expect(`${name} on ${profile}: someone else's issue does not stop; ${harness === "windlass" ? "Windlass is told" : "labelled only, as before"}`, harness === "windlass" ? elsewhere.kind === "marked" && isDeepStrictEqual(elsewhere.sources, [ISSUE]) : elsewhere.kind === "labelled" && elsewhere.note === agentUnmarkedNote(name, [ISSUE]), JSON.stringify(elsewhere));
+			expect(`${name} on ${profile}: someone else's issue does not stop; ${harness === "windlass" ? "Windlass is told" : "labelled only, as before"}`, harness === "windlass" ? elsewhere.kind === "marked" && isDeepStrictEqual(elsewhere.sources, [ISSUE]) : elsewhere.kind === "labelled" && elsewhere.note === agentUnmarkedNote(name, [ISSUE], machineHarness(harness)?.sandboxedOn.includes(profile) ?? false), JSON.stringify(elsewhere));
 		}
 	}
 	const notOutside = walk(walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, { ...turnEnded("succeeded", null), outcome: "error", refused: "Old Windlass." }]).item, [{ kind: "answer", choice: "run_anyway" }]);

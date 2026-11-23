@@ -10,7 +10,7 @@ import { isTurnSandbox, type SandboxProcess } from "./provider.js";
 import { ASK_TOOL, REPORT_TOOL } from "../agent-publish.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 
-import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, sandboxEscapeNote } from "./codex-modes.js";
+import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesSandboxEscape, SANDBOX_ESCAPE_REFUSED, sandboxEscapeNote } from "./codex-modes.js";
 
 export const ACP_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
@@ -275,12 +275,24 @@ export class AcpHarness implements Harness {
 				if (method !== "session/request_permission") throw new MethodNotFound(method);
 				if (phase !== "running" || params.sessionId !== result.windlassSessionId) return { outcome: { outcome: "cancelled" } };
 				if (profile.id === "codex" && refusesSandboxEscape(handle.profile)) {
-					input.onAcpNote?.(sandboxEscapeNote(object(params.toolCall).kind));
+					const note = sandboxEscapeNote(object(params.toolCall).kind);
+					input.onAcpNote?.(note);
+					// A work item's turn ends at the first one: the step fails with the platform's note, never the agent's words.
+					if (input.unattended) endForEscape(note);
 					return refuse(params);
 				}
 				return permission(params, input, AbortSignal.any([questions.signal, withdrawn]), profile);
 			},
 		}, "", value => redactor.deep(value));
+		// Codex asked to leave its sandbox during a work item's turn (above): the turn is stopped, and fails with the platform's note.
+		let escaped: string | null = null;
+		const endForEscape = (note: string) => {
+			if (escaped !== null) return;
+			escaped = note;
+			questions.abort();
+			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
+			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+		};
 		const cancel = () => {
 			questions.abort();
 			if (phase === "running") {
@@ -309,8 +321,10 @@ export class AcpHarness implements Harness {
 			if (profile.id === "codex") await request("providers/set", {providerId:"openai", apiType:"openai", baseUrl:"http://127.0.0.1:17892/codex/v1", headers:{}});
 			const caps = object(init.agentCapabilities);
 			const canSteer = object(object(init._meta).steering).supported === true;
-			// An adapter that takes no `acp` server gets none: the turn runs without the tools, and says so.
-			const served = mcp !== null && object(caps.mcpCapabilities).acp === true;
+			// An adapter that takes no `acp` server gets none: the turn runs without the tools, and says so. codex-acp takes one itself,
+			// on a random port Codex's requirements.toml cannot allow: only the image's wlp-acp-mcp in front of it serves one Codex starts.
+			const bridged = profile.id !== "codex" || object(init._meta)["windlass-platform/acpMcp"] === 1;
+			const served = mcp !== null && bridged && object(caps.mcpCapabilities).acp === true;
 			if (mcp && !served) input.onAcpNote?.(`${profile.name} here cannot take the platform's tools, so this turn has no ${[...tools.keys()].join(" or ")}. A newer harness image on the machine has them.`);
 			const settings = { cwd: handle.cwd, mcpServers: served ? [PLATFORM_MCP_SERVER] : [] };
 			const prior = input.windlassSessionId;
@@ -433,6 +447,7 @@ export class AcpHarness implements Harness {
 			clearTimeout(cancelDeadline);
 			input.signal?.removeEventListener("abort", cancel);
 			phase = "ended";
+			if (escaped !== null && !input.signal?.aborted) result.failure = { reason: SANDBOX_ESCAPE_REFUSED, message: escaped };
 			questions.abort();
 			stream.flush();
 			if (run && isTurnSandbox(handle)) {

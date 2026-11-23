@@ -13,8 +13,9 @@
  *   MCP over ACP The agent is handed one MCP server, `windlass_platform`, declared `"type": "acp"` in
  *                `session/new`: each MCP request comes back as an `mcp/message` request on the same ACP
  *                connection, and this file answers it (`PlatformMcpServer`). Claude Code's adapter takes
- *                such a server itself; OpenCode's harness image runs `wlp-acp-mcp`, which serves it the
- *                same way. Only the tools `reach` marks "sandbox".
+ *                such a server itself; OpenCode's and Codex's harness images run `wlp-acp-mcp`, which
+ *                serves it the same way (Codex's on the one URL its requirements.toml allows). Only the
+ *                tools `reach` marks "sandbox".
  *
  * Why only some tools go over MCP. Windlass's host tools are called by the model through Windlass. An MCP
  * server is reached, in the end, through an endpoint inside the container (127.0.0.1, with a bearer token
@@ -189,7 +190,8 @@ export class PlatformMcpServer {
 		if (meta[META_VERSION] !== MCP_PROTOCOL_VERSION) return mcpError(-32022, "Unsupported protocol version");
 		switch (params.method) {
 			case "server/discover":
-				return { result: { supportedVersions: [MCP_PROTOCOL_VERSION], capabilities: { tools: { listChanged: false } }, serverInfo: { name: PUBLISH_SERVER, version: "1" }, ttlMs: 0, cacheScope: "private" } };
+				// `resultType`: Codex 0.171's MCP client takes a discover result only with it.
+				return { result: { resultType: "complete", supportedVersions: [MCP_PROTOCOL_VERSION], capabilities: { tools: { listChanged: false } }, serverInfo: { name: PUBLISH_SERVER, version: "1" }, ttlMs: 0, cacheScope: "private" } };
 			case "ping":
 				return { result: {} };
 			case "tools/list":

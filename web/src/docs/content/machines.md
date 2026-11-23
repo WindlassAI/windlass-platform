@@ -244,7 +244,7 @@ Codex runs in both profiles, with different modes:
 - **Hardened Docker: Container access.** Commands run as `agent` in the session's container, under the machine's egress setting, and Codex asks for nothing. The container is the boundary.
 - **Windlass sandbox: Read-only or Workspace access (the default).** Every command runs in Codex's own sandbox, without network. Workspace access can change files in the workspace. Codex is offered here only once the runner has checked that its sandbox works on this machine. A request to go outside the sandbox is refused, even if you would allow it. The timeline then notes "Codex asked to run a command outside its sandbox; refused on this profile." or "Codex asked to edit files outside its sandbox; refused on this profile."
 
-On either profile Codex ignores a repository's own Codex settings (`.codex/`), and a repository's setup command cannot change Codex's settings. Codex cannot build work items yet: start a Codex session instead.
+On either profile Codex ignores a repository's own Codex settings (`.codex/`), and a repository's setup command cannot change Codex's settings. Codex builds Quick work items, on either profile: see [Codex items](/docs/factory#codex-items).
 
 None of these agents has a tool to publish: open the pull request from the session panel. None gets your saved secrets.
 
