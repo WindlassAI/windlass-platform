@@ -5,39 +5,43 @@
  * person reads (§4.5), and when it is next tried. The one who holds the request (the user actor's turn
  * queue) tries it again then, or sooner when something is freed.
  *
- * Limits are a policy per place:
+ * Only what costs the operator is capped, and only where it does:
  *
- *   hosted     the platform pays, so the limits are the owner's settings (`FactoryLimits`, the day's
- *              allowance and kept sandboxes of usage.ts), which the owner can raise per user
- *   machine    the user's own computer: bounded by what its runner reports it can run, which nothing
- *              here can raise
+ *   hosted     the platform pays, so the limits are the owner's settings: the hosted sandboxes a user runs at
+ *              once (`FactoryLimits.hostedRunning`), the day's allowance and kept sandboxes of usage.ts, which
+ *              the owner can raise per user
+ *   machine    the user's own computer: bounded only by what its runner reports it can run (its slots), which
+ *              nothing here can raise; the runner queues turns past them
  *
- * and some hold in both places: running turns per user (each holds a session actor and its stream on
- * a server), the factory's share of them, the cap on items waiting for review, and every item's budget
- * of tokens, turns and active time. Hosted sandbox seconds count only where the sandbox is hosted.
+ * An item's own budget is one cost-weighted token figure (and, hosted, its sandbox time). When it is used
+ * up the item asks its person for more; it never throws away work.
  *
- * The numbers of decisions 6–8 are `FACTORY_DEFAULTS`, the defaults of the WLP_FACTORY_* settings
- * config.ts reads. The day's allowance and the kept sandboxes are usage.ts's own settings.
+ * The numbers are `FACTORY_DEFAULTS`, the defaults of the WLP_FACTORY_* settings config.ts reads. The day's
+ * allowance and the kept sandboxes are usage.ts's own settings.
  */
 
 import { MINUTE, providerWait } from "../provider-usage.js";
 import type { HarnessId, ItemAgent, ProviderAccount, SandboxPlace, TurnUsage, UsageNumbers } from "../contract.js";
 import { itemTokensOf, machineHarness, type SignInMethod } from "../sandbox/harnesses.js";
 import { nextUtcDay, spellSeconds, type UsageEntry } from "../usage.js";
-import type { AgentTurn, FactoryItem, FactoryLimits, ItemBudget, StopCause, TurnSpend, Wait } from "./types.js";
+import type { AgentTurn, FactoryItem, FactoryLimits, ItemBudget, ItemSpend, StopCause, TurnSpend, Wait } from "./types.js";
 
 export const FACTORY_DEFAULTS: FactoryLimits = {
 	dailyTokens: null,
-	featureMultiplier: 3,
 	githubItemsPerDay: 20,
-	githubDrafts: 20,
 	attachments: { bytes: 2 * 1024 * 1024, perItem: 40, accountBytes: 1_073_741_824, days: 180 },
-	runningTurns: 6,
-	factoryTurns: 5,
 	hostedRunning: 3,
-	reviewCap: 6,
-	item: { tokens: 6_000_000, turns: 14, activeSeconds: 4 * 3600, hostedSeconds: 2 * 3600 },
+	item: { tokens: 2_000_000, hostedSeconds: 2 * 3600 },
 };
+
+/**
+ * What a cached input token counts for against an item's budget, against 1 for every other token. A
+ * prompt-cache read is billed at a tenth of the base input price by Anthropic (Claude: "cache hits … 0.1x
+ * base input price") and by OpenAI for its current models (GPT-5: cached input $0.125 against $1.25 per
+ * million). The platform keeps no price table of its own, so the budget uses that published ratio for
+ * every agent: a long turn that mostly rereads its context is not counted as if it read it all afresh.
+ */
+export const CACHED_INPUT_WEIGHT = 0.1;
 
 /** A turn that waits at a place is tried again after 30 s, then twice as long each time, up to 5 min. */
 export const RETRY_FIRST_MS = 30_000;
@@ -48,9 +52,16 @@ export function retryAt(at: number, attempt: number): number {
 	return at + Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** Math.max(0, Math.min(attempt, 10)));
 }
 
-/** What a turn counts against an item's tokens: what went in and what came out (cached input and reasoning are parts of those). */
+/** A turn's tokens as reported: what went in and what came out (cached input and reasoning are parts of those). */
 export function turnTokens(usage: TurnUsage | null): number {
 	return usage === null ? 0 : usage.inputTokens + usage.outputTokens;
+}
+
+/** What a turn counts against an item's budget: its tokens, cached input at `CACHED_INPUT_WEIGHT`. */
+export function weightedTokens(usage: TurnUsage | null): number {
+	if (usage === null) return 0;
+	const cached = Math.min(Math.max(0, usage.cachedInputTokens || 0), usage.inputTokens);
+	return Math.round(usage.inputTokens - cached + cached * CACHED_INPUT_WEIGHT + usage.outputTokens);
 }
 
 /** An item's agent before its first turn: Windlass's tokens are counted as they come, a machine harness has reported none. */
@@ -60,7 +71,18 @@ export function newAgent(harness: HarnessId, model: string, effort?: string | nu
 
 /** The agent of an item, also of one filed before agents could be chosen. */
 export function itemAgent(item: Pick<FactoryItem, "agent" | "spent">): ItemAgent {
-	return item.agent ?? { ...newAgent("windlass", "default"), reportedTokens: item.spent.tokens };
+	return item.agent ?? { ...newAgent("windlass", "default"), reportedTokens: rawTokens(item.spent) };
+}
+
+/** An item's tokens as reported, cached input at full count; an item stored before they were kept has only `tokens`. */
+export const rawTokens = (spent: Pick<ItemSpend, "tokens" | "rawTokens">): number => spent.rawTokens ?? spent.tokens;
+
+/** Nothing spent yet. */
+export const noSpend = (): ItemSpend => ({ tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
+
+/** What an item has spent, as it is stored, with what items stored before a field was kept lack: their tokens are their raw ones. */
+export function spendOf(spent: Partial<ItemSpend> & Pick<ItemSpend, "tokens">): ItemSpend {
+	return { tokens: spent.tokens, rawTokens: spent.rawTokens ?? spent.tokens, turns: spent.turns ?? 0, activeSeconds: spent.activeSeconds ?? 0, hostedSeconds: spent.hostedSeconds ?? 0 };
 }
 
 /**
@@ -81,9 +103,10 @@ export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | nul
 	};
 }
 
-/** A turn's spend: its tokens count only where its agent's are counted. */
+/** A turn's spend: its tokens count only where its agent's are counted, cost-weighted. */
 export function turnSpend(usage: TurnUsage | null, agent?: AgentTurn): TurnSpend {
-	return { tokens: agent && !agent.counted ? 0 : turnTokens(usage), hostedSeconds: 0, ...(agent && { agent }) };
+	const counted = !agent || agent.counted;
+	return { tokens: counted ? weightedTokens(usage) : 0, rawTokens: counted ? turnTokens(usage) : 0, hostedSeconds: 0, ...(agent && { agent }) };
 }
 
 /**
@@ -109,12 +132,12 @@ export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
 }
 
 /**
- * An item's tokens in words: "1,200 of 6,000,000 tokens" where they are counted, otherwise what its agent
- * reported, never a 0 that was not measured.
+ * An item's tokens in words: "1,200 of 2,000,000 tokens (cost-weighted; 9,800 as reported)" where they are
+ * counted, otherwise what its agent reported, never a 0 that was not measured.
  */
-export function tokenWords(spent: Pick<ItemBudget, "tokens">, budget: Pick<ItemBudget, "tokens">, agent?: ItemAgent): string {
+export function tokenWords(spent: Pick<ItemSpend, "tokens" | "rawTokens">, budget: Pick<ItemBudget, "tokens">, agent?: ItemAgent): string {
 	const name = agent ? machineHarness(agent.harness)?.name ?? "Windlass" : "Windlass";
-	if (!agent || agent.tokens === "counted") return `${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens`;
+	if (!agent || agent.tokens === "counted") return `${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens (cost-weighted; ${rawTokens(spent).toLocaleString("en-US")} as reported)`;
 	if (agent.tokens === "subscription") return `${agent.reportedTokens.toLocaleString("en-US")} tokens reported by ${name}, not counted (subscription)`;
 	return `tokens not reported by ${name}`;
 }
@@ -131,21 +154,22 @@ export function spellTokens(tokens: number): string {
 	return String(Math.round(tokens));
 }
 
-const BUDGET_WORDS: Record<keyof ItemBudget, (spent: number, budget: number) => string> = {
-	tokens: (spent, budget) => `This item has used ${spellTokens(spent)} of its ${spellTokens(budget)} tokens.`,
-	turns: (spent, budget) => `This item has used ${spent} of its ${budget} turns.`,
-	activeSeconds: (spent, budget) => `This item has worked for ${spellSeconds(spent)} of its ${spellSeconds(budget)}.`,
-	hostedSeconds: (spent, budget) => `This item's hosted sandbox has run for ${spellSeconds(spent)} of its ${spellSeconds(budget)}.`,
+const BUDGET_WORDS: Record<keyof ItemBudget, (spent: ItemSpend, budget: number) => string> = {
+	tokens: (spent, budget) => `This item has used ${spellTokens(spent.tokens)} of its ${spellTokens(budget)} tokens (cost-weighted, cached input at a tenth; ${spellTokens(rawTokens(spent))} as reported).`,
+	hostedSeconds: (spent, budget) => `This item's hosted sandbox has run for ${spellSeconds(spent.hostedSeconds)} of its ${spellSeconds(budget)}.`,
 };
+
+/** The figures of a budget: tokens everywhere, hosted sandbox time only where the sandbox is hosted. */
+export const BUDGET_FIGURES = ["tokens", "hostedSeconds"] as const satisfies ReadonlyArray<keyof ItemBudget>;
 
 /**
  * The first of an item's budgets it has used up, with the sentence a person reads; null while every
  * one has something left. Hosted seconds are no limit on a machine.
  */
-export function budgetStop(budget: ItemBudget, spent: ItemBudget, place: SandboxPlace): { cause: StopCause & keyof ItemBudget; sentence: string } | null {
-	for (const cause of ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const) {
+export function budgetStop(budget: ItemBudget, spent: ItemSpend, place: SandboxPlace): { cause: StopCause & keyof ItemBudget; sentence: string } | null {
+	for (const cause of BUDGET_FIGURES) {
 		if (cause === "hostedSeconds" && place.kind !== "hosted") continue;
-		if (spent[cause] >= budget[cause]) return { cause, sentence: BUDGET_WORDS[cause](spent[cause], budget[cause]) };
+		if (spent[cause] >= budget[cause]) return { cause, sentence: BUDGET_WORDS[cause](spent, budget[cause]) };
 	}
 	return null;
 }
@@ -199,12 +223,6 @@ export interface AdmissionInput {
 	dailyTokenWait?: string | null;
 	at: number;
 	limits: FactoryLimits;
-	/** The user's turns running now, the factory's among them by their items' titles. */
-	turns: { running: number; factory: string[] };
-	/** True for the first turn of a run: the review cap holds new work back, never work in progress. */
-	startsRun: boolean;
-	/** The user's items in review now. */
-	inReview: number;
 	place: PlaceNow;
 	/** How many times this request has waited before: spaces the tries. */
 	attempt: number;
@@ -213,13 +231,12 @@ export interface AdmissionInput {
 export type Admission = { ok: true } | { ok: false; wait: Wait };
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-const listed = (titles: string[]) => (titles.length === 0 ? "" : ` (${titles.slice(0, 3).map((title) => `“${title}”`).join(", ")}${titles.length > 3 ? ", …" : ""})`);
 const utcTime = (ms: number) => new Date(ms).toISOString().slice(11, 16);
 
 /** In the order a person can act on them: the first that holds is the one reason named. */
 
 export function admit(input: AdmissionInput): Admission {
-	const { at, limits, turns, place } = input;
+	const { at, limits, place } = input;
 	const account = input.provider;
 	if (account?.state === "limited" && account.limitedUntil !== null && account.limitedUntil > at) {
 		const reset = account.windows.find(w => w.source === "refusal" && w.resetsAt !== null && w.resetsAt + MINUTE === account.limitedUntil)?.resetsAt;
@@ -233,25 +250,10 @@ export function admit(input: AdmissionInput): Admission {
 	if (place.kind === "machine" && (!place.online || (place.attachRetryAt ?? 0) > at)) {
 		return wait("machine", `Waiting for your machine "${place.name}" to come back online.`, place.online ? place.attachRetryAt! : later);
 	}
-	if (input.startsRun && input.inReview >= limits.reviewCap) {
-		return wait("review_cap", `Waiting until fewer than ${limits.reviewCap} of your items are in review (${input.inReview} now).`);
-	}
-	// The factory never has the person's last turn: with one running turn allowed in all, it has none.
-	const factoryTurns = Math.min(limits.factoryTurns, Math.max(0, limits.runningTurns - 1));
-	if (factoryTurns === 0) {
-		return wait("capacity", `This deployment allows you ${plural(limits.runningTurns, "running turn", "running turns")}, which is kept for your own prompts: work items need at least two.`);
-	}
-	if (turns.factory.length >= factoryTurns) {
-		return wait("capacity", `Waiting for one of your ${factoryTurns} factory turns; ${turns.factory.length} are running${listed(turns.factory)}.`);
-	}
-	if (turns.running >= limits.runningTurns) {
-		return wait("capacity", `Waiting for one of your ${limits.runningTurns} running turns; ${turns.running} are running, ${turns.running - turns.factory.length} of them your own.`);
-	}
-
 	if (place.kind === "machine") {
 		if (place.slots && place.slots.free < place.slots.units) return wait("machine", slotWait(place.name, place.slots.units, place.slots.free));
 		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`);
-		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there.`);
+		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there, its runner's limit.`);
 		return { ok: true };
 	}
 
@@ -265,7 +267,7 @@ export function admit(input: AdmissionInput): Admission {
 		return wait("sandboxes", keptCapSentence(usage.sandboxes.limit, place.holders ?? []));
 	}
 	if (place.running >= limits.hostedRunning) {
-		return wait("capacity", `Waiting for one of your ${plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")}: ${place.running} running now.`);
+		return wait("capacity", `Waiting for one of your ${plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} that run at once: ${place.running} running now. Your machines don't count toward this.`);
 	}
 	if (place.deploymentFull !== null) {
 		return wait("capacity", `Waiting for a hosted sandbox: this deployment runs ${place.deploymentFull} at once and all are in use. Trying again at ${utcTime(later)} UTC.`);

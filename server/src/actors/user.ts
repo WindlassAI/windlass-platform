@@ -2615,7 +2615,8 @@ export const user = actor({
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
 			// A session on one of the user's machines is neither counted nor refused (`hostedLimitsApply`).
 			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle" && hostedLimitsApply(session.place));
-			const atLimit = () => others().length + factorySlots(c) >= effectiveUserLimits(c.vars.items.limits.overrides).factory.runningTurns;
+			// One ceiling on what the platform pays for: the user's hosted sandboxes at work, their own and their items' (`hostedRunning`).
+			const atLimit = () => others().length + factorySlots(c) >= effectiveUserLimits(c.vars.items.limits.overrides).factory.hostedRunning;
 			const asking = c.vars.sessions.get(sessionId);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would

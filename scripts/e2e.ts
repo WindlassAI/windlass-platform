@@ -73,7 +73,7 @@ const TURN_MS = FAKE ? 30_000 : 240_000;
 /** How long the server this script starts lets a question wait before it declines it: short, so the wait can be watched. */
 const QUESTION_MS = FAKE ? 8_000 : 20_000;
 
-/** The ceiling on a person's agents working at once that this script's cases assume: its servers are started with it (WLP_FACTORY_RUNNING_TURNS). */
+/** The ceiling on a person's hosted agents working at once that this script's cases assume: its servers are started with it (WLP_FACTORY_HOSTED_RUNNING). */
 const RUNNING_CEILING = 3;
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
@@ -207,7 +207,7 @@ class Server {
 			WLP_DAILY_SANDBOX_SECONDS: "unlimited",
 			WLP_MAX_KEPT_SANDBOXES: "unlimited",
 			// A person's ceiling on agents working at once, set to what the checks of that limit count to.
-			WLP_FACTORY_RUNNING_TURNS: String(RUNNING_CEILING),
+			WLP_FACTORY_HOSTED_RUNNING: String(RUNNING_CEILING),
 			...extraEnv,
 		};
 		// The local engine asks browsers for no token. An admin token in the shell this is run from is some

@@ -250,10 +250,10 @@ export function crossFact(f: Flow, fact: Extract<Fact, { kind: "integration_star
 	integration.state = state;
 	integration.said = fact.said;
 	if (!integration.charged && fact.seconds !== undefined) {
-		// The run's own time, once, on the feature's ledger: inside the reserve approval kept for it.
+		// The run's own time, once, on the feature's ledger as working time. It runs on GitHub Actions, not in a hosted
+		// sandbox, so it is no hosted time of the feature's budget.
 		integration.charged = true;
 		item.spent.activeSeconds += fact.seconds;
-		item.spent.hostedSeconds += fact.seconds;
 	}
 	f.effects.push({ kind: "link_prs", key: f.key });
 	f.say(integrationWords(integration) + (fact.said ? `: ${fact.said}` : "") + ".");

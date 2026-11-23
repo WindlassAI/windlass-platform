@@ -26,7 +26,7 @@
  *   report      text for the person, taken as a claim and never as the verdict (whether the work is
  *               ready is decided from the checks and CI). A rogue call can file a wrong report, which the
  *               agent's own later call replaces, and which the person reads labelled as the agent's.
- *   ask_person  one question, with the limits Windlass's has (one per turn, `ASK_LIMITS.perRun` per run,
+ *   ask_person  one question, with the limits Windlass's has (one per turn, its length and options,
  *               the same cleaning), the answer coming from the person as the next turn's message.
  *   push        commits the workspace and pushes it to the session's own branch, which the platform names
  *               (a call that names another is refused, and nothing in a call chooses the ref, a force or a

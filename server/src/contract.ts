@@ -1452,10 +1452,10 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
 
 /**
  * What a waiting item waits for. "person" and "budget": a question to the person (`ItemSummary.question`);
- * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
- * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
+ * the others end by themselves: "capacity" a free hosted sandbox, or the day's allowance; "machine" the
+ * user's machine; "ci" CI on the pushed commit.
  */
-export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration" | "sandboxes";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "ci" | "person" | "budget" | "integration" | "sandboxes";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1508,7 +1508,12 @@ export interface ItemRun {
 	/** Why it ended other than by handing over: "cancelled", "retried", or the cause of the question given up on. */
 	stopReason: string | null;
 	step: ItemStep;
-	/** The rounds of each kind used in this run: fixing after the checks, after CI, merging the base, after the second review; `plan` counts planning turns. `review` is absent on runs stored before it was counted. */
+	/**
+	 * The rounds of each kind used in this run, shown on the item's page and never capped: fixing after the checks, after
+	 * CI, merging the base, after the second review; `plan` counts planning turns. A run stops when the same failure comes
+	 * back (the stuck detector), when its budget is used, or at the backstop on an item's turns. `review` is absent on runs
+	 * stored before it was counted.
+	 */
 	rounds: { plan: number; gate: number; ci: number; conflict: number; review?: number };
 }
 
@@ -1521,30 +1526,39 @@ export interface ItemTask {
 	base: string;
 }
 
-/** An item's budget, and what it has spent, in the same units. Hosted seconds count only where the item's sandbox is hosted. */
+/**
+ * An item's budget: what stops it and asks its person when used up. `tokens` are cost-weighted
+ * (factory/budget.ts `weightedTokens`: cached input counts at `CACHED_INPUT_WEIGHT`); hosted seconds are a
+ * limit only where the item's sandbox is hosted.
+ */
 export interface ItemBudget {
 	tokens: number;
-	turns: number;
-	/** Seconds spent working. Time waiting for a machine, capacity, CI or a person is excluded. */
-	activeSeconds: number;
 	hostedSeconds: number;
 }
+
+/**
+ * What an item has spent: its budget's figures, and what is shown beside them. `rawTokens`: every token as
+ * the agent reported it, cached input at full count (absent on items stored before it was kept: `tokens`).
+ * `turns` and `activeSeconds` bound nothing a person sets: the turns are held to an internal backstop
+ * (blueprint.ts `RULES.turnBackstop`), and active time excludes waiting for a machine, capacity, CI or a person.
+ */
+export interface ItemSpend extends ItemBudget {
+	rawTokens?: number;
+	turns: number;
+	activeSeconds: number;
+}
+
+/** A subtask's budget in a feature's plan: one token figure. Its hosted time is the account's per-item budget. */
+export type SubtaskBudget = Pick<ItemBudget, "tokens">;
 
 /** Effective account limits after applying the operator’s overrides to the deployment defaults. */
 export interface FactoryLimits {
 	dailyTokens: number | null;
-	featureMultiplier: number;
+	/** Items filed from GitHub issues a day, drafts among them: one guard against a flood of filings. */
 	githubItemsPerDay: number;
-	githubDrafts: number;
 	attachments: { bytes: number; perItem: number; accountBytes: number; days: number };
-	/** All factory turns and the person's own hosted turns count toward this ceiling. */
-	runningTurns: number;
-	/** Of those, the factory's: the rest are always free for the person's own prompts. */
-	factoryTurns: number;
-	/** The user's hosted sandboxes running at once. */
+	/** The user's hosted sandboxes running at once: factory turns and the person's own hosted agents together. Machines never count. */
 	hostedRunning: number;
-	/** New items wait while this many of the user's items are in review. */
-	reviewCap: number;
 	/** A new item's budget. */
 	item: ItemBudget;
 }
@@ -1818,16 +1832,6 @@ export const REVIEW_LIMITS = {
 	lookAtChars: 1_000,
 } as const;
 
-/** The rounds of each kind a run allows (`ItemRun.rounds` counts them): after a stop on one, a person can let it go on. */
-export interface RoundCaps {
-	plan: number;
-	gate: number;
-	ci: number;
-	conflict: number;
-	/** Absent when the item has no second reviewer that can send its builder back: off, on a machine, a feature or a subtask. */
-	review?: number;
-}
-
 /** An item as the user's index lists it. */
 /** Which agent an item's builder runs, on which model, and what that agent said it used. */
 export interface ItemAgent {
@@ -1886,7 +1890,7 @@ export interface ItemSummary {
 	/** The second review for this run, or null before one is due. */
 	review: { state: "waiting" | "running" | "filed" | "none" | "off"; recommendation: ReviewRecommendation | null } | null;
 	budget: ItemBudget;
-	spent: ItemBudget;
+	spent: ItemSpend;
 	/** The item's agent session, among the user's sessions. */
 	sessionId: string;
 	createdAt: number;
@@ -1946,7 +1950,7 @@ export interface ItemView extends ItemSummary {
 	reviewNone: string | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
-	run: (ItemRun & { caps: RoundCaps; failureFingerprint?: string | null }) | null;
+	run: (ItemRun & { failureFingerprint?: string | null }) | null;
 	/** The commit pushed last. */
 	head: string | null;
 	/** Its log, oldest first: the runs and steps before the current one are read from it. */
@@ -2006,7 +2010,7 @@ export interface PlanSubtask {
 	acceptance: string[];
 	dependsOn: string[];
 	owns: string[];
-	budget: ItemBudget;
+	budget: SubtaskBudget;
 }
 
 /**
@@ -3016,7 +3020,11 @@ export const MAX_SERVER_DEFINITION_BYTES = 8_192;
 export const MAX_SERVER_NAME_CHARS = 64;
 /** How many secrets one account may keep for its MCP servers. */
 export const MAX_ACCOUNT_SECRETS = 50;
-/** How long a question waits for an answer before the platform declines it. */
+/**
+ * How long a question in a running interactive turn waits for an answer before the platform declines it: the
+ * turn holds its sandbox meanwhile, and turns are 45 minutes at most. A work item never asks this way: its
+ * questions end the turn and wait for days if need be.
+ */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** How many machines a user may have paired at once. */
 export const MAX_MACHINES = 3;

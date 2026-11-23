@@ -116,7 +116,7 @@ const fetchBaseDescription = (fetches?: number) => [
 ].join(" ");
 
 /** What a question of the agent's may hold. */
-export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120, perRun: 3 } as const;
+export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120 } as const;
 
 const ASK_DESCRIPTION = [
 	"Ask the person who owns this work item a question you cannot go on without, then end your turn: their answer comes as your next message.",
@@ -124,7 +124,7 @@ const ASK_DESCRIPTION = [
 	"Do not ask for permission, for anything you can find out yourself, or to have your work checked: decide, and say in your report's concerns what you decided.",
 	"Write the question plainly, say what you will do with each answer, and give up to 4 short options when the answer is one of a few.",
 	"The call is answered at once. The question waits on the item's page for as long as the person takes, which can be days; your work stays as it is meanwhile. End your turn right after asking.",
-	`At most one question per turn and ${ASK_LIMITS.perRun} per run.`,
+	"At most one question per turn.",
 ].join(" ");
 
 const ASK_SCHEMA = {
@@ -241,7 +241,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
 	if (offer.plan) return [tool("file_plan",
-		`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?,why?}] (each question's text one short sentence of at most 140 characters ending in a question mark, each option at most 80 characters, and why, optional, at most 400 characters of background the owner can open), and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.`
+		`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?,why?}] (each question's text one short sentence of at most 140 characters ending in a question mark, each option at most 80 characters, and why, optional, at most 400 characters of background the owner can open), and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens}}]. A subtask's budget is one figure: cost-weighted tokens, where cached input counts at a tenth, between the least and most a subtask may have (the prompt's Budget lines give the figures). The feature's budget is its subtasks' together, and its own allowance for planning, summary and review on top; when a subtask uses its budget, it asks the owner for more instead of stopping work. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.`
 			+ (offer.crossRepo ? " For a feature over two repositories (the prompt names them), also give repos[], each subtask's repo alias, mergeOrder [{repo, prerequisite[], intermediate, evidence, fallback}], releaseGate request and finalIntegration {runFrom, command, inputs[], profile: actions, timeoutSeconds, requiredCases[], artifactOutputs[]}." : ""),
 		{ type: "object", required: ["spec", "questions", "subtasks"], properties: {
 			overflow: { type: "boolean" }, spec: { type: "object" }, questions: { type: "array", items: { type: "object" } },
@@ -327,8 +327,8 @@ export interface AgentAsk {
 export const ASK_TAKEN = "Recorded as a question to the person. End your turn now; their answer will come as your next message.";
 /** A second question in one turn. */
 export const ASK_AGAIN = "You already asked in this turn. End your turn; the answer comes as your next message.";
-/** No question left in the run. */
-export const ASK_NONE_LEFT = `You have used this run's ${ASK_LIMITS.perRun} questions. Decide yourself, say what you decided in your report's concerns, and go on.`;
+/** No question offered to this turn. */
+export const ASK_NONE_LEFT = "This turn may not ask the person. Decide yourself, say what you decided in your report's concerns, and go on.";
 
 /** What a call of `ask_person` comes to: the question to record (null when none is), what the agent is told, and the timeline's line. */
 export interface AskTaken {
@@ -342,12 +342,12 @@ export interface AskTaken {
  * agent read (the repository, an issue): saved secrets are taken out, control and invisible characters
  * go (a direction override could make the question read as something it is not), and what is past the
  * limits is refused with the limit, so that the agent can ask again. `already`: this turn has asked;
- * `left`: what the run has left. Neither of those records anything.
+ * `left`: the questions the turn was offered (one). Neither of those records anything.
  */
 export function askPerson(given: Record<string, unknown>, state: { already: boolean; left: number }, redactor: Redactor): AskTaken {
 	const refuse = (told: string, said: string): AskTaken => ({ asked: null, told, said });
 	if (state.already) return refuse(ASK_AGAIN, "The agent asked a second question in one turn, and was told to end its turn.");
-	if (state.left <= 0) return refuse(ASK_NONE_LEFT, `The agent asked a question with none of this run's ${ASK_LIMITS.perRun} left, and was told to decide itself.`);
+	if (state.left <= 0) return refuse(ASK_NONE_LEFT, "The agent asked a question in a turn that may not ask, and was told to decide itself.");
 	// Invisible characters go before secrets are taken out, so a secret split by one cannot slip past and be rejoined.
 	const clean = (value: string) => redactor.text(value.replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "").replace(HIDDEN, ""));
 	if (typeof given.question !== "string") return refuse(`Not recorded. The question has to be text. Call ${ASK_TOOL} again.`, "The agent asked a question that is not text, so it was not recorded.");

@@ -763,7 +763,7 @@ await section("network modes", async () => {
 	expect("Settings says a server by address must be on an allowed host, and what a started one can reach", /must be one of them/.test(reachOf.address) && /only the network this deployment allows/.test(reachOf.command), reachOf.address);
 	expect("and on open says what it said before", JSON.stringify(personalServerReach(facts("open"))) === JSON.stringify(personalServerReach(facts("open"), "open")));
 
-	const hostedTask = { key: "a", title: "Do a", brief: "b", acceptance: ["x"], dependsOn: [], owns: ["src/**"], budget: { tokens: 1000, turns: 1, activeSeconds: 60, hostedSeconds: 60 }, place: { prefer: "hosted", reason: "r" } };
+	const hostedTask = { key: "a", title: "Do a", brief: "b", acceptance: ["x"], dependsOn: [], owns: ["src/**"], budget: { tokens: 1000 }, place: { prefer: "hosted", reason: "r" } };
 	const placed = (hostedEgress?: "open" | "restricted" | "none") => choosePlacement(hostedTask, { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["e2b"], hostedEgress });
 	const [offline, limited] = [placed("none"), placed("restricted")];
 	expect("the factory places no repository work on hosted none, and places it on restricted", "refused" in offline && /no network for repositories/.test(offline.refused ?? "") && "decision" in limited, JSON.stringify(offline));

@@ -1,51 +1,25 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
-import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent } from "../contract.js";
+import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent, SubtaskBudget } from "../contract.js";
 import { harnessName, knownHarness, subtaskHarnessProblem, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
-export const dimensions = ["tokens", "turns", "activeSeconds", "hostedSeconds"] as const;
-export const emptyBudget = (): ItemBudget => ({ tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
-export function featureCap(single: ItemBudget, multiplier = 3): ItemBudget {
-	const cap = emptyBudget();
-	for (const key of dimensions) cap[key] = multiplier * single[key];
-	return cap;
+/** The figures a budget has (`ItemBudget`). A subtask's plan budget has `tokens` only. */
+export const dimensions = ["tokens", "hostedSeconds"] as const;
+export const emptyBudget = (): ItemBudget => ({ tokens: 0, hostedSeconds: 0 });
+
+/** Planning receipts stay on the ledger. One implementer gets one item's budget on top of what planning spent. */
+export function singleAfterPlanning(single: ItemBudget, spent: Pick<ItemBudget, "tokens" | "hostedSeconds">): ItemBudget {
+	return { tokens: Math.ceil(spent.tokens) + single.tokens, hostedSeconds: Math.ceil(spent.hostedSeconds) + single.hostedSeconds };
 }
 
-/** Planning receipts stay on the ledger. The implementer gets one Quick allowance within the feature cap. */
-export function singleAfterPlanning(single: ItemBudget, spent: ItemBudget, feature: ItemBudget): ItemBudget {
-	const budget = emptyBudget();
-	for (const d of dimensions) budget[d] = Math.min(feature[d], Math.ceil(spent[d]) + single[d]);
-	return budget;
-}
-
-/** Four closing turns allow the summary and reviewer a retry each. Scale time and tokens with the configured single item. */
-export function closingReserve(single: ItemBudget): ItemBudget {
-	return { tokens: Math.ceil(single.tokens / 6), turns: 4, activeSeconds: Math.ceil(single.activeSeconds / 6), hostedSeconds: Math.ceil(single.hostedSeconds / 6) };
-}
-
-/** The longest a combined run may take, and what the closing reserve holds for each one the plan needs. */
+/** The longest a combined run may take. */
 export const INTEGRATION_SECONDS = 3600;
 
 /** A cross-repo plan: one that names its repositories. */
 export const crossRepoPlan = (plan: Pick<FeaturePlanEdit, "repos"> | null | undefined): boolean => (plan?.repos?.length ?? 0) > 1;
 
-/**
- * What a cross-repo plan keeps back for its combined run, beside the closing reserve: the first attempt's
- * active and hosted time, and a second window when the plan waits for a release (it runs again on the release).
- */
-export function integrationReserve(plan: Pick<FeaturePlanEdit, "repos" | "releaseGate" | "finalIntegration"> | null | undefined): ItemBudget {
-	if (!crossRepoPlan(plan)) return emptyBudget();
-	const windows = plan!.releaseGate === "wait" ? 2 : 1;
-	const seconds = windows * Math.max(plan!.finalIntegration?.timeoutSeconds ?? INTEGRATION_SECONDS, INTEGRATION_SECONDS);
-	return { tokens: 0, turns: 0, activeSeconds: seconds, hostedSeconds: seconds };
-}
-
-/** The closing reserve and, for a cross-repo plan, its combined run's. */
-export function featureReserve(single: ItemBudget, plan?: Pick<FeaturePlanEdit, "repos" | "releaseGate" | "finalIntegration"> | null): ItemBudget {
-	const reserve = closingReserve(single), more = integrationReserve(plan);
-	for (const d of dimensions) reserve[d] += more[d];
-	return reserve;
-}
+/** The tokens a plan gives its subtasks, together. */
+export const planTokens = (plan: Pick<FeaturePlanEdit, "subtasks">): number => plan.subtasks.reduce((sum, task) => sum + task.budget.tokens, 0);
 
 /** A subtask's agent in words: "Claude Code (sonnet, high effort), works without asking"; "Windlass on the feature's model". */
 export function agentWords(agent: SubtaskAgent | undefined): string {
@@ -60,10 +34,7 @@ export function unattendedKeys(plan: Pick<FeaturePlanEdit, "subtasks">, complete
 }
 
 export function approvalText(plan: FeaturePlan): string {
-	const words = (b: ItemBudget) => [
-		b.tokens.toLocaleString("en-US") + " tokens", b.turns + " turns",
-		b.activeSeconds + " active seconds", b.hostedSeconds + " hosted seconds",
-	].join(", ");
+	const words = (b: SubtaskBudget) => b.tokens.toLocaleString("en-US") + " tokens";
 	const unattended = unattendedKeys(plan);
 	const cross = crossRepoPlan(plan);
 	const final = plan.finalIntegration;
@@ -73,10 +44,9 @@ export function approvalText(plan: FeaturePlan): string {
 			"Merge order — " + (plan.mergeOrder ?? []).map(m => m.repo + (m.prerequisite.length ? ` after ${m.prerequisite.join(", ")}` : "")).join(", then ") + ".",
 			`Tested together in ${final.runFrom}: ${final.command} (inputs ${final.inputs.join(", ")}; at most ${final.timeoutSeconds} seconds; required cases: ${final.requiredCases.join("; ")}).`,
 			plan.releaseGate === "wait" ? "Ends when the owner's release is adopted." : "Ends at a tested set of pull requests and a release request; adopting a release is a separate feature.",
-			"Reserved for the combined run — " + words(integrationReserve(plan)),
 		] : []),
 		...(plan.subtasks.some(s => s.needs?.cpus !== undefined || s.needs?.memoryGiB !== undefined) ? ["Sizing beyond one slot is not supported by current runners."] : []),
-		"Reserved for summary and review — " + words(closingReserve(plan.compare.singleBudget)), "Feature cap — " + words(plan.budget), "Single item — " + words(plan.compare.singleBudget),
+		"Subtasks together — " + words({ tokens: planTokens(plan) }) + " (cost-weighted: cached input counts at a tenth)", "Feature budget with planning, summary and review — " + words(plan.budget), "At most per subtask — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }
 
@@ -228,12 +198,9 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 	return result;
 }
 
-export function subtaskMinimum(single: ItemBudget): ItemBudget {
-	return {
-		tokens: Math.max(1000, Math.ceil(single.tokens / 10)), turns: 2,
-		activeSeconds: Math.max(60, Math.ceil(single.activeSeconds / 10)),
-		hostedSeconds: Math.max(60, Math.ceil(single.hostedSeconds / 10)),
-	};
+/** The least a subtask may be given: a tenth of one item's tokens, and at least 1,000. */
+export function subtaskMinimum(single: Pick<ItemBudget, "tokens">): SubtaskBudget {
+	return { tokens: Math.max(1000, Math.ceil(single.tokens / 10)) };
 }
 
 /** A repository alias as a filing gives it. */
@@ -306,7 +273,7 @@ function crossRepoFields(p: Record<string, unknown>, filing: readonly string[], 
  * The plan, checked. `repos`: the aliases of a cross-repo filing's repositories, the primary first; a
  * plan for one is then cross-repo and must say how its repositories merge and are tested together.
  */
-export function validatePlan(value: unknown, single: ItemBudget, available: ItemBudget, repos: readonly string[] = []): FeaturePlanEdit {
+export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">, repos: readonly string[] = []): FeaturePlanEdit {
 	const p = record(value), spec = record(p.spec);
 	const cross = repos.length > 1;
 	// A one-repository plan is checked as it always was: what only a cross-repo plan has (repos, mergeOrder, releaseGate,
@@ -323,16 +290,12 @@ export function validatePlan(value: unknown, single: ItemBudget, available: Item
 	unique(questions.map(q => q.id));
 	requirePlan(Array.isArray(p.subtasks) && (singleSuggested && p.subtasks.length === 0 || p.subtasks.length >= 2 && p.subtasks.length <= 6), "Propose two to six subtasks or suggest one single item.");
 	const minimum = subtaskMinimum(single);
-	const total = emptyBudget();
 	const subtasks: PlanSubtask[] = p.subtasks.map(raw => {
-		const s = record(raw), asked = record(s.budget), budget = emptyBudget();
-		for (const key of dimensions) {
-			const n = asked[key];
-			requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= minimum[key] && n <= single[key], `Subtask ${key} must be a whole number between ${minimum[key]} and ${single[key]}.`);
-			budget[key] = n;
-			total[key] += n;
-			requirePlan(total[key] <= available[key], `Subtasks exceed the remaining ${key} budget after the summary and review reserve.`);
-		}
+		const s = record(raw), asked = record(s.budget);
+		// One cost-weighted token figure. A plan from before names more figures; only its tokens are read.
+		const n = asked.tokens;
+		requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= minimum.tokens && n <= single.tokens, `Subtask tokens must be a whole number between ${minimum.tokens} and ${single.tokens}.`);
+		const budget: SubtaskBudget = { tokens: n };
 		const owns = lines(s.owns, 1, 32);
 		for (const path of owns) requirePlan(/^[\w.*@/-]+$/.test(path) && path.split("/").every(part => part && ![".", "..", ".git"].includes(part)), "Use repository-relative owned path globs.");
 		const dependsOn = lines(s.dependsOn, 0, 5).map(keyOf);

@@ -5,22 +5,24 @@ import * as intake from "../server/src/factory/intake.js";
 import { edge } from "../server/src/github/events.js";
 import { MAX_ITEM_BODY_CHARS, type FeaturePlanEdit } from "../server/src/contract.js";
 
-const single = { tokens: 10000, turns: 10, activeSeconds: 1000, hostedSeconds: 500 };
-const zero = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 };
+const single = { tokens: 10000, hostedSeconds: 500 };
+const zero = { tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 };
 const task = { title: "Build search", body: "Index and display results", acceptance: ["Search works"], base: "main" };
 const proposal = (): FeaturePlanEdit => ({
 	spec: { goal: task.body, requirements: ["Index documents"], outOfScope: [], acceptance: task.acceptance },
 	questions: [], singleSuggested: null,
-	subtasks: ["index", "page"].map((key, i) => ({ key, title: key, brief: "Implement " + key, acceptance: ["Run pnpm test"], owns: [key + "/**"], dependsOn: i ? ["index"] : [], budget: { ...single } })),
+	subtasks: ["index", "page"].map((key, i) => ({ key, title: key, brief: "Implement " + key, acceptance: ["Run pnpm test"], owns: [key + "/**"], dependsOn: i ? ["index"] : [], budget: { tokens: single.tokens } })),
 });
 const plans = () => import("../server/src/factory/feature-plan.js");
-test("an orchestrated filing starts with a planner and three single budgets", () => {
+test("an orchestrated filing starts with a planner and one item's budget as its own allowance", () => {
 	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } });
-	assert.equal(item.budget.turns, 30);
+	assert.deepEqual(item.budget, single);
+	assert.equal(item.ownTokens, single.tokens);
 	const start = advance(item, { kind: "start", at: 1, by: "person" });
 	assert.equal(start.item.run!.step.kind, "refine");
 	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /file_plan/);
 });
+
 test("issues plan first unless the bug label, quick label or leading quick command opts out", () => {
 	const label = edge("issues", { action: "labeled", installation: { id: 1 }, repository: { id: 2 }, issue: { number: 3 }, sender: { login: "sam", id: 4 }, label: { name: "windlass:orchestrate" } }, { slug: "windlass" });
 	assert.ok(label);
@@ -34,10 +36,14 @@ test("issues plan first unless the bug label, quick label or leading quick comma
 	assert.deepEqual(intake.issueMode("orchestrate", ["BUG"]).mode, "single");
 	assert.match(intake.issueMode("orchestrate", ["bug"]).reason!, /bug/i);
 });
-test("validate the entire plan, including dependencies, paths and every budget dimension", async () => {
-	const { validatePlan, featureCap } = await plans();
+test("validate the entire plan, including dependencies, paths and its one token budget per subtask", async () => {
+	const { validatePlan } = await plans();
 	const good = proposal();
-	assert.deepEqual(validatePlan(good, single, featureCap(single)).subtasks, good.subtasks);
+	assert.deepEqual(validatePlan(good, single).subtasks, good.subtasks);
+	// A plan of before names more figures: only its tokens are kept.
+	const older = proposal();
+	for (const sub of older.subtasks) Object.assign(sub.budget, { turns: 4, activeSeconds: 600, hostedSeconds: 60 });
+	assert.deepEqual(validatePlan(older, single).subtasks.map(s => s.budget), [{ tokens: single.tokens }, { tokens: single.tokens }]);
 	for (const mutate of [
 		(p: FeaturePlanEdit) => p.subtasks.pop(),
 		(p: FeaturePlanEdit) => p.subtasks.push(...Array(5).fill(p.subtasks[0])),
@@ -46,13 +52,13 @@ test("validate the entire plan, including dependencies, paths and every budget d
 		(p: FeaturePlanEdit) => p.subtasks[0].owns = ["../other"],
 		(p: FeaturePlanEdit) => p.subtasks[0].owns = [],
 		(p: FeaturePlanEdit) => p.subtasks[0].acceptance = [],
-		(p: FeaturePlanEdit) => p.subtasks[0].budget.turns = 0,
-		(p: FeaturePlanEdit) => p.subtasks[0].budget.hostedSeconds++,
+		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = 0,
+		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens++,
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = Infinity,
-		(p: FeaturePlanEdit) => p.subtasks[0].budget.activeSeconds = 0.1,
+		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = 5000.5,
 		(p: FeaturePlanEdit) => p.subtasks.push(...["more", "again"].map(key => ({ ...p.subtasks[0], key }))),
 	]) {
-		const p = proposal(); mutate(p); assert.throws(() => validatePlan(p, single, featureCap(single)));
+		const p = proposal(); mutate(p); assert.throws(() => validatePlan(p, single));
 	}
 });
 
@@ -132,16 +138,18 @@ test("the owner-approved plan is bounded quoted data in the implementing prompt"
 	assert.equal(payload?.length, MAX_ITEM_BODY_CHARS);
 });
 
-test("planning stops before a second turn after a quarter of a Quick allowance", () => {
+test("planning out of the feature's own allowance asks for more, and one implementer still gets a Quick budget", () => {
 	const feature = started();
-	const pending = advance(feature, { kind: "turn_ended", key: currentKey(feature)!, at: 2, outcome: "succeeded", changes: false, verified: null, flags: [], report: null, spend: { tokens: single.tokens / 4, hostedSeconds: 1 } }).item;
+	const pending = advance(feature, { kind: "turn_ended", key: currentKey(feature)!, at: 2, outcome: "succeeded", changes: false, verified: null, flags: [], report: null, spend: { tokens: single.tokens, hostedSeconds: 1 } }).item;
 	const denied = advance(pending, { kind: "answer", choice: "revise", question: pending.question!.id, by: "owner", at: 3 });
 	assert.equal(denied.item.question?.kind, "budget");
-	assert.match(denied.item.question!.text, /planning/i);
+	assert.deepEqual(denied.item.question!.choices.map(c => c.id), ["raise", "give_up"]);
+	assert.equal(denied.item.question!.choices[0]!.label, "Give it 10k more tokens");
 	assert.ok(!denied.effects.some(e => e.kind === "deliver"));
-	const build = advance(denied.item, { kind: "answer", choice: "run_single", question: denied.item.question!.id, by: "owner", at: 4 });
-	assert.equal(build.item.budget.tokens - build.item.spent.tokens, single.tokens);
-	assert.ok(build.effects.some(e => e.kind === "deliver" && e.agent === null));
+	const more = advance(denied.item, { kind: "answer", choice: "raise", question: denied.item.question!.id, by: "owner", at: 4 });
+	assert.equal(more.item.ownTokens, 2 * single.tokens);
+	assert.equal(more.item.budget.tokens, 2 * single.tokens);
+	assert.ok(more.effects.some(e => e.kind === "deliver" && e.agent === "planner"));
 });
 
 test("a large final planner receipt stays charged and leaves room for a Quick implementation", () => {
@@ -150,7 +158,8 @@ test("a large final planner receipt stays charged and leaves room for a Quick im
 	const filed = advance(start, { kind: "file_plan", key, at: 2, plan: p }).item;
 	const spent = 15_000;
 	const pending = advance(filed, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: spent, hostedSeconds: 1 } }).item;
-	assert.ok(!pending.question!.choices.some(c => c.id === "orchestrate_anyway"));
+	// Out of its own allowance, a feature still offers subtasks: the planner's next turn asks for more first.
+	assert.ok(pending.question!.choices.some(c => c.id === "orchestrate_anyway"));
 	const plan = { ...p, questions: [{ ...p.questions[0]!, answer: "SQLite" }] };
 	const edited = advance(pending, { kind: "edit_plan", version: 1, plan, by: "owner", at: 4 }).item;
 	const build = advance(edited, { kind: "run_single", at: 5, by: "owner" });
@@ -256,12 +265,12 @@ test("a planner cannot answer its own questions or introduce a scope change with
 	assert.ok(filed.featurePlan!.questions.some(q => !q.answer));
 });
 test("independent subtasks cannot claim overlapping paths; each names a check or screenshot", async () => {
-	const {validatePlan, featureCap} = await plans();
-	const plan = proposal(), cap = featureCap(single);
+	const {validatePlan} = await plans();
+	const plan = proposal();
 	plan.subtasks[1].dependsOn = []; plan.subtasks[1].owns = ["index/data.ts"];
-	assert.throws(() => validatePlan(plan, single, cap), /own|overlap/i);
-	plan.subtasks[1].dependsOn = ["index"]; assert.doesNotThrow(() => validatePlan(plan, single, cap));
-	plan.subtasks[1].acceptance = ["Looks good."]; assert.throws(() => validatePlan(plan, single, cap));
+	assert.throws(() => validatePlan(plan, single), /own|overlap/i);
+	plan.subtasks[1].dependsOn = ["index"]; assert.doesNotThrow(() => validatePlan(plan, single));
+	plan.subtasks[1].acceptance = ["Looks good."]; assert.throws(() => validatePlan(plan, single));
 });
 test("child integration needs both gates, ignores duplicate receipts, and rebases in the child on refusal", () => {
 	const child = createItem({ id: "i_child", task: {...task, base: "windlass/feature-i_feature"}, budget: single, place: {kind:"hosted"}, reviewer: {off:"deployment"} });
@@ -296,37 +305,41 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 	}
 });
 
-test("a stopped feature cannot turn its cap into a builder retry or lose child spend", () => {
+test("a feature whose own allowance is used still runs its approved subtasks on their budgets", () => {
 	const item = proposed(proposal());
 	const old = item.featurePlan!;
+	assert.equal(old.budget.tokens, single.tokens + 2 * single.tokens);
 	const next = advance(item,{kind:"approve_plan",version:old.version,at:5,by:"person"}).item;
-	next.spent.tokens = next.budget.tokens;
-	const paused = advance(next,{kind:"feature_ready",key:currentKey(next)!,pr,head,at:6}).item;
-	assert.equal(paused.question?.kind,"budget"); assert.equal(paused.jobs?.length,0);
-	assert.ok(paused.question!.choices.some(c => c.id === "revise"));
-	const revised = advance(paused,{kind:"answer",question:paused.question!.id,choice:"revise",by:"person",at:7});
-	assert.equal(revised.item.question?.kind, "budget");
-	assert.equal(revised.item.question!.choices.some(c => c.id === "retry"), false);
-	assert.equal(revised.effects.some(e => e.kind === "deliver"), false);
-	assert.deepEqual(revised.item.spent, next.spent);
+	assert.equal(next.budget.tokens, 3 * single.tokens);
+	next.spent.tokens = next.ownTokens!;
+	const running = advance(next,{kind:"feature_ready",key:currentKey(next)!,pr,head,at:6}).item;
+	assert.equal(running.question, null);
+	assert.equal(running.jobs?.length, 1);
+	assert.deepEqual(running.spent, next.spent);
 });
-test("a second re-plan can move only unused allocation and a third stop cannot dispatch a planner", () => {
-	let item = approved({ ...single, turns: 12 }); // Three planning turns fit in this allowance.
+
+test("re-plans are not capped: each new plan's budgets are the person's to approve, and the same subtask stopping twice stops the feature", () => {
+	let item = approved({ ...single, tokens: 100_000 });
 	item = advance(item, {kind:"feature_ready",key:currentKey(item)!,pr,head,at:5}).item;
-	for (let i=0;i<3;i++) {
+	for (let i=0;i<2;i++) {
 		const last = item.jobs!.at(-1)!;
-		item = advance(item,{kind:"child_update",child:last.id,key:currentKey(item)!,state:"failed",spent:{...zero,turns:1},report:"Stopped",head:null,at:6+i}).item;
-		if(i===2) break;
+		item = advance(item,{kind:"child_update",child:last.id,key:currentKey(item)!,state:"failed",spent:{...zero,turns:1},report:"Stopped",head:null,at:6+i,failure:"gate/" + i}).item;
+		if (i === 1) break;
+		assert.equal(item.run!.step.kind, "refine");
 		const p = proposal();
-		assert.throws(()=>advance(item,{kind:"file_plan",plan:p,key:currentKey(item)!,at:10}),/unspent/);
-		p.subtasks[0].budget.turns -= i+1;
+		p.subtasks[0].budget.tokens = 20_000;
 		const key = currentKey(item)!;
 		item = advance(item,{kind:"file_plan",plan:p,key,at:10}).item;
 		item = advance(item,{kind:"turn_ended",key,at:11,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},verified:null,flags:[],changes:false,report:null}).item;
 		assert.equal(item.question!.kind,"replan_approval");
+		// Its own allowance, the stopped subtask's budget, and the new plan's two.
+		assert.equal(item.featurePlan!.budget.tokens, 100_000 + 10_000 + 20_000 + 10_000);
 		item = advance(item,{kind:"approve_plan",version:item.featurePlan!.version,by:"person",at:12}).item;
+		assert.equal(item.budget.tokens, item.featurePlan!.budget.tokens);
 	}
-	assert.equal(item.replans,2); assert.equal(item.question?.kind,"rounds");
+	assert.equal(item.replans,1); assert.equal(item.question?.kind,"rounds");
+	assert.match(item.question!.text, /stopped a second time/);
+	assert.deepEqual(item.question!.choices.map(c => c.id), ["revise", "give_up"]);
 });
 
 test("a child notice wakes a waiting feature and settles spend after cancellation without restarting it", () => {
@@ -418,12 +431,13 @@ test("the child verdict flags both sides of a rename outside its declared owners
 	assert.equal(workFlags(diff, []).some(f=>f.kind==="outside_scope"),false);
 });
 
-test("the existing approval question shows each subtask cap and the single-item comparison", () => {
+test("the approval question shows each subtask's token budget, their total and the feature's", () => {
 	const {question} = proposed(proposal());
 	assert.match(question!.text,/index.*10,000 tokens/);
-	assert.match(question!.text,/page.*10 turns/);
-	assert.match(question!.text,/30,000 tokens/);
-	assert.match(question!.text,/Single item.*10,000 tokens/);
+	assert.match(question!.text,/Subtasks together — 20,000 tokens/);
+	assert.match(question!.text,/Feature budget with planning, summary and review — 30,000 tokens/);
+	assert.match(question!.text,/At most per subtask — 10,000 tokens/);
+	assert.doesNotMatch(question!.text,/turns|active seconds|Reserved/);
 });
 
 test("a person can cancel the current subtask by its approved key", () => {
@@ -521,42 +535,36 @@ test("only an unsupported draft retries as an in-progress ordinary PR", async ()
 });
 
 test("each subtask must fund a useful build and verification turn", async () => {
-	const { validatePlan, featureCap, dimensions } = await plans();
-	const minimum = { tokens: 1000, turns: 2, activeSeconds: 100, hostedSeconds: 60 };
-	for (const d of dimensions) {
-		const p = proposal();
-		p.subtasks[0].budget[d] = minimum[d];
-		validatePlan(p, single, featureCap(single));
-		p.subtasks[0].budget[d]--;
-		assert.throws(() => validatePlan(p, single, featureCap(single)), new RegExp(d));
-	}
+	const { validatePlan } = await plans();
+	const p = proposal();
+	p.subtasks[0].budget.tokens = 1000;
+	validatePlan(p, single);
+	p.subtasks[0].budget.tokens--;
+	assert.throws(() => validatePlan(p, single), /tokens/);
 });
 
-test("filing, editing and dispatch preserve the closing budget", () => {
+test("a plan's budget is its subtasks' and the feature's own allowance, and more subtasks make it larger", () => {
 	const full = proposal();
 	full.subtasks.push({ ...full.subtasks[1], key: "docs", owns: ["docs/**"] });
-	assert.throws(() => proposed(full), /reserve/i);
+	assert.equal(proposed(full).featurePlan!.budget.tokens, 4 * single.tokens);
 	const pending = proposed(proposal());
-	assert.match(pending.question!.text, /summary and review.*1,667 tokens.*4 turns/i);
-	assert.throws(() => advance(pending, { kind: "edit_plan", at: 4, by: "person", version: 1, plan: full }), /reserve/i);
-	const feature = approved();
-	feature.spent.tokens = feature.budget.tokens - single.tokens - 100;
-	const next = advance(feature, { kind: "feature_ready", key: currentKey(feature)!, at: 5, head, pr });
-	assert.equal(next.item.question?.kind, "budget");
-	assert.equal(next.item.jobs?.length, 0);
+	const edited = advance(pending, { kind: "edit_plan", at: 4, by: "person", version: 1, plan: full }).item;
+	assert.equal(edited.featurePlan!.budget.tokens, 4 * single.tokens);
+	const approvedFull = advance(edited, { kind: "approve_plan", at: 5, by: "person", version: 2 }).item;
+	assert.equal(approvedFull.budget.tokens, 4 * single.tokens);
 });
-test("feature budget raises require an explicit increase bounded in every dimension", () => {
+
+test("a feature's own allowance is raised by one start's worth, or to the person's figure above what it spent", () => {
 	const feature = started();
 	feature.spent.tokens = feature.budget.tokens;
 	const pending = advance(feature, {kind:"turn_ended", key:currentKey(feature)!, at:2, outcome:"succeeded", changes:false, verified:null, flags:[], report:null, spend:{tokens:0,hostedSeconds:0}}).item;
 	const stopped = advance(pending, {kind:"answer", choice:"revise", question:pending.question!.id, by:"person", at:3}).item;
 	assert.equal(stopped.question!.kind, "budget");
 	const raise = {kind:"answer" as const, choice:"raise" as const, question:stopped.question!.id, by:"person", at:4};
-	const cap = stopped.budget.tokens;
-	for (const budget of [undefined, {}, {turns:31}, {tokens:cap}, {tokens:cap+0.5}, {tokens:cap+single.tokens+1}, {tokens:cap+100,turns:1000}]) {
-		assert.throws(() => advance(stopped, {...raise, budget}), /raise|increase/i);
-	}
-	assert.equal(advance(stopped, {...raise, budget:{tokens:cap+single.tokens}}).item.budget.tokens, cap+single.tokens);
+	assert.equal(advance(stopped, raise).item.budget.tokens, 2 * single.tokens);
+	assert.equal(advance(stopped, {...raise, budget:{tokens:15_000}}).item.ownTokens, 15_000);
+	// A figure at or below what was spent gives the default extra instead: going on never stops at once again.
+	assert.equal(advance(stopped, {...raise, budget:{tokens:single.tokens}}).item.ownTokens, 2 * single.tokens);
 });
 
 test("a quiet child needs 15 polls and one parent revision in the first hour", async () => {
@@ -589,18 +597,27 @@ test("a quiet child needs 15 polls and one parent revision in the first hour", a
 	assert.equal(notice.effects.find(e => e.kind === "dispatch")?.at, at);
 });
 
-test("an exhausted child cannot raise even through an old stored question", () => {
+test("an exhausted subtask asks for more, and its new budget grows its feature's", () => {
 	const child = createItem({id:"i_child", task, budget:single, reviewer:{off:"deployment"}, place:{kind:"hosted"}});
 	child.parent = {itemId:"i_feature",key:"index",title:task.title};
-	child.spent = {...single};
+	child.spent = {...zero, tokens: single.tokens, rawTokens: single.tokens};
 	const stopped = advance(child, {kind:"start", at:1, by:"person"}).item;
 	assert.equal(stopped.question!.kind, "budget");
-	assert.equal(stopped.question!.choices.some(c => c.id === "raise"), false);
-	stopped.question!.choices.push({id:"raise",label:"Raise"});
-	const forced = advance(stopped, {kind:"answer", question:stopped.question!.id, choice:"raise", budget:{tokens:single.tokens*2}, at:2, by:"person"});
-	assert.equal(forced.item, stopped);
-	assert.deepEqual(forced.item.budget, single);
+	assert.deepEqual(stopped.question!.choices.map(c => c.id), ["raise", "give_up"]);
+	assert.match(stopped.question!.text, /adds to the feature's budget/);
+	const more = advance(stopped, {kind:"answer", question:stopped.question!.id, choice:"raise", at:2, by:"person"});
+	assert.equal(more.item.budget.tokens, 2 * single.tokens);
+	assert.equal(more.item.run!.n, 1);
+	assert.ok(more.effects.some(e => e.kind === "deliver"));
+	// The feature reads the subtask's new budget from its next update: its own budget grows by as much.
+	const feature = advance(approved(), {kind:"feature_ready", key:currentKey(approved())!, at:5, head, pr}).item;
+	const job = feature.jobs![0];
+	const before = feature.budget.tokens;
+	const grown = advance(feature, {kind:"child_update", key:currentKey(feature)!, child:job.id, at:6, state:"waiting", spent:{...zero, tokens:single.tokens}, budget:{ tokens: 2 * single.tokens, hostedSeconds: single.hostedSeconds }, head:null, report:""}).item;
+	assert.equal(grown.budget.tokens, before + single.tokens);
+	assert.equal(grown.jobs![0].budget?.tokens, 2 * single.tokens);
 });
+
 test("a re-plan cannot edit completed work", () => {
 	let item = approved();
 	item = advance(item, {kind:"feature_ready", key:currentKey(item)!, head, pr, at:5}).item;
@@ -646,10 +663,10 @@ test("push CI must target the feature and child branches", async () => {
 		assert.equal(workflowReportsPush(source, branch), true, source);
 });
 
-test("re-planning cannot start a turn with only the closing reserve left", () => {
+test("re-planning after a stopped subtask is the feature's own turn, held to its own allowance", () => {
 	const feature = approved();
 	const running = advance(feature, {kind:"feature_ready", key:currentKey(feature)!, at:5, head, pr}).item;
-	running.spent.turns = running.budget.turns - 4;
+	running.spent.tokens = running.ownTokens!;
 	const stopped = advance(running, {kind:"child_update", key:currentKey(running)!, child:running.jobs![0].id, state:"failed", spent:zero, report:"Stopped", head:null, at:6});
 	assert.equal(stopped.item.question?.kind, "budget");
 	assert.equal(stopped.effects.some(e => e.kind === "deliver"), false);
@@ -1133,7 +1150,7 @@ test("a re-plan keeps each remaining subtask's agent unless the person changes i
 	const replan = mixedPlan();
 	replan.subtasks[0].agent = { harness: "opencode" };
 	replan.subtasks[1].agent = { harness: "claude" };
-	replan.subtasks[0].budget.turns -= 1;
+	replan.subtasks[0].budget.tokens -= 1000;
 	const key = currentKey(item)!;
 	let filed = advance(item, { kind: "file_plan", key, plan: replan, at: 8 }).item;
 	assert.deepEqual(filed.featurePlan?.subtasks.map(s => s.agent), [{ harness: "claude", model: "sonnet", effort: "high" }, undefined]);
@@ -1158,7 +1175,7 @@ test("a re-plan can't keep a machine agent on a subtask it moves out of the hard
 	const replan = mixedPlan();
 	delete replan.subtasks[0].agent;
 	replan.subtasks[0].needs = { profile: "docker-windlass-sandbox" };
-	replan.subtasks[0].budget.turns -= 1;
+	replan.subtasks[0].budget.tokens -= 1000;
 	assert.throws(() => advance(item, { kind: "file_plan", key: currentKey(item)!, plan: replan, at: 8 }), /index: Claude Code runs only in the docker-hardened profile/);
 	// Placement refuses such a subtask for good, wherever it came from.
 	const task = { ...mixedPlan().subtasks[0], needs: { profile: "docker-windlass-sandbox" as const } };
@@ -1394,7 +1411,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 // PR per repository, a combined run before hand-over, merges in the approved order.
 // ---------------------------------------------------------------------------------------------
 
-const crossSingle = { tokens: 10000, turns: 10, activeSeconds: 4000, hostedSeconds: 4000 };
+const crossSingle = { tokens: 10000, hostedSeconds: 4000 };
 const sha = (c: string) => c.repeat(40);
 const crossRepos = (): import("../server/src/contract.js").FeatureRepository[] => [
 	{ alias: "platform", repositoryId: 11, installationId: 5, owner: "ada", name: "platform", url: "https://github.com/ada/platform", private: false, baseRef: "main", planningBaseSha: sha("1") },
@@ -1405,8 +1422,8 @@ const crossProposal = (): FeaturePlanEdit => ({
 	questions: [], singleSuggested: null,
 	subtasks: [
 		// The same owned paths in two repositories are two sets of paths.
-		{ key: "cli", repo: "cli", title: "CLI field", brief: "Add the optional field", acceptance: ["Run bun test"], owns: ["src/**"], dependsOn: [], budget: { tokens: 3000, turns: 3, activeSeconds: 3000, hostedSeconds: 3000 } },
-		{ key: "platform", repo: "platform", title: "Platform reader", brief: "Read the field when present", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn: ["cli"], budget: { tokens: 3000, turns: 3, activeSeconds: 3000, hostedSeconds: 3000 } },
+		{ key: "cli", repo: "cli", title: "CLI field", brief: "Add the optional field", acceptance: ["Run bun test"], owns: ["src/**"], dependsOn: [], budget: { tokens: 3000 } },
+		{ key: "platform", repo: "platform", title: "Platform reader", brief: "Read the field when present", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn: ["cli"], budget: { tokens: 3000 } },
 	],
 	repos: ["platform", "cli"],
 	mergeOrder: [
@@ -1441,7 +1458,7 @@ function crossIntegrating() {
 test("a one-repository planning turn's file_plan schema and plan checks are exactly as before cross-repo features", async () => {
 	const { readFileSync } = await import("node:fs");
 	const { platformTools } = await import("../server/src/agent-publish.js");
-	const { validatePlan, featureCap } = await plans();
+	const { validatePlan } = await plans();
 	// Written by main's own platformTools and validatePlan before cross-repo features (fixtures/one-repo-plan/main.json).
 	const before = JSON.parse(readFileSync(new URL("../fixtures/one-repo-plan/main.json", import.meta.url), "utf8"));
 	assert.deepEqual(platformTools({ plan: true, publish: false, report: false, push: false }, 600_000), before.declaration);
@@ -1450,10 +1467,10 @@ test("a one-repository planning turn's file_plan schema and plan checks are exac
 	for (const key of ["repos", "mergeOrder", "releaseGate", "earlyChecks", "finalIntegration"]) assert.ok(key in props, `a cross-repo planning turn is not offered ${key}`);
 	assert.ok("repo" in props.subtasks.items!.properties!);
 	// Empty or default cross-repo values, and any others, are not read for one repository: the plan comes out as it always did.
-	assert.deepEqual(validatePlan(before.withExtras, single, featureCap(single)), before.validated);
-	assert.deepEqual(validatePlan(before.plan, single, featureCap(single)), before.validated);
+	assert.deepEqual(validatePlan(before.withExtras, single), before.validated);
+	assert.deepEqual(validatePlan(before.plan, single), before.validated);
 	const named = { ...before.plan, repos: ["platform", "cli"], releaseGate: "wait", finalIntegration: { runFrom: "cli" }, subtasks: before.plan.subtasks.map((s: object) => ({ ...s, repo: "cli" })) };
-	assert.deepEqual(validatePlan(named, single, featureCap(single)), before.validated);
+	assert.deepEqual(validatePlan(named, single), before.validated);
 	// The same through a one-repository item's planning turn: filed.
 	const item = advance(createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } }), { kind: "start", at: 1, by: "person" }).item;
 	const filed = advance(item, { kind: "file_plan", key: currentKey(item)!, plan: before.withExtras, at: 2 }).item;
@@ -1462,15 +1479,15 @@ test("a one-repository planning turn's file_plan schema and plan checks are exac
 });
 
 test("cross-repo: a plan over the filing's two repositories validates, with identical paths in different repositories", async () => {
-	const { validatePlan, featureCap, planScope } = await plans();
-	const plan = validatePlan(crossProposal(), crossSingle, featureCap(crossSingle), ["platform", "cli"]);
+	const { validatePlan, planScope } = await plans();
+	const plan = validatePlan(crossProposal(), crossSingle, ["platform", "cli"]);
 	assert.deepEqual(plan.subtasks.map(s => s.repo), ["cli", "platform"]);
 	assert.equal(plan.finalIntegration?.runFrom, "platform");
 	// The same paths in one repository, independent of each other, overlap.
 	const same = crossProposal();
 	same.subtasks[1].repo = "cli"; same.subtasks[1].dependsOn = [];
 	same.subtasks.push({ ...same.subtasks[0], key: "web", repo: "platform", owns: ["web/**"], dependsOn: [] });
-	assert.throws(() => validatePlan(same, crossSingle, featureCap(crossSingle), ["platform", "cli"]), /overlap/);
+	assert.throws(() => validatePlan(same, crossSingle, ["platform", "cli"]), /overlap/);
 	// Editing a cross-repo field changes the approved scope; a one-repository plan keeps its old fingerprint.
 	const moved = structuredClone(plan); moved.finalIntegration!.command = "pnpm test";
 	assert.notEqual(planScope(moved), planScope(plan));
@@ -1479,7 +1496,7 @@ test("cross-repo: a plan over the filing's two repositories validates, with iden
 });
 
 test("cross-repo: refusals name the problem (third repo, unknown repo, empty command, cycles, merge chains, missing tasks and order)", async () => {
-	const { validatePlan, featureCap } = await plans();
+	const { validatePlan } = await plans();
 	const filing = ["platform", "cli"];
 	const cases: [string, (p: FeaturePlanEdit) => void, RegExp][] = [
 		["a third repository", p => p.repos!.push("docs"), /at most 2 repositories/],
@@ -1495,29 +1512,25 @@ test("cross-repo: refusals name the problem (third repo, unknown repo, empty com
 	];
 	for (const [what, mutate, expected] of cases) {
 		const p = crossProposal(); mutate(p);
-		assert.throws(() => validatePlan(p, crossSingle, featureCap(crossSingle), filing), expected, what);
+		assert.throws(() => validatePlan(p, crossSingle, filing), expected, what);
 	}
 	// A one-repository feature does not read cross-repo fields (as before them), and a cross-repo one refuses a plan without them.
-	const one = validatePlan(crossProposal(), crossSingle, featureCap(crossSingle));
+	const one = validatePlan(crossProposal(), crossSingle);
 	assert.equal(one.repos, undefined); assert.equal(one.finalIntegration, undefined); assert.ok(one.subtasks.every(s => s.repo === undefined));
 	const bare = proposal();
-	assert.throws(() => validatePlan(bare, crossSingle, featureCap(crossSingle), filing), /repository/);
+	assert.throws(() => validatePlan(bare, crossSingle, filing), /repository/);
 	// Planner-supplied answers are dropped when the planner files.
 	const answered = crossProposal(); answered.questions.push({ id: "who", text: "Who releases?", answer: "the planner" });
 	assert.equal(crossProposed(answered).featurePlan!.questions[0].answer, undefined);
 });
 
-test("cross-repo: the planner is told where the sibling is, and the reserve holds the combined run's hour", async () => {
-	const { featureReserve, closingReserve, integrationReserve } = await plans();
+test("cross-repo: the planner is told where the sibling is, and the card shows the merge order", async () => {
 	const start = advance(crossItem(), { kind: "start", at: 1, by: "person" });
 	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /cli \(ada\/cli, base main\) is read-only at \.windlass-inputs\/cli/);
 	// The sibling's tree is a repository the person bound with write access, trusted as the primary's files are: nothing is marked.
 	assert.equal((start.effects.find(e => e.kind === "deliver") as { untrusted?: string[] }).untrusted, undefined);
-	assert.equal(integrationReserve(crossProposal()).activeSeconds, 3600);
-	assert.equal(featureReserve(crossSingle, crossProposal()).hostedSeconds, closingReserve(crossSingle).hostedSeconds + 3600);
-	assert.equal(featureReserve(crossSingle, proposal()).hostedSeconds, closingReserve(crossSingle).hostedSeconds);
 	const card = crossProposed().question!.text;
-	assert.match(card, /\[cli\] CLI field/); assert.match(card, /Merge order — cli, then platform after cli/); assert.match(card, /Reserved for the combined run — 0 tokens, 0 turns, 3600 active seconds/);
+	assert.match(card, /\[cli\] CLI field/); assert.match(card, /Merge order — cli, then platform after cli/); assert.doesNotMatch(card, /Reserved/);
 });
 
 test("cross-repo: approval opens each repository in turn, both can have PR #1, and a replayed fact makes no second PR", () => {

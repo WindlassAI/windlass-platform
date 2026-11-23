@@ -4368,7 +4368,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
 			if (claim.dailyTokenWait) throw new UserError(claim.dailyTokenWait, { code: "daily_token_cap" });
-			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
+			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working on this platform, the most it runs for you at once. Agents on your machines don't count. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
 		claimName = claim.claim;
