@@ -35,8 +35,10 @@ const read = (path: string) => readFileSync(path, "utf8");
 const output = (program: string, args: string[]) => execFileSync(program, args, { encoding: "utf8" }).trim();
 function scan(path: string) {
 	const bundle = read(path);
-	for (const marker of ["/home/", "@gmail", "-----BEGIN", "WLP_SECRET", "onrivet", "sourceMappingURL="])
+	for (const marker of ["/home/", "@gmail", "WLP_SECRET", "onrivet", "sourceMappingURL="])
 		assert(!bundle.includes(marker), `Runner bundle contains ${marker}`);
+	// A PEM block with its body: a header naming a key type, then base64. A bare header, as code that recognises PEM input checks for, is no key.
+	assert(!/-----BEGIN [A-Z0-9 ]+-----(\\n|\s)*[A-Za-z0-9+/=]{40}/.test(bundle), "Runner bundle contains a PEM block");
 	assert(!existsSync(path + ".map"), "Runner bundle has a source map");
 }
 function bundlePins(path: string): Record<Role, string> {
