@@ -2,68 +2,32 @@
  * The Agents home's right side when no one repository is chosen (screens/Workspace.tsx): "Everything",
  * or with `scope` "none" the agents on no repository of the GitHub connection.
  *
- * Agents: the user's sessions, live, with rename and delete, and the start composer at the top
- * (components/StartComposer.tsx): a task and Enter launch one. Without agents, the composer is the
- * empty page's one action. The agents stand under the
- * repository they were launched on, the repository that was used last first, and each repository's
- * name leads to its page; the agents on no repository of the GitHub connection come last. A list with
- * no such repository in it is shown as it always was, without a heading.
- *
- * Under the groups, the repositories something is saved for that have no agent: their pages are
- * where what was saved is changed or deleted, and nothing else leads there.
+ * At the top the start composer (components/StartComposer.tsx): a task and Enter launch an agent.
+ * Without agents, the composer is the empty page's one action. Under it one feed (lib/feed.ts,
+ * components/Feed.tsx): what needs its person, what is at work, and the rest, each newest first, the
+ * user's agents and their work items together. The repository is a quiet label on each row; the rail
+ * is where repositories are chosen, so a repository with nothing on it has no place here.
  *
  * The sessions of work items are not listed: each is part of its item, and is opened from the item's
- * row and page. A repository that has only work items keeps its heading, with how many, so that its
- * page is still a click away. The count of what is at work is the server's, against the ceiling on
- * running turns, and says how much of it is work items'.
+ * row and page. The count of what is at work is the server's, against the ceiling on running turns,
+ * and says how much of it is work items'.
  *
- * The filters of the home (lib/workspace.ts) narrow the lists: with any of them on, the work items they
- * leave are listed too, under the agents.
+ * The filters of the home (lib/workspace.ts) narrow the feed; they are set from the Recent heading.
  */
 import { USAGE_LOW_SHARE, type ItemSummary, type MachineSummary, type SavedRepository, type SessionSummary, type UsageNumbers } from "@contract";
-import { useEffect, useId, useState } from "react";
-import { AgentList } from "../components/Agents";
+import { useEffect, useState } from "react";
+import { FeedSection } from "../components/Feed";
 import { Mark, WarnIcon } from "../components/Icons";
-import { ItemTable, itemsByUrgency } from "../components/ItemTable";
-import { NeedsYouCard } from "../components/NeedsYouCard";
 import { StartComposer } from "../components/StartComposer";
-import { FilterBar, ListHeader } from "../components/WorkspaceFilters";
+import { FilterBar } from "../components/WorkspaceFilters";
+import { feedOf } from "../lib/feed";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
-import { NO_REPOSITORY, groupSessions, ownAgents, shownLimit, workingCounts, workingWords, type SessionGroup } from "../lib/repositories";
+import { ownAgents, workingCounts, workingWords } from "../lib/repositories";
 import { linkProps } from "../lib/router";
-import { filterCount, matchesItem, matchesSession, type Filters } from "../lib/workspace";
+import { filterCount, type Filters } from "../lib/workspace";
 import { useApp, useAuth } from "../state/app";
 import { asking } from "./Items";
 import { allowanceState, useChatgpt, useFactoryLimits, useNow, type SessionsState } from "../state/hooks";
-
-/** One repository's agents under its name, or the agents on none. `headed` is false for a list that has only the latter. */
-function Group({ group, limit, headed, now }: { group: SessionGroup; limit: number; headed: boolean; now: number }) {
-	const heading = useId();
-	const repository = group.repository;
-	const name = repository ? `${repository.owner}/${repository.name}` : "No connected repository";
-	return (
-		<section className="agent-group" aria-labelledby={headed ? heading : undefined} aria-label={headed ? undefined : "Your agents"}>
-			{headed ? (
-				<h2 className="agent-group-head" id={heading}>
-					{repository ? (
-						<a className="agent-group-name" {...linkProps({ name: "repository", id: repository.id })} title={`What is saved for ${name}, and its pull requests`}>
-							<span className="agent-group-owner">{repository.owner}/</span>
-							{repository.name}
-						</a>
-					) : (
-						<span className="agent-group-name">{name}</span>
-					)}
-					<span className="agent-group-count">
-						{[group.sessions.length > 0 ? plural(group.sessions.length, "agent") : null, group.working > 0 ? `${group.working} working` : null, group.items > 0 ? plural(group.items, "work item") : null].filter((part) => part !== null).join(" · ")}
-					</span>
-				</h2>
-			) : null}
-			{group.sessions.length > 0 ? (
-				<AgentList sessions={group.sessions} limit={limit} foldKey={`home:${group.key}`} label={repository ? `Your agents on ${name}, the most recently used first` : "Your agents on no connected repository, the most recently used first"} grouped={repository !== null} now={now} />
-			) : null}
-		</section>
-	);
-}
 
 /** The repositories something is saved for: asked when the screen opens and when a session is added or deleted. Empty until they arrive, or where they could not be read. */
 export function useSavedRepositories(sessions: readonly SessionSummary[] | null): SavedRepository[] {
@@ -87,13 +51,6 @@ export function useSavedRepositories(sessions: readonly SessionSummary[] | null)
 		};
 	}, [client, auth, known]);
 	return saved;
-}
-
-/** Of those, the ones no session is on (one with only work items has its heading). */
-export function savedWithoutAgents(saved: readonly SavedRepository[], sessions: readonly SessionSummary[] | null): SavedRepository[] {
-	if (sessions === null) return [];
-	const used = new Set(sessions.map((session) => session.repository?.id));
-	return saved.filter((repository) => !used.has(repository.id));
 }
 
 function AccountLine() {
@@ -181,8 +138,6 @@ export interface HomeProps {
 	state: SessionsState;
 	/** The user's work items, read once for the page and the bar (null until they arrive; none where the deployment offers none). */
 	items: readonly ItemSummary[] | null;
-	/** The repositories something is saved for. */
-	saved: readonly SavedRepository[];
 	usage: UsageNumbers | null;
 	/** "none": the agents on no repository of the GitHub connection alone. */
 	scope?: "all" | "none";
@@ -191,7 +146,7 @@ export interface HomeProps {
 	machines: readonly MachineSummary[];
 }
 
-export function Home({ state, items, saved: savedAll, usage, scope = "all", filters, onFilters, machines }: HomeProps) {
+export function Home({ state, items, usage, scope = "all", filters, onFilters, machines }: HomeProps) {
 	const { sessions, connection, error } = state;
 	const now = useNow(15_000);
 	const filtering = filterCount(filters) > 0;
@@ -199,20 +154,12 @@ export function Home({ state, items, saved: savedAll, usage, scope = "all", filt
 	// The ceiling is the deployment's, on hosted sandboxes: the user's agents and work items on the platform's sandboxes count against it, never a machine's.
 	const ceiling = useFactoryLimits().value?.hostedRunning ?? null;
 	const counts = workingCounts(sessions ?? []);
-
-	// With a filter on, a work item's session is not counted under its repository: its item is listed below instead.
-	const shown = sessions === null ? null : sessions.filter((session) => (session.item !== undefined ? !filtering : matchesSession(session, filters)));
-	const grouped = shown === null ? [] : groupSessions(shown);
-	const groups = scope === "none" ? grouped.filter((group) => group.key === NO_REPOSITORY) : grouped;
-	const saved = scope === "none" ? [] : savedWithoutAgents(savedAll, sessions);
 	const waiting = agents?.filter((session) => session.status === "waiting").length ?? 0;
 	const asked = asking(items ?? []).length;
-	const matchingItems = scope === "none" || !filtering ? [] : itemsByUrgency((items ?? []).filter((item) => !item.parent && matchesItem(item, filters)));
-	// Without agents the composer stands in the empty page; otherwise at the top, over the list.
-	const empty = sessions !== null && connection !== "failed" && (agents?.length ?? 0) === 0 && grouped.length === 0;
-	const needsSessions = (agents ?? []).filter((session) => (scope === "none" ? !session.repository : true) && matchesSession(session, filters));
-	const needsItems = scope === "none" ? [] : items === null ? null : items.filter((item) => matchesItem(item, filters));
-	const nothingLeft = !empty && sessions !== null && groups.length === 0 && matchingItems.length === 0;
+	const feed = feedOf({ sessions, items, filters, scope });
+	const total = feed.needs.length + feed.working.length + feed.recent.length;
+	// Without agents or work items the composer stands in the empty page; otherwise at the top, over the feed.
+	const empty = sessions !== null && connection !== "failed" && (agents?.length ?? 0) === 0 && (scope === "none" || (items ?? []).length === 0) && !filtering;
 
 	return (
 		<main className="home home-agents ws-pane">
@@ -240,15 +187,6 @@ export function Home({ state, items, saved: savedAll, usage, scope = "all", filt
 				</p>
 			) : null}
 
-			<NeedsYouCard sessions={needsSessions} items={needsItems} now={now} />
-
-			{empty || connection === "failed" ? null : (
-				<div className="ws-list-bar">
-					<h2 className="ws-section-title">{scope === "none" ? "Agents" : "By repository"}</h2>
-					<FilterBar filters={filters} onChange={onFilters} machines={machines} />
-				</div>
-			)}
-
 			{connection === "failed" ? (
 				<div className="state state-error" role="alert">
 					<WarnIcon size={22} />
@@ -274,39 +212,24 @@ export function Home({ state, items, saved: savedAll, usage, scope = "all", filt
 				<div className="state state-empty home-empty">
 					<Mark size={56} />
 					<h2>No agents yet</h2>
-					<p>Say what it should do and press Enter. The repository, where it runs and its sandbox are under the field.</p>
+					<p>Say what it should do and press Enter. Where it runs and the repository are under the field.</p>
 					<StartComposer sessions={sessions} autoFocus />
 				</div>
-			) : nothingLeft ? (
-				<p className="usage-empty ws-empty">{filtering ? "Nothing here matches the filters." : scope === "none" ? "No agent of yours is on no repository." : "Nothing here yet."}</p>
 			) : (
-				groups.map((group) => <Group key={group.key} group={group} limit={shownLimit(groups.length)} headed={scope === "all" && (groups.length > 1 || group.key !== NO_REPOSITORY)} now={now} />)
+				<div className="home-feed">
+					<FeedSection title="Needs you" tone="needs" entries={feed.needs} now={now} />
+					<FeedSection title="Working now" tone="working" entries={feed.working} now={now} />
+					<FeedSection
+						title="Recent"
+						tone="recent"
+						entries={feed.recent}
+						now={now}
+						limit={12}
+						tools={<FilterBar filters={filters} onChange={onFilters} machines={machines} />}
+						empty={filtering ? (total === 0 ? "Nothing here matches the filters." : "Nothing else matches the filters.") : scope === "none" ? "No agent of yours is on no repository." : "Nothing has ended yet."}
+					/>
+				</div>
 			)}
-
-			{matchingItems.length > 0 ? (
-				<section className="ws-section" aria-labelledby="home-items">
-					<ListHeader id="home-items" title="Work items" count={matchingItems.length} />
-					<ItemTable items={matchingItems.slice(0, 12)} now={now} label="Work items the filters leave, what asks you first" repository />
-					{matchingItems.length > 12 ? (
-						<p className="agents-fold">
-							<a className="link" {...linkProps({ name: "factory" })}>
-								All {count(matchingItems.length)} in Factory
-							</a>
-						</p>
-					) : null}
-				</section>
-			) : null}
-
-			{saved.length > 0 ? (
-				<p className="home-saved">
-					<span>Saved settings for repositories with no agent:</span>
-					{saved.map((repository) => (
-						<a key={repository.id} className="link" {...linkProps({ name: "repository", id: repository.id, view: "settings" })}>
-							{repository.name ?? `repository ${repository.id}`}
-						</a>
-					))}
-				</p>
-			) : null}
 		</main>
 	);
 }

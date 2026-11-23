@@ -1,0 +1,317 @@
+/* The Agents home's feed (components/Feed.tsx), repository tiles and owner avatars (components/RepoTile.tsx). */
+
+/* ---- tiles ------------------------------------------------------------------------------------- */
+.repo-tile {
+	--tile-hue: 200;
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 5px;
+	background: var(--bg-raised);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	color: hsl(var(--tile-hue) 60% 72%);
+	font-family: var(--font-text);
+	font-size: 10px;
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.02em;
+	line-height: 1;
+}
+:root[data-theme="light"] .repo-tile {
+	color: hsl(var(--tile-hue) 55% 36%);
+}
+.repo-tile-sm {
+	width: 16px;
+	height: 16px;
+	border-radius: 4px;
+	font-size: 8.5px;
+}
+.repo-tile-xs {
+	width: 14px;
+	height: 14px;
+	border-radius: 3.5px;
+	font-size: 7.5px;
+}
+.owner-avatar {
+	flex: none;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	box-shadow: 0 0 0 1px var(--line-strong);
+	background: var(--bg-active);
+	object-fit: cover;
+}
+
+/* ---- the feed ---------------------------------------------------------------------------------- */
+.feed {
+	margin-top: var(--space-6);
+}
+.feed-head {
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	margin-bottom: 4px;
+	padding: 0 4px;
+}
+.feed-heading {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 8px;
+	margin: 0;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.feed-needs .feed-heading {
+	color: var(--needs);
+}
+.feed-working .feed-heading {
+	color: var(--accent-text);
+}
+.feed-count {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.feed-head > :last-child:not(.feed-heading) {
+	margin-left: auto;
+}
+.feed-rows {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.feed-row {
+	position: relative;
+	display: grid;
+	grid-template-columns: 22px minmax(0, 1fr) minmax(0, 168px) 64px 84px;
+	grid-template-areas: "glyph main repo when act";
+	align-items: center;
+	gap: 0 12px;
+	padding: 10px 8px;
+	border-radius: var(--r-control);
+}
+.feed-row + .feed-row {
+	box-shadow: 0 -1px 0 var(--line);
+}
+.feed-row:hover {
+	background: var(--bg-hover);
+	box-shadow: none;
+}
+.feed-row:hover + .feed-row {
+	box-shadow: none;
+}
+.feed-glyph {
+	grid-area: glyph;
+	display: grid;
+	place-items: center;
+	color: var(--ink-faint);
+}
+.feed-lamp {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--needs);
+	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--needs) 22%, transparent);
+}
+.feed-done {
+	color: var(--ink-faint);
+}
+.feed-main {
+	grid-area: main;
+	min-width: 0;
+}
+.feed-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0;
+	min-width: 0;
+	font-size: var(--text-14);
+	font-weight: var(--weight-medium);
+}
+.feed-recent .feed-title {
+	font-weight: var(--weight-regular);
+}
+.feed-link {
+	overflow: hidden;
+	min-width: 0;
+	color: var(--ink);
+	text-decoration: none;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.feed-recent .feed-link {
+	color: var(--ink-dim);
+}
+/* The whole row is the link's target. */
+.feed-link::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+}
+.feed-link:focus-visible {
+	outline: none;
+}
+.feed-link:focus-visible::after {
+	box-shadow: 0 0 0 var(--focus-width) var(--accent-edge);
+}
+.feed-tag {
+	flex: none;
+	padding: 1px 5px;
+	border-radius: 4px;
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-mono);
+	font-size: 0.65625rem;
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.feed-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 2px 0 0;
+	overflow: hidden;
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+.feed-agent {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	color: var(--ink-dim);
+}
+.feed-agent .ui-glyph-inline {
+	margin-right: 5px;
+}
+.feed-state {
+	overflow: hidden;
+	min-width: 0;
+	text-overflow: ellipsis;
+}
+.feed-state::before {
+	content: "·";
+	margin-right: 6px;
+	color: var(--ink-faint);
+}
+.feed-repo {
+	grid-area: repo;
+	position: relative;
+	z-index: 1;
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	justify-self: start;
+	min-width: 0;
+	max-width: 100%;
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+	text-decoration: none;
+}
+.feed-repo:hover {
+	color: var(--ink);
+}
+.feed-repo-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.feed-repo-none {
+	font-style: normal;
+}
+.feed-time {
+	grid-area: when;
+	text-align: right;
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	color: var(--ink-faint);
+	white-space: nowrap;
+}
+.feed-act {
+	grid-area: act;
+	justify-self: end;
+	position: relative;
+	z-index: 1;
+}
+.feed-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	height: 26px;
+	padding: 0 8px 0 10px;
+	border-radius: var(--r-control);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+	text-decoration: none;
+	white-space: nowrap;
+}
+.feed-button:hover {
+	background: var(--bg-active);
+}
+.feed-button-needs {
+	background: var(--needs-fill);
+	box-shadow: none;
+	color: var(--needs-ink);
+}
+.feed-button-needs:hover {
+	background: color-mix(in srgb, var(--needs-fill) 88%, var(--ink));
+}
+.feed-pull {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	padding: 0 8px;
+	border-radius: 11px;
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	color: var(--ink-dim);
+}
+.feed-pull-open {
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 55%, transparent);
+	color: var(--ok);
+}
+.feed-pull-merged {
+	color: var(--ink-faint);
+}
+.feed-empty {
+	margin: 0;
+	padding: 10px 8px;
+	font-size: var(--text-13);
+	color: var(--ink-faint);
+}
+.feed-more {
+	display: flex;
+	justify-content: center;
+	margin: 8px 0 0;
+}
+
+@media (max-width: 900px) {
+	.feed-row {
+		grid-template-columns: 20px minmax(0, 1fr) auto;
+		grid-template-areas: "glyph main when" ". repo act";
+		gap: 4px 10px;
+		padding: 10px 4px;
+	}
+	.feed-glyph {
+		align-self: start;
+		margin-top: 3px;
+	}
+	.feed-time {
+		align-self: start;
+		padding-top: 3px;
+	}
+	.feed-agent-words {
+		display: none;
+	}
+	.feed-state::before {
+		content: none;
+	}
+}
