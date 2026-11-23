@@ -926,7 +926,8 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
 		step.interruptions += 1;
-		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}; the step is tried again.`);
+		// The cut-off that reaches the limit is not tried again: the person is asked next (`nextTurn`, "interruptions").
+		c.say(`The turn ${OUTCOME_WORDS[fact.outcome] ?? "did not finish"}${step.interruptions >= RULES.interruptions ? "." : "; the step is tried again."}`);
 		return nextTurn(c, { ...IMPLEMENT, kind, text: "You were interrupted. Continue from where you were.", newStep: false, charge: "interruptions" });
 	}
 	if (kind === "summary") {
@@ -1091,7 +1092,9 @@ function publishFailed(c: Change, fact: Extract<Fact, { kind: "publish_failed" }
 		c.effects.push({ kind: "publish", key: c.key, at: c.at + RULES.publishRetryMs * 2 ** (step.attempt - 2) });
 		return;
 	}
-	ask(c, "publish_refused", `GitHub refused the push: ${fact.said}`, [choice("again"), choice("give_up")], null, null);
+	// GitHub's own sentence may say so already (github/publish.ts): it is not said twice.
+const said = fact.said.replace(/^GitHub refused the push(?::\s*|\s+(?=because))/, "");
+ask(c, "publish_refused", `GitHub refused the push${/^because/.test(said) ? " " : ": "}${said}`, [choice("again"), choice("give_up")], null, null);
 }
 
 function pollCi(c: Change, openItems: number, notBefore: number | null, sentence: string): void {

@@ -1022,7 +1022,7 @@ drive("a deploy in the middle of the implement step", newItem(), [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: interrupted, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "interruptions", "cut off three times: a person is asked") },
+	{ fact: interrupted, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.cause === "interruptions" && !o.events.some(e => /tried again/.test(e.said)), "cut off three times: a person is asked, and the log does not say it is tried again") },
 	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
@@ -1147,6 +1147,23 @@ drive("GitHub refuses the push: a question with GitHub's reason, then a push aga
 	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GH006: Protected branch update failed", transient: false }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "publish_refused" && /GH006/.test(o.item.question.text), "GitHub's reason is in the question") },
 	{ fact: answer("again"), state: "working", effects: ["publish"] },
 	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
+]);
+
+{
+	const { filedFromIssue } = await import("../server/src/factory/intake.js");
+	expect("an item filed from someone else's issue names its author, and apart who filed it",
+		filedFromIssue({ issue: { number: 101, author: "mallory" }, sender: "ada" }) === "Filed from GitHub issue #101, written by @mallory. Filed by @ada.");
+	expect("an issue its author filed says so once", filedFromIssue({ issue: { number: 7, author: "ada" }, sender: "ada" }) === "Filed from GitHub issue #7, written and filed by @ada.");
+}
+drive("GitHub's own sentence that it refused the push is not said twice", newItem(), [
+	...begun,
+	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GitHub refused the push: a rule of acme/quay protects branches named like windlass/x.", transient: false }), state: "waiting", wait: "person", effects: ["ask"],
+		also: (o) => holds(o.item.question?.text === "GitHub refused the push: a rule of acme/quay protects branches named like windlass/x.", o.item.question?.text ?? "no question") },
+]);
+drive("GitHub's sentence that starts with because reads as one", newItem(), [
+	...begun,
+	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GitHub refused the push because it changes a workflow file.", transient: false }), state: "waiting", wait: "person", effects: ["ask"],
+		also: (o) => holds(o.item.question?.text === "GitHub refused the push because it changes a workflow file.", o.item.question?.text ?? "no question") },
 ]);
 
 drive("cancelling a running turn withdraws it", newItem(), [

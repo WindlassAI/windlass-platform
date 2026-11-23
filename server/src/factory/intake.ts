@@ -78,3 +78,12 @@ export function issueComment(itemId: string, origin: NonNullable<ItemSummary["or
 export function recentSubject(at: number, now = Date.now()) {
 	return Number.isFinite(at) && at >= now - 3 * 86_400_000 && at <= now + 60_000;
 }
+
+/**
+ * The item's first log line for one filed from a GitHub issue: who wrote the issue, and, apart, who filed it (added
+ * the label or wrote the comment), so that the filer is never read as the issue's author.
+ */
+export function filedFromIssue(origin: { issue: { number: number; author: string }; sender: string }): string {
+	const { number, author } = origin.issue;
+	return author === origin.sender ? `Filed from GitHub issue #${number}, written and filed by @${author}.` : `Filed from GitHub issue #${number}, written by @${author}. Filed by @${origin.sender}.`;
+}

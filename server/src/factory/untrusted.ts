@@ -133,7 +133,9 @@ export const hardenedRefusal = (agent: HarnessId, list: readonly string[]) => {
 	const what = marker
 		? `On “Docker, hardened” ${name} cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
 		: `On “Docker, hardened” ${name} cannot be told which text is not yours, so the text would go to it labelled only, and its commands would run without asking, with the container's network and the session's access.`;
-	const elsewhere = marker ? `file the work again on “Docker + Windlass sandbox”` : `file the work again with Windlass on “Docker + Windlass sandbox”`;
+	// Codex runs its commands in its own sandbox there (`sandboxedOn`): it is filed again as itself. Any other agent is filed with Windlass.
+const own = machineHarness(agent)?.sandboxedOn.includes("docker-windlass-sandbox") ?? false;
+const elsewhere = marker || own ? `file the work again on “Docker + Windlass sandbox”${own ? `, where ${name} runs its commands in its own sandbox` : ""}` : `file the work again with Windlass on “Docker + Windlass sandbox”`;
 	return `This turn carries text from someone else (${sources(list).join("; ")}). ${what} Run it anyway, ${elsewhere}, or give up.`;
 };
 
