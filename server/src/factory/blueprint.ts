@@ -1749,7 +1749,7 @@ const handOver = (item: FactoryItem) => (!item.parent && item.run?.ci !== null &
 function repeatedWords(plan: TurnPlan, task: Task): string {
 	switch (plan.kind) {
 		case "conflict": return `The pull request conflicts with ${task.base} again after a round of merging it.`;
-		case "ci_fix": return "CI failed the same way again after a fix, so the factory stopped instead of trying it again.";
+		case "ci_fix": return "The same failure came back in CI after a fix, so the factory stopped instead of trying it again.";
 		default: return "The same failure came back after a fix, so the factory stopped instead of trying it again.";
 	}
 }

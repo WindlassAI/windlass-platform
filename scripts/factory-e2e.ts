@@ -272,7 +272,8 @@ if (!only.length || only.some(name => name.startsWith("user-limits"))) {
 				assert((await user.usage()).usedModelTokens === 0, "another user's turn spent this user's tokens");
 				const filing = { repository: { id: harbor.id }, title: "Write notes", body: "Run two parallel tool calls." };
 				const feature = await user.createItem({ ...filing, mode: "orchestrate", start: false });
-				assert(feature.budget.tokens === 246912, "new feature did not receive the effective item budget and multiplier");
+				// A feature starts with one item's budget of its own: its plan adds its subtasks'.
+				assert(feature.budget.tokens === 123456, "new feature did not receive the effective item budget");
 				const item = await user.createItem({ ...filing, mode: "single", start: true });
 				const session = client.agentSession.get([uid, item.sessionId], { params: { token: auth.token } });
 				const finished = await waitFor("the admitted Factory step to finish", async () =>

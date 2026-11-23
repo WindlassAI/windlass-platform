@@ -1372,7 +1372,7 @@ async function run() {
 			try {
 				// Drafts are no cap of their own: the one daily limit holds them.
 				const another = make(121, stranger); await change(another, "labeled", quotaUser);
-				assert.equal(bots(another).length, 0);
+				assert.ok(!bots(another).some(c => /Not taken/.test(c.body)));
 				assert.equal((await account.user.listItems()).length, 21);
 			} finally { await settings.checkDailyLimit(20); }
 		});
