@@ -36,7 +36,7 @@ import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
-import { PlanError, subtaskMinimum, unattendedKeys } from "../factory/feature-plan.js";
+import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { childItemId, itemSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
@@ -1394,10 +1394,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
-				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places })
-					+ "\nSubtask token budget (cost-weighted, cached input at a tenth): at least " + subtaskMinimum(item.singleBudget ?? item.budget).tokens + ", at most " + (item.singleBudget ?? item.budget).tokens
-					+ ". The feature's budget is its subtasks' together and its own allowance for planning, summary and review (" + (item.ownTokens ?? item.singleBudget?.tokens ?? item.budget.tokens) + ")."
-					+ "\nSpent: " + JSON.stringify({ tokens: item.spent.tokens, rawTokens: item.spent.rawTokens ?? item.spent.tokens });
+				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
 			return true;

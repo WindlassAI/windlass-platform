@@ -23,6 +23,25 @@ test("an orchestrated filing starts with a planner and one item's budget as its 
 	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /file_plan/);
 });
 
+test("every planning turn's prompt gives the planner its budget figures", () => {
+	const item = createItem({ id: "i_feature", task, mode: "orchestrate", place: { kind: "hosted" }, budget: single, reviewer: { on: true } });
+	const first = advance(item, { kind: "start", at: 1, by: "person" });
+	const text = first.effects.find(e => e.kind === "deliver")!.text;
+	// One item's weighted budget, the subtask range, and the feature's own allowance on top.
+	assert.match(text, /Budget \(tokens are cost-weighted: an input token read from the prompt cache counts as a tenth\):/);
+	assert.match(text, /One item's budget: 10,000 tokens\./);
+	assert.match(text, /Each subtask's budget: at least 1,000, at most 10,000 tokens\./);
+	assert.match(text, /the feature's own allowance for planning, the summary and the review: 10,000 tokens, of which 0 are spent\./);
+	// A planning turn after the person gave the feature more says the new allowance and what was spent.
+	const key = currentKey(first.item)!;
+	const spent = advance(first.item, { kind: "turn_ended", key, at: 2, outcome: "succeeded", changes: false, verified: null, flags: [], report: null, spend: { tokens: single.tokens, hostedSeconds: 1 } }).item;
+	const asked = advance(spent, { kind: "answer", choice: "revise", question: spent.question!.id, by: "owner", at: 3 }).item;
+	const more = advance(asked, { kind: "answer", choice: "raise", question: asked.question!.id, by: "owner", at: 4 });
+	assert.match(more.effects.find(e => e.kind === "deliver")!.text, /allowance for planning, the summary and the review: 20,000 tokens, of which 10,000 are spent\./);
+	// A builder's turn is not given them.
+	const quick = advance(createItem({ id: "i_quick", task, place: { kind: "hosted" }, budget: single, reviewer: { on: true } }), { kind: "start", at: 1, by: "person" });
+	assert.doesNotMatch(quick.effects.find(e => e.kind === "deliver")!.text, /One item's budget/);
+});
 test("issues plan first unless the bug label, quick label or leading quick command opts out", () => {
 	const label = edge("issues", { action: "labeled", installation: { id: 1 }, repository: { id: 2 }, issue: { number: 3 }, sender: { login: "sam", id: 4 }, label: { name: "windlass:orchestrate" } }, { slug: "windlass" });
 	assert.ok(label);

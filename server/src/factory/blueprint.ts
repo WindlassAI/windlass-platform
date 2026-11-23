@@ -52,7 +52,7 @@ import { childItemId } from "./feature-ids.js";
 import { answeredWords } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
-import { singleAfterPlanning, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem } from "./feature-plan.js";
+import { singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem } from "./feature-plan.js";
 import { aliases, beginIntegration, boundRepos, crossFact, crossRepo, featureOpened, handOver as crossHandOver, integrationAnswer, plannerText, recordIntegrated, recordOpened, recordSeed, repoOf, type Flow } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
@@ -785,6 +785,24 @@ function featureTotal(item: FactoryItem, plan: Pick<import("../contract.js").Fea
 	return { tokens, hostedSeconds: item.budget.hostedSeconds };
 }
 
+/**
+ * The budget figures a feature's planner proposes against (file_plan's description points here): one item's weighted
+ * budget, the least and most a subtask may have, the feature's own allowance on top, and what it has spent.
+ */
+export function plannerBudgetText(item: FactoryItem): string {
+	const single = (item.singleBudget ?? item.budget).tokens;
+	const n = (value: number) => Math.round(value).toLocaleString("en-US");
+	return [
+		"",
+		"",
+		"Budget (tokens are cost-weighted: an input token read from the prompt cache counts as a tenth):",
+		`- One item's budget: ${n(single)} tokens.`,
+		`- Each subtask's budget: at least ${n(subtaskMinimum({ tokens: single }).tokens)}, at most ${n(single)} tokens.`,
+		`- On top of the subtasks, the feature's own allowance for planning, the summary and the review: ${n(ownTokens(item))} tokens, of which ${n(Math.max(0, ownSpent(item, item.spent).tokens))} are spent.`,
+		"- The feature's budget is its subtasks' budgets together and that allowance. A subtask that uses its budget asks the owner for more.",
+	].join("\n");
+}
+
 /** The turns an item has taken toward the backstop: a feature's own, not its subtasks'. */
 const backstopTurns = (item: FactoryItem): number => (item.mode === "orchestrate" ? ownSpent(item, item.spent).turns : item.spent.turns) - (item.backstopFrom ?? 0);
 
@@ -817,7 +835,8 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	run.step.turn = "delivered";
 	run.step.checks = 0;
 	c.state(item.state === "queued" || item.place.kind === "machine" ? "queued" : "working");
-	const delivery = { kind: "deliver" as const, key: c.key, text: plan.text, fetchBase: plan.fetchBase, ...(plan.feedbackQuote && { feedbackQuote: plan.feedbackQuote }) };
+	// A planning turn is told its budget figures each time, from the item as it is now.
+	const delivery = { kind: "deliver" as const, key: c.key, text: plan.kind === "refine" ? plan.text + plannerBudgetText(item) : plan.text, fetchBase: plan.fetchBase, ...(plan.feedbackQuote && { feedbackQuote: plan.feedbackQuote }) };
 	if (plan.to === "review") {
 		if (!plan.checkout || !run.ci || !run.review) throw new Error("a reviewer turn needs its checkout and verdict");
 		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
