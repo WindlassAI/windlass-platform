@@ -181,7 +181,17 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 									{preset.name} <code className="repo-network-id">{preset.id}</code>
 								</span>
 								<span className="check-means">
-									{everywhere ? "Allowed for every sandbox of this deployment." : `${preset.about}: ${preset.hosts.join(", ")}`}
+									{everywhere ? "Allowed for every sandbox of this deployment." : (
+										<>
+											{preset.about}:{" "}
+											{preset.hosts.map((presetHost, index) => (
+												<span key={presetHost}>
+													{index > 0 ? ", " : null}
+													<HostName host={presetHost} />
+												</span>
+											))}
+										</>
+									)}
 								</span>
 							</Check>
 						);
@@ -303,5 +313,24 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 
 			{always.size > 0 ? <p className="usage-note">Always reachable here: {[...always].join(", ")}.</p> : null}
 		</>
+	);
+}
+
+/** A host name that wraps only after its dots, never inside a label ("playwright.download.prss.microsoft.com"). */
+function HostName({ host }: { host: string }) {
+	const labels = host.split(".");
+	return (
+		<span>
+			{labels.map((label, index) => (
+				<span key={index}>
+					{label}
+					{index < labels.length - 1 ? (
+						<>
+							.<wbr />
+						</>
+					) : null}
+				</span>
+			))}
+		</span>
 	);
 }

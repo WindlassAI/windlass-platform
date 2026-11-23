@@ -614,8 +614,9 @@ a.agent-group-name:hover .agent-group-owner {
 	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
 }
+/* Hosts wrap after a dot (`HostName`); a label longer than the line is the only thing cut. */
 .repo-network-presets .check-means {
-	overflow-wrap: anywhere;
+	overflow-wrap: break-word;
 }
 .repo-network-hosts {
 	list-style: none;
