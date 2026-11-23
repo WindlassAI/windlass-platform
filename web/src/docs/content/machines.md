@@ -4,6 +4,8 @@ An agent on one of your machines runs in a Docker container there, made by a sma
 
 The runner connects out to the platform. Nothing needs to reach your machine from outside.
 
+If you have no spare computer, you can [run agents on a cheap cloud VM](/docs/cheap-vm).
+
 ## What you need
 
 - Linux with Docker, or macOS or Windows with Docker Desktop or OrbStack. On Windows, run the install in a WSL terminal. On a Mac or Windows, sessions run in Docker's Linux VM, with the arm64 or x86-64 images that match it.
