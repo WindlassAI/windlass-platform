@@ -308,8 +308,12 @@ describe("the start composer's agent picker", () => {
 		const row = rows.find((candidate) => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ?? rows[0];
 		act(() => (row as HTMLElement).click());
 	};
-	/** The mode's menu, while it is open. */
-	const modeRows = () => [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])] as HTMLElement[];
+	/** The approval choices in the open options menu's Mode group. */
+	const modeRows = () => {
+		const groups = pop()?.querySelectorAll('[role="group"][aria-labelledby]') ?? [];
+		const group = [...groups].find((candidate) => document.getElementById(candidate.getAttribute("aria-labelledby") ?? "")?.textContent === "Mode");
+		return [...(group?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])];
+	};
 	/** The modes offered, by name, each with what it does, and the one chosen. Its menu is the only one open. */
 	const modes = () => {
 		chip("mode");
