@@ -1021,6 +1021,8 @@ const KEYED = "agent";
  * in one synchronous step at the end, or the call is refused and nothing of it is kept.
  */
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], build?: EnvironmentBuildOrigin): Promise<SessionSummary> {
+	// Builds of prepared environments start from the actor's own alarm, with no caller: they need the profile kept.
+	if (!build && !c.vars.profile) await rememberProfile(c, profile);
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
@@ -2007,6 +2009,7 @@ export const user = actor({
 			const command = setupCommandOf(input?.command);
 			try {
 				const saved = await saveSetup(c, profile.uid, project, await labelFor(c, input.repositoryId, project), command);
+				await rememberProfile(c, profile);
 				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
@@ -2041,6 +2044,7 @@ export const user = actor({
 				const saved = await saveChecks(c.db, project, await labelFor(c, input.repositoryId, project), checks, Date.now());
 				// A command is the user's text and may hold what they would not want in a log: only how many there are is said.
 				console.log(`[wlp] checks.saved uid=${profile.uid} project=${project} checks=${checks.length}`);
+				await rememberProfile(c, profile);
 				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
@@ -2181,12 +2185,12 @@ export const user = actor({
 		// --- prepared environments of repositories (environments.ts, user-environments.ts) ---------------
 
 		repositoryEnvironments: async (c, repositoryId: GithubId): Promise<RepositoryEnvironments> => {
-			requireUser(c);
+			await rememberProfile(c, requireUser(c));
 			try { return await environmentsView(environmentHost(c), setupKeyOf(repositoryId)); }
 			catch (error) { throw clientError(c.log, error, "The repository's environments could not be read. Try again."); }
 		},
 		rebuildEnvironment: async (c, input: { repositoryId: GithubId; place?: EnvironmentPlace }): Promise<RepositoryEnvironments> => {
-			requireUser(c);
+			await rememberProfile(c, requireUser(c));
 			const project = setupKeyOf(input?.repositoryId);
 			if (input.place !== undefined && (typeof input.place !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.place))) throw new UserError("Choose one of the places listed.", { code: "bad_input" });
 			const host = environmentHost(c);
@@ -2198,7 +2202,7 @@ export const user = actor({
 			return environmentsView(host, project);
 		},
 		saveEnvironmentSchedule: async (c, input: { repositoryId: GithubId; schedule: EnvironmentSchedule }): Promise<RepositoryEnvironments> => {
-			requireUser(c);
+			await rememberProfile(c, requireUser(c));
 			const project = setupKeyOf(input?.repositoryId);
 			if (!ENVIRONMENT_SCHEDULES.includes(input?.schedule)) throw new UserError("Choose nightly, every 12 hours, every 6 hours or off.", { code: "bad_input" });
 			const host = environmentHost(c);
