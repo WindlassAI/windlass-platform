@@ -1180,8 +1180,12 @@ export interface UsageDay {
 export interface KeptSandbox {
 	/** The agent it was made for: what `freeSandbox` takes. */
 	sessionId: string;
-	/** Null when that agent no longer exists and its sandbox was left behind. */
+	/** Null when that agent no longer exists and its sandbox was left behind. A work item's reviewer reads "Reviewer of “title”". */
 	title: string | null;
+	/** The work item whose builder or reviewer it is. */
+	item?: { id: string; role: "builder" | "reviewer" };
+	/** A reviewer's sandbox, which shares its item builder's place: it takes none of the cap of its own. */
+	sharesPlace?: true;
 	/** "starting": the agent was given the place and its sandbox is being made. */
 	state: "running" | "paused" | "starting";
 	/** When the agent was last prompted or its last turn ended, ms since the epoch; null without the agent. */
@@ -1443,7 +1447,7 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
  * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
  * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
  */
-export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration" | "sandboxes";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1484,6 +1488,8 @@ export interface ItemStep {
 	interruptions: number;
 	/** Consecutive automatic retries after a provider refusal on this step. */
 	providerRetries?: number;
+	/** The person was asked in this step about the hosted cap on kept sandboxes (question "sandboxes"): not asked again. */
+	capAsked?: true;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
@@ -1535,8 +1541,8 @@ export interface FactoryLimits {
 	item: ItemBudget;
 }
 
-/** "turn_refused": the session or provider refused the turn, in its words. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment";
+/** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment";
 
 /**
  *   approve     the plan is approved: implement it
