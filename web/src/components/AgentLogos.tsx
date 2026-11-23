@@ -16,8 +16,7 @@ export interface LogoProps {
  * The Claude spark, which Claude Code's own logo uses as well, from Anthropic's press kit
  * (https://www.anthropic.com/press-kit, file "Claude Spark - Clay.svg"). Anthropic's trademark
  * guidelines (https://www.anthropic.com/legal/trademark-guidelines) allow no change of colour,
- * font or proportion, so the fill is the kit's Clay, #D97757, in both themes. Those guidelines ask
- * for approval before the marks are used in other people's materials. Checked 2026-11-23.
+ * font or proportion, so the fill is the kit's Clay, #D97757, in both themes. Checked 2026-11-23.
  */
 export function ClaudeLogo({ size = 16, className }: LogoProps) {
 	return (
