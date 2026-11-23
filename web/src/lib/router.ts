@@ -26,6 +26,8 @@ export type Route =
 	| { name: "usage" }
 	/** What the user keeps for their account, whatever the repository: defaults, their own MCP servers, and those servers' secrets. */
 	| { name: "settings" }
+	/** Free and Pro side by side, with the way to upgrade: where the deployment has billing (`PlatformInfo.billing`). */
+	| { name: "plans" }
 	/** The user's own machines. With `add`, the dialog that pairs one is open: the address a runner prints with its code. */
 	| { name: "machines"; add?: boolean }
 	| { name: "signin" }
@@ -70,6 +72,7 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/new") return { name: "new" };
 	if (path === "/usage") return { name: "usage" };
 	if (path === "/settings") return { name: "settings" };
+	if (path === "/plans") return { name: "plans" };
 	if (path === "/machines") return { name: "machines" };
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
@@ -106,6 +109,8 @@ function pathOf(route: Route): string {
 			return "/usage";
 		case "settings":
 			return "/settings";
+		case "plans":
+			return "/plans";
 		case "machines":
 			return route.add ? "/machines/add" : "/machines";
 		case "signin":

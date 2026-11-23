@@ -13,6 +13,8 @@
  * which say what each item has spent in all against its budget. Which sessions are items' is read from
  * the summaries the page's own live feed sends.
  */
+import { HostedNotice, MonthFigure } from "../components/Plan";
+import { monthName, monthReset } from "../lib/hosted";
 import { USAGE_HISTORY_DAYS, type HostedSize, type KeptSandbox, type SessionSummary, type UsageView } from "@contract";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "../components/Dialog";
@@ -192,6 +194,7 @@ function Meter({ view }: { view: UsageView }) {
 }
 
 export function Usage() {
+	const { platform } = useApp();
 	const { view, error, items, reload, replace } = useUsage();
 	const now = useNow(15_000);
 	const [freeing, setFreeing] = useState<KeptSandbox | null>(null);
@@ -270,6 +273,31 @@ export function Usage() {
 				</p>
 			) : null}
 
+			{view.hosted ? (
+				<section className="usage-section" aria-labelledby="usage-month">
+					<h2 className="usage-title" id="usage-month">
+						Hosted minutes this month
+						<span className="usage-count">{monthName(view.hosted)}</span>
+					</h2>
+					<p className="usage-lede">One hosted minute is a minute of a standard sandbox; a small one counts half, a large one twice. Agents on your own machines are never counted. The month starts again on {monthReset(view.hosted)}, 00:00 UTC.</p>
+					<HostedNotice numbers={view} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
+					<div className="usage-card billing-card">
+						<div className="billing-month">
+							<MonthFigure month={view.hosted} />
+						</div>
+					</div>
+					{platform.info?.billing ? (
+						<p className="usage-note">
+							Your plan, its spend cap and billing are in{" "}
+							<a className="link" {...linkProps({ name: "settings" })}>
+								Settings
+							</a>
+							.
+						</p>
+					) : null}
+				</section>
+			) : null}
+
 			<section className="usage-section" aria-labelledby="usage-tokens">
 				<h2 className="usage-title" id="usage-tokens">Model tokens today</h2>
 				<p className="usage-figure"><strong>{count(view.usedModelTokens)}</strong> {view.factoryLimits.dailyTokens === null ? "used · no daily cap" : `of ${count(view.factoryLimits.dailyTokens)} used`}</p>
@@ -282,7 +310,7 @@ export function Usage() {
 				<div className="usage-card usage-today">
 				<p className="usage-figure">
 					<strong>{sandboxTime(spent)}</strong>
-					{allowance === null ? <span> used. This deployment sets no daily limit.</span> : <span> of {sandboxTime(allowance)} used</span>}
+					{allowance === null ? <span> used. {view.hosted ? "Hosted time is counted by the month, above; there is no daily limit." : "This deployment sets no daily limit."}</span> : <span> of {sandboxTime(allowance)} used</span>}
 					{left !== null ? <span className={`usage-figure-left${left < view.startSeconds ? " tone-warn" : ""}`}>{left < view.startSeconds ? (left === 0 ? "none left" : `${sandboxTime(left)} left, too little for a turn`) : `${sandboxTime(left)} left`}</span> : null}
 				</p>
 				<Meter view={view} />

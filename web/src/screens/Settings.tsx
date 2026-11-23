@@ -21,6 +21,7 @@ import { AccountSecretsBlock } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
 import { PersonalServers } from "../components/PersonalServers";
+import { PlanSection } from "../components/Plan";
 import { HARNESS_NAMES } from "../lib/acp";
 import { machineLabel } from "../lib/machines";
 import { modeName } from "../lib/modes";
@@ -123,6 +124,8 @@ export function Settings() {
 					<p className="home-account">What {who} keeps for every agent, whatever the repository it works on. What is saved for one repository is on that repository's page.</p>
 				</div>
 			</header>
+
+			{info?.billing ? <PlanSection /> : null}
 
 			{settings === null ? (
 				<section className="usage-section">

@@ -11,6 +11,7 @@ import "./styles/new-agent.css";
 import "./styles/session.css";
 import "./styles/github.css";
 import "./styles/usage.css";
+import "./styles/billing.css";
 import "./styles/repository.css";
 import "./styles/machines.css";
 import "./styles/items.css";
@@ -47,7 +48,7 @@ function mockQuestionTimeout(): number | undefined {
 async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
-		const { createMockClient, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import("./api/mock");
+		const { createMockClient, MOCK_BILLING_STATES, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import("./api/mock");
 		const { MOCK_ITEMS_STATES } = await import("./api/mock-items");
 		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B,
 		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
@@ -69,6 +70,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			github: params.get("github") !== "off",
 			sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker",
 			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
+			// `?billing=free|free-low|free-used|pro|pro-capped|pro-past-due` a deployment with plans, the account in that state (`MockBillingState`).
+			billing: MOCK_BILLING_STATES.find((state) => state === params.get("billing")),
 			// The user has MCP servers of their own and secrets for them saved, unless the address says `account=empty`.
 			account: params.get("account") === "empty" ? "empty" : "seeded",
 			models: params.get("models") === "unavailable" ? "unavailable" : "account",

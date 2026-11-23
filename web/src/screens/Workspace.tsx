@@ -18,6 +18,7 @@
  * The lists can be filtered (lib/workspace.ts): by status, agent, where it runs and kind. The filters
  * are the viewer's own, remembered in this browser, and narrow the rail and the lists alike.
  */
+import { minutes, monthReset } from "../lib/hosted";
 import { USAGE_LOW_SHARE, type GithubId, type MachineSummary, type UsageNumbers } from "@contract";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon, RepoIcon, RingIcon, SearchIcon, SlidersIcon } from "../components/Icons";
@@ -335,20 +336,23 @@ function RepoRow({ repository, current, owned = false }: { repository: RailRepos
 /** The rail's foot: the day's sandbox time as a meter, what is at work and the sandboxes kept, leading to the usage page. */
 function RailFoot({ usage, working, ceiling, onMachines }: { usage: UsageNumbers | null; working: number; ceiling: number | null; onMachines: number }) {
 	const state = usage === null ? "plenty" : allowanceState(usage, USAGE_LOW_SHARE);
-	const spent = usage === null ? 0 : usage.usedSeconds + usage.heldSeconds;
-	const allowance = usage?.allowanceSeconds ?? null;
+	// With a plan, the month's hosted minutes, in weighted seconds (lib/hosted.ts).
+	const month = usage?.hosted ?? null;
+	const spent = month ? month.usedSeconds + month.heldSeconds : usage === null ? 0 : usage.usedSeconds + usage.heldSeconds;
+	const allowance = month ? month.limitSeconds : (usage?.allowanceSeconds ?? null);
 	const share = allowance === null || allowance === 0 ? null : Math.min(1, spent / allowance);
 	const sandboxes = usage?.sandboxes ?? null;
 	const full = sandboxes !== null && sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
 	return (
 		<a className={`ws-rail-foot${state !== "plenty" ? " ws-rail-foot-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: sandbox time and sandboxes">
 			<span className="ws-foot-time">
-				<span>Sandbox today</span>
+				<span>{month ? "Hosted this month" : "Sandbox today"}</span>
 				<span>
-					<strong>{usage === null ? "–" : sandboxTime(spent)}</strong>
-					{allowance === null ? null : ` of ${sandboxTime(allowance)}`}
+					<strong>{usage === null ? "–" : month ? minutes(spent) : sandboxTime(spent)}</strong>
+					{allowance === null ? null : month ? ` of ${minutes(allowance)} min` : ` of ${sandboxTime(allowance)}`}
 				</span>
-				{usage !== null && state !== "plenty" && usage.leftSeconds !== null ? <span className="ws-foot-left">{state === "used" ? `Used up until ${localTime(usage.resetsAt)}` : `${sandboxTime(usage.leftSeconds)} left`}</span> : null}
+				{month && state !== "plenty" ? <span className="ws-foot-left">{state === "used" ? `Used up until ${monthReset(month)}` : `${minutes(month.leftSeconds)} min left`}</span> : null}
+				{!month && usage !== null && state !== "plenty" && usage.leftSeconds !== null ? <span className="ws-foot-left">{state === "used" ? `Used up until ${localTime(usage.resetsAt)}` : `${sandboxTime(usage.leftSeconds)} left`}</span> : null}
 			</span>
 			{share === null ? null : (
 				<span className="ws-foot-bar" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowance ?? 0} aria-valuenow={Math.min(spent, allowance ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance ?? 0)}`}>
