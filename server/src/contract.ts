@@ -2371,6 +2371,9 @@ export interface UserActions {
 	 * Throws a UserError with code `bad_checks` for a list that cannot be saved, with what is wrong.
 	 */
 	saveRepositoryChecks(input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
+	repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments>;
+	rebuildEnvironment(input: { repositoryId: GithubId; place?: EnvironmentPlace }): Promise<RepositoryEnvironments>;
+	saveEnvironmentSchedule(input: { repositoryId: GithubId; schedule: EnvironmentSchedule }): Promise<RepositoryEnvironments>;
 	/** The repository's network list, with the requests its sessions filed and what the deployment allows anyway. Asks GitHub nothing. */
 	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
 	/**

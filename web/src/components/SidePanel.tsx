@@ -145,6 +145,11 @@ function Sandbox({ summary, profile, view }: { summary: SessionSummary; profile:
 				<SandboxState state={summary.sandbox} />
 			</h2>
 			<p className="panel-lede">{profile.name}</p>
+			{summary.environment ? (
+				<p className="panel-env" title={absoluteTime(summary.environment.validatedAt)}>
+					Started from a validated environment: setup and {summary.environment.checks === 1 ? "the saved check" : `${summary.environment.checks} saved checks`} passed at <code>{summary.environment.commit.slice(0, 10)}</code>.
+				</p>
+			) : null}
 			<ProfileFacts profile={profile} claude={summary.harness && summary.harness !== "windlass" ? { codex: summary.harness === "codex", opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null} />
 			<BlockedNetworkLine view={view} />
 			<details className="panel-more">

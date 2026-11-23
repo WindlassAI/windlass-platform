@@ -25,7 +25,7 @@
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
-import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type StepKind, type Verdict } from "@contract";
+import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type SessionSummary, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
@@ -45,7 +45,7 @@ import { reviewShots, SecondReview } from "../components/SecondReview";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useNow } from "../state/hooks";
+import { useNow, useSessions } from "../state/hooks";
 import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
@@ -373,6 +373,16 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 				{when ? <p className="agent-meta item-now-when">{when}</p> : null}
 			</div>
 		</div>
+	);
+}
+
+/** The builder's sandbox started from a validated environment (SessionSummary.environment): said in one short fact. */
+export function ValidatedEnvironment({ environment, now }: { environment: SessionSummary["environment"] | undefined; now: number }) {
+	if (!environment) return null;
+	return (
+		<span className="repo-fact tone-dim" title={`Setup and ${environment.checks === 1 ? "the saved check" : `${environment.checks} saved checks`} passed at ${environment.commit.slice(0, 12)}, ${absoluteTime(environment.validatedAt)}`}>
+			from a validated environment ({relativeTime(environment.validatedAt, now)})
+		</span>
 	);
 }
 
@@ -1038,6 +1048,7 @@ function useAllowHost(view: ItemView | null): AllowHostContext | null {
 
 export function Item({ page }: { page: ItemPage }) {
 	const now = useNow(30_000);
+	const { sessions } = useSessions();
 	const { view } = page;
 	// A plan action refused because the plan moved on: the page reads the item again, and its card says so until the next action.
 	const [conflicted, setConflicted] = useState(false);
@@ -1135,6 +1146,7 @@ export function Item({ page }: { page: ItemPage }) {
 						<a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
 							Open the agent
 						</a>
+						<ValidatedEnvironment environment={sessions?.find((s) => s.id === view.sessionId)?.environment} now={now} />
 						{view.reviewerSessionId ? (
 							<a className="repo-link" {...linkProps({ name: "session", id: view.reviewerSessionId })}>
 								Open the reviewer

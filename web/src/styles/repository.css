@@ -662,3 +662,130 @@ a.agent-group-name:hover .agent-group-owner {
 		flex-direction: column;
 	}
 }
+
+/* A repository's prepared environments (components/Environments.tsx): a list of places, in the card's own colours. */
+.env-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+}
+.env-schedule {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.env-schedule .select {
+	width: auto;
+}
+.env-also {
+	flex: 1 1 auto;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.env-rows {
+	margin: 14px 0 0;
+	padding: 0;
+	list-style: none;
+}
+.env-row {
+	padding: 12px 0;
+	border-top: 1px solid var(--line);
+}
+.env-row:last-child {
+	padding-bottom: 0;
+}
+.env-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+.env-place {
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.env-state {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.env-state-failed {
+	color: var(--warn-text, var(--warn));
+}
+.env-rebuild {
+	margin-left: auto;
+}
+.env-meta,
+.env-note,
+.env-places {
+	margin: 4px 0 0;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.env-note {
+	color: var(--ink);
+}
+.env-places {
+	margin-top: 12px;
+}
+.env-meta code,
+.env-failure code {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.env-failure {
+	margin-top: 8px;
+}
+.env-failure-title {
+	display: flex;
+	gap: 6px;
+	align-items: flex-start;
+	margin: 0;
+	font-size: var(--size-small);
+}
+.env-failure-title svg {
+	flex: none;
+	margin-top: 2px;
+	color: var(--warn);
+}
+.env-failure-line {
+	margin: 4px 0 0 20px;
+	font-size: var(--size-small);
+	overflow-wrap: anywhere;
+}
+.env-checks {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 16px;
+	margin: 8px 0 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--size-small);
+}
+.env-check-name {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.env-check-status {
+	margin-left: 6px;
+	color: var(--ink-dim);
+}
+.env-check-bad .env-check-status {
+	color: var(--warn-text, var(--warn));
+}
+.env-output {
+	margin-top: 8px;
+	font-size: var(--size-small);
+}
+.env-output summary {
+	cursor: pointer;
+	color: var(--ink-dim);
+}
+.env-output .output-text {
+	margin-top: 6px;
+	max-height: 240px;
+}

@@ -43,6 +43,8 @@ import type {
 	PublishState,
 	RepositoryCheck,
 	RepositoryChecks,
+	RepositoryEnvironments,
+	EnvironmentSchedule,
 	RepositoryDefaults,
 	RepositoryNetwork,
 	RepositorySecrets,
@@ -174,6 +176,11 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	repositoryChecks(repositoryId: GithubId): Promise<RepositoryChecks>;
 	/** Saves the list whole, or none with an empty one. Throws with reason `bad_checks` for a list that cannot be saved. */
 	saveRepositoryChecks(repositoryId: GithubId, checks: RepositoryCheck[]): Promise<RepositoryChecks>;
+	/** The repository's prepared environments, one per place, and how often they are rebuilt (environments.ts). */
+	repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments>;
+	/** Builds them again now, at one place or at each. Throws with reason `environment_refused` when none can be built. */
+	rebuildEnvironment(repositoryId: GithubId, place?: string): Promise<RepositoryEnvironments>;
+	saveEnvironmentSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule): Promise<RepositoryEnvironments>;
 	/** The repository's network list, the requests its sessions filed, and what the deployment's hosted sandboxes reach anyway. */
 	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
 	/** Saves the list whole: preset ids and exact host names. Throws with reason `bad_network` for an entry or a length that cannot be saved. */

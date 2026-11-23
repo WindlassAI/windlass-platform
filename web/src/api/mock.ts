@@ -63,6 +63,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
 import { initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
+import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
 import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import { publishAsksEveryTime } from "../../../server/src/agent-publish.js";
@@ -88,6 +89,8 @@ import {
 	CLAUDE_LAUNCH_MODES,
 	type RepositoryCheck,
 	type RepositoryChecks,
+	type RepositoryEnvironments,
+	type EnvironmentSchedule,
 	type Verified,
 	type AccountDefaults,
 	type LastStart,
@@ -3603,6 +3606,18 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(320);
 				nameAtSave(world(), repositoryId);
 				return saveChecks(world(), repositoryId, checks);
+			},
+			async repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments> {
+				await latency(180);
+				return mockEnvironments(repositoryId, realNow());
+			},
+			async rebuildEnvironment(repositoryId: GithubId, place?: string): Promise<RepositoryEnvironments> {
+				await latency(260);
+				return mockRebuild(repositoryId, place, realNow(), later, () => undefined);
+			},
+			async saveEnvironmentSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule): Promise<RepositoryEnvironments> {
+				await latency(220);
+				return mockSchedule(repositoryId, schedule, realNow());
 			},
 			async repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork> {
 				await latency(180);
