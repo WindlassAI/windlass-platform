@@ -745,12 +745,12 @@ describe("a plan question's background", () => {
 		const feature = await featureNamed("Search the docs from the command line");
 		const plan = feature.plan!;
 		const long = "Because the index is rebuilt at release. ".repeat(20);
-		const checked = validatePlan({ ...plan, questions: [{ id: "why", text: "Index at release?", options: ["Yes", "No"], why: long }] }, plan.compare.singleBudget, plan.budget);
+		const checked = validatePlan({ ...plan, questions: [{ id: "why", text: "Index at release?", options: ["Yes", "No"], why: long }] }, plan.compare.singleBudget);
 		expect(checked.questions[0]?.why?.length).toBe(PLAN_QUESTION_WHY_CHARS);
 		expect(checked.questions[0]?.why?.endsWith("…")).toBe(true);
 		// An older plan has none, and stays as it was.
-		expect(validatePlan({ ...plan, questions: [{ id: "old", text: "Index at release?" }] }, plan.compare.singleBudget, plan.budget).questions[0]).toEqual({ id: "old", text: "Index at release?" });
-		expect(() => validatePlan({ ...plan, questions: [{ id: "bad", text: "Index at release?", why: 3 }] }, plan.compare.singleBudget, plan.budget)).toThrow();
+		expect(validatePlan({ ...plan, questions: [{ id: "old", text: "Index at release?" }] }, plan.compare.singleBudget).questions[0]).toEqual({ id: "old", text: "Index at release?" });
+		expect(() => validatePlan({ ...plan, questions: [{ id: "bad", text: "Index at release?", why: 3 }] }, plan.compare.singleBudget)).toThrow();
 	});
 
 	it("shows an older plan's long question as its question sentence, the rest folded as its background", () => {
