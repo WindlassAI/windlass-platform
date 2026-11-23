@@ -5,6 +5,12 @@ export function featureBranch(item: string) {
 	return "windlass/feature-" + item;
 }
 
+export function subtaskBranch(feature: string, key: string, child: string) {
+	if (!/^[a-z][a-z0-9_-]{0,31}$/.test(key) || !/^i_[a-z0-9]+$/.test(child)) throw new Error("Invalid subtask identity.");
+	// A revised plan may reuse a key. Its new session must never overwrite the old branch.
+	return featureBranch(feature) + "-" + key + "-" + child;
+}
+
 const obj = (v: unknown) => (v ?? {}) as Record<string, unknown>;
 function sha(v: unknown) {
 	if (typeof v !== "string" || !/^[0-9a-f]{40}$/.test(v)) throw new Error("GitHub did not identify the requested commit.");
@@ -19,8 +25,18 @@ export async function advanceFeatureRef(app: GithubApp, token: string, owner: st
 	const branch = featureBranch(id);
 	if (branch === base) throw new Error("The feature branch must differ from the destination.");
 	const path = "/repos/" + owner + "/" + repo + "/git/refs/heads/" + branch;
-	const { body } = await app.call({ method: "PATCH", path, auth: { bearer: token }, body: { sha: sha(head), force: false }, what: "fast-forward the feature branch" });
-	if (sha(obj(obj(body).object).sha) !== head) throw new Error("GitHub did not confirm the fast-forward.");
+	const auth = { bearer: token };
+	try {
+		const { body } = await app.call({ method: "PATCH", path, auth, body: { sha: sha(head), force: false }, what: "fast-forward the feature branch" });
+		if (sha(obj(obj(body).object).sha) !== head) throw new Error("GitHub did not confirm the fast-forward.");
+		return head;
+	} catch (error) {
+		if (!(error instanceof GithubError && [409, 422].includes(error.status) && /fast.forward/i.test(error.said))) throw error;
+	}
+	const merged = await app.call({ method: "POST", path: "/repos/" + owner + "/" + repo + "/merges", auth,
+		body: { base: branch, head, commit_message: "Integrate subtask " + head.slice(0, 10) }, what: "merge the verified subtask" });
+	// A retry after GitHub accepted the merge but the parent did not record its receipt.
+	return merged.status === 204 ? refHead(app, token, owner, repo, branch) : sha(obj(merged.body).sha);
 }
 
 /**

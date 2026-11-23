@@ -1673,6 +1673,64 @@ const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) =
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
+// Exercise approval, child polling and replay with more than one outstanding dispatch.
+{
+	const task = (key: string, owns: string[] = [key], dependsOn: string[] = []) => ({ key, title: key, brief: key, owns, dependsOn, acceptance: ["Run npm test"], budget: { tokens: 1000 } });
+	const zero = { tokens: 0, activeSeconds: 0, turns: 0, hostedSeconds: 0 };
+	function start(subtasks: ReturnType<typeof task>[], available?: number) {
+		const plan = { subtasks, questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };
+		const approved = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [
+			{ kind: "start" }, { kind: "file_plan", plan }, turnEnded("succeeded", null), { kind: "approve_plan", version: 1 },
+		]).item;
+		if (available !== undefined) approved.spent.tokens = approved.budget.tokens - available;
+		return walk(approved, [{ kind: "feature_ready", head: H(1), pr: { number: 1, url: "" } }]).item;
+	}
+	function update(item: FactoryItem, task: string, state: ItemState, tokens = 0) {
+		const job = item.jobs!.find(j => j.task.key === task)!;
+		return walk(item, [{ kind: "child_update", key: job.dispatchKey, child: job.id, state, spent: { ...zero, tokens }, head: H(2), report: state }]).item;
+	}
+	const keys = (item: FactoryItem) => item.jobs!.map(j => j.task.key);
+	const tasks = [task("a", ["src/lib"]), task("b", ["src/library/file"]), task("c", ["src/lib/file"]), task("d", ["doc"], ["b"]), task("e"), task("f")];
+	const parallel = start(tasks);
+	assert.deepEqual(keys(parallel), ["a", "b", "e"]);
+	const next = update(parallel, "b", "done");
+	assert.deepEqual(keys(next), ["a", "b", "e", "d"]);
+	assert.deepEqual(keys(update(next, "a", "done")), ["a", "b", "e", "d", "c"]);
+	for (const owns of [[], ["src/lib"], ["src/lib/nested.ts"]]) {
+		const first = start([tasks[0], task("other", owns)]);
+		assert.deepEqual(keys(first), ["a"]);
+		assert.deepEqual(keys(update(first, "a", "done")), ["a", "other"]);
+	}
+	const budget = start([task("a"), task("b")], 1600);
+	assert.deepEqual(keys(budget), ["a"]);
+	assert.deepEqual(keys(update(budget, "a", "done", 500)), ["a", "b"]);
+	const [a, b] = parallel.jobs!;
+	const waiting = walk(parallel, [{ kind: "placement_wait", key: a.dispatchKey, child: a.id, sentence: "Waiting for a free machine slot." }]).item;
+	assert.equal(waiting.jobs![0].wait, "Waiting for a free machine slot.");
+	assert.equal(waiting.jobs![1].dispatchKey, b.dispatchKey);
+	assert.equal(update(waiting, "b", "working").jobs![1].state, "working");
+	assert.deepEqual(effect(walk(parallel, [{ kind: "cancel" }]).last, "cancel_children")?.ids, parallel.jobs!.map(j => j.id));
+
+	const claim = (child: string) => ({ kind: "claim_join", key: child + "/ci", child });
+	const claimed = walk(parallel, [claim(a.id)]).item;
+	assert.equal(walk(claimed, [claim(b.id)]).item, claimed);
+	const refusal = { key: a.id + "/ci", reason: "Merge conflict", conflict: true };
+	const released = walk(claimed, [{ kind: "finish_join", child: a.id, result: refusal }, claim(b.id)]).item;
+	assert.equal(released.joining?.child, b.id);
+	assert.deepEqual(released.jobs![0].join, refusal);
+	const child = newItem();
+	child.parent = { itemId: parallel.id, key: "a", title: "Build" };
+	child.task.base = "windlass/feature-" + parallel.id;
+	const passed = walk(child, [...pushedRun(H(2)).map(f => f.kind === "published" ? { ...f, pr: null } : f), ciFact(passedCi, H(2), null)]).item;
+	const conflict = walk(passed, [{ kind: "feature_problem", reason: refusal.reason, rebase: true }]);
+	assert.equal(conflict.item.run?.step.kind, "conflict");
+	assert.equal(effect(conflict.last, "deliver")?.fetchBase, child.task.base);
+	const repeated = structuredClone(passed);
+	repeated.run!.failures = conflict.item.run!.failures;
+	assert.equal(walk(repeated, [{ kind: "feature_problem", reason: refusal.reason, rebase: true }]).item.question?.cause, "repeated");
+	expect("parallel scheduling, ownership, dependencies, reservations, placement, cancellation and conflict retries", true);
+}
+
 // Each scenario starts from a real pushed run and has a positive G4 observation, including refusals.
 {
 	const reviewed = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
@@ -2215,6 +2273,24 @@ const checkRun = (id: number | bigint, name: string, conclusion: string | null) 
 
 try {
 	standin.appPermissions = granted;
+	const { featureBranch, advanceFeatureRef } = await import("../server/src/github/feature.js");
+	const id = "i_parallel", branch = featureBranch(id);
+	standin.commit(repo, branch, {}, "Start feature", "main");
+	const a = standin.commit(repo, "child-a", { a: "one" }, "First change", branch);
+	const b = standin.commit(repo, "child-b", { b: "two" }, "Second change", branch);
+	const conflicting = standin.commit(repo, "child-c", { a: "conflict" }, "Third change", branch);
+	await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "write", metadata: "read" } }, async token => {
+		const integrate = (head: string) => advanceFeatureRef(app, token, repo.owner, repo.name, id, "main", head);
+		assert.equal(await integrate(a), a);
+		const merged = await integrate(b);
+		assert.notEqual(merged, b);
+		assert.equal(standin.fileOn(repo, branch, "a"), "one");
+		assert.equal(standin.fileOn(repo, branch, "b"), "two");
+		assert.equal(await integrate(b), merged);
+		await assert.rejects(integrate(conflicting), e => e instanceof GithubError && e.status === 409);
+		assert.equal(standin.branchHead(repo, branch), merged);
+	});
+	expect("the feature fast-forwards, merges divergent children, replays the merge and preserves its tip on conflict", true);
 	ciData.runs = Array.from({ length: 250 }, (_, index) => checkRun(index === 137 ? 9007199254740993n : 5000 + index, `job-${index}`, index === 137 ? "failure" : "success"));
 	ciData.statuses = [{ context: "ci/legacy", state: "success", description: "ok", target_url: "https://ci.invalid/1" }];
 	const lines = Array.from({ length: 5000 }, (_, index) => `2026-11-19T20:0${index % 10}:00.1234567Z \x1b[31mline ${index}\x1b[0m`);

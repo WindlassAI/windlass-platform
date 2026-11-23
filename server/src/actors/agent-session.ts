@@ -1338,7 +1338,7 @@ async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | nu
 	if (!project || !app || !repo) return null;
 	try {
 		const saved = secrets.snapshotSetup, command = saved.command;
-		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : repo.branch;
+		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : meta.origin?.childBranch?.start ?? repo.branch;
 		if (!revision) return null;
 		const key = { repo: String(repo.id), attempt: randomBytes(16).toString("hex"), generation: snapshotGeneration(String(repo.id), saved.updatedAt, saved.connectedAt) };
 		// A build always starts cold, and is the only kind of session that saves an image (environments.ts).
@@ -1372,7 +1372,8 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 		head = pinned.marks.get("work") ?? "";
 		if (head !== plan.commit) return false;
 		repo.baseSha = plan.commit;
-	} else head = await putOnWork(sandbox, ".", repo.branch);
+	} else if (meta.origin?.childBranch) head = await putOnWork(sandbox, ".", meta.origin.childBranch.name, meta.origin.childBranch.start);
+	else head = await putOnWork(sandbox, ".", repo.branch);
 	if (head !== plan.commit) {
 		// The branch moved during startup. Decide using the immutable tree we actually checked out.
 		const latest = await setupRevision(app, connection, repo, head);
@@ -2168,7 +2169,8 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	if (!due || !repo) return;
 	let head: string;
 	try {
-		head = await putOnWork(sandbox, due.directory, due.branch);
+		const child = !meta.pushedHead && meta.origin?.childBranch;
+		head = child ? await putOnWork(sandbox, due.directory, child.name, child.start) : await putOnWork(sandbox, due.directory, due.branch);
 	} catch (error) {
 		throw new TurnProblem(`The new sandbox could not be put on ${due.branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
 	}
@@ -5594,7 +5596,7 @@ export const agentSession = actor({
 				cloned: false,
 				windlassSessionId: null,
 				turnStartedAt: null,
-				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin } : {}),
+				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin, ...(input.origin.childBranch && { publishBranch: input.origin.childBranch.name }) } : {}),
 				...(!input.origin && typeof input.environmentBuild?.project === "string" && typeof input.environmentBuild.place === "string"
 					? { environmentBuild: { project: input.environmentBuild.project, place: input.environmentBuild.place, screenshots: input.environmentBuild.screenshots === true } } : {}),
 			};

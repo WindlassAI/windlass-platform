@@ -153,11 +153,18 @@ export interface IntegrationRun extends IntegrationView {
 	charged: boolean;
 }
 
+export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean });
+
 export interface FeatureJob {
-	/** A cross-repo feature's child: the head of its repository's feature branch it started from. */
+	/** Immutable tip from which this child branches, after repository setup at the original seed. */
 	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
 	dispatchKey?: string;
+	startedAt?: number;
+	wait?: string;
+	placementRefusal?: string;
+	/** Last serialized integration result, retained so a restarted child can receive it again. */
+	join?: JoinResult;
 	route?: PlacementRoute;
 	warm?: string[];
 	placement?: ChildPlacement;
@@ -230,6 +237,9 @@ export interface FactoryItem {
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
+	joining?: { child: string; key: string };
+	stoppedJob?: string;
+	retryChildren?: boolean;
 	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
@@ -387,11 +397,13 @@ export type Fact =
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
+	| { kind: "claim_join"; at: number; child: string; key: string }
+	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
-	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
+	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
 	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
 	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
-	| { kind: "integrated"; at: number; key: string }
+	| { kind: "integrated"; head?: string; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
@@ -512,7 +524,7 @@ export type Effect =
 	| { kind: "poll_integration"; key: string; attempt: number; at: number }
 	/** A cross-repo feature: read its pull request in `repo`. */
 	| { kind: "poll_repo_pr"; key: string; repo: string; pr: number; at: number }
-	| { kind: "dispatch"; key: string; at?: number }
+	| { kind: "dispatch"; child?: string; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
 	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */

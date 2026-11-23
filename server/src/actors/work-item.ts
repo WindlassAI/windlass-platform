@@ -39,12 +39,12 @@ import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
 import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
-import { childItemId, itemSessionId } from "../factory/feature-ids.js";
+import { childItemId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCi, repositoryAdmission } from "../github/feature-ci.js";
-import { authorOf, branchFor } from "../github/publish.js";
-import { featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
+import { authorOf } from "../github/publish.js";
+import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
@@ -62,9 +62,9 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
-import { advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
+import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
-import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect } from "../factory/types.js";
+import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi, rerunCancelled } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -281,6 +281,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		feedback: await feedbackView(c.db),
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: plan ?? null,
+		...(stored.item.jobs && { subtasks: stored.item.jobs.map(j => ({ id: j.id, key: j.task.key, state: j.state, startedAt: j.startedAt ?? null, wait: j.wait ?? j.placementRefusal ?? null })) }),
 		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
@@ -757,7 +758,7 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 		const label = `${repo.owner}/${repo.name}`;
 		try {
 			if (!await userActor(c, meta.uid).internalHasChecks(repo.repositoryId)) problems.push(`${label}: add saved repository checks.`);
-			const branches = [featureBranch(item.id), ...pending.filter(s => (s.repo ?? item.repos![0].alias) === repo.alias).map(s => branchFor(s.title, itemSessionId(childItemId(item.id, plan.version, s.key))))];
+			const branches = [featureBranch(item.id), ...pending.filter(s => (s.repo ?? item.repos![0].alias) === repo.alias).map(s => subtaskBranch(item.id, s.key, childItemId(item.id, plan.version, s.key)))];
 			problems.push(...await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, async ({ app, token, owner, name, private: hidden }) => {
 				const found = await repositoryAdmission(app, token, owner, name, { alias: repo.alias, baseRef: repo.baseRef, ciBase: repo.pr ? featureBranch(item.id) : repo.baseRef, branches, planningBaseSha: repo.planningBaseSha,
 					reconfirmed: bases[repo.alias], runsIntegration: plan.finalIntegration?.runFrom === repo.alias, opened: !!repo.pr });
@@ -780,7 +781,7 @@ async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<str
 	const hub = await github(c, meta, "write");
 	const plan = item.featurePlan!;
 	const pending = plan.subtasks.filter(s => !item.jobs?.some(j => j.task.key === s.key && j.state === "done"));
-	const branches = [featureBranch(item.id), ...pending.map(s => branchFor(s.title, itemSessionId(childItemId(item.id, plan.version, s.key))))];
+	const branches = [featureBranch(item.id), ...pending.map(s => subtaskBranch(item.id, s.key, childItemId(item.id, plan.version, s.key)))];
 	const eligible = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" } },
 		token => hasPushCi(hub.app, token, hub.owner, hub.name, item.pr ? featureBranch(item.id) : meta.repository.branch, branches));
 	if (!eligible) throw new PlanError("Use a single item or add CI that reports on pushes to the feature and child branches before approving orchestration.");
@@ -1034,7 +1035,11 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 		case "poll_integration": return effect.key === key && run.step.kind === "integration" && !item.question && item.integration?.attempt === effect.attempt;
 		case "poll_repo_pr": return effect.key === `${key}/${effect.repo}` && run.step.kind === "merged" && item.state === "review" && !item.question;
 		case "integrate": return effect.key === key && run.step.kind === "subtasks" && !item.question;
-		case "dispatch": return !item.question && effect.key === key && run.step.kind === "subtasks";
+		case "dispatch": {
+			if (item.question || run.step.kind !== "subtasks") return false;
+			const job = effect.child && item.jobs?.find(j => j.id === effect.child);
+			return job ? activeJob(job) && !job.placementRefusal && job.dispatchKey === effect.key : !effect.child && effect.key === key;
+		}
 		case "deliver":
 			return effect.key === key && run.step.turn === "delivered";
 		case "check_turn":
@@ -1276,10 +1281,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "cancel_children":
 			for (const child of effect.ids) {
 				const view = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child, cancel: true });
-				const active = c.vars.stored?.item, job = active?.jobs?.at(-1);
-				if (!view && active && job?.id === child && job.cancelRequested && job.state === "draft" && !ENDED.has(active.state)) {
+				const active = c.vars.stored?.item, job = active?.jobs?.find(j => j.id === child);
+				if ((!view || ENDED.has(view.state)) && active && job && (ENDED.has(active.state) || active.question?.kind === "machine_removed")) {
+					await take(c, { kind: "child_notice", child, state: view?.state ?? "cancelled", spent: view?.spent ?? job.spent, at: Date.now() });
+				} else if (!view && active && job?.cancelRequested && job.state === "draft") {
 					// A placement wait has no child actor to report cancellation.
-					await take(c, { kind: "child_update", key: currentKey(active)!, child, state: "cancelled",
+					await take(c, { kind: "child_update", key: job.dispatchKey ?? currentKey(active)!, child, state: "cancelled",
 						spent: job.spent, head: null, report: "Cancelled before launch.", at: Date.now() });
 				}
 			}
@@ -1314,18 +1321,41 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			}
 			return true;
 		}
-		case "dispatch":
-		case "describe_feature":
 		case "integrate": {
+			const parent = itemActor(c, meta.uid, item.parent!.itemId);
+			const claim = await parent.internalClaimJoin(item.id, effect.key);
+			if (claim === "busy") {
+				await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
+				return "deferred";
+			}
+			let result: JoinResult;
+			if (claim === "claimed") {
+				try {
+					const hub = await github(c, meta, "write");
+					const head = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read" } },
+						token => advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head));
+					result = { key: effect.key, head };
+				} catch (error) {
+					if (!lostAccess(error) && !(error instanceof GithubError && error.status === 409)) throw error;
+					result = { key: effect.key, reason: describeError(error), conflict: error instanceof GithubError && error.status === 409 && /merge/i.test(error.message) };
+				}
+				await parent.internalFinishJoin(item.id, result);
+			} else result = claim;
+			if ("head" in result) await take(c, { kind: "integrated", key: effect.key, head: result.head, at: Date.now() });
+			else await take(c, { kind: "feature_problem", key: effect.key, reason: result.reason, rebase: result.conflict, at: Date.now() });
+			return true;
+		}
+		case "dispatch":
+		case "describe_feature": {
 			const key = effect.key;
-			const job = item.jobs?.at(-1);
-			if (crossRepo(item) && effect.kind !== "integrate" && (effect.kind === "describe_feature" || nextOpening(item))) {
+			const job = effect.kind === "dispatch" && effect.child ? item.jobs?.find(j => j.id === effect.child) : item.jobs?.at(-1);
+			if (crossRepo(item) && (effect.kind === "describe_feature" || nextOpening(item))) {
 				await crossOpenOrDescribe(c, meta, item, effect);
 				return true;
 			}
 			if (effect.kind === "dispatch" && item.pr && job) {
 				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
-					await take(c, { kind: "place_child", key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
+					await take(c, { kind: "place_child", child: job.id, key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
 					return true;
 				}
 				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
@@ -1342,10 +1372,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read", pull_requests: "write" } }, async token => {
 					if (!live(c.vars.stored!.item, effect)) return;
 					const { app, owner, name } = hub;
-					if (effect.kind === "integrate") {
-						await advanceFeatureRef(app, token, owner, name, item.parent!.itemId, item.childBase!, effect.head);
-						await take(c, { kind: "integrated", key, at: Date.now() });
-					} else if (effect.kind === "describe_feature") {
+					if (effect.kind === "describe_feature") {
 						const report = await latestReport(c.db, item.run!.n);
 						const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
 						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta), hub.repository.private) });
@@ -1361,7 +1388,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			} catch (error) {
 				const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
 				if (!denied && !(error instanceof GithubError && [403,404,409,422].includes(error.status))) throw error;
-				await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message, rebase: effect.kind === "integrate" && error instanceof GithubError && [409,422].includes(error.status) });
+				await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message });
 			}
 			return true;
 		}
@@ -1678,6 +1705,22 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
+		// The durable grant survives a restart between GitHub's ref update and its receipt. A replay
+		// either completes that same integration or reads its result before a sibling can claim it.
+		internalClaimJoin: async (c, child: string, key: string): Promise<"busy" | "claimed" | JoinResult> => {
+			requireServiceFor(c, "call");
+			await take(c, { kind: "claim_join", at: Date.now(), child, key });
+			await c.vars.writing;
+			const item = c.vars.stored!.item, job = item.jobs?.find(j => j.id === child);
+			if (job?.join?.key === key) return job.join;
+			if (item.joining?.child === child && item.joining.key === key) return "claimed";
+			if (job && activeJob(job) && !job.cancelRequested && item.joining) return "busy";
+			return { key, reason: "The feature stopped before this subtask integrated.", conflict: false };
+		},
+		internalFinishJoin: async (c, child: string, result: JoinResult) => {
+			requireServiceFor(c, "call");
+			await take(c, { kind: "finish_join", at: Date.now(), child, result });
+		},
 		internalChildNotice: async (c, child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }) => {
 			requireServiceFor(c, "call");
 			await take(c, {kind: "child_notice", at: Date.now(), child: child.id, spent: child.spent, ...(child.budget && { budget: child.budget }), state: child.state, integratedHead: child.integratedHead});
@@ -1713,14 +1756,14 @@ export const workItem = actor({
 		},
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
-			const s = c.vars.stored, job = s?.item.jobs?.at(-1);
-			if (!s || !job || job.id !== id || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
+			const s = c.vars.stored, job = s?.item.jobs?.find(j => j.id === id);
+			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
 			// A cross-repo feature's child is made in its subtask's repository, from that repository's feature branch.
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
-			return { job: { ...job, dispatchKey: currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+			return { job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
 				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },

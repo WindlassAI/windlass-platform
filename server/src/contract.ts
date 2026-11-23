@@ -1616,6 +1616,8 @@ export interface ItemFeed {
 	 * subtask's page and the lists read to stay current while subtasks run. Absent from servers before it.
 	 */
 	children?: ItemSummary[];
+	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
+	subtasks?: { id: string; key: string; state: ItemState; startedAt: number | null; wait: string | null }[];
 }
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
@@ -2161,6 +2163,8 @@ export interface ItemView extends ItemSummary {
 	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
 	completedSubtasks?: string[];
 	children?: ItemSummary[];
+	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
+	subtasks?: { id: string; key: string; state: ItemState; startedAt: number | null; wait: string | null }[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */

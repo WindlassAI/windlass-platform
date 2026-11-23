@@ -335,21 +335,22 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
  * lockfile an install rewrote) goes, since the workspace must hold what the session pushed and nothing
  * else; what it made beside them (`node_modules`) stays. `wlp:work <commit>`.
  */
-export function workCheckoutScript(directory: string, work: string): string {
+export function workCheckoutScript(directory: string, work: string, start?: string): string {
+	if (start !== undefined && !/^[a-f0-9]{40}$/.test(start)) throw new Error("Invalid child start commit.");
 	return [
 		"set -eu",
 		// Check the platform's clone itself, also when it was made under a nonempty workspace.
 		`cd ${shellQuote(directory)}`,
 		privateStart({ refs: [`refs/heads/${work}`] }),
-		`git checkout --quiet -f -B ${shellQuote(work)} ${shellQuote(`refs/remotes/origin/${work}`)}`,
+		`git checkout --quiet -f -B ${shellQuote(work)} ${shellQuote(start ?? `refs/remotes/origin/${work}`)}`,
 		`bridge export HEAD index ${shellQuote(`refs/heads/${work}`)}`,
 		`echo "wlp:work $(git rev-parse HEAD)"`,
 	].join("\n");
 }
 
 /** Runs `workCheckoutScript`. */
-export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string): Promise<GitOutcome> {
-	return run(sandbox, workCheckoutScript(directory, work), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
+export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string, start?: string): Promise<GitOutcome> {
+	return run(sandbox, workCheckoutScript(directory, work, start), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
 /** A prepared reviewer's setup belongs to the pinned base, which can predate the freshly fetched branch tip. */

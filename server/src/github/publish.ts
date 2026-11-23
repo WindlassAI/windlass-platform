@@ -172,8 +172,8 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
  * Puts the clone in `directory` on the session's branch `work`, once the setup command has run on the
  * base (git.ts `workCheckoutScript`); resolves with the commit it is on. Throws when git could not.
  */
-export async function putOnWork(sandbox: SandboxHandle, directory: string, work: string): Promise<string> {
-	const outcome = await checkoutWork(sandbox, directory, work);
+export async function putOnWork(sandbox: SandboxHandle, directory: string, work: string, start?: string): Promise<string> {
+	const outcome = await checkoutWork(sandbox, directory, work, start);
 	const unsafe = outcome.marks.get("unsafe");
 	if (unsafe !== undefined) throw new Error(unsafeWorkspace(unsafe));
 	const head = outcome.marks.get("work") || "";

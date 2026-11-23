@@ -16,6 +16,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { subtaskBranch } from "../server/src/github/feature.js";
 import { branchFor } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
@@ -433,7 +434,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const done = await untilItem(user,feature.id,"the feature handoff",v => {
 				if (v.run?.step.kind === "subtasks") assert(!standin.checks.some(r => r.external_id.includes(feature.id)), "A check appeared during feature integration");
 				for (const child of v.children ?? []) {
-					const pushed = standin.branchHead(harbor, branchFor(child.title, child.sessionId));
+					const pushed = standin.branchHead(harbor, subtaskBranch(child.parent!.itemId, child.parent!.key, child.id));
 					if (pushed && !harbor.ci.has(pushed)) setCi(harbor, pushed, "success");
 				}
 				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
@@ -447,12 +448,12 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			await waitFor("one successful feature check", () => standin.checks.find(r => r.external_id === done.verdicts.at(-1)?.id && r.conclusion === "success"), 30_000);
 			assert(standin.checks.filter(r => r.external_id.includes(feature.id)).length === 1 && !standin.checks.some(r => done.children!.some(child => r.external_id.includes(child.id))), "Extra feature or child checks were posted");
 			const [first, secondChild] = done.children;
-			const firstHead = standin.branchHead(harbor, branchFor(first.title, first.sessionId))!;
-			assert(standin.fileOn(harbor, branchFor(first.title, first.sessionId), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
+			const firstHead = standin.branchHead(harbor, subtaskBranch(first.parent!.itemId, first.parent!.key, first.id))!;
+			assert(standin.fileOn(harbor, subtaskBranch(first.parent!.itemId, first.parent!.key, first.id), "index/setup.sh") === "echo child-setup\n", "The first subtask did not change the setup script.");
 			const snapshot = await client.agentSession.get([auth.profile.uid, secondChild.sessionId], { params: { token: auth.token } }).snapshot();
 			const setup = snapshot.timeline.find(e => e.kind === "setup" && e.state === "succeeded");
 			assert(setup?.kind === "setup" && setup.output.trim() === "seed-setup", "The second subtask must run the seed setup with the fixture secret. Observed " + (setup?.kind === "setup" ? setup.output : "no successful setup"));
-			const parent = standin.branchHead(harbor, branchFor(secondChild.title, secondChild.sessionId))!;
+			const parent = standin.branchHead(harbor, subtaskBranch(secondChild.parent!.itemId, secondChild.parent!.key, secondChild.id))!;
 			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
 			assert(log("%s", firstHead + "^") === "Start feature " + feature.id && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
@@ -547,7 +548,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 				for (const child of v.children ?? []) {
 					const repo = child.repository.id === cli.id ? cli : platform;
 					children.add(child.id + ":" + child.repository.id);
-					const pushed = standin.branchHead(repo, branchFor(child.title, child.sessionId));
+					const pushed = standin.branchHead(repo, subtaskBranch(child.parent!.itemId, child.parent!.key, child.id));
 					if (pushed && !repo.ci.has(pushed)) setCi(repo, pushed, "success");
 				}
 				return v.run?.step.kind === "integration" || !!v.question || !!v.children?.some(c => c.question);

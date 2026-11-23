@@ -69,13 +69,11 @@ test("validate the entire plan, including dependencies, paths and its one token 
 		(p: FeaturePlanEdit) => p.subtasks[0].dependsOn.push("page"),
 		(p: FeaturePlanEdit) => p.subtasks[0].dependsOn.push("missing"),
 		(p: FeaturePlanEdit) => p.subtasks[0].owns = ["../other"],
-		(p: FeaturePlanEdit) => p.subtasks[0].owns = [],
 		(p: FeaturePlanEdit) => p.subtasks[0].acceptance = [],
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = 0,
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens++,
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = Infinity,
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = 5000.5,
-		(p: FeaturePlanEdit) => p.subtasks.push(...["more", "again"].map(key => ({ ...p.subtasks[0], key }))),
 	]) {
 		const p = proposal(); mutate(p); assert.throws(() => validatePlan(p, single));
 	}
@@ -283,15 +281,15 @@ test("a planner cannot answer its own questions or introduce a scope change with
 	const filed = advance(stopped, { kind: "file_plan", key: currentKey(stopped)!, at: 7, plan: changed }).item;
 	assert.ok(filed.featurePlan!.questions.some(q => !q.answer));
 });
-test("independent subtasks cannot claim overlapping paths; each names a check or screenshot", async () => {
+test("overlapping subtasks can be scheduled in sequence; each names a check or screenshot", async () => {
 	const {validatePlan} = await plans();
 	const plan = proposal();
 	plan.subtasks[1].dependsOn = []; plan.subtasks[1].owns = ["index/data.ts"];
-	assert.throws(() => validatePlan(plan, single), /own|overlap/i);
+	assert.doesNotThrow(() => validatePlan(plan, single));
 	plan.subtasks[1].dependsOn = ["index"]; assert.doesNotThrow(() => validatePlan(plan, single));
 	plan.subtasks[1].acceptance = ["Looks good."]; assert.throws(() => validatePlan(plan, single));
 });
-test("child integration needs both gates, ignores duplicate receipts, and rebases in the child on refusal", () => {
+test("child integration needs both gates, ignores duplicate receipts, and merges in the child on conflict", () => {
 	const child = createItem({ id: "i_child", task: {...task, base: "windlass/feature-i_feature"}, budget: single, place: {kind:"hosted"}, reviewer: {off:"deployment"} });
 	child.parent = {itemId:"i_feature",key:"index",title:task.title};
 	const start = advance(child, {kind:"start",at:1,by:"platform"}).item;
@@ -319,7 +317,7 @@ test("child integration needs both gates, ignores duplicate receipts, and rebase
 			assert.equal(declined.state, "cancelled");
 			const rejected = advance(result.item,{kind:"feature_problem",key:currentKey(result.item)!,at:5,reason:"not a fast-forward",rebase:true});
 			assert.equal(rejected.item.run!.step.kind,"conflict");
-			assert.match(rejected.effects.find(e=>e.kind==="deliver")!.text,/rebase/i);
+			assert.match(rejected.effects.find(e=>e.kind==="deliver")!.text,/merge origin/i);
 		}
 	}
 });
@@ -1506,7 +1504,7 @@ test("cross-repo: a plan over the filing's two repositories validates, with iden
 	const same = crossProposal();
 	same.subtasks[1].repo = "cli"; same.subtasks[1].dependsOn = [];
 	same.subtasks.push({ ...same.subtasks[0], key: "web", repo: "platform", owns: ["web/**"], dependsOn: [] });
-	assert.throws(() => validatePlan(same, crossSingle, ["platform", "cli"]), /overlap/);
+	assert.doesNotThrow(() => validatePlan(same, crossSingle, ["platform", "cli"]));
 	// Editing a cross-repo field changes the approved scope; a one-repository plan keeps its old fingerprint.
 	const moved = structuredClone(plan); moved.finalIntegration!.command = "pnpm test";
 	assert.notEqual(planScope(moved), planScope(plan));
