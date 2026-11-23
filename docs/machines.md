@@ -6,7 +6,13 @@ and cannot do. Users' instructions are in the in-app docs ([Use your own machine
 
 ## How it works
 
-With `WLP_MACHINES=1` a user can pair a Linux machine of their own that has Docker, and launch agents on it.
+With `WLP_MACHINES=1` a user can pair a machine of their own that has Docker, and launch agents on it: Linux with
+Docker, or macOS or Windows with Docker Desktop or OrbStack, where the runner and the sessions run in Docker's Linux
+VM with the images of its architecture (a Mac with Apple silicon takes the arm64 images; Windlass and Claude Code
+turns have passed on Docker Desktop, runner 0.3.3). The runner's default name is the host name it sees, which under
+Docker Desktop is the VM's, `docker-desktop`: users are told to pass `--name`. A new pairing allows only
+`docker-hardened`; `--allow-profile docker-windlass-sandbox` adds the two-wall profile, recommended for Windlass and
+Codex ([runner reference](../web/src/docs/content/runner.md#allowed-profiles)).
 A small program on that machine, the runner, connects out to the platform, and makes and runs the
 sessions' containers on the machine's own Docker. Everything else stays with the platform: the session's
 actor, the turn's conversation with Windlass, questions, secrets, the GitHub App, the checks' record and the

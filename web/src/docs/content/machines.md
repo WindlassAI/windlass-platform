@@ -6,9 +6,13 @@ The runner connects out to the platform. Nothing needs to reach your machine fro
 
 ## What you need
 
-- A Linux machine with Docker.
-- At least 5 GB of free disk for each new sandbox.
+- Linux with Docker, or macOS or Windows with Docker Desktop or OrbStack. On a Mac or Windows, sessions run in Docker's Linux VM, with the arm64 or x86-64 images that match it.
+- At least 5 GB of free disk for each new sandbox, inside Docker's VM where it has one.
 - A clock set from the network. The platform warns you when the machine's clock is more than a minute off.
+
+**Name the machine.** The runner names the machine after the host it sees. Under Docker Desktop that is Docker's VM, so every such machine is called `docker-desktop`. Give it a name of your own with `--name`, for example `--name "my-mac"`, in the setup command.
+
+**Allow Windlass's command sandbox.** A new machine offers only **Hardened Docker on your machine**: the agent's commands run directly in the session's container, with the container's network. Add `--allow-profile docker-windlass-sandbox` to also offer **Docker + Windlass sandbox on your machine**, which puts a second wall around each command: Windlass (or Codex, with its own sandbox) runs every command in a sandbox without network that cannot read the session's token file. To let that sandbox run, the session's container is started with AppArmor and system paths unconfined, and with user namespaces and mounts allowed; the command sandbox inside is the boundary. It is recommended for Windlass and Codex, which use it. Claude Code and OpenCode run only on the hardened profile. See [Allowed profiles](/docs/runner#allowed-profiles).
 
 An account can connect up to 3 machines.
 
@@ -31,7 +35,7 @@ docker run -it --rm \
 
 It pairs the machine and signs its agents in, asking in the terminal as it goes. First it prints the pairing code: enter it as in steps 2 and 3. Then it asks to [sign each agent in](#sign-agents-in). Last, it prints `Start the runner on this machine:` and the command that starts the runner in the background, with the same options. Run that command.
 
-A box is shown only for an agent the platform's runner image includes.
+A box is shown only for an agent the platform's runner image includes. **Allow Windlass's command sandbox** is ticked unless you untick it: both commands then end with `--allow-profile docker-windlass-sandbox` (see [What you need](#what-you-need)). Add `--name` and a name of your own to the setup command on a Mac or Windows PC.
 
 **Or start the runner in the background** is the install command. It starts the runner at once, and you read the pairing code from its log:
 

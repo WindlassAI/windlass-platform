@@ -49,7 +49,7 @@ export function MachinesCrumb() {
 }
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
-function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
+function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean; windlassSandbox?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
 	if (info.runnerImage === null) return null;
 	return [
 		(setup ? "docker run -it --rm" + (agents.codex ? " --log-driver none" : "") : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
@@ -57,7 +57,7 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
 		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
-		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}`,
+		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}${agents.windlassSandbox ? " --allow-profile docker-windlass-sandbox" : ""}`,
 	].join("\n");
 }
 
@@ -643,12 +643,14 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	const [codex, setCodex] = useState(false);
 	const [openCode, setOpenCode] = useState(false);
 	const [importKeys, setImportKeys] = useState(false);
+	// Windlass's command sandbox, the second wall around each command (`docker-windlass-sandbox`): on unless the person turns it off.
+	const [windlassSandbox, setWindlassSandbox] = useState(true);
 	/** The person says the runner's terminal shows the same machine key (or, for a runner that prints none, that they started it). */
 	const [keyMatches, setKeyMatches] = useState(false);
 	const offersCodex = info.runnerHarnesses?.includes("codex") === true;
 	const offersOpenCode = info.runnerHarnesses?.includes("opencode") === true;
 	const offersClaude = info.runnerHarnesses?.includes("claude") ?? true;
-	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode };
+	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode, windlassSandbox };
 	const setup = installCommand(info, agents, { importKeys });
 	const install = installCommand(info, agents);
 	const complete = code.replace(/-/g, "").length === 8;
@@ -825,7 +827,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	return (
 		<Dialog
 			title="Add a machine"
-			lede="Run this in a terminal on a Linux machine with Docker. The runner connects out to the platform; nothing needs to reach your machine from outside."
+			lede="Run this in a terminal on a machine with Docker: Linux, or a Mac or Windows PC with Docker Desktop or OrbStack. The runner connects out to the platform; nothing needs to reach your machine from outside."
 			onClose={onClose}
 			footer={
 				<>
@@ -848,9 +850,11 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
 							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
+							<label><input type="checkbox" checked={windlassSandbox} onChange={event => setWindlassSandbox(event.target.checked)} /> Allow Windlass's command sandbox (recommended for Windlass and Codex)</label>
+							{windlassSandbox && <p>Adds <code>--allow-profile docker-windlass-sandbox</code>: sessions may also run each command in a sandbox without network. Their container is loosened so that the sandbox can run inside it.</p>}
 						</div>
 						<Command text={setup} label="The setup command" />
-						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name.</p>
+						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name. Under Docker Desktop the machine is named <code>docker-desktop</code> unless you add <code>--name</code> and a name of your own.</p>
 					</div>
 				) : null}
 				{install ? (
