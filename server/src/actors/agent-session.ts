@@ -1514,6 +1514,14 @@ export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sa
 	}, error => c.log.warn({ msg: "could not read blocked network requests", error: describeError(error) }), () => c.vars.stopping || c.vars.destroying);
 }
 
+/** Apply the account's size decision once, even if both the hold and the place claim observe the downgrade. */
+export function applySandboxClamp(meta: Pick<SessionMeta, "hostedSize">, size: HostedSize | undefined, notify: (text: string) => void): boolean {
+	if (!size || meta.hostedSize === size) return false;
+	meta.hostedSize = size;
+	notify(`This agent's next sandbox is ${size}: large sandboxes are part of Pro.`);
+	return true;
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
@@ -1559,8 +1567,13 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (hostedLimitsApply(meta.place)) {
 			// The place is claimed where the sandbox is made: the hold's reserve asked for one only if the session
 			// had no sandbox then, and the one it had may have been found gone above.
-			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId);
+			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId, meta.hostedSize);
 			if (!place.ok) throw new TurnProblem("numbers" in place ? sandboxRefusal(place.numbers) : "The agent was deleted.");
+			if (applySandboxClamp(meta, place.clampedSize, text => note(c, turn, "info", text))) {
+				await persist(c);
+				// The previous sandbox disappeared, or the plan changed since the reserve. Trade its hold at the new weight.
+				await holdSandbox(c, meta, false);
+			}
 		}
 		note(c, turn, "info", "Creating sandbox");
 		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
@@ -3284,6 +3297,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	meta.meterAsked = null;
 	void persist(c);
 	if (answer.ok) {
+		applySandboxClamp(meta, answer.clampedSize, text => note(c, c.vars.turn?.number ?? 0, "info", text));
 		// A renewal goes on with the use the hold was for; anything that starts takes a use of its own.
 		const use = !fresh && open ? open.use : answer.hold.id;
 		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, use, ...(open?.seen ? { seen: open.seen } : {}) };

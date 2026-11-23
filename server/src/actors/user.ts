@@ -87,7 +87,7 @@ import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, 
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
-import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize, type HostedSizeOption } from "../contract.js";
+import { USAGE_HISTORY_DAYS, HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize, type HostedSizeOption } from "../contract.js";
 import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView } from "../contract.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { randomBytes } from "node:crypto";
@@ -179,7 +179,7 @@ import { customerDirectory } from "../billing/customer-index.js";
 import { AccountCheckout, CheckoutBlocked, CheckoutEmailRequired, applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
 import { billing } from "../billing/config.js";
 import { sessionWeight } from "../billing/meter.js";
-import { effectivePlan, hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
+import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 import type { BillingEvent } from "../billing/provider.js";
 import type { BillingPeriod, BillingView } from "../contract.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
@@ -804,6 +804,10 @@ function serverInput<T>(clean: () => T): T {
 const KEPT_FRESH_MS = 30_000;
 
 interface UsageCtx extends UserCtx {
+	schedule: {
+		list(): Promise<{ action: string; runAt: number }[]>;
+		at(at: number, action: string): Promise<unknown>;
+	};
 	key: string[];
 	log: { warn(entry: unknown): void };
 	keepAwake?<T>(promise: Promise<T>): Promise<T>;
@@ -823,7 +827,7 @@ export function itemSharing(sessions: ReadonlyMap<string, SessionSummary>): (ses
 	};
 }
 
-async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyMap<string, SessionSummary>): Promise<UsageBook> {
+export async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyMap<string, SessionSummary>): Promise<UsageBook> {
 	const today = dayOf(Date.now());
 	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
 	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
@@ -831,7 +835,7 @@ async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyM
 	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
 	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
 	// Reload the retained ledger, including both sides of a subscription renewal.
-	const since = today - USAGE_KEPT_DAYS - 1;
+	const since = today - (limits.plan ? USAGE_KEPT_DAYS : USAGE_HISTORY_DAYS);
 	const entries = await db.execute<UsageEntryRow>("SELECT e.*, s.started_at FROM usage_entry e LEFT JOIN usage_start s USING (hold) WHERE e.day > ? ORDER BY e.id", since);
 	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, weight, started_at, expires_at FROM usage_hold");
 	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
@@ -915,25 +919,28 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 
 /**
  * Tells the payment provider of overage it has not been told of (billing/account.ts), one report at a time, after the
- * request that counted it has been answered. A report that fails stays pending and is sent again with the next one.
+ * request that counted it has been answered. The actor also drains the durable outbox on wake and scheduled retry.
  */
 function queueOverageReport(c: UsageCtx): void {
 	const settings = billing();
 	const state = c.vars.items.limits.billing;
-	if (!settings || !state || state.period !== "month" || accountLimits(c.vars.items.limits).usage.includedSeconds === null || effectivePlan(state, Date.now()) === "free") return;
+	if (!settings || !state?.customerId) return;
+	const now = Date.now();
+	const { includedSeconds } = accountLimits(c.vars.items.limits, now).usage;
 	c.vars.overageReport = c.vars.overageReport.then(async () => {
 		try {
-			const now = Date.now();
 			const sent = await reportOverage(c.db, settings.provider, {
-				uid: c.key[0]!, state: c.vars.items.limits.billing ?? state, now,
-				usedSeconds: period => c.vars.usage.usedInPeriod(period),
-				includedSeconds: accountLimits(c.vars.items.limits).usage.includedSeconds ?? 0,
+				uid: c.key[0]!, state, now, usedSeconds: period => c.vars.usage.usedInPeriod(period), includedSeconds,
 			});
-			for (const report of sent) console.log(`[wlp] billing.usage_reported uid=${c.key[0]} period=${report.periodStart} event=${report.eventId}`);
+			for (const report of sent) console.log(`[wlp] billing.usage_reported uid=${c.key[0]} event=${report.eventId}`);
 		} catch {
 			console.warn(`[wlp] billing.usage_report_failed uid=${c.key[0]}`);
+			const scheduled = await c.schedule.list();
+			if (!scheduled.some(job => job.action === "internalRetryOverage" && job.runAt > Date.now())) {
+				await c.schedule.at(Date.now() + 15 * 60_000, "internalRetryOverage");
+			}
 		}
-	});
+	}).catch(() => { console.warn(`[wlp] billing.retry_schedule_failed uid=${c.key[0]}`); });
 	void c.keepAwake?.(c.vars.overageReport);
 }
 
@@ -1099,6 +1106,13 @@ const KEYED = "agent";
 /** The hosted sizes offered to this account, with their prices. */
 function sizesOf(c: UserCtx, layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[] {
 	return hostedSizesForPlan(layer.sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
+}
+
+/** A replacement sandbox can be smaller than the sandbox the account kept through a downgrade. */
+function clampedSandboxSize(c: UserCtx, size: HostedSize | undefined): HostedSize | undefined {
+	const plan = accountLimits(c.vars.items.limits).plan;
+	if (!plan || !size || planAllowsSize(plan, size)) return undefined;
+	return plan.sizes.at(-1);
 }
 
 /**
@@ -1706,6 +1720,7 @@ export const user = actor({
 
 	onDestroy: async c => { await dropHostedSnapshots(c.key[0]); },
 	onWake: async (c) => {
+		queueOverageReport(c);
 		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
@@ -2018,6 +2033,12 @@ export const user = actor({
 			console.log(`[wlp] billing.cap uid=${c.key[0]}`);
 			billingChanged(c);
 			return billingAnswer(c);
+		},
+
+		internalRetryOverage: async (c): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			queueOverageReport(c);
+			await c.vars.overageReport;
 		},
 
 		/** A webhook's event for this account (billing/route.ts), applied once. */
@@ -3049,7 +3070,10 @@ export const user = actor({
 			if (keep) await reconcileKept(c, c.vars.usage.atCap(session));
 
 			const now = Date.now();
-			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, weight: isHostedSize(input.hostedSize) ? sessionWeight(input) : undefined, fresh: input.fresh === true, settle }));
+			const size = isHostedSize(input.hostedSize) ? input.hostedSize : c.vars.sessions.get(session)?.hostedSize;
+			const clampedSize = keep ? clampedSandboxSize(c, size) : undefined;
+			const weight = size ? sessionWeight({ hostedSize: clampedSize ?? size }) : undefined;
+			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, weight, fresh: input.fresh === true, settle }));
 			const numbers = c.vars.usage.numbers(now);
 			const lose = reserveFault === null ? null : input.fresh === true ? "fresh" : renewal ? "renewal" : null;
 			if (reserveFault && lose && reserveFault[lose] > 0) {
@@ -3061,7 +3085,7 @@ export const user = actor({
 				console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=${done.reason} used=${numbers.usedSeconds} held=${numbers.heldSeconds} allowance=${numbers.allowanceSeconds ?? "none"} kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}`);
 				return { ok: false, reason: done.reason, numbers };
 			}
-			return { ok: true, hold: { id: done.hold.id, seconds: done.hold.seconds }, numbers };
+			return { ok: true, ...(clampedSize && { clampedSize }), hold: { id: done.hold.id, seconds: done.hold.seconds }, numbers };
 		},
 
 		/**
@@ -3069,7 +3093,7 @@ export const user = actor({
 		 * made (`UsageBook.claim`). A reserve's place was the session's as it stood then, and a sandbox found
 		 * gone since is replaced here. Held against the provider's list first, as a reserve is.
 		 */
-		internalClaimPlace: async (c, sessionId: string): Promise<{ ok: boolean; numbers: UsageNumbers } | { ok: false; reason: "gone" }> => {
+		internalClaimPlace: async (c, sessionId: string, hostedSize?: HostedSize): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }> => {
 			requireService(c);
 			const session = approvalText(sessionId, 200);
 			await reconcileKept(c, c.vars.usage.atCap(session));
@@ -3079,7 +3103,8 @@ export const user = actor({
 			const done = await changeUsage(c, (book) => book.claim(now, session));
 			const numbers = c.vars.usage.numbers(now);
 			if (!done.ok) console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=sandboxes kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}: at the making of its sandbox`);
-			return { ok: done.ok, numbers };
+			const clampedSize = clampedSandboxSize(c, hostedSize);
+			return { ok: done.ok, ...(clampedSize && { clampedSize }), numbers };
 		},
 
 		internalSettle: async (c, input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }> => {

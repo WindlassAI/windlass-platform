@@ -17,21 +17,24 @@
 
 import type { RawAccess } from "rivetkit/db";
 import type { BillingView, HostedMonth } from "../contract.js";
-import { meterPeriod, shiftMonths, type MeterPeriod } from "./meter.js";
+import { boundedPeriodStart, meterPeriod, shiftMonths, type MeterPeriod } from "./meter.js";
 import { capMinutes, effectivePlan, MAX_CAP_CENTS, NO_SUBSCRIPTION, PLAN_LIST, PLANS, type BillingState } from "./plans.js";
-import type { BillingEvent, BillingProvider, CheckoutInput } from "./provider.js";
+import type { BillingEvent, BillingProvider, CheckoutInput, UsageReport } from "./provider.js";
 
 export type BillingDb = Pick<RawAccess, "execute">;
 type TxDb = BillingDb & Pick<RawAccess, "transaction">;
 
 export const BILLING_TABLES = [
 	`CREATE TABLE IF NOT EXISTS billing (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)`,
-	// One checkout link per account until the subscription settles or its reuse window ends.
-	`CREATE TABLE IF NOT EXISTS billing_checkout (id INTEGER PRIMARY KEY CHECK (id = 1), session TEXT NOT NULL, url TEXT NOT NULL, opened_at INTEGER NOT NULL, period TEXT)`,
+	// One checkout link per account until settlement or provider expiry.
+	`CREATE TABLE IF NOT EXISTS billing_checkout (id INTEGER PRIMARY KEY CHECK (id = 1), session TEXT NOT NULL, url TEXT NOT NULL, opened_at INTEGER NOT NULL, period TEXT NOT NULL)`,
 	// The deliveries applied, by the provider's id. Kept for 90 days, longer than any provider retries one.
 	`CREATE TABLE IF NOT EXISTS billing_event (id TEXT PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, outcome TEXT NOT NULL)`,
-	// Keyed by subscription id and period start: the overage minutes the provider has taken, and the report under way, if any.
-	`CREATE TABLE IF NOT EXISTS billing_usage (month TEXT PRIMARY KEY, reported INTEGER NOT NULL, pending_to INTEGER, pending_id TEXT)`,
+	// A durable outbox. Each row covers a distinct increment of one subscription period's cumulative total.
+	`CREATE TABLE IF NOT EXISTS billing_usage (event_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, subscription_id TEXT NOT NULL,
+		period_start INTEGER NOT NULL, total INTEGER NOT NULL, minutes INTEGER NOT NULL, sent INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(subscription_id, period_start, total))`,
+	`CREATE INDEX IF NOT EXISTS billing_usage_pending ON billing_usage(period_start, total) WHERE sent = 0`,
 ];
 
 export const EVENT_KEPT_MS = 90 * 86_400_000;
@@ -71,11 +74,12 @@ export function nextBillingState(state: BillingState, event: BillingEvent, now: 
 	};
 	const period = event.period ?? state.period;
 	const periodEnd = event.periodEnd ?? (replacing ? null : state.periodEnd);
-	const periodStart = event.periodStart ?? (replacing ? null : state.periodStart)
+	const start = event.periodStart ?? (replacing ? null : state.periodStart)
 		?? (periodEnd === null ? event.occurredAt : shiftMonths(periodEnd, period === "year" ? -12 : -1));
-	let previousPeriod = replacing || state.period !== period ? null : state.previousPeriod;
-	if (!replacing && state.period === "month" && period === "month" && state.periodEnd !== null && state.periodEnd === periodStart) {
-		previousPeriod = meterPeriod(state, periodStart - 1);
+	const periodStart = boundedPeriodStart(start, periodEnd, period);
+	let previousPeriod = replacing ? null : state.previousPeriod;
+	if (!replacing && state.period === "month" && state.periodStart !== null && state.periodEnd !== null && periodStart > state.periodStart) {
+		previousPeriod = { start: state.periodStart, end: state.periodEnd };
 	}
 	const dates = { period, periodStart, periodEnd, previousPeriod };
 	switch (event.kind) {
@@ -100,7 +104,7 @@ export function nextBillingState(state: BillingState, event: BillingEvent, now: 
 
 /** Applies a delivery once. The delivery's id and the new state are written in one transaction. */
 export async function applyBillingEvent(db: TxDb, event: BillingEvent, now: number, graceMs: number, claimCustomer?: (id: string) => Promise<boolean>): Promise<{ outcome: ApplyOutcome; state: BillingState }> {
-	return db.transaction(async (tx) => {
+	const result = await db.transaction(async (tx) => {
 		const seen = await tx.execute<{ id: string }>("INSERT INTO billing_event (id, at, kind, outcome) VALUES (?, ?, ?, '') ON CONFLICT (id) DO NOTHING RETURNING id", event.id, now, event.kind);
 		const before = await readBilling(tx);
 		if (seen.length === 0) return { outcome: "duplicate" as const, state: before };
@@ -119,6 +123,10 @@ export async function applyBillingEvent(db: TxDb, event: BillingEvent, now: numb
 		await tx.execute("DELETE FROM billing_event WHERE at < ?", now - EVENT_KEPT_MS);
 		return done;
 	}, { name: "billing.event" });
+	if (result.outcome === "other_subscription" && event.kind === "active") {
+		console.warn(`[wlp] billing.double_subscription event=${event.id} customer=${event.customerId} subscription=${event.subscriptionId} current_subscription=${result.state.subscriptionId}`);
+	}
+	return result;
 }
 
 export async function setCapCents(db: TxDb, cents: unknown): Promise<BillingState> {
@@ -165,9 +173,16 @@ export class AccountCheckout {
 	private async openOrReuse(db: TxDb, provider: BillingProvider, input: OpenCheckout, now: number): Promise<{ url: string }> {
 		const { state, saved } = await db.transaction(async tx => {
 			const state = await checkoutState(tx);
-			const [saved] = await tx.execute<{ url: string }>("SELECT url FROM billing_checkout WHERE id = 1 AND opened_at > ? AND period = ?", now - CHECKOUT_WINDOW_MS, input.period);
+			const [saved] = await tx.execute<{ session: string; url: string; period: string; opened_at: number }>("SELECT session, url, period, opened_at FROM billing_checkout WHERE id = 1");
 			return { state, saved };
 		}, { name: "billing.checkout.read" });
+		if (saved) {
+			const recentlyOpened = saved.opened_at > now - CHECKOUT_WINDOW_MS;
+			if (recentlyOpened || !await provider.checkoutExpired(saved.session, now)) {
+				if (saved.period !== input.period) throw new CheckoutBlocked("You have a checkout open; finish or cancel it first.");
+				return { url: saved.url };
+			}
+		}
 		let customerId = state.customerId;
 		if (!customerId) {
 			if (!input.email) throw new CheckoutEmailRequired("Sign in with an account email to start billing.");
@@ -181,7 +196,6 @@ export class AccountCheckout {
 			}
 			if (!current.customerId) await writeBilling(tx, { ...current, customerId: id });
 		}, { name: "billing.customer" });
-		if (saved && state.customerId) return { url: saved.url };
 
 		const checkout = await provider.createCheckout({ uid: input.uid, returnUrl: input.returnUrl, period: input.period, customerId: id });
 		return db.transaction(async tx => {
@@ -201,68 +215,63 @@ export function overageMinutes(state: BillingState, usedSeconds: number, include
 	return Math.min(Math.floor(Math.max(0, usedSeconds - includedSeconds) / 60), capMinutes(plan, state.capCents));
 }
 
-type UsageRow = { month: string; reported: number; pending_to: number | null; pending_id: string | null };
-
-async function usageRow(db: BillingDb, month: string): Promise<UsageRow> {
-	const [row] = await db.execute<UsageRow>("SELECT month, reported, pending_to, pending_id FROM billing_usage WHERE month = ?", month);
-	return row ?? { month, reported: 0, pending_to: null, pending_id: null };
-}
-
-export async function reportedMinutes(db: BillingDb, month: string): Promise<number> {
-	return (await usageRow(db, month)).reported;
-}
-
 export interface ReportInput {
 	uid: string;
 	state: BillingState;
 	/** Weighted hosted seconds for this half-open subscription period. */
 	usedSeconds: (period: MeterPeriod) => number;
-	includedSeconds: number;
+	includedSeconds: number | null;
 	now: number;
 }
 
-/**
- * Reports what overage the provider has not been told of yet, for last month and this one. Throws where the provider
- * could not be reached; what was pending stays pending, and the next call sends it again under the same id.
- */
-export async function reportOverage(db: BillingDb, provider: BillingProvider, input: ReportInput): Promise<Array<{ periodStart: number; minutes: number; eventId: string }>> {
-	const { state, now } = input;
-	// Never without a subscription that runs now.
-	if (effectivePlan(state, now) === "free" || state.period !== "month" || state.customerId === null || state.subscriptionId === null) return [];
-	const sent: Array<{ periodStart: number; minutes: number; eventId: string }> = [];
-	// A delayed renewal may leave the new allowance open locally. Wait for the provider's dates before billing it.
-	if (state.periodEnd === null) return [];
-	const current = meterPeriod(state, Math.min(now, state.periodEnd - 1));
-	const previous = state.previousPeriod;
-	for (const period of previous ? [previous, current] : [current]) {
-		const key = periodKey(state, period);
-		const send = async (row: UsageRow) => {
-			const minutes = row.pending_to! - row.reported;
-			if (minutes > 0) await provider.reportUsage({ eventId: row.pending_id!, customerId: state.customerId!, subscriptionId: state.subscriptionId!, periodStart: period.start, minutes });
-			await db.execute("UPDATE billing_usage SET reported = ?, pending_to = NULL, pending_id = NULL WHERE month = ? AND pending_id = ?", row.pending_to, key, row.pending_id);
-			if (minutes > 0) sent.push({ periodStart: period.start, minutes, eventId: row.pending_id! });
-		};
-		// What was written down and not yet taken goes first, under its own id.
-		const open = await usageRow(db, key);
-		if (open.pending_to !== null) await send(open);
-		const row = await usageRow(db, key);
-		const counted = overageMinutes(state, input.usedSeconds(period), input.includedSeconds, now);
-		if (counted <= row.reported) continue;
-		const id = `wlp_${input.uid}_${key}_${row.reported}_${counted}`;
-		await db.execute("INSERT INTO billing_usage (month, reported, pending_to, pending_id) VALUES (?, ?, ?, ?) ON CONFLICT (month) DO UPDATE SET pending_to = excluded.pending_to, pending_id = excluded.pending_id",
-			key, row.reported, counted, id);
-		await send({ ...row, pending_to: counted, pending_id: id });
+/** Record every period's tail before contacting Dodo. An earlier outage cannot strand a newer period. */
+export async function reportOverage(db: TxDb, provider: BillingProvider, input: ReportInput): Promise<Array<{ periodStart: number; minutes: number; eventId: string }>> {
+	const { state, now, includedSeconds } = input;
+	const { customerId, subscriptionId, periodEnd, previousPeriod } = state;
+	if (effectivePlan(state, now) === "pro" && customerId && subscriptionId && periodEnd !== null && includedSeconds !== null) {
+		const periods: MeterPeriod[] = [];
+		if (previousPeriod) {
+			// If Dodo advanced the renewal, the new period owns holds from its start onward.
+			periods.push({ ...previousPeriod, end: Math.min(previousPeriod.end, state.periodStart ?? periodEnd) });
+		}
+		if (state.period === "month") periods.push(meterPeriod(state, Math.min(now, periodEnd - 1)));
+		await db.transaction(async tx => {
+			for (const period of periods) {
+				const total = overageMinutes({ ...state, period: "month" }, input.usedSeconds(period), includedSeconds, now);
+				if (total <= 0) continue;
+				const [row] = await tx.execute<{ queued: number }>(
+					"SELECT COALESCE(MAX(total), 0) AS queued FROM billing_usage WHERE subscription_id = ? AND period_start = ?", subscriptionId, period.start);
+				const queued = row!.queued;
+				if (total <= queued) continue;
+				const id = `wlp_${input.uid}_${subscriptionId}_${period.start}_${queued}_${total}`;
+				await tx.execute("INSERT INTO billing_usage(event_id, customer_id, subscription_id, period_start, total, minutes) VALUES (?, ?, ?, ?, ?, ?)",
+					id, customerId, subscriptionId, period.start, total, total - queued);
+			}
+		}, { name: "billing.usage.queue" });
 	}
+
+	const pending = await db.execute<UsageReport>(`SELECT event_id AS eventId, customer_id AS customerId, subscription_id AS subscriptionId,
+		period_start AS periodStart, minutes FROM billing_usage WHERE sent = 0 ORDER BY period_start, total`);
+	const sent = [];
+	let deliveryFailed = false;
+	for (const report of pending) {
+		try {
+			await provider.reportUsage(report);
+		} catch {
+			// A refusal for one period must not prevent delivery for another.
+			deliveryFailed = true;
+			continue;
+		}
+		await db.execute("UPDATE billing_usage SET sent = 1 WHERE event_id = ?", report.eventId);
+		sent.push(report);
+	}
+	if (deliveryFailed) throw new Error("An overage report is still pending.");
 	return sent;
 }
 
-function periodKey(state: BillingState, period: MeterPeriod): string {
-	return `${state.subscriptionId}_${period.start}`;
-}
-
 export async function billingView(db: BillingDb, state: BillingState, month: HostedMonth | null, now: number): Promise<BillingView> {
-	const reported = effectivePlan(state, now) === "pro" && state.period === "month"
-		? await reportedMinutes(db, periodKey(state, meterPeriod(state, now))) : 0;
+	const [reported] = effectivePlan(state, now) === "pro" && state.period === "month"
+		? await db.execute<{ minutes: number }>("SELECT SUM(minutes) AS minutes FROM billing_usage WHERE subscription_id = ? AND period_start = ? AND sent = 1", state.subscriptionId, meterPeriod(state, now).start) : [];
 	return {
 		enabled: true,
 		plan: effectivePlan(state, now),
@@ -274,7 +283,7 @@ export async function billingView(db: BillingDb, state: BillingState, month: Hos
 		capCents: state.capCents,
 		maxCapCents: MAX_CAP_CENTS,
 		overageMinutes: month ? overageMinutes(state, month.usedSeconds, month.includedSeconds, now) : 0,
-		reportedMinutes: reported,
+		reportedMinutes: reported?.minutes ?? 0,
 		portal: state.customerId !== null,
 		plans: PLAN_LIST,
 		month,

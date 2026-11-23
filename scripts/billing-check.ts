@@ -200,6 +200,16 @@ const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRI
 	book.settle(end + DAY_MS, { session: "a", hold: "last", seconds: 7 });
 	expect("a hold stops at the provider reset and a late correction stays with the original period",
 		last.ok && last.hold.seconds === 10 && book.month(end).usedSeconds === 0 && book.month(end - 1).usedSeconds === 67);
+	const termEnd = Date.UTC(2028, 2, 1);
+	const monthlyStart = termEnd - 31 * DAY_MS, yearlyStart = termEnd - 366 * DAY_MS;
+	for (const [period, earliest] of [["month", monthlyStart], ["year", yearlyStart]] as const) {
+		const normal = pro({ period, periodStart: earliest, periodEnd: termEnd });
+		const excessive = { ...normal, periodStart: earliest - 10 * DAY_MS };
+		const stored = (await applyBillingEvent(await memoryDbWithTables(), event({ period, periodStart: excessive.periodStart, periodEnd: termEnd }), NOW, GRACE)).state;
+		expect(`${period} terms clamp to the maximum before calculating allowance anniversaries`,
+			stored.periodStart === earliest && meterPeriod(excessive, earliest).start === earliest &&
+			meterPeriod(excessive, earliest).end === meterPeriod(normal, earliest).end);
+	}
 	const jan = Date.UTC(2027, 0, 31, 13);
 	const annual = pro({ period: "year", periodStart: jan, periodEnd: shiftMonths(jan, 12) });
 	const yearly = new UsageBook(effectiveUserLimits({}, annual, jan).usage, { entries: [
@@ -264,7 +274,17 @@ const dodo = new DodoProvider(SETTINGS, fake.fetch, "https://test.dodopayments.c
 	expect("the same delivery again is a duplicate", (await applyBillingEvent(db, first, NOW, GRACE)).outcome === "duplicate");
 	expect("an older event arriving late is stale", (await applyBillingEvent(db, event({ kind: "ended", occurredAt: NOW - 1000 }), NOW, GRACE)).outcome === "stale" && (await readBilling(db)).status === "active");
 	expect("another customer's event changes nothing", (await applyBillingEvent(db, event({ customerId: "cus_2", kind: "ended", occurredAt: NOW + 1 }), NOW, GRACE)).outcome === "other_customer");
-	expect("a second subscription while one runs changes nothing", (await applyBillingEvent(db, event({ subscriptionId: "sub_2", occurredAt: NOW + 1 }), NOW, GRACE)).outcome === "other_subscription");
+	const warnings: unknown[][] = [];
+	const warn = console.warn;
+	try {
+		console.warn = (...args) => { warnings.push(args); };
+		const second = event({ id: "e2", subscriptionId: "sub_2", occurredAt: NOW + 1 });
+		expect("a second activation is dropped and warns once with the delivery, customer and subscription ids",
+			(await applyBillingEvent(db, second, NOW, GRACE)).outcome === "other_subscription" &&
+			(await applyBillingEvent(db, second, NOW, GRACE)).outcome === "duplicate" &&
+			JSON.stringify(warnings) === JSON.stringify([["[wlp] billing.double_subscription event=e2 customer=cus_1 subscription=sub_2 current_subscription=sub_1"]]));
+	} finally { console.warn = warn; }
+
 
 	const failedAt = NOW + DAY_MS;
 	await applyBillingEvent(db, event({ kind: "payment_failed", occurredAt: failedAt }), failedAt, GRACE);
@@ -332,13 +352,21 @@ async function memoryDbWithTables() {
 	expect("a cap lowered under what was reported reports nothing more, and takes nothing back", fake.minutes === 50);
 	const end = pro().periodEnd!;
 	const renewed = (await applyBillingEvent(db, event({ periodStart: start, periodEnd: end }), NOW, GRACE)).state;
-	await applyBillingEvent(db, event({ periodStart: end, periodEnd: shiftMonths(end, 1), occurredAt: end }), end, GRACE);
+	await applyBillingEvent(db, event({ periodStart: end + 1234, periodEnd: shiftMonths(end, 1), occurredAt: end + 1234 }), end, GRACE);
 	const after = await readBilling(db);
 	used = (1800 + 60) * 60;
 	const rollover = await reportOverage(db, dodo, { ...input(after, end), usedSeconds: period => period.start === start ? used : 1810 * 60 });
-	expect("5 December renewal reports the old remainder and the new overage under distinct period ids",
-		renewed.periodStart === start && rollover.length === 2 && rollover[0]!.minutes === 10 && rollover[1]!.minutes === 10 &&
-		rollover[0]!.eventId.includes(`sub_1_${start}_`) && rollover[1]!.eventId.includes(`sub_1_${end}_`) && fake.minutes === 70);
+	expect("a renewal with a shifted provider date reports the finished period’s tail and the new overage",
+		renewed.periodStart === start && after.previousPeriod?.start === start && after.previousPeriod.end === end && rollover.length === 2 && rollover[0]!.minutes === 10 && rollover[1]!.minutes === 10 &&
+		rollover[0]!.eventId.includes(`sub_1_${start}_`) && rollover[1]!.eventId.includes(`sub_1_${end + 1234}_`) && fake.minutes === 70);
+	const retryDb = await memoryDbWithTables();
+	fake.failNext = { status: 503, count: 2 };
+	await rejects(reportOverage(retryDb, dodo, { ...input(after, end), usedSeconds: () => 1802 * 60 }));
+	fake.failNext = { status: 503, count: 1 };
+	await rejects(reportOverage(retryDb, dodo, input({ ...NO_SUBSCRIPTION })));
+	const outstanding = await retryDb.execute<{ period_start: number }>("SELECT period_start FROM billing_usage WHERE sent = 0");
+	expect("a refusal for an earlier period leaves its retry pending while other periods are delivered",
+		outstanding.length === 1 && outstanding[0]?.period_start === start);
 	const calls = fake.calls.length;
 	expect("yearly Pro never sends an overage event", !(await reportOverage(db, dodo, input(pro({ period: "year" })))).length && fake.calls.length === calls);
 }
@@ -365,16 +393,31 @@ async function memoryDbWithTables() {
 		WLP_DODO_PRODUCT_PRO_MONTHLY: PRODUCTS.month, WLP_DODO_PRODUCT_PRO_YEARLY: PRODUCTS.year });
 	billing()!.provider = dodo;
 	config.sandbox = "fake";
-	const { user } = await import("../server/src/actors/user.js");
-	const { agentSession } = await import("../server/src/actors/agent-session.js");
+	const { user, readUsage } = await import("../server/src/actors/user.js");
+	const { agentSession, applySandboxClamp } = await import("../server/src/actors/agent-session.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { issueUserToken } = await import("../server/src/tokens.js");
 	const { getLayer } = await import("../server/src/layer.js");
 	const db = memoryDb();
 	const profile = { uid: "u_check", email: "billing@example.test", demo: false };
 	const { billingCustomers } = await import("../server/src/billing/customer-index.js");
-	const { webhookOwner } = await import("../server/src/billing/route.js");
+	const { webhookOwner, billingWebhookRoute } = await import("../server/src/billing/route.js");
 	const { issueServiceToken } = await import("../server/src/tokens.js");
+	for (const declared of [undefined, "1"]) {
+		let reads = 0, cancelled = false;
+		const stream = new ReadableStream({
+			pull(controller) { reads++; controller.enqueue(new Uint8Array(128 * 1024)); },
+			cancel() { cancelled = true; },
+		}, { highWaterMark: 0 });
+		const request = new Request("https://app.example/billing/webhook", {
+			method: "POST", body: stream, duplex: "half", headers: declared ? { "content-length": declared } : {},
+		} as RequestInit);
+		expect("oversized streamed webhook stops at the crossing chunk with HTTP 413" + (declared ? " despite a short declared length" : " without a length"),
+			(await billingWebhookRoute(request)).status === 413 && cancelled && reads === 3);
+	}
+	const limitBody = new Uint8Array(256 * 1024);
+	expect("an exactly limit-sized webhook proceeds to signature verification",
+		(await billingWebhookRoute(new Request("https://app.example/billing/webhook", { method: "POST", body: limitBody }))).status === 401);
 	const directoryDb = memoryDb();
 	if (!("db" in billingCustomers.config)) throw new Error("Missing customer directory database");
 	await billingCustomers.config.db.onMigrate(directoryDb as never);
@@ -398,7 +441,16 @@ async function memoryDbWithTables() {
 	}
 	await db.execute("INSERT INTO usage_entry(day, session, hold, kind, seconds, at) VALUES(?, 'old', 'legacy', 'used', 10, ?)", dayOf(Date.now()), Date.now());
 	await schema.onMigrate(db as never);
+	const today = dayOf(Date.now());
+	for (const age of [13, 14, 89, 90]) {
+		await db.execute("INSERT INTO usage_entry(day, session, hold, kind, seconds, at) VALUES(?, 'history', ?, 'used', 1, ?)",
+			today - age, `history_${age}`, (today - age) * DAY_MS);
+	}
+	const offBook = await readUsage(db as never, effectiveUserLimits({}).usage, new Map());
 	const vars = await reload();
+	expect("billing off loads 14 UTC days and billing on loads 90, including today",
+		offBook.usedOn(today - 13) === 1 && offBook.usedOn(today - 14) === 0 &&
+		vars.usage.usedOn(today - 89) === 1 && vars.usage.usedOn(today - 90) === 0);
 	const svc = { ...base, vars, conn: { params: serviceParams() } };
 	const actions = user.config.actions!;
 	const now = Date.now();
@@ -412,7 +464,7 @@ async function memoryDbWithTables() {
 	const restored = await reload();
 	const open = restored.usage.holdOf("agent");
 	expect("a reload without the session restores the weights of both SQLite rows", !!open &&
-		restored.usage.month(now).usedSeconds === 14 && restored.usage.month(now).heldSeconds === open.seconds * 2);
+		restored.usage.usedInPeriod({ start: today * DAY_MS, end: (today + 1) * DAY_MS }) === 14 && restored.usage.month(now).heldSeconds === open.seconds * 2);
 
 	const layer = await getLayer();
 	layer.sandboxes.sizes = () => HOSTED_SIZES.map(id => ({ id, ...HOSTED_SIZE_SPECS[id], usdPerHour: null }));
@@ -428,8 +480,27 @@ async function memoryDbWithTables() {
 	expect("an old Pro resize choice on Free preserves the sandbox and its size", answer.sizeUnavailable === "large" && !answer.freed &&
 		meta.hostedSize === "standard" && meta.sandboxId === "old-box");
 
+	const next = { hostedSize: "large" as "large" | "standard" };
+	const notes: string[] = [];
+	const reserve = (id: string, keep: boolean) => actions.internalReserve(svc as never, { sessionId: "agent", id, hostedSize: next.hostedSize, fresh: true, keep });
+	const resumedLarge = await reserve("resume-large", false);
+	expect("resuming the same large sandbox on Free keeps its size and weight", resumedLarge.ok && !resumedLarge.clampedSize && vars.usage.holdOf("agent")?.weight === 2);
+	const claim = await actions.internalClaimPlace(svc as never, "agent", next.hostedSize);
+	const fresh = await reserve("replace-large", true);
+	if (fresh.ok) applySandboxClamp(next, fresh.clampedSize, text => notes.push(text));
+	if (claim.ok) applySandboxClamp(next, claim.clampedSize, text => notes.push(text));
+	expect("both a fresh hold and a replacement discovered at create clamp to standard and announce it once",
+		fresh.ok && fresh.clampedSize === "standard" && claim.ok && claim.clampedSize === "standard" &&
+		next.hostedSize === "standard" && vars.usage.holdOf("agent")?.weight === 1 &&
+		notes.length === 1 && notes[0] === "This agent's next sandbox is standard: large sandboxes are part of Pro.");
+	vars.items.limits.billing = null;
+	next.hostedSize = "large";
+	const offHold = await reserve("off-large", true);
+	expect("a fresh large sandbox with billing off retains its weight and size", offHold.ok && !offHold.clampedSize && vars.usage.holdOf("agent")?.weight === 2);
+	vars.items.limits.billing = { ...NO_SUBSCRIPTION };
+
 	const personal = { ...base, vars, conn: { params: { token: issueUserToken(profile, 0) } } };
-	const checkout = () => actions.billingCheckout(personal as never, { period: "month", origin: config.origins[0]! });
+	const checkout = (period: "month" | "year" = "month") => actions.billingCheckout(personal as never, { period, origin: config.origins[0]! });
 	const calls = () => fake.calls.filter(call => call.path === "/checkouts").length;
 	const before = calls();
 	const [one, two] = await Promise.all([checkout(), checkout()]);
@@ -448,7 +519,18 @@ async function memoryDbWithTables() {
 	const [row] = await db.execute<{ session: string; opened_at: number }>("SELECT session, opened_at FROM billing_checkout");
 	expect("the open checkout records its provider id and opening time", !!row && one.url.endsWith(row.session) && row.opened_at >= now);
 	await db.execute("UPDATE billing_checkout SET opened_at = ?", Date.now() - 30 * 60_000);
-	expect("an expired checkout can be replaced", (await checkout()).url !== one.url && calls() === before + 2);
+	expect("after 30 minutes the same interval reuses its link and the other interval is refused",
+		(await checkout()).url === one.url && String(await rejects(checkout("year"))).includes("You have a checkout open; finish or cancel it first.") && calls() === before + 1);
+	const remote = fake.checkouts.get(row!.session)!;
+	remote.created_at = new Date(Date.now() - DAY_MS).toISOString();
+	for (const status of ["processing", "succeeded"]) {
+		remote.payment_id = "pay_1";
+		remote.payment_status = status;
+		expect(`a ${status} payment still blocks a second interval after link expiry`,
+			String(await rejects(checkout("year"))).includes("You have a checkout open") && calls() === before + 1);
+	}
+	remote.payment_id = remote.payment_status = null;
+	expect("an unpaid checkout past Dodo's lifetime can be replaced with the other interval", (await checkout("year")).url !== one.url && calls() === before + 2);
 	await applyBillingEvent(db, event({ occurredAt: now - 4 }), now - 4, GRACE);
 	expect("an activation settles the checkout", (await db.execute("SELECT id FROM billing_checkout")).length === 0);
 	await applyBillingEvent(db, event({ kind: "payment_failed", occurredAt: now - 3 }), now - 3, 0);
@@ -471,6 +553,35 @@ async function memoryDbWithTables() {
 	personal.vars = await reload();
 	expect("a new subscription first seen on hold blocks checkout without granting Pro", effectivePlan(await readBilling(db), now) === "free" &&
 		/Manage billing/.test(String(await rejects(checkout()))) && calls() === before + 3);
+
+	// A report from two renewals ago reached Dodo but its acknowledgement was lost.
+	const oldStart = shiftMonths(now, -3);
+	const old = pro({ periodStart: oldStart, periodEnd: shiftMonths(oldStart, 1), subscriptionId: "sub_old" });
+	const oldInput = { uid: profile.uid, state: old, now: oldStart, usedSeconds: () => 11 * 60, includedSeconds: 0 };
+	fake.failNext = { status: 503, count: 1, took: true };
+	await rejects(reportOverage(db, dodo, oldInput));
+	const oldEvent = fake.calls.at(-1)!.body.events[0].event_id;
+	const totalBeforeWake = fake.minutes;
+	const alarms: { runAt: number; action: string }[] = [];
+	const awake = { ...personal, vars: await reload(), schedule: {
+		list: async () => alarms,
+		at: async (runAt: number, action: string) => { alarms.push({ runAt, action }); return "job"; },
+	} };
+	fake.failNext = { status: 503, count: 2 };
+	const wakeAt = Date.now();
+	await user.config.onWake!(awake as never);
+	await awake.vars.overageReport;
+	await user.config.onWake!(awake as never);
+	await awake.vars.overageReport;
+	expect("wake retries an earlier subscription's pending event without usage and arms one 15-minute retry",
+		fake.failNext.count === 0 && alarms.length === 1 && alarms[0]?.action === "internalRetryOverage" &&
+		alarms[0].runAt >= wakeAt + 15 * 60_000 && alarms[0].runAt <= Date.now() + 15 * 60_000);
+	await actions.internalRetryOverage({ ...awake, scheduledFire: { id: "job" } } as never);
+	const last = fake.calls.at(-1)!.body.events[0];
+	expect("the scheduled retry drains the earlier period under its original event id without billing it twice",
+		last.event_id === oldEvent && last.metadata.period_start === new Date(oldStart).toISOString() && last.metadata.subscription_id === "sub_old" &&
+		fake.minutes === totalBeforeWake && !(await db.execute("SELECT 1 FROM billing_usage WHERE sent = 0")).length);
+
 }
 
 console.log(failed === 0 ? "\nAll billing checks passed." : `\n${failed} billing check(s) failed.`);

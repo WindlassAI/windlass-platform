@@ -58,6 +58,15 @@ function anniversaryPeriod(anchor: number, now: number): MeterPeriod {
 	return { start: shiftMonths(anchor, months), end: shiftMonths(anchor, months + 1) };
 }
 
+/** Bound the provider's term before deriving any monthly anniversaries from it. */
+export function boundedPeriodStart(start: number, end: number | null, period: SubscriptionDates["period"]): number {
+	if (end === null) return start;
+	const earliest = end - (period === "year" ? 366 : 31) * DAY_MS;
+	if (start >= earliest) return start;
+	console.warn("[wlp] billing.period_clamped");
+	return earliest;
+}
+
 export function meterPeriod(dates: SubscriptionDates | null, now: number): MeterPeriod {
 	if (!dates) {
 		const date = new Date(now);
@@ -65,7 +74,7 @@ export function meterPeriod(dates: SubscriptionDates | null, now: number): Meter
 		return { start, end: shiftMonths(start, 1) };
 	}
 	const end = dates.periodEnd;
-	const start = dates.periodStart ?? now;
+	const start = boundedPeriodStart(dates.periodStart ?? now, end, dates.period);
 	if (end !== null && now >= end) return anniversaryPeriod(end, now);
 	if (dates.period === "month" && end !== null) return { start, end };
 	const window = anniversaryPeriod(start, Math.max(start, now));

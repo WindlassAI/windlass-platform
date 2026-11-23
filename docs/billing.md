@@ -34,7 +34,7 @@ back to Free deletes nothing: kept sandboxes, machines and items stay, and only 
 
 - **The unit.** One hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB). Small counts 0.5 and large counts 2.
 - **What is counted.** The minutes are counted from the same ledger as sandbox time (`server/src/usage.ts`). Each entry uses the sandbox weight stored when its hold opened (`server/src/billing/meter.ts`, `sessionSize`).
-- **The size** is the session's `hostedSize`. A session from before sizes has none and counts as small, the size it ran at. On Free, large is not offered: a launch that asks for it is refused, and a saved default of large steps down to standard.
+- **The size** is the session's `hostedSize`. A session from before sizes has none and counts as small, the size it ran at. On Free, large is not offered: a launch that asks for it is refused, and a saved default of large steps down to standard. After Pro ends, a kept large sandbox can resume. Its replacement runs at standard and the session records the change on its timeline.
 - **Resets.** Free resets at midnight UTC on the first of the calendar month. Monthly Pro starts at Dodo’s previous billing date and resets at its next billing date, including the time of day. Yearly Pro resets on each monthly anniversary within its paid term, on the last day in shorter months. The next month uses the original anniversary day again.
 - **Holds** count in the period when they open, including late settlements and corrections. The ledger entries stay as written. A separate index retains the opening instant. An entry without an opening instant counts at the start of its UTC day, and a missing weight counts as one.
 - **Machines are not metered.** Runs on users' own machines never enter the ledger.
@@ -98,8 +98,9 @@ WLP_DODO_PRODUCT_PRO_YEARLY=pdt_...
   - **Verified first.** Signatures are checked by the Standard Webhooks spec: `webhook-id`, `webhook-timestamp` and `webhook-signature`, HMAC-SHA256, five minutes of tolerance. A delivery that fails gets 401.
   - **Routed by account.** Checkout creates a customer with the signed-in account email (or reuses its saved customer id), binds the id to the uid in the durable service directory, and sends it to Dodo. Webhooks look up this customer id first. Deliveries can use `wlp_uid` metadata as a fallback. When both identify an account, they must agree. A disagreement is logged by ids and dropped. A delivery naming no account of this deployment is logged (`billing.unmatched`) and answered 200.
   - **Applied once.** Each delivery is applied once: its id is written in the same transaction as the change. An older event that arrives late changes nothing.
-  - **Mismatches are logged and ignored.** This covers another customer's event, and a second subscription while one runs. Refund such a second subscription by hand.
+  - **Mismatches are logged and ignored.** This covers another customer's event, and a second subscription while one runs. Watch for the warning `billing.double_subscription`. Use its customer and subscription ids to identify the duplicate, cancel it in Dodo, and refund its charge.
   - **Retries.** 5xx means "send it again"; Dodo retries with backoff for about a day and a half.
+- **Checkout links.** An open link is reused for its billing interval. Switching intervals waits for settlement or expiry. Dodo provides a status lookup and a 24-hour lifetime for these sessions. A processing or successful payment keeps the account from opening a second checkout while its webhook is pending.
 - **Event mapping.**
 
   | Dodo event | What it does |
@@ -114,7 +115,7 @@ WLP_DODO_PRODUCT_PRO_YEARLY=pdt_...
 - **Overage.**
   - **Only while a monthly Pro subscription runs** (active, or in grace) with a customer and a subscription id. Free and yearly Pro have no overage.
   - **Whole minutes,** rounded down, and never more than the cap pays for.
-  - **Recorded before it is sent.** The minutes not yet reported are written down as pending under one `event_id`, then sent to `POST /events/ingest`. They are sent again under the same id until Dodo takes them; Dodo ignores an `event_id` it has already seen. The event id includes the subscription id and period start. A late settlement for the preceding period uses that period’s id and allowance.
+  - **Recorded before it is sent.** The minutes not yet reported are written down as pending under one `event_id`, then sent to `POST /events/ingest`. They are sent again under the same id until Dodo takes them; Dodo ignores an `event_id` it has already seen. The event id includes the subscription id and period start. A late settlement for the preceding period uses that period’s id and allowance. The account retries pending reports on wake and schedules another attempt in 15 minutes after a failure.
   - **The log line** is `billing.usage_reported`.
 - **Logs** carry ids only: account, customer, subscription, delivery and event. They never carry names, emails, cards or addresses, and never the provider's own error text.
 

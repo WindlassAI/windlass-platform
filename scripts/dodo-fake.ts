@@ -23,6 +23,7 @@ export const FAKE_KEY = "dodo_test_fake";
 export interface FakeCall { method: string; path: string; query: URLSearchParams; body: any; auth: string | null }
 
 export class FakeDodo {
+	readonly checkouts = new Map<string, { id: string; created_at: string; payment_id: string | null; payment_status: string | null }>();
 	readonly calls: FakeCall[] = [];
 	/** Event ids taken by /events/ingest, and the minutes each carried. */
 	readonly ingested = new Map<string, number>();
@@ -44,8 +45,11 @@ export class FakeDodo {
 		if (init.method === "POST" && parsed.pathname === "/customers" && body.name && body.email) return Response.json({ customer_id: "cus_1" });
 		if (init.method === "POST" && parsed.pathname === "/checkouts" && body.customer?.customer_id) {
 			const id = `cks_${randomBytes(6).toString("hex")}`;
+			this.checkouts.set(id, { id, created_at: new Date().toISOString(), payment_id: null, payment_status: null });
 			return Response.json({ session_id: id, checkout_url: `https://test.checkout.dodopayments.com/session/${id}` });
 		}
+		const checkout = this.checkouts.get(parsed.pathname.slice("/checkouts/".length));
+		if (init.method === "GET" && parsed.pathname.startsWith("/checkouts/") && checkout) return Response.json(checkout);
 		const portal = /^\/customers\/([^/]+)\/customer-portal\/session$/.exec(parsed.pathname);
 		if (init.method === "POST" && portal) return Response.json({ link: `https://test.customer.dodopayments.com/portal/${portal[1]}` });
 		if (init.method === "POST" && parsed.pathname === "/events/ingest") return Response.json({ ingested_count: this.take(body) });

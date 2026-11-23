@@ -9,6 +9,8 @@
  *                        https://docs.dodopayments.com/developer-resources/subscription-integration-guide.md
  *                        POST /checkouts { product_cart: [{ product_id, quantity }], customer?, return_url, metadata }
  *                        answers { session_id, checkout_url }; a subscription product in the cart is a subscription
+ *   checkout status      https://docs.dodopayments.com/api-reference/checkout-sessions/get-checkouts.md
+ *                        GET /checkouts/{id} returns created_at and payment status. Default sessions last 24 hours.
  *   create customer      https://docs.dodopayments.com/api-reference/customers/create-customer.md
  *                        POST /customers { name, email, metadata } answers { customer_id, ... }
  *   customer portal      https://docs.dodopayments.com/api-reference/customers/create-customer-portal-session.md
@@ -131,6 +133,15 @@ export class DodoProvider implements BillingProvider {
 		const url = text(answer.checkout_url);
 		if (!url || !url.startsWith("https://")) throw new BillingProviderError(502, "no_checkout_url");
 		return { id, url };
+	}
+
+	async checkoutExpired(session: string, now: number): Promise<boolean> {
+		// Dodo has no checkout void endpoint. An in-flight or successful payment still needs its webhook.
+		const status = await this.call<{ id: string; created_at: string; payment_id: string | null; payment_status: string | null }>(
+			"GET", `/checkouts/${encodeURIComponent(session)}`);
+		const created = time(status.created_at);
+		const unpaid = (status.payment_id === null && status.payment_status === null) || status.payment_status === "failed" || status.payment_status === "cancelled";
+		return status.id === session && created !== null && now >= created + 24 * 60 * 60_000 && unpaid;
 	}
 
 	async portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }> {

@@ -49,7 +49,7 @@ export interface CheckoutInput {
 	returnUrl: string;
 }
 
-export interface UsageReport {
+export type UsageReport = {
 	/** The provider's dedupe key: a retry with the same id is counted once. */
 	eventId: string;
 	customerId: string;
@@ -58,12 +58,13 @@ export interface UsageReport {
 	periodStart: number;
 	/** Overage minutes to add: whole minutes, above zero. */
 	minutes: number;
-}
+};
 
 export interface BillingProvider {
 	readonly name: string;
 	createCustomer(uid: string, email: string): Promise<string>;
 	createCheckout(input: CheckoutInput): Promise<{ id: string; url: string }>;
+	checkoutExpired(session: string, now: number): Promise<boolean>;
 	portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
 	/** Null for a signature that does not verify, or a delivery too old. An empty list for events billing does not use. */
 	parseWebhook(headers: Headers, body: string, now: number): BillingEvent[] | null;

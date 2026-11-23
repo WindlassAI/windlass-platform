@@ -34,8 +34,29 @@ export async function billingWebhookRoute(request: Request): Promise<Response> {
 	if (request.method !== "POST") return answer(405, "Use POST.");
 	const declared = Number(request.headers.get("content-length") ?? 0);
 	if (declared > MAX_BODY_BYTES) return answer(413, "Too large.");
-	const body = await request.text().catch(() => null);
-	if (body === null || Buffer.byteLength(body) > MAX_BODY_BYTES) return answer(400, "The body could not be read.");
+	const reader = request.body?.getReader();
+	let body = "";
+	if (reader) {
+		const decoder = new TextDecoder();
+		let bytes = 0;
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				bytes += value.byteLength;
+				if (bytes > MAX_BODY_BYTES) {
+					void reader.cancel().catch(() => undefined);
+					return answer(413, "Too large.");
+				}
+				body += decoder.decode(value, { stream: true });
+			}
+			body += decoder.decode();
+		} catch {
+			return answer(400, "The body could not be read.");
+		} finally {
+			reader.releaseLock();
+		}
+	}
 	const events = settings.provider.parseWebhook(request.headers, body, Date.now());
 	if (events === null) {
 		console.warn("[wlp] billing.webhook_refused: the signature did not verify, or the delivery is too old");

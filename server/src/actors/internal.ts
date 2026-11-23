@@ -88,7 +88,7 @@ export interface ReserveRequest {
  * The answer: the hold and how many seconds it is for, or which limit refused it ("gone": the user
  * has no such session any more). Either way with the user's numbers as they are then.
  */
-export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; numbers: UsageNumbers } | { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
+export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: string; seconds: number }; numbers: UsageNumbers } | { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
@@ -142,7 +142,7 @@ export interface UserInternal {
 	/** The session has no sandbox any more: its place among the kept ones is free. */
 	internalRelease(sessionId: string): Promise<void>;
 	/** The session's place among the kept sandboxes, claimed right before its sandbox is made (`UsageBook.claim`). */
-	internalClaimPlace(sessionId: string): Promise<{ ok: boolean; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
+	internalClaimPlace(sessionId: string, hostedSize?: HostedSize): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
 	/** The models the user may choose and the efforts of each (account-models.ts): their plan's, or what stands in for it. */
 	internalModels(): Promise<ModelList>;
 	/** A work item's summary changed (user-items.ts). */
