@@ -138,7 +138,8 @@ class Server {
 /**
  * The server's process: the real server, whose machine actor fails `internalRemoveSandbox` while
  * `Server.refusal` exists, as one whose storage is away; and whose session has one action more,
- * `e2eMeta`, which reads its stored meta for a check (no page shows the machine's name kept at launch).
+ * `e2eMeta`, which reads its stored meta for a check (no page shows the machine's name kept at launch), and
+ * `e2eCheckpoint`, the turn whose checkpoint is stored (runner/journal.ts), or null.
  */
 async function serverNode(): Promise<void> {
 	if (process.env.WLP_TEST_MODEL_SCRIPT) {
@@ -147,7 +148,10 @@ async function serverNode(): Promise<void> {
 		SandboxWindlass.prototype.demoScript = () => script;
 	}
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
-	Object.assign(agentSession.config.actions!, { e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta });
+	Object.assign(agentSession.config.actions!, {
+		e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta,
+		e2eCheckpoint: async (c: { db: { execute<T>(sql: string): Promise<T[]> } }) => (await c.db.execute<{ turn: number }>("SELECT turn FROM turn_checkpoint"))[0]?.turn ?? null,
+	});
 	const { machine } = await import("../server/src/actors/machine.js");
 	const actions = machine.config.actions!;
 	Object.assign(actions, { e2eDestroy: (c: { destroy(): void }) => c.destroy() });
@@ -1373,6 +1377,9 @@ async function main(): Promise<void> {
 				const resets = runner.served.get(main.id)?.resets.length ?? 0;
 				const { turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" });
 				const box = await until("the turn's engine to stream", () => watch.windlass(number) >= 3 && boxesOf(main.id).find((box) => box.engines.size === 1));
+				// A server that stops before the turn's first timeline write has nothing to take up: that is the fallback, not this check.
+				const session = client.agentSession.get([uid, main.id], { params: { token } }) as unknown as { e2eCheckpoint(): Promise<number | null> };
+				await until("the turn's checkpoint to be stored", async () => (await session.e2eCheckpoint()) === number);
 				const starts = runner.engineStarts;
 				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
 				closed = true;
@@ -1442,6 +1449,8 @@ async function main(): Promise<void> {
 			try {
 				({ turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" }));
 				await until("the turn's engine to stream", () => watch.windlass(number) >= 3);
+				const session = client.agentSession.get([uid, main.id], { params: { token } }) as unknown as { e2eCheckpoint(): Promise<number | null> };
+				await until("the turn's checkpoint to be stored", async () => (await session.e2eCheckpoint()) === number);
 				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
 			} catch (error) {
 				await watch.conn.dispose().catch(() => undefined);
@@ -1455,11 +1464,12 @@ async function main(): Promise<void> {
 			const end = await until(`turn ${number} to end`, async () => (await snapshotOf(client, uid, main.id, token).catch(() => null))?.timeline.find((item) => item.turn === number && item.kind === "turn.ended"), 120_000);
 			assert(end.kind === "turn.ended" && end.outcome !== "succeeded", `the turn ${end.kind === "turn.ended" ? end.outcome : "?"}`);
 			assert(server.log().split("turn.take_up session=" + main.id).length === takeUps + 1, "the restarted server did not try to take the turn up");
-			const { ended } = await turn(main.id, "Write the primes");
-			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
+			// Back to the default for the checks that follow; the next turn leaves the session awake, as they expect.
 			await server.stop();
 			await server.start({ ...github.env(), WLP_ITEMS: "1" });
 			await machineIs("online");
+			const { ended } = await turn(main.id, "Write the primes");
+			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
 			return `turn ${number} ${end.kind === "turn.ended" ? `${end.outcome}: ${String(end.message).split("\n")[0]}` : ""}; next turn succeeded`;
 		});
 
