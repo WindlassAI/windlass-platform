@@ -33,7 +33,8 @@ const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "gith
 export interface CleanPage {
 	before: ItemCursor | null;
 	limit: number;
-	ended: boolean;
+	/** true: only ended items; false: only open ones; null: both. */
+	ended: boolean | null;
 	repository: GithubId | null;
 	source: ItemSummary["source"] | null;
 }
@@ -56,7 +57,7 @@ export function cleanItemPage(raw: unknown): CleanPage | null {
 	if (input.ended !== undefined && typeof input.ended !== "boolean") throw new ItemPageProblem("Say true or false for ended items only.");
 	if (input.repository !== undefined && input.repository !== null && !isGithubId(input.repository)) throw new ItemPageProblem("Name the repository by GitHub's id for it.");
 	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"])) throw new ItemPageProblem("Filed from is web, api or github.");
-	return { before, limit, ended: input.ended === true, repository: (input.repository ?? null) as GithubId | null, source: (input.source ?? null) as ItemSummary["source"] | null };
+	return { before, limit, ended: typeof input.ended === "boolean" ? input.ended : null, repository: (input.repository ?? null) as GithubId | null, source: (input.source ?? null) as ItemSummary["source"] | null };
 }
 
 /** Newest filed first, by id between equals: the order of the list and of its pages. */
@@ -71,7 +72,7 @@ const after = (item: Pick<ItemSummary, "createdAt" | "id">, cursor: ItemCursor) 
 export function itemPage(list: readonly ItemSummary[], page: CleanPage): ItemSummary[] {
 	const kept = list.filter(
 		(item) =>
-			(!page.ended || ENDED.has(item.state)) &&
+			(page.ended === null || ENDED.has(item.state) === page.ended) &&
 			(page.repository === null || String(item.repository.id) === String(page.repository)) &&
 			(page.source === null || item.source === page.source) &&
 			(page.before === null || after(item, page.before)),

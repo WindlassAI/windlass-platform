@@ -1376,8 +1376,8 @@ export interface ItemCursor {
 
 /**
  * A page of the user's work items (`listItems`), in the list's order: newest filed first. `ended`
- * keeps done, failed and cancelled ones; `repository` and `source` keep one repository's and one way
- * of filing's, as the Factory's filters do.
+ * true keeps done, failed and cancelled ones, false keeps the others, and left out keeps both;
+ * `repository` and `source` keep one repository's and one way of filing's, as the Factory's filters do.
  */
 export interface ItemListPage {
 	before?: ItemCursor | null;

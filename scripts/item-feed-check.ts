@@ -159,6 +159,11 @@ await check("listItems without a page still answers with every listed item", () 
 	assert.equal(list.length, 64); // 3 open, 60 ended, the child that asks
 	assert.equal(list.filter((one) => one.id !== "i_child_asks").length, 63);
 	assert.equal(itemActions.listItems(c, { ended: true, limit: 100 }).length, 60);
+	// `ended: false` keeps the open ones only: it listed cancelled items as open before.
+	const open = itemActions.listItems(c, { ended: false, limit: 100 });
+	assert.deepEqual(open.map((one) => one.id).sort(), list.filter((one) => !["done", "failed", "cancelled"].includes(one.state)).map((one) => one.id).sort());
+	assert.equal(open.length, 4);
+	assert.equal(itemActions.listItems(c, { limit: 100 }).length, 64, "left out, both");
 });
 
 await check("an item that ends: the next broadcast counts it, and carries it where it is among the newest filed", async () => {

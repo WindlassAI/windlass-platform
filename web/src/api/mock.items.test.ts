@@ -606,8 +606,9 @@ describe("a page of work items", () => {
 		const third = itemPage(list, page({ limit: 2, before: nextCursor(second, 2) }));
 		expect(third.map((one) => one.id)).toEqual(["e"]);
 		expect(nextCursor(third, 2)).toBeNull();
-		// Ended only, one repository, one way of filing.
+		// Ended only, open only, one repository, one way of filing.
 		expect(itemPage(list, page({ ended: true })).map((one) => one.id)).toEqual(["c", "b", "a", "e"]);
+		expect(itemPage(list, page({ ended: false })).map((one) => one.id)).toEqual(["d"]);
 		expect(itemPage(list, page({ ended: true, repository: 7102 })).map((one) => one.id)).toEqual(["e"]);
 		expect(itemPage(list, page({ source: "api" }))).toEqual([]);
 	});
