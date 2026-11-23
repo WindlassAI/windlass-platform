@@ -233,12 +233,12 @@ export class AcpHarness implements Harness {
 		const stream = updateStream(redactor, update => input.onAcpUpdate?.(update));
 		const stderr = new RedactingStream(redactor);
 		let errorLines = "";
-const keepError = (piece: string) => {
-	result.stderrTail = (result.stderrTail + piece).slice(-4096);
-	if (!profile.limitGiveUp || phase !== "running") return;
-	errorLines = (errorLines + piece).slice(-8192);
-	if (profile.limitGiveUp.test(errorLines)) endFor("usage_limit", "The provider's usage or rate limit was reached.");
-};
+		const keepError = (piece: string) => {
+			result.stderrTail = (result.stderrTail + piece).slice(-4096);
+			if (!profile.limitGiveUp || phase !== "running") return;
+			errorLines = (errorLines + piece).slice(-8192);
+			if (profile.limitGiveUp.test(errorLines)) endFor("usage_limit", "The provider's usage or rate limit was reached.");
+		};
 		const mark = (point: StartMark) => {
 			try { input.onStartMark?.(point); } catch { /* A listener's failure must not stop the turn. */ }
 		};
@@ -564,8 +564,8 @@ const keepError = (piece: string) => {
 			phase = "ended";
 			acp.steps = steps.steps;
 			clearInterval(idle);
-if (escaped !== null && !input.signal?.aborted) result.failure = { reason: SANDBOX_ESCAPE_REFUSED, message: escaped };
-else if (ended !== null && !input.signal?.aborted) result.failure = ended;
+			if (escaped !== null && !input.signal?.aborted) result.failure = { reason: SANDBOX_ESCAPE_REFUSED, message: escaped };
+			else if (ended !== null && !input.signal?.aborted) result.failure = ended;
 			questions.abort();
 			stream.flush();
 			if (run && isTurnSandbox(handle)) {
