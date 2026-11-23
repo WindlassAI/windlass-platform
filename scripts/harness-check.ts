@@ -100,7 +100,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	// What the screens are sent: the same flags, read-only, and nothing of the record that is not theirs.
 	const sent = sessionCapabilities("claude");
 	assert.deepEqual(Object.keys(sent).sort(), ["cancelCall", "checks", "envLists", "models", "planMode", "platformTools", "projectServerApproval", "reportScreenshots", "usage"]);
-	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
+	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
 	assert.deepEqual(sessionCapabilities(undefined), sessionCapabilities("windlass"));
 	assert.ok(sessionCapabilities("windlass").cancelCall && sessionCapabilities("windlass").usage === "tokens" && sessionCapabilities("codex").planMode);
 	assert.equal(harnessName("codex"), "Codex");
@@ -136,7 +136,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
 	// Codex takes them through its image's wlp-acp-mcp (sandbox/harness/codex/requirements.toml).
-	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "request_secret", "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
 	const { MCP_TOOLS } = await import("../server/src/platform-tools.js");
 	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools].sort(), [...MCP_TOOLS].sort(), `${acp}'s tools are exactly those that may be served over MCP`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
@@ -155,6 +155,22 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	}
 
 	const redactor = new SecretRedactor([{ name: "STORE_TOKEN", value: "s3cr3t-value-123" }]);
+	const { requestSecret } = await import("../server/src/agent-publish.js");
+	const args = { name: "SERVICE_TOKEN", why: "Run the integration test." };
+	assert.deepEqual(requestSecret(args, false, false, redactor), {
+		request: args, told: "Asked your person for SERVICE_TOKEN; stop here and say what you will do once it is set.",
+	});
+	for (const name of ["lower", "A", "A".repeat(65), "PATH", "WLP_SESSION_BEARER", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "INITIAL_AGENT_MODE", "BAD-NAME"]) {
+		assert.equal(requestSecret({ ...args, name }, false, false, redactor).request, undefined);
+	}
+	assert.deepEqual(requestSecret(args, false, true, redactor), { told: "A request coming from third-party text was not shown as a secret prompt." });
+	assert.equal(requestSecret(args, true, false, redactor).request, undefined);
+	assert.equal(requestSecret({ ...args, why: "" }, false, false, redactor).request, undefined);
+	assert.equal(requestSecret({ ...args, why: "x".repeat(241) }, false, false, redactor).request, undefined);
+	for (const reach of ["host", "sandbox"] as const) {
+		const tools = (await import("../server/src/platform-tools.js")).turnPlatformTools({ onRequestSecret: call } as never, reach);
+		assert.equal(tools.get("request_secret"), call);
+	}
 	const fresh = { already: false, left: 3 };
 	const taken = askPerson({ question: "Use\u0000 the ‮right‬ store?​ With s3cr3t-value-123 in it.\n\n\n\nSay which.", options: ["SQLite", " SQLite ", "Post⁦gres"] }, fresh, redactor);
 	assert.equal(taken.told, ASK_TAKEN);
@@ -213,14 +229,14 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const offers: Array<Parameters<typeof platformTools>[0]> = [{ plan: true, publish: false, report: false, push: false }, { plan: true, crossRepo: true, publish: false, report: false, push: false }, { review: true, publish: false, report: false, push: false }];
 	for (let bits = 0; bits < 64; bits++) {
 		const on = (n: number) => (bits & (1 << n)) !== 0;
-		offers.push({ publish: on(0), report: on(1), push: on(2), ask: on(3), screenshots: on(4), ...(on(5) && { mcp: { pushes: 5, fetches: 3 } }) });
+		offers.push({ publish: on(0), report: on(1), push: on(2), ask: on(3), secret: true, screenshots: on(4), ...(on(5) && { mcp: { pushes: 5, fetches: 3 } }) });
 	}
 	const declared = new Map<string, unknown>();
 	for (const offer of offers) for (const tool of platformTools(offer, 60_000)) declared.set(`${tool.name} ${JSON.stringify(offer)}`, tool.inputSchema);
 	// What a turn's tools declare over MCP is the same declarations, filtered (platform-tools.ts).
 	const all = turnPlatformTools({ onReport: () => "", onAsk: () => "", onPush: () => "", onFetchBase: () => "", onPublish: () => "" } as never);
 	for (const tool of platformToolDeclarations(all, { mcp: true })) declared.set(`${tool.name} over MCP`, tool.inputSchema);
-	for (const name of ["file_plan", "file_review", "report", "ask_person", "push", "fetch_base", "publish"]) assert.ok([...declared.keys()].some(key => key.startsWith(name + " ")), `${name} is among the declarations checked`);
+	for (const name of ["file_plan", "file_review", "report", "ask_person", "request_secret", "push", "fetch_base", "publish"]) assert.ok([...declared.keys()].some(key => key.startsWith(name + " ")), `${name} is among the declarations checked`);
 	for (const [where, schema] of declared) {
 		assert.ok(isObject(schema) && schema.type === "object", `${where}: Windlass takes only an input schema of type "object"`);
 		assert.deepEqual(problems(schema), [], `${where}: a schema Windlass 0.6.0 refuses`);
@@ -519,7 +535,7 @@ async function clientCheck(state: string) {
 	const input = { prompt: "secret:" + secret, secrets };
 	const guards: Partial<RunTurnInput>[] = [
 		{ servers: [{ name: "user", definition: {} }] },
-		{ secrets: { ...secrets, env: { FIXTURE: secret } } }, { secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
+		{ secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
 		{ script: { responses: [] } }, { reportScreenshots: true },
 		{ onEvent() {} }, { onUnasked() {} }, { onServerApproved() {} }, { onServers() {} },
 		{ onServerQuestion: async () => false }, { onPlan: () => "" }, { onReview: async () => "" },
@@ -537,6 +553,7 @@ async function clientCheck(state: string) {
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
 	/** The text of each `session/prompt` the adapter was sent. */
+	let expectSecret = false;
 	const prompts: string[] = [];
 	const answers: unknown[] = [];
 	const updates: AcpUpdate[] = [];
@@ -547,7 +564,7 @@ async function clientCheck(state: string) {
 		start(argv: string[], opts: StartOptions) {
 			assert.deepEqual(argv, [variant === "codex-signed-out" ? "wlp-codex-acp" : "wlp-claude-acp"]);
 			assert.deepEqual(opts.env, {});
-			assert.equal(opts.secretEnv, undefined);
+			assert.ok(expectSecret ? opts.secretEnv?.FIXTURE === secret : opts.secretEnv === undefined, "only approved values reach the protected process environment");
 			assert.equal(opts.cwd, "/workspace");
 			let finish!: (end: ProcessEnd) => void;
 			const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
@@ -669,6 +686,10 @@ async function clientCheck(state: string) {
 		assert.equal(stored.account.limitedUntil, until);
 		assert.doesNotMatch(JSON.stringify(stored), /canary/);
 	}
+	expectSecret = true;
+	const withSecret = await harness.runTurn(handle, { ...input, secrets: { ...secrets, env: { FIXTURE: secret } } });
+	expectSecret = false;
+	assert.equal(withSecret.failure, null);
 	methods.length = 0;
 	let lateSteer: Promise<void> | undefined;
 	const marks: string[] = [];
@@ -909,8 +930,8 @@ async function platformToolsCheck(state: string) {
 	const { ASK_AGAIN, ASK_TAKEN, REPORT_TAKEN, askPerson } = await import("../server/src/agent-publish.js");
 	const { fileReport } = await import("../server/src/factory/review.js");
 	const harness = harnessOf({ machine: { name: "Bench" } } as SandboxLayer, "claude");
-	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "publish", "push", "fetch_base"], "all but the planner's and the reviewer's tools may be served over MCP");
-	for (const tool of ["report", "ask_person", "push", "fetch_base"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
+	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], "all but the planner's and the reviewer's tools may be served over MCP");
+	for (const tool of ["report", "ask_person", "request_secret", "push", "fetch_base"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
 	assert.equal(tools.TOOL_REACH.publish, "asked", "publish is served over MCP only because it asks every time");
 	for (const tool of ["file_plan", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
 	assert.deepEqual({ ...tools.MCP_LIMITS }, { push: 5, fetch_base: 3 });

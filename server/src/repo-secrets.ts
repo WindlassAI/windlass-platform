@@ -134,6 +134,16 @@ export function isReservedName(name: string): boolean {
 	return RESERVED_NAMES.includes(upper) || RESERVED_PREFIXES.some((prefix) => upper.startsWith(prefix));
 }
 
+/** These variables configure the agent adapters, model relays and Git credentials. */
+const REQUEST_RESERVED_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "INITIAL_AGENT_MODE", "DISABLE_MCP_CONFIG_FILTERING", "MCP_TOOL_TIMEOUT", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"];
+const REQUEST_RESERVED_PREFIXES = ["CODEX_", "CLAUDE_", "OPENCODE_", "GIT_CONFIG_"];
+
+/** A request may name an ordinary environment variable, never one owned by the platform or its harness. */
+export function validRequestedSecretName(name: unknown): name is string {
+	return typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && !isReservedName(name)
+		&& !REQUEST_RESERVED_NAMES.includes(name) && !REQUEST_RESERVED_PREFIXES.some(prefix => name.startsWith(prefix));
+}
+
 /** The name as it is saved: an environment variable's. Throws SecretProblem. */
 export function cleanSecretName(raw: unknown): string {
 	if (typeof raw !== "string" || raw === "") throw new SecretProblem("A secret needs a name.");

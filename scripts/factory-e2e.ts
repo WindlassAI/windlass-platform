@@ -2277,7 +2277,8 @@ if (only.length && only.every(prefix => prefix.startsWith("machine"))) {
 const main = new Server();
 try {
 	// Room for every sandbox these items leave running: the cap on them has a check of its own (factory-check.ts, `admit`).
-	const { client, auth, user } = await world(main, standin, { WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
+	const requestedValue = randomBytes(32).toString("hex");
+	const { client, auth, user } = await world(main, standin, { WLP_FAKE_REQUEST_VALUE: requestedValue, WLP_FACTORY_HOSTED_RUNNING: "20", WLP_FAKE_DELAY_MS: "25" });
 	const untrustedMarks = marksIn(client, auth);
 
 	let token = "";
@@ -2422,7 +2423,7 @@ try {
 		const pushed = await untilItem(user, item.id, "the push", (view) => view.pullRequest !== null, 60_000);
 		const pull = standin.pulls.find((one) => one.repository === harbor.id && one.number === pushed.pullRequest?.number);
 		assert(pull, "no pull request");
-		setCi(harbor, pull.head, "failure");
+		setCi(harbor, pull.head, "failure", "service test (secret)");
 		const asked = await untilItem(user, item.id, "the question", (view) => view.question !== null, CI_WAIT_MS * 2);
 		const fixes = said(asked).filter((line) => line.startsWith("CI failed")).length;
 		// The fix turn ran (the same failure came back after it), as on a profile that marks the text.
@@ -2431,12 +2432,70 @@ try {
 		assert(marks.prompts.length === 0 && marks.taint === null, `the fix turn reached Windlass marked: ${JSON.stringify(marks)}`);
 		const { hardenedUnmarkedNote, untrustedWords } = await import("../server/src/factory/untrusted.js");
 		const timeline = (await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot()).timeline;
+		assert(timeline.some(e => e.kind === "platform" && e.text.includes("third-party text was not shown as a secret prompt")) && !timeline.some(e => e.kind === "platform" && e.secretRequest), "outside text produced a secret prompt or no refusal notice");
 		const notes = timeline.filter((entry) => entry.kind === "platform" && entry.text === hardenedUnmarkedNote([untrustedWords.ci(pull.head)]));
 		assert(notes.length === 1, `the timeline's line: ${notes.length}; ${JSON.stringify(timeline.filter((entry) => entry.kind === "platform").map((entry) => (entry as { text?: string }).text))}`);
 		const prompt = JSON.stringify(timeline.filter((entry) => entry.kind === "user"));
 		assert(prompt.includes("untrusted"), "the CI log was not labelled in the prompt");
 		await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
 		return `${fixes} CI failures, the fix ran unmarked; “${notes[0] && (notes[0] as { text: string }).text}”`;
+	});
+
+	await check("ask-secret: an item accepts the value only through the secret action", async () => {
+		const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Test the service", body: "Use the service. (secret)", start: true });
+		const asked = await untilItem(user, item.id, "the secret question", v => !!v.question, 90_000);
+		const q = asked.question;
+		assert(q?.kind === "secret_needed" && q.secret?.name === "SERVICE_TOKEN" && q.secret.why === "Run the service test.", "missing secret request");
+		assert(q.choices.map(c => c.label).join("|") === "Add it and continue|Continue without it|Give up", "unexpected secret choices");
+		const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
+		await refused(() => user.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "add_secret" } }), "bad_input");
+		await refused(() => user.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "without_secret", note: requestedValue } }), "item_conflict");
+		await session.setRequestedSecret({ requestId: q.id, name: q.secret.name, value: requestedValue });
+		const view = await untilItem(user, item.id, "the resumed step", v => !!v.pullRequest, 90_000);
+		const snapshot = await session.snapshot();
+		assert(snapshot.timeline.some(e => e.kind === "windlass" && e.event.type === "fake.secret_checked" && e.event.data?.matches === true), "the sandbox did not receive the value and continuation");
+		const list = await user.repositorySecrets({ repositoryId: harbor.id, profile: "docker-hardened" });
+		assert(list.secrets.some(s => s.name === q.secret!.name && s.scope === "agent"), "repository secret missing");
+		const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === view.pullRequest?.number);
+		assert(pull, "missing test pull request");
+		assert(!JSON.stringify([snapshot, view, list, pull.body, pull.comments, main.text]).includes(requestedValue), "value escaped into a public view or log");
+		await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+		await user.deleteRepositorySecret({ repositoryId: harbor.id, profile: "docker-hardened", name: q.secret.name });
+		return "repository secret reached the next turn";
+	});
+
+	await check("ask-secret: skip and give up", async () => {
+		for (const choice of ["without_secret", "give_up"] as const) {
+			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Optional service", body: "Try the service. (secret)", start: true });
+			const asked = await untilItem(user, item.id, "the secret question", v => !!v.question, 90_000);
+			assert(asked.question?.kind === "secret_needed", "wrong question");
+			const view = await user.actOnItem({ id: item.id, action: { kind: "answer", question: asked.question.id, choice } });
+			if (choice === "give_up") assert(view.state === "failed" && view.run?.stopReason === "secret_needed", "give up did not end the run");
+			else {
+				await untilItem(user, item.id, "work continued", v => !!v.pullRequest, 90_000);
+				const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
+				assert((await session.snapshot()).timeline.some(e => e.kind === "user" && e.text.includes("Continue without SERVICE_TOKEN.")), "missing skip prompt");
+				await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+			}
+		}
+		return "both choices settled the question";
+	});
+
+	await check("ask-secret: a plain session sets an account secret and continues", async () => {
+		const created = await user.createSession({ profile: "docker-hardened" });
+		const session = client.agentSession.get([auth.profile.uid, created.id], { params: { token: auth.token } });
+		await session.prompt({ text: "Use the service. (secret)" });
+		const request = await waitFor("the session secret request", async () => (await session.snapshot()).secretRequest, 90_000);
+		await session.setRequestedSecret({ requestId: request.id, name: request.name, value: requestedValue });
+		const snapshot = await waitFor("the next turn’s sandbox", async () => {
+			const s = await session.snapshot();
+			return s.timeline.some(e => e.kind === "windlass" && e.event.type === "fake.secret_checked" && e.event.data?.matches === true) && s;
+		}, 90_000);
+		const list = await user.accountSecrets({ profile: created.profile });
+		assert(!snapshot.secretRequest && list.secrets.some(s => s.name === request.name && s.scope === "agent"), "the account request was not fulfilled");
+		assert(!JSON.stringify([snapshot, list, main.text]).includes(requestedValue), "value escaped into a public view or log");
+		await user.deleteAccountSecret({ profile: created.profile, name: request.name });
+		return "account secret reached the next turn";
 	});
 
 	await check("ask: the builder asks its person, the item waits with the agent's words apart, and the answer is the next turn's message", async () => {

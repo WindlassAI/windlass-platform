@@ -143,6 +143,8 @@ const CHOICES: Record<ChoiceId, string> = {
 	wait: "Keep waiting",
 	hand_over: "Hand it over as it is",
 	give_up: "Give up",
+	add_secret: "Add it and continue",
+	without_secret: "Continue without it",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
 	run_anyway: "Run it anyway",

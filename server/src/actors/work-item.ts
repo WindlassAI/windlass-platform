@@ -68,7 +68,7 @@ import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect 
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi, rerunCancelled } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
-import { grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
+import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
 
 /** What the item knows around the blueprint's `FactoryItem`. */
@@ -114,6 +114,7 @@ interface Stored {
 }
 
 interface ItemVars {
+	savingSecret?: boolean;
 	/** Null for an actor `user` did not create. */
 	stored: Stored | null;
 	/** The tail of the write queue: every transaction runs after the one before it. */
@@ -191,7 +192,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -1564,6 +1565,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 		case "send_back":
 			return { kind: "send_back", at, by, note: note(action.note, true) as string };
 		case "answer": {
+			if (action.choice === "add_secret") throw bad("Use the dedicated secret action to set the value.");
 			if (typeof action.question !== "string" || typeof action.choice !== "string") throw bad("Say which question this answers, and which choice.");
 			const budget: Record<string, number> = {};
 			for (const [name, most] of Object.entries(MAX_RAISE)) {
@@ -1769,11 +1771,29 @@ export const workItem = actor({
 			return await viewOf(c);
 		},
 
+		internalSetRequestedSecret: async (c, input: RequestedSecretSave): Promise<void> => {
+			requireServiceFor(c, "call");
+			const stored = c.vars.stored;
+			const question = stored?.item.question;
+			if (!stored || question?.kind !== "secret_needed" || question.id !== input.requestId || question.secret?.name !== input.name || c.vars.savingSecret)
+				throw new UserError("That secret request is no longer open.", { code: "item_conflict" });
+			c.vars.savingSecret = true;
+			try {
+				const { uid, sessionId } = stored.meta;
+				await secretsActor(c, uid, sessionId).internalSaveRequestedSecret(sessionId, input);
+				if (!await take(c, { kind: "answer", question: question.id, choice: "add_secret", by: `person:${uid}`, at: Date.now() }))
+					throw new UserError("The secret was saved, but the item has moved on.", { code: "item_conflict" });
+			} finally {
+				delete c.vars.savingSecret;
+			}
+		},
+
 		/** A person's action (`UserActions.actOnItem`), by `by` ("person:<uid>"). Refused with `item_conflict` when it changes nothing. */
 		internalAct: async (c, input: { action: ItemAction; by: string }): Promise<ItemView> => {
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
+			if (c.vars.savingSecret) throw new UserError("The secret is being saved.", { code: "item_conflict" });
 			const fact = factOf(input?.action, String(input?.by), Date.now());
 			let changed: boolean;
 			try {

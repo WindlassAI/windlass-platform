@@ -167,6 +167,8 @@ export interface SealedSecrets {
 	environment?: { usable: boolean; commit: string; validatedAt: number; checks: number };
 	/** Only the server-side redactor may use these values. The machine owner disabled sending them. */
 	redactOnly?: boolean;
+	/** Names the person explicitly shared with this ACP session. */
+	requestedNames?: string[];
 	screenshots?: boolean;
 	/** What the secrets are saved for; null when the session has no repository of the GitHub connection. */
 	project: string | null;
@@ -187,8 +189,17 @@ export interface SealedSecrets {
 	account?: { secrets: Array<{ name: string; scope: SecretScope; sealed: string }>; servers: Array<{ name: string; definition: Record<string, unknown>; unasked: boolean }> };
 }
 
+/** An authenticated person's value, sealed before it leaves the requesting session. */
+export interface RequestedSecretSave {
+	requestId: string;
+	name: string;
+	project: string;
+	sealed: string;
+}
+
 /** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */
 export interface UserSecretsInternal {
+	internalSaveRequestedSecret(sessionId: string, input: RequestedSecretSave): Promise<void>;
 	internalSessionSecrets(sessionId: string, snapshotSetup?: boolean): Promise<SealedSecrets>;
 }
 
@@ -221,6 +232,7 @@ export interface NetworkReceipt { sessionId: string; revision: number; network: 
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalSetRequestedSecret(input: RequestedSecretSave): Promise<void>;
 	internalBlockedNetwork(input: NetworkReceipt): Promise<void>;
 	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */

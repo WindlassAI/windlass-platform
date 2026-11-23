@@ -57,14 +57,14 @@
  */
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
-import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools, type HostToolDeclaration } from "./agent-publish.js";
+import { SECRET_TOOL, ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools, type HostToolDeclaration } from "./agent-publish.js";
 import { config } from "./config.js";
 import type { RunTurnInput, TurnPublishRequest } from "./sandbox/api.js";
 
 export const PLAN_TOOL = "file_plan";
 
 /** One of the platform's tools. */
-export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL;
+export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof SECRET_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL;
 
 /** What decides and does a call: the agent is told what it resolves with. */
 export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
@@ -83,6 +83,7 @@ export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal
 export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "host">> = Object.freeze({
 	[REPORT_TOOL]: "sandbox",
 	[ASK_TOOL]: "sandbox",
+	[SECRET_TOOL]: "sandbox",
 	[PUBLISH_TOOL]: "asked",
 	[PUSH_TOOL]: "sandbox",
 	[FETCH_BASE_TOOL]: "sandbox",
@@ -135,6 +136,7 @@ export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox"
 			tools.set(REPORT_TOOL, input.onReport);
 			if (input.onAsk) tools.set(ASK_TOOL, input.onAsk);
 		}
+		if (input.onRequestSecret) tools.set(SECRET_TOOL, input.onRequestSecret);
 		if (input.onPush && input.onFetchBase) {
 			tools.set(PUSH_TOOL, input.onPush);
 			tools.set(FETCH_BASE_TOOL, input.onFetchBase);
@@ -150,7 +152,7 @@ export function platformToolDeclarations(tools: ReadonlyMap<string, unknown>, op
 	return platformTools({
 		plan, ...(options.crossRepo && plan && { crossRepo: true }),
 		publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL),
-		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots: options.screenshots,
+		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), secret: tools.has(SECRET_TOOL), screenshots: options.screenshots,
 		...(options.mcp && { mcp: { pushes: MCP_LIMITS[PUSH_TOOL] ?? 0, fetches: MCP_LIMITS[FETCH_BASE_TOOL] ?? 0 } }),
 	}, config.questionTimeoutMs).filter(tool => tools.has(tool.name));
 }

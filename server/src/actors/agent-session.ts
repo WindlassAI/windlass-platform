@@ -157,6 +157,7 @@ import {
 	type SandboxProfileId,
 	type SessionServers,
 	type SessionSnapshot,
+	type SetRequestedSecretInput,
 	type SessionStatus,
 	type SessionSummary,
 	type StartTimes,
@@ -194,7 +195,7 @@ import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, re
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
-import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
+import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -223,7 +224,7 @@ import { PlatformChecks } from "../sandbox/platform-checks.js";
 import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
-import { REPORT_TAKEN, askPerson } from "../agent-publish.js";
+import { REPORT_TAKEN, askPerson, requestSecret } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
@@ -321,6 +322,9 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 // ---------------------------------------------------------------------------------------------
 
 interface SessionMeta {
+	secretRequest?: SessionSnapshot["secretRequest"];
+	/** The current conversation has seen outside text, including turns on harnesses without a taint marker. */
+	secretRequestBlocked?: boolean;
 	size?: number;
 	/** A session that only builds the repository's prepared environment (user-environments.ts): one turn, no agent. */
 	environmentBuild?: EnvironmentBuildOrigin;
@@ -593,6 +597,7 @@ interface ActiveTurn {
  * values out of text.
  */
 interface HeldSecrets {
+	requestedNames?: string[];
 	/** Read before the turn had a number (the prompt's own row is redacted with them): what could not be opened, for the turn to tell once. */
 	unopened: string[];
 	snapshotSetup?: SealedSecrets["snapshotSetup"];
@@ -637,6 +642,7 @@ async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promis
 }
 
 interface SessionVars {
+	savingSecret?: boolean;
 	/** Null for an actor that `user` did not create: it rejects everything and removes itself. */
 	meta: SessionMeta | null;
 	/** A build session's result, once its setup and checks ran (`buildEnvironment`); reported when its turn has closed. */
@@ -2091,6 +2097,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
 		unopened: turn === null ? unopened : [],
+		requestedNames: sealed.requestedNames,
 		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
 		environment: project && sealed.project === project.key ? sealed.environment : undefined,
 		// Off for the whole deployment wins over the repository's choice, also for a sandbox made before it was turned off.
@@ -3861,6 +3868,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
 	let untrusted = active.item?.row.untrusted ?? [];
+	let outsideText = untrusted.length > 0 || !!active.item?.row.fresh?.untrusted.length;
 	let handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
 	/** Refuses the turn on "Docker, hardened" for someone else's text in `retryText`; the item asks, and can run it anyway. */
 	const refuseUntrusted = (item: NonNullable<ActiveTurn["item"]>, stop: Extract<typeof handling, { kind: "stop" }>, retryText: string): never => {
@@ -4039,6 +4047,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// out to be gone only once the agent is asked for it (`fresh`). The whole task's sources go by the same rule as any turn's.
 		if (active.resume && run?.prompted) {
 			const whole = await wholeTask(c, meta, active, turn);
+			outsideText ||= whole.untrusted.length > 0;
 			const wholeHandling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted: whole.untrusted, unsandboxed: whole.unsandboxed });
 			if (resumed) {
 				untrusted = [];
@@ -4123,11 +4132,23 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
 			return tracked(filings);
 		} : undefined;
+		meta.secretRequestBlocked = outsideText || (!!resumed && !!meta.secretRequestBlocked);
+		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret") ? (request, withdrawn) => {
+			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+			const taken = requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, held.redactor);
+			if (taken.request) {
+				const secretRequest = { ...taken.request, id: String(turn) };
+				meta.secretRequest = secretRequest;
+				append(c, { turn, kind: "platform", level: "info", text: `The agent requested ${secretRequest.name}.`, secretRequest });
+				void persist(c);
+			} else note(c, turn, "warn", taken.told);
+			return taken.told;
+		} : undefined;
 		// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
 		// and only on a delivery that says how many the run has left.
 		const onAsk: RunTurnInput["onAsk"] = item && !planner && !reviewer && typeof item.row.asksLeft === "number" && platformTool("ask_person") ? (request, withdrawn) => {
 			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
-			const taken = askPerson(request.arguments, { already: !!item.asked, left: item.row.asksLeft ?? 0 }, held.redactor);
+			const taken = askPerson(request.arguments, { already: !!item.asked || !!meta.secretRequest, left: item.row.asksLeft ?? 0 }, held.redactor);
 			if (taken.asked) item.asked = taken.asked;
 			note(c, turn, taken.asked ? "info" : "warn", taken.said);
 			return taken.told;
@@ -4150,15 +4171,19 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				...(item && { unattended: true }),
 				onReport,
 				onAsk,
+				onRequestSecret,
 				// Over MCP a publish is always put to the person, never "for this session": any process in the container may have asked.
 				onPublish: repoTools && !item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, "none", request, withdrawn)) : undefined,
 				onPush,
 				onFetchBase,
-				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: held.redactor },
+				secrets: { env: Object.fromEntries((meta.repo ? held.opened : held.account)
+					.filter(s => s.scope === "agent" && held.requestedNames?.includes(s.name)).map(s => [s.name, s.value])),
+					withholdEnv: [], passEnv: [], redactor: held.redactor },
 				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
 				// and records them as Windlass's gate would be; and the step limit, which the platform counts (platform-steps.ts).
 				checks: planner || reviewer ? [] : held.checks,
 				onChecks: (event, said) => {
+					if (event.type === "synthetic.appended" && event.data?.origin === "check_report") meta.secretRequestBlocked = true;
 					active.checks.note(event);
 					if (open && said) note(c, turn, said.level, said.text);
 				},
@@ -4306,6 +4331,7 @@ fi`, { signal, timeoutMs: 5000 });
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
 				onReport,
 				onAsk,
+				onRequestSecret,
 				script: meta.demo ? layer.windlass.demoScript(text, turn) : undefined,
 				onEvent: (event) => {
 					if (!open) return;
@@ -5209,6 +5235,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		// Accepted. From here to the return nothing is awaited.
 		const turn = meta.turns + 1;
 		const now = Date.now();
+		delete meta.secretRequest;
 		meta.turns = turn;
 		meta.model = model;
 		meta.status = "starting";
@@ -5333,6 +5360,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		}
 		// Accepted. From here to the transaction nothing is awaited.
 		const now = Date.now();
+		delete meta.secretRequest;
 		meta.turns = turn;
 		meta.status = "starting";
 		delete meta.pauseNow;
@@ -5473,7 +5501,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why } }), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
@@ -5928,6 +5956,7 @@ export const agentSession = actor({
 						timeline,
 						pending: [...c.vars.pending],
 						question: c.vars.turn?.question?.pending ?? null,
+						...(!meta.origin && meta.secretRequest && { secretRequest: meta.secretRequest }),
 						...(meta.place.kind === "machine" ? { machine: c.vars.runner?.reach() ?? null } : {}),
 					};
 				});
@@ -5957,9 +5986,44 @@ export const agentSession = actor({
 			return summaryOf(meta);
 		},
 
+		setRequestedSecret: async (c, input: SetRequestedSecretInput): Promise<void> => {
+			await requireSessionUser(c);
+			const meta = liveMeta(c);
+			const request = meta.secretRequest;
+			if (!request || !validRequestedSecretName(input?.name) || input.name !== request.name || (!meta.origin && input.requestId !== request.id))
+				throw new UserError("That secret request is no longer open.", { code: "no_question" });
+			if (c.vars.savingSecret || c.vars.accepting || c.vars.nextPrompt || meta.status === "paused")
+				throw new UserError("The session is busy. Try again when the turn has ended.", { code: "turn_running" });
+			const project = setupProjectOf(meta)?.key ?? ACCOUNT_SECRET_PROJECT;
+			let sealed: string;
+			try {
+				sealed = sealSecret(serverSealer(), meta.uid, project, request.name, cleanSecretValue(input.value));
+			} catch (error) {
+				if (error instanceof SecretProblem) throw new UserError(error.message, { code: "bad_secret" });
+				throw error;
+			}
+			const save = { project, sealed, name: request.name, requestId: input.requestId };
+			c.vars.savingSecret = true;
+			try {
+				if (meta.origin) {
+					await itemActor(c, meta.uid, meta.origin.itemId).internalSetRequestedSecret(save);
+				} else {
+					if (c.vars.turn) await c.vars.turn.done;
+					if (meta.secretRequest !== request || c.vars.accepting || meta.run?.paused)
+						throw new UserError("That secret request is no longer open.", { code: "no_question" });
+					await secretsActor(c, meta.uid, meta.sessionId).internalSaveRequestedSecret(meta.sessionId, save);
+					const text = `${request.name} is now set in your environment.`;
+					await takePrompt(c, meta, { text }, text, null);
+				}
+			} finally {
+				delete c.vars.savingSecret;
+			}
+		},
+
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
+			if (c.vars.savingSecret) throw new UserError("The requested secret is being saved.", { code: "turn_running" });
 			if (meta.origin) throw new UserError("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.", { code: "item_session" });
 			if (meta.environmentBuild) throw new UserError("This session only builds the repository's prepared environment.", { code: "item_session" });
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {

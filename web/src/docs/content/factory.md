@@ -242,6 +242,8 @@ A builder can stop and ask you a question when it can't go on without your decis
 - **Who can ask.** A builder, whether it runs Windlass, Claude Code, OpenCode or Codex: the turns that implement, fix checks or CI, merge the base, or answer a review. The planner files its questions with its plan, and the second reviewer asks through its review.
 - **What another program can do with these tools.** Claude Code, OpenCode and Codex reach the platform's tools through a connection inside the sandbox, which another program running there could also use. The worst it could do is file a wrong report, which is never the verdict (checks and CI decide that), ask you one question within the same limits, or push what is in the workspace to the item's own branch, at most 5 times a turn. A push never goes to another branch and never replaces someone else's commit, and nothing there gets a credential. The timeline says of each push that another program may have made it.
 
+For a missing environment variable, the builder can request a secret by name and explain why it needs it. **Add it and continue** saves the value as an agent-scoped repository secret and resumes the step. Enter the value only through the secret action. **Continue without it** resumes the step without adding a secret. **Give up** ends the run. A request from third-party text produces a timeline notice instead of a secret question.
+
 ### What you can do with an item
 
 - **Start** a draft.

@@ -1124,6 +1124,9 @@ class FakeWindlass implements Windlass {
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
 				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {
 					platformCalled = true;
+					if (input.prompt.includes("SERVICE_TOKEN is now set in your environment.") && process.env.WLP_FAKE_REQUEST_VALUE) {
+						emit({ type: "fake.secret_checked", data: { matches: input.secrets?.env.SERVICE_TOKEN === process.env.WLP_FAKE_REQUEST_VALUE }, seq: 0 });
+					}
 					const offered = turnHostTools(input);
 					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan) });
 					if (input.onPlan) {
@@ -1205,12 +1208,13 @@ class FakeWindlass implements Windlass {
 						["(push)", "push", input.onPush],
 						["(report)", "report", input.onReport],
 						["(ask)", "ask_person", input.onAsk],
+						["(secret)", "request_secret", input.onRequestSecret],
 					] as const) {
 						if (!(text.includes(word) || name === "report" && input.planner) || run === undefined || signal?.aborted) continue;
 						const fixture = process.env.WLP_FAKE_ATTACHMENT_PNG;
 						const pictured = name === "report" && text.includes("(screenshot)");
 						if (pictured && fixture) this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));
-						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "ask_person" ? { question: "Which store should the readings go in?\u202e Reply in one word.", options: ["SQLite", "Postgres"] } : name === "report" ? { ...(pictured ? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] } : {}), title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
+						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "request_secret" ? { name: "SERVICE_TOKEN", why: "Run the service test." } : name === "ask_person" ? { question: "Which store should the readings go in?\u202e Reply in one word.", options: ["SQLite", "Postgres"] } : name === "report" ? { ...(pictured ? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] } : {}), title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
 						// `input` as Windlass writes it for every call, a host tool's too: the model's arguments as JSON text (its event/durable.ts, `tool.called`).
 						emit({ type: "tool.called", v: 1, data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) }, seq: 0, time: 0 });
 						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(() => "The platform could not handle this call.");

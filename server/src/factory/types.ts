@@ -306,6 +306,8 @@ export type HandoffReview = { review: string; reviewNone: null; assessment?: Che
 
 /** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
+	/** Include this continuation’s instructions when the agent needs the whole task again. */
+	includeInFresh?: boolean;
 	kind: TurnStepKind;
 	/** Absent on builder plans, including resume plans saved before reviewer sessions. */
 	to?: "work" | "review";
@@ -434,6 +436,7 @@ export type Fact =
 			report: AgentReport | string | null;
 			/** The question the builder asked its person in the turn (`ask_person`), cleaned by the session. */
 			asked?: AgentAsk | null;
+			secret?: Question["secret"];
 			/** A push made by the host tool can precede the item's publish step. */
 			pushedHead?: string | null;
 			/**

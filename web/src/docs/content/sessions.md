@@ -99,6 +99,8 @@ A question waits 10 minutes. A countdown shows **declines in** and the time left
 
 The agent asks one question at a time.
 
+When the agent calls `request_secret`, the timeline shows the environment variable’s name and why the agent needs it. Supply its value through the secret action. The platform saves it for the session’s repository, or for your account when the session has no connected repository. The next turn receives the value in its environment. Keep values out of prompts and notes.
+
 ## Stop
 
 Choose **Stop**, beside the field, to stop the running turn. It shows **Stopping** while it works. The conversation and the files stay. Send a prompt to go on.
