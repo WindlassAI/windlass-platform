@@ -198,6 +198,8 @@ users' actors go with the actor data.
 
 ## Docker setup snapshots
 
+Only a repository's prepared-environment builds save snapshots, and sessions start from one only while its environment is ready and current ([github-and-repositories.md](github-and-repositories.md#a-repositorys-prepared-environment)). The rules below are those of the store the builds save into.
+
 A snapshot lives on the Docker daemon that ran setup. Windlass keeps one image per user and repository there. The cache key includes the image ID, OS and architecture, sandbox profile, screenshots variant, network mode, setup text, lockfile contents and toolchain pins. Every `package.json` and recognized dependency file contributes its Git blob ID. A hosted deployment keeps its index identity in `snapshot-deployment` under `RIVETKIT_STORAGE_PATH`. Preserve that directory when replacing the server. If the tree has no recognized lockfile or GitHub cannot provide a complete tree, the session uses the ordinary setup path. Editing setup or reconnecting GitHub changes the settings generation. A new session verifies access and the fetched revision before it skips setup.
 
 Each Docker daemon allows 10 GB of incremental image storage by default, with a 2 GB share per user. Eviction removes the least recently used images first. Sweeps and new saves evict oldest-first when the Docker filesystem has less than the keep-free amount free (40 GB by default), and no snapshot or Git mirror is written below it. Images expire after 14 days unused. An evicted image still counts toward both caps until its last container releases it.
