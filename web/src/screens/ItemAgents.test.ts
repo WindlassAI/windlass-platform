@@ -11,9 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ITEM_SESSION_PROMPT, createMockClient, type MockClient } from "../api/mock";
 import { loadAuth, saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
-import { Home } from "./Home";
 import { Item, useItem } from "./Item";
-import { Repository, useRepository } from "./Repository";
+import { RepositoryPane, useRepository } from "./Repository";
+import { useItems } from "./Items";
+import { NO_FILTERS } from "../lib/workspace";
+import type { RepositoryPaneView } from "../lib/router";
+import { Workspace } from "./Workspace";
 import { Session, useSessionMachine } from "./Session";
 import { useSession } from "../state/hooks";
 import { Usage } from "./Usage";
@@ -72,7 +75,7 @@ afterEach(() => {
 
 describe("a work item's agent session", () => {
 	it("is not among the home page's agents, nor in its count of agents, and a repository's heading counts its work items", async () => {
-		await render(() => createElement(Home));
+		await render(() => createElement(Workspace, { selection: { kind: "everything" }, items: useItems(true) }));
 		expect(itemSessions().length).toBeGreaterThan(0);
 		const lists = [...host.querySelectorAll("ul.agents[aria-label^='Your agents']")];
 		expect(lists.length).toBeGreaterThan(0);
@@ -89,7 +92,8 @@ describe("a work item's agent session", () => {
 	});
 
 	it("is not among a repository's agents, and is reached from its item's row", async () => {
-		await render(() => createElement(Repository, { page: useRepository(7101), view: "work" }));
+		const pane = (view: RepositoryPaneView) => () => createElement(RepositoryPane, { page: useRepository(7101), view, items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] });
+		await render(pane("agents"));
 		const onHarbor = itemSessions().filter((session) => session.repository?.id === 7101);
 		expect(onHarbor.length).toBeGreaterThan(0);
 		const agents = host.querySelector("ul.agents[aria-label^='Your agents on']") as HTMLElement;
@@ -97,8 +101,12 @@ describe("a work item's agent session", () => {
 		for (const session of onHarbor) expect(linksTo(agents, `/agents/${session.id}`)).toEqual([]);
 		const own = sessions.filter((session) => session.repository?.id === 7101 && session.item === undefined);
 		expect(agents.querySelectorAll("li.agent-row")).toHaveLength(own.length);
-		expect(host.querySelector("#repo-agents .usage-count")?.textContent).toBe(String(own.length));
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toMatch(new RegExp(`^repository · ${own.length} agents`));
+		expect(host.querySelector("#repo-agents .ws-section-count")?.textContent).toBe(String(own.length));
+		expect(host.querySelector(".ws-head .ws-status")?.textContent).toContain(`${own.length} agents`);
+		act(() => root.unmount());
+		client.dispose();
+		root = createRoot(host);
+		await render(pane("items"));
 		// Every started item's row leads to its session; a draft's has nothing to show yet, and its page leads there.
 		const section = host.querySelector("section[aria-labelledby='repo-items']") as HTMLElement;
 		for (const item of items.filter((one) => one.repository.id === 7101 && one.state !== "draft" && one.state !== "done" && one.state !== "cancelled")) {

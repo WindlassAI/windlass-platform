@@ -1,3 +1,15 @@
+## The Agents home
+
+**Agents** is the home page. Your repositories are in a rail on the left, grouped by owner. Each shows a ring while something on it runs, an amber count of what needs you, and otherwise how many agents and work items it has. A repository with only saved settings shows **saved**. **Everything** at the top lists all your agents by repository; **No repository** lists the agents that were launched without one.
+
+Choose a repository to open it on the right, at `/repositories/<id>`. Its head shows what is running, what needs you, its agents, its work items and its default branch, with **Pull requests** and **Saved settings**. The field under it launches an agent on that repository. **Overview** shows its agents and a table of its work items, what needs you first. **Agents** and **Work items** show all of them; **New work item…** is under **Work items**.
+
+Press <kbd>/</kbd> to search the rail, and the arrow keys to move through it. <kbd>Ctrl</kbd>+<kbd>B</kbd> (<kbd>⌘</kbd>+<kbd>B</kbd> on a Mac) hides the rail and shows it again. On a phone, the rail opens from the repository button at the top, with a strip of repositories under it.
+
+### Filters
+
+**Filter** narrows the lists and the rail by status (**Running**, **Needs you**, **Done**, **Failed**), by agent, by where it runs (**Hosted** or one of your machines) and by kind (agent sessions or work items). The filters that are on show as chips; choose one to take it off. Your browser remembers the filters, and whether the rail is hidden, for your next visit.
+
 ## The session page
 
 Each agent has its own page, at `/agents/<id>`. The bar at the top shows its title and its status. When it runs on one of your machines, it also says which one.

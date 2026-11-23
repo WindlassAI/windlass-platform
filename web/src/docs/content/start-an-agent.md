@@ -1,6 +1,6 @@
 ## The start composer
 
-You start an agent from the field at the top of **Agents**, the home page, or from **New agent** on a repository's page. The prompt comes first. Type what the agent should do in **What should it do?**, then adjust the choices under the field if you need to.
+You start an agent from the field at the top of **Agents**, the home page. With a repository chosen in the rail, the field launches on that repository. The prompt comes first. Type what the agent should do in **What should it do?**, then adjust the choices under the field if you need to.
 
 - Press <kbd>Enter</kbd> or choose **Launch** to create the agent and send the prompt.
 - Press <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line.

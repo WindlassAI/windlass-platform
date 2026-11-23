@@ -296,8 +296,8 @@ describe("the live feed's ended items beyond its first page", () => {
 		expect((await facts(open.id)).some((fact) => fact.startsWith("ended "))).toBe(false);
 	});
 
-	it("on a repository's page: the fold is said from the counts, and unfolded reads a page at a time", async () => {
-		await show("/repositories/7101", { items: "many" });
+	it("on a repository's Work items tab: the fold is said from the counts, and unfolded reads a page at a time", async () => {
+		await show("/repositories/7101/items", { items: "many" });
 		const ended = byFiling((await listed()).filter((item) => !item.parent && item.repository.id === 7101 && isEnded(item)));
 		expect(ended.length).toBeGreaterThan(ITEM_FEED_ENDED);
 		// The feed carries fewer of them than there are: the fold's words are the counts'.
