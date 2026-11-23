@@ -40,6 +40,7 @@
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
+import { monthReset, monthState } from "../lib/hosted";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
@@ -119,10 +120,13 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 }
 
 /** What launching runs into now, before anything is sent: `warn` when the agent could not start at all. */
-function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolean } | null {
+function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text: string; warn: boolean } | null {
 	if (numbers === null) return null;
 	const left = allowanceState(numbers, USAGE_LOW_SHARE);
 	const resets = localTime(numbers.resetsAt);
+	// The month's hosted minutes, where a plan sets them: one on the user's own machine is never counted.
+	// Near the limit the page's own notice says so (components/Plan.tsx); at it, what launching here does, unless that notice is on the page too.
+	if (numbers.hosted && monthState(numbers) === "used") return hostedNotice ? null : { warn: true, text: `Hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
 	if (left === "used") return { warn: true, text: `Today's sandbox time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
 	const { kept, limit } = numbers.sandboxes;
 	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} hosted sandboxes, the most an account may have. An agent launched here now is created, and cannot start working until you free one. One on your own machine is not counted.` };
@@ -226,6 +230,8 @@ export interface StartComposerProps {
 	kind?: StartKind;
 	/** The user's work items, live, where the page has them: a work item starts on the newest one's repository. Null until they arrive. */
 	items?: readonly ItemSummary[] | null;
+	/** The page shows the month's hosted minutes in its own notice (components/Plan.tsx, `HostedNotice`): not said again here. */
+	hostedNotice?: boolean;
 }
 
 export type StartKind = "agent" | "item";
@@ -233,12 +239,15 @@ export type StartKind = "agent" | "item";
 /** The refusals of a machine that the list of machines may be behind on: it is read again. */
 const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"] as const;
 
-export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: kindChoice = "agent", items }: StartComposerProps) {
+export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: kindChoice = "agent", items, hostedNotice = false }: StartComposerProps) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;
 	const github = useGithub();
-	const limit = launchLimit(useAllowance());
+	const allowance = useAllowance();
+	const limit = launchLimit(allowance, hostedNotice);
+	// Where the deployment has plans, the sizes the account's plan offers (Free has no large).
+	const planSizes = allowance?.hosted?.plan ? (info?.billing?.plans.find((plan) => plan.id === allowance.hosted!.plan)?.sizes ?? null) : null;
 	const surface = useSurface();
 	const phone = surface === "sheet";
 	const ids = { text: useId(), hint: useId(), keys: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), criteria: useId(), criteriaNote: useId() };
@@ -393,7 +402,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
 	// ---- the hosted size: where the deployment offers more than one, for a hosted sandbox -----------------
-	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []) : [];
+	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id)) : [];
 	const savedSize = saved.defaults?.hostedSize ?? null;
 	const defaultSize = sizes.length > 1 ? startingSize(sizes, savedSize, item) : null;
 	const hostedSize = defaultSize === null ? null : sizeChoice !== null && sizes.some((size) => size.id === sizeChoice) ? sizeChoice : defaultSize;

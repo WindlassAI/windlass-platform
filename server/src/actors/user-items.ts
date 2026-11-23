@@ -82,7 +82,8 @@ import { getLayer } from "../layer.js";
 import { reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { effectiveUserLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
+import { hostedSizesForPlan } from "../billing/plans.js";
+import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
 import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -403,6 +404,8 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const input = cleanItemInput(raw);
 	// A GitHub issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (github && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
+	// Where the deployment has billing, a feature over two repositories is Pro's (billing/plans.ts).
+	if (input.repositories && accountLimits(c.vars.items.limits).plan?.crossRepo === false) throw new UserError("Features over two repositories are on Pro. Upgrade in Settings, or file one item per repository.", { code: "bad_input" });
 	const uid = profile.uid;
 	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
@@ -439,7 +442,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		}
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
+		const limits = accountLimits(c.vars.items.limits).factory;
 		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort, ...(session.item?.signIn && { signIn: session.item.signIn }) } });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
@@ -577,7 +580,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, deferUntil: null, wait: null });
 		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`);
 	}
-	const limits = effectiveUserLimits(state.limits.overrides).factory;
+	const limits = accountLimits(state.limits).factory;
 	const tokenWait = dailyTokenWait(c.vars.usage.modelTokens(now), limits.dailyTokens);
 	const sessions = [...c.vars.sessions.values()];
 	const usage = c.vars.usage.numbers(now);
@@ -810,7 +813,7 @@ async function reserveAttachment(c: ItemsCtx, input: Reservation): Promise<Reser
 	const { sessionId, itemId, key, sha256, bytes } = input;
 	const item = c.vars.items.items.get(itemId);
 	if (!item || ended(item) || c.vars.sessions.get(sessionId)?.item?.id !== itemId || !key.startsWith(itemId + ":")) return { refused: "item_ended" };
-	const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory.attachments;
+	const limits = accountLimits(c.vars.items.limits).factory.attachments;
 	if (!Number.isSafeInteger(bytes) || bytes <= 0 || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
 	if (bytes > limits.bytes) return { refused: "too_large" };
 	await armSweep(c, Date.now());
@@ -862,7 +865,7 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 
 export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 	const used = c.vars.usage.modelTokens(Date.now());
-	return dailyTokenWait(used, effectiveUserLimits(c.vars.items.limits.overrides).factory.dailyTokens);
+	return dailyTokenWait(used, accountLimits(c.vars.items.limits).factory.dailyTokens);
 }
 
 /**
@@ -881,7 +884,8 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
 	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
 	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...((sandboxes.sizes?.().length ?? 0) > 1 && { hostedSizes: sandboxes.sizes!().map(size => size.id) }),
+	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
 		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
@@ -948,7 +952,7 @@ export const itemActions = {
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: { tokens: job.task.budget.tokens, hostedSeconds: effectiveUserLimits(c.vars.items.limits.overrides).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.
@@ -1022,7 +1026,7 @@ export const itemActions = {
 			await armSweep(c, fire.firedAt);
 			const rows = await c.db.execute<{ id: string; key: string }>(
 				"SELECT id,key FROM attachments WHERE state!='removed' AND at<=? AND (state='discarded' OR ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))",
-				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - effectiveUserLimits(c.vars.items.limits.overrides).factory.attachments.days * DAY,
+				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - accountLimits(c.vars.items.limits).factory.attachments.days * DAY,
 			);
 			await removeRows(c, rows, true);
 		});
@@ -1088,7 +1092,7 @@ export const itemActions = {
 	// Answered with work items off too: the ceiling on running agents among these holds for a person's own agents as well.
 	factoryLimits: (c: ItemsCtx): FactoryLimits => {
 		requireUser(c);
-		return effectiveUserLimits(c.vars.items.limits.overrides).factory;
+		return accountLimits(c.vars.items.limits).factory;
 	},
 
 	apiTokens: async (c: ItemsCtx): Promise<ApiToken[]> => {

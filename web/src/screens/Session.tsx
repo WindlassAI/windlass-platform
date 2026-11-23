@@ -18,6 +18,7 @@
  * offered where it has its own list (`models`), and Plan mode where it has one (`planMode`). Where its
  * machine says it is not signed in, the line above the composer shows the machine terminal command.
  */
+import { monthSentence, monthState } from "../lib/hosted";
 import { USAGE_LOW_SHARE, type ItemView, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
@@ -265,6 +266,12 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 	if (numbers === null) return null;
 	const left = allowanceState(numbers, USAGE_LOW_SHARE);
 	const resets = localTime(numbers.resetsAt);
+	// The month's hosted minutes count only where the agent runs hosted.
+	if (summary.place.kind === "hosted" && monthState(numbers) !== "plenty") {
+		const month = monthSentence(numbers, null);
+		if (month !== null) return monthState(numbers) === "used" && summary.status !== "idle" ? `${month} This turn is stopped when the time it holds is over, with its files kept.` : month;
+	}
+	if (summary.place.kind !== "hosted" && numbers.hosted) return null;
 	if (left === "used") {
 		return summary.status === "idle"
 			? `Today's sandbox time is used up, so a turn cannot start before ${resets}.`

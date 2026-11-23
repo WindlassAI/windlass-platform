@@ -83,6 +83,20 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_MAX_KEPT_SANDBOXES` | how many of the platform's own (hosted) sandboxes a user may keep at the same time, running or paused; sandboxes on the user's machines are not counted, and have only the limits their owners set on the runner (default 5; at least 1), or `unlimited` |
 | `WLP_USAGE_HOLD_SECONDS` | how much of the day's allowance a running sandbox reserves at a time, and so how often its session reports (default 300, from 5 to 3600). A shorter time is for the checks |
 
+## Plans and billing
+
+Off unless `WLP_BILLING_PROVIDER` is set. With billing off there are no plans, and every account has the limits above. [billing.md](billing.md) covers the plans, how to set up the provider and how the money code behaves.
+
+| Variable | Effect |
+|---|---|
+| `WLP_BILLING_PROVIDER` | `dodo` turns billing on with Dodo Payments; unset, empty or `off` leaves it off. Any other value stops the server at start |
+| `WLP_BILLING_GRACE_DAYS` | days Pro's limits last after a failed payment before the account falls back to Free (default 7, from 0 to 60) |
+| `WLP_DODO_API_KEY` | the Dodo API key (a secret); required with `dodo` |
+| `WLP_DODO_WEBHOOK_SECRET` | the webhook endpoint's signing secret, `whsec_…` (a secret); required with `dodo` |
+| `WLP_DODO_ENVIRONMENT` | `test_mode` (default) or `live_mode` |
+| `WLP_DODO_PRODUCT_PRO_MONTHLY`, `WLP_DODO_PRODUCT_PRO_YEARLY` | the product ids (`pdt_…`) of Pro billed monthly and yearly; required with `dodo` |
+| `WLP_DODO_METER_EVENT` | the event name of the overage meter (default `hosted_minutes`) |
+
 ## E2B
 
 Read only with `WLP_SANDBOX=e2b` (`server/src/sandbox/e2b/config.ts`). The defaults are sized for E2B's free
@@ -255,5 +269,6 @@ Use `default` to remove an override and inherit the deployment setting. Each cha
 | `attachments.bytes`, `attachments.days` | 1–2,097,152 bytes per screenshot and 1–36,500 days of retention |
 | `attachments.accountBytes`, `dailyTokens` | Positive safe integer. `dailyTokens` also accepts `unlimited`. |
 | `dailySeconds`, `maxKept` | 60–86,400 hosted sandbox seconds and 1–1,000 kept hosted sandboxes. Both accept `unlimited`. |
+| `hostedMinutes`, `machines` | 1–10,000,000 hosted minutes a month (accepts `unlimited`) and 1–100 paired machines. With billing these replace the plan's figures for that user; a Pro user's spend cap still adds overage past `hostedMinutes`. |
 
 Factory turns already admitted finish their step, so reported usage can exceed the cap. Further Factory turns wait until 00:00 UTC or an operator raises the cap. Interactive prompts show the reason immediately.

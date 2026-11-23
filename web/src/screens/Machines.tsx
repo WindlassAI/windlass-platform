@@ -967,6 +967,24 @@ function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary
 	);
 }
 
+/** How many machines the account may pair: its plan's where the deployment has billing, MAX_MACHINES otherwise. */
+function useMachineLimit(): number {
+	const { platform } = useApp();
+	const [limit, setLimit] = useState(MAX_MACHINES);
+	const { client } = useApp();
+	const auth = useAuth();
+	const billed = Boolean(platform.info?.billing);
+	useEffect(() => {
+		if (!billed) return;
+		let current = true;
+		client.user(auth).billing().then((view) => {
+			if (current && view.enabled) setLimit(view.plans.find((plan) => plan.id === view.plan)?.machines ?? MAX_MACHINES);
+		}, () => undefined);
+		return () => { current = false; };
+	}, [billed, client, auth]);
+	return limit;
+}
+
 export function Machines({ adding }: { adding: boolean }) {
 	const { platform } = useApp();
 	const machines = useMachines();
@@ -974,7 +992,8 @@ export function Machines({ adding }: { adding: boolean }) {
 	const [removing, setRemoving] = useState<MachineSummary | null>(null);
 	const info = platform.info?.machines ?? null;
 	const { list } = machines;
-	const full = list !== null && list.length >= MAX_MACHINES;
+	const maxMachines = useMachineLimit();
+	const full = list !== null && list.length >= maxMachines;
 	const add = () => navigate({ name: "machines", add: true });
 	const closeAdd = () => navigate({ name: "machines" }, { replace: true });
 	// The address a runner prints opens the dialog once what it needs is known; an account that cannot add another goes to its list.
@@ -996,7 +1015,7 @@ export function Machines({ adding }: { adding: boolean }) {
 						<PlusIcon />
 						Add a machine
 					</button>
-					{full ? <p className="field-note">An account can connect up to {MAX_MACHINES} machines.</p> : null}
+					{full ? <p className="field-note">Your account can connect up to {maxMachines} machines.{maxMachines < 10 && platform.info?.billing ? " Pro connects up to 10." : ""}</p> : null}
 				</div>
 			</header>
 
@@ -1034,7 +1053,7 @@ export function Machines({ adding }: { adding: boolean }) {
 					<section className="usage-section" aria-labelledby="machines-list">
 						<h2 className="usage-title" id="machines-list">
 							Your machines
-							{list.length > 0 ? <span className="usage-count">{`${list.length} of ${MAX_MACHINES}`}</span> : null}
+							{list.length > 0 ? <span className="usage-count">{`${list.length} of ${maxMachines}`}</span> : null}
 						</h2>
 						{list.length === 0 ? (
 							<div className="state state-empty">

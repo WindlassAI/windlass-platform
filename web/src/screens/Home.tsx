@@ -14,6 +14,8 @@
  *
  * The filters of the home (lib/workspace.ts) narrow the feed; they are set from the Recent heading.
  */
+import { periodWords, minutes, monthReset } from "../lib/hosted";
+import { HostedNotice } from "../components/Plan";
 import { USAGE_LOW_SHARE, type ItemSummary, type MachineSummary, type SavedRepository, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useState } from "react";
 import { FeedSection } from "../components/Feed";
@@ -78,6 +80,7 @@ function AccountLine() {
  */
 export function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
 	if (numbers === null) return null;
+	if (numbers.hosted) return <MonthMeter numbers={numbers} />;
 	const { allowanceSeconds, leftSeconds, sandboxes } = numbers;
 	const spent = numbers.usedSeconds + numbers.heldSeconds;
 	const state = allowanceState(numbers, USAGE_LOW_SHARE);
@@ -100,6 +103,30 @@ export function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
 				{kept}
 				{full ? <span className="visually-hidden"> (the most an account may keep)</span> : null}
 			</span>
+		</a>
+	);
+}
+
+/** The month's hosted minutes as the small meter, where a plan sets them (lib/hosted.ts). */
+function MonthMeter({ numbers }: { numbers: UsageNumbers }) {
+	const month = numbers.hosted!;
+	const spent = month.usedSeconds + month.heldSeconds;
+	const state = allowanceState(numbers, USAGE_LOW_SHARE);
+	const { sandboxes } = numbers;
+	const full = sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
+	const share = month.limitSeconds === 0 ? null : Math.min(1, spent / month.limitSeconds);
+	return (
+		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: hosted minutes and sandboxes">
+			<span className="home-usage-time">
+				Hosted {periodWords(month)} <strong>{minutes(spent)}</strong> of {minutes(month.limitSeconds)} min
+				{state !== "plenty" ? <span className="home-usage-left">{state === "used" ? `, used up until ${monthReset(month)}` : `, ${minutes(month.leftSeconds)} left`}</span> : null}
+			</span>
+			{share === null ? null : (
+				<span className="home-meter" role="meter" aria-label={`Hosted minutes used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(spent, month.limitSeconds)} aria-valuetext={`${minutes(spent)} of ${minutes(month.limitSeconds)} hosted minutes`}>
+					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
+				</span>
+			)}
+			<span className={full ? "home-usage-full" : undefined}>{sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept`}</span>
 		</a>
 	);
 }
@@ -148,6 +175,7 @@ export interface HomeProps {
 
 export function Home({ state, items, usage, scope = "all", filters, onFilters, machines }: HomeProps) {
 	const { sessions, connection, error } = state;
+	const { platform } = useApp();
 	const now = useNow(15_000);
 	const filtering = filterCount(filters) > 0;
 	const agents = sessions === null ? null : ownAgents(sessions);
@@ -173,10 +201,11 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 					<UsageMeter numbers={usage} />
 				</div>
 			</header>
+			<HostedNotice numbers={usage} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
 
 			{empty ? null : (
 				<section className="home-start" aria-label="Launch an agent">
-					<StartComposer sessions={sessions} />
+					<StartComposer sessions={sessions} hostedNotice />
 				</section>
 			)}
 
@@ -213,7 +242,7 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 					<Mark size={56} />
 					<h2>No agents yet</h2>
 					<p>Say what it should do and press Enter. Where it runs and the repository are under the field.</p>
-					<StartComposer sessions={sessions} autoFocus />
+					<StartComposer sessions={sessions} autoFocus hostedNotice />
 				</div>
 			) : (
 				<div className="home-feed">

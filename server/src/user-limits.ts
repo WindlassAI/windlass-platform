@@ -2,7 +2,8 @@ import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor } from "./auth.js";
 import { config } from "./config.js";
-import type { FactoryLimits } from "./contract.js";
+import { planLimits, type BillingState } from "./billing/plans.js";
+import { MAX_MACHINES, type FactoryLimits } from "./contract.js";
 import { ATTACHMENT_LIMITS } from "./factory/attachments.js";
 
 const ranges = {
@@ -12,6 +13,8 @@ const ranges = {
 	"attachments.bytes": [1, ATTACHMENT_LIMITS.bytes], "attachments.perItem": [1, 1_000_000],
 	"attachments.accountBytes": [1, Number.MAX_SAFE_INTEGER], "attachments.days": [1, 36500],
 	dailySeconds: [60, 86400], maxKept: [1, 1000],
+	// The month's hosted minutes and the paired machines: a plan sets them where the deployment has billing.
+	hostedMinutes: [1, 10_000_000], machines: [1, 100],
 } as const;
 type Key = keyof typeof ranges;
 type Overrides = Partial<Record<Key, number | null>>;
@@ -20,7 +23,12 @@ export const LIMITS_AUDIT_TABLE = `CREATE TABLE IF NOT EXISTS limit_changes (
 	id INTEGER PRIMARY KEY, at INTEGER NOT NULL, operator TEXT NOT NULL, setting TEXT NOT NULL,
 	old_value INTEGER, new_value INTEGER, overrides TEXT NOT NULL)`;
 
-export function effectiveUserLimits(overrides: Overrides) {
+/**
+ * The account's limits: the operator's override of a setting where there is one, then the plan's where the deployment
+ * has billing (`billing` is the account's subscription; null without billing), then the deployment's default.
+ */
+export function effectiveUserLimits(overrides: Overrides, billing: BillingState | null = null, now = Date.now()) {
+	const plan = billing === null ? null : planLimits(billing, now);
 	const defaults = config.factory;
 	const value = (key: Key, fallback: number) => overrides[key] ?? fallback;
 	const item = { ...defaults.item }, attachments = { ...defaults.attachments };
@@ -29,14 +37,29 @@ export function effectiveUserLimits(overrides: Overrides) {
 	// Overrides of limits that are gone (the turn caps, the review cap, the feature multiplier, GitHub drafts, the item's
 	// turns and working time) may still be stored: they are read past. Only the figures below are kept.
 	const factory: FactoryLimits = {
-		hostedRunning: value("hostedRunning", defaults.hostedRunning),
+		hostedRunning: value("hostedRunning", plan?.hostedRunning ?? defaults.hostedRunning),
 		dailyTokens: overrides.dailyTokens === undefined ? defaults.dailyTokens : overrides.dailyTokens,
-		githubItemsPerDay: value("githubItemsPerDay", defaults.githubItemsPerDay),
+		githubItemsPerDay: value("githubItemsPerDay", plan?.githubItemsPerDay ?? defaults.githubItemsPerDay),
 		item, attachments,
 	};
-	const usage = { ...config.usage };
+	const subscription = plan?.plan.id === "pro" && billing ? { period: billing.period, periodStart: billing.periodStart, periodEnd: billing.periodEnd } : null;
+	const usage = { ...config.usage, subscription, monthlySeconds: null as number | null, includedSeconds: null as number | null, plan: plan?.plan.id ?? null };
+	// With a plan, the month's hosted minutes take the place of the day's allowance, unless the operator set one for the user.
+	if (plan) {
+		usage.dailySeconds = null;
+		usage.maxKept = plan.maxKept;
+		usage.monthlySeconds = plan.monthlySeconds;
+		usage.includedSeconds = plan.includedSeconds;
+	}
 	for (const key of ["dailySeconds", "maxKept"] as const) if (overrides[key] !== undefined) usage[key] = overrides[key];
-	return { factory, usage };
+	if (overrides.hostedMinutes !== undefined) {
+		const minutes = overrides.hostedMinutes;
+		usage.includedSeconds = minutes === null ? null : minutes * 60;
+		// The operator's minutes are the included ones: a plan's spend cap still pays for overage past them.
+		usage.monthlySeconds = minutes === null ? null : minutes * 60 + (plan ? plan.monthlySeconds - plan.includedSeconds : 0);
+	}
+	const machines = value("machines", plan?.machines ?? MAX_MACHINES);
+	return { factory, usage, machines, plan: plan?.plan ?? null };
 }
 
 export async function readUserLimits(db: Db) {
@@ -44,12 +67,20 @@ export async function readUserLimits(db: Db) {
 	const overrides: Overrides = row ? JSON.parse(row.overrides) : {};
 	return { id: row?.id ?? 0, overrides };
 }
-export type UserLimits = Awaited<ReturnType<typeof readUserLimits>>;
+/** The operator's overrides, and the account's subscription where the deployment has billing (billing/account.ts). */
+export type UserLimits = Awaited<ReturnType<typeof readUserLimits>> & { billing?: BillingState | null };
+
+/** The account's limits now: the operator's overrides, the plan, the deployment's defaults. */
+export function accountLimits(limits: UserLimits, now = Date.now()) {
+	return effectiveUserLimits(limits.overrides, limits.billing ?? null, now);
+}
 export type LimitAuditRow = { id: number; at: number; operator: string; setting: Key; old_value: number | null; new_value: number | null; overrides: string };
 export type LimitChange = { operator: string; key: string; value: number | "default" | "unlimited" };
 
 function setting(limits: ReturnType<typeof effectiveUserLimits>, key: Key) {
 	if (key === "dailySeconds" || key === "maxKept") return limits.usage[key];
+	if (key === "hostedMinutes") return limits.usage.includedSeconds === null ? null : limits.usage.includedSeconds / 60;
+	if (key === "machines") return limits.machines;
 	if (key.startsWith("item.")) return limits.factory.item[key.slice(5) as keyof FactoryLimits["item"]];
 	if (key.startsWith("attachments.")) return limits.factory.attachments[key.slice(12) as keyof FactoryLimits["attachments"]];
 	return limits.factory[key as Exclude<keyof FactoryLimits, "item" | "attachments">];
@@ -67,7 +98,7 @@ export async function changeUserLimit(c: { key: string[]; conn?: { params: unkno
 	const key = input.key as Key;
 	const [min, max] = ranges[key];
 	const { value } = input;
-	if (value !== "default" && !(value === "unlimited" && (key === "dailyTokens" || key === "dailySeconds" || key === "maxKept")) &&
+	if (value !== "default" && !(value === "unlimited" && (key === "dailyTokens" || key === "dailySeconds" || key === "maxKept" || key === "hostedMinutes")) &&
 		(typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max))
 		throw new UserError(`Use an integer from ${min} to ${max}, or default.`, { code: "bad_input" });
 	return c.db.transaction(async tx => {

@@ -71,6 +71,8 @@ export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "s
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
 export interface ReserveRequest {
+	/** From the session itself, whose newest size may not have reached its user's index yet. */
+	hostedSize?: HostedSize;
 	/** The new hold's id, made by the session: the same request sent twice is one hold. */
 	id: string;
 	sessionId: string;
@@ -86,10 +88,11 @@ export interface ReserveRequest {
  * The answer: the hold and how many seconds it is for, or which limit refused it ("gone": the user
  * has no such session any more). Either way with the user's numbers as they are then.
  */
-export type ReserveAnswer = { ok: true; hold: { id: string; seconds: number }; numbers: UsageNumbers } | { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
+export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: string; seconds: number }; numbers: UsageNumbers } | { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;
 	internalTokenGeneration(): Promise<number>;
@@ -139,7 +142,7 @@ export interface UserInternal {
 	/** The session has no sandbox any more: its place among the kept ones is free. */
 	internalRelease(sessionId: string): Promise<void>;
 	/** The session's place among the kept sandboxes, claimed right before its sandbox is made (`UsageBook.claim`). */
-	internalClaimPlace(sessionId: string): Promise<{ ok: boolean; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
+	internalClaimPlace(sessionId: string, hostedSize?: HostedSize): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }>;
 	/** The models the user may choose and the efforts of each (account-models.ts): their plan's, or what stands in for it. */
 	internalModels(): Promise<ModelList>;
 	/** A work item's summary changed (user-items.ts). */
@@ -199,7 +202,7 @@ export interface SessionInternal {
 	/** Destroys the sandbox, then the actor. */
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */
-	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean }>;
+	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
 	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
 	internalDeliver(input: Delivery): Promise<void>;
 	/** The user's turn queue gives the delivery of `key` its slot. */

@@ -49,8 +49,9 @@
  */
 
 import type { RawAccess } from "rivetkit/db";
-import type { HarnessId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import type { HarnessId, HostedMonth, PlanId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
+import { meterPeriod, monthOf, type MeterPeriod, type SubscriptionDates } from "./billing/meter.js";
 
 /**
  * Whether the platform's own limits hold a session at this place: its sandbox time, its place among the
@@ -167,6 +168,16 @@ export interface UsageLimits {
 	dailySeconds: number | null;
 	maxKept: number | null;
 	holdSeconds: number;
+	/**
+	 * Hosted seconds a UTC calendar month may use, weighted by size (billing/meter.ts): a plan's included minutes and
+	 * what its spend cap pays for, or the operator's `hostedMinutes`. Absent or null: no monthly allowance, as before plans.
+	 */
+	monthlySeconds?: number | null;
+	subscription?: SubscriptionDates | null;
+	/** Of `monthlySeconds`, what the plan includes: past it is overage. */
+	includedSeconds?: number | null;
+	/** The plan the monthly allowance is of, where billing set it; for the words of a refusal. */
+	plan?: PlanId | null;
 }
 
 /** A second or more of sandbox time that was counted. */
@@ -184,6 +195,10 @@ export interface UsageEntry {
 	 */
 	kind: "used" | "unreported" | "corrected";
 	seconds: number;
+	/** Monthly weight locked in when the hold opened. Older rows have no weight. */
+	weight?: number | null;
+	/** Opening time from the separate hold index. Older settled holds only have their ledger timestamp. */
+	startedAt?: number;
 	/** When it was counted, ms since the epoch. */
 	at: number;
 	/** Set where the count is not simply what was reported: why. */
@@ -197,6 +212,8 @@ export interface UsageHold {
 	session: string;
 	day: number;
 	seconds: number;
+	/** Monthly weight locked in when the hold opened. Older rows have no weight. */
+	weight?: number | null;
 	startedAt: number;
 	/** When it is counted in full unless it was settled. */
 	expiresAt: number;
@@ -236,6 +253,8 @@ export type ReserveRefusal =
 export type ReserveResult = { ok: true; hold: UsageHold; change: UsageChange } | { ok: false; reason: ReserveRefusal; change: UsageChange };
 
 export interface ReserveInput {
+	/** The session's own sandbox weight, when supplied by the session opening this hold. */
+	weight?: number;
 	/** The new hold's id, made by the session. */
 	id: string;
 	session: string;
@@ -245,6 +264,10 @@ export interface ReserveInput {
 	fresh?: boolean;
 	/** The session's open hold and what its sandbox ran of it: closed in the same step the new one is taken in. */
 	settle?: { hold: string; seconds: number };
+}
+
+function openingTime(row: UsageEntry | UsageHold): number {
+	return row.startedAt ?? row.day * DAY_MS;
 }
 
 /** One user's sandbox time and kept sandboxes. Every method takes the time, so nothing here reads a clock. */
@@ -261,6 +284,8 @@ export class UsageBook {
  * counts as one place (its reviewer's sandbox is released after each review). Set by whoever knows the sessions.
  */
 sharing: (session: string) => string | undefined = () => undefined;
+/** What a second of a session's sandbox counts as of the monthly allowance: its size's weight (billing/meter.ts). */
+weightOf: (session: string) => number = () => 1;
 
 	constructor(
 		readonly limits: UsageLimits,
@@ -297,6 +322,28 @@ sharing: (session: string) => string | undefined = () => undefined;
 	/** The same sum, added up again from the entries: what `usedOn` must equal. */
 	recount(day: number): number {
 		return this.entries.reduce((sum, entry) => (entry.day === day ? sum + entry.seconds : sum), 0);
+	}
+
+	private storedWeight(row: UsageEntry | UsageHold): number {
+		return row.weight ?? 1;
+	}
+
+	/** Free keeps the ledger day (including the midnight handover). Pro uses the hold's opening instant. */
+	private countsIn(row: UsageEntry | UsageHold, period: MeterPeriod): boolean {
+		const at = this.limits.subscription ? openingTime(row) : row.day * DAY_MS;
+		return at >= period.start && at < period.end;
+	}
+
+	usedInPeriod(period: MeterPeriod): number {
+		let sum = 0;
+		for (const entry of this.entries) if (this.countsIn(entry, period)) sum += entry.seconds * this.storedWeight(entry);
+		return sum;
+	}
+
+	private heldInPeriod(period: MeterPeriod, except?: string): number {
+		let sum = 0;
+		for (const hold of this.holds.values()) if (hold.session !== except && this.countsIn(hold, period)) sum += hold.seconds * this.storedWeight(hold);
+		return sum;
 	}
 
 	/** The seconds open holds have reserved of a day, without `except`'s. */
@@ -363,11 +410,11 @@ sharing: (session: string) => string | undefined = () => undefined;
 			}
 		}
 		if (seconds > hold.seconds) notes.push(`${seconds - hold.seconds} s over its hold of ${hold.seconds} s`);
-		return { day: hold.day, session: hold.session, hold: hold.id, kind: "used", seconds, at: now, note: notes.length === 0 ? null : notes.join("; ") };
+		return { day: hold.day, startedAt: hold.startedAt, session: hold.session, hold: hold.id, weight: this.storedWeight(hold), kind: "used", seconds, at: now, note: notes.length === 0 ? null : notes.join("; ") };
 	}
 
 	private unreported(hold: UsageHold, at: number, why: string): UsageEntry {
-		return { day: hold.day, session: hold.session, hold: hold.id, kind: "unreported", seconds: hold.seconds, at, note: why };
+		return { day: hold.day, startedAt: hold.startedAt, session: hold.session, hold: hold.id, weight: this.storedWeight(hold), kind: "unreported", seconds: hold.seconds, at, note: why };
 	}
 
 	/** Counts in full every hold that ran out without being settled. Every other step begins with this. */
@@ -407,6 +454,17 @@ sharing: (session: string) => string | undefined = () => undefined;
 			if (left < (input.fresh === true ? this.startSeconds : 1)) return { ok: false, reason: "allowance", change };
 			grant = Math.min(grant, left);
 		}
+		// The month's hosted minutes, weighted by the session's size: the same rule as the day's, in weighted seconds.
+		const weight = input.weight ?? this.weightOf(input.session);
+		const monthly = this.limits.monthlySeconds ?? null;
+		if (monthly !== null) {
+			const subscription = this.limits.subscription ?? null;
+			const period = meterPeriod(subscription, subscription ? now : day * DAY_MS);
+			const closingWeighted = closing !== null && this.countsIn(closing, period) ? closing.seconds * this.storedWeight(closing) : 0;
+			const left = monthly - this.usedInPeriod(period) - this.heldInPeriod(period, input.session) - closingWeighted;
+			if (left < (input.fresh === true ? this.startSeconds : 1) * weight) return { ok: false, reason: "allowance", change };
+			grant = Math.min(grant, Math.floor(left / weight), Math.ceil((period.end - now) / 1000));
+		}
 		// Asked after the allowance: someone told to free a sandbox must not then be told the day is used up.
 		if (input.keep === true && this.atCap(input.session)) return { ok: false, reason: "sandboxes", change };
 
@@ -419,7 +477,7 @@ sharing: (session: string) => string | undefined = () => undefined;
 			change.closed.push(own.id);
 		}
 		if (input.keep === true) change.kept.push(...this.claim(now, input.session).change.kept);
-		const hold: UsageHold = { id: input.id, session: input.session, day, seconds: grant, startedAt: now, expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000 };
+		const hold: UsageHold = { id: input.id, session: input.session, day, seconds: grant, weight, startedAt: now, expiresAt: now + (grant + HOLD_GRACE_SECONDS) * 1000 };
 		this.holds.set(input.session, hold);
 		change.opened.push(hold);
 		return { ok: true, hold, change };
@@ -438,7 +496,7 @@ sharing: (session: string) => string | undefined = () => undefined;
 			if (full === undefined || this.entries.some((entry) => entry.hold === `${input.hold}${LATE}`)) return { known: false, entry: null, change };
 			// Never more than was counted, and never less than nothing: a late report only ever gives back.
 			const ran = Number.isFinite(input.seconds) ? Math.min(full.seconds, Math.max(0, Math.round(input.seconds))) : full.seconds;
-			const entry: UsageEntry = { day: full.day, session: full.session, hold: `${full.hold}${LATE}`, kind: "corrected", seconds: ran - full.seconds, at: now, note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full` };
+			const entry: UsageEntry = { day: full.day, startedAt: openingTime(full), session: full.session, hold: `${full.hold}${LATE}`, weight: this.storedWeight(full), kind: "corrected", seconds: ran - full.seconds, at: now, note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full` };
 			this.add(entry);
 			change.entries.push(entry);
 			return { known: true, entry, change };
@@ -515,6 +573,24 @@ sharing: (session: string) => string | undefined = () => undefined;
 			leftSeconds: allowance === null ? null : Math.max(0, allowance - usedSeconds - heldSeconds),
 			startSeconds: this.startSeconds,
 			sandboxes: { kept: this.places(), limit: this.limits.maxKept },
+			...(this.limits.monthlySeconds != null && { hosted: this.month(now) }),
+		};
+	}
+
+	/** The month's hosted minutes, in weighted seconds; only where there is a monthly allowance. */
+	month(now: number): HostedMonth {
+		const subscription = this.limits.subscription ?? null;
+		const period = meterPeriod(subscription, now);
+		const limitSeconds = this.limits.monthlySeconds ?? 0;
+		const usedSeconds = this.usedInPeriod(period);
+		const heldSeconds = this.heldInPeriod(period);
+		return {
+			month: monthOf(period.start), resetsAt: period.end,
+			...(subscription?.period && { period: subscription.period }),
+			includedSeconds: Math.min(limitSeconds, this.limits.includedSeconds ?? limitSeconds),
+			limitSeconds, usedSeconds, heldSeconds,
+			leftSeconds: Math.max(0, limitSeconds - usedSeconds - heldSeconds),
+			...(this.limits.plan && { plan: this.limits.plan }),
 		};
 	}
 
@@ -657,8 +733,42 @@ function resetWords(numbers: Pick<UsageNumbers, "resetsAt" | "at">): string {
 	return `The allowance is whole again at 00:00 UTC, in ${spellSeconds(Math.max(60, Math.ceil((numbers.resetsAt - numbers.at) / 60_000) * 60))}.`;
 }
 
+/** Whole hosted minutes, for a sentence: "87", "1,800". Used minutes are rounded down, so that "N of M" never says more than was used. */
+export function spellMinutes(weightedSeconds: number): string {
+	return Math.floor(Math.max(0, weightedSeconds) / 60).toLocaleString("en-US");
+}
+
+/** Whether what stops a start is the month's hosted minutes rather than the day's allowance. */
+export function monthIsShort(numbers: UsageNumbers): boolean {
+	const month = numbers.hosted;
+	if (!month) return false;
+	return numbers.leftSeconds === null || month.leftSeconds < numbers.leftSeconds || month.leftSeconds < numbers.startSeconds;
+}
+
+/** "1 December": the day the month's minutes start again, in UTC. */
+function monthResetWords(month: HostedMonth): string {
+	const date = new Date(month.resetsAt);
+	return `${date.getUTCDate()} ${date.toLocaleString("en-US", { month: "long", timeZone: "UTC" })}`;
+}
+
+/**
+ * What a user reads when the month's hosted minutes stop something: what was used of how many, and the way on. A plan
+ * with overage that reached its spend cap says so; one without says Pro. Their own machines are never counted.
+ */
+export function monthRefusal(month: HostedMonth): string {
+	const capped = month.limitSeconds > month.includedSeconds;
+	const used = `You have used ${spellMinutes(month.usedSeconds + month.heldSeconds)} of your ${spellMinutes(month.limitSeconds)} hosted minutes ${month.plan === "pro" ? `for the period ending ${monthResetWords(month)}` : "this month"}${capped ? ", up to your overage spend cap" : ""}`;
+	const way = month.plan === "free"
+		? "Run the agent on one of your own machines, which are never counted, or move to Pro for 1,800 hosted minutes a month."
+		: month.plan === "pro"
+			? `${month.period === "year" ? "Switch to monthly Pro for overage, or run" : capped ? "Raise the spend cap in Settings, or run" : "Run"} the agent on one of your own machines, which are never counted.`
+			: "Run the agent on one of your own machines, which are never counted.";
+	return `${used}, so nothing more can run hosted. ${way} The minutes start again on ${monthResetWords(month)} at ${new Date(month.resetsAt).toISOString().slice(11, 16)} UTC.`;
+}
+
 /** What a user reads when something that needs sandbox time is refused for the day's allowance: what was used, what the allowance is, and when it is whole again. */
 export function allowanceRefusal(numbers: UsageNumbers): string {
+	if (monthIsShort(numbers)) return monthRefusal(numbers.hosted!);
 	const allowance = spellSeconds(numbers.allowanceSeconds ?? 0);
 	const used = spellSeconds(numbers.usedSeconds);
 	const held = numbers.heldSeconds > 0 ? spellSeconds(numbers.heldSeconds) : null;
@@ -694,6 +804,7 @@ export const USAGE_UNAVAILABLE = "Your sandbox time could not be checked just no
 
 /** The timeline's line when a running turn is stopped because the day's allowance is used up. */
 export function turnStoppedNote(numbers: UsageNumbers): string {
+	if (monthIsShort(numbers)) return `This turn was stopped at the end of the time it held. ${monthRefusal(numbers.hosted!)} The sandbox is suspended with its files as they are, and the conversation is kept.`;
 	return `Today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up, so this turn was stopped at the end of the time it held. The sandbox is suspended with its files as they are, and the conversation is kept. ${resetWords(numbers)} A prompt after that goes on from here.`;
 }
 
@@ -703,6 +814,7 @@ export const UNCHECKED_IDLE_NOTE = "Suspended the sandbox: your sandbox time cou
 
 /** The timeline's line when a sandbox that runs with no turn in it is suspended for the same reason. */
 export function idleSuspendedNote(numbers: UsageNumbers): string {
+	if (monthIsShort(numbers)) return `Suspended the sandbox: the hosted minutes are used up. Its files are kept. ${monthRefusal(numbers.hosted!)}`;
 	return `Suspended the sandbox: today's ${spellSeconds(numbers.allowanceSeconds ?? 0)} of sandbox time is used up. Its files are kept. ${resetWords(numbers)}`;
 }
 

@@ -169,12 +169,13 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 	WIDE_HOSTS,
-	HOSTED_SIZES,
+	largerHostedSize,
 	type HostedSize,
 	isHostedSize,
 	outOfMemoryWords,
 } from "../contract.js";
 import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../blocked-network.js";
+import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
@@ -1513,6 +1514,14 @@ export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sa
 	}, error => c.log.warn({ msg: "could not read blocked network requests", error: describeError(error) }), () => c.vars.stopping || c.vars.destroying);
 }
 
+/** Apply the account's size decision once, even if both the hold and the place claim observe the downgrade. */
+export function applySandboxClamp(meta: Pick<SessionMeta, "hostedSize">, size: HostedSize | undefined, notify: (text: string) => void): boolean {
+	if (!size || meta.hostedSize === size) return false;
+	meta.hostedSize = size;
+	notify(`This agent's next sandbox is ${size}: large sandboxes are part of Pro.`);
+	return true;
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
@@ -1558,8 +1567,13 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (hostedLimitsApply(meta.place)) {
 			// The place is claimed where the sandbox is made: the hold's reserve asked for one only if the session
 			// had no sandbox then, and the one it had may have been found gone above.
-			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId);
+			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId, meta.hostedSize);
 			if (!place.ok) throw new TurnProblem("numbers" in place ? sandboxRefusal(place.numbers) : "The agent was deleted.");
+			if (applySandboxClamp(meta, place.clampedSize, text => note(c, turn, "info", text))) {
+				await persist(c);
+				// The previous sandbox disappeared, or the plan changed since the reserve. Trade its hold at the new weight.
+				await holdSandbox(c, meta, false);
+			}
 		}
 		note(c, turn, "info", "Creating sandbox");
 		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
@@ -3267,7 +3281,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
+			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, hostedSize: meta.hostedSize ?? "small", keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
@@ -3283,6 +3297,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	meta.meterAsked = null;
 	void persist(c);
 	if (answer.ok) {
+		applySandboxClamp(meta, answer.clampedSize, text => note(c, c.vars.turn?.number ?? 0, "info", text));
 		// A renewal goes on with the use the hold was for; anything that starts takes a use of its own.
 		const use = !fresh && open ? open.use : answer.hold.id;
 		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, use, ...(open?.seen ? { seen: open.seen } : {}) };
@@ -3800,11 +3815,13 @@ function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | nu
 	});
 }
 
-/** The memory figures with the next size the layer offers above the one that ran out, if any. */
-function withLarger(layer: SandboxLayer, memory: OutOfMemory): OutOfMemory {
-	const offered = layer.sandboxes.sizes?.().map((size) => size.id) ?? [];
-	const larger = HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(memory.size ?? "large") + 1).find((size) => offered.includes(size));
-	return larger ? { ...memory, larger } : memory;
+async function resizeOptions(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<HostedSize[]> {
+	if (meta.place.kind === "hosted" && billing()) return userActor(c, meta.uid).internalHostedSizes();
+	return layer.sandboxes.sizes?.().map(size => size.id) ?? [];
+}
+
+function withLarger(memory: OutOfMemory, offered: HostedSize[]): OutOfMemory {
+	return { ...memory, larger: largerHostedSize(memory.size ?? "large", offered) ?? undefined };
 }
 
 /** Compare the sandbox's own kill counts over the turn. A silent E2B guest can also be diagnosed from its provider's samples. */
@@ -3819,12 +3836,12 @@ export async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTu
 		const hosted = meta.place.kind === "hosted";
 		const memory: OutOfMemory = peak ?? { usedMiB: end!.totalMiB, totalMiB: end!.totalMiB, ...(hosted && meta.hostedSize && { size: meta.hostedSize }) };
 		const layer = hosted ? await layerOf(c, meta) : null;
-		const offered = layer?.sandboxes.sizes?.().map((size) => size.id);
+		const offered = layer ? await resizeOptions(c, meta, layer) : undefined;
 		const what = end ? ` Its kernel stopped ${killed === 1 ? "a program" : `${killed} programs`} to free memory during this turn: a command that ended with "Killed" or exit code 137 was one of them.` : " It stopped answering commands.";
 		note(c, turn, "warn", `${outOfMemoryWords(memory, offered, meta.place.kind)}${what}`);
 		const allocation = hosted ? `size=${meta.hostedSize ?? "small"} used=${memory.usedMiB}` : "place=machine";
 		console.log(`[wlp] sandbox.out_of_memory session=${meta.sessionId} turn=${turn} ${allocation} total=${memory.totalMiB} killed=${killed}`);
-		if (active.item) active.item.outOfMemory = layer ? withLarger(layer, memory) : memory;
+		if (active.item) active.item.outOfMemory = offered ? withLarger(memory, offered) : memory;
 		// Its next connect finds it silent and restarts it: the item has been told of this sandbox's memory already.
 		meta.memoryNoted = sandbox.id;
 	} catch (error) {
@@ -3996,7 +4013,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (sandbox.outOfMemory && active.item && meta.memoryNoted !== sandbox.id) {
 			// It had run out of memory before this turn, and was restarted: in the same size the same commands run it out again,
 			// so a work item asks its person first, where a larger size is offered. A person's own agent goes on: they read the note.
-			active.item.outOfMemory = withLarger(layer, sandbox.outOfMemory);
+			active.item.outOfMemory = withLarger(sandbox.outOfMemory, await resizeOptions(c, meta, layer));
 			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
 		}
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
@@ -6474,11 +6491,15 @@ export const agentSession = actor({
 		 * that was not used for long is, the timeline says who did it and what became of the agent's
 		 * memory, and the next prompt starts a new sandbox. Refused while the session works.
 		 */
-		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean }> => {
+		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
+			// A stored OOM choice can outlive Pro. Check again before touching the old sandbox.
+			if (meta.place.kind === "hosted" && hostedSize && billing() && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
+				return { freed: false, sizeUnavailable: hostedSize };
+			}
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });
 			if (busy(c)) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
 			const id = meta.sandboxId;
