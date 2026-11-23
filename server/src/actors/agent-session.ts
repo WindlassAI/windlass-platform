@@ -195,7 +195,7 @@ import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, re
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
-import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
+import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, secretRequestLimit, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -224,7 +224,7 @@ import { PlatformChecks } from "../sandbox/platform-checks.js";
 import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
-import { REPORT_TAKEN, askPerson, requestSecret } from "../agent-publish.js";
+import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
@@ -323,6 +323,9 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 
 interface SessionMeta {
 	secretRequest?: SessionSnapshot["secretRequest"];
+	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */
+	secretAsks?: number;
+	declinedSecrets?: string[];
 	/** The current conversation has seen outside text, including turns on harnesses without a taint marker. */
 	secretRequestBlocked?: boolean;
 	size?: number;
@@ -4133,16 +4136,36 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			return tracked(filings);
 		} : undefined;
 		meta.secretRequestBlocked = outsideText || (!!resumed && !!meta.secretRequestBlocked);
-		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret") ? (request, withdrawn) => {
+		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret") ? async (request, withdrawn) => {
+			const refuse = (message: string) => {
+				note(c, turn, "warn", message);
+				return message;
+			};
+			const validate = () => requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, held.redactor);
 			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
-			const taken = requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, held.redactor);
-			if (taken.request) {
-				const secretRequest = { ...taken.request, id: String(turn) };
-				meta.secretRequest = secretRequest;
-				append(c, { turn, kind: "platform", level: "info", text: `The agent requested ${secretRequest.name}.`, secretRequest });
-				void persist(c);
-			} else note(c, turn, "warn", taken.told);
-			return taken.told;
+			const taken = validate();
+			if (!taken.request) return refuse(taken.told);
+			const { name } = taken.request;
+			let problem: string | null;
+			try {
+				problem = item ? await itemActor(c, meta.uid, item.row.itemId).internalSecretRequestLimit(item.row.key, name)
+					: secretRequestLimit(name, meta.secretAsks ?? 0, meta.declinedSecrets ?? [], "session");
+				problem ??= await secretsActor(c, meta.uid, meta.sessionId).internalRequestedSecretConflict(meta.sessionId, name);
+			} catch {
+				problem = "The platform could not check this secret request. Try again.";
+			}
+			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+			if (problem) return refuse(problem);
+			// Another tool call or a third-party event may have landed during the lookups.
+			const current = validate();
+			if (!current.request) return refuse(current.told);
+			const notice = secretRequestNotice(caps.events === "acp", !setupProjectOf(meta));
+			const secretRequest = { ...current.request, notice, id: String(turn) };
+			meta.secretRequest = secretRequest;
+			if (!item) meta.secretAsks = (meta.secretAsks ?? 0) + 1;
+			append(c, { turn, kind: "platform", level: "info", text: `A secret was requested for ${name}.\n${notice}`, secretRequest });
+			await persist(c);
+			return current.told;
 		} : undefined;
 		// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
 		// and only on a delivery that says how many the run has left.
@@ -5235,6 +5258,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		// Accepted. From here to the return nothing is awaited.
 		const turn = meta.turns + 1;
 		const now = Date.now();
+		if (meta.secretRequest) (meta.declinedSecrets ??= []).push(meta.secretRequest.name);
 		delete meta.secretRequest;
 		meta.turns = turn;
 		meta.model = model;
@@ -5501,7 +5525,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why } }), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
@@ -6012,6 +6036,8 @@ export const agentSession = actor({
 					if (meta.secretRequest !== request || c.vars.accepting || meta.run?.paused)
 						throw new UserError("That secret request is no longer open.", { code: "no_question" });
 					await secretsActor(c, meta.uid, meta.sessionId).internalSaveRequestedSecret(meta.sessionId, save);
+					delete meta.secretRequest;
+					await persist(c);
 					const text = `${request.name} is now set in your environment.`;
 					await takePrompt(c, meta, { text }, text, null);
 				}

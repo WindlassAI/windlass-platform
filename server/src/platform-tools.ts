@@ -28,6 +28,9 @@
  *               agent's own later call replaces, and which the person reads labelled as the agent's.
  *   ask_person  one question, with the limits Windlass's has (one per turn, its length and options,
  *               the same cleaning), the answer coming from the person as the next turn's message.
+ *   request_secret asks the person to supply a missing variable. The request names the sandbox as its
+ *               source and says where the value would be saved. Only the person's separate action
+ *               can save it and grant the next turn access.
  *   push        commits the workspace and pushes it to the session's own branch, which the platform names
  *               (a call that names another is refused, and nothing in a call chooses the ref, a force or a
  *               lease), with a token that never enters the container, under a lease that replaces only the
@@ -41,8 +44,7 @@
  *               `agentPublish`). A rogue call reaches a question the person answers, which says the call
  *               may not be the agent's.
  *
- * None of them hands anything to the container: no credential, no token, nothing it could not already do
- * there; and a call is answered only while the turn runs. The timeline says of every push, fetch and
+ * The tool replies carry no credentials and are sent only while the turn runs. The timeline says of every push, fetch and
  * publish that came over MCP that any process in the sandbox may have made it (agent-publish.ts,
  * `MCP_CALL_WORDS`). This is the exposure Windlass already has where it does not sandbox commands
  * ("Docker, hardened"), whose commands can write on the engine's own connection (docs/known-limitations.md).

@@ -1841,10 +1841,12 @@ export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "f
  */
 export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox";
 
-/** Only the name and the agent's reason are public. Render the reason as quoted plain text. */
+/** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {
 	name: string;
 	why: string;
+	/** Platform-authored provenance and save destination, one line each. Absent on older requests. */
+	notice?: string;
 }
 
 export interface SetRequestedSecretInput {
@@ -3201,7 +3203,8 @@ export interface AgentSessionActions {
 	/** Select the mode for the next prompt. An unavailable choice or item session returns bad_input. */
 	setMode(input: { mode: string }): Promise<SessionSummary>;
 	snapshot(): Promise<SessionSnapshot>;
-	/** Save at agent scope for this repository (otherwise the account) and continue the requesting turn’s work. */
+	/** Create the missing secret at agent scope and continue. A name saved since the request returns secret_exists.
+	 * A failed item save reopens the question with its error and a new id. */
 	setRequestedSecret(input: SetRequestedSecretInput): Promise<void>;
 	/**
 	 * Starts a turn and returns as soon as it is accepted; the work arrives as events. While a turn is

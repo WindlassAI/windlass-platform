@@ -99,7 +99,9 @@ A question waits 10 minutes. A countdown shows **declines in** and the time left
 
 The agent asks one question at a time.
 
-When the agent calls `request_secret`, the timeline shows the environment variable’s name and why the agent needs it. Supply its value through the secret action. The platform saves it for the session’s repository, or for your account when the session has no connected repository. The next turn receives the value in its environment. Keep values out of prompts and notes.
+A `request_secret` entry gives the variable name, the supplied reason, the connection that made the request, and where the value would be saved. In a Claude Code, OpenCode or Codex session, any program inside the sandbox can make the request. The platform cannot tell whether third-party text prompted it. Review the reason before entering a value through the secret action.
+
+The value is saved with agent scope for the connected repository, or for your account when there is no connected repository. Account scope applies across your agents, subject to each sandbox’s secret delivery settings. An existing name in either applicable store must be managed under **Secrets**. In a plain session, starting another turn without supplying the value skips that name for the rest of the session. A plain session can request at most three secrets, one per turn. Keep values out of prompts and notes.
 
 ## Stop
 

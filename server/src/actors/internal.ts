@@ -199,6 +199,7 @@ export interface RequestedSecretSave {
 
 /** Actions of `user` that only one session may call, with a token made for it (`secretsActor`). */
 export interface UserSecretsInternal {
+	internalRequestedSecretConflict(sessionId: string, name: string): Promise<string | null>;
 	internalSaveRequestedSecret(sessionId: string, input: RequestedSecretSave): Promise<void>;
 	internalSessionSecrets(sessionId: string, snapshotSetup?: boolean): Promise<SealedSecrets>;
 }
@@ -232,6 +233,7 @@ export interface NetworkReceipt { sessionId: string; revision: number; network: 
 
 /** Actions of `workItem` that only actors may call. */
 export interface ItemInternal {
+	internalSecretRequestLimit(key: string, name: string): Promise<string | null>;
 	internalSetRequestedSecret(input: RequestedSecretSave): Promise<void>;
 	internalBlockedNetwork(input: NetworkReceipt): Promise<void>;
 	internalProviderChanged(revision: number): Promise<void>;

@@ -585,6 +585,15 @@ async function secretProfile(id: unknown): Promise<SandboxProfile> {
 	return profile;
 }
 
+/** Check both stores by name alone, including secrets withheld from this session. */
+async function requestedSecretConflict(db: Pick<RawAccess, "execute">, project: string | null, name: string): Promise<string | null> {
+	const [row] = await db.execute<{ source: string }>(
+		"SELECT 'repository' AS source FROM repo_secret WHERE project = ? AND name = ? UNION ALL SELECT 'account' FROM account_secret WHERE name = ? LIMIT 1",
+		project, name, name,
+	);
+	return row ? `${name} already exists for this ${row.source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.` : null;
+}
+
 /**
  * A repository's secrets as a client may see them: name, scope, when each was last changed, and what
  * it reaches in a sandbox of `profile`. The value's column is not read, so no value can be in the answer.
@@ -1338,6 +1347,7 @@ interface EnvironmentCtx extends CreateCtx {
 /** Forget the durable index and its launch and submission keys after the actor is gone. */
 async function forgetSession(c: UserCtx, id: string): Promise<void> {
 	await c.db.execute("DELETE FROM session_secret_grant WHERE session_id = ?", id);
+	await c.db.execute("DELETE FROM requested_secret_receipt WHERE session_id = ?", id);
 	await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
 	c.vars.sessions.delete(id);
 	c.vars.launchUntil.delete(id);
@@ -1591,6 +1601,7 @@ export const user = actor({
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
+			await db.execute("CREATE TABLE IF NOT EXISTS requested_secret_receipt (session_id TEXT PRIMARY KEY, request_id TEXT NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS session_secret_grant (session_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(session_id, name))");
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
@@ -2495,6 +2506,13 @@ export const user = actor({
 			}
 		},
 
+		internalRequestedSecretConflict: async (c, sessionId: string, name: string): Promise<string | null> => {
+			requireServiceFor(c, secretsCaller(c.key[0]!, sessionId));
+			const session = c.vars.sessions.get(sessionId);
+			if (!session || !validRequestedSecretName(name)) throw new UserError("That secret request is unavailable.", { code: "bad_secret" });
+			return requestedSecretConflict(c.db, setupProjectKey(session.repository?.id), name);
+		},
+
 		internalSaveRequestedSecret: async (c, sessionId: string, input: RequestedSecretSave): Promise<void> => {
 			const uid = c.key[0]!;
 			requireServiceFor(c, secretsCaller(uid, sessionId));
@@ -2507,11 +2525,23 @@ export const user = actor({
 			const { name, sealed } = input;
 			try {
 				await c.db.transaction(async tx => {
+					const [receipt] = await tx.execute("SELECT 1 FROM requested_secret_receipt WHERE session_id = ? AND request_id = ?", sessionId, input.requestId);
+					if (receipt) {
+						// An item recovering after a restart replays the exact ciphertext it already saved.
+						const same = project === ACCOUNT_SECRET_PROJECT
+							? await tx.execute("SELECT 1 FROM account_secret WHERE name = ? AND sealed = ? AND scope = 'agent'", name, sealed)
+							: await tx.execute("SELECT 1 FROM repo_secret WHERE project = ? AND name = ? AND sealed = ? AND scope = 'agent'", project, name, sealed);
+						if (same.length) return;
+						throw new UserError("The saved secret was changed under Secrets.", { code: "bad_secret" });
+					}
+					const conflict = await requestedSecretConflict(tx, project, name);
+					if (conflict) throw new UserError(conflict, { code: "secret_exists" });
 					if (project === ACCOUNT_SECRET_PROJECT) await saveAccountSecret(tx, name, "agent", sealed, Date.now());
 					else {
 						const repo = session.repository!;
 						checkSecretLimit(await saveRepoSecret(tx, { uid, project, label: `${repo.owner}/${repo.name}`, name, scope: "agent", sealed, now: Date.now() }));
 					}
+					await tx.execute("INSERT OR REPLACE INTO requested_secret_receipt VALUES (?, ?)", sessionId, input.requestId);
 					if (session.harness && session.harness !== "windlass")
 						await tx.execute("INSERT OR IGNORE INTO session_secret_grant VALUES (?, ?)", sessionId, name);
 				});

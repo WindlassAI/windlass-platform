@@ -155,12 +155,21 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	}
 
 	const redactor = new SecretRedactor([{ name: "STORE_TOKEN", value: "s3cr3t-value-123" }]);
-	const { requestSecret } = await import("../server/src/agent-publish.js");
+	const { requestSecret, secretRequestNotice } = await import("../server/src/agent-publish.js");
+	for (const harness of ["claude", "codex", "opencode"] as const) {
+		const notice = secretRequestNotice(capabilitiesOf(harness).events === "acp", true);
+		assert.equal(notice.split("\n")[0], "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it.");
+		assert.match(notice, /saved for your account: every agent of yours will have it/);
+	}
 	const args = { name: "SERVICE_TOKEN", why: "Run the integration test." };
 	assert.deepEqual(requestSecret(args, false, false, redactor), {
 		request: args, told: "Asked your person for SERVICE_TOKEN; stop here and say what you will do once it is set.",
 	});
-	for (const name of ["lower", "A", "A".repeat(65), "PATH", "WLP_SESSION_BEARER", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "INITIAL_AGENT_MODE", "BAD-NAME"]) {
+	for (const name of ["lower", "A", "A".repeat(65), "PATH", "WLP_SESSION_BEARER", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "INITIAL_AGENT_MODE", "BAD-NAME",
+		"GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXEC_PATH", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_1", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PYTHONPATH", "PYTHONSTARTUP", "PERL5OPT", "PERL5LIB", "RUBYOPT",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+		"NODE_OPTIONS", "FTP_PROXY", "JAVA_TOOL_OPTIONS", "OPENSSL_CONF", "NPM_CONFIG_CAFILE", "GIT_SSL_CAINFO", "SSH_ASKPASS"]) {
 		assert.equal(requestSecret({ ...args, name }, false, false, redactor).request, undefined);
 	}
 	assert.deepEqual(requestSecret(args, false, true, redactor), { told: "A request coming from third-party text was not shown as a secret prompt." });

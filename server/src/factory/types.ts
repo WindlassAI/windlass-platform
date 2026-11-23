@@ -80,8 +80,9 @@ export interface Run extends ItemRun {
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: RunReview | null;
-	/** Questions the builder asked the person in this run (`ask_person`), shown in its log. Absent on runs stored before the tool: none. */
+	/** Questions the builder asked the person in this run (`ask_person` and `request_secret`), shown in its log. Absent on runs stored before the tool: none. */
 	asks?: number;
+	declinedSecrets?: string[];
 }
 
 /** A blocking finding of a review, as the next round's reviewer must answer it (`earlier` blocks). */
@@ -191,6 +192,8 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
+	claimedSecret?: Question;
 	/** One rerun request per commit. Keep the original job ids to distinguish a fresh attempt from a delayed listing. */
 	ciReruns?: Record<string, { jobs: CancelledJob[]; reported?: boolean }>;
 	/**
@@ -407,6 +410,8 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
+	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
+	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }

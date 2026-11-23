@@ -380,6 +380,12 @@ export function askPerson(given: Record<string, unknown>, state: { already: bool
 	return { asked: { text, options }, told: ASK_TAKEN, said: "The agent asked you a question. It waits under Needs you, on the item's page, until you answer." };
 }
 
+export function secretRequestNotice(sandbox: boolean, account: boolean): string {
+	const source = sandbox ? "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it." : "This request came through the agent's host tool connection.";
+	const scope = account ? "If supplied, this will be saved for your account: every agent of yours will have it." : "If supplied, this will be saved for this repository with agent scope.";
+	return source + "\n" + scope;
+}
+
 export function requestSecret(given: Record<string, unknown>, already: boolean, untrusted: boolean, redactor: Redactor): { request?: SecretRequest; told: string } {
 	if (untrusted) return { told: "A request coming from third-party text was not shown as a secret prompt." };
 	if (already) return { told: ASK_AGAIN };

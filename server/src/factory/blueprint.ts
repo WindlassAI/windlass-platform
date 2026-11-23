@@ -43,6 +43,7 @@
  * that fires after the item moved on. No clock is read: every time is a fact's `at`.
  */
 
+import { secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
@@ -175,6 +176,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const unchanged: Outcome = { item, effects: [], events: [] };
 	const receipt = (fact.kind === "turn_ended" || fact.kind === "review_ended") && item.state === "cancelled"
 		&& (item.parent || item.mode === "orchestrate") && item.run?.step.turn && fact.key === currentKey(item);
+	if (item.claimedSecret && fact.kind !== "settle_secret") return unchanged;
 	if (FINAL.has(item.state) && fact.kind !== "child_notice" && !receipt) return unchanged;
 	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
 	if (receipt) spendTurn(change, fact.spend);
@@ -390,6 +392,24 @@ function apply(c: Change, fact: Fact): boolean {
 			}
 			cancel(c);
 			return true;
+		case "claim_secret": {
+			const q = item.question;
+			if (q?.kind !== "secret_needed" || q.id !== fact.question || q.secret?.name !== fact.name) return false;
+			item.claimedSecret = q;
+			item.question = null;
+			c.state("waiting", { reason: "person", sentence: `Saving ${fact.name}.`, retryAt: null });
+			return true;
+		}
+		case "settle_secret": {
+			const q = item.claimedSecret;
+			if (!q || q.id !== fact.question) return false;
+			delete item.claimedSecret;
+			item.question = q;
+			if (!fact.error) return answer(c, { kind: "answer", question: q.id, choice: "add_secret", by: fact.by, at: fact.at });
+			const text = [`A secret was requested for ${q.secret!.name}.`, q.secret?.notice, fact.error].filter(Boolean).join("\n");
+			ask(c, q.kind, text, q.choices, q.cause, q.resume, fact.error, { secret: q.secret });
+			return true;
+		}
 		case "answer":
 			return answer(c, fact);
 		case "integration_started":
@@ -416,7 +436,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -1032,8 +1052,9 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	// The builder asked its person (`ask_person`) and was told the question is recorded: it is asked, even of a turn cut short.
 	// Nothing of the turn is judged: the workspace and any pushed head stay as they are, and the answer resumes this step.
-	if (fact.secret && ASKING.has(kind)) {
-		const text = `The agent needs ${fact.secret.name} in its environment.`;
+	if (fact.secret && ASKING.has(kind) && !secretRequestLimit(fact.secret.name, run.asks ?? 0, run.declinedSecrets ?? [], "run")) {
+		run.asks = (run.asks ?? 0) + 1;
+		const text = [`A secret was requested for ${fact.secret.name}.`, fact.secret.notice].filter(Boolean).join("\n");
 		return ask(c, "secret_needed", text, [choice("add_secret"), choice("without_secret"), choice("give_up")], null, { ...IMPLEMENT, kind, newStep: false }, text, { secret: fact.secret });
 	}
 	if (fact.asked && ASKING.has(kind)) {
@@ -2144,6 +2165,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 		case "add_secret":
 		case "without_secret":
 			if (!question.secret || !resume) return false;
+			if (fact.choice === "without_secret") (run.declinedSecrets ??= []).push(question.secret.name);
 			nextTurn(c, { ...resume, includeInFresh: true, text: fact.choice === "add_secret" ? `${question.secret.name} is now set in your environment.` : `Continue without ${question.secret.name}.` });
 			break;
 		case "reply":

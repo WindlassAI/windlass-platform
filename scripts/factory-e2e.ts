@@ -2038,6 +2038,20 @@ async function machineChecks(): Promise<void> {
 			}
 		});
 
+		await check("machine: a plain ACP secret request identifies the sandbox and account reach", async () => {
+			const person = await user.createSession({ place, profile: "docker-hardened", harness: "claude" });
+			const session = client.agentSession.get([auth.profile.uid, person.id], { params: { token: auth.token } });
+			try {
+				await session.prompt({ text: "platformsecret" });
+				const request = await waitFor("the sandbox request", async () => (await session.snapshot()).secretRequest, 60_000);
+				assert(request.name === "SERVICE_TOKEN" && request.notice?.split("\n").includes("This request came from inside the agent's sandbox; a program there, not only the agent, could have made it."), "missing sandbox attribution");
+				assert(request.notice?.includes("saved for your account: every agent of yours will have it"), "missing account reach");
+				return "the MCP request carries both lines";
+			} finally {
+				await user.deleteSession(person.id);
+			}
+		});
+
 		await check("machine: Claude Code's push, fetch_base and publish over MCP say any process may have made them, stop at a turn's limits, and a publish is asked every time", async () => {
 			const { MCP_CALL_WORDS, publishAsksEveryTime } = await import("../server/src/agent-publish.js");
 			const { overLimit } = await import("../server/src/platform-tools.js");
@@ -2446,11 +2460,20 @@ try {
 		const asked = await untilItem(user, item.id, "the secret question", v => !!v.question, 90_000);
 		const q = asked.question;
 		assert(q?.kind === "secret_needed" && q.secret?.name === "SERVICE_TOKEN" && q.secret.why === "Run the service test.", "missing secret request");
+		assert(q.secret.notice?.includes("host tool connection") && q.secret.notice.includes("this repository") && q.text.includes(q.secret.notice), "missing request provenance or destination");
 		assert(q.choices.map(c => c.label).join("|") === "Add it and continue|Continue without it|Give up", "unexpected secret choices");
 		const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
 		await refused(() => user.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "add_secret" } }), "bad_input");
 		await refused(() => user.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "without_secret", note: requestedValue } }), "item_conflict");
-		await session.setRequestedSecret({ requestId: q.id, name: q.secret.name, value: requestedValue });
+		// A setup-only account value appeared after the question was shown. It must also prevent a repository shadow.
+		await user.saveAccountSecret({ profile: "docker-hardened", name: q.secret.name, scope: "setup", value: randomBytes(32).toString("hex") });
+		await refused(() => session.setRequestedSecret({ requestId: q.id, name: q.secret!.name, value: requestedValue }), "secret_exists");
+		const reopened = (await user.item(item.id)).question;
+		assert(reopened?.secret?.name === q.secret.name && reopened.id !== q.id && reopened.text.includes("already exists for this account"), "save conflict did not reopen the question with the error");
+		assert((await user.accountSecrets({ profile: "docker-hardened" })).secrets.some(s => s.name === q.secret!.name && s.scope === "setup"), "save widened the existing scope");
+		await user.deleteAccountSecret({ profile: "docker-hardened", name: q.secret.name });
+		await refused(() => session.setRequestedSecret({ requestId: q.id, name: q.secret!.name, value: requestedValue }), "item_conflict");
+		await session.setRequestedSecret({ requestId: reopened.id, name: q.secret.name, value: requestedValue });
 		const view = await untilItem(user, item.id, "the resumed step", v => !!v.pullRequest, 90_000);
 		const snapshot = await session.snapshot();
 		assert(snapshot.timeline.some(e => e.kind === "windlass" && e.event.type === "fake.secret_checked" && e.event.data?.matches === true), "the sandbox did not receive the value and continuation");
@@ -2464,6 +2487,29 @@ try {
 		return "repository secret reached the next turn";
 	});
 
+	await check("ask-secret: existing repository and account names cannot raise a question", async () => {
+		const profile = "docker-hardened", name = "SERVICE_TOKEN";
+		for (const store of ["repository", "account"] as const) {
+			const fixture = { profile, name, scope: "setup" as const, value: randomBytes(32).toString("hex") };
+			if (store === "repository") await user.saveRepositorySecret({ repositoryId: harbor.id, ...fixture });
+			else await user.saveAccountSecret(fixture);
+			try {
+				const created = await user.createSession({ profile, repository: { id: harbor.id } });
+				const session = client.agentSession.get([auth.profile.uid, created.id], { params: { token: auth.token } });
+				await session.prompt({ text: "Use the service. (secret)" });
+				const snapshot = await waitFor("the refusal", async () => {
+					const s = await session.snapshot();
+					return s.timeline.some(e => e.kind === "platform" && e.text.includes(`already exists for this ${store}`)) && s;
+				}, 90_000);
+				assert(!snapshot.secretRequest && !snapshot.timeline.some(e => e.kind === "platform" && e.secretRequest), "an existing name raised a question");
+			} finally {
+				if (store === "repository") await user.deleteRepositorySecret({ profile, name, repositoryId: harbor.id });
+				else await user.deleteAccountSecret({ profile, name });
+			}
+		}
+		return "both setup-only names were refused";
+	});
+
 	await check("ask-secret: skip and give up", async () => {
 		for (const choice of ["without_secret", "give_up"] as const) {
 			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, title: "Optional service", body: "Try the service. (secret)", start: true });
@@ -2474,11 +2520,28 @@ try {
 			else {
 				await untilItem(user, item.id, "work continued", v => !!v.pullRequest, 90_000);
 				const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
-				assert((await session.snapshot()).timeline.some(e => e.kind === "user" && e.text.includes("Continue without SERVICE_TOKEN.")), "missing skip prompt");
+				const timeline = (await session.snapshot()).timeline;
+				assert(timeline.some(e => e.kind === "user" && e.text.includes("Continue without SERVICE_TOKEN.")), "missing skip prompt");
+				assert(timeline.some(e => e.kind === "platform" && e.text.includes("Do not request it again in this run")), "repeat request was not refused");
 				await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
 			}
 		}
 		return "both choices settled the question";
+	});
+
+	await check("ask-secret: a plain session remembers skipped names and stops at three", async () => {
+		const created = await user.createSession({ profile: "docker-hardened" });
+		const session = client.agentSession.get([auth.profile.uid, created.id], { params: { token: auth.token } });
+		for (const [name, refusal] of [["FIRST_TOKEN", null], ["FIRST_TOKEN", "Do not request it again in this session"], ["SECOND_TOKEN", null], ["THIRD_TOKEN", null], ["FOURTH_TOKEN", "three questions have already been recorded"]] as const) {
+			const sent = await session.prompt({ text: `Use the service. (secret) (secret-name ${name})` });
+			const snap = await waitFor("the end of the request turn", async () => {
+				const s = await session.snapshot();
+				return s.summary.status === "idle" && s.timeline.some(e => e.turn === sent.turn) && s;
+			}, 90_000);
+			if (refusal) assert(!snap.secretRequest && snap.timeline.some(e => e.turn === sent.turn && e.kind === "platform" && e.text.includes(refusal)), "missing refusal");
+			else assert(snap.secretRequest?.name === name, "missing open request");
+		}
+		return "a repeat and a fourth request were refused";
 	});
 
 	await check("ask-secret: a plain session sets an account secret and continues", async () => {
@@ -2486,6 +2549,13 @@ try {
 		const session = client.agentSession.get([auth.profile.uid, created.id], { params: { token: auth.token } });
 		await session.prompt({ text: "Use the service. (secret)" });
 		const request = await waitFor("the session secret request", async () => (await session.snapshot()).secretRequest, 90_000);
+		assert(request.notice?.includes("saved for your account: every agent of yours will have it"), "account reach missing from the request");
+		const name = request.name, profile = created.profile;
+		const saved = await user.saveAccountSecret({ name, profile, scope: "agent", value: randomBytes(32).toString("hex") });
+		await refused(() => session.setRequestedSecret({ requestId: request.id, name, value: requestedValue }), "secret_exists");
+		const after = await user.accountSecrets({ profile });
+		assert(after.secrets.find(s => s.name === name)?.updatedAt === saved.secrets.find(s => s.name === name)?.updatedAt, "existing account entry was rewritten");
+		await user.deleteAccountSecret({ name, profile });
 		await session.setRequestedSecret({ requestId: request.id, name: request.name, value: requestedValue });
 		const snapshot = await waitFor("the next turn’s sandbox", async () => {
 			const s = await session.snapshot();

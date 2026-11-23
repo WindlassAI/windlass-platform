@@ -113,6 +113,10 @@ export const scenarios = {
 		const old = yield { mcp: { version: "2025-06-18", method: "tools/list" } };
 		yield message(`Old: ${old?.error?.message ?? JSON.stringify(old)}\n`);
 	},
+	*platformsecret() {
+		yield { mcp: { method: "tools/call", params: { name: "request_secret", arguments: { name: "SERVICE_TOKEN", why: "Run the service test." } } } };
+		yield message("Finished requesting the variable.");
+	},
 	// A person's turn with push, fetch_base and publish over MCP, as a process of the sandbox could make the calls: another
 	// branch, a ref, a force and a lease of its own, then more pushes and fetches than a turn may make, then a publish.
 	*platformpush() {
