@@ -80,7 +80,7 @@ import type { AgentModels } from "../factory/placement.js";
 
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
-import { changeUserLimit, effectiveUserLimits, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
+import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
@@ -169,13 +169,19 @@ import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
-import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, DAY_MS, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { readE2bSettings } from "../sandbox/e2b/config.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildResult } from "./internal.js";
+import { applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
+import { billing } from "../billing/config.js";
+import { monthStartDay, nextMonthStart, sessionWeight } from "../billing/meter.js";
+import { effectivePlan, planAllowsSize } from "../billing/plans.js";
+import type { BillingEvent } from "../billing/provider.js";
+import type { BillingPeriod, BillingView } from "../contract.js";
 import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
@@ -236,6 +242,8 @@ interface UserVars {
 	models: AccountModels;
 	/** The user's sandbox time and kept sandboxes, as the tables have them. */
 	usage: UsageBook;
+	/** The overage report under way (billing/account.ts `reportOverage`): one at a time. */
+	overageReport: Promise<void>;
 	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
 	listed: { at: number; sandboxes: ListedSandbox[] } | null;
 	/** The user's work items, the turn queue and its slots (user-items.ts), as the tables have them. */
@@ -797,6 +805,7 @@ const KEPT_FRESH_MS = 30_000;
 interface UsageCtx extends UserCtx {
 	key: string[];
 	log: { warn(entry: unknown): void };
+	keepAwake?<T>(promise: Promise<T>): Promise<T>;
 }
 
 type UsageEntryRow = { day: number; session: string; hold: string; kind: string; seconds: number; at: number; note: string | null };
@@ -819,7 +828,9 @@ async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyM
 	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
 	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
 	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
-	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, at, note FROM usage_entry WHERE day > ? ORDER BY id", today - USAGE_HISTORY_DAYS);
+	// The days the usage page shows, and last month and this one whole, for the monthly hosted minutes (billing/meter.ts).
+	const since = Math.min(today - USAGE_HISTORY_DAYS, monthStartDay(nextMonthStart(Date.now()) - 40 * DAY_MS) - 1);
+	const entries = await db.execute<UsageEntryRow>("SELECT day, session, hold, kind, seconds, at, note FROM usage_entry WHERE day > ? ORDER BY id", since);
 	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, started_at, expires_at FROM usage_hold");
 	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
 	const book = new UsageBook(limits, {
@@ -828,6 +839,7 @@ async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyM
 		kept,
 	});
 	book.sharing = itemSharing(sessions);
+	book.weightOf = (session) => sessionWeight(sessions.get(session));
 	const at = Date.now();
 	book.noteModelTokens(at, await tokensOn(db, at));
 	return book;
@@ -867,6 +879,8 @@ const reserveFault = ((): { fresh: number; renewal: number; delayMs: number; dow
 })();
 
 async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step: (book: UsageBook) => T): Promise<T> {
+	// A plan's limits change with the clock (a grace period that ends): the book decides with them as they are now.
+	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
 	const done = step(c.vars.usage);
 	const { change } = done;
 	if (isEmptyChange(change)) return done;
@@ -892,7 +906,32 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
 		console.log(`[wlp] usage.counted uid=${c.key[0]} session=${entry.session} hold=${entry.hold} kind=${entry.kind} seconds=${entry.seconds}${entry.note === null ? "" : `: ${entry.note}`}`);
 	}
 	c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+	if (change.entries.length > 0) queueOverageReport(c);
 	return done;
+}
+
+/**
+ * Tells the payment provider of overage it has not been told of (billing/account.ts), one report at a time, after the
+ * request that counted it has been answered. A report that fails stays pending and is sent again with the next one.
+ */
+function queueOverageReport(c: UsageCtx): void {
+	const settings = billing();
+	const state = c.vars.items.limits.billing;
+	if (!settings || !state || effectivePlan(state, Date.now()) === "free") return;
+	c.vars.overageReport = c.vars.overageReport.then(async () => {
+		try {
+			const now = Date.now();
+			const sent = await reportOverage(c.db, settings.provider, {
+				uid: c.key[0]!, state: c.vars.items.limits.billing ?? state, now,
+				usedSeconds: (month) => c.vars.usage.usedInMonth(month),
+				includedSeconds: accountLimits(c.vars.items.limits).usage.includedSeconds ?? 0,
+			});
+			for (const report of sent) console.log(`[wlp] billing.usage_reported uid=${c.key[0]} month=${report.month} minutes=${report.minutes} event=${report.eventId}`);
+		} catch (error) {
+			console.warn(`[wlp] billing.usage_report_failed uid=${c.key[0]}: ${error instanceof Error ? error.message : "unknown error"}; it is sent again with the next report`);
+		}
+	});
+	void c.keepAwake?.(c.vars.overageReport);
 }
 
 /** Counts the holds that ran out, so that what is read next has them as entries. */
@@ -938,6 +977,34 @@ async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 	}
 }
 
+function billingOn() {
+	const settings = billing();
+	if (!settings) throw new UserError("This deployment has no plans or billing.", { code: "billing_off" });
+	return settings;
+}
+
+function billingOrigin(raw: unknown): string {
+	const origin = typeof raw === "string" ? raw.replace(/\/+$/, "") : "";
+	if (!config.origins.includes(origin)) throw new UserError("Billing can only be opened from the web app's own address.", { code: "origin_not_allowed" });
+	return origin;
+}
+
+async function billingAnswer(c: UsageCtx): Promise<BillingView> {
+	const state = c.vars.items.limits.billing;
+	if (!billing() || !state) return { enabled: false };
+	const now = Date.now();
+	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
+	return billingView(c.db, state, c.vars.usage.numbers(now).hosted ?? null, now);
+}
+
+/** The plan's limits changed: the book, the queue and every open page hear of it. */
+function billingChanged(c: UsageCtx & Parameters<typeof queueChanged>[0]): void {
+	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
+	c.broadcast("usage", c.vars.usage.numbers(Date.now()));
+	queueChanged(c);
+	queueOverageReport(c);
+}
+
 /** The usage page: the numbers, today by agent, the kept sandboxes as the provider lists them, the history and the price. */
 async function usageView(c: UsageCtx): Promise<UsageView> {
 	const layer = await getLayer();
@@ -970,7 +1037,7 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 	return {
 		...book.numbers(now),
 		usedModelTokens: book.modelTokens(now),
-		factoryLimits: effectiveUserLimits(c.vars.items.limits.overrides).factory,
+		factoryLimits: accountLimits(c.vars.items.limits).factory,
 		today: book.today(now).map((row) => {
 			const session = c.vars.sessions.get(row.sessionId);
 			return { ...row, title: session?.title ?? null, ...(session?.hostedSize && { hostedSize: session.hostedSize }) };
@@ -1038,9 +1105,14 @@ function sizesOf(layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[
  * offers below it. Undefined where the layer has one size.
  */
 async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: Parameters<MakeSession>[4] | undefined): Promise<HostedSize | undefined> {
-	const offered = sizesOf(await getLayer())?.map((size) => size.id);
+	const listed = sizesOf(await getLayer())?.map((size) => size.id);
 	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.join(", ")}.`, { code: "bad_input" });
-	if (!offered) return undefined;
+	if (!listed) return undefined;
+	// Where the deployment has billing, the plan's sizes only (billing/plans.ts): Free has no large.
+	const plan = accountLimits(c.vars.items.limits).plan;
+	const offered = plan ? listed.filter((size) => planAllowsSize(plan, size)) : listed;
+	if (plan && isHostedSize(asked) && !planAllowsSize(plan, asked)) throw new UserError(`${asked.charAt(0).toUpperCase()}${asked.slice(1)} sandboxes are on Pro. Choose a smaller size, or upgrade in Settings.`, { code: "bad_input" });
+	if (offered.length === 0) return listed[0];
 	const wanted = (asked as HostedSize | undefined) ?? item?.hostedSize ?? (project ? (await readDefaults(c.db, project)).hostedSize : null) ?? (item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
 	return [...offered].reverse().find((size) => HOSTED_SIZES.indexOf(size) <= HOSTED_SIZES.indexOf(wanted)) ?? offered[0];
 }
@@ -1563,6 +1635,7 @@ export const user = actor({
 			// The sessions that have a place among the sandboxes the user keeps.
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
+			await billingTables(db);
 		},
 	}),
 
@@ -1590,7 +1663,9 @@ export const user = actor({
 		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
 		const items = await loadItems(c.db);
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, effectiveUserLimits(items.limits.overrides).usage, sessions), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
+		// Where the deployment has billing, the account's subscription sets its plan's limits (billing/plans.ts).
+		items.limits.billing = billing() ? await readBilling(c.db) : null;
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
 	events: {
@@ -1667,12 +1742,12 @@ export const user = actor({
 		internalSetLimit: async (c, change: LimitChange) => {
 			const result = await changeUserLimit(c, change);
 			if (result.id >= c.vars.items.limits.id) {
-				c.vars.items.limits = result;
-				Object.assign(c.vars.usage.limits, effectiveUserLimits(result.overrides).usage);
+				c.vars.items.limits = { ...result, billing: c.vars.items.limits.billing };
+				Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
 				c.broadcast("usage", c.vars.usage.numbers(Date.now()));
 				queueChanged(c);
 			}
-			return effectiveUserLimits(c.vars.items.limits.overrides);
+			return accountLimits(c.vars.items.limits);
 		},
 		internalDailyTokenWait: (c) => { requireServiceFor(c, "call"); return accountTokenWait(c); },
 		internalRecordTurnTokens: async (c, input: { sessionId: string; receipt: TokenReceipt }) => {
@@ -1872,6 +1947,71 @@ export const user = actor({
 			} catch (error) {
 				throw clientError(c.log, error, "Your sandbox time could not be read. Try again.");
 			}
+		},
+
+		// --- plans and billing (billing/) -------------------------------------------------------------
+
+		billing: async (c): Promise<BillingView> => {
+			requireUser(c);
+			return billingAnswer(c);
+		},
+
+		billingCheckout: async (c, input: { period: BillingPeriod; origin: string }): Promise<{ url: string }> => {
+			const profile = requireUser(c);
+			const settings = billingOn();
+			if (input?.period !== "month" && input?.period !== "year") throw new UserError("Choose monthly or yearly.", { code: "bad_input" });
+			const origin = billingOrigin(input?.origin);
+			const state = c.vars.items.limits.billing!;
+			if (effectivePlan(state, Date.now()) !== "free") throw new UserError("You already have Pro. Manage it from Settings.", { code: "already_subscribed" });
+			if (profile.demo) throw new UserError("The demo account cannot subscribe.", { code: "billing_off" });
+			try {
+				const { url } = await settings.provider.createCheckout({ uid: c.key[0]!, period: input.period, customerId: state.customerId, returnUrl: `${origin}/settings?billing=checkout#plan` });
+				console.log(`[wlp] billing.checkout uid=${c.key[0]} period=${input.period} customer=${state.customerId ?? "-"}`);
+				return { url };
+			} catch (error) {
+				console.warn(`[wlp] billing.checkout_failed uid=${c.key[0]}: ${error instanceof Error ? error.message : "unknown error"}`);
+				throw new UserError("The checkout could not be opened. Try again in a moment.", { code: "billing_unavailable" });
+			}
+		},
+
+		billingPortal: async (c, input: { origin: string }): Promise<{ url: string }> => {
+			requireUser(c);
+			const settings = billingOn();
+			const origin = billingOrigin(input?.origin);
+			const customerId = c.vars.items.limits.billing?.customerId ?? null;
+			if (customerId === null) throw new UserError("There is no subscription to manage yet.", { code: "no_customer" });
+			try {
+				return await settings.provider.portalLink({ customerId, returnUrl: `${origin}/settings#plan` });
+			} catch (error) {
+				console.warn(`[wlp] billing.portal_failed uid=${c.key[0]} customer=${customerId}: ${error instanceof Error ? error.message : "unknown error"}`);
+				throw new UserError("The billing portal could not be opened. Try again in a moment.", { code: "billing_unavailable" });
+			}
+		},
+
+		setOverageCap: async (c, input: { cents: number }): Promise<BillingView> => {
+			requireUser(c);
+			billingOn();
+			try {
+				c.vars.items.limits.billing = await setCapCents(c.db, input?.cents);
+			} catch (error) {
+				if (error instanceof RangeError) throw new UserError(error.message, { code: "bad_input" });
+				throw error;
+			}
+			console.log(`[wlp] billing.cap uid=${c.key[0]} cents=${c.vars.items.limits.billing.capCents}`);
+			billingChanged(c);
+			return billingAnswer(c);
+		},
+
+		/** A webhook's event for this account (billing/route.ts), applied once. */
+		internalBillingEvent: async (c, event: BillingEvent): Promise<string> => {
+			requireServiceFor(c, "billing");
+			const settings = billingOn();
+			const done = await applyBillingEvent(c.db, event, Date.now(), settings.graceMs);
+			if (done.outcome === "applied") {
+				c.vars.items.limits.billing = done.state;
+				billingChanged(c);
+			}
+			return done.outcome;
 		},
 
 		usage: async (c): Promise<UsageView> => {
@@ -2789,7 +2929,7 @@ export const user = actor({
 			// A session on one of the user's machines is neither counted nor refused (`hostedLimitsApply`).
 			const others = () => [...c.vars.sessions.values()].filter((session) => session.id !== sessionId && !session.item && session.status !== "idle" && hostedLimitsApply(session.place));
 			// One ceiling on what the platform pays for: the user's hosted sandboxes at work, their own and their items' (`hostedRunning`).
-			const atLimit = () => others().length + factorySlots(c) >= effectiveUserLimits(c.vars.items.limits.overrides).factory.hostedRunning;
+			const atLimit = () => others().length + factorySlots(c) >= accountLimits(c.vars.items.limits).factory.hostedRunning;
 			const asking = c.vars.sessions.get(sessionId);
 
 			// At the limit, ask the sessions that look busy: one whose report never arrived would

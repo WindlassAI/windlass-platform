@@ -113,6 +113,8 @@ export interface PlatformInfo {
 	 * repository's setting says.
 	 */
 	items?: { reviewer: boolean; orchestrate?: boolean; screenshots?: boolean };
+	/** Set when the deployment takes payment for plans (WLP_BILLING_PROVIDER). Absent: no plans, the deployment's own limits, and nothing of billing shown. */
+	billing?: { plans: PlanInfo[] };
 }
 
 /**
@@ -1263,7 +1265,80 @@ export interface UsageNumbers {
 	startSeconds: number;
 	/** How many sandboxes the user keeps, running or paused, and the most they may keep; `limit` is null without one. */
 	sandboxes: { kept: number; limit: number | null };
+	/** The calendar month's hosted minutes, where the account has a monthly allowance (a plan, or the operator's `hostedMinutes`). Absent: only the day counts. */
+	hosted?: HostedMonth;
 }
+
+/**
+ * A UTC calendar month of hosted minutes. A hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB): a small
+ * one counts half, a large one twice (billing/meter.ts). Runs on the user's own machines are never in it. All in
+ * weighted seconds, so that nothing is rounded before it is shown.
+ */
+export interface HostedMonth {
+	/** "2026-11". */
+	month: string;
+	/** Midnight UTC on the first of the next month, ms since the epoch: when the month's minutes start again. */
+	resetsAt: number;
+	/** What the plan includes. */
+	includedSeconds: number;
+	/** The most that may be used: the included minutes, and on a plan with overage the minutes the spend cap pays for. */
+	limitSeconds: number;
+	/** Counted this month, weighted. */
+	usedSeconds: number;
+	/** Held by sandboxes that run now, weighted. */
+	heldSeconds: number;
+	/** What is left of `limitSeconds`, never below 0. */
+	leftSeconds: number;
+	/** The plan these are of, where the deployment has billing; absent where the operator set the allowance. */
+	plan?: PlanId;
+}
+
+/** A plan of the deployment's billing (billing/plans.ts). Team and Enterprise are planned, not offered. */
+export type PlanId = "free" | "pro";
+export type BillingPeriod = "month" | "year";
+
+/** What a plan gives, as the upgrade page compares them. Prices in US cents. */
+export interface PlanInfo {
+	id: PlanId;
+	name: string;
+	/** Per month, billed monthly; and per year, billed yearly (null where the plan has no yearly price). */
+	monthlyCents: number;
+	yearlyCents: number | null;
+	machines: number;
+	hostedMinutes: number;
+	hostedRunning: number;
+	keptSandboxes: number;
+	sizes: Array<"small" | "standard" | "large">;
+	crossRepo: boolean;
+	githubItemsPerDay: number;
+	/** US cents per 1,000 hosted minutes past the included ones; null: a hard stop at the included minutes. */
+	overageCentsPer1000: number | null;
+}
+
+/** The Plan section of Settings and the upgrade page. `enabled` false: the deployment has no billing, and nothing of it is shown. */
+export type BillingView = { enabled: false } | {
+	enabled: true;
+	/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
+	plan: PlanId;
+	/** The subscription's state: "none" without one; "past_due" after a failed payment, until `graceUntil`; "ended" after it ended. */
+	status: "none" | "active" | "past_due" | "ended";
+	period: BillingPeriod | null;
+	/** When the subscription renews, or ends where `cancelAtPeriodEnd`. */
+	periodEnd: number | null;
+	cancelAtPeriodEnd: boolean;
+	/** After a failed payment: when the account falls back to Free unless a payment succeeds. Nothing is deleted then. */
+	graceUntil: number | null;
+	/** The most overage may cost in a month, in US cents; `maxCapCents` is the highest it may be set to. */
+	capCents: number;
+	maxCapCents: number;
+	/** Overage minutes counted this month, and what the provider has been told of them. */
+	overageMinutes: number;
+	reportedMinutes: number;
+	/** Whether a customer portal can be opened: there is a customer at the provider. */
+	portal: boolean;
+	plans: PlanInfo[];
+	month: HostedMonth | null;
+};
 
 /** One agent's sandbox time today. */
 export interface UsageSession {
@@ -2590,6 +2665,17 @@ export interface UserActions {
 	 * against the provider's own list of the user's sandboxes, so what is shown is what exists.
 	 */
 	usage(): Promise<UsageView>;
+	/** The account's plan, its subscription and this month's hosted minutes; `{ enabled: false }` where the deployment has no billing. */
+	billing(): Promise<BillingView>;
+	/**
+	 * A checkout for Pro at the provider: the address to send the browser to. `origin` is the web app's own (WLP_ORIGINS);
+	 * the provider sends the browser back to its Settings. Throws `billing_off`, `already_subscribed` or `origin_not_allowed`.
+	 */
+	billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }>;
+	/** The provider's customer portal, to change the card or cancel. Throws `billing_off` or `no_customer`. */
+	billingPortal(input: { origin: string }): Promise<{ url: string }>;
+	/** Sets the overage spend cap, US cents from 0 to `maxCapCents`: the server stops hosted sandboxes at it. Throws `bad_input` or `billing_off`. */
+	setOverageCap(input: { cents: number }): Promise<BillingView>;
 	/**
 	 * Removes the sandbox of one of the user's agents, to make room for another: the files in its
 	 * workspace go with it, and the agent and its conversation stay (`UsageView.memory` says what
