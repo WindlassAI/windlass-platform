@@ -28,7 +28,7 @@
  * author may have written, so its choice of such an agent is never approved by default.
  */
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemAction, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
 import { ChevronIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
@@ -496,9 +496,12 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 			</h2>
 			{folds && !opened ? (
 				<>
-					<LongText lines={3} className="plan-goal">
-						<Inline text={plan.spec.goal} />
-					</LongText>
+					{/* Clamped with no control of its own: the line under it opens the whole plan, the goal with it. */}
+					<div className="long-text">
+						<p className="long-text-body plan-goal" data-clamped="true" style={{ "--lines": 3 } as CSSProperties}>
+							<Inline text={plan.spec.goal} />
+						</p>
+					</div>
 					<p className="plan-folded">
 						<FoldToggle open={false} controls={body} label={FOLD_WORDS.all} onToggle={() => setOpened(true)} />
 						<span className="tone-dim">{[...specParts(plan), plural(plan.subtasks.length, "subtask brief")].join(" · ")}</span>
