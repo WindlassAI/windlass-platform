@@ -22,7 +22,7 @@ import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
-import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
+import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
@@ -374,11 +374,11 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
 						) : harness.signIn === "none" ? (
-							<span className="machine-agent-state">: sign in needed</span>
+							<span className="machine-agent-state">: {signInWords(harness)}</span>
 						) : (
 							// Unknown is the runner's check failing, not a sign-in to redo: its reason, where it gave one, and no login prompt.
 							<span className="machine-agent-state" title={harness.signInReason}>
-								: couldn't check the sign-in{harness.signInReason ? ` (${harness.signInReason})` : ""}
+								: {signInWords(harness)}{harness.signInReason ? ` (${harness.signInReason})` : ""}
 							</span>
 						)}
 						{harness.signIn === "unknown" ? null : (

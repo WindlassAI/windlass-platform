@@ -209,7 +209,7 @@ export type MockUsageState = "plenty" | "low" | "used" | "full";
  * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "claude-unchecked", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -3277,6 +3277,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({ machineId: "m_workshop", name: "workshop", egress: "restricted", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
 			case "claude-signed-out":
 				return [nas({ harnesses: [{ ...claude, signIn: "none" }] })];
+			// The runner could not check Claude Code's sign-in: it may well run.
+			case "claude-unchecked":
+				return [nas({ harnesses: [{ ...claude, signIn: "unknown" }] })];
 			case "pairing":
 				return [nas({ status: "waiting", slots: undefined, since: at - 4 * MINUTE, agents: 0, sandboxes: [], commandSandbox: null, freeDiskBytes: null, storeLimits: undefined, profiles: [], harnesses: undefined })];
 			case "outdated":

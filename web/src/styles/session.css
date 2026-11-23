@@ -212,6 +212,26 @@
 .to-details {
 	display: none;
 }
+/* An agent's sign-in on its machine (HarnessStatus): in the composer's column, above it. */
+.session-notice {
+	flex: none;
+	width: min(var(--transcript, var(--measure)), 100%);
+	margin: 0 auto;
+	padding: 6px var(--gutter) 0;
+}
+.session-notice .machine-command {
+	margin-top: 8px;
+}
+.session-notice-quiet {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.session-notice-quiet summary {
+	cursor: pointer;
+}
+.session-notice-quiet[open] summary {
+	color: var(--ink);
+}
 
 /* ---- conversation --------------------------------------------------------------------------- */
 
