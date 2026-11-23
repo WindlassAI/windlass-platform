@@ -159,6 +159,11 @@ import {
 	type NetworkRequest,
 	type NetworkScan,
 	type RepositoryNetwork,
+	type BillingPeriod,
+	type BillingView,
+	type HostedMonth,
+	type PlanId,
+	type PlanInfo,
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
@@ -185,6 +190,8 @@ export interface MockOptions {
 	sandbox?: "docker" | "e2b";
 	/** How the user's day stands when the page loads (`MockUsageState`). Default "plenty". */
 	usage?: MockUsageState;
+	/** Plans and billing (`MockBillingState`). Default "off": no billing, the deployment's daily allowance. */
+	billing?: MockBillingState;
 	/** "seeded": the user has MCP servers of their own and secrets for them saved. Default "empty": nothing is saved for the account. */
 	account?: "empty" | "seeded";
 	/** "unavailable" plays a signed-in user whose plan's models could not be read: the stand-in list, which says so. Default "account": the plan's own. */
@@ -213,6 +220,20 @@ export interface MockOptions {
  * "full" (the user keeps as many sandboxes as they may, and an agent without one is refused its first prompt).
  */
 export type MockUsageState = "plenty" | "low" | "used" | "full";
+
+/**
+ * Plans and billing (`?billing=`): "off" (the default) a deployment without billing, as before; "free" a Free account
+ * early in the month, "free-low" one near its 120 hosted minutes, "free-used" one that used them all; "pro" a Pro
+ * subscriber, "pro-capped" one at the overage spend cap, "pro-past-due" one in the grace period after a failed payment.
+ */
+export type MockBillingState = "off" | "free" | "free-low" | "free-used" | "pro" | "pro-capped" | "pro-past-due";
+export const MOCK_BILLING_STATES: readonly MockBillingState[] = ["off", "free", "free-low", "free-used", "pro", "pro-capped", "pro-past-due"];
+
+/** The plans as the server has them (server/src/billing/plans.ts). */
+export const MOCK_PLANS: PlanInfo[] = [
+	{ id: "free", name: "Free", monthlyCents: 0, yearlyCents: null, machines: 3, hostedMinutes: 120, hostedRunning: 1, keptSandboxes: 2, sizes: ["small", "standard"], crossRepo: false, githubItemsPerDay: 20, overageCentsPer1000: null },
+	{ id: "pro", name: "Pro", monthlyCents: 1500, yearlyCents: 14_400, machines: 10, hostedMinutes: 1800, hostedRunning: 5, keptSandboxes: 10, sizes: ["small", "standard", "large"], crossRepo: true, githubItemsPerDay: 100, overageCentsPer1000: 600 },
+];
 
 /**
  * The user's own machines, for looking at each state of the Machines page by hand (`?machine=`):
@@ -1329,6 +1350,46 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const serversLatency = (ms: number) => latency(realNow() < slowServersUntil ? 10_000 : ms);
 	const githubOn = options.github !== false;
 	let usageState: MockUsageState = options.usage ?? "plenty";
+	const billingState: MockBillingState = options.billing ?? "off";
+	/** The account's subscription in the mock: what Settings and the upgrade page show, and what Upgrade changes. */
+	const billing = {
+		plan: (billingState.startsWith("pro") ? "pro" : "free") as PlanId,
+		status: (billingState === "pro-past-due" ? "past_due" : billingState.startsWith("pro") ? "active" : "none") as "none" | "active" | "past_due" | "ended",
+		capCents: 2000,
+		/** Weighted hosted minutes used this month. */
+		usedMinutes: ({ off: 0, free: 34, "free-low": 97, "free-used": 120, pro: 642, "pro-capped": 1800 + 3333, "pro-past-due": 1210 } as Record<MockBillingState, number>)[billingState],
+	};
+	const billingPlan = () => MOCK_PLANS.find((plan) => plan.id === billing.plan)!;
+	function hostedMonth(at: number): HostedMonth {
+		const plan = billingPlan();
+		const date = new Date(at);
+		const included = plan.hostedMinutes * 60;
+		const extra = plan.overageCentsPer1000 === null ? 0 : Math.floor((billing.capCents * 1000) / plan.overageCentsPer1000) * 60;
+		const used = billing.usedMinutes * 60;
+		return {
+			month: date.toISOString().slice(0, 7),
+			resetsAt: Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1),
+			includedSeconds: included, limitSeconds: included + extra, usedSeconds: used, heldSeconds: 0,
+			leftSeconds: Math.max(0, included + extra - used), plan: plan.id,
+		};
+	}
+	function billingView(at: number): BillingView {
+		if (billingState === "off") return { enabled: false };
+		const month = hostedMonth(at);
+		const plan = billingPlan();
+		const overage = plan.overageCentsPer1000 === null ? 0 : Math.min(Math.floor(Math.max(0, month.usedSeconds - month.includedSeconds) / 60), Math.floor((billing.capCents * 1000) / plan.overageCentsPer1000));
+		return {
+			enabled: true, plan: billing.plan, status: billing.status,
+			period: billing.plan === "pro" ? "month" : null,
+			periodEnd: billing.plan === "pro" ? at + 12 * 86_400_000 : null,
+			cancelAtPeriodEnd: false,
+			graceUntil: billing.status === "past_due" ? at + 5 * 86_400_000 : null,
+			capCents: billing.capCents, maxCapCents: 2000,
+			overageMinutes: overage, reportedMinutes: overage,
+			portal: billing.plan === "pro",
+			plans: MOCK_PLANS, month,
+		};
+	}
 	const profiles = options.sandbox === "e2b" ? MOCK_E2B_PROFILES : MOCK_PROFILES;
 	const realNow = options.now ?? (() => Date.now());
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
@@ -1517,6 +1578,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		let used = usageOffset(world, held);
 		for (const seconds of world.spent.values()) used += seconds;
 		const day = Math.floor(at / 86_400_000);
+		// With billing, the month's hosted minutes take the place of the day's allowance, as on the server (user-limits.ts).
+		if (billingState !== "off") {
+			const plan = billingPlan();
+			return {
+				at, day: new Date(day * 86_400_000).toISOString().slice(0, 10), resetsAt: (day + 1) * 86_400_000,
+				allowanceSeconds: null, usedSeconds: used, heldSeconds: held, leftSeconds: null, startSeconds: MOCK_START_SECONDS,
+				sandboxes: { kept: keptSandboxes(world).length, limit: plan.keptSandboxes },
+				hosted: hostedMonth(at),
+			};
+		}
 		return {
 			at,
 			day: new Date(day * 86_400_000).toISOString().slice(0, 10),
@@ -3916,6 +3987,30 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(320);
 				return usageView(world());
 			},
+			async billing(): Promise<BillingView> {
+				await latency(200);
+				return billingView(realNow());
+			},
+			async billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }> {
+				await latency(500);
+				if (billingState === "off") throw new PlatformError("user", "This deployment has no plans or billing.", { reason: "billing_off" });
+				if (billing.plan === "pro") throw new PlatformError("user", "You already have Pro. Manage it from Settings.", { reason: "already_subscribed" });
+				// The mock has no checkout page: it plays one that was paid at once and comes back to Settings.
+				billing.plan = "pro";
+				billing.status = "active";
+				return { url: `${input.origin}/settings?mock=1&billing=pro&checkout=${input.period}#plan` };
+			},
+			async billingPortal(input: { origin: string }): Promise<{ url: string }> {
+				await latency(400);
+				if (billing.plan !== "pro") throw new PlatformError("user", "There is no subscription to manage yet.", { reason: "no_customer" });
+				return { url: `${input.origin}/settings?mock=1&billing=${billingState}#plan` };
+			},
+			async setOverageCap(input: { cents: number }): Promise<BillingView> {
+				await latency(300);
+				if (!Number.isSafeInteger(input.cents) || input.cents < 0 || input.cents > 2000) throw new PlatformError("user", "Set the cap in whole cents from 0 to 2000.", { reason: "bad_input" });
+				billing.capCents = input.cents;
+				return billingView(realNow());
+			},
 			async freeSandbox(sessionId: string): Promise<UsageView> {
 				await latency(700);
 				const session = world().sessions.get(sessionId);
@@ -4301,7 +4396,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode", "codex"] as Array<"claude" | "opencode" | "codex">, platformUrl: origin } };
-			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
+			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(billingState === "off" ? {} : { billing: { plans: MOCK_PLANS } }), ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
 		},
 		login: {
 			async start(): Promise<LoginStart> {

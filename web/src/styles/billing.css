@@ -1,0 +1,200 @@
+/*
+ * Plans and billing (components/Plan.tsx, screens/Plans.tsx): the Plan section of Settings, the comparison of Free and
+ * Pro, and the notice about the month's hosted minutes. In the record pages' cards (usage.css): neutral surfaces with
+ * hairlines, tone only in icons and the meter, never a tinted box.
+ */
+
+.billing-card {
+	margin-top: 14px;
+	overflow: hidden;
+}
+.billing-month {
+	padding: 14px 16px 16px;
+	border-bottom: 1px solid var(--line);
+}
+.billing-month .usage-figure {
+	margin-top: 4px;
+}
+.billing-month-name {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.billing-meter {
+	position: relative;
+	overflow: visible;
+}
+/* Where the included minutes end and overage begins. */
+.billing-meter-mark {
+	position: absolute;
+	top: -3px;
+	bottom: -3px;
+	width: 2px;
+	margin-left: -1px;
+	border-radius: 1px;
+	background: var(--ink-faint);
+}
+
+.billing-facts > div {
+	display: grid;
+	grid-template-columns: 120px minmax(0, 1fr);
+	align-items: baseline;
+	column-gap: 16px;
+	padding: 11px 16px;
+	border-bottom: 1px solid var(--line);
+}
+.billing-facts > div:last-child {
+	border-bottom: 0;
+}
+.billing-facts dt {
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.billing-facts dd {
+	font-size: var(--size-small);
+	line-height: 1.5;
+	color: var(--ink);
+}
+.billing-gloss {
+	font-size: var(--size-small);
+	line-height: 1.45;
+	color: var(--ink-dim);
+}
+
+.billing-cap {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 10px;
+}
+.billing-cap-field {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-family: var(--font-mono);
+	color: var(--ink-dim);
+}
+.billing-cap-field .input {
+	width: 7ch;
+	text-align: right;
+}
+.billing-cap .billing-gloss {
+	flex-basis: 100%;
+}
+.billing-cap-error {
+	flex-basis: 100%;
+	font-size: var(--size-small);
+	color: var(--bad);
+}
+
+.billing-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px 16px;
+	margin-top: 14px;
+}
+.billing-callout {
+	margin-top: 12px;
+}
+
+/* The upgrade page: the period, then the two plans side by side (one above the other on a phone). */
+.billing-period {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 14px;
+}
+.billing-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+	gap: 14px;
+	margin-top: 16px;
+}
+.billing-offer {
+	display: flex;
+	flex-direction: column;
+	padding: 18px 18px 16px;
+}
+.billing-offer-current {
+	border-color: var(--line-strong);
+}
+.billing-offer-name {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	font-family: var(--font-display);
+	font-size: var(--text-15);
+	font-weight: var(--weight-strong);
+}
+.billing-offer-price {
+	margin-top: 8px;
+	color: var(--ink-dim);
+}
+.billing-offer-price strong {
+	font-family: var(--font-display);
+	font-size: clamp(1.5rem, 1.3rem + 0.8vw, 1.875rem);
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.02em;
+	color: var(--ink);
+}
+.billing-offer-list {
+	flex: 1;
+	margin: 16px 0 0;
+	padding: 0;
+	list-style: none;
+}
+.billing-offer-list li {
+	display: grid;
+	grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+	gap: 12px;
+	padding: 9px 0;
+	border-top: 1px solid var(--line);
+	font-size: var(--size-small);
+	line-height: 1.45;
+}
+.billing-offer-list li > span:last-child {
+	color: var(--ink);
+}
+.billing-offer-list li > span:last-child svg {
+	margin-right: 6px;
+	vertical-align: -2px;
+	color: var(--accent-text);
+}
+.billing-offer-label {
+	color: var(--ink-dim);
+}
+.billing-offer-no > span:last-child {
+	color: var(--ink-faint) !important;
+}
+.billing-offer-action {
+	display: flex;
+	align-items: center;
+	min-height: 36px;
+	margin-top: 16px;
+}
+
+/* The month's hosted minutes, near or at the limit. */
+.billing-notice {
+	margin-top: 16px;
+}
+.billing-notice-links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 16px;
+	margin-top: 4px;
+}
+
+@media (max-width: 760px) {
+	.billing-facts > div {
+		grid-template-columns: minmax(0, 1fr);
+		row-gap: 2px;
+	}
+	.billing-offer-list li {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 2px;
+	}
+}

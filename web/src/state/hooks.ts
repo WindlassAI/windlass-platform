@@ -1,3 +1,4 @@
+import { monthState } from "../lib/hosted";
 import type { AccountSettings, ChatgptStatus, FactoryLimits, ModelList, SessionSummary, UsageNumbers } from "@contract";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
@@ -222,7 +223,10 @@ export type AllowanceState =
 	| "used";
 
 export function allowanceState(numbers: UsageNumbers | null, lowShare: number): AllowanceState {
-	if (numbers === null || numbers.allowanceSeconds === null || numbers.leftSeconds === null) return "plenty";
+	// With a plan, the month's hosted minutes are the allowance (lib/hosted.ts); a day's limit the operator set still counts.
+	const month = monthState(numbers);
+	if (month === "used") return "used";
+	if (numbers === null || numbers.allowanceSeconds === null || numbers.leftSeconds === null) return month;
 	if (numbers.leftSeconds < numbers.startSeconds) return "used";
 	return numbers.leftSeconds < numbers.allowanceSeconds * lowShare ? "low" : "plenty";
 }

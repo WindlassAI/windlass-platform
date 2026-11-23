@@ -60,6 +60,8 @@ import type {
 	UsageNumbers,
 	HostedSize,
 	UsageView,
+	BillingPeriod,
+	BillingView,
 	UserActions,
 	UserProfile,
 	WorkspaceFile,
@@ -236,6 +238,14 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	allowance(): Promise<UsageNumbers>;
 	/** The usage page: the numbers, today by agent, the kept sandboxes, the last two weeks and what a second is estimated to cost. */
 	usage(): Promise<UsageView>;
+	/** The account's plan and this month's hosted minutes; `{ enabled: false }` where the deployment has no billing (`PlatformInfo.billing`). */
+	billing(): Promise<BillingView>;
+	/** A checkout for Pro at the payment provider: the address to send the browser to. Throws with reason `billing_off`, `already_subscribed` or `billing_unavailable`. */
+	billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }>;
+	/** The payment provider's customer portal, to change the card or cancel. Throws with reason `no_customer` or `billing_unavailable`. */
+	billingPortal(input: { origin: string }): Promise<{ url: string }>;
+	/** Sets the monthly overage spend cap, in US cents. Throws with reason `bad_input`. */
+	setOverageCap(input: { cents: number }): Promise<BillingView>;
 	/** Frees one agent's sandbox to make room: its workspace files go, the agent and its conversation stay. Throws with reason `sandbox_busy` while it works. */
 	freeSandbox(sessionId: string): Promise<UsageView>;
 	/** The user's machines, the first paired first. The machine calls throw with reason `machines_off` where the deployment has none (`PlatformInfo.machines`). */

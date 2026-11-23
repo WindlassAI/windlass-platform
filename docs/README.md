@@ -12,6 +12,7 @@ at `/docs`, for example at <https://windlass.parthg.dev/docs>.
 | [machines.md](machines.md) | Users' own machines: pairing, what the runner does and cannot do, the link and its failures, Claude Code, OpenCode and their credential relays, building the runner |
 | [model-relay.md](model-relay.md) | Windlass's model relay: where it runs on each provider, the placeholder, refresh, limits, the rollout and why it fails closed |
 | [operating.md](operating.md) | Running a deployment: several servers on one engine, Rivet Cloud, public HTTP rate limits, E2B, registering the GitHub App, the bucket |
+| [billing.md](billing.md) | Plans and billing: Free and Pro, hosted minutes, the spend cap, grace and downgrade; turning on Dodo Payments (what to create in its dashboard, the webhook, the env) |
 | [configuration.md](configuration.md) | Every environment variable, grouped, with defaults and how bad values are reported |
 | [development.md](development.md) | Running from a checkout, the repository layout, every check, and the public pages' build |
 | [known-limitations.md](known-limitations.md) | What the platform does not do, or does only in part, and why |

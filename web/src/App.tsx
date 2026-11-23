@@ -11,6 +11,7 @@ import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Settings, SettingsCrumb } from "./screens/Settings";
+import { Plans, PlansCrumb } from "./screens/Plans";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
 import { Usage, UsageCrumb } from "./screens/Usage";
 import { Workspace, type Selection } from "./screens/Workspace";
@@ -123,7 +124,7 @@ export function App() {
 	const [theme, toggleTheme] = useTheme();
 
 	// Home is the landing page for someone who is not signed in, so it is the one list that does not send them to sign in.
-	const needsAuth = (route.name === "home" && route.scope === "none") || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
+	const needsAuth = (route.name === "home" && route.scope === "none") || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "plans" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** Nor one that does not offer work items an item's page. */
@@ -137,7 +138,7 @@ export function App() {
 
 	useEffect(() => {
 		if (route.name === "docs") return;
-		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
+		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "plans" ? "Plans · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
 	useEffect(() => {
@@ -214,6 +215,17 @@ export function App() {
 					<SettingsCrumb />
 				</TopBar>
 				<Settings />
+			</div>
+		);
+	}
+
+	if (route.name === "plans") {
+		return (
+			<div className="app">
+				<TopBar theme={theme} onToggleTheme={toggleTheme}>
+					<PlansCrumb />
+				</TopBar>
+				<Plans />
 			</div>
 		);
 	}
