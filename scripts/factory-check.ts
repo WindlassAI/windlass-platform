@@ -1249,7 +1249,20 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	expect("an OpenCode turn that reports no tokens stops the item with the reason, offering no way to go on unbounded",
 		silentOpenCode.state === "waiting" && silentOpenCode.question?.kind === "budget" && silentOpenCode.question.text === "OpenCode did not report token use, so the item's budget can't be enforced."
 		&& isDeepStrictEqual(silentOpenCode.question.choices.map(choice => choice.id), ["give_up"]) && silentOpenCode.agent?.tokens === "not_reported", JSON.stringify(silentOpenCode.question));
-	const silentClaude = afterTurn(agentItem("claude"), turnSpend(null, agentTurn("claude", null, null)));
+	{
+	// The provider refused an OpenCode turn, which therefore reported no tokens: the refusal is what the person is asked
+	// about, with Try again and the hand-over choices, not the item's budget.
+	let o = advance(agentItem("opencode"), { kind: "start", at: T0, by: "person:u1" });
+	o = advance(o.item, { kind: "turn_started", at: T0, key: currentKey(o.item)! });
+	const refused = advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key: currentKey(o.item)!, outcome: "error", verified: null, flags: [], changes: false, report: null,
+		spend: turnSpend(null, agentTurn("opencode", null, { cost: null })),
+		providerRefusal: { kind: "provider_rejected", message: "The provider rejected the request.", retry: { text: "Carry on.", fetchBase: null } } }).item;
+	const question = refused.question;
+	expect("an OpenCode turn the provider refused asks about the refusal, with retry and hand-over, before any budget question",
+		refused.state === "waiting" && question?.kind === "turn_refused" && question.text === "The provider rejected the request."
+		&& question.choices[0]?.id === "again" && question.choices.at(-1)?.id === "give_up" && question.choices.length >= 2, JSON.stringify(question));
+}
+const silentClaude = afterTurn(agentItem("claude"), turnSpend(null, agentTurn("claude", null, null)));
 	expect("a Claude Code turn that reports no tokens goes on: its tokens are not counted", silentClaude.question === null && silentClaude.agent?.tokens === "not_reported", JSON.stringify(silentClaude.question));
 	{
 		// The machine is removed while a turn runs: the turn's closing report is still the item's.

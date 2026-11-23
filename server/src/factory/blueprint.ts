@@ -881,12 +881,14 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
 	spendTurn(c, fact.spend, fact.providerRefusal);
+	// The provider refused the turn: that is what the person is told, with its retry and hand-over choices, before anything
+	// about the turn's tokens. A refused turn reported none because the provider answered none; the next one is measured again.
+	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	// A turn whose tokens should count but were not reported stops the item: another turn would run unbounded by its token budget.
 	// One the session refused before the agent ran used none.
 	const unmeasured = fact.refused ? null : unmeasuredTurn(fact.spend, itemAgent(item));
 	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
-	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
 	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
 	// would most likely ask the same. The person files the work again where commands run unasked, or gives up.
 	if (fact.escaped) return ask(c, "turn_refused", sandboxEscapeQuestion(item, fact.escaped), [...handOver(item), choice("give_up")], null, null);
