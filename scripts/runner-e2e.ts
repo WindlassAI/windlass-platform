@@ -30,7 +30,7 @@ import { MIN_RUNNER_VERSION, sessionProof } from "../server/src/runner/control.j
 import { optionsDigest } from "../server/src/runner/catalog.js";
 import { certify } from "../server/src/runner/frame-auth.js";
 import { DEAD_MS, type Operation } from "../server/src/runner/protocol.js";
-import { StandInRunner, assert, until, opened } from "./runner-standin.js";
+import { StandInRunner, assert, enginePrompts, until, opened } from "./runner-standin.js";
 import { GithubStandin } from "./github-standin.js";
 import { FakeRunner } from "./runner-fake.js";
 
@@ -619,7 +619,7 @@ async function linkChecks(): Promise<void> {
 }
 
 /** A Claude Code session on a machine, through the same sockets and actors as the Windlass cases. */
-async function claudeChecks(client: Client, uid: string, token: string, windlassPlace: { kind: "machine"; machineId: string }, stateDir: string, github: GithubStandin) {
+async function claudeChecks(client: Client, uid: string, token: string, windlassPlace: { kind: "machine"; machineId: string }, stateDir: string, github: GithubStandin, server?: Server) {
 	const runner = new StandInRunner(ORIGIN, ENDPOINT, { claude: true, stateDir });
 	const user = client.user.get([uid], { params: { token } });
 	const profile = "docker-hardened" as const;
@@ -1040,7 +1040,39 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(refusal.outcome === "failed" && refusal.message?.includes("The provider refused") && limit.outcome === "unresolved", `${refusal.outcome}, ${limit.outcome}`);
 				return "failed, unresolved";
 			});
-		} finally { await watch.conn.dispose(); }
+			// A Claude Code turn whose machine goes away (WLP_TURN_RESUME): its adapter is gone with the conversation, and the
+			// resumed turn's new adapter takes the session up through `session/resume`, from what the old one left on disk.
+			if (server) await check("a Claude Code turn whose machine goes away mid-turn resumes through the adapter's session resume when it is back", async () => {
+				await within("the watcher to close", watch.conn.dispose(), 15_000).catch(() => undefined);
+				await server.stop();
+				await server.start({ ...github.env(), WLP_ITEMS: "1", WLP_TURN_RESUME: "1", WLP_TEST_RUNNER_GRACE_MS: "3000" });
+				await until("the Claude machine's control socket", () => runner.control !== null, 60_000);
+				watch = new Watch(client, uid, session.id, token);
+				// A turn first, so that the session has its ACP session (an earlier check may have had none).
+				await play("plain");
+				const { turn } = await watch.conn.prompt({ text: "steer" });
+				await waitDuring(turn, "the fixture to wait for a steer", () => watch.items.some(i => i.turn === turn && i.kind === "acp"));
+				const { id } = await acpSession();
+				const input = runner.acpInput.length;
+				await runner.setOffline(true);
+				await until("the turn to pause for its machine", async () => (await snapshot()).summary.status === "paused", 90_000);
+				await runner.setOffline(false);
+				const end = await watch.untilEnded(turn, 120_000);
+				assert(end.outcome === "succeeded", `the turn ended ${end.outcome}: ${end.message}`);
+				const after = runner.acpInput.slice(input).join("");
+				assert(after.includes("\"session/resume\"") && after.includes(id), "the new adapter was not asked to resume the session");
+				assert(after.includes("Your machine was switched off"), "the resumed turn was not given the resume prompt");
+				const resumed = watch.items.find(i => i.turn === turn && i.kind === "platform" && i.code === "turn_resumed");
+				assert(resumed?.kind === "platform" && resumed.text.startsWith("Resumed after the machine came back"), "no line says the turn resumed");
+				// Closed before its server goes: a connection to a server that is gone does not close.
+				await within("the watcher to close", watch.conn.dispose(), 15_000).catch(() => undefined);
+				await server.stop();
+				await server.start({ ...github.env(), WLP_ITEMS: "1" });
+				await until("the Claude machine's control socket", () => runner.control !== null, 60_000);
+				watch = new Watch(client, uid, session.id, token);
+				return `session ${id.slice(0, 8)} resumed by session/resume; ${resumed.text}`;
+			});
+		} finally { await within("the watcher to close", watch.conn.dispose(), 15_000).catch(() => undefined); }
 	} finally {
 		runner.offline = true;
 		runner.control?.ws.close();
@@ -1190,7 +1222,7 @@ async function main(): Promise<void> {
 			}
 		};
 
-		await claudeChecks(client, uid, token, place, server.storage, github);
+		await claudeChecks(client, uid, token, place, server.storage, github, server);
 		if (process.argv[2] === "claude") return;
 		const main = await newSession();
 		await check("the first snapshot after a sandbox-less machine session wakes shows its machine profile", async () => {
@@ -1471,6 +1503,92 @@ async function main(): Promise<void> {
 			const { ended } = await turn(main.id, "Write the primes");
 			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
 			return `turn ${number} ${end.kind === "turn.ended" ? `${end.outcome}: ${String(end.message).split("\n")[0]}` : ""}; next turn succeeded`;
+		});
+
+		// A machine that goes away mid-turn (WLP_TURN_RESUME): past the grace (WLP_TEST_RUNNER_GRACE_MS, short here) the turn
+		// pauses instead of ending, takes what is sent meanwhile as held, and resumes by itself when the runner is back.
+		const resumeEnv = { ...github.env(), WLP_ITEMS: "1", WLP_TURN_RESUME: "1", WLP_TEST_RUNNER_GRACE_MS: "3000" };
+		await check("a machine that goes away mid-turn pauses the turn past the grace, holds what is sent, and resumes it when the machine is back", async () => {
+			await server.stop();
+			await server.start(resumeEnv);
+			await machineIs("online");
+			const watch = new Watch(client, uid, main.id, token);
+			let number = 0;
+			try {
+				({ turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" }));
+				await until("the turn's engine to stream", () => watch.windlass(number) >= 3);
+			} finally {
+				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+			}
+			const prompts = enginePrompts.length;
+			await runner.setOffline(true);
+			const away = Date.now();
+			const paused = await until("the turn to pause for its machine", async () => {
+				const snapshot = await snapshotOf(client, uid, main.id, token).catch(() => null);
+				return snapshot?.summary.status === "paused" && snapshot.summary.paused?.reason === "machine" ? snapshot : null;
+			}, 90_000);
+			assert(!paused.timeline.some((item) => item.turn === number && item.kind === "turn.ended"), "the turn ended");
+			assert(paused.timeline.some((item) => item.turn === number && item.kind === "platform" && item.code === "turn_paused" && /went offline, so this turn is paused/.test(item.text)), "no line says the turn is paused");
+			assert(server.log().includes(`turn.paused session=${main.id} turn=${number} reason=machine`), "the server did not log the pause");
+			const session = client.agentSession.get([uid, main.id], { params: { token } });
+			const held = await session.prompt({ text: "Then print them in reverse." });
+			assert(held.turn === number && held.steered === true, `the message was answered ${JSON.stringify(held)}`);
+			const holding = await snapshotOf(client, uid, main.id, token);
+			assert(holding.summary.paused?.held === 1 && holding.timeline.some((item) => item.kind === "user" && item.held === true && item.turn === number), `summary: ${JSON.stringify(holding.summary.paused)}`);
+			await sleep(5_000);
+			await runner.setOffline(false);
+			await machineIs("online");
+			const back = Date.now();
+			// Nothing asks the session anything: the machine wakes it when its runner says hello.
+			const ended = await until(`turn ${number} to end after the machine came back`, async () => {
+				const snapshot = await snapshotOf(client, uid, main.id, token).catch(() => null);
+				const end = snapshot?.timeline.find((item) => item.turn === number && item.kind === "turn.ended");
+				return end && end.kind === "turn.ended" && snapshot ? { end, timeline: snapshot.timeline } : null;
+			}, 120_000);
+			assert(ended.end.outcome === "succeeded", `the turn ended ${ended.end.outcome}: ${ended.end.message}`);
+			const resumed = ended.timeline.find((item) => item.turn === number && item.kind === "platform" && item.code === "turn_resumed");
+			assert(resumed?.kind === "platform" && resumed.text.startsWith("Resumed after the machine came back (offline "), `the resume says: ${resumed?.kind === "platform" ? resumed.text : "nothing"}`);
+			assert(ended.timeline.filter((item) => item.turn === number && item.kind === "turn.ended").length === 1, "more than one turn.ended");
+			const given = enginePrompts.slice(prompts);
+			assert(given.some((text) => text.includes("Your machine was switched off") && text.includes("Then print them in reverse.")), `the engine was given: ${given.join(" | ").slice(0, 300)}`);
+			// The time the machine was away is not the turn's: its duration leaves it out.
+			const first = ended.timeline.find((item) => item.turn === number && item.kind === "user")!;
+			// The grace (3 s here) is still the turn's: it waited for the machine then. What came after it is not.
+			const wall = ended.end.at - first.at;
+			assert(ended.end.durationMs <= wall - (back - away - 3_000) + 1_000, `the turn's duration ${ended.end.durationMs} ms of ${wall} ms counts the ${back - away} ms its machine was away`);
+			assert(!server.log().split("\n").some((line) => line.includes(`turn.paused session=${main.id}`) && line.includes("reason=restart")), "the pause was taken for a restart");
+			const next = await turn(main.id, "Write the primes");
+			assert(next.ended.outcome === "succeeded", `the next turn ended ${next.ended.outcome}: ${next.ended.message}`);
+			return `paused ${Math.round((back - away) / 1000)} s with 1 message held; ${resumed.text}`;
+		});
+
+		await check("a turn paused for its machine is stopped at once by Stop, and does not resume when the machine is back", async () => {
+			const watch = new Watch(client, uid, main.id, token);
+			let number = 0;
+			try {
+				({ turn: number } = await watch.conn.prompt({ text: "Write the primes (slow)" }));
+				await until("the turn's engine to stream", () => watch.windlass(number) >= 3);
+			} finally {
+				await within("the watcher of the turn to close", watch.conn.dispose(), 15_000);
+			}
+			await runner.setOffline(true);
+			await until("the turn to pause for its machine", async () => (await snapshotOf(client, uid, main.id, token).catch(() => null))?.summary.status === "paused", 90_000);
+			await client.agentSession.get([uid, main.id], { params: { token } }).stop();
+			const stopped = await snapshotOf(client, uid, main.id, token);
+			const end = stopped.timeline.find((item) => item.turn === number && item.kind === "turn.ended");
+			assert(end?.kind === "turn.ended" && end.outcome === "stopped" && stopped.summary.status === "idle", `after Stop: ${stopped.summary.status}, ${JSON.stringify(end)}`);
+			const resumes = server.log().split(`turn.resumed session=${main.id}`).length;
+			await runner.setOffline(false);
+			await machineIs("online");
+			await sleep(5_000);
+			assert(server.log().split(`turn.resumed session=${main.id}`).length === resumes, "the stopped turn resumed");
+			// Back to the default for the checks that follow.
+			await server.stop();
+			await server.start({ ...github.env(), WLP_ITEMS: "1" });
+			await machineIs("online");
+			const { ended } = await turn(main.id, "Write the primes");
+			assert(ended.outcome === "succeeded", `the next turn ended ${ended.outcome}: ${ended.message}`);
+			return "stopped at once; no resume when the machine came back";
 		});
 
 		await check("a machine session put to sleep with its sandbox running is not suspended through a runner its sleep refuses, and its next prompt runs", async () => {

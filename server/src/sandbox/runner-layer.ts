@@ -73,6 +73,8 @@ export function machineActor(client: () => any, uid: string, machineId: string) 
 	return {
 		turnSlot: (sessionId: string, turn: number, size: number): Promise<TurnSlot> => machine().internalTurnSlot(sessionId, turn, size),
 		releaseSlot: (sessionId: string, turn: number): Promise<void> => machine().internalReleaseTurnSlot(sessionId, turn),
+		/** The session's turn is paused while the machine is away (`on`): the machine wakes it when its runner is back. */
+		pausedSession: (sessionId: string, on: boolean): Promise<void> => machine().internalPausedSession(sessionId, on),
 		attach: (sessionId: string, ticket: string) => machine().internalAttach({ sessionId, ticket }),
 		facts: () => machine().internalFacts(),
 		removeSandbox: async (sandboxId: string | null, sessionId?: string) => {

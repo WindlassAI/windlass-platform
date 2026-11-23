@@ -29,10 +29,23 @@ If the agent asks you something while its tab is in the background, the tab's ti
 | **working** | A turn is running. |
 | **needs you** | A question waits for your answer. |
 | **stopping** | The turn is being stopped. |
+| **paused** | The turn is waiting to resume: the server restarted, or its machine went offline. |
 
 When a turn ends, its outcome is one of **done**, **done, checks unresolved**, **failed**, **stopped**, **interrupted** or **error**.
 
-A turn is **interrupted** when the server stops while it runs. For a Windlass turn, its tokens are the ones its finished model requests reported before the cut. They count toward the turn, a work item's budget and your daily cap, and the timeline says how many there were. A request still under way at the cut is not counted. Other agents report their tokens only when a turn ends, so an interrupted turn of theirs counts none, and the timeline says so.
+### When the server restarts or the machine goes away
+
+On a deployment that turns it on, a turn that is running when the platform's server restarts is **paused**, not ended. It keeps its turn number, and it resumes by itself in a few seconds, once a server is back. The timeline says **Resumed after a server restart**, with how long the turn was paused.
+
+A turn on your machine is paused in the same way when the machine shuts down or goes to sleep. It waits for as long as the machine is away. When the machine is back, the turn resumes by itself, and the timeline says **Resumed after the machine came back**. While it waits, the chip beside the offline banner says **turn paused**.
+
+A resumed turn goes on from the agent's own saved session. The step that was running when it paused, such as a command or a model reply, may be done again. If the agent no longer has its conversation, for example because its sandbox is new, it is given the whole task again. That is this turn's message and what you sent since, the session's first prompt, and a short account of the earlier turns rebuilt from the timeline. The account is marked as a reconstruction.
+
+What you send while a turn is paused is **held**: it shows with a **held** chip and goes to the agent when the turn resumes. **Stop** ends a paused turn at once, and it does not resume.
+
+The time a turn is paused does not count toward its time limit. A resumed turn gets what is left of its limit, and at least five minutes. If the server stops three times in a row while a turn resumes, with nothing done in between, the turn is ended as **interrupted**.
+
+A turn is **interrupted** when the server stops while it runs and it cannot be resumed. For a Windlass turn, its tokens are the ones its finished model requests reported before the cut. They count toward the turn, a work item's budget and your daily cap, and the timeline says how many there were. A request still under way at the cut is not counted. Other agents report their tokens only when a turn ends, so an interrupted turn of theirs counts none, and the timeline says so.
 
 ## The timeline
 

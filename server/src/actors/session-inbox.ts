@@ -143,6 +143,8 @@ export interface TurnRequest {
 	startsRun: boolean;
 	/** Set when the sandbox layer refused the last try because the deployment runs as many as it may: that number (factory/budget.ts `PlaceNow`). */
 	deploymentFull?: number | null;
+	/** A paused turn that gave its slot back while its machine was away asks for one again: queued as of when it first started, ahead of the turns that came since. */
+	resumeAt?: number;
 }
 
 /** The queue's answer: a slot, named, or why the turn waits (it is granted later, by `internalGrant`). */
@@ -238,8 +240,8 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 }
 
 /** Asks the user's turn queue for a slot for the row. A queue that does not answer leaves the request to be sent again (the item's check, or the next wake). */
-export function requestTurn(c: InboxCtx, uid: string, row: InboxRow, deploymentFull: number | null = null): Promise<TurnAnswer> {
-	const request: TurnRequest = { sessionId: c.key[1] as string, itemId: row.itemId, key: row.key, title: row.title, startsRun: row.startsRun, deploymentFull };
+export function requestTurn(c: InboxCtx, uid: string, row: InboxRow, deploymentFull: number | null = null, resumeAt?: number): Promise<TurnAnswer> {
+	const request: TurnRequest = { sessionId: c.key[1] as string, itemId: row.itemId, key: row.key, title: row.title, startsRun: row.startsRun, deploymentFull, ...(resumeAt !== undefined && { resumeAt }) };
 	return userActor(c, uid).internalRequestTurn(request);
 }
 

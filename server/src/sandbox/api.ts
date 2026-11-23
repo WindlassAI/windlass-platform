@@ -558,6 +558,13 @@ export interface RunTurnInput {
 	untrusted?: string[];
 	onUntrustedUnmarked?: () => void;
 	/**
+	 * A turn that resumes after a restart or a machine away (`windlassSessionId` set, `prompt` a short
+	 * "carry on"): what goes instead when the agent's saved session cannot be continued after all (Windlass
+	 * no longer has it, or an ACP adapter cannot load it), so that the agent is given the whole task. Its
+	 * own outside sources go with it, as `untrusted` does with `prompt`. `RunTurnResult.resumed` is false then.
+	 */
+	fresh?: { prompt: string; untrusted?: string[] };
+	/**
 	 * The layer stops answering for `TurnPersonalServer.unasked` once the engine reports the session
 	 * tainted (`taint.noticed`), also part way through the turn: from then on such a call's question goes
 	 * to `onQuestion` like any other. For a turn nobody watches, where Windlass's asking again after taint

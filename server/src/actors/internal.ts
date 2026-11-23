@@ -204,6 +204,8 @@ export interface SessionInternal {
 	internalDeliver(input: Delivery): Promise<void>;
 	/** The user's turn queue gives the delivery of `key` its slot. */
 	internalGrant(input: { key: string; slot: string }): Promise<void>;
+	/** The session's machine is back, or was removed: a turn paused for it resumes, or ends. */
+	internalMachineBack(): Promise<void>;
 	/** The turn of `key` is not wanted any more: out of the inbox, or stopped. */
 	internalWithdraw(key: string): Promise<void>;
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */

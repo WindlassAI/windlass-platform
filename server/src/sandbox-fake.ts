@@ -692,6 +692,11 @@ class FakeWindlass implements Windlass {
 	}
 
 	async runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
+		// A turn that resumes, whose session this sandbox does not hold (Windlass's store was lost): a new session, given the whole task, as the real layer does.
+		if (input.fresh && input.windlassSessionId !== undefined && this.sandboxes.sessionsLiveInSandbox && this.sandboxes.all.has(sandbox.id) && !this.sandboxes.windlassOf(sandbox.id).has(input.windlassSessionId)) {
+			const result = await this.runTurn(sandbox, { ...input, prompt: input.fresh.prompt, untrusted: input.fresh.untrusted, windlassSessionId: undefined, fresh: undefined });
+			return { ...result, resumed: false };
+		}
 		const text = input.prompt.toLowerCase();
 		if (text.includes("(throw)")) throw new Error("fake layer: docker exec failed: container is not running");
 		if (!this.sandboxes.all.has(sandbox.id)) throw new Error(`fake sandbox ${sandbox.id} does not exist`);

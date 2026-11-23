@@ -32,6 +32,17 @@
  *                              ends the turn so the sandbox can pause (default 5 minutes, at most
  *                              WLP_QUESTION_TIMEOUT_MS)
  *   WLP_TURN_TIMEOUT_MS        how long one turn may run (default 45 minutes)
+ *   WLP_TURN_RESUME=1          a turn running when its server stops, or whose machine goes away, is
+ *                              paused and resumes by itself (the agent's saved session and a short
+ *                              resume prompt) instead of being cut short. Default off
+ *   WLP_TURN_RESUME_FLOOR_MS   the least time a resumed turn gets, whatever it ran before (default 5
+ *                              minutes; at most WLP_TURN_TIMEOUT_MS). For tests
+ *   WLP_TURN_RESUME_DELAY_MS   how long after a graceful pause the turn resumes at the earliest (default
+ *                              three seconds). For tests
+ *   WLP_TURN_HEARTBEAT_MS      how far ahead a running turn keeps the wake that resumes it after a
+ *                              crash (default one minute). For tests
+ *   WLP_MACHINE_AWAY_ASK_MS    how long an item's turn waits for its machine before the item asks its
+ *                              person once (default three days). For tests
  *   WLP_SETUP_TIMEOUT_MS       how long a repository's setup command may run in a new sandbox before the
  *                              platform stops it (default 600000, ten minutes; at most the time a turn
  *                              may take, since it runs inside one). The same on every server
@@ -355,6 +366,8 @@ export interface Config {
 	setupTimeoutMs: number;
 	/** How long one turn may run before the platform stops it (WLP_TURN_TIMEOUT_MS). */
 	turnTimeoutMs: number;
+	/** WLP_TURN_RESUME=1, with its test overrides: a turn pauses and resumes across a restart or a machine away. */
+	turnResume: { enabled: boolean; floorMs: number; delayMs: number; heartbeatMs: number; machineAskMs: number };
 	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
 	usage: UsageLimits;
 	/** The software factory's deployment defaults for user limits (WLP_FACTORY_*). */
@@ -829,6 +842,13 @@ hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTE
 	storeLimits: readStoreLimits(),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
+	turnResume: {
+		enabled: process.env.WLP_TURN_RESUME === "1",
+		floorMs: readDuration("WLP_TURN_RESUME_FLOOR_MS", 5 * 60 * 1000, 1_000),
+		delayMs: readDuration("WLP_TURN_RESUME_DELAY_MS", 3_000, 0),
+		heartbeatMs: readDuration("WLP_TURN_HEARTBEAT_MS", 60 * 1000, 2_000),
+		machineAskMs: readDuration("WLP_MACHINE_AWAY_ASK_MS", 3 * 24 * 60 * 60 * 1000, 1_000),
+	},
 	usage: {
 		dailySeconds: readCount("WLP_DAILY_SANDBOX_SECONDS", DEFAULT_DAILY_SECONDS, 60, 86_400, true),
 		maxKept: readCount("WLP_MAX_KEPT_SANDBOXES", DEFAULT_MAX_KEPT, 1, 1_000, true),

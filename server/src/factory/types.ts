@@ -411,6 +411,12 @@ export type Fact =
 	| { kind: "turn_started"; at: number; key: string }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
 	| { kind: "turn_running"; at: number; key: string }
+	/** The turn of `key` is paused, not ended: its machine went away mid-turn (`since`). It resumes by itself when the machine is back. */
+	| { kind: "turn_paused"; at: number; key: string; since: number; machine: string | null }
+	/** The paused turn of `key` runs again: its machine came back after `offlineMs`. */
+	| { kind: "turn_resumed"; at: number; key: string; offlineMs: number }
+	/** The paused turn of `key` has waited for its machine since `since`, long enough (WLP_MACHINE_AWAY_ASK_MS) to ask the person once. */
+	| { kind: "machine_away"; at: number; key: string; since: number; machine: string | null }
 	| {
 			kind: "turn_ended";
 			at: number;

@@ -15,7 +15,7 @@ import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolve
 import { useNow } from "../state/hooks";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
-import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, RefusedIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
+import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, PauseIcon, RefusedIcon, ResumeIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
 import { AnswerLine, AskedLine, InlineQuestion, useInteractive } from "./Question";
 import { AllowHost, BlockedList, blockedHeadline } from "./BlockedNetwork";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
@@ -140,11 +140,12 @@ function UserPrompt({ block, first = false }: { block: UserBlock; first?: boolea
 
 function PersonPrompt({ block }: { block: UserBlock }) {
 	const steer = block.steer;
+	const held = block.held === true;
 	const modelLabel = useContext(ModelLabel);
 	return (
 		<div className={`user${steer ? " user-steer" : ""}`}>
 			<p className="user-text">
-				<span className="visually-hidden">{steer ? "You, while it worked: " : "You: "}</span>
+				<span className="visually-hidden">{held ? "You, while the turn was paused: " : steer ? "You, while it worked: " : "You: "}</span>
 				{block.text}
 			</p>
 			<div className="user-foot">
@@ -152,7 +153,12 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 					<span className="user-who" aria-hidden="true">
 						You
 					</span>
-					{steer ? (
+					{held ? (
+						<span className="user-held-word" title="Sent while the turn was paused: the agent reads it when the turn resumes.">
+							<PauseIcon size={12} />
+							held
+						</span>
+					) : steer ? (
 						<span className="user-steer-word">
 							<SteerIcon size={12} />
 							steer
@@ -827,6 +833,19 @@ function withLinks(text: string): ReactNode {
 
 function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 	const tone = block.kind === "platform" ? (block.level === "error" ? "bad" : block.level === "warn" ? "warn" : "dim") : block.tone;
+	// The turn paused, or resumed after a pause: a line of its own kind, so the gap in the turn reads as one.
+	if (block.kind === "platform" && block.resume) {
+		return (
+			<p className={`system system-resume system-${block.resume}`}>
+				<span className="system-rule" aria-hidden="true" />
+				<span className="system-resume-mark" aria-hidden="true">
+					{block.resume === "paused" ? <PauseIcon size={12} /> : <ResumeIcon size={12} />}
+				</span>
+				<span className="system-source">{block.resume}</span>
+				<span className="system-text">{block.text}</span>
+			</p>
+		);
+	}
 	const line = (
 		<p className={`system tone-${tone}`}>
 			<span className="system-rule" aria-hidden="true" />

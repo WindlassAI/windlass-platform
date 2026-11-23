@@ -1827,7 +1827,7 @@ export const workItem = actor({
 				await take(c, fact);
 				return;
 			}
-			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "review_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting") return;
+			if (fact.kind !== "machine_removed" && fact.kind !== "turn_ended" && fact.kind !== "review_ended" && fact.kind !== "turn_started" && fact.kind !== "turn_running" && fact.kind !== "turn_waiting" && fact.kind !== "turn_paused" && fact.kind !== "turn_resumed" && fact.kind !== "machine_away") return;
 			await takeSessionFact(c, stored, fact);
 		},
 

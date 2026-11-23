@@ -68,6 +68,9 @@ if (githubOnly && (!OWN_SERVER || !FAKE || identityOnly)) throw new Error("--git
 if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
 const idleOnly = args.includes("--idle-only");
 if (idleOnly && !OWN_SERVER) throw new Error("--idle-only requires a server of its own");
+/** Only the checks of a turn that pauses and resumes across a restart (WLP_TURN_RESUME). */
+const resumeOnly = args.includes("--resume-only");
+if (resumeOnly && !OWN_SERVER) throw new Error("--resume-only requires a server of its own");
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
@@ -836,6 +839,11 @@ async function main(server: Server | null): Promise<void> {
 
 	if (idleOnly && server) {
 		await idleChecks(server, client, uid, token, availableProfile, ASK, LONG);
+		await client.dispose().catch(() => undefined);
+		return;
+	}
+	if (resumeOnly && server) {
+		await resumeChecks(server, client, uid, token, availableProfile, LONG);
 		await client.dispose().catch(() => undefined);
 		return;
 	}
@@ -2844,6 +2852,14 @@ async function main(server: Server | null): Promise<void> {
 		for (const name of IDLE_CHECKS) skip(name, "needs its own server, restarted with short idle times");
 	}
 
+	// --- a turn that pauses and resumes across a restart (WLP_TURN_RESUME) -------------------------
+
+	if (server) {
+		await resumeChecks(server, client, uid, token, availableProfile, LONG);
+	} else {
+		for (const name of RESUME_CHECKS) skip(name, "needs its own server, restarted with WLP_TURN_RESUME");
+	}
+
 	// --- the agent's memory outlives its sandbox: a server whose sandboxes hold Windlass's sessions, and a bucket ---
 
 	if (server && FAKE) {
@@ -3293,6 +3309,239 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 	} finally {
 		await watch.conn.dispose().catch(() => undefined);
 		await userHandle.deleteSession(idle.id).catch(() => undefined);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// A turn that pauses and resumes across a restart (WLP_TURN_RESUME, server/src/actors/turn-resume.ts)
+// ---------------------------------------------------------------------------------------------
+
+const RESUME_CHECKS = [
+	"a turn running when the server stops (SIGTERM) pauses, and resumes as the same turn on the next server",
+	"a turn cut off by a crash (SIGKILL) is woken by its heartbeat on the next server, and resumes",
+	"a message sent to a paused turn is held, shown, and given to the agent when it resumes; Stop ends a paused turn at once",
+	"a resumed turn gets what is left of its limit, at least the floor: the paused time does not count",
+	"an agent whose memory went with its sandbox is given the whole task, rebuilt from the timeline",
+	"crashes in a row while resuming, with nothing done in between, end the turn as interrupted",
+];
+
+/**
+ * Turns that outlive their server: each server here is started with WLP_TURN_RESUME, a heartbeat of a few seconds, and,
+ * on the fake layer, events slow enough that a turn is still running when the server goes. The fake layer's sandboxes
+ * live in the server's memory, so after a restart a turn resumes in a new one: with Windlass's sessions kept per user
+ * (as on Docker) its memory is kept, and with WLP_FAKE_BACKUP_DIR (as on E2B) it goes with the old sandbox.
+ */
+async function resumeChecks(server: Server, client: Client, uid: string, token: string, profile: string, LONG: string): Promise<void> {
+	type Ended = Extract<TimelineItem, { kind: "turn.ended" }>;
+	type Platform = Extract<TimelineItem, { kind: "platform" }>;
+	const userHandle = client.user.getOrCreate([uid], { params: { token } });
+	const plainEnv: Record<string, string> = { WLP_LOGIN_TTL_MS: String(loginTtlMs) };
+	const base: Record<string, string> = { WLP_TURN_RESUME: "1", WLP_TURN_HEARTBEAT_MS: "4000", WLP_LOGIN_TTL_MS: String(loginTtlMs), ...(FAKE && { WLP_FAKE_DELAY_MS: "60" }) };
+	let env = base;
+	const restart = async (how: "stop" | "crash", extra: Record<string, string> = {}) => {
+		if (how === "stop") await server.stop();
+		else await server.crash();
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
+		env = { ...base, ...extra };
+		await server.start(env);
+	};
+	const handleOf = (id: string) => client.agentSession.get([uid, id], { params: { token } });
+	/** The sessions made here, deleted at the end: their sandboxes go with them. */
+	const made: string[] = [];
+	const make = async (title: string) => {
+		const id = (await userHandle.createSession({ profile: profile as never, title })).id;
+		made.push(id);
+		return id;
+	};
+	try {
+	/** Starts a turn and waits until it streams and its first events are stored: the agent has its prompt. */
+	const startLong = async (id: string, text = LONG) => {
+		const watch = new Watch(client, uid, id, token);
+		try {
+			const { turn } = await watch.conn.prompt({ text });
+			await waitFor(`turn ${turn} to stream`, () => watch.deltas.some((delta) => delta.turn === turn) || watch.items.some((item) => item.kind === "windlass" && item.turn === turn), TURN_MS);
+			await sleep(1_500);
+			return turn;
+		} finally {
+			await watch.conn.dispose().catch(() => undefined);
+		}
+	};
+	/** Snapshots until turn `turn` has ended and the session is idle. */
+	const endedOf = (id: string, turn: number, timeoutMs = 3 * TURN_MS) => waitFor(`turn ${turn} of ${id} to end`, async () => {
+		const snap = await handleOf(id).snapshot();
+		const ended = snap.timeline.find((item): item is Ended => item.kind === "turn.ended" && item.turn === turn);
+		return ended && snap.summary.status === "idle" ? { snap, ended } : undefined;
+	}, timeoutMs, 500);
+	/** What a resumed turn's timeline must say: one pause, one resume, one end, and nothing cut short. */
+	const resumedOnce = (timeline: TimelineItem[], turn: number) => {
+		const notes = timeline.filter((item): item is Platform => item.kind === "platform" && item.turn === turn);
+		const paused = notes.filter((item) => item.code === "turn_paused");
+		const resumed = notes.filter((item) => item.code === "turn_resumed");
+		const ends = timeline.filter((item) => item.kind === "turn.ended" && item.turn === turn);
+		assert(ends.length === 1, `turn ${turn} has ${ends.length} turn.ended items`);
+		assert(paused.length >= 1 && resumed.length >= 1, `turn ${turn} paused ${paused.length} times and resumed ${resumed.length} times`);
+		assert(!notes.some((item) => /cut short/.test(item.text)), "a line says the turn was cut short");
+		dense(timeline);
+		return { paused, resumed };
+	};
+	/** The prompts the agent was given in the turn after its resume, as the engine echoed them. */
+	const promptsAfter = (timeline: TimelineItem[], turn: number, seq: number) =>
+		timeline.filter((item) => item.kind === "windlass" && item.turn === turn && item.seq > seq && item.event.type === "inbox.enqueued").map((item) => JSON.stringify(item.kind === "windlass" ? item.event.data : null));
+	let ok = true;
+	const step = async (name: string, body: () => Promise<string | undefined>) => {
+		if (!ok) {
+			skip(name, "an earlier check of resuming failed");
+			return;
+		}
+		ok = await check(name, body);
+	};
+
+	await restart("stop");
+
+	await step(RESUME_CHECKS[0], async () => {
+		const id = await make("Paused by a deploy");
+		const turn = await startLong(id);
+		const from = server.output.length;
+		await restart("stop");
+		const log = server.output.slice(from);
+		assert(log.includes(`[wlp] turn.paused session=${id} turn=${turn} reason=restart`), "the server did not log the pause");
+		assert(log.includes(`[wlp] sandbox.kept_for_resume`) && log.includes(`session=${id}`), "the sandbox of the paused turn was not kept running for it");
+		const { snap, ended } = await endedOf(id, turn);
+		const { paused, resumed } = resumedOnce(snap.timeline, turn);
+		assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+		assert(paused[0]!.text === "The server is restarting; this turn will resume by itself.", `the pause says: ${paused[0]!.text}`);
+		assert(resumed[0]!.text.startsWith("Resumed after a server restart (the turn was paused "), `the resume says: ${resumed[0]!.text}`);
+		assert(snap.summary.turns === turn && snap.summary.lastOutcome === "succeeded", `summary: ${plain(snap.summary)}`);
+		if (FAKE) {
+			const given = promptsAfter(snap.timeline, turn, resumed[0]!.seq);
+			assert(given.some((text) => text.includes("The platform restarted while you were working on this turn")), `the agent was given: ${given.join(" | ").slice(0, 300)}`);
+		}
+		return `turn ${turn}: ${resumed[0]!.text}, then ${ended.outcome}`;
+	});
+
+	await step(RESUME_CHECKS[1], async () => {
+		const id = await make("Cut off by a crash");
+		const turn = await startLong(id);
+		const from = server.output.length;
+		await restart("crash");
+		// Nothing asks the session anything: the wake its heartbeat kept scheduled brings it back.
+		await waitFor("the heartbeat's wake to pause the turn", () => server.output.slice(from).includes(`[wlp] turn.crashed session=${id} turn=${turn} crashes=1`), 60_000, 250);
+		const { snap, ended } = await endedOf(id, turn);
+		const { paused, resumed } = resumedOnce(snap.timeline, turn);
+		assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+		assert(paused[0]!.text === "The server stopped while this turn was running; it will resume by itself.", `the pause says: ${paused[0]!.text}`);
+		assert(resumed[0]!.text.startsWith("Resumed after a server restart"), `the resume says: ${resumed[0]!.text}`);
+		return `woken by its heartbeat; ${resumed[0]!.text}`;
+	});
+
+	if (!FAKE) {
+		for (const name of RESUME_CHECKS.slice(2)) skip(name, "times its turns by the fake layer's events");
+		return;
+	}
+
+	// A server that waits before it resumes, so the pause can be looked at; a short limit, with a floor.
+	const LIMIT_MS = 16_000;
+	const FLOOR_MS = 7_000;
+	const DELAY_MS = 75_000;
+	const limits = { WLP_TURN_TIMEOUT_MS: String(LIMIT_MS), WLP_TURN_RESUME_FLOOR_MS: String(FLOOR_MS), WLP_TURN_RESUME_DELAY_MS: String(DELAY_MS) };
+	const held = { id: "", turn: 0, stopped: "", stoppedTurn: 0, startedAt: 0, problem: "the check did not get that far" as string | null };
+	await step(RESUME_CHECKS[2], async () => {
+		await restart("stop", limits);
+		held.id = await make("Held while paused");
+		held.stopped = await make("Stopped while paused");
+		held.startedAt = Date.now();
+		[held.turn, held.stoppedTurn] = await Promise.all([startLong(held.id), startLong(held.stopped)]);
+		// Most of its limit: what is left after the pause is less than the floor.
+		await sleep(Math.max(0, held.startedAt + LIMIT_MS - 6_000 - Date.now()));
+		await restart("stop", limits);
+		const watch = new Watch(client, uid, held.id, token);
+		try {
+			const answer = await watch.conn.prompt({ text: "Also keep the long build log (slow)." });
+			assert(answer.turn === held.turn && answer.steered === true, `the message was answered ${plain(answer)}`);
+			const snap = await watch.conn.snapshot();
+			assert(snap.summary.status === "paused" && snap.summary.paused?.reason === "restart" && snap.summary.paused.held === 1, `summary: ${plain(snap.summary)}`);
+			const row = snap.timeline.at(-1);
+			assert(row?.kind === "user" && row.held === true && row.steer === true && row.turn === held.turn, `the last item is ${plain(row).slice(0, 200)}`);
+		} finally {
+			await watch.conn.dispose().catch(() => undefined);
+		}
+		const stoppedHandle = handleOf(held.stopped);
+		await stoppedHandle.stop();
+		const after = await stoppedHandle.snapshot();
+		const end = after.timeline.find((item): item is Ended => item.kind === "turn.ended" && item.turn === held.stoppedTurn);
+		assert(end?.outcome === "stopped" && after.summary.status === "idle", `after Stop: ${plain(after.summary)}, ${plain(end)}`);
+		const { snap } = await endedOf(held.id, held.turn, DELAY_MS + 3 * TURN_MS);
+		const { resumed } = resumedOnce(snap.timeline, held.turn);
+		const given = promptsAfter(snap.timeline, held.turn, resumed[0]!.seq);
+		assert(given.some((text) => text.includes("Also keep the long build log (slow).") && text.includes("While the turn was paused, the person sent")), `the agent was given: ${given.join(" | ").slice(0, 300)}`);
+		assert(!server.output.includes(`[wlp] turn.resumed session=${held.stopped}`), "the stopped turn resumed");
+		held.problem = null;
+		return `held 1 message, given on resume; the other turn ended ${end.outcome} at once and did not resume`;
+	});
+
+	await step(RESUME_CHECKS[3], async () => {
+		assert(held.problem === null, held.problem ?? "");
+		const { snap, ended } = await endedOf(held.id, held.turn, 1_000);
+		const resumed = snap.timeline.find((item): item is Platform => item.kind === "platform" && item.turn === held.turn && item.code === "turn_resumed")!;
+		const limit = snap.timeline.find((item): item is Platform => item.kind === "platform" && item.turn === held.turn && item.text.includes("not counting the time it was paused"));
+		assert(limit, `no line says the limit stopped it; the turn ended ${ended.outcome}: ${snap.timeline.filter((item) => item.kind === "platform" && item.turn === held.turn).map((item) => item.kind === "platform" ? item.text : "").join(" | ")}`);
+		const segment = limit.at - resumed.at;
+		assert(segment >= FLOOR_MS - 1_000 && segment < FLOOR_MS + 8_000, `the resumed turn was stopped ${segment} ms after it resumed; its floor is ${FLOOR_MS} ms`);
+		assert(limit.at - held.startedAt > LIMIT_MS + 10_000, `the turn was stopped ${limit.at - held.startedAt} ms after it started: the pause was counted`);
+		return `"${limit.text}" ${segment} ms after the resume, ${limit.at - held.startedAt} ms after the start`;
+	});
+
+	await step(RESUME_CHECKS[4], async () => {
+		const bucket = join(server.storage, "resume-bucket");
+		const memory = { WLP_FAKE_BACKUP_DIR: bucket };
+		await restart("stop", memory);
+		const id = await make("Memory lost while paused");
+		const first = new Watch(client, uid, id, token);
+		try {
+			const { turn } = await first.conn.prompt({ text: "Write a short program that prints the date." });
+			const ended = await first.untilEnded(turn);
+			assert(ended.outcome === "succeeded", `turn ${turn} ended ${ended.outcome}`);
+		} finally {
+			await first.conn.dispose().catch(() => undefined);
+		}
+		const turn = await startLong(id, `Now add a flag for the time zone. ${LONG}`);
+		// The copy of its memory goes too: the new sandbox has none to restore.
+		rmSync(join(bucket, "sessions", uid, `${id}.tgz`), { force: true });
+		await restart("stop", memory);
+		const { snap, ended } = await endedOf(id, turn);
+		const { resumed } = resumedOnce(snap.timeline, turn);
+		assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+		assert(snap.timeline.some((item) => item.kind === "platform" && item.turn === turn && item.text === "The agent no longer has its earlier conversation of this turn, so it was given the whole task again."), "no line says the agent was given the whole task");
+		const given = promptsAfter(snap.timeline, turn, resumed[0]!.seq).join(" | ");
+		for (const part of ["Your earlier conversation is gone", "Now add a flag for the time zone.", "The session's first prompt was", "Write a short program that prints the date.", "reconstructed by the platform from the session's timeline"]) {
+			assert(given.includes(part), `the agent's whole task lacks "${part}": ${given.slice(0, 400)}`);
+		}
+		return "this turn's message, the first prompt and a reconstruction of the earlier turn";
+	});
+
+	await step(RESUME_CHECKS[5], async () => {
+		await restart("stop");
+		const id = await make("Crashes while resuming");
+		const turn = await startLong(id);
+		// Resumed segments that get nowhere before the next crash: the fake layer's events come seconds apart.
+		const slow = { WLP_FAKE_DELAY_MS: "3000" };
+		for (let crash = 1; crash <= 4; crash++) {
+			const from = server.output.length;
+			await restart("crash", slow);
+			await waitFor(`the wake after crash ${crash}`, () => server.output.slice(from).includes(`[wlp] turn.crashed session=${id} turn=${turn} crashes=${crash}`), 60_000, 100);
+			if (crash < 4) await waitFor(`resume ${crash}`, () => server.output.slice(from).includes(`[wlp] turn.resumed session=${id} turn=${turn}`), 30_000, 50);
+		}
+		const { snap, ended } = await endedOf(id, turn);
+		assert(ended.outcome === "interrupted", `the turn ended ${ended.outcome}`);
+		assert(snap.timeline.some((item) => item.kind === "platform" && item.turn === turn && item.text === "The server stopped 3 times in a row while resuming this turn, with nothing done in between, so the turn was ended."), "no line says why it ended");
+		return `ended ${ended.outcome} after 3 resumes that each crashed`;
+	});
+	} finally {
+		for (const id of made) await userHandle.deleteSession(id).catch(() => undefined);
+		// Back to a server without resume for the checks that follow.
+		await server.stop();
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
+		await server.start(plainEnv);
 	}
 }
 
@@ -4612,7 +4861,7 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
-		if (FAKE && !idleOnly && !githubOnly) {
+		if (FAKE && !idleOnly && !githubOnly && !resumeOnly) {
 			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {

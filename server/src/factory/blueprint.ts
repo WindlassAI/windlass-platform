@@ -583,6 +583,28 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "github_feedback" | "re
 			if (step.turn === null || fact.key !== `${key}/check${step.checks}`) return false;
 			checkTurn(c);
 			return true;
+		case "turn_paused": {
+			// No failure and no question: the turn is not over, and resumes by itself when the machine is back.
+			if (fact.key !== key || step.turn !== "started") return false;
+			const sentence = `Paused: waiting for ${fact.machine ? `the machine “${fact.machine}”` : "the machine"} (offline since ${clock(fact.since)} UTC). The turn resumes by itself when it is back.`;
+			if (c.item.wait?.reason === "machine" && c.item.wait.sentence === sentence) return false;
+			c.say(sentence);
+			c.state("waiting", { reason: "machine", sentence, retryAt: null });
+			return true;
+		}
+		case "turn_resumed":
+			// Once only: a turn that already goes on again (the fact delivered twice) has nothing to change.
+			if (fact.key !== key || step.turn !== "started" || (c.item.wait?.reason !== "machine" && c.item.question?.kind !== "machine_away")) return false;
+			// The question about waiting longer is answered by the machine itself.
+			if (c.item.question?.kind === "machine_away") c.item.question = null;
+			c.say(`The machine came back after ${spellDuration(fact.offlineMs)}: the turn resumed where it was.`);
+			c.state("working");
+			return true;
+		case "machine_away":
+			if (fact.key !== key || step.turn !== "started" || step.awayAsked || c.item.question) return false;
+			step.awayAsked = true;
+			ask(c, "machine_away", `${fact.machine ? `The machine “${fact.machine}”` : "The machine"} has been offline since ${clock(fact.since)} UTC, and this item's turn is paused until it is back. Keep waiting, or give up on the item. To run it elsewhere, give up and start it again on another place.`, [choice("wait"), choice("give_up")], null, null);
+			return true;
 		case "turn_ended":
 			if (fact.key !== key || step.turn === null || step.kind === "review") return false;
 			turnEnded(c, fact);
@@ -1881,6 +1903,21 @@ function askBudget(c: Change, cause: keyof ItemBudget, sentence: string, resume:
  */
 const handOverAny = (item: FactoryItem) => (handOver(item).length || item.parent || item.mode === "orchestrate" || item.run === null ? handOver(item) : [choice("hand_over")]);
 
+/** A moment as an item's log reads it: the hour and minute in UTC, with the day when it is not today's. */
+function clock(at: number): string {
+	const iso = new Date(at).toISOString();
+	return iso.slice(0, 10) === new Date().toISOString().slice(0, 10) ? iso.slice(11, 16) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+}
+
+/** A stretch of time in the largest unit that fits: "50 minutes", "3 hours", "2 days". */
+function spellDuration(ms: number): string {
+	const minutes = Math.max(1, Math.round(ms / 60_000));
+	if (minutes < 120) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+	const hours = Math.round(minutes / 60);
+	if (hours < 48) return `${hours} hours`;
+	return `${Math.round(hours / 24)} days`;
+}
+
 function askRemoved(c: Change): void {
 	ask(c, "machine_removed", "Your machine was removed. This item can no longer work on it.", [...handOver(c.item), choice("give_up")], null, null);
 }
@@ -1918,8 +1955,8 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			item.run.stopReason = question.cause ?? question.kind;
 		}
 		stopPendingChecks(c);
-		// A turn still queued for its place (the hosted cap) goes back: nothing of it started.
-		if (item.run?.step.turn === "delivered") c.effects.push({ kind: "withdraw", key: c.key, ...(item.run.step.kind === "review" && { to: "review" }) });
+		// A turn still queued for its place (the hosted cap) goes back: nothing of it started. One paused for its machine ends with it.
+		if (item.run?.step.turn === "delivered" || (question.kind === "machine_away" && item.run?.step.turn === "started")) c.effects.push({ kind: "withdraw", key: c.key, ...(item.run.step.kind === "review" && { to: "review" }) });
 		c.state("failed");
 		return true;
 	}
@@ -1986,6 +2023,10 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			beginRun(c, firstPlan(item, note));
 			break;
 		case "wait":
+			if (question.kind === "machine_away") {
+				c.state("waiting", { reason: "machine", sentence: "Waiting for the machine to come back, as you asked. The turn resumes by itself then.", retryAt: null });
+				break;
+			}
 			if (question.kind === "sandboxes") {
 				c.state("waiting", { reason: "sandboxes", sentence: "Waiting for a hosted sandbox to be freed, as you asked.", retryAt: null });
 				break;

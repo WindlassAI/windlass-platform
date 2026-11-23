@@ -1038,6 +1038,65 @@ drive("a deploy in the middle of the implement step", newItem(), [
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ]);
 
+// A turn paused while its machine is away (WLP_TURN_RESUME): no failure, no question and no cut-off; it waits, says so,
+// asks once when the machine stays away (`machine_away`), and goes on when it is back. A restart's pause sends the item
+// nothing at all: it sees one turn that runs, and one `turn_ended`.
+const pausedFact: Row["fact"] = (k) => ({ kind: "turn_paused", key: k.key, since: T0 + 30 * MINUTE, machine: "nas" });
+const awayFact: Row["fact"] = (k) => ({ kind: "machine_away", key: k.key, since: T0 + 30 * MINUTE, machine: "nas" });
+const resumedFact: Row["fact"] = (k) => ({ kind: "turn_resumed", key: k.key, offlineMs: 50 * MINUTE });
+const stepOf = (o: Outcome) => o.item.run?.step;
+drive("a turn paused while its machine is away waits, asks once, and resumes with no cut-off", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: pausedFact, state: "waiting", wait: "machine", effects: [], also: (o) => holds(o.item.question === null && stepOf(o)?.interruptions === 0 && stepOf(o)?.turn === "started" && /Paused: waiting for the machine “nas”/.test(o.item.wait?.sentence ?? ""), `${o.item.wait?.sentence}; question ${o.item.question?.kind}`) },
+	{ fact: (k) => ({ kind: "turn_running", key: k.check }), state: "waiting", wait: "machine", effects: ["check_turn"] },
+	{ fact: awayFact, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "machine_away" && o.item.question.choices.map((c) => c.id).join() === "wait,give_up" && stepOf(o)?.awayAsked === true, `${o.item.question?.kind}: ${o.item.question?.choices.map((c) => c.id)}`) },
+	{ fact: awayFact, state: "waiting", wait: "person", effects: [], unchanged: true },
+	{ fact: answer("wait"), state: "waiting", wait: "machine", effects: [], also: (o) => holds(o.item.question === null, "the question is answered") },
+	{ fact: resumedFact, state: "working", effects: [], also: (o) => holds(o.events.some((e) => /came back after 50 minutes/.test(e.said)), o.events.map((e) => e.said).join(" | ")) },
+	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"], also: (o) => holds(stepOf(o)?.interruptions === 0, `${stepOf(o)?.interruptions} interruptions`) },
+]);
+drive("giving up on a turn paused for its machine withdraws the turn", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: pausedFact, state: "waiting", wait: "machine", effects: [] },
+	{ fact: awayFact, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: answer("give_up"), state: "failed", effects: ["withdraw"] },
+]);
+drive("the machine coming back answers the question about waiting", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: pausedFact, state: "waiting", wait: "machine", effects: [] },
+	{ fact: awayFact, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: resumedFact, state: "working", effects: [], also: (o) => holds(o.item.question === null, `question ${o.item.question?.kind}`) },
+]);
+
+// The words and the arithmetic of a resumed turn (server/src/actors/turn-resume.ts).
+{
+	const { crashCount, CRASHES_ALLOWED, segmentLimit, resumePrompt, sessionWholeTask, addUsage } = await import("../server/src/actors/turn-resume.js");
+	let crashes = 0;
+	crashes = crashCount(crashes, true);
+	const counts = [crashes];
+	for (let i = 0; i < 3; i++) counts.push((crashes = crashCount(crashes, false)));
+	expect("the loop guard: a crash that cut off work counts one, three more with nothing done end the turn", counts.join() === "1,2,3,4" && counts.filter((n) => n > CRASHES_ALLOWED).length === 1 && crashCount(3, true) === 1, counts.join());
+	expect("a resumed turn has what is left of its limit, at least the floor", segmentLimit(45 * MINUTE, 5 * MINUTE, { activeMs: 44 * MINUTE, resumes: 1 }) === 5 * MINUTE && segmentLimit(45 * MINUTE, 5 * MINUTE, { activeMs: 10 * MINUTE, resumes: 1 }) === 35 * MINUTE && segmentLimit(45 * MINUTE, 5 * MINUTE, { activeMs: 10 * MINUTE, resumes: 0 }) === 45 * MINUTE);
+	const said = resumePrompt("machine", ["also run lint"]);
+	expect("the resume prompt says what happened and carries what was held", /machine was switched off/.test(said) && /check the state of the workspace/i.test(said) && said.includes("> also run lint"), said);
+	const u = { inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningTokens: 1 };
+	expect("a turn's usage is the sum of its segments", JSON.stringify(addUsage(u, u)) === JSON.stringify({ inputTokens: 20, cachedInputTokens: 4, outputTokens: 10, reasoningTokens: 2 }) && addUsage(null, u) === u && addUsage(null, null) === null);
+	const row = (seq: number, turn: number, item: object) => ({ seq, at: seq, turn, ...item }) as never;
+	const whole = sessionWholeTask([
+		row(1, 1, { kind: "user", text: "Make the parser strict.", model: "m", effort: null }),
+		row(2, 1, { kind: "windlass", event: { type: "workspace.changes", data: { files: ["src/parse.ts"] } } }),
+		row(3, 1, { kind: "windlass", event: { type: "text.ended", data: { text: "Done: the parser rejects trailing commas." } } }),
+		row(4, 1, { kind: "turn.ended", outcome: "succeeded" }),
+		row(5, 2, { kind: "user", text: "Now add a test for it.", model: "m", effort: null }),
+		row(6, 2, { kind: "user", text: "Use the fixtures folder.", model: "m", effort: null, steer: true }),
+		row(7, 2, { kind: "user", text: "And keep it short.", model: "m", effort: null, steer: true, held: true }),
+	], 2, ["And keep it short."]);
+	expect("a session's whole task: this turn's message, what was sent since, the first prompt, and a labelled reconstruction", ["Your earlier conversation is gone", "> Now add a test for it.", "> Use the fixtures folder.", "> And keep it short.", "The session's first prompt was", "> Make the parser strict.", "reconstructed by the platform", "files changed: src/parse.ts", "Done: the parser rejects trailing commas."].every((part) => whole.includes(part)) && whole.split("And keep it short.").length === 2, whole);
+}
+
 // The live case: a turn cut off by a deploy, then a sandbox that could not be prepared on every later turn. Those are no
 // cut-offs (the agent never ran): one is tried again, the next asks, and the person can start the step on a fresh sandbox.
 const unprepared: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, sandboxFailed: "could not set the sandbox's network: the sandbox does not answer", spend: { tokens: 0, hostedSeconds: 0 } });
