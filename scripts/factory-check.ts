@@ -367,6 +367,12 @@ const begun: Row[] = [
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 ];
 
+drive("a deleted session ends its outstanding turn checks", newItem(), [
+	...begun.slice(0, 2),
+	{ fact: k => ({ kind: "session_deleted", key: k.key }), state: "waiting", wait: "person", effects: ["ask"],
+		also: o => holds(o.item.run?.step.turn === null && o.item.question?.text === "This agent was deleted.", "the deleted agent still has an outstanding turn") },
+]);
+
 print("\n== the advisory second review");
 
 const reviewHead = H(1);

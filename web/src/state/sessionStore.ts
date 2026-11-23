@@ -92,7 +92,7 @@ export function createSessionStore(api: SessionApi): SessionStore {
 						return;
 					}
 					const missing = error?.code === "not_found";
-					set({ connection, error: error ?? null, phase: missing ? "missing" : state.phase === "ready" ? "ready" : "failed" });
+					set({ connection, error: error ?? null, ...(missing && { summary: null, question: null }), phase: missing ? "missing" : state.phase === "ready" ? "ready" : "failed" });
 				},
 			});
 		},

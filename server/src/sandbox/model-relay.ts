@@ -4,7 +4,7 @@
  * turn's session container's network namespace.
  *
  *   relay      wlp-model-relay[-<machine>]: `sandbox/relay/windlass.cjs` from the pinned base image, as
- *              agent, read-only, no capabilities, no logs, on the bridge (its route to api.openai.com).
+ *              agent, read-only, no capabilities, on the bridge (its route to api.openai.com).
  *              Its tokens are in its own tmpfs, `/run/wlp-model/tokens/<nonce>.json`, written with
  *              `docker exec -i` and the content on standard input; its socket in the volume
  *              wlp-model-socket[-<machine>], which only the relay and the forwarders mount.
@@ -25,7 +25,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccessToken } from "./api.js";
-import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, docker } from "./docker.js";
+import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
 import { SECRET_FILE_SCRIPT, type TurnModelRelay } from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
@@ -157,9 +157,13 @@ export class DockerModelRelay {
 		return { id, running: running === "true", labels: JSON.parse(json || "{}") ?? {} };
 	}
 
+	private get logOptions(): string[] {
+		return this.options.machine ? RELAY_LOGS : NO_LOGS;
+	}
+
 	private version(): string {
 		const { image, requests, userRequests, network, upstream, limits } = this.options;
-		return createHash("sha256").update(relayScript()).update(JSON.stringify([image, requests ?? null, userRequests ?? null, network ?? null, upstream ?? null, limits ?? null, RELAY_MEMORY])).digest("hex");
+		return createHash("sha256").update(relayScript()).update(JSON.stringify([image, requests ?? null, userRequests ?? null, network ?? null, upstream ?? null, limits ?? null, RELAY_MEMORY, this.logOptions])).digest("hex");
 	}
 
 	/** The relay is running, with this program: its container id. One at a time in this process. */
@@ -183,7 +187,7 @@ export class DockerModelRelay {
 		const limits = { ...(this.options.limits ?? {}), ...(this.options.requests ? { machineRequests: this.options.requests } : {}), ...(this.options.userRequests ? { userRequests: this.options.userRequests } : {}) };
 		const run = await docker([
 			"run", "-d", "--pull", "never", "--name", this.relayName, ...this.labels("relay"), "--label", `${VERSION}=${version}`,
-			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", ...NO_LOGS,
+			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", ...this.logOptions,
 			"--memory", RELAY_MEMORY, "--pids-limit", "48", "--restart", "no",
 			"--network", this.options.network ?? "bridge",
 			"--mount", `type=volume,src=${this.socketVolume},dst=/workspace`,

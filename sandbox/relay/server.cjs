@@ -241,10 +241,14 @@ function reject(res, status, { restarting = false, message: own, headers = {}, c
 
 /**
  * What the relay notes about an answer it did not pass on as the provider gave it: never a body, a header that
- * could carry a credential, or a query string. Relay containers keep no Docker log, so the latest notes are also
+ * could carry a credential, or a query string. The latest notes are also
  * kept in a file beside the socket (`notesFile`), which `windlass-runner status` reads.
  */
-const printable = value => value === undefined ? 'none' : /^[A-Za-z0-9 ./;=_+:,-]{0,120}$/.test(String(value)) ? String(value) : '(unprintable)';
+// Restrict diagnostics to known values. Even printable response headers can echo a secret.
+const mediaTypes = new Set(['application/json', 'text/event-stream', 'text/html', 'text/plain', 'application/octet-stream']);
+const encodings = new Set(['identity', ...decoders.keys()]);
+const networkErrors = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE']);
+const diagnostic = (value, allowed) => value === undefined ? 'none' : allowed.has(value) ? value : 'other';
 const NOTES_KEPT = 20;
 exports.NOTES_FILE = '/workspace/relay-notes.json';
 function notesOf(notesFile) {
@@ -394,9 +398,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				target = { hostname: 'api.anthropic.com', path: req.url, headers };
 			}
 			if (res.destroyed) return;
-			const route = req.method + ' ' + req.url.split('?')[0];
+			const route = req.method + ' ' + req.url.split('?')[0].replace(/(\/models\/)[^/]+:/, '$1[model]:');
 			const up = forward({ port: 443, ...target, method: req.method }, reply => {
-				const described = { route, upstream: reply.statusCode, contentType: printable(reply.headers['content-type']), contentEncoding: printable(reply.headers['content-encoding']) };
+				const described = { route, upstream: reply.statusCode, contentType: diagnostic(reply.headers['content-type']?.split(';')[0].trim().toLowerCase(), mediaTypes), contentEncoding: diagnostic(reply.headers['content-encoding']?.toLowerCase(), encodings) };
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					const status = reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502;
@@ -449,7 +453,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			});
 			up.on('error', error => {
 				if (res.destroyed || res.writableEnded) return;
-				if (!res.headersSent) note({ event: 'unreachable', route, error: printable(error?.code ?? 'error'), answered: 502 });
+				if (!res.headersSent) note({ event: 'unreachable', route, error: diagnostic(error?.code, networkErrors), answered: 502 });
 				if (res.headersSent) res.destroy(); else reject(res, 502);
 			});
 			up.setTimeout?.(600_000, () => up.destroy());

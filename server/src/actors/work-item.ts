@@ -68,7 +68,7 @@ import type { Effect as BlueprintEffect, Fact, FactoryItem, VerifiedCheckEffect 
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
-import { grantIsValid, itemActor, sessionActor, userActor } from "./internal.js";
+import { grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
 
 /** What the item knows around the blueprint's `FactoryItem`. */
@@ -1038,7 +1038,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 		case "check_turn":
 			return effect.turn === key && run.step.turn !== null;
 		case "publish":
-			return effect.key === key && run.step.kind === "publish";
+			return effect.key === key && run.step.kind === "publish" && item.question?.kind !== "turn_refused";
 		case "poll_ci":
 			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && (item.pr !== null || !!item.parent);
 		case "poll_pr":
@@ -1214,6 +1214,16 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	const sessionId = "to" in effect && effect.to === "review" ? meta.reviewerSessionId : meta.sessionId;
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
+	// Catch only the session RPC. A failure from GitHub or another actor still belongs to the retry queue.
+	const gone = Symbol("deleted session");
+	const onGone = async (error: unknown): Promise<typeof gone> => {
+		if (!isSessionGone(error)) throw error;
+		if ((effect.kind === "deliver" || effect.kind === "check_turn" || effect.kind === "fresh_sandbox" || effect.kind === "publish")
+			&& c.vars.stored && live(c.vars.stored.item, effect)) {
+			await take(c, { kind: "session_deleted", key: effect.kind === "check_turn" ? effect.turn : effect.key, at: Date.now() });
+		}
+		return gone;
+	};
 	switch (effect.kind) {
 		case "provider_retry":
 			await take(c, { ...effect, at: Date.now(), loginChanged: row.due_at < effect.at });
@@ -1408,22 +1418,23 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				text += "\n\nCurrent runners do not support sizing beyond one slot.\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
-			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) });
+			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);
 			return true;
 		}
 		case "release_review":
-			await session.internalFreeSandbox(effect.run);
+			await session.internalFreeSandbox(effect.run).catch(onGone);
 			return true;
 		case "fresh_sandbox":
 			// The person chose a new sandbox for a step whose sandbox could not be prepared: the session's is removed, as "Free" does.
-			await session.internalFreeSandbox();
+			if (await session.internalFreeSandbox().catch(onGone) === gone) return true;
 			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan });
 			return true;
 		case "withdraw":
-			await session.internalWithdraw(effect.key);
+			await session.internalWithdraw(effect.key).catch(onGone);
 			return true;
 		case "check_turn": {
-			const fact = await session.internalCheckTurn({ turn: effect.turn, check: effect.key });
+			const fact = await session.internalCheckTurn({ turn: effect.turn, check: effect.key }).catch(onGone);
+			if (fact === gone) return true;
 			// A turn still waiting for its slot is not running at the session: it is still in the session's hands, and looked at again.
 			if (fact === null && item.run?.step.turn === "delivered") await take(c, { kind: "turn_running", at: Date.now(), key: effect.key });
 			else if (fact !== null) await takeSessionFact(c, stored, fact);
@@ -1436,7 +1447,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const now = c.vars.stored;
 			if (!now || !live(now.item, effect)) return false;
 			const body = meta.github ? `${item.task.body}\n\nCloses #${meta.github.origin.issue.number}.` : item.task.body;
-			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, blockedNetwork: itemNetwork(meta), branchOnly: !!item.parent });
+			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, blockedNetwork: itemNetwork(meta), branchOnly: !!item.parent }).catch(onGone);
+			if (answer === gone) return true;
 			const receipt = { at: Date.now(), key: effect.key };
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
 			return true;

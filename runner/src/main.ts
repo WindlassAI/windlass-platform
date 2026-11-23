@@ -160,7 +160,7 @@ async function main() {
 					const signIn = await claudeSignIn(executor);
 					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
 				}
-				// What each relay refused or passed on differently, latest last (its container keeps no log).
+				// What each relay refused or passed on differently, latest last.
 				for (const [relay, label] of [["codex", "Codex"], ["opencode", "OpenCode"], ["claude", "Claude Code"]] as const) {
 					const notes = await relayNotes(executor, relay).catch(() => []);
 					if (notes.length) console.log(`  ${label} relay, latest notes:\n${notes.map(line => "    " + line).join("\n")}`);

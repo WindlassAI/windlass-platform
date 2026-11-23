@@ -285,7 +285,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
 	const [planMode, setPlanMode] = useState(false);
 	const [refusals, setRefusals] = useState(0);
-	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
+	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`, state.phase !== "missing");
 	const online = state.connection === "connected";
 	const flow = useQuestionFlow(api, state.phase === "ready" ? state.question : null, explain);
 	const stopCall = useCallback(
@@ -336,8 +336,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 		return (
 			<main className="state state-page">
 				<Mark size={56} />
-				<h1 className="display display-small">No agent at this address</h1>
-				<p>It may have been deleted, or the address is not one of yours.</p>
+				<h1 className="display display-small">This agent was deleted</h1>
 				<a className="button button-outline" {...linkProps({ name: "home" })}>
 					Back to your agents
 				</a>

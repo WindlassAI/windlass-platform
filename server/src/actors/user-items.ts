@@ -83,7 +83,7 @@ import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { effectiveUserLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
-import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
+import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { launchPlace, launchMachineProfiles } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
@@ -661,7 +661,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			slot.told = true;
 			await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
 		} catch (error) {
-			if (!isActorGone(error)) {
+			if (!isSessionGone(error)) {
 				// Kept, slot and all: the session may have taken it and only its answer was lost. Told again on the next run, or freed by its lease.
 				c.log.warn({ msg: "could not give a session its slot; it is told again later", session: slot.session, error: String(error) });
 				continue;

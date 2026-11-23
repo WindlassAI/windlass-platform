@@ -10,7 +10,7 @@ import { isMachineIdName, machineLabel, sandboxSlots, type MachineSummary, MACHI
 import { MINUTE_MS } from "../http-limits.js";
 import { machineError, signed } from "../runner-keys.js";
 import { ControlQueue, CLOCK_TOLERANCE_MS, CONTROL_DEAD_MS, CONTROL_HEARTBEAT_MS, MACHINE_ID, LEGACY_MIN_RUNNER_VERSION, MAX_REPORT_BYTES, MIN_RUNNER_VERSION, REFUSED_RETRY_MS, controlProof, parseRunnerFrame, refuse, secondHello, versionAtLeast, welcomeCapabilities, type Refusal, type Report, type ServerFrame } from "../runner/control.js";
-import { grantIsValid, isActorGone, sessionActor } from "./internal.js";
+import { grantIsValid, isSessionGone, sessionActor } from "./internal.js";
 
 const minimum = () => config.machines?.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION;
 const SEEN_INTERVAL = 3 * 60_000;
@@ -87,7 +87,7 @@ async function reapSlots(c: Ctx) {
 		try {
 			const summary = await sessionActor(c, c.key[0]!, row.session).internalSummary();
 			if (summary.turns === row.turn && summary.status !== "idle") return;
-		} catch (error) { if (!isActorGone(error)) return; }
+		} catch (error) { if (!isSessionGone(error)) return; }
 		await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", row.session, row.turn); await tell(c, await record(c)); });
 	}));
 }

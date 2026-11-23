@@ -255,14 +255,14 @@ async function relayAndForwarder(t, { stopping = false, modelsType = 'applicatio
 		req.end(method === 'POST' ? '{}' : undefined);
 	});
 	/** A Responses request whose upstream answer the check writes. */
-	const answer = async (status, headers, body) => {
+	const answer = async (status, headers, body, requestBody = '{}') => {
 		const turn = new Promise((ok, fail) => {
 			const req = request({ host: '127.0.0.1', port: forwarder.address().port, method: 'POST', path: '/codex/v1/responses', agent,
 				headers: { host: '127.0.0.1:17892', authorization: bearer, 'content-type': 'application/json' } }, (res) => {
 				text(res).then((body) => ok({ status: res.statusCode, type: res.headers['content-type'], body }), fail);
 			});
 			req.on('error', fail);
-			req.end('{}');
+			req.end(requestBody);
 		});
 		while (!held.length) await new Promise((r) => setTimeout(r, 10));
 		held.shift().writeHead(status, headers).end(body);
@@ -347,9 +347,20 @@ test('an untyped 200 on the Responses route is passed as an event stream, and an
 	const refused = noted.filter((n) => n.event === 'refused_200');
 	assert.deepEqual(refused.map((n) => [n.route, n.upstream, n.contentType, n.answered]),
 		[['POST /codex/v1/responses', 200, 'text/html', 502], ['GET /codex/v1/models', 200, 'none', 502]]);
-	assert.deepEqual(noted.filter((n) => n.event === 'untyped_200').map((n) => n.contentType), ['none', 'text/plain; charset=utf-8']);
+	assert.deepEqual(noted.filter((n) => n.event === 'untyped_200').map((n) => n.contentType), ['none', 'text/plain']);
 	assert.doesNotMatch(JSON.stringify(noted), /sk-fixture|Bearer|html>/);
 });
+test('relay diagnostics omit credentials, bodies and arbitrary upstream header values', async (t) => {
+	const relay = await relayAndForwarder(t);
+	const lines = [];
+	t.mock.method(console, 'error', line => lines.push(line));
+	await relay.answer(403, { 'content-type': 'text/html; secret=sk-fixture', 'content-encoding': 'request-marker' },
+		'upstream-marker', 'request-marker');
+	assert.equal(lines.length, 1);
+	assert.match(lines[0], /event=upstream_error .*upstream=403/);
+	assert.doesNotMatch(lines[0], /sk-fixture|request-marker|upstream-marker|Bearer/);
+});
+
 test('the OpenCode relay reads only a ChatGPT sign-in\'s Responses answer as an event stream', async () => {
 	const { providerFor } = await import('../sandbox/relay/opencode.cjs');
 	const chatgpt = providerFor(['chatgpt'], 'g', { load: async () => ({}) });

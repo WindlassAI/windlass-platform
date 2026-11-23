@@ -406,6 +406,7 @@ export type Fact =
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
+	| { kind: "session_deleted"; at: number; key: string }
 	| { kind: "turn_started"; at: number; key: string }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
 	| { kind: "turn_running"; at: number; key: string }

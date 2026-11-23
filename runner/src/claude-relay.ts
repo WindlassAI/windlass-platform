@@ -1,6 +1,6 @@
 import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
-import { docker, helperFlags, LABEL, LABEL_ARG, NO_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
+import { docker, helperFlags, LABEL, LABEL_ARG, RELAY_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
 import { image, type MachineHarness, type MachineDocker } from "./policy.js";
 import { loadPair, Refusal, RunnerError } from "./state.js";
@@ -56,7 +56,7 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 
 /**
  * The relay's latest notes about answers it did not pass on as the provider gave them (sandbox/relay/server.cjs
- * `notesFile`): relay containers keep no Docker log. Only the fields the relay writes, as short printable text.
+ * `notesFile`). Only the fields the relay writes, as short printable text.
  */
 export async function relayNotes(m: MachineDocker, harness: MachineHarness, latest = 3): Promise<string[]> {
 	const box = await ownedRelay(m, harness).catch(() => undefined);
@@ -129,7 +129,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	await m.ensureImage();
 	const socketVolume = relaySocketVolume(m, harness);
 	await m.ownedVolume(true, socketVolume);
-	const version = createHash("sha256").update(script).update(JSON.stringify(login ?? null)).digest("hex");
+	const version = createHash("sha256").update(script).update(JSON.stringify(login ?? null)).update(JSON.stringify(RELAY_LOGS)).digest("hex");
 	const publicKey = createPublicKey(pair.key).export({ format: "der", type: "spki" }).toString("base64");
 	let box = await ownedRelay(m, harness);
 	if (box && (box.Config.Labels[role + ".version"] !== version || box.Config.Image !== image ||
@@ -139,7 +139,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	if (!box) {
 		await docker(["create", "--pull", "never", "--name", relayName(m, harness), ...flags(m), "--label", role + ".version=" + version,
 			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-			...NO_LOGS, "--memory", "192m", "--pids-limit", "48",
+			...RELAY_LOGS, "--memory", "192m", "--pids-limit", "48",
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,

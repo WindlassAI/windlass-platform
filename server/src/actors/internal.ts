@@ -301,9 +301,4 @@ export function secretsActor(c: HasClient, uid: string, sessionId: string): User
 	return c.client().user.get([uid], { params: { token: issueServiceToken(secretsCaller(uid, sessionId)) } }) as UserSecretsInternal;
 }
 
-/** Whether a call failed because the actor it was meant for does not exist (any more). */
-export function isActorGone(error: unknown): boolean {
-	if (typeof error !== "object" || error === null) return false;
-	const { group, code } = error as { group?: unknown; code?: unknown };
-	return group === "actor" && (code === "not_found" || code === "destroying" || code === "destroyed");
-}
+export { isActorGone, isSessionGone } from "../actor-errors.js";
