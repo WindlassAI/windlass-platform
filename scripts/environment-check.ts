@@ -200,6 +200,7 @@ async function run(): Promise<void> {
 		await nudge(s.host, PROJECT, HOSTED, "missed");
 		const r = (await readEnvironments(s.host.db, PROJECT)).find(x => x.place === HOSTED)!;
 		expect("an image change is stale, not used, and rebuilt", r.stale !== null && !usable(r, environmentInputs("npm ci", CHECKS)) && r.dueTrigger === "image");
+		expect("a missed image is stale even after a failed build", stateOf({ ...r, attempt: build({ startedAt: Date.now() * 2, failure: { kind: "code", check: "test", line: "", excerpt: "" } }) }, environmentInputs("npm ci", CHECKS)) === "stale");
 	}
 
 	// Limits and an away machine hold a build back as a note, retried later; never a failure.

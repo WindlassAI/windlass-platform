@@ -73,6 +73,8 @@ export function usable(row: Pick<EnvironmentRow, "ready" | "stale"> | undefined,
 
 export function stateOf(row: EnvironmentRow, inputs: EnvironmentInputs): EnvironmentState {
 	if (row.attempt && row.attempt.finishedAt === null) return "building";
+	// Its image is gone from the place: whatever the last build said, sessions start cold until one is saved again.
+	if (row.ready && row.stale !== null) return "stale";
 	// A failure under settings that have changed since says nothing of today's: the record is stale then.
 	const failedLater = row.attempt?.failure && (!row.ready || row.attempt.startedAt > row.ready.startedAt)
 		&& row.attempt.setupHash === inputs.setupHash && row.attempt.checksHash === inputs.checksHash;

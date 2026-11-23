@@ -4584,7 +4584,10 @@ async function preparedSessions(server: Server) {
 			github.commit(repo,"main",{"package-lock.json":"{ }"},"Changed lockfile");
 			await turn(false);
 			pass("A real session skips setup only for matching inputs, checks out current source, and gives the base commit to Windlass");
-			const stale = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
+			const stale = await waitFor("the environment marked stale", async () => {
+				const env = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
+				return env?.state === "stale" ? env : undefined;
+			}, 20_000, 500).catch(async () => (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted"));
 			assert(stale?.state === "stale", "A session that missed the ready image did not mark it stale: " + plain(stale));
 			pass("A session whose ready image no longer matches marks the environment stale");
 			await user.saveRepositorySetup({ repositoryId: repo.id, command: "true" });
