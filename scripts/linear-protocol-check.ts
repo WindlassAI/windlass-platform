@@ -6,7 +6,7 @@
  *
  * Linear is played by scripts/linear-standin.ts: its authorization page, token endpoint, GraphQL API and
  * the signed deliveries of its webhooks, over real HTTP. No server and no actor runs here: what the
- * actors keep (the states that were issued, the connection, the deliveries taken in) is played by
+ * actors keep (the states that were issued, the deliveries taken in) is played by
  * `LinearConnectStore` and the route's `dispatch` in memory; the actors themselves are checked by linear-check.ts.
  *
  * What it shows: the configuration, and that without it the integration is off; the OAuth exchange as
@@ -39,9 +39,8 @@ mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
 const { linearConfig, linearClientSecret } = await import("../server/src/config.js");
 const { LinearApp, LinearError, challengeOf, newVerifier, linearApp, redactLinear } = await import("../server/src/linear/app.js");
-const { linearCallbackResponse } = await import("../server/src/linear/connect.js");
+const { linearCallbackResponse, openLinearTicket } = await import("../server/src/linear/connect.js");
 const webhook = await import("../server/src/linear/webhook.js");
-type LinearConnection = import("../server/src/linear/connect.js").LinearConnection;
 type LinearClaim = import("../server/src/linear/connect.js").LinearClaim;
 type LinearConnectStore = import("../server/src/linear/connect.js").LinearConnectStore;
 type LinearDelivery = import("../server/src/linear/webhook.js").LinearDelivery;
@@ -66,8 +65,6 @@ const secrets = { client: standin.clientSecret, signing: standin.signingSecret }
 
 class MemoryConnectStore implements LinearConnectStore {
 	readonly states = new Map<string, { uid: string; origin: string; verifier: string; used: boolean }>();
-	readonly connections = new Map<string, LinearConnection>();
-	completions = 0;
 
 	begin(uid: string, app: InstanceType<typeof LinearApp>): { state: string; url: string } {
 		const state = `state-${randomBytes(12).toString("hex")}`;
@@ -81,12 +78,7 @@ class MemoryConnectStore implements LinearConnectStore {
 		if (!found) return { ok: false, reason: "state", origin: null };
 		if (found.used) return { ok: false, reason: "used", origin: found.origin };
 		found.used = true;
-		return { ok: true, uid: found.uid, origin: found.origin, verifier: found.verifier };
-	}
-
-	async complete(uid: string, connection: LinearConnection): Promise<void> {
-		this.completions += 1;
-		this.connections.set(uid, connection);
+		return { ok: true, uid: found.uid, nonce: state, origin: found.origin, verifier: found.verifier };
 	}
 }
 
@@ -186,7 +178,7 @@ await section("without configuration the routes do not exist and nothing is disp
 const store = new MemoryConnectStore();
 const logLines: string[] = [];
 const deps = { store, app, origins: [ORIGIN], log: (line: string) => void logLines.push(line) };
-let connection!: LinearConnection;
+let connection: ReturnType<typeof openLinearTicket>;
 for (let i = 1; i <= 120; i += 1) standin.addTeam(`T${i}`, `Team ${i}`);
 const alpha = standin.teams.find((team) => team.key === "T1")!;
 const beta = standin.teams.find((team) => team.key === "T2")!;
@@ -206,9 +198,13 @@ await section("OAuth as the app's own user: the address, the exchange, the ident
 	const back = await standin.authorize(begun.url);
 	const answer = await linearCallbackResponse(new Request(back), deps);
 	assert.equal(answer.status, 302);
-	assert.equal(answer.headers.get("location"), `${ORIGIN}/#linear=connected`);
-	assert.equal(store.completions, 1);
-	connection = store.connections.get("u_owner")!;
+	const location = answer.headers.get("location")!;
+	const landing = new URL(location);
+	assert.equal(landing.origin + landing.pathname, `${ORIGIN}/settings`);
+	assert.match(landing.hash, /^#linear=.+$/);
+	const ticket = landing.hash.slice("#linear=".length);
+	assert.throws(() => openLinearTicket("u_other", ticket));
+	connection = openLinearTicket("u_owner", ticket);
 	assert.ok(connection.token.accessToken.startsWith("lin_oauth_"));
 	assert.ok(connection.token.refreshToken);
 	assert.ok(connection.token.expiresAt! > Date.now() + 3600_000);
@@ -220,13 +216,13 @@ await section("OAuth as the app's own user: the address, the exchange, the ident
 	assert.equal(connection.identity.workspace.id, standin.workspace.id);
 	assert.equal(connection.identity.installer, null);
 	// Every team the token reaches, over several pages.
-	assert.equal(connection.teams.length, standin.teams.length);
+	const teams = await app.teams(connection.token.accessToken);
+	assert.equal(teams.length, standin.teams.length);
 	assert.ok(standin.teams.length > 100);
-	assert.deepEqual(connection.teams.find((team) => team.key === "T1"), { id: alpha.id, key: "T1", name: "Team 1" });
+	assert.deepEqual(teams.find((team) => team.key === "T1"), { id: alpha.id, key: "T1", name: "Team 1" });
 	const pages = standin.calls.filter((call) => call.includes("teams")).length;
 	assert.ok(pages >= 3, `expected the teams to be paged, saw ${pages} calls`);
-	// What the browser was sent holds no credential.
-	const location = answer.headers.get("location")!;
+	// Credentials stay sealed in the fragment.
 	for (const secret of [connection.token.accessToken, connection.token.refreshToken!, standin.clientSecret, standin.signingSecret]) assert.ok(!location.includes(secret));
 	assert.ok(logLines.some((line) => line.includes("linear.connect.confirmed")));
 });
@@ -237,10 +233,8 @@ await section("OAuth refusals: reused, forged and declined states; a wrong code;
 	// Used twice: the second return of the same state is refused and nothing is recorded.
 	const first = store.begin("u_owner", app);
 	const returned = await standin.authorize(first.url);
-	const before = store.completions;
-	assert.equal(await fragment(await linearCallbackResponse(new Request(returned), deps)), "#linear=connected");
+	assert.match(await fragment(await linearCallbackResponse(new Request(returned), deps)), /^#linear=.+$/);
 	assert.equal(await fragment(await linearCallbackResponse(new Request(returned), deps)), "#linear-error=used");
-	assert.equal(store.completions, before + 1);
 
 	// Forged: no such state, and none that is not a string.
 	assert.equal(await fragment(await linearCallbackResponse(new Request(`${standin.redirectUri}?code=x&state=forged`), deps)), "#linear-error=state");
@@ -269,9 +263,7 @@ await section("OAuth refusals: reused, forged and declined states; a wrong code;
 	// A token for a person, as when the authorization was made without actor=app.
 	standin.consent = { approve: true, actor: "user" };
 	const person = store.begin("u_owner", app);
-	const personCompletions = store.completions;
 	assert.equal(await fragment(await linearCallbackResponse(new Request(await standin.authorize(person.url)), deps)), "#linear-error=not_app");
-	assert.equal(store.completions, personCompletions, "a person's token was kept");
 	standin.consent = { approve: true };
 
 	// Assignable not granted.

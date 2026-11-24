@@ -26,8 +26,8 @@ import type { LinearFiled, LinearFiling } from "../factory/intake.js";
 import { githubApp } from "../github/app.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
-import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearIdentity, type LinearToken, type LinearTeam as ProtocolTeam } from "../linear/app.js";
-import { type LinearClaim, type LinearConnectStore, type LinearConnection as ProtocolConnection } from "../linear/connect.js";
+import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearToken, type LinearTeam as ProtocolTeam } from "../linear/app.js";
+import { type LinearClaim, type LinearConnectStore, openLinearTicket } from "../linear/connect.js";
 import { QUICK_LABEL, TRIGGER_LABEL, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
@@ -66,6 +66,7 @@ export const LINEAR_TABLES = [
 ];
 
 export const LINEAR_STATE_TTL_MS = 10 * 60_000;
+const TICKET_TTL_MS = 5 * 60_000;
 /** How many connections may be begun and left unfinished. */
 const MAX_PENDING = 20;
 /** How long a delivery id is remembered: Linear redelivers within hours. */
@@ -248,24 +249,12 @@ export async function beginLinearConnect(c: LinearCtx, input: { origin: string }
 /** Takes a state's number out of the list: it is there once. Answers with the verifier and the origin that began it. */
 export async function claimLinearState(c: LinearCtx, nonce: string): Promise<{ ok: boolean; verifier: string | null; origin: string | null }> {
 	if (typeof nonce !== "string" || nonce === "") return { ok: false, verifier: null, origin: null };
-	// One statement: of two claims of one state, one gets the row.
-	const [row] = await c.db.execute<{ verifier: string; origin: string; expires_at: number }>("DELETE FROM linear_state WHERE nonce = ? RETURNING verifier, origin, expires_at", nonce);
-	if (!row || row.expires_at <= Date.now()) return { ok: false, verifier: null, origin: null };
-	return { ok: true, verifier: row.verifier, origin: row.origin };
-}
-
-const transitSubject = (uid: string) => `linear-connect\n${uid}`;
-
-/** What the server hands the actor after the code was exchanged: the token and what Linear confirmed, sealed for this user. */
-export function sealConnection(uid: string, connection: ProtocolConnection): string {
-	return serverSealer().seal("transit", transitSubject(uid), JSON.stringify(connection));
-}
-
-function readConnectionBlob(uid: string, blob: string): { token: LinearToken; identity: LinearIdentity; teams: ProtocolTeam[] } {
-	const parsed = JSON.parse(serverSealer().open("transit", transitSubject(uid), blob)) as ProtocolConnection;
-	const { token, identity, teams } = parsed;
-	if (typeof token?.accessToken !== "string" || !isLinearId(identity?.workspace?.id) || !isLinearId(identity?.appUser?.id) || !Array.isArray(teams)) throw new Error("The connection is not well formed.");
-	return { token, identity, teams: teams.filter(team => isLinearId(team?.id) && typeof team.key === "string") };
+	// A claimed state becomes a one-use ticket. Disconnect cancels both kinds of pending connection.
+	const now = Date.now();
+	const [row] = await c.db.execute<{ verifier: string; origin: string }>(
+		"UPDATE linear_state SET nonce = ?, expires_at = ? WHERE nonce = ? AND expires_at > ? RETURNING verifier, origin",
+		`ticket:${nonce}`, now + TICKET_TTL_MS, nonce, now);
+	return row ? { ok: true, verifier: row.verifier, origin: row.origin } : { ok: false, verifier: null, origin: null };
 }
 
 /**
@@ -273,13 +262,25 @@ function readConnectionBlob(uid: string, blob: string): { token: LinearToken; id
  * the rest are dropped, and their claims given up first, so that a failure leaves a mapping nobody is routed to and not a claim
  * that blocks everyone else.
  */
-export async function completeLinearConnection(c: LinearCtx, blob: string): Promise<void> {
+export async function completeLinearConnection(c: LinearCtx, ticket: string): Promise<LinearStatus> {
+	const app = requireLinear();
 	const uid = c.key[0]!;
-	const { token, identity, teams } = readConnectionBlob(uid, blob);
+	const invalid = () => new UserError("This link to connect Linear is not valid for this account any more. Connect Linear again.", { code: "linear_ticket" });
+	let confirmed;
+	try {
+		confirmed = openLinearTicket(uid, ticket);
+	} catch {
+		throw invalid();
+	}
+	const { token, identity, nonce } = confirmed;
 	const workspace = { id: lower(identity.workspace.id), name: identity.workspace.name, urlKey: identity.workspace.urlKey };
 	const appUser = { id: lower(identity.appUser.id), name: identity.appUser.name };
-	const known = teams.map(team => ({ id: lower(team.id), key: team.key, name: team.name }));
 	await inLinearQueue(c, async () => {
+		const claimed = await c.db.execute("DELETE FROM linear_state WHERE nonce = ? AND expires_at > ? RETURNING nonce", `ticket:${nonce}`, Date.now());
+		if (!claimed.length) throw invalid();
+		// Team lists can exceed a redirect header, so read them after the ticket returns.
+		const teams = await app.teams(token.accessToken).catch(error => { throw linearFailure(c, error, "The Linear teams could not be listed. Connect Linear again."); });
+		const known = teams.map(team => ({ ...team, id: lower(team.id) }));
 		const previous = await readConnection(c.db);
 		const present = new Set(known.map(team => team.id));
 		const sameWorkspace = previous?.workspace.id === workspace.id;
@@ -293,6 +294,7 @@ export async function completeLinearConnection(c: LinearCtx, blob: string): Prom
 		});
 		console.log(`[wlp] linear.connected uid=${uid} workspace=${workspace.id} teams=${known.length} mapped=${kept.length}`);
 	});
+	return linearStatus(c);
 }
 
 function teamList(teams: ProtocolTeam[], mappings: LinearMapping[]): LinearTeamList {
@@ -378,13 +380,21 @@ export async function removeLinearMapping(c: LinearCtx, teamId: string): Promise
 export async function disconnectLinear(c: LinearCtx): Promise<LinearStatus> {
 	await inLinearQueue(c, async () => {
 		const stored = await readConnection(c.db);
-		if (!stored) return;
-		for (const mapping of await readMappings(c.db)) await releaseTeam(c, stored.workspace.id, mapping.teamId);
+		if (stored) {
+			for (const mapping of await readMappings(c.db)) await releaseTeam(c, stored.workspace.id, mapping.teamId);
+			try {
+				await requireLinear().revoke(openToken(c.key[0]!, stored).accessToken);
+			} catch (error) {
+				c.log.warn({ msg: "Could not revoke the Linear token", workspace: stored.workspace.id, status: error instanceof LinearError ? error.status : undefined });
+			}
+		}
 		await c.db.transaction(async tx => {
 			await tx.execute("DELETE FROM linear_mapping");
 			await tx.execute("DELETE FROM linear_connection");
+			await tx.execute("DELETE FROM linear_state");
+			await tx.execute("DELETE FROM linear_delivery");
 		});
-		console.log(`[wlp] linear.disconnected uid=${c.key[0]} workspace=${stored.workspace.id}`);
+		if (stored) console.log(`[wlp] linear.disconnected uid=${c.key[0]} workspace=${stored.workspace.id}`);
 	});
 	return linearStatus(c);
 }
@@ -479,7 +489,6 @@ async function decide(c: LinearCtx, app: LinearApp, stored: Stored, delivery: Li
 
 interface UserLinearActions {
 	internalLinearClaim(nonce: string): Promise<{ ok: boolean; verifier: string | null; origin: string | null }>;
-	internalLinearComplete(blob: string): Promise<void>;
 	internalLinearDelivery(delivery: LinearDelivery): Promise<LinearDispatch>;
 }
 
@@ -529,9 +538,6 @@ export const actorLinearConnectStore: LinearConnectStore = {
 		}
 		// The origin is the one the owner's actor kept for this number, and must be the one signed into the state.
 		if (!claimed.ok || claimed.origin !== payload.origin || claimed.verifier === null) return { ok: false, reason: "used", origin: config.origins.includes(payload.origin) ? payload.origin : null };
-		return { ok: true, uid: payload.uid, origin: claimed.origin, verifier: claimed.verifier };
-	},
-	async complete(uid, connection) {
-		await actors().user(uid).internalLinearComplete(sealConnection(uid, connection));
+		return { ok: true, uid: payload.uid, nonce: payload.nonce, origin: claimed.origin, verifier: claimed.verifier };
 	},
 };

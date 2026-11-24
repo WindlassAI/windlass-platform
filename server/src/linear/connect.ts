@@ -7,11 +7,10 @@
  *   2. The owner authorizes the app at Linear as the app's own user (`actor=app`, `app:assignable`),
  *      and Linear sends the browser here with `code` and `state`.
  *   3. This route has the store check the state and take it out of the user's list (so it works once),
- *      exchanges the code, and asks Linear who the token is, which workspace it is in, and which teams
- *      it reaches. The token must be the app user's (`LinearApp.identity`), and must have been
- *      granted `app:assignable`.
- *   4. The store keeps the connection, the token among it. Nothing secret goes back to the browser:
- *      it is sent to the web app with `#linear=connected`, or with `#linear-error=<code>`.
+ *      exchanges the code, and asks Linear who the token is and which workspace it is in. The token must
+ *      be the app user's (`LinearApp.identity`) and have the `app:assignable` scope.
+ *   4. The browser returns to Settings with a sealed ticket. The signed-in user redeems it to record
+ *      the connection. A failure returns `#linear-error=<code>`.
  *
  * The human who authorized is not established: the app's token cannot say who they are. The connection
  * is for the platform user the state names, and authorship of issues stays untrusted.
@@ -21,7 +20,8 @@
  */
 
 import { config } from "../config.js";
-import { LINEAR_SCOPES, LinearApp, LinearError, type LinearIdentity, type LinearTeam, type LinearToken, linearApp, redactLinear } from "./app.js";
+import { serverSealer } from "../signin/seal.js";
+import { LINEAR_SCOPES, LinearApp, LinearError, type LinearIdentity, type LinearToken, linearApp, redactLinear } from "./app.js";
 
 export const LINEAR_CALLBACK_PATH = "/linear/callback";
 
@@ -43,23 +43,26 @@ export type LinearConnectFailure =
 	| "unreachable"
 	| "failed";
 
-/** What Linear confirmed. The token is a secret: only the store sees it, and it never reaches a browser or a log. */
-export interface LinearConnection {
+interface LinearTicket {
+	nonce: string;
 	token: LinearToken;
 	identity: LinearIdentity;
-	teams: LinearTeam[];
+}
+
+const ticketSubject = (uid: string) => `linear-connect\n${uid}`;
+
+export function openLinearTicket(uid: string, ticket: string): LinearTicket {
+	return JSON.parse(serverSealer().open("transit", ticketSubject(uid), ticket));
 }
 
 export type LinearClaim =
-	| { ok: true; uid: string; origin: string; verifier: string | null }
+	| { ok: true; uid: string; nonce: string; origin: string; verifier: string | null }
 	| { ok: false; reason: "state" | "used"; /** The web app's address, when the state was readable enough to name one. */ origin: string | null };
 
 /** What the route needs of the user's actor. */
 export interface LinearConnectStore {
 	/** Checks the signed state and takes its number out of the user's list; it works once. */
 	claim(state: string): Promise<LinearClaim>;
-	/** Records the connection for the user the claimed state named. */
-	complete(uid: string, connection: LinearConnection): Promise<void>;
 }
 
 function redirect(location: string): Response {
@@ -67,7 +70,7 @@ function redirect(location: string): Response {
 }
 
 /** Back to the web app, with what happened in the fragment: it is not sent to any server, and not kept in a log. */
-const back = (origin: string, fragment: string) => redirect(`${origin}/#${fragment}`);
+const back = (origin: string, fragment: string) => redirect(`${origin}/settings#${fragment}`);
 const failed = (origin: string, code: LinearConnectFailure) => back(origin, `linear-error=${code}`);
 
 export interface LinearConnectDeps {
@@ -138,10 +141,9 @@ export async function linearCallbackResponse(request: Request, deps: LinearConne
 			}
 			throw error;
 		}
-		const teams = await app.teams(token.accessToken);
-		await deps.store.complete(uid, { token, identity, teams });
-		log(`[wlp] linear.connect.confirmed uid=${uid} workspace=${identity.workspace.id} teams=${teams.length}`);
-		return back(origin, "linear=connected");
+		const ticket: LinearTicket = { nonce: claimed.nonce, token, identity };
+		log(`[wlp] linear.connect.confirmed uid=${uid} workspace=${identity.workspace.id}`);
+		return back(origin, `linear=${serverSealer().seal("transit", ticketSubject(uid), JSON.stringify(ticket))}`);
 	} catch (error) {
 		const unreachable = error instanceof LinearError && error.unreachable;
 		console.error(`[wlp] linear.connect.failed uid=${uid}: ${redactLinear(error instanceof Error ? error.message : "unknown error", [token?.accessToken, token?.refreshToken])}`);

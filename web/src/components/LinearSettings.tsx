@@ -3,8 +3,7 @@
  * to one repository of their GitHub connection. An issue of a mapped team that gains the `windlass` label, or is
  * assigned to the Windlass app user, is filed as a work item. Windlass writes nothing back to Linear.
  *
- * The OAuth callback finishes on the server and sends the browser back with `#linear=connected` or
- * `#linear-error=<code>`: the page says so once, then asks again where things stand.
+ * The signed-in user redeems the ticket returned by the OAuth callback.
  */
 import type { GithubRepository, LinearStatus, LinearTeam } from "@contract";
 import { useEffect, useId, useState } from "react";
@@ -16,14 +15,6 @@ const ERRORS: Record<string, string> = {
 	state: "That connection attempt expired. Connect again.",
 };
 
-/** What the address says about a return from Linear, read once. */
-function returned(): { kind: "connected" } | { kind: "error"; code: string } | null {
-	const hash = typeof location === "undefined" ? "" : location.hash;
-	if (hash === "#linear=connected") return { kind: "connected" };
-	const failed = /^#linear-error=(.+)$/.exec(hash);
-	return failed ? { kind: "error", code: decodeURIComponent(failed[1] as string) } : null;
-}
-
 export function LinearSettings() {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
@@ -31,7 +22,7 @@ export function LinearSettings() {
 	const [status, setStatus] = useState<LinearStatus | null>(null);
 	const [teams, setTeams] = useState<LinearTeam[] | null>(null);
 	const [repositories, setRepositories] = useState<GithubRepository[] | null>(null);
-	const [back] = useState(returned);
+	const [connected, setConnected] = useState(false);
 	const [teamId, setTeamId] = useState("");
 	const [repositoryId, setRepositoryId] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -40,8 +31,16 @@ export function LinearSettings() {
 	const [repositoryProblem, setRepositoryProblem] = useState<string | null>(null);
 
 	useEffect(() => {
-		if (back) history.replaceState(null, "", location.pathname + location.search);
-	}, [back]);
+		const back = /^#(linear|linear-error)=(.+)$/.exec(location.hash);
+		if (!back) return;
+		history.replaceState(null, "", location.pathname + location.search);
+		const [, kind, value] = back;
+		if (kind === "linear-error") {
+			setError(ERRORS[value === "denied" ? "access_denied" : value!] ?? `Linear could not be connected (${value}). Try again.`);
+			return;
+		}
+		void client.user(auth).linearComplete(value!).then(() => setConnected(true), failure => setError(explain(failure)));
+	}, [client, auth, explain]);
 
 	useEffect(() => {
 		let live = true;
@@ -67,7 +66,7 @@ export function LinearSettings() {
 		return () => {
 			live = false;
 		};
-	}, [client, auth, explain, platform.info?.github]);
+	}, [client, auth, explain, platform.info?.github, connected]);
 
 	const run = async (work: () => Promise<void>) => {
 		setBusy(true);
@@ -96,6 +95,7 @@ export function LinearSettings() {
 		if (!confirm("Disconnect Linear? Its team mappings are removed and nothing more is filed from Linear. Items already filed stay.")) return;
 		void run(async () => {
 			setStatus(await client.user(auth).disconnectLinear());
+			setConnected(false);
 			setTeams(null);
 		});
 	};
@@ -121,13 +121,7 @@ export function LinearSettings() {
 			<p className="usage-lede">
 				File work items from Linear issues. An issue in a mapped team that gains the <code>windlass</code> label, or is assigned to Windlass (the app's user in your workspace), is filed on that team's repository. Windlass writes nothing back to Linear.
 			</p>
-			{back?.kind === "connected" ? <p className="callout" role="status">Linear is connected. Choose a repository for a team below.</p> : null}
-			{back?.kind === "error" ? (
-				<p className="callout callout-warn" role="alert">
-					<WarnIcon />
-					<span>{ERRORS[back.code] ?? `Linear could not be connected (${back.code}). Try again.`}</span>
-				</p>
-			) : null}
+			{connected && status?.state === "connected" ? <p className="callout" role="status">Linear is connected. Choose a repository for a team below.</p> : null}
 			{failed ? (
 				<p className="callout callout-warn" role="alert">
 					<WarnIcon />

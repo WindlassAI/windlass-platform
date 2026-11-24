@@ -433,6 +433,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			factoryLimits: () => act("factoryLimits"),
 			linear: () => act("linear"),
 			linearConnect: (input) => act("linearConnect", input),
+			linearComplete: (ticket) => act("linearComplete", ticket),
 			linearTeams: () => act("linearTeams"),
 			saveLinearMapping: (input) => act("saveLinearMapping", input),
 			removeLinearMapping: (teamId) => act("removeLinearMapping", teamId),

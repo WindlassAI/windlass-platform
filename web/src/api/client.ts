@@ -283,8 +283,9 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	factoryLimits(): Promise<FactoryLimits>;
 	/** The Linear connection (`LinearStatus`): `off` where the deployment has no Linear client. */
 	linear(): Promise<LinearStatus>;
-	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=connected` or `#linear-error=<code>`. */
+	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=<ticket>` or `#linear-error=<code>`. */
 	linearConnect(input: { origin: string }): Promise<{ url: string }>;
+	linearComplete(ticket: string): Promise<LinearStatus>;
 	/** The workspace's teams and the repository each files to. Throws with reason `linear_not_connected`. */
 	linearTeams(): Promise<LinearTeamList>;
 	/** Maps a team to one connected repository. Answers with the teams as they are then. */

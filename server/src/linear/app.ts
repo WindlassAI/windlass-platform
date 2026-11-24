@@ -247,6 +247,14 @@ export class LinearApp {
 		return this.token({ grant_type: "refresh_token", refresh_token: refreshToken }, "refresh the access token");
 	}
 
+	async revoke(token: string): Promise<void> {
+		await this.send(`${this.settings.apiUrl}/oauth/revoke`, {
+			method: "POST",
+			headers: { "user-agent": USER_AGENT },
+			body: new URLSearchParams({ token, token_type_hint: "access_token" }),
+		}, "revoke the access token", [token]);
+	}
+
 	private async query(token: string, what: string, query: string, variables: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
 		const { body } = await this.send(`${this.settings.apiUrl}/graphql`, {
 			method: "POST",

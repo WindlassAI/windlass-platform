@@ -3866,8 +3866,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(260);
 				if (options.linear === false) throw new PlatformError("user", "This deployment has no Linear client, so Linear cannot be connected here.", { reason: "linear_off" });
 				// The mock's Linear approves at once and sends the browser straight back.
-				keepLinear(world().profile.uid, { connectedAt: now(), mappings: {} });
-				return { url: `${origin.replace(/\/$/, "")}/settings#linear=connected` };
+				const ticket = `mock.${now() + 5 * 60_000}.${crypto.randomUUID()}`;
+				keep(`wlp.mock.linear.ticket.${world().profile.uid}`, ticket);
+				const search = typeof location === "undefined" ? "" : location.search;
+				return { url: `${origin.replace(/\/$/, "")}/settings${search}#linear=${ticket}` };
+			},
+			async linearComplete(ticket) {
+				await latency(240);
+				const uid = world().profile.uid;
+				const key = `wlp.mock.linear.ticket.${uid}`;
+				if (recall(key) !== ticket || !(Number(ticket.split(".")[1]) > now())) throw new PlatformError("user", "This link to connect Linear is not valid for this account any more. Connect Linear again.", { reason: "linear_ticket" });
+				keep(key, "");
+				const connectedAt = now();
+				keepLinear(uid, { connectedAt, mappings: linearKept(uid)?.mappings ?? {} });
+				return { state: "connected", connection: linearConnection(connectedAt) };
 			},
 			async linearTeams() {
 				await latency(240);
@@ -3897,6 +3909,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(260);
 				const uid = world().profile.uid;
 				linearMemory.delete(uid);
+				keep(`wlp.mock.linear.ticket.${uid}`, "");
 				try {
 					localStorage.removeItem(`wlp.mock.linear.${uid}`);
 				} catch {

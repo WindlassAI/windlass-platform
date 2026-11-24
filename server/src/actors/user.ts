@@ -1920,6 +1920,10 @@ export const user = actor({
 			requireUser(c);
 			return beginLinearConnect(c, input);
 		},
+		linearComplete: async (c, ticket: string): Promise<LinearStatus> => {
+			requireUser(c);
+			return completeLinearConnection(c, ticket);
+		},
 		linearTeams: async (c): Promise<LinearTeamList> => {
 			requireUser(c);
 			return (await linearTeams(c)).list;
@@ -1940,11 +1944,6 @@ export const user = actor({
 		internalLinearClaim: async (c, nonce: string) => {
 			requireService(c);
 			return claimLinearState(c, nonce);
-		},
-		/** Records the connection the callback confirmed, handed over sealed (user-linear.ts `sealConnection`). */
-		internalLinearComplete: async (c, blob: string): Promise<void> => {
-			requireService(c);
-			await completeLinearConnection(c, blob);
 		},
 		/** One verified delivery of the webhook route, for the user its team was claimed by (user-linear.ts). Throws when Linear should redeliver it. */
 		internalLinearDelivery: (c, delivery: import("../linear/webhook.js").LinearDelivery) => {

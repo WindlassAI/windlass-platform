@@ -324,6 +324,13 @@ export class LinearStandin {
 		try {
 			if (request.method === "GET" && url.pathname === "/oauth/authorize") return this.consentPage(url, response);
 			if (request.method === "POST" && url.pathname === "/oauth/token") return this.tokenEndpoint(raw, request, send);
+			if (request.method === "POST" && url.pathname === "/oauth/revoke") {
+				this.calls.push("POST /oauth/revoke");
+				const token = new URLSearchParams(raw).get("token");
+				if (!token || !this.sessions.has(token)) return send(400, { error: "invalid_token" });
+				this.revoke(token);
+				return send(200, {});
+			}
 			if (request.method === "POST" && url.pathname === "/graphql") return this.graphql(raw, request, send);
 			send(404, { error: "not_found" });
 		} catch (error) {

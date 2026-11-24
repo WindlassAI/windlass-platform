@@ -5,10 +5,10 @@
  * webhooks), GitHub is scripts/github-standin.ts, the sandbox is the fake one, and no browser runs (the owner's click is the
  * stand-in's `authorize()`). The platform is the real one: a child process runs the server's own index.ts, so the Linear callback
  * and webhook routes, the `linearWorkspace` team claims, the owner's `user` actor and the items' actors are the ones a deployment runs.
- * The child attaches only read-only probes before the registry is built (`--node`: the owner's delivery rows, what an item kept
+ * The child attaches test actions before the registry is built (`--node`: the owner's delivery rows, what an item kept
  * of its issue, and a paired machine for the saved placement), as webhook-check.ts does; no filing helper is replaced.
  *
- * The owner is set up through the supported actions only: sign in, connect GitHub, `linearConnect` and the callback,
+ * The owner is set up through the supported actions only: sign in, connect GitHub, `linearConnect`, the callback and `linearComplete`,
  * `saveLinearMapping`. Everything is then read back from the platform: the owner's items, an item's page, the owner's
  * delivery rows, what the stand-ins were asked.
  *
@@ -36,7 +36,7 @@ import { localListeners } from "./check-listeners.js";
 const ORIGIN = "http://127.0.0.1:5173";
 const OPERATOR = "linear-check";
 
-/** The node of the platform under test: the normal server, with read-only probes attached before the registry is set up. */
+/** The node of the platform under test: the normal server, with test actions attached before the registry is set up. */
 async function testNode() {
 	const { requireServiceFor } = await import("../server/src/auth.js");
 	const { user } = await import("../server/src/actors/user.js");
@@ -48,6 +48,10 @@ async function testNode() {
 		checkRows: async (c: UserCtx) => {
 			requireServiceFor(c, "call");
 			return c.db.execute<{ id: string; decision: string }>("SELECT id, decision FROM linear_delivery ORDER BY received_at, rowid");
+		},
+		checkExpireLinearTickets: async (c: UserCtx) => {
+			requireServiceFor(c, "call");
+			await c.db.execute("UPDATE linear_state SET expires_at = 0 WHERE nonce LIKE 'ticket:%'");
 		},
 		// A paired machine that is online, for the saved placement to name.
 		checkPlaceMachine: async (c: UserCtx, id: string) => {
@@ -148,6 +152,17 @@ async function run() {
 		await owner.githubComplete(back.headers.get("location")!.split("#github=")[1]);
 		const code = (promise: Promise<unknown>) => promise.then(() => "ok", (error: { code?: string }) => error.code ?? "error");
 
+		const { openLinearTicket } = await import("../server/src/linear/connect.js");
+		const callback = (search: URLSearchParams) => fetch(`${api}/linear/callback?${search}`, { redirect: "manual" });
+		const ticketFrom = (answer: Response) => {
+			assert.equal(answer.status, 302);
+			const landing = new URL(answer.headers.get("location")!);
+			assert.equal(landing.origin + landing.pathname, `${ORIGIN}/settings`);
+			assert.match(landing.hash, /^#linear=.+$/);
+			return landing.hash.slice("#linear=".length);
+		};
+		const begin = async () => new URL(await linear.authorize((await owner.linearConnect({ origin: ORIGIN })).url)).searchParams;
+		let ownerToken: string;
 		type Team = StandinTeam;
 		const eng = linear.addTeam("ENG", "Engineering"), ops = linear.addTeam("OPS", "Operations");
 		const hook = api + "/linear/webhook";
@@ -204,15 +219,21 @@ async function run() {
 			assert.ok(!begun.url.includes(linear.clientSecret));
 			// A state that was not issued, and one that was altered, finish nothing.
 			const consent = new URL(await linear.authorize(begun.url));
-			const callback = (search: URLSearchParams) => fetch(`${api}/linear/callback?${search}`, { redirect: "manual" });
 			const forged = new URLSearchParams(consent.searchParams); forged.set("state", forged.get("state")!.slice(0, -2) + "xx");
 			let answer = await callback(forged);
-			assert.equal(answer.status, 302); assert.equal(answer.headers.get("location"), `${ORIGIN}/#linear-error=state`);
+			assert.equal(answer.status, 302); assert.equal(answer.headers.get("location"), `${ORIGIN}/settings#linear-error=state`);
 			assert.deepEqual(await owner.linear(), { state: "disconnected" });
-			// The real one finishes, and sends the browser back to the web app.
+			// Only the signed-in owner can redeem the returned ticket.
 			answer = await callback(consent.searchParams);
-			assert.equal(answer.headers.get("location"), `${ORIGIN}/#linear=connected`);
-			const status = await owner.linear();
+			const ticket = ticketFrom(answer);
+			const stranger = await client.login.getOrCreate([randomUUID()]).demo();
+			const other = client.user.getOrCreate([stranger.profile.uid], { params: { token: stranger.token } });
+			assert.equal(await code(other.linearComplete(ticket)), "linear_ticket");
+			assert.deepEqual(await other.linear(), { state: "disconnected" });
+			assert.deepEqual(await owner.linear(), { state: "disconnected" });
+			const status = await owner.linearComplete(ticket);
+			assert.equal(await code(owner.linearComplete(ticket)), "linear_ticket");
+			ownerToken = openLinearTicket(uid, ticket).token.accessToken;
 			assert.ok(status.state === "connected");
 			assert.equal(status.connection.workspace.id, linear.workspace.id);
 			assert.equal(status.connection.workspace.urlKey, "acme");
@@ -546,7 +567,8 @@ async function run() {
 			const gh = await other.githubConnect({ origin: ORIGIN });
 			await other.githubComplete((await fetch(github.authorize(login2, gh.url), { redirect: "manual" })).headers.get("location")!.split("#github=")[1]);
 			const consent = new URL(await linear.authorize((await other.linearConnect({ origin: ORIGIN })).url));
-			assert.equal((await fetch(`${api}/linear/callback?${consent.searchParams}`, { redirect: "manual" })).headers.get("location"), `${ORIGIN}/#linear=connected`);
+			const ticket = ticketFrom(await callback(consent.searchParams));
+			await other.linearComplete(ticket);
 
 			// ENG is the first owner's while it is mapped; OPS is free.
 			assert.equal(await code(other.saveLinearMapping({ teamId: eng.id, repositoryId: second.id })), "linear_team_taken");
@@ -575,11 +597,32 @@ async function run() {
 			await ignored(created(stale, { labels: ["windlass"] }).payload);
 			assert.equal((await linearItems()).length, ownItems + 1);
 			assert.equal(linear.calls.filter(call => call === "POST /graphql issue").length, reads, "a stale route read an issue for the former owner");
+			// Linear already revoked this token. Local disconnect still succeeds.
+			linear.revoke(openLinearTicket(auth2.profile.uid, ticket).token.accessToken);
+			assert.deepEqual(await other.disconnectLinear(), { state: "disconnected" });
+		});
+
+		await check("disconnect revokes the token, clears deliveries and cancels pending states and tickets", async () => {
+			const expired = ticketFrom(await callback(await begin()));
+			await (client.user.get([uid], service()) as unknown as { checkExpireLinearTickets(): Promise<void> }).checkExpireLinearTickets();
+			assert.equal(await code(owner.linearComplete(expired)), "linear_ticket");
+
+			const pending = await begin();
+			const ticket = ticketFrom(await callback(await begin()));
+			assert.ok((await rows()).length > 0);
+			const revocations = linear.calls.filter(call => call === "POST /oauth/revoke").length;
+			assert.deepEqual(await owner.disconnectLinear(), { state: "disconnected" });
+			assert.equal(linear.calls.filter(call => call === "POST /oauth/revoke").length, revocations + 1);
+			const { linearApp, LinearError } = await import("../server/src/linear/app.js");
+			await assert.rejects(linearApp()!.identity(ownerToken), e => e instanceof LinearError && e.unauthorized);
+			assert.deepEqual(await rows(), []);
+			assert.equal((await callback(pending)).headers.get("location"), `${ORIGIN}/settings#linear-error=used`);
+			assert.equal(await code(owner.linearComplete(ticket)), "linear_ticket");
 		});
 
 		await check("the platform wrote nothing to Linear, and logged no credential", async () => {
 			assert.deepEqual(linear.writes, []);
-			assert.ok(linear.calls.every(call => ["POST /oauth/token", "POST /graphql viewer", "POST /graphql teams", "POST /graphql issue"].includes(call)), linear.calls.join("\n"));
+			assert.ok(linear.calls.every(call => ["POST /oauth/token", "POST /oauth/revoke", "POST /graphql viewer", "POST /graphql teams", "POST /graphql issue"].includes(call)), linear.calls.join("\n"));
 			assert.ok(logs.includes("linear.connected"), "the connection was logged");
 			assert.ok(logs.includes("linear.delivery.filed"));
 			for (const secret of [linear.clientSecret, linear.signingSecret, githubSecret, "lin_oauth_", "lin_refresh_", "code-"]) assert.ok(!logs.includes(secret), "a credential appeared in the platform's output");

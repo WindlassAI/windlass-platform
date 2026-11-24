@@ -150,16 +150,21 @@ describe("Linear in Settings", () => {
 		const first = await open(client);
 		expect(section(first.host).textContent).toContain("writes nothing back to Linear");
 		expect(section(first.host).textContent).toContain("Connect Linear…");
-		// Connecting: the mock sends the browser back with #linear=connected.
+		// Begin leaves the account disconnected until Settings redeems the ticket.
 		const assign = vi.fn();
-		vi.stubGlobal("location", { assign, origin: "http://localhost", pathname: "/settings", search: "", hash: "" });
+		vi.stubGlobal("location", { assign, origin: "http://localhost", pathname: "/settings", search: "?mock=1", hash: "" });
 		await press(section(first.host), "Connect Linear…");
 		await first.settle();
 		vi.unstubAllGlobals();
-		expect(assign).toHaveBeenCalledWith("http://localhost/settings#linear=connected");
+		const landing = new URL(assign.mock.calls[0]![0]);
+		expect(landing.origin + landing.pathname).toBe("http://localhost/settings");
+		expect(landing.search).toBe("?mock=1");
+		expect(landing.hash).toMatch(/^#linear=.+$/);
+		expect(await client.user(first.auth).linear()).toEqual({ state: "disconnected" });
 		first.close();
 
-		const second = await open(client, "#linear=connected");
+		const second = await open(createMockClient({ pace: 0 }), landing.hash);
+		expect(location.hash).toBe("");
 		expect(section(second.host).textContent).toContain("Linear is connected.");
 		expect(section(second.host).querySelector("[data-testid='linear-workspace']")?.textContent).toContain("Connected to Acme as Ada Lovelace");
 		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");
@@ -194,6 +199,11 @@ describe("Linear in Settings", () => {
 		expect(section(failed.host).querySelector("[role='alert']")?.textContent).toContain("Linear was not given access");
 		expect(location.hash).toBe("");
 		failed.close();
+		const invalid = await open(createMockClient({ pace: 0 }), "#linear=invalid");
+		expect(location.hash).toBe("");
+		expect(section(invalid.host).querySelector("[role='alert']")?.textContent).toContain("Connect Linear again");
+		expect(section(invalid.host).textContent).toContain("Connect Linear…");
+		invalid.close();
 		const off = await open(createMockClient({ pace: 0, linear: false }));
 		expect(section(off.host)).toBeNull();
 		off.close();

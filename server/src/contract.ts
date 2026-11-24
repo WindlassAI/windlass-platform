@@ -2653,12 +2653,10 @@ export interface UserActions {
 	githubDisconnect(): Promise<GithubStatus>;
 	/** The Linear connection (see `LinearStatus`). Never throws for a deployment without Linear: the answer is `{ state: "off" }`. */
 	linear(): Promise<LinearStatus>;
-	/**
-	 * Begins connecting a Linear workspace and returns the address at Linear to send the browser to. `origin` is the web app's own
-	 * address: the server's callback finishes the connection and sends the browser back there with `#linear=connected` or
-	 * `#linear-error=<code>`, after which the page asks `linear` again. Throws a UserError with code `linear_off` on a deployment without Linear.
-	 */
+	/** Begins connecting a workspace. The callback returns to Settings with `#linear=<ticket>` or `#linear-error=<code>`. */
 	linearConnect(input: { origin: string }): Promise<{ url: string }>;
+	/** Records the connection for the user who started it. Refuses an invalid, expired or used ticket with `linear_ticket`. */
+	linearComplete(ticket: string): Promise<LinearStatus>;
 	/** The workspace's teams with the repository each files to. Throws a UserError with code `linear_not_connected` before a workspace is connected. */
 	linearTeams(): Promise<LinearTeamList>;
 	/**
