@@ -80,6 +80,8 @@ export type PlatformErrorCode =
 	| "not_found"
 	/** The server could not be reached, or the connection could not be opened. */
 	| "network"
+	/** The platform is restarting (a deploy): the request met an actor while it stopped, or the proxy in front of it. */
+	| "restarting"
 	/** Anything else: `message` is generic. */
 	| "internal";
 

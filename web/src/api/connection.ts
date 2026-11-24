@@ -27,7 +27,7 @@
  */
 import { PLATFORM_CONNECTION_PATH, type PlatformConnection } from "@contract";
 import { PlatformError } from "./client";
-import { isRivetError, toPlatformError } from "./errors";
+import { isRivetError, RESTARTING_MESSAGE, toPlatformError } from "./errors";
 
 /** How long a request to the platform's HTTP routes may take. */
 export const CONNECT_PATIENCE_MS = 12_000;
@@ -62,7 +62,11 @@ async function request(api: string, path: string, fetcher: typeof fetch): Promis
 	}
 	if (response.ok) return body;
 	// Refusals and failures have the shape of RivetKit's errors, and are read as those are.
-	const error = isRivetError(body) ? toPlatformError(body, api) : new PlatformError("internal", `The server at ${api} answered ${response.status}.`);
+	// 502, 503 and 504 without a body of RivetKit's are the proxy's while the server behind it restarts.
+	let error: PlatformError;
+	if (isRivetError(body)) error = toPlatformError(body, api);
+	else if ([502, 503, 504].includes(response.status)) error = new PlatformError("restarting", RESTARTING_MESSAGE);
+	else error = new PlatformError("internal", `The server at ${api} answered ${response.status}.`);
 	// A server that is starting, restarting or cannot reach the engine may answer the next time; a refusal will not.
 	throw new RouteFailure(error, response.status >= 500 || response.status === 429);
 }

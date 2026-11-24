@@ -45,7 +45,7 @@ import {
 import { createClient, type ActorConn, type ActorConnStatus, type ActorHandle } from "rivetkit/client";
 import { PlatformError, type ConnectionState, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { CONNECT_PATIENCE_MS, ConnectionSource, getPlatform } from "./connection";
-import { isRefusedConnectionToken, toPlatformError } from "./errors";
+import { isRefusedConnectionToken, isRestart, RESTARTED_MESSAGE, toPlatformError } from "./errors";
 
 export { toPlatformError };
 
@@ -71,6 +71,27 @@ const ACTOR = { login: "login", user: "user", agentSession: "agentSession" } as 
 const ACTION_TIMEOUT_MS = 30_000;
 /** A push commits, pushes and opens a pull request before it answers: the server gives it two minutes. */
 const PUBLISH_TIMEOUT_MS = 125_000;
+
+/** How long a request that met the platform restarting waits before it is sent the one more time. */
+const RESTART_RETRY_MS = 2_000;
+
+/**
+ * The actions that only read, so may be sent again when the platform restarts under them. A write is
+ * sent again only with the key of its submission (`idempotencyKey`), which the server takes once.
+ */
+const READS = new Set([
+	"me", "chatgpt", "models", "listSessions", "github", "githubRepositories", "githubBranches", "repositorySetup", "repositoryChecks",
+	"repositoryEnvironments", "repositoryNetwork", "repositorySecrets", "repository", "githubRepository", "savedRepositories", "account",
+	"accountSecrets", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
+	"apiTokens", "snapshot", "changes", "diff", "publishState", "servers",
+]);
+
+/** Whether an action may be sent twice: it reads, or it carries the key of its submission. */
+function isSafeToResend(name: string, args: unknown[]): boolean {
+	if (READS.has(name)) return true;
+	const input = args[0];
+	return typeof input === "object" && input !== null && "idempotencyKey" in input && typeof input.idempotencyKey === "string";
+}
 
 /** What an action of a contract interface resolves to. */
 type ResultOf<A, K extends keyof A> = A[K] extends (...args: never[]) => Promise<infer R> ? R : never;
@@ -160,7 +181,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 	 * Calls one action through a stateless handle or a connection, typed from the contract's interface.
 	 * An action the engine refuses for its token (`auth.token_expired`: the browser's clock runs behind,
 	 * so RivetKit took the token for good) is sent once more: the engine refused it before any actor saw
-	 * it, and RivetKit has fetched the next token by the time the refusal is thrown.
+	 * it, and RivetKit has fetched the next token by the time the refusal is thrown. An action that met
+	 * the platform restarting is sent once more after RESTART_RETRY_MS, when sending it twice is safe.
 	 */
 	async function call<A, K extends keyof A & string>(target: Handle | Conn | Promise<Handle>, name: K, ...args: A[K] extends (...args: infer P) => unknown ? P : never): Promise<ResultOf<A, K>> {
 		const abort = new AbortController();
@@ -176,14 +198,23 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		});
 		// `action({ name, args })` is the raw form of `handle.name(...args)`; it exists on both.
 		const send = async (): Promise<ResultOf<A, K>> => (await target).action({ name, args, signal: abort.signal });
-		try {
-			const result = send().catch((error: unknown) => {
+		const attempt = () =>
+			send().catch((error: unknown) => {
 				if (!isRefusedConnectionToken(error) || abort.signal.aborted) throw error;
 				return send();
 			});
+		try {
+			const result = attempt().catch(async (error: unknown) => {
+				if (!isRestart(error) || !isSafeToResend(name, args)) throw error;
+				await new Promise((done) => setTimeout(done, RESTART_RETRY_MS));
+				if (abort.signal.aborted) throw error;
+				return attempt();
+			});
 			return await Promise.race([result, timeout]);
 		} catch (error) {
-			throw toPlatformError(error, shown);
+			const failure = toPlatformError(error, shown);
+			// The one more time is spent, or was not safe: RivetKit is not trying again either.
+			throw failure.code === "restarting" ? new PlatformError("restarting", RESTARTED_MESSAGE, { cause: error }) : failure;
 		} finally {
 			clearTimeout(timer);
 		}

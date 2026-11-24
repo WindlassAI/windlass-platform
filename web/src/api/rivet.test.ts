@@ -157,6 +157,65 @@ describe("an action the engine refuses for its token", () => {
 	});
 });
 
+describe("an action that meets the platform restarting", () => {
+	const STOPPED = { group: "guard", code: "actor_stopped_while_waiting", message: "Actor stopped while waiting." };
+	const client = () => createRivetClient("http://localhost:6420", "http://platform.test", source({ endpoint: "https://engine.test", namespace: "default", tokens: true }).source);
+	const failure = (pending: Promise<unknown>) => pending.then(() => null, (thrown: unknown) => thrown as PlatformError);
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		return () => vi.useRealTimers();
+	});
+
+	it("is sent once more after two seconds when it only reads", async () => {
+		rivet.script.push(() => {
+			throw STOPPED;
+		}, () => []);
+		const listed = client().user(AUTH).listSessions();
+		await vi.advanceTimersByTimeAsync(1_900);
+		expect(rivet.calls).toEqual(["listSessions"]);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(await listed).toEqual([]);
+		expect(rivet.calls).toEqual(["listSessions", "listSessions"]);
+	});
+
+	it("says to try again in a moment when the one more time fails too", async () => {
+		rivet.script.push(() => {
+			throw new Error("HTTP request error: Bad Gateway (502):\n");
+		});
+		const error = failure(client().user(AUTH).me());
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(await error).toMatchObject({ code: "restarting", message: "The platform is restarting. Try again in a moment." });
+		expect(rivet.calls).toEqual(["me", "me"]);
+	});
+
+	it("is sent once more when it writes with the key of its submission, and not without one", async () => {
+		rivet.script.push(() => {
+			throw STOPPED;
+		}, () => ({ turn: 1, steered: false }));
+		const prompted = client().session(AUTH, "s1").prompt({ text: "hi", idempotencyKey: "k1" } as never);
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(await prompted).toEqual({ turn: 1, steered: false });
+		expect(rivet.calls).toEqual(["prompt", "prompt"]);
+
+		rivet.calls.length = 0;
+		rivet.script.length = 0;
+		rivet.script.push(() => {
+			throw STOPPED;
+		});
+		expect(await failure(client().session(AUTH, "s1").stop())).toMatchObject({ code: "restarting", message: "The platform is restarting. Try again in a moment." });
+		expect(rivet.calls).toEqual(["stop"]);
+	});
+
+	it("is not sent again for a real internal error", async () => {
+		rivet.script.push(() => {
+			throw { group: "rivetkit", code: "internal_error", message: "Internal error" };
+		});
+		expect(await failure(client().user(AUTH).me())).toMatchObject({ code: "internal", message: "The server hit an internal error. Its log has the details." });
+		expect(rivet.calls).toEqual(["me"]);
+	});
+});
+
 describe("a feed", () => {
 	it("opens once the connection is known", async () => {
 		const { source: from, release } = source({ endpoint: "https://engine.test", namespace: "default", tokens: true }, true);
