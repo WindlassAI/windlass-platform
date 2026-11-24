@@ -9,8 +9,9 @@ import { clockDuration } from "../lib/format";
 import type { SessionView, TurnView } from "../lib/timeline";
 import { liveStep } from "../lib/workGroups";
 import { useNow } from "../state/hooks";
-import { PlatformPrompts, Turn } from "./Blocks";
-import { ArrowDownIcon, AskIcon, Mark } from "./Icons";
+import { sessionModelWords } from "../lib/acp";
+import { ModelLabel, PlatformPrompts, Turn } from "./Blocks";
+import { ArrowDownIcon, AskIcon, Mark, PauseIcon } from "./Icons";
 
 /** How close to the end counts as "at the bottom", in pixels. */
 const NEAR = 48;
@@ -23,6 +24,20 @@ const STARTERS = ["Run the tests and fix what fails.", "Check what the sandbox a
  */
 function Working({ summary, turn }: { summary: SessionSummary; turn: TurnView | null }) {
 	const now = useNow(1000);
+	// Paused: nothing works on the turn now, and it resumes by itself. How long it has waited, and what is held for it.
+	if (summary.status === "paused") {
+		const paused = summary.paused;
+		const held = paused?.held ?? 0;
+		return (
+			<p className="working working-paused" role="status">
+				<span className="working-weight" aria-hidden="true" />
+				<PauseIcon size={16} />
+				<span className="working-words">{paused?.reason === "machine" ? "paused until your machine is back" : "resuming after a server restart…"}</span>
+				{held > 0 ? <span className="working-held">{held === 1 ? "1 message held" : `${held} messages held`}</span> : null}
+				<span className="working-time">{clockDuration(Math.max(0, now - (paused?.since ?? summary.updatedAt)))}</span>
+			</p>
+		);
+	}
 	const since = turn?.blocks[0]?.at ?? summary.updatedAt;
 	const elapsed = Math.max(0, now - since);
 	const waiting = summary.status === "waiting";
@@ -78,6 +93,8 @@ export function Conversation({ view, summary, profile, onSuggest }: { view: Sess
 	const content = useRef<HTMLDivElement>(null);
 	const following = useRef(true);
 	const [away, setAway] = useState(false);
+	const { harness, harnessModels } = summary;
+	const modelLabel = useCallback((model: string) => sessionModelWords({ harness, harnessModels, model }), [harness, harnessModels]);
 
 	const toEnd = useCallback((smooth = false) => {
 		const element = scroller.current;
@@ -120,11 +137,13 @@ export function Conversation({ view, summary, profile, onSuggest }: { view: Sess
 			<div className="conversation" ref={scroller} onScroll={onScroll} tabIndex={0} role="log" aria-label="Conversation" aria-live="off">
 				<div className={`conversation-inner${view.turns.length > 0 ? " timeline" : ""}`} ref={content}>
 					{view.turns.length === 0 && !active ? <Empty summary={summary} profile={profile} onSuggest={onSuggest} /> : null}
-					{/* An item's second reviewer takes only the platform's prompts: they stand as the platform's, never as a person's. */}
-					<PlatformPrompts.Provider value={summary.item?.role === "reviewer"}>
-						{view.turns.map((turn) => (
-							<Turn key={turn.turn} turn={turn} />
-						))}
+					{/* An item's agents, its builder and its second reviewer, take only the platform's prompts: they stand as the platform's, never as a person's. */}
+					<PlatformPrompts.Provider value={summary.item ? (summary.item.role === "reviewer" ? "reviewer" : "builder") : null}>
+						<ModelLabel.Provider value={modelLabel}>
+							{view.turns.map((turn) => (
+								<Turn key={turn.turn} turn={turn} />
+							))}
+						</ModelLabel.Provider>
 					</PlatformPrompts.Provider>
 					{active ? <Working summary={summary} turn={last && last.end === null ? last : null} /> : null}
 				</div>

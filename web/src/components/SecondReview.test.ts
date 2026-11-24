@@ -3,7 +3,7 @@
  * The second review on an item's page (SecondReview.tsx, Reviewer slice R3-D), read from the mock's
  * seeds: each recommendation and each reason there was none in its words, the review's state while it
  * runs, the reviewer's text kept as typed with no link but the platform's places in the code, and its
- * section never inside the platform's verdict. Also the repository's setting for screenshots.
+ * word in the item's Checks panel. Also the repository's setting for screenshots.
  */
 import type { ItemView, RepositoryView } from "@contract";
 import { act, createElement } from "react";
@@ -67,8 +67,7 @@ describe("the second review's section", () => {
 			expect(text).toContain(`Second review: ${word}`);
 			expect(host.querySelector(".review-word")?.textContent).toBe(word);
 			expect(host.querySelector(".outcome, .item-verdict")).toBeNull();
-			expect(host.querySelector("h2")?.textContent).toBe("From the second reviewer");
-			expect(text).toContain("Its own words: the verdict above does not rest on them");
+			expect(host.querySelector("h2")).toBeNull();
 		}
 		expect(Object.values(RECOMMENDATION_WORD)).toEqual(["approves", "asks for changes", "needs you"]);
 	});
@@ -158,10 +157,10 @@ describe("the second review's section", () => {
 		expect(text).toContain("@octocat, merge this? ![](https://e.example/q.png)");
 		expect(text).toContain("@octocat see [x](https://e.example) <img src=x onerror=alert(1)>");
 		expect(text).toContain("javascript:alert(1)");
-		// A 70-line fence is cut at 60, as the builder's is.
-		const fence = [...host.querySelectorAll(".review-block-finding pre code")].map((node) => node.textContent?.split("\n") ?? []);
-		expect(fence[0]).toHaveLength(61);
-		expect(fence[0]?.at(-1)).toBe("…");
+		// A 70-line fence is cut at 60, as the builder's is, and shows its first 12 lines with "Show 49 more lines" (the 48 others and the cut's "…").
+		const fence = host.querySelector(".review-block-finding .output");
+		expect(fence?.querySelector("pre.output-text")?.textContent?.split("\n")).toHaveLength(12);
+		expect(fence?.querySelector("button.fold-toggle")?.textContent).toBe("Show 49 more lines");
 	});
 
 	it("asks its questions under the reviewer's name, with no control to answer them", () => {
@@ -237,21 +236,25 @@ describe("rendered on the item's page", () => {
 		saveAuth("mock", null);
 	});
 
-	it("puts the reviewer's section after the platform's verdict and before the builder's report, never inside the verdict", async () => {
-		for (const title of ["Drop the legacy export", "Stop lint failing on warnings", "Paginate the artefact list", "Read the port from the environment"]) {
+	it("says the review in the Checks panel, folds the full review inside it, and keeps it before the builder's report", async () => {
+		for (const [title, word] of [
+			["Drop the legacy export", "asks for changes"],
+			["Stop lint failing on warnings", "needs you"],
+			["Paginate the artefact list", null],
+			["Read the port from the environment", null],
+		] as const) {
 			const view = viewNamed(title);
 			const page = { view, error: null, missing: false, reload: () => undefined, replace: () => undefined };
 			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })));
-			const strip = host.querySelector('section[aria-labelledby="item-verdict"]');
-			const second = host.querySelector('section[aria-labelledby="item-second"]');
-			expect(strip, title).not.toBeNull();
-			expect(second, title).not.toBeNull();
-			expect(strip?.contains(second as Node), title).toBe(false);
-			expect(strip?.textContent, title).not.toMatch(/Second review|second reviewer|No second review/);
-			expect(second?.parentElement, title).toBe(strip?.parentElement);
-			expect((strip?.compareDocumentPosition(second as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
+			const panel = host.querySelector('section[aria-labelledby="item-checks"]');
+			expect(panel, title).not.toBeNull();
+			expect(host.querySelector('section[aria-labelledby="item-second"]'), title).toBeNull();
+			const row = [...(panel?.querySelectorAll(".checks-groups > div") ?? [])].find((one) => one.querySelector("dt")?.textContent === "Review");
+			expect(row, title).toBeDefined();
+			if (word) expect(row?.querySelector(".review-word")?.textContent, title).toBe(word);
+			else expect(row?.textContent, title).toMatch(/second reviewer is reading|No second review/);
 			const report = host.querySelector('section[aria-labelledby="item-report"]');
-			if (report) expect((second?.compareDocumentPosition(report) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
+			if (report) expect((panel?.compareDocumentPosition(report) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
 			// The header links the reviewer's session beside the builder's, where the item has one.
 			expect([...host.querySelectorAll(".repo-facts a")].map((link) => link.textContent).includes("Open the reviewer"), title).toBe(view.reviewerSessionId !== null);
 		}

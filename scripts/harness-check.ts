@@ -68,6 +68,18 @@ const itemHasHarness: "harness" extends keyof CreateItemInput ? true : false = t
 assert.equal(itemHasHarness, true);
 assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "low", status: "pending" }] }), "Read");
 
+// Every harness gets refusal observations from its sandbox handle on the same session socket.
+{
+	const { validArgs, validValue } = await import("../server/src/runner/protocol.js");
+	const broker = "a".repeat(64);
+	const entry = { host: "registry.example", port: 443, reason: "machine_policy", firstAt: 1, lastAt: 2, count: 3 };
+	assert.ok(validArgs("blockedNetwork", { id: "box", turn: 1, retained: [] }));
+	assert.ok(validValue("blockedNetwork", { broker, hosts: [entry], overflow: 0 }));
+	for (const change of [{ host: "host/path" }, { host: "host?token" }, { headers: {} }, { reason: "unknown" }, { port: 65536 }, { count: 0 }])
+		assert.equal(validValue("blockedNetwork", { broker, hosts: [{ ...entry, ...change }], overflow: 0 }), false);
+	assert.equal(validValue("blockedNetwork", { broker, hosts: Array(51).fill(entry), overflow: 0 }), false);
+}
+
 // One capability record per agent (harnesses.ts): the platform and the screens decide by these flags, never by the agent's id.
 {
 	const { CLAUDE, CODEX, OPENCODE, WINDLASS_CAPABILITIES, capabilitiesOf, harnessName, machineHarnesses, sessionCapabilities, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
@@ -88,7 +100,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	// What the screens are sent: the same flags, read-only, and nothing of the record that is not theirs.
 	const sent = sessionCapabilities("claude");
 	assert.deepEqual(Object.keys(sent).sort(), ["cancelCall", "checks", "envLists", "models", "planMode", "platformTools", "projectServerApproval", "reportScreenshots", "usage"]);
-	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
+	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
 	assert.deepEqual(sessionCapabilities(undefined), sessionCapabilities("windlass"));
 	assert.ok(sessionCapabilities("windlass").cancelCall && sessionCapabilities("windlass").usage === "tokens" && sessionCapabilities("codex").planMode);
 	assert.equal(harnessName("codex"), "Codex");
@@ -124,7 +136,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
 	// Codex takes them through its image's wlp-acp-mcp (sandbox/harness/codex/requirements.toml).
-	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "request_secret", "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
 	const { MCP_TOOLS } = await import("../server/src/platform-tools.js");
 	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools].sort(), [...MCP_TOOLS].sort(), `${acp}'s tools are exactly those that may be served over MCP`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
@@ -143,6 +155,31 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	}
 
 	const redactor = new SecretRedactor([{ name: "STORE_TOKEN", value: "s3cr3t-value-123" }]);
+	const { requestSecret, secretRequestNotice } = await import("../server/src/agent-publish.js");
+	for (const harness of ["claude", "codex", "opencode"] as const) {
+		const notice = secretRequestNotice(capabilitiesOf(harness).events === "acp", true);
+		assert.equal(notice.split("\n")[0], "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it.");
+		assert.match(notice, /saved for your account: every agent of yours will have it/);
+	}
+	const args = { name: "SERVICE_TOKEN", why: "Run the integration test." };
+	assert.deepEqual(requestSecret(args, false, false, redactor), {
+		request: args, told: "Asked your person for SERVICE_TOKEN; stop here and say what you will do once it is set.",
+	});
+	for (const name of ["lower", "A", "A".repeat(65), "PATH", "WLP_SESSION_BEARER", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "INITIAL_AGENT_MODE", "BAD-NAME",
+		"GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXEC_PATH", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_1", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PYTHONPATH", "PYTHONSTARTUP", "PERL5OPT", "PERL5LIB", "RUBYOPT",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+		"NODE_OPTIONS", "FTP_PROXY", "JAVA_TOOL_OPTIONS", "OPENSSL_CONF", "NPM_CONFIG_CAFILE", "GIT_SSL_CAINFO", "SSH_ASKPASS"]) {
+		assert.equal(requestSecret({ ...args, name }, false, false, redactor).request, undefined);
+	}
+	assert.deepEqual(requestSecret(args, false, true, redactor), { told: "A request coming from third-party text was not shown as a secret prompt." });
+	assert.equal(requestSecret(args, true, false, redactor).request, undefined);
+	assert.equal(requestSecret({ ...args, why: "" }, false, false, redactor).request, undefined);
+	assert.equal(requestSecret({ ...args, why: "x".repeat(241) }, false, false, redactor).request, undefined);
+	for (const reach of ["host", "sandbox"] as const) {
+		const tools = (await import("../server/src/platform-tools.js")).turnPlatformTools({ onRequestSecret: call } as never, reach);
+		assert.equal(tools.get("request_secret"), call);
+	}
 	const fresh = { already: false, left: 3 };
 	const taken = askPerson({ question: "Use\u0000 the ‮right‬ store?​ With s3cr3t-value-123 in it.\n\n\n\nSay which.", options: ["SQLite", " SQLite ", "Post⁦gres"] }, fresh, redactor);
 	assert.equal(taken.told, ASK_TAKEN);
@@ -201,14 +238,14 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const offers: Array<Parameters<typeof platformTools>[0]> = [{ plan: true, publish: false, report: false, push: false }, { plan: true, crossRepo: true, publish: false, report: false, push: false }, { review: true, publish: false, report: false, push: false }];
 	for (let bits = 0; bits < 64; bits++) {
 		const on = (n: number) => (bits & (1 << n)) !== 0;
-		offers.push({ publish: on(0), report: on(1), push: on(2), ask: on(3), screenshots: on(4), ...(on(5) && { mcp: { pushes: 5, fetches: 3 } }) });
+		offers.push({ publish: on(0), report: on(1), push: on(2), ask: on(3), secret: true, screenshots: on(4), ...(on(5) && { mcp: { pushes: 5, fetches: 3 } }) });
 	}
 	const declared = new Map<string, unknown>();
 	for (const offer of offers) for (const tool of platformTools(offer, 60_000)) declared.set(`${tool.name} ${JSON.stringify(offer)}`, tool.inputSchema);
 	// What a turn's tools declare over MCP is the same declarations, filtered (platform-tools.ts).
 	const all = turnPlatformTools({ onReport: () => "", onAsk: () => "", onPush: () => "", onFetchBase: () => "", onPublish: () => "" } as never);
 	for (const tool of platformToolDeclarations(all, { mcp: true })) declared.set(`${tool.name} over MCP`, tool.inputSchema);
-	for (const name of ["file_plan", "file_review", "report", "ask_person", "push", "fetch_base", "publish"]) assert.ok([...declared.keys()].some(key => key.startsWith(name + " ")), `${name} is among the declarations checked`);
+	for (const name of ["file_plan", "file_review", "report", "ask_person", "request_secret", "push", "fetch_base", "publish"]) assert.ok([...declared.keys()].some(key => key.startsWith(name + " ")), `${name} is among the declarations checked`);
 	for (const [where, schema] of declared) {
 		assert.ok(isObject(schema) && schema.type === "object", `${where}: Windlass takes only an input schema of type "object"`);
 		assert.deepEqual(problems(schema), [], `${where}: a schema Windlass 0.6.0 refuses`);
@@ -507,7 +544,7 @@ async function clientCheck(state: string) {
 	const input = { prompt: "secret:" + secret, secrets };
 	const guards: Partial<RunTurnInput>[] = [
 		{ servers: [{ name: "user", definition: {} }] },
-		{ secrets: { ...secrets, env: { FIXTURE: secret } } }, { secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
+		{ secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
 		{ script: { responses: [] } }, { reportScreenshots: true },
 		{ onEvent() {} }, { onUnasked() {} }, { onServerApproved() {} }, { onServers() {} },
 		{ onServerQuestion: async () => false }, { onPlan: () => "" }, { onReview: async () => "" },
@@ -519,11 +556,14 @@ async function clientCheck(state: string) {
 	}
 	ok(`all ${guards.length} unsupported inputs are refused before the sandbox is touched`);
 
-	let variant: "normal" | "load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" | "codex-signed-out" = "normal";
+	let variant: "normal" | "load" | "no-load" | "wrong-version" | "without-auto" | "adapter-default" | "config-modes" | "codex-signed-out" = "normal";
 	const configMode = (currentValue: string) => ({ id: "agent-mode", category: "mode", type: "select", currentValue,
 		options: [{ value: "build", name: "Build" }, { value: "plan", name: "Plan", description: "Plan only" }] });
 	let duringShutdown: (() => void) | undefined;
 	const methods: string[] = [];
+	/** The text of each `session/prompt` the adapter was sent. */
+	let expectSecret = false;
+	const prompts: string[] = [];
 	const answers: unknown[] = [];
 	const updates: AcpUpdate[] = [];
 	const sandbox = {
@@ -533,7 +573,7 @@ async function clientCheck(state: string) {
 		start(argv: string[], opts: StartOptions) {
 			assert.deepEqual(argv, [variant === "codex-signed-out" ? "wlp-codex-acp" : "wlp-claude-acp"]);
 			assert.deepEqual(opts.env, {});
-			assert.equal(opts.secretEnv, undefined);
+			assert.ok(expectSecret ? opts.secretEnv?.FIXTURE === secret : opts.secretEnv === undefined, "only approved values reach the protected process environment");
 			assert.equal(opts.cwd, "/workspace");
 			let finish!: (end: ProcessEnd) => void;
 			const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
@@ -544,6 +584,10 @@ async function clientCheck(state: string) {
 				lastSessionId = frame.result?.sessionId ?? lastSessionId;
 				if (frame.result?.agentCapabilities) {
 					if (variant === "load") delete frame.result.agentCapabilities.sessionCapabilities.resume;
+					if (variant === "no-load") {
+						delete frame.result.agentCapabilities.sessionCapabilities.resume;
+						delete frame.result.agentCapabilities.loadSession;
+					}
 					if (variant === "wrong-version") frame.result.protocolVersion = 2;
 				}
 				if (frame.result?.modes && variant === "load") frame.result.modes.availableModes = [
@@ -608,6 +652,7 @@ async function clientCheck(state: string) {
 						frame.method = "session/resume";
 					}
 					if (frame.method === "session/prompt") {
+						prompts.push(String(frame.params?.prompt?.[0]?.text ?? ""));
 						opts.onStderr!(secret.slice(0, 8));
 						opts.onStderr!(secret.slice(8));
 					}
@@ -650,6 +695,10 @@ async function clientCheck(state: string) {
 		assert.equal(stored.account.limitedUntil, until);
 		assert.doesNotMatch(JSON.stringify(stored), /canary/);
 	}
+	expectSecret = true;
+	const withSecret = await harness.runTurn(handle, { ...input, secrets: { ...secrets, env: { FIXTURE: secret } } });
+	expectSecret = false;
+	assert.equal(withSecret.failure, null);
 	methods.length = 0;
 	let lateSteer: Promise<void> | undefined;
 	const marks: string[] = [];
@@ -699,6 +748,27 @@ async function clientCheck(state: string) {
 	] });
 	assert(updates.some(u => u.sessionUpdate === "current_mode_update" && u.currentModeId === "plan"));
 	ok("session/load uses the chosen mode and preserves the adapter’s current order, labels and optional descriptions");
+
+	// A turn that resumes after its adapter was killed (WLP_TURN_RESUME): each turn starts a new adapter process, so this is
+	// the adapter loading what the killed one left on disk. One that can load gets the short "carry on"; one that cannot
+	// (neither `loadSession` nor `session/resume`) opens a new session, which is given the whole task instead.
+	const fresh = { prompt: "plain: the whole task, given again" };
+	prompts.length = 0;
+	const carriedOn = await harness.runTurn(handle, { prompt: "plain: carry on", windlassSessionId: first.windlassSessionId!, fresh });
+	assert.equal(carriedOn.failure, null);
+	assert.equal(carriedOn.resumed, true);
+	assert.deepEqual(prompts, ["plain: carry on"]);
+	variant = "no-load";
+	methods.length = 0;
+	prompts.length = 0;
+	const restarted = await harness.runTurn(handle, { prompt: "plain: carry on", windlassSessionId: first.windlassSessionId!, fresh });
+	assert.equal(restarted.failure, null);
+	assert.equal(restarted.resumed, false);
+	assert(methods.includes("session/new") && !methods.includes("session/load") && !methods.includes("session/resume"), methods.join());
+	assert.deepEqual(prompts, ["plain: the whole task, given again"]);
+	assert.notEqual(restarted.windlassSessionId, first.windlassSessionId);
+	ok("a resumed turn: an adapter that loads its saved session gets the short prompt, one that cannot gets a new session and the whole task");
+	variant = "load";
 
 	for (const effort of ["high", undefined]) {
 		const prior = await harness.runTurn(handle, { prompt: "plain", model: "opus", effort: "high" });
@@ -839,6 +909,23 @@ async function clientCheck(state: string) {
 		assert.equal(asked, 1);
 	}
 	ok("Codex runs work items but not subtasks, counts tokens by its filed sign-in, and an item's allow-once answers it only where nothing refused first");
+	{
+		// Codex resumes on its config's model, not the session's: the turn's model is in its config before it starts.
+		const { turnEnv } = await import("../server/src/sandbox/acp-harness.js");
+		const { CODEX, CLAUDE } = await import("../server/src/sandbox/harnesses.js");
+		assert.deepEqual(turnEnv(CODEX, { model: "gpt-6-luna" }), { WLP_CODEX_MODEL: "gpt-6-luna" });
+		assert.deepEqual(turnEnv(CODEX, { model: "default" }), {});
+		assert.deepEqual(turnEnv(CODEX, {}), {});
+		assert.deepEqual(turnEnv(CLAUDE, { model: "sonnet" }), {});
+		const { codexEnv } = (await import("node:module")).createRequire(import.meta.url)("../sandbox/harness/codex/wlp-codex-acp") as { codexEnv(env: Record<string, string>): Record<string, string> };
+		const env = codexEnv({ WLP_CODEX_MODEL: "gpt-6-luna", WLP_SESSION_BEARER: "b" });
+		assert.deepEqual(JSON.parse(env.CODEX_CONFIG!), { model: "gpt-6-luna" });
+		assert.equal(env.WLP_CODEX_MODEL, undefined);
+		assert.equal(env.WLP_SESSION_BEARER, "b");
+		assert.equal(codexEnv({ WLP_CODEX_MODEL: "a model; rm" }).CODEX_CONFIG, undefined);
+		assert.deepEqual(JSON.parse(codexEnv({ CODEX_CONFIG: '{"x":1}', WLP_CODEX_MODEL: "m" }).CODEX_CONFIG!), { x: 1, model: "m" });
+		ok("a Codex turn starts Codex with the session's model in its config, so a resume keeps it");
+	}
 }
 
 /**
@@ -852,8 +939,8 @@ async function platformToolsCheck(state: string) {
 	const { ASK_AGAIN, ASK_TAKEN, REPORT_TAKEN, askPerson } = await import("../server/src/agent-publish.js");
 	const { fileReport } = await import("../server/src/factory/review.js");
 	const harness = harnessOf({ machine: { name: "Bench" } } as SandboxLayer, "claude");
-	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "publish", "push", "fetch_base"], "all but the planner's and the reviewer's tools may be served over MCP");
-	for (const tool of ["report", "ask_person", "push", "fetch_base"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
+	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], "all but the planner's and the reviewer's tools may be served over MCP");
+	for (const tool of ["report", "ask_person", "request_secret", "push", "fetch_base"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
 	assert.equal(tools.TOOL_REACH.publish, "asked", "publish is served over MCP only because it asks every time");
 	for (const tool of ["file_plan", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
 	assert.deepEqual({ ...tools.MCP_LIMITS }, { push: 5, fetch_base: 3 });
@@ -1211,6 +1298,18 @@ async function platformChecksCheck(state: string) {
 		ok("checks that keep failing: two rounds, then the turn ends unresolved with the failing run recorded");
 	}
 
+	// The shell did not find the command (exit 127): the sandbox could not run it, so the agent is not sent back, and the turn ends at once.
+	{
+		const { result, verified, notes } = await turn([127, 0]);
+		assert.equal(result.acp?.checks, "unresolved");
+		assert.equal(prompts.length, 1, "no prompt of the platform's: the agent was not sent back");
+		assert.equal(ran.length, 1);
+		assert.deepEqual([verified.state, verified.unresolved?.reason], ["unresolved", "environment"]);
+		assert.deepEqual(verified.run?.checks.map(c => [c.name, c.status, c.exitCode, c.sentBack]), [["test", "failed", 127, 0]]);
+		assert.match(notes.at(-1)!, /The sandbox could not run test, which says nothing about the code, so Claude Code was not sent back\./);
+		ok("a check whose command the shell did not find: the turn ends without sending the agent back");
+	}
+
 	// Nothing changed, nothing covered, nothing saved: no check runs, and each is said as Windlass says it.
 	{
 		still = true;
@@ -1350,6 +1449,114 @@ lines.on("line", async line => {
 	ok("with WLP_ACP_MCP_PORT the bridge serves on that port only, says it is in front, and hands over no server where the port is held");
 }
 
+/**
+ * How an ACP turn ends when its agent cannot do the work (acp-harness.ts): Codex's model requests all failed though it
+ * answered `end_turn`, an agent that went quiet, OpenCode's log line that it gave up on a rate limit, and the relay's
+ * own refusals passed on by an agent. A scripted agent plays each; `prompt` answers the turn's prompt.
+ */
+async function turnBoundsCheck() {
+	const { AcpHarness } = await import("../server/src/sandbox/acp-harness.js");
+	const { CODEX, OPENCODE } = await import("../server/src/sandbox/harnesses.js");
+	type Send = (frame: unknown) => void;
+	const scripted = (profileId: "codex" | "opencode", prompt: (id: number, send: Send, stderr: (text: string) => void) => void) => {
+		const mode = profileId === "codex" ? "agent-full-access" : "build";
+		const sandbox = {
+			profile: "docker-hardened", cwd: "/workspace",
+			async stopLeftovers() { return 0; },
+			async sweep() { return 0; },
+			start(_argv: string[], opts: StartOptions) {
+				let finish!: (end: ProcessEnd) => void;
+				const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
+				const send: Send = frame => queueMicrotask(() => opts.onStdout!(JSON.stringify({ jsonrpc: "2.0", ...frame as object }) + "\n"));
+				let pending: number | null = null;
+				return {
+					tag: "fixture", ended, hasEnded: false,
+					write(line: string) {
+						const frame = JSON.parse(line);
+						const answer = (result: unknown) => send({ id: frame.id, result });
+						if (frame.method === "initialize") answer({ protocolVersion: 1, agentCapabilities: {} });
+						else if (frame.method === "session/new") answer({ sessionId: "acp-1", modes: { currentModeId: mode, availableModes: [{ id: mode, name: mode }] } });
+						else if (frame.method === "session/prompt") { pending = frame.id; prompt(frame.id, send, text => opts.onStderr!(text)); }
+						else if (frame.method === "session/cancel") { if (pending !== null) send({ id: pending, result: { stopReason: "cancelled" } }); }
+						else if (frame.id !== undefined && frame.method) answer({});
+						return true;
+					},
+					closeStdin() { finish({ code: 0, signal: null, error: null }); },
+					async signal() {}, killClient() {},
+				};
+			},
+		};
+		markTurnSandbox(sandbox);
+		return sandbox as unknown as SandboxHandle;
+	};
+	const update = (send: Send, value: object) => send({ method: "session/update", params: { sessionId: "acp-1", update: value } });
+	const codexError = (send: Send, error: object) => update(send, { sessionUpdate: "session_info_update", _meta: { codex: { error } } });
+	const said = "unexpected status 502 Bad Gateway: The provider failed or couldn't be reached., url: http://127.0.0.1:17892/codex/v1/responses";
+
+	// Codex: every try at the model answered 502 through the relay, and codex-acp ends the prompt with end_turn.
+	const failing = (status: number) => scripted("codex", (id, send) => {
+		for (let n = 1; n <= 5; n++) codexError(send, { message: `Reconnecting... ${n}/5`, codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: status } }, willRetry: true });
+		update(send, { sessionUpdate: "session_info_update", _meta: { codex: { threadStatus: { type: "systemError" } } } });
+		update(send, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: said } });
+		send({ id, result: { stopReason: "end_turn" } });
+	});
+	const codex = new AcpHarness(CODEX, "Bench");
+	const failed = await codex.runTurn(failing(502), { prompt: "hello" });
+	assert.equal(failed.failure?.reason, "provider_unavailable", JSON.stringify(failed.failure));
+	assert.match(failed.failure!.message, /^Codex's model requests failed \(HTTP 502\), so it did nothing this turn\. It said: unexpected status 502/);
+	const limited = await codex.runTurn(failing(429), { prompt: "hello" });
+	assert.equal(limited.failure?.reason, "usage_limit");
+	const { turnRefusal, refusalMessage } = await import("../server/src/provider-refusal.js");
+	const refusal = turnRefusal("error", failed, null);
+	assert.equal(refusal?.kind, "provider_unavailable");
+	assert.equal(refusalMessage(refusal!), failed.failure!.message, "the sentence is not prefixed with another");
+	// One try failed and the next answered: the turn did its work, whatever Codex said in between.
+	const recovered = await codex.runTurn(scripted("codex", (id, send) => {
+		codexError(send, { message: "Reconnecting... 1/5", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } }, willRetry: true });
+		update(send, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } });
+		send({ id, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 3 } } });
+	}), { prompt: "hello" });
+	assert.equal(recovered.failure, null, JSON.stringify(recovered.failure));
+	ok("a Codex turn whose model requests all failed ends failed with the provider's words; one that recovered succeeds");
+
+	// An agent that sends nothing more after the prompt, with no call of its own running: the turn ends.
+	const opencode = new AcpHarness(OPENCODE, "Bench");
+	const started = Date.now();
+	const quiet = await opencode.runTurn(scripted("opencode", () => {}), { prompt: "hello", idleMs: 200 });
+	assert.equal(quiet.failure?.reason, "agent_idle", JSON.stringify(quiet.failure));
+	assert.match(quiet.failure!.message, /^OpenCode sent nothing for a while with no call of its own running, so the platform ended the turn\./);
+	assert.ok(Date.now() - started < 5_000);
+	// A command of its own still running is not quiet: the turn waits for it.
+	const busy = await opencode.runTurn(scripted("opencode", (id, send) => {
+		update(send, { sessionUpdate: "tool_call", toolCallId: "t1", title: "npm test", status: "in_progress" });
+		setTimeout(() => {
+			update(send, { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
+			send({ id, result: { stopReason: "end_turn" } });
+		}, 600);
+	}), { prompt: "hello", idleMs: 200 });
+	assert.equal(busy.failure, null, JSON.stringify(busy.failure));
+	ok("an agent quiet past the bound, with no call of its own running, has its turn ended; a long call is waited for");
+
+	// OpenCode logs that it gave up on the provider's rate limit, and never answers the prompt.
+	const gaveUp = await opencode.runTurn(scripted("opencode", (_id, _send, stderr) => {
+		stderr('ERROR 2026-11-23T08:41:38 +2ms service=session error.error="AI_APICallError: The provider\'s usage or rate limit was reached."\n');
+		stderr('ERROR 2026-11-23T08:41:44 +5s service=session error.error="AI_RetryError: Failed after 3 attempts. Last error: The provider\'s usage or rate limit was reached."\n');
+	}), { prompt: "hello", idleMs: 600_000 });
+	assert.deepEqual(gaveUp.failure, { reason: "usage_limit", message: "The provider's usage or rate limit was reached." });
+	assert.equal(turnRefusal("error", gaveUp, null)?.kind, "usage_limit");
+	ok("OpenCode's log line that it gave up on a rate limit ends the turn at once as a usage limit");
+
+	// The relay's own refusals, as OpenCode passes them on: the provider's refusal, not the agent's failure.
+	for (const [sentence, kind] of [["The provider rejected the request.", "provider_rejected"], ["The provider failed or couldn't be reached.", "provider_unavailable"]]) {
+		const result = await opencode.runTurn(scripted("opencode", (id, send) => send({ id, error: { code: -32603, message: "Internal error: " + sentence } })), { prompt: "hello" });
+		assert.deepEqual(result.failure, { reason: kind, message: sentence });
+		const refused = turnRefusal("error", result, null);
+		assert.equal(refused?.kind, kind);
+		assert.equal(refusalMessage(refused!), sentence);
+	}
+	ok("the relay's refusals passed on by OpenCode are provider refusals, in the relay's words");
+}
+
 const state = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".fake-acp-check-"));
 try {
 	const id = await withProcess(state, async (client) => {
@@ -1386,6 +1593,7 @@ try {
 	await clientCheck(state);
 	await platformToolsCheck(state);
 	await platformChecksCheck(state);
+	await turnBoundsCheck();
 	await bridgeCheck();
 } finally {
 	rmSync(state, { recursive: true, force: true });

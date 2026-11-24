@@ -60,6 +60,13 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 		file: "machines.md",
 	},
 	{
+		slug: "cheap-vm",
+		title: "Run agents on a cheap cloud VM",
+		description: "Choose a small VM, pair its runner and use your own model plans without spending hosted sandbox time.",
+		section: "Your machines",
+		file: "cheap-vm.md",
+	},
+	{
 		slug: "runner",
 		title: "Runner reference",
 		description: "Every runner command and option: harnesses, network modes, names, turn limits, CPU caps, allowed profiles, status, logs and pruning.",

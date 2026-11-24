@@ -76,7 +76,7 @@ export const FAQ: Faq[] = [
 	{
 		question: "Where does the agent's code run?",
 		answer:
-			"In a sandbox you choose when you start it. Hosted sessions each get a Firecracker microVM of their own from E2B. Or pair a Linux machine of yours that has Docker: a small runner on it connects out to the platform and runs each session in a container there, so nothing on your machine needs to be reachable from outside.",
+			"In a sandbox you choose when you start it. Hosted sessions each get a Firecracker microVM of their own from E2B. Or pair a Mac, Linux or Windows (WSL) machine of yours that has Docker: a small runner on it connects out to the platform and runs each session in a container there, so nothing on your machine needs to be reachable from outside.",
 	},
 	{
 		question: "How are agents isolated?",

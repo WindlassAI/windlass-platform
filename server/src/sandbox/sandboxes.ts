@@ -1,3 +1,4 @@
+import type { SnapshotSelection } from "./snapshot-key.js";
 /**
  * Sandboxes: one Docker container per agent session, `wlp-session-<id>`.
  *
@@ -118,6 +119,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		relay?: DockerModelRelay,
 		/** The free bytes below which a mirror save writes nothing (`StoreLimits.free`); the default limits' when left out. */
 		private readonly mirrorFloor?: () => number,
+		/** The image the container was made from (`SandboxHandle.image`). */
+		readonly image?: string,
 	) {
 		markTurnSandbox(this);
 		// The user names the lease in the relay, whose ceiling per user counts by it.
@@ -230,7 +233,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 	async ask(argv: string[], options: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Answer | null> {
 		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
 		const result = await docker(["exec", ...env, this.container, ...argv], { timeoutMs: options.timeoutMs }).catch(() => null);
-		return result === null ? null : { code: result.code, stdout: result.stdout, stderr: result.stderr };
+		return result === null ? null : { code: result.timedOut ? null : result.code, stdout: result.stdout, stderr: result.stderr };
 	}
 
 	/** A container runs until it is stopped: there is nothing to keep alive for a turn. */
@@ -390,6 +393,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 interface Inspected {
 	screenshots: boolean;
 	snapshot?: SnapshotSource;
+	/** The Docker image id the container was made from. */
+	image?: string;
 	memory: number;
 	resize?: MachineSlotCapacity["unit"];
 	status: string;
@@ -543,10 +548,10 @@ export class DockerSandboxes implements Sandboxes {
 	private async inspect(id: string): Promise<Inspected | null> {
 		if (!SANDBOX_ID.test(id)) return null;
 		// JSON has no raw newline in it, so each of the two takes a line of its own.
-		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}\n{{json .Mounts}}\n{{json .Config.Labels}}`, containerName(id)]);
+		const result = await docker(["container", "inspect", "--format", `{{.State.Status}}|{{.HostConfig.CpuShares}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{.Image}}\n{{json .Mounts}}\n{{json .Config.Labels}}`, containerName(id)]);
 		if (result.code !== 0) return null;
 		const [fields = "", mountsJson = "", labelsJson = ""] = result.stdout.trim().split("\n");
-		const [status, shares, nanos, memory, swap, pids] = fields.split("|");
+		const [status, shares, nanos, memory, swap, pids, image] = fields.split("|");
 		let labels: Record<string, string> | null;
 		let mounts: { Type?: string; Name?: string; Destination?: string }[] | null;
 		try { labels = JSON.parse(labelsJson); mounts = JSON.parse(mountsJson); }
@@ -563,7 +568,7 @@ export class DockerSandboxes implements Sandboxes {
 		const ownName = windlass && this.options.ownVolumeName && NAME.test(uid ?? "") ? this.options.ownVolumeName(uid!, id) : undefined;
 		const ownData = data?.Type === "volume" && ownName !== undefined && data.Name === ownName;
 		return { status, profile, uid, ownData, sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
-			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory),
+			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory), image: /^sha256:[a-f0-9]{64}$/.test(image ?? "") ? image : undefined,
 			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
 
@@ -584,6 +589,18 @@ export class DockerSandboxes implements Sandboxes {
 	/** The user's containers, by the labels each was made with. */
 	async list(uid: string): Promise<ListedSandbox[]> {
 		return listDockerSandboxes(uid, this.machine);
+	}
+
+	/** The users with hosted sandboxes on this Docker: a runner's, which carry a machine label, are not this layer's. */
+	async owners(): Promise<string[]> {
+		if (this.machine !== "") return [];
+		const result = await docker(["ps", "-a", "--no-trunc", "--filter", `label=${LABEL_ARG}`, "--format", `{{.Names}}|{{.Label "${LABEL}.uid"}}|{{.Label "${MACHINE_LABEL}"}}`], { timeoutMs: 30_000, check: true });
+		const uids = new Set<string>();
+		for (const line of result.stdout.split("\n")) {
+			const [name = "", uid = "", machine = ""] = line.trim().split("|");
+			if (name.startsWith("wlp-session-") && machine === "" && NAME.test(uid)) uids.add(uid);
+		}
+		return [...uids];
 	}
 
 	profiles(): SandboxProfile[] {
@@ -630,7 +647,7 @@ export class DockerSandboxes implements Sandboxes {
 	 * the data went with the sandbox. Left out: it gets one of its own where the provider makes them
 	 * (`DockerSandboxOptions.ownVolumeName`).
 	 */
-	async create(input: CreateSandboxInput & { ownData?: boolean }): Promise<string> {
+	async create(input: CreateSandboxInput & { ownData?: boolean; reservedId?: string; deferredRelayNonce?: string }): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
 		const agent = machineHarness(input.harness ?? harness) ?? CLAUDE;
@@ -645,7 +662,8 @@ export class DockerSandboxes implements Sandboxes {
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
-		const id = (harness ? harness + "-" : "") + randomId(6);
+		if (input.reservedId && !/^[a-f0-9]{12}$/.test(input.reservedId)) throw new Error("Invalid reserved sandbox id.");
+		const id = (harness ? harness + "-" : "") + (input.reservedId ?? randomId(6));
 		const name = containerName(id);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
 		// A session whose commands run directly in the container gets a volume of its own.
@@ -653,7 +671,9 @@ export class DockerSandboxes implements Sandboxes {
 		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, { floor: this.limits().free }).catch(() => null) : null;
-		const relay = await this.options.sessionRelay?.();
+		// An idle harness has only its public routing nonce. The runner signs it and
+		// opens its forwarder once a session has claimed this container.
+		const relay = harness && input.deferredRelayNonce ? { nonce: input.deferredRelayNonce, env: [] } : await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
 		const limits = this.resources(size);
@@ -694,6 +714,8 @@ export class DockerSandboxes implements Sandboxes {
 			{ timeoutMs: 120_000 },
 		);
 		if (result.code !== 0) {
+			// A conflict belongs to the container that already held the name.
+			if (/container name .*already in use/i.test(result.stderr)) throw new Error("The sandbox name was already in use.");
 			await docker(["rm", "-f", name]);
 			// The error said below is the one that matters: a volume left behind goes with the next sweep.
 			if (own) await this.dropOwnVolume(input.uid, id).catch(() => {});
@@ -782,6 +804,11 @@ export class DockerSandboxes implements Sandboxes {
 
 	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
 
+	async selectedImage(input: SnapshotSelection, uid: string, profile: SandboxProfileId, shots: boolean) {
+		const selection = await this.snapshots(shots ? this.shotsImage : this.image, shots).select(input, uid, profile);
+		return selection.hit ? selection.image : null;
+	}
+
 	async saveSnapshot(id: string, source: SnapshotSource) {
 		const found = await this.inspect(id);
 		if (!found || found.snapshot || this.options.sessionRelay) return false;
@@ -855,7 +882,7 @@ export class DockerSandboxes implements Sandboxes {
 		}
 		// Only Windlass's own sandboxes: a harness session has a relay of its own (runner/src/claude-relay.ts).
 		const relay = /^[a-f0-9]{12}$/.test(id) && this.options.sessionRelay === undefined && await this.modelRelayReady() ? this.options.modelRelay : undefined;
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free, found.image);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

@@ -349,6 +349,43 @@ h3 {
 	opacity: 0.5;
 }
 
+/* ---- long text: one clamp and one control (components/Fold.tsx) ---------------------------- */
+.long-text {
+	max-width: 68ch;
+	min-width: 0;
+}
+.long-text-body {
+	white-space: pre-line;
+	overflow-wrap: anywhere;
+}
+.long-text-body[data-clamped="true"] {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: var(--lines, 3);
+	line-clamp: var(--lines, 3);
+	overflow: hidden;
+}
+.fold-toggle {
+	margin-top: 4px;
+	font-size: var(--text-13);
+}
+.fold-list-toggle {
+	margin-top: 6px;
+}
+.path-list {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px;
+}
+.path-list-count {
+	margin-right: 2px;
+	color: var(--ink-dim);
+}
+.path-list-more {
+	font-size: var(--text-13);
+}
+
 /* ---- fields --------------------------------------------------------------------------------- */
 
 .label {
@@ -645,6 +682,12 @@ h3 {
 .check-means {
 	font-size: var(--size-small);
 	color: var(--ink-dim);
+}
+/* A short choice in one plain line (`Check`'s `label`). */
+.check-label {
+	font-size: var(--size-small);
+	line-height: 1.5;
+	color: var(--ink);
 }
 /* The footer while a deletion is confirmed: the question on the left, as a dialog's error is. */
 .secret-confirm {
@@ -1052,6 +1095,10 @@ h3 {
 .status-waiting {
 	color: var(--needs);
 }
+/* Paused: the turn is not over and resumes by itself. Still, and quiet. */
+.status-paused {
+	color: var(--ink-dim);
+}
 
 .status-badge {
 	display: inline-flex;
@@ -1073,6 +1120,9 @@ h3 {
 .status-badge-waiting {
 	font-weight: var(--weight-strong);
 	color: var(--needs);
+}
+.status-badge-paused {
+	color: var(--ink-dim);
 }
 
 .outcome {

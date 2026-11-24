@@ -12,6 +12,8 @@
  * - `tool.progress` replaces the previous progress text of its call; it is not appended.
  * - A run of the repository's setup command is two stored items with one id, and between them the
  *   platform's `setup.output` deltas, each appended; the ending item's output replaces what they built.
+ * - A turn's `network.blocked` row is one block, replaced in place by a newer `revision` of the same
+ *   `seq` (the live `networkBlocked` event), its counts cumulative for the turn.
  * - A subagent belongs to the `subagent` call that started it (`spawn.started`, by its `spawnId`), and
  *   what it does (`child.event`) is folded by this same reducer into a view of its own on that call.
  * - What a harness spoken to through ACP sent (`acp` items and deltas) is folded into the same blocks
@@ -20,7 +22,7 @@
  * Nothing here touches the DOM, the clock or the network.
  */
 import { ACP_MESSAGE, contextOf, foldAcp } from "./acp";
-import { SETUP_OUTPUT_CHARS, type AcpContext, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type Verified, type WindlassEvent } from "@contract";
+import { SETUP_OUTPUT_CHARS, type AcpContext, type BlockedHost, type NetworkBlockedItem, type LiveDelta, type SessionSnapshot, type TimelineItem, type TurnOutcome, type TurnUsage, type Verified, type WindlassEvent } from "@contract";
 
 // ---------------------------------------------------------------------------------------------
 // The view
@@ -89,6 +91,8 @@ export interface UserBlock extends BlockBase {
 	effort: string | null;
 	/** Sent while the turn was running: the model reads it at its next step. */
 	steer: boolean;
+	/** Sent while the turn was paused: held, and given to the agent when the turn resumes. */
+	held?: boolean;
 }
 
 export interface PlatformBlock extends BlockBase {
@@ -97,6 +101,10 @@ export interface PlatformBlock extends BlockBase {
 	text: string;
 	/** A line about a host a command could not reach (`code` "host_blocked"): the host, and whether the session's repository's list can allow it. */
 	blocked?: { host: string; repository: boolean };
+	/** The turn paused (its server restarted, or its machine went away), or resumed after it (`code` "turn_paused", "turn_resumed"). */
+	resume?: "paused" | "resumed";
+	/** The line of the agent's `request_secret`: the name it asks for and its reason, the agent's own words. */
+	secret?: { id: string; name: string; why: string; notice?: string };
 }
 
 export interface ReasoningBlock extends BlockBase {
@@ -240,7 +248,18 @@ export interface PlanBlock extends BlockBase {
 	entries: PlanEntry[];
 }
 
-export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock | SetupBlock | PlanBlock;
+/** The network requests the sandbox's egress policy refused in one turn (`network.blocked`), cumulative while the turn runs. */
+export interface NetworkBlock extends BlockBase {
+	kind: "network";
+	/** The stored row's `seq`, which a newer `revision` replaces. */
+	seq: number;
+	revision: number;
+	hosts: BlockedHost[];
+	/** Requests to destinations past the first 50 kept. */
+	overflow: number;
+}
+
+export type Block = UserBlock | PlatformBlock | ReasoningBlock | TextBlock | ToolBlock | ChecksBlock | NoticeBlock | ErrorBlock | NoteBlock | SetupBlock | PlanBlock | NetworkBlock;
 
 export interface TurnEnd {
 	at: number;
@@ -327,18 +346,19 @@ export function fromSnapshot(snapshot: Pick<SessionSnapshot, "timeline" | "pendi
 
 /** Applies one stored timeline entry. */
 export function applyItem(view: SessionView, item: TimelineItem): SessionView {
+	if (item.kind === "network.blocked" && item.seq <= view.lastSeq) return replaceNetwork(view, item);
 	if (item.seq <= view.lastSeq) return view;
 	const gap = view.gap || (view.lastSeq > 0 && item.seq !== view.lastSeq + 1);
 	const draft = new Draft({ ...view, lastSeq: item.seq, gap });
 	switch (item.kind) {
 		case "user":
-			draft.push(item.turn, { kind: "user", at: item.at, text: item.text, model: item.model, effort: item.effort, steer: item.steer === true });
+			draft.push(item.turn, { kind: "user", at: item.at, text: item.text, model: item.model, effort: item.effort, steer: item.steer === true, ...(item.held === true && { held: true }) });
 			break;
 		case "platform": {
 			// The platform answering a call's question itself is told once, with the call's answer. Its
 			// line carries a code and names the call, so nothing rests on its wording.
 			if ((item.code === "question_expired" || item.code === "question_allowed") && item.call) draft.patchTurn(item.turn, { platformAnswer: { key: callKey(item.call), text: item.text } });
-			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text, ...(item.code === "host_blocked" && item.host ? { blocked: { host: item.host, repository: item.repository === true } } : {}) });
+			else draft.push(item.turn, { kind: "platform", at: item.at, level: item.level, text: item.text, ...(item.code === "host_blocked" && item.host ? { blocked: { host: item.host, repository: item.repository === true } } : {}), ...(item.code === "turn_paused" ? { resume: "paused" as const } : item.code === "turn_resumed" ? { resume: "resumed" as const } : {}), ...(item.secretRequest ? { secret: { id: item.secretRequest.id, name: item.secretRequest.name, why: item.secretRequest.why, ...(item.secretRequest.notice !== undefined && { notice: item.secretRequest.notice }) } } : {}) });
 			break;
 		}
 		case "windlass":
@@ -361,7 +381,19 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 		case "turn.ended":
 			endTurn(draft, item);
 			break;
+		case "network.blocked":
+			draft.push(item.turn, { kind: "network", at: item.at, seq: item.seq, revision: item.revision, hosts: item.hosts, overflow: item.overflow });
+			break;
 	}
+	return draft.view;
+}
+
+/** A newer revision of a turn's `network.blocked` row, in place of the one with its `seq`. An older or equal one, or one for no row shown, changes nothing. */
+function replaceNetwork(view: SessionView, item: NetworkBlockedItem): SessionView {
+	const draft = new Draft(view);
+	const shown = view.turns.find((turn) => turn.turn === item.turn)?.blocks.find((block): block is NetworkBlock => block.kind === "network" && block.seq === item.seq);
+	if (!shown || shown.revision >= item.revision) return view;
+	draft.replace(item.turn, shown, { revision: item.revision, hosts: item.hosts, overflow: item.overflow });
 	return draft.view;
 }
 
@@ -402,6 +434,28 @@ export function lastTurn(view: SessionView): TurnView | null {
 /** Share of input tokens read from the cache, 0..1, or null when there was no input. */
 export function cachedShare(usage: TurnUsage): number | null {
 	return usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : null;
+}
+
+/** The turn's blocked network requests, when any were recorded. */
+export function turnNetwork(turn: TurnView): NetworkBlock | null {
+	return turn.blocks.findLast((block): block is NetworkBlock => block.kind === "network") ?? null;
+}
+
+/** Requests a blocked list counts: each destination's, and those past the ones kept. */
+export function blockedRequests(network: { hosts: readonly BlockedHost[]; overflow: number }): number {
+	return network.hosts.reduce((sum, host) => sum + host.count, network.overflow);
+}
+
+/**
+ * The turn's blocks as the timeline draws them: a platform line naming a host the turn's
+ * `network.blocked` row lists is left out, as that row names it with the same action. A turn
+ * without that row (an older server's) keeps its lines.
+ */
+export function shownBlocks(blocks: Block[]): Block[] {
+	const listed = new Set<string>();
+	for (const block of blocks) if (block.kind === "network") for (const host of block.hosts) if (host.host) listed.add(host.host);
+	if (listed.size === 0) return blocks;
+	return blocks.filter((block) => !(block.kind === "platform" && block.blocked && listed.has(block.blocked.host)));
 }
 
 export function toolBlocks(turn: TurnView): ToolBlock[] {
@@ -888,6 +942,8 @@ function endTurn(draft: Draft, item: Extract<TimelineItem, { kind: "turn.ended" 
 	});
 	const context = item.context === undefined ? null : contextOf(item.context);
 	if (context) draft.set({ context });
+	// Another agent's session id comes with the turn's end: the panel shows it without a reload.
+	if (typeof item.sessionId === "string" && item.sessionId !== "" && draft.view.windlassSessionId !== item.sessionId) draft.set({ windlassSessionId: item.sessionId });
 }
 
 // ---------------------------------------------------------------------------------------------

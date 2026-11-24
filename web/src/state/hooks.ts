@@ -1,3 +1,4 @@
+import { monthState } from "../lib/hosted";
 import type { AccountSettings, ChatgptStatus, FactoryLimits, ModelList, SessionSummary, UsageNumbers } from "@contract";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
@@ -186,11 +187,12 @@ const ALLOWANCE_EVERY_MS = 60_000;
  * after that, and whenever `key` changes (a turn ended, a prompt was refused). Null until they are
  * known and when they cannot be read: the screens then say nothing rather than something stale.
  */
-export function useAllowance(key: unknown = 0): UsageNumbers | null {
+export function useAllowance(key: unknown = 0, enabled = true): UsageNumbers | null {
 	const { client } = useApp();
 	const auth = useAuth();
 	const [numbers, setNumbers] = useState<UsageNumbers | null>(null);
 	useEffect(() => {
+		if (!enabled) return;
 		let current = true;
 		const read = () => {
 			client
@@ -207,7 +209,7 @@ export function useAllowance(key: unknown = 0): UsageNumbers | null {
 			current = false;
 			clearInterval(timer);
 		};
-	}, [client, auth, key]);
+	}, [client, auth, key, enabled]);
 	return numbers;
 }
 
@@ -221,7 +223,10 @@ export type AllowanceState =
 	| "used";
 
 export function allowanceState(numbers: UsageNumbers | null, lowShare: number): AllowanceState {
-	if (numbers === null || numbers.allowanceSeconds === null || numbers.leftSeconds === null) return "plenty";
+	// With a plan, the month's hosted minutes are the allowance (lib/hosted.ts); a day's limit the operator set still counts.
+	const month = monthState(numbers);
+	if (month === "used") return "used";
+	if (numbers === null || numbers.allowanceSeconds === null || numbers.leftSeconds === null) return month;
 	if (numbers.leftSeconds < numbers.startSeconds) return "used";
 	return numbers.leftSeconds < numbers.allowanceSeconds * lowShare ? "low" : "plenty";
 }

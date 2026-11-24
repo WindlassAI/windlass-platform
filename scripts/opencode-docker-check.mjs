@@ -220,6 +220,8 @@ try {
 	assert.ok(owner.report().harnesses[0].options.models.some(m => m.id.startsWith('openai/')));
 	ok('Native terminal device challenge, approval and private credential transfer against a TLS fixture.');
 	const first = await create('first'), second = await create('second');
+	assert.deepEqual(JSON.parse(await cmd(['inspect', '--format', '{{json .HostConfig.LogConfig}}', relayName])),
+		{ Type: 'json-file', Config: { 'max-size': '4m', 'max-file': '2' } });
 	assert.equal(await cmd(['exec',first,'ls','/sys/class/net']), 'lo');
 	assert.match(await cmd(['exec',first,'printenv','HTTPS_PROXY']),/127.0.0.1:17891/);
 	await cmd(['exec','-d',second,'node','-e',"require('http').createServer((q,r)=>r.end('peer')).listen(19123,'0.0.0.0')"]);

@@ -85,6 +85,15 @@ export interface E2bConnection {
 	writeFile(path: string, content: string): Promise<void>;
 }
 
+export interface E2bConnectOptions {
+	/**
+	 * `onResume: "reboot"`: a paused sandbox is started from its disk, without the memory its pause kept, so no
+	 * process of before runs in it. E2B's rescue for a guest whose memory image wedges it. A no-op for a running
+	 * sandbox. https://docs.e2b.dev/sandbox/persistence.md (SDK 2.63.0 `SandboxOnResume`)
+	 */
+	reboot?: true;
+}
+
 export interface E2bClient {
 	/** `Sandbox.create(template, { timeoutMs, metadata, envs, lifecycle: { onTimeout } })`. https://docs.e2b.dev/sandbox.md, /sandbox/metadata.md, /sandbox/persistence.md ("Auto-pause") */
 	create(input: E2bCreateInput): Promise<E2bConnection>;
@@ -93,7 +102,7 @@ export interface E2bClient {
 	 * `timeoutMs` from now unless it already ends later (a connect only ever extends). Undefined when there
 	 * is no such sandbox. https://docs.e2b.dev/sandbox/connect.md, /sandbox/persistence.md ("Resuming sandbox", "Sandbox's timeout")
 	 */
-	connect(sandboxId: string, timeoutMs: number): Promise<E2bConnection | undefined>;
+	connect(sandboxId: string, timeoutMs: number, options?: E2bConnectOptions): Promise<E2bConnection | undefined>;
 	/** `Sandbox.getInfo(id)`. Undefined when there is no such sandbox. https://docs.e2b.dev/sandbox.md ("Retrieve sandbox information") */
 	info(sandboxId: string): Promise<E2bSandboxInfo | undefined>;
 	/** `Sandbox.list({ query: { metadata, state } })`, every page. Without `state`: running and paused. https://docs.e2b.dev/sandbox/list.md */
@@ -127,6 +136,18 @@ export interface E2bClient {
 	deleteSnapshot(snapshotId: string): Promise<boolean>;
 	/** `Template.getTags(name)`: the build the template's tag points at now; null when the template or the tag is unknown. https://docs.e2b.dev/template/tags.md */
 	templateBuild(template: string): Promise<string | null>;
+	/**
+	 * `Sandbox.getMetrics(id, { start })`: E2B's samples of the sandbox's use since `sinceMs`, the oldest first, in bytes.
+	 * Read from outside the guest, so it answers for a guest that answers nothing. https://docs.e2b.dev/sandbox/metrics.md
+	 */
+	metrics?(sandboxId: string, sinceMs: number): Promise<E2bMetric[]>;
+}
+
+/** One of E2B's samples of a sandbox (`SandboxMetrics`): ms since the epoch, memory in bytes. */
+export interface E2bMetric {
+	at: number;
+	memUsed: number;
+	memTotal: number;
 }
 
 /** `SnapshotInfo` of the SDK: an id `create` takes, and the snapshot template's full names (`team/name:tag`). */

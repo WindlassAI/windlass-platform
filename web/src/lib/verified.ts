@@ -61,7 +61,9 @@ export function unresolvedLine(verified: Verified): string | null {
 			? `the agent reported that it could not make them pass${verified.unresolved.said ? `: ${verified.unresolved.said}` : ""}`
 			: verified.unresolved.reason === "report_mode"
 				? "the repository's file sets verification to report only, so the agent was not sent back"
-				: "the agent had been sent back as often as a turn allows";
+				: verified.unresolved.reason === "environment"
+					? "the sandbox could not run the command, which says nothing about the code, so the agent was not sent back"
+					: "the agent had been sent back as often as a turn allows";
 	return checks.some((check) => check.startError !== undefined) ? `${why}; ${unstarted}` : why;
 }
 

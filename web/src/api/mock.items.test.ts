@@ -29,19 +29,16 @@ function gateOf(seed: SeedVerdict): GateEvidence | null {
 }
 
 describe("the mock's work items", () => {
-	it("gives no review round cap to an item without a reviewer that can send its builder back", async () => {
-		const views = async (reviewer: boolean) => {
-			const mock = createMockClient({ pace: 0, reviewer });
-			const user = mock.user(auth);
-			return Promise.all((await user.listItems()).map((item) => user.item(item.id)));
-		};
-		const off = (await views(false)).filter((view) => view.run);
-		expect(off.length).toBeGreaterThan(0);
-		expect(off.every((view) => view.run!.caps.review === undefined)).toBe(true);
-		const on = (await views(true)).filter((view) => view.run);
-		expect(on.some((view) => view.run!.caps.review === 2)).toBe(true);
-		expect(on.filter((view) => view.place.kind === "machine").every((view) => view.run!.caps.review === undefined)).toBe(true);
-		expect(on.some((view) => view.place.kind === "machine")).toBe(true);
+	it("sends a run's rounds with no caps, and budget questions that never offer to start over", async () => {
+		const mock = createMockClient({ pace: 0 });
+		const user = mock.user(auth);
+		const views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
+		expect(views.some((view) => view.run)).toBe(true);
+		expect(views.every((view) => !view.run || !("caps" in view.run))).toBe(true);
+		const budget = views.filter((view) => view.question?.kind === "budget");
+		expect(budget.length).toBeGreaterThan(0);
+		expect(budget.every((view) => view.question!.choices[0]!.label.startsWith("Give it ") && !view.question!.choices.some((choice) => choice.id === "retry"))).toBe(true);
+		mock.dispose();
 	});
 
 	it("says in platform info whether the second review is on, and without it gives no item one", async () => {
@@ -60,8 +57,8 @@ describe("the mock's work items", () => {
 		const user = off.user(auth);
 		const calls = [user.listItems(), user.item("it_any"), user.createItem({ repository: { id: 1 }, title: "A", body: "" }), user.actOnItem("it_any", { kind: "cancel" }), user.apiTokens(), user.createApiToken({ name: "A", scopes: ["items:read"] }), user.revokeApiToken("tok_any")];
 		for (const call of calls) await expect(call).rejects.toMatchObject({ reason: "items_off" });
-		// The ceiling on running agents is every agent's, so it is still answered.
-		expect((await user.factoryLimits()).runningTurns).toBeGreaterThan(0);
+		// The ceiling on hosted sandboxes is every agent's, so it is still answered.
+		expect((await user.factoryLimits()).hostedRunning).toBeGreaterThan(0);
 		off.dispose();
 	});
 
@@ -72,8 +69,26 @@ describe("the mock's work items", () => {
 		for (const item of list) expect(item.wait !== null).toBe(item.state === "waiting");
 		// A question is always a wait for the person, with the question's text.
 		for (const item of list.filter((one) => one.question)) expect(item.wait).toMatchObject({ reason: item.question?.kind === "budget" ? "budget" : "person", sentence: item.question?.text, retryAt: null });
-		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more", "review_question", "agent_ask"]));
+		expect(new Set(list.flatMap((item) => (item.question ? [item.question.kind] : [])))).toEqual(new Set(["no_change", "publish_refused", "ci_timeout", "rounds", "budget", "turn_refused", "machine_removed", "feedback_more", "review_question", "agent_ask", "check_environment", "secret_needed"]));
 		expect(new Set(list.flatMap((item) => (item.verdict ? [item.verdict.result] : [])))).toEqual(new Set(["pass", "fail", "incomplete", "unverified"]));
+		mock.dispose();
+	});
+
+	it("answers a builder's request for a secret through its session, as the item's question", async () => {
+		const mock = make();
+		const user = mock.user(auth);
+		const listed = (await user.listItems()).find((item) => item.question?.kind === "secret_needed")!;
+		const view = await user.item(listed.id);
+		const question = view.question!;
+		expect(question.secret).toEqual({ name: "RESEND_API_KEY", why: expect.any(String), notice: expect.stringContaining("inside the agent's sandbox") });
+		expect(question.choices.map((choice) => choice.id)).toEqual(["add_secret", "without_secret", "give_up"]);
+		const session = mock.session(auth, view.sessionId);
+		await expect(session.setRequestedSecret({ requestId: "another", name: "RESEND_API_KEY", value: "re_live_5f2c9a81" })).rejects.toMatchObject({ reason: "item_conflict" });
+		await session.setRequestedSecret({ requestId: question.id, name: "RESEND_API_KEY", value: "re_live_5f2c9a81" });
+		const after = await user.item(listed.id);
+		expect(after.question).toBeNull();
+		expect(after.state).toBe("working");
+		expect(JSON.stringify(after)).not.toContain("re_live_5f2c9a81");
 		mock.dispose();
 	});
 
@@ -154,14 +169,11 @@ describe("the mock's work items", () => {
 		mock.dispose();
 	});
 
-	it("sends a run's caps and a verdict's sentences, as the server does", async () => {
+	it("sends a verdict's sentences, as the server does", async () => {
 		const mock = make();
 		const user = mock.user(auth);
 		const views = await Promise.all((await user.listItems()).map((item) => user.item(item.id)));
 		for (const view of views) {
-			// The second review's cap only where the item's reviewer can send its builder back, as the server's `reviewSendsBack`.
-			const reviewer = view.mode !== "orchestrate" && !view.parent && view.place.kind === "hosted" && view.review?.state !== "off";
-			if (view.run) expect(view.run.caps).toEqual({ plan: 3, gate: 2, ci: 2, conflict: 1, ...(reviewer && { review: 2 }) });
 			// One is stored before verdicts carried their sentences, and has none.
 			for (const verdict of view.verdicts) if ((verdict as Partial<Verdict>).said) expect(verdict.said.flags).toHaveLength(verdict.flags.length);
 		}
@@ -292,7 +304,7 @@ describe("the mock's work items", () => {
 		const waiting = onMachines.find((item) => item.wait?.reason === "machine") as ItemSummary;
 		expect(machineOf(waiting)).toMatchObject({ name: "workshop", status: "offline" });
 		expect(waiting.wait?.sentence).toBe('Waiting for your machine "workshop" to come back online.');
-		expect(onMachines.find((item) => item.question?.kind === "budget")?.question?.text).toBe("This item has used 10 of its 10 turns.");
+		expect(onMachines.find((item) => item.question?.kind === "budget")?.question?.text).toBe("This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.");
 		const removed = onMachines.find((item) => item.question?.kind === "machine_removed") as ItemSummary;
 		expect(removed.place).toEqual({ kind: "machine", machineId: REMOVED_MACHINE_ID });
 		expect(machineOf(removed)).toBeUndefined();
@@ -330,7 +342,7 @@ describe("the mock's work items", () => {
 		const waiting = await user.item(away.id);
 		expect(waiting).toMatchObject({ state: "waiting", wait: { reason: "machine", sentence: 'Waiting for your machine "workshop" to come back online.' } });
 		expect(waiting.events.at(-1)?.said).toBe('Waiting for your machine "workshop" to come back online.');
-		expect(waiting.spent).toEqual({ tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
+		expect(waiting.spent).toEqual({ tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
 		// Without a place, it is hosted, as before.
 		expect((await user.createItem({ ...input, title: "Hosted" })).place).toEqual({ kind: "hosted" });
 		mock.dispose();
@@ -405,7 +417,7 @@ describe("the agent's report on an item's page", () => {
 		for (const kind of kinds) expect(html).toContain(`review-block-${kind}`);
 		// A screenshot block is no row of its own: they are gathered under the blocks (Screenshots.test.ts), and without their records nothing is shown.
 		const shot = renderToStaticMarkup(createElement(ReviewBlocks, { blocks: [{ kind: "screenshot", attachment: "a_1" }], records: [], verdict: null, author: "The agent" }));
-		expect(shot).toBe('<dl class="usage-facts item-facts review-blocks"></dl>');
+		expect(shot).toMatch(/^<dl id="[^"]+" class="usage-facts item-facts review-blocks"><\/dl>$/);
 		for (const out of [html, shot]) {
 			expect(out).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em/);
 			expect(out.toLowerCase()).not.toContain("reviewer");
@@ -418,7 +430,7 @@ describe("the agent's report on an item's page", () => {
 	});
 
 	it("keeps hostile agent text as typed: no link, image, markup or heading, and a long fence cut at 60 lines", async () => {
-		const { html } = await rendered("Cache the station list");
+		const { view, html } = await rendered("Cache the station list");
 		expect(html).toContain("[link](https://e.example)");
 		expect(html).toContain("![](https://e.example/a.png)");
 		expect(html).toContain("@octocat");
@@ -430,12 +442,18 @@ describe("the agent's report on an item's page", () => {
 		expect(html).toContain("src/&lt;b&gt;stations&lt;/b&gt;.ts:3");
 		expect(html).not.toMatch(/<a[\s>]|<img|<script|<h[1-6]|<strong|<em|<b>/);
 		expect(html).not.toMatch(/<[^>]*\shref=/);
-		// The 40-line fence whole; the 70-line one shows 60 lines, then "…".
-		const fences = [...html.matchAll(/<pre[^>]*><code>([\s\S]*?)<\/code><\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
-		expect(fences.map((lines) => lines.length)).toEqual([40, 61]);
-		expect(fences[1]?.at(-2)).toContain("line 60");
-		expect(fences[1]?.at(-1)).toBe("…");
-		expect(html).not.toContain("line 61");
+		// Each fence shows its first 12 lines, then "Show N more lines": the 40-line one whole behind it, the 70-line one cut at 60 lines and "…".
+		const fences = [...html.matchAll(/<pre[^>]*class="output-text"[^>]*>([\s\S]*?)<\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
+		expect(fences.map((lines) => lines.length)).toEqual([12, 12]);
+		expect(html).toContain("Show 28 more lines");
+		expect(html).toContain("Show 49 more lines");
+		const text = (view.report?.blocks ?? []).map((block) => ("text" in block ? block.text : "")).join("\n\n");
+		const plain = renderToStaticMarkup(createElement(ReviewText, { text, plain: true }));
+		const whole = [...plain.matchAll(/<pre[^>]*><code>([\s\S]*?)<\/code><\/pre>/g)].map((match) => (match[1] ?? "").split("\n"));
+		expect(whole.map((lines) => lines.length)).toEqual([40, 61]);
+		expect(whole[1]?.at(-2)).toContain("line 60");
+		expect(whole[1]?.at(-1)).toBe("…");
+		expect(plain).not.toContain("line 61");
 	});
 
 	it("shows the platform's record beside the agent's claim, and marks the claims it does not bear out", async () => {
@@ -471,8 +489,11 @@ describe("the agent's report on an item's page", () => {
 			{ kind: "pre", lines: ["x()"], cut: 0 },
 			{ kind: "p", text: "# not a heading" },
 		]);
-		const html = renderToStaticMarkup(createElement(ReviewText, { text: "Use `a<b>` here; *not* [this](https://e.example)." }));
-		expect(html).toBe('<div class="review-text"><p>Use <code>a&lt;b&gt;</code> here; *not* [this](https://e.example).</p></div>');
+		const text = "Use `a<b>` here; *not* [this](https://e.example).";
+		expect(renderToStaticMarkup(createElement(ReviewText, { text, plain: true }))).toBe('<div class="review-text"><p>Use <code>a&lt;b&gt;</code> here; *not* [this](https://e.example).</p></div>');
+		// Unfolded only where asked: a paragraph is otherwise clamped to six lines.
+		const folded = renderToStaticMarkup(createElement(ReviewText, { text }));
+		expect(folded).toMatch(/^<div class="review-text"><div class="long-text"><p id="[^"]+" class="long-text-body" data-clamped="true" style="--lines:6">Use <code>a&lt;b&gt;<\/code> here; \*not\* \[this\]\(https:\/\/e\.example\)\.<\/p><\/div><\/div>$/);
 	});
 
 	it("seeds a report of an earlier run, and items in review without one", async () => {

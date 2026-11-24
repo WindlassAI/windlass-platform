@@ -168,6 +168,10 @@ const CURRENT = ["windlass/maxSteps", MARKER];
 		const name = harnessName(agent);
 		const stop = decide(agent, "docker-hardened", issueRow);
 		expect(`${name}, docker-hardened: someone else's issue stops the turn, naming ${name} and the source`, stop.kind === "stop" && stop.sources.join() === ISSUE && stop.reason.includes(`“Docker, hardened” ${name} `) && stop.reason.includes(ISSUE), JSON.stringify(stop));
+// Codex runs its commands in its own sandbox on "Docker + Windlass sandbox": it is filed again there as itself, not with Windlass.
+if (stop.kind === "stop") expect(`${name}, docker-hardened: the refusal names where to file it again`, agent === "codex"
+	? stop.reason.includes("file the work again on “Docker + Windlass sandbox”, where Codex runs its commands in its own sandbox") && !stop.reason.includes("with Windlass on")
+	: agent === "windlass" || stop.reason.includes("file the work again with Windlass on “Docker + Windlass sandbox”"), stop.reason);
 		const anyway = decide(agent, "docker-hardened", anywayRow);
 		const note = agent === "windlass" ? hardenedUnmarkedNote([ISSUE]) : agentUnmarkedNote(name, [ISSUE]);
 		expect(`${name}, docker-hardened: run anyway, it goes labelled only, said once`, anyway.kind === "labelled" && anyway.note === note, JSON.stringify(anyway));

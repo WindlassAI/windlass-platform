@@ -92,8 +92,10 @@ const text = () => host.textContent ?? "";
 it.each(["claude", "opencode", "codex"] as const)("shows %s models and modes in the idle composer and panel before its first turn", async harness => {
 	await open({ harness });
 	// Codex's own plan mode (`capabilities.planMode`), not the items' Plan first.
-	if (harness === "codex") expect(host.textContent).toContain("Plan mode");
+	// It is one of the composer's pickers, not a control of its own outside the composer.
+	if (harness === "codex") expect(pickers()).toContain("plan-mode");
 	else expect(host.textContent).not.toContain("Plan mode");
+	expect(host.querySelector(".session-main select")).toBeNull();
 	expect(host.textContent).not.toContain("Plan first");
 	const names = harness === "codex" ? ["6.2 Sol (default)"] : harness === "claude" ? ["Default (recommended)", "Opus", "Haiku"] : ["OpenAI/GPT-5.4 (default)", "OpenAI/GPT-5.4 mini"];
 	const modeNames = harness === "codex" ? ["Container access"] : harness === "claude" ? ["Manual", "Accept edits", "Plan", "Auto", "Bypass permissions"] : ["build", "plan"];
@@ -121,11 +123,16 @@ it("documents the three sign-in labels used by the session and composer", () => 
 
 it.each(["token", "none", "unknown"] as const)("shows session login instructions only when OpenCode needs sign-in (%s)", async signIn => {
 	await open({ harness: "opencode" }, { name: "workshop", harnesses: [{ id: "opencode", signIn, adapter: "OpenCode", image: "fixture" }] } as MachineSummary);
-	const banner = host.querySelector(".session-main .machine-harness");
-	if (signIn === "token") expect(banner).toBeNull();
-	else {
-		expect(banner?.textContent).toContain("so this agent cannot run a turn");
-		expect(banner?.querySelector("pre")?.textContent).toContain("windlass-runner login opencode");
+	const notice = host.querySelector(".session-main .session-notice");
+	if (signIn === "token") expect(notice).toBeNull();
+	else if (signIn === "none") {
+		expect(notice?.textContent).toContain("OpenCode is not signed in on “workshop”, so this agent cannot run a turn.");
+		expect(notice?.querySelector("pre")?.textContent).toContain("windlass-runner login opencode");
+	} else {
+		// A runner that could not check says nothing of the agent being unable to run: a quiet line, the command folded.
+		expect(notice?.textContent).not.toContain("cannot run a turn");
+		expect(notice?.querySelector("details summary")?.textContent).toBe("Couldn't check OpenCode's sign-in on “workshop”. If a turn fails to start, sign in again:");
+		expect(notice?.querySelector("details:not([open]) pre")?.textContent).toContain("windlass-runner login opencode");
 	}
 });
 

@@ -36,7 +36,7 @@ import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { ExecResult, SandboxHandle } from "../sandbox/api.js";
 import type { WorkDiff } from "../verified.js";
-import { GithubProblem } from "./repos.js";
+import { GithubProblem } from "./problem.js";
 import { redact } from "./redact.js";
 import { SAFE_FLAGS, TRANSPORT_FLAGS } from "./git-flags.js";
 
@@ -109,7 +109,8 @@ const UNSAFE_KEYS = String.raw`^(filter\.|diff\.external$|diff\..+\.(command|tex
 
 // This helper is shipped with the server and passed as script text to the sandbox. -I keeps
 // workspace modules and Python's user site out of its imports.
-const BRIDGE = `bridge() { local action="$1"; shift; python3 -I -c ${shellQuote(readFileSync(new URL("./private-git.py", import.meta.url), "utf8"))} "$action" "$private" "$@"; }`;
+declare const PRIVATE_GIT_SOURCE: string;
+const BRIDGE = `bridge() { local action="$1"; shift; python3 -I -c ${shellQuote(typeof PRIVATE_GIT_SOURCE === "string" ? PRIVATE_GIT_SOURCE : readFileSync(new URL("./private-git.py", import.meta.url), "utf8"))} "$action" "$private" "$@"; }`;
 
 const WORKSPACE_GUARD = [
 	"wlp_guard() {",
@@ -169,6 +170,25 @@ export const CLONE_GIT_START = [
 	GIT_PROXY,
 	`git() { ${GIT_ENV} ${PROXY_ENV} git ${SAFE_FLAGS} -C / "$@" </dev/null; }`,
 ].join("\n");
+
+/**
+ * Clones into the workspace. A new sandbox's workspace holds an empty repository and nothing else, which
+ * the clone replaces; if anything else is there, the clone goes into a directory of its own.
+ */
+export function cloneCommand(repoUrl: string): string {
+	const url = shellQuote(repoUrl);
+	const name = (repoUrl.replace(/\/+$/, "").split("/").pop() ?? "repo").replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
+	return [
+		"set -e",
+		CLONE_GIT_START,
+		`if [ -z "$(ls -A | grep -v '^\\.git$' || true)" ]; then`,
+		"  rm -rf .git",
+		`  git clone --quiet -- ${url} "$(pwd -P)"`,
+		"else",
+		`  git clone --quiet -- ${url} "$(pwd -P)"/${shellQuote(name)}`,
+		"fi",
+	].join("\n");
+}
 
 /** The sentence for a workspace `wlp_guard` refused: `what` is the key or ".git". */
 export function unsafeWorkspace(what: string): string {
@@ -335,21 +355,53 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
  * lockfile an install rewrote) goes, since the workspace must hold what the session pushed and nothing
  * else; what it made beside them (`node_modules`) stays. `wlp:work <commit>`.
  */
-export function workCheckoutScript(directory: string, work: string): string {
+export function workCheckoutScript(directory: string, work: string, start?: string): string {
+	if (start !== undefined && !/^[a-f0-9]{40}$/.test(start)) throw new Error("Invalid child start commit.");
 	return [
 		"set -eu",
 		// Check the platform's clone itself, also when it was made under a nonempty workspace.
 		`cd ${shellQuote(directory)}`,
 		privateStart({ refs: [`refs/heads/${work}`] }),
-		`git checkout --quiet -f -B ${shellQuote(work)} ${shellQuote(`refs/remotes/origin/${work}`)}`,
+		`git checkout --quiet -f -B ${shellQuote(work)} ${shellQuote(start ?? `refs/remotes/origin/${work}`)}`,
 		`bridge export HEAD index ${shellQuote(`refs/heads/${work}`)}`,
 		`echo "wlp:work $(git rev-parse HEAD)"`,
 	].join("\n");
 }
 
+/** Merge the confirmed base without invoking workspace config or leaving conflict markers.
+ * A deterministic commit lets a retry recognize its own checkout or push after a lost reply. */
+export function mergeBaseForCi(sandbox: SandboxHandle, branch: string, base: string, baseSha: string, head: string, at: number, author: CommitInput["author"]) {
+	const date = shellQuote(new Date(at).toISOString());
+	const ref = shellQuote("refs/heads/" + branch);
+	const script = [
+		privateStart({ refs: ["refs/heads/" + branch] }),
+		`[ "$(git symbolic-ref HEAD)" = ${ref} ] || { echo "The workspace is on another branch." >&2; exit 1; }`,
+		`original=${commitId(head)}; base=${commitId(baseSha)}; local_head=$(git rev-parse HEAD); remote=$(git rev-parse ${shellQuote("refs/remotes/origin/" + branch)})`,
+		// On a retry the base may have advanced again. Reconstruct the merge already prepared for this answer.
+		'candidate="$local_head"; if [ "$candidate" = "$original" ]; then candidate="$remote"; fi',
+		'if [ "$candidate" != "$original" ]; then',
+		'  prior=$(git rev-parse --verify "$candidate^2") && git merge-base --is-ancestor "$prior" "$base" || { echo "The item branch moved since CI." >&2; exit 1; }',
+		'  base="$prior"',
+		'fi',
+		'if git merge-base --is-ancestor "$base" "$original"; then echo "The base no longer has new commits." >&2; exit 1; fi',
+		'rc=0; git merge-tree --write-tree "$original" "$base" > "$private/merge" || rc=$?',
+		'if [ "$rc" = 1 ] && [ "$candidate" = "$original" ]; then echo wlp:conflict; exit 0; fi',
+		'[ "$rc" = 0 ] || exit "$rc"',
+		`merged=$(${GIT_ENV} GIT_AUTHOR_DATE=${date} GIT_COMMITTER_DATE=${date} git ${SAFE_FLAGS} --git-dir="$private/repo" -c user.name=${shellQuote(author.name)} -c user.email=${shellQuote(author.email)} commit-tree "$(head -1 "$private/merge")" -p "$original" -p "$base" -m ${shellQuote("Merge " + base + " into " + branch)})`,
+		'for tip in "$remote" "$local_head"; do [ "$tip" = "$original" ] || [ "$tip" = "$merged" ] || { echo "The item branch moved since CI." >&2; exit 1; }; done',
+		'if [ "$local_head" != "$merged" ]; then',
+		'  git diff --quiet HEAD -- || { echo "The workspace has uncommitted changes." >&2; exit 1; }',
+		`  git checkout --quiet --no-overwrite-ignore -B ${shellQuote(branch)} "$merged"`,
+		`  bridge export HEAD index ${ref}`,
+		'fi',
+		'echo "wlp:head $merged"',
+	].join("\n");
+	return run(sandbox, script, { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
+}
+
 /** Runs `workCheckoutScript`. */
-export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string): Promise<GitOutcome> {
-	return run(sandbox, workCheckoutScript(directory, work), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
+export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string, start?: string): Promise<GitOutcome> {
+	return run(sandbox, workCheckoutScript(directory, work, start), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
 }
 
 /** A prepared reviewer's setup belongs to the pinned base, which can predate the freshly fetched branch tip. */
@@ -826,6 +878,44 @@ export async function removeInputs(sandbox: SandboxHandle, directory: string): P
 	throw new Error(`the planner's copy of the other repositories at ${directory} could not be removed${reason && INPUT_REFUSALS[reason] ? `: ${INPUT_REFUSALS[reason](directory)}` : removed.stderr.trim() ? `: ${removed.stderr.trim().slice(0, 200)}` : ""}`);
 }
 
+async function installClone(sandbox: SandboxHandle, stage: string, directory: string, signal?: AbortSignal) {
+	return run(sandbox, ["set -eu", `export PATH=${SYSTEM_PATH}`,
+		'if [ -z "$(ls -A | grep -vxF .git || true)" ]; then rm -rf -- .git; target=.; else',
+		`target=${shellQuote(directory)}; if [ -d "$target" ] && [ ! -L "$target" ]; then [ -z "$(ls -A -- "$target")" ]; else mkdir -- "$target"; fi; fi`,
+		`cp -R -- ${shellQuote(transportDirectory(stage))}/repo/. "$target/"`, 'echo "wlp:dir $target"'].join("\n"),
+		{ stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal });
+}
+
+/** Seed a fresh workspace without ever handing the spare a GitHub credential. Only a
+ * full, fsck-checked mirror of this pairing and repository may be used as a remote. */
+export async function cloneReadyBase(sandbox: SandboxHandle, url: string, branch: string, commit: string, owner: string, signal: AbortSignal) {
+	if (!isBranchName(branch) || !/^[a-f0-9]{40}$/.test(commit)) return false;
+	const stage = randomBytes(16).toString("hex");
+	try {
+		const script = [startTransport(stage), GIT_PROXY, PLAIN_GIT, `mirror=${mirrorPath(owner)}`,
+			'if mountpoint -q -- "$mirror" && exec 9<"$mirror" && flock -s -w 3 9 && [ -d "$mirror/repo.git/objects" ]; then',
+			`  printf '%s\\n' ${shellQuote(MIRROR_CONFIG)} | cmp -s - "$mirror/repo.git/config"`,
+			`  plain_git -c protocol.file.allow=always clone --quiet --no-local --branch ${shellQuote(branch)} -- "$mirror/repo.git" repo`,
+			`  plain_git -C repo remote set-url origin ${shellQuote(url)}`,
+			'else', `  ${GIT_ENV} ${PROXY_ENV} git ${SAFE_FLAGS} clone --quiet --branch ${shellQuote(branch)} -- ${shellQuote(url)} repo`, 'fi',
+			`test "$(plain_git -C repo rev-parse HEAD)" = ${commit}`, 'chmod -R a+rX repo', 'chmod 711 "$private"'].join("\n");
+		const cloned = await run(sandbox, script, { gitUser: true, stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal });
+		return cloned.ok && (await installClone(sandbox, stage, "repo", signal)).marks.get("dir") === ".";
+	} finally { await removeTransport(sandbox, stage); }
+}
+
+/** Only for a freshly cloned workspace which has never run setup. A changed default
+ * branch, force push, dirty checkout or unavailable remote is a cold miss. */
+export function refreshReadyClone(url: string, branch?: string, commit?: string) {
+	return ['set -eu', CLONE_GIT_START, 'tree=$(pwd -P)', 'branch=$(git -C "$tree" symbolic-ref --short HEAD)',
+		branch ? `test "$branch" = ${shellQuote(branch)}` :
+			`test "$(git ls-remote --symref -- ${shellQuote(url)} HEAD | head -1 | cut -f1)" = "ref: refs/heads/$branch"`,
+		'status=$(git -C "$tree" status --porcelain)', 'test -z "$status"',
+		`git -C "$tree" fetch --quiet -- ${shellQuote(url)} "+refs/heads/$branch:refs/remotes/origin/$branch"`,
+		'git -C "$tree" merge --quiet --ff-only "refs/remotes/origin/$branch"',
+		`test "$(git -C "$tree" rev-parse HEAD)" = "${commit || '$(git -C "$tree" rev-parse "refs/remotes/origin/$branch")'}"`].join("\n");
+}
+
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
 export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt }): Promise<GitOutcome> {
 	const stage = randomBytes(16).toString("hex");
@@ -837,11 +927,7 @@ export async function cloneWithToken(sandbox: SandboxHandle, token: string, inpu
 			if (input.mirror?.reference && cloned.failure !== "aborted" && cloned.marks.has("mirrorfail")) return { ...cloned, failure: "mirror" };
 			return cloned;
 		}
-		const copy = await run(sandbox, ["set -eu", `export PATH=${SYSTEM_PATH}`,
-			'if [ -z "$(ls -A | grep -vxF .git || true)" ]; then rm -rf -- .git; target=.; else',
-			`target=${shellQuote(input.directory)}; if [ -d "$target" ] && [ ! -L "$target" ]; then [ -z "$(ls -A -- "$target")" ]; else mkdir -- "$target"; fi; fi`,
-			`cp -R -- ${shellQuote(transportDirectory(stage))}/repo/. "$target/"`, 'echo "wlp:dir $target"'].join("\n"),
-			{ stdin: "", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal });
+		const copy = await installClone(sandbox, stage, input.directory, input.signal);
 		if (copy.ok) for (const [key, value] of cloned.marks) copy.marks.set(key, value);
 		// The stage is named by this call, never by what the script printed.
 		if (copy.ok && copy.marks.has("mirrorsave")) {

@@ -1,9 +1,10 @@
-import { approvalText, featureCap, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
+import { answeredWords } from "../../../server/src/factory/answered.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -43,13 +44,13 @@ import {
 	type ItemAction,
 	type ItemAttachment,
 	type ItemBudget,
+	type ItemSpend,
 	type ItemEvent,
 	type ItemQuestion,
 	type ItemReview,
 	type ItemRun,
 	type ReviewRecommendation,
 	type ReviewRecord,
-	type RoundCaps,
 	type ItemSummary,
 	type FeedbackBatch,
 	type FeedbackEntry,
@@ -87,8 +88,12 @@ export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
 	state?: MockItemsState;
+	/** True writes the seeded features' texts at length (`?long=1`, `longFeatures`). */
+	long?: boolean;
 	/** False plays a deployment without the second review: no item gets one, as WLP_FACTORY_REVIEWER unset leaves them. Default true. */
 	reviewer?: boolean;
+	/** True gives the item that has a report the network requests its sessions' sandboxes refused (`?blocked=1`). */
+	blocked?: boolean;
 	now(): number;
 	/** Waits as long as the mock's answers take. */
 	latency(ms?: number): Promise<void>;
@@ -112,11 +117,9 @@ export interface MockItemsDeps {
 	machines(auth: AuthResult): { list: MachineSummary[]; minRunnerVersion: string } | null;
 }
 
-/** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`). */
-export const MOCK_FACTORY_LIMITS: FactoryLimits = structuredClone(FACTORY_DEFAULTS);
+/** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`), its owner having raised the hosted sandboxes at once to 6: the seeded agents at work leave room for more. */
+export const MOCK_FACTORY_LIMITS: FactoryLimits = { ...structuredClone(FACTORY_DEFAULTS), hostedRunning: 6 };
 
-/** The rounds a run allows (server/src/factory/blueprint.ts, `RULES`), as the server sends them in `ItemView.run.caps`. */
-const ROUND_CAPS: RoundCaps = { plan: 3, gate: 2, ci: 2, conflict: 1, review: 2 };
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -125,6 +128,7 @@ const repository = (id: number, owner: string, name: string, isPrivate: boolean)
 /** Repositories of the mock's GitHub connection (mock.ts). Each item has an agent session of its own, made with the seeded items (`seededSession`). */
 const HARBOR = { repository: repository(7101, "acme", "harbor", true) };
 const TIDES = { repository: repository(7102, "ada", "tide-tables", false) };
+const ENVIRONMENT_QUESTION = "The check “typecheck” could not run in the sandbox: its package manager refused to run. This is not a code problem, so the agent was not sent back. Fix the environment, then run the step again.";
 const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
@@ -133,17 +137,26 @@ const CHOICES: Record<ChoiceId, string> = {
 	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
-	raise: "Raise the limit and go on",
-	retry: "Retry from scratch",
+	raise: "Go on",
+	retry: "Start over (discards the sandbox's work)",
 	again: "Try again",
 	wait: "Keep waiting",
 	hand_over: "Hand it over as it is",
+	run_checks: "Run the checks again",
+	ci_alone: "Integrate on CI alone",
+	update_from_base: "Update from the base branch and run CI again",
 	give_up: "Give up",
+	add_secret: "Add it and continue",
+	without_secret: "Continue without it",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
 	run_anyway: "Run it anyway",
+	fresh_sandbox: "Start on a fresh sandbox",
+	larger_sandbox: "Go on in a larger sandbox",
 };
 const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
+/** A budget question's choices, as the server words them (blueprint.ts, `askBudget`): "Give it N more", hand over, give up. */
+const budgetChoices = (more: string, handOver = true) => [{ id: "raise" as const, label: `Give it ${more} more tokens` }, ...(handOver ? choices("hand_over") : []), ...choices("give_up")];
 
 const hex = (seed: number, length = 40) => {
 	let out = "";
@@ -190,13 +203,13 @@ interface Seed {
 	run?: Omit<ItemRun, "startedAt" | "endedAt" | "step"> & { started: number; ended?: number; step: { n: number; kind: StepKind; attempt?: number; started: number; turn?: ItemRun["step"]["turn"]; interruptions?: number } };
 	/** Where its second review is (`ItemSummary.review`); null when left out. */
 	review?: ItemSummary["review"];
-	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean]>;
+	events?: Array<[ago: number, said: string, step?: [run: number, n: number, kind: StepKind, attempt?: number], person?: boolean, asked?: string]>;
 	/**
 	 * `repositoryChecks`: how many of the repository's own checks ran beside the user's (`gate.required`);
 	 * none when left out.
 	 */
 	verdicts?: SeedVerdict[];
-	spent?: Partial<ItemBudget>;
+	spent?: Partial<ItemSpend>;
 	budget?: Partial<ItemBudget>;
 }
 
@@ -215,6 +228,8 @@ const ci = {
 	unread: (): Verdict["ci"] => ({ state: "unread", runs: [], said: null }),
 	/** Read, but not in full: more checks than the platform reads, none of those it read failed. */
 	unreadPartly: (): Verdict["ci"] => ({ state: "unread", runs: ciRuns(3, "success"), said: "GitHub listed more checks than the platform reads, and none of those it read failed" }),
+	/** CI finished without a failure, but some of its checks were cancelled (a newer push or a person stopped them). */
+	cancelled: (): Verdict["ci"] => ({ state: "cancelled", runs: [...ciRuns(2, "success"), { name: "e2e (chromium)", app: "github-actions", conclusion: "cancelled", url: "https://github.com/acme/harbor/actions/runs/9140" }, { name: "e2e (firefox)", app: "github-actions", conclusion: "cancelled", url: "https://github.com/acme/harbor/actions/runs/9141" }], said: null }),
 };
 
 const noChecks: Verdict["gate"] = { state: "none_set", required: [] };
@@ -224,10 +239,15 @@ const OLD_SANDBOX =
 	"This agent's sandbox is from an older version of the platform, whose Windlass cannot give the agent the platform's tools, so nothing was run. Start a new agent.";
 
 function ciRuns(count: number, conclusion: string): VerdictRun[] {
-	const names = ["build", "test (node 22)", "test (node 24)", "typecheck", "docs"];
+	const names = ["build", "test (node 22)", "test (node 24)", "typecheck", "docs", "lint", "e2e (chromium)", "e2e (firefox)", "e2e (webkit)", "unit (linux)", "unit (macos)", "unit (windows)", "bundle size", "license check", "codeql", "dependency review", "coverage", "changeset"];
 	return names.slice(0, count).map((name, index) => ({ name, app: "github-actions", conclusion, url: `https://github.com/acme/harbor/actions/runs/${9100 + index}` }));
 }
 
+/** The tide store's builder asked its person (`ask_person`): its own words, on the question and on its log entry. */
+const TIDE_STORE_ASKED: NonNullable<ItemQuestion["asked"]> = {
+	text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
+	options: ["SQLite", "Postgres", "One JSON file per station"],
+};
 const userChecks = (...statuses: Array<[name: string, status: Verdict["gate"]["required"][number]["status"], sentBack?: number]>): Verdict["gate"]["required"] => statuses.map(([name, status, sentBack]) => ({ name, status, sentBack: sentBack ?? 0 }));
 const passingGate: Verdict["gate"] = { state: "passed", required: userChecks(["unit tests", "passed"], ["lint", "passed"]) };
 
@@ -294,14 +314,14 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			spent: { tokens: 1_240_000, turns: 1, activeSeconds: 16 * 60, hostedSeconds: 16 * 60 },
 		},
 		// Each wait for capacity, as the user actor's turn queue words it (budget.ts, `admit`).
-		waitingFor(5, "Fix the flaky clock test", "The clock test fails about one run in twenty when the minute rolls over. Freeze the time in it.", HARBOR, "capacity", "Waiting for one of your 5 factory turns; 5 are running (“Bump the TLS library”, “Rename the config loader's options”, “Tidy the README's install steps”, …).", 6, at + 25_000),
-		waitingFor(6, "Drop the Node 20 workaround", "Node 20 is no longer supported. Remove the fallback for its missing fetch timeout, and 20 from the engines range.", HARBOR, "capacity", "Waiting for one of your 6 running turns; 6 are running, 1 of them your own.", 4, at + 40_000),
+		waitingFor(5, "Fix the flaky clock test", "The clock test fails about one run in twenty when the minute rolls over. Freeze the time in it.", HARBOR, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 6, at + 25_000),
+		waitingFor(6, "Drop the Node 20 workaround", "Node 20 is no longer supported. Remove the fallback for its missing fetch timeout, and 20 from the engines range.", HARBOR, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 4, at + 40_000),
 		waitingFor(7, "Log the upload's size", "Log each artefact's size when it is uploaded, in a unit a person reads easily.", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${spellSeconds(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). The allowance is this deployment's setting, which its owner can raise.`, 50, nextMidnight(at)),
 		waitingFor(8, "Explain the tide formula in a comment", "Above the harmonic sum, say in a comment what each term stands for and where the constants come from.", TIDES, "capacity", "Waiting for a place among the 20 sandboxes you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.", 12, at + 2 * MINUTE),
-		waitingFor(9, "Speed up the harmonic constants table", "Building the harmonic constants table takes 2 s at start. Build it once and keep it.", TIDES, "capacity", "Waiting for one of your 3 hosted sandboxes: 3 running now.", 7, at + 30_000),
+		waitingFor(9, "Speed up the harmonic constants table", "Building the harmonic constants table takes 2 s at start. Build it once and keep it.", TIDES, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 7, at + 30_000),
 		waitingFor(10, "Show the next high tide first", "On a station's page, list the next high tide above the rest of the day's tides.", TIDES, "capacity", `Waiting for a hosted sandbox: this deployment runs 10 at once and all are in use. Trying again at ${utc(at + 4 * MINUTE)} UTC.`, 9, at + 4 * MINUTE),
 		waitingFor(11, "Fix the timezone in the station list", "The station list shows times in UTC. Show them in each station's own timezone, and say which.", TIDES, "capacity", "Waiting for the item's agent to answer.", 1, at + 30_000),
-		waitingFor(12, "Add a changelog entry for 2.4", "Add the changelog entry for 2.4: the new search, the end of IE support and the fixed anchor links.", DOCS, "review_cap", "Waiting until fewer than 6 of your items are in review (6 now).", 35, at + 5 * MINUTE),
+		waitingFor(12, "Add a changelog entry for 2.4", "Add the changelog entry for 2.4: the new search, the end of IE support and the fixed anchor links.", DOCS, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 35, at + 5 * MINUTE),
 		// The waits on CI (blueprint.ts, `ciWaitSentence`): the work is pushed and has a pull request.
 		ciWait(13, "Cache the parsed station file", "Parse the station file once per run instead of once per lookup.", TIDES, `Waiting for CI to start on ${short(hex(13))}.`, 2, 51),
 		ciWait(14, "Use the new rounding helper", "Replace the three hand-written rounding functions with the shared helper.", TIDES, `Waiting for CI on ${short(hex(14))}: 2 of 5 checks finished.`, 6, 52),
@@ -391,7 +411,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			state: "waiting",
 			filed: 300,
 			pr: 49,
-			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 75 },
+			question: { kind: "rounds", text: "The same failure came back after a fix, so the factory stopped instead of trying it again.", choices: [{ id: "raise", label: "Try the fix once more" }, ...choices("retry", "hand_over", "give_up")], asked: 75 },
 			run: { n: 1, started: 299, stopReason: null, rounds: { plan: 0, gate: 0, ci: 1, conflict: 0 }, step: { n: 5, kind: "ci_fix", started: 75 } },
 			events: [
 				[299, "Started.", undefined, true],
@@ -409,14 +429,14 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		},
 		{
 			n: 23,
-			budget: { tokens: 4_000_000 },
+			budget: { tokens: 2_000_000 },
 			title: "Migrate the docs search to the new index",
 			body: "Move the docs search to the new search index and remove the old index's build step.",
 			on: DOCS,
 			state: "waiting",
 			filed: 420,
 			pr: 12,
-			question: { kind: "budget", text: "This item has used 4.1M of its 4M tokens.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 130 },
+			question: { kind: "budget", text: "This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are.", choices: budgetChoices("2M"), asked: 130 },
 			run: { n: 1, started: 419, stopReason: null, rounds: { plan: 0, gate: 1, ci: 2, conflict: 0 }, step: { n: 9, kind: "ci", started: 130 } },
 			events: [
 				[419, "Started.", undefined, true],
@@ -428,9 +448,9 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[220, "The checks passed.", [1, 6, "gate"]],
 				[219, `Pushed ${short(hex(23))} to pull request #12.`, [1, 7, "publish"]],
 				[180, "CI failed: docs.", [1, 8, "ci", 6]],
-				[130, "Asked: This item has used 4.1M of its 4M tokens.", [1, 9, "ci_fix"]],
+				[130, "Asked: This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are.", [1, 9, "ci_fix"]],
 			],
-			spent: { tokens: 4_100_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
+			spent: { tokens: 2_100_000, rawTokens: 19_300_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
 		},
 		{
 			n: 42,
@@ -446,6 +466,29 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[11, `Asked: The agent's turn could not start. ${OLD_SANDBOX}`, [1, 1, "implement"]],
 			],
 		},
+		// A check the sandbox could not run: the person is asked, with the check's command and the end of its output.
+		{
+			n: 81,
+			title: "Show the station's timezone",
+			body: "Show each station's timezone next to its name on the chart.",
+			on: TIDES,
+			state: "waiting",
+			filed: 25,
+			question: {
+				kind: "check_environment",
+				text: ENVIRONMENT_QUESTION,
+				choices: [{ id: "again", label: "Run the step again" }, { id: "give_up", label: "Give up" }],
+				asked: 3,
+				check: { name: "typecheck", command: "corepack pnpm -s typecheck", exitCode: 1, kind: "package_manager", line: "ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0", excerpt: " ERR_PNPM_BAD_PM_VERSION  This project is configured to use v11.25.0 of pnpm. Your current pnpm is v12.21.0\n\nIf you want to bypass this version check, you can set the \"package-manager-strict\" configuration to \"false\" or set the \"COREPACK_ENABLE_STRICT\" environment variable to \"0\"" },
+			},
+			run: { n: 1, started: 24, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "gate", started: 3 } },
+			events: [
+				[25, "Started.", undefined, true],
+				[3, "The checks could not run in the sandbox: typecheck. The agent was not sent back.", [1, 2, "gate"]],
+				[3, `Asked: ${ENVIRONMENT_QUESTION}`, [1, 2, "gate"]],
+			],
+			spent: { tokens: 210_000, turns: 1, activeSeconds: 21 * 60, hostedSeconds: 21 * 60 },
+		},
 		// The builder asked its person (`ask_person`): the platform's sentence, and the agent's own words beside it.
 		{
 			n: 79,
@@ -459,17 +502,40 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				text: "The agent stopped to ask you a question before it goes on.",
 				choices: choices("reply", "give_up"),
 				asked: 7,
-				asked_: {
-					text: "The repository has no database yet. Should the readings go in SQLite, in a file next to the station list, or in the Postgres server the deploy notes mention?\n\nWith SQLite or Postgres I will add a migration; with a file I will keep one JSON file per station.",
-					options: ["SQLite", "Postgres", "One JSON file per station"],
-				},
+				asked_: TIDE_STORE_ASKED,
 			},
 			run: { n: 1, started: 39, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 39 } },
 			events: [
 				[40, "Started.", undefined, true],
-				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"]],
+				[7, "Asked: The agent stopped to ask you a question before it goes on.", [1, 1, "implement"], false, TIDE_STORE_ASKED.text],
 			],
 			spent: { tokens: 380_000, turns: 1, activeSeconds: 32 * 60, hostedSeconds: 32 * 60 },
+		},
+		// The builder asked for a secret it lacks (`request_secret`): the name, and its reason in its own words.
+		{
+			n: 84,
+			title: "Send the release notes by email",
+			body: "After a release is published, email its notes to the subscribers list.",
+			on: HARBOR,
+			state: "waiting",
+			filed: 34,
+			question: {
+				kind: "secret_needed",
+				text: "The agent needs RESEND_API_KEY in its environment.",
+				choices: choices("add_secret", "without_secret", "give_up"),
+				asked: 4,
+				secret: {
+					name: "RESEND_API_KEY",
+					why: "The release script sends the notes through Resend, and its integration test calls the API. Without the key the test is skipped, so the email step would ship unverified.",
+					notice: "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it.\nIf supplied, this will be saved for this repository with agent scope.",
+				},
+			},
+			run: { n: 1, started: 33, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 33 } },
+			events: [
+				[34, "Started.", undefined, true],
+				[4, "Asked: The agent needs RESEND_API_KEY in its environment.", [1, 1, "implement"]],
+			],
+			spent: { tokens: 290_000, turns: 1, activeSeconds: 29 * 60, hostedSeconds: 29 * 60 },
 		},
 		// In review: each verdict, and each state of CI.
 		review(24, "Show the upload's checksum in the log", HARBOR, 61, { body: "After each upload, log the artefact's SHA-256 next to its name.", acceptance: ["The log has each uploaded artefact's SHA-256, next to its name."] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 20 }),
@@ -491,6 +557,10 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		// Handed over without a second review: the reviewer could not take its tool, and an older push named no commit (Reviewer slice R3-D).
 		review(47, "Quote the artefact names in the upload log", HARBOR, 70, { body: "Put each artefact's name in quotes in the upload log, so that a name with spaces reads as one.", acceptance: [] }, { result: "pass", gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: 21 }),
 		review(48, "Mention the docs site in the README", DOCS, 17, { body: "Link the docs site from the README's first paragraph.", acceptance: [] }, { result: "pass", gate: noChecks, ci: ci.passed(1), flags: [], mergeable: true, run: 1, ago: 44 }),
+		// Every check passed and the second reviewer approves: nothing is open.
+		review(82, "Show the build number in the footer", HARBOR, 75, { body: "Print the build number from BUILD_ID in the page footer, beside the version.", acceptance: [] }, { result: "pass", gate: passingGate, ci: ci.passed(18), flags: [], mergeable: true, run: 1, ago: 11 }),
+		// CI finished, but two of its checks were cancelled: nothing failed, and nothing verified the change either.
+		review(83, "Speed up the station import", TIDES, 62, { body: "The station import reads each file twice. Read it once.", acceptance: ["Importing every station takes less than half as long."] }, { result: "unverified", gate: passingGate, ci: ci.cancelled(), flags: [], mergeable: true, run: 1, ago: 15 }),
 		sentBack(31, "Add a health check endpoint", HARBOR, 60),
 		// Feedback from GitHub (G4): a run started by the PR's feedback, with more held while CI runs; and a fourth batch from others that asks first (`seededFeedback`).
 		{
@@ -689,7 +759,6 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 					[30, "Started.", undefined, true],
 					[29, "The turn started.", [1, 1, "implement"]],
 				],
-				spent: { tokens: 640_000, turns: 0, activeSeconds: 29 * 60 },
 			});
 		}
 		if (away) {
@@ -700,7 +769,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			const head = hex(53);
 			made.push({
 				n: 53,
-				budget: { turns: 10 },
+				budget: { tokens: 1_000_000 },
 				title: "Generate the API reference from the doc comments",
 				body: "Replace the hand-written API page with one generated from the doc comments at build time.",
 				on: DOCS,
@@ -708,7 +777,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				state: "waiting",
 				filed: 260,
 				pr: 64,
-				question: { kind: "budget", text: "This item has used 10 of its 10 turns.", choices: choices("raise", "retry", "hand_over", "give_up"), asked: 20 },
+				question: { kind: "budget", text: "This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.", choices: budgetChoices("1M"), asked: 20 },
 				run: { n: 1, started: 259, stopReason: null, rounds: { plan: 0, gate: 2, ci: 2, conflict: 0 }, step: { n: 12, kind: "ci_fix", started: 21 } },
 				events: [
 					[259, "Started.", undefined, true],
@@ -716,9 +785,9 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 					[200, "The checks passed.", [1, 2, "gate"]],
 					[199, `Pushed ${short(head)} to pull request #64.`, [1, 3, "publish"]],
 					[150, "CI failed: docs.", [1, 4, "ci", 6]],
-					[21, "Asked: This item has used 10 of its 10 turns.", [1, 12, "ci_fix"]],
+					[21, "Asked: This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.", [1, 12, "ci_fix"]],
 				],
-				spent: { tokens: 2_900_000, turns: 10, activeSeconds: 3 * 3600 + 5 * 60 },
+				spent: { tokens: 1_000_000, rawTokens: 9_200_000, turns: 10, activeSeconds: 3 * 3600 + 5 * 60 },
 			});
 		}
 		const removed = "Your machine was removed. This item can no longer work on it.";
@@ -931,8 +1000,16 @@ const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_
 export function ciSentence(ci: Verdict["ci"]): string {
 	const count = new Set(ci.runs.map((run) => run.name)).size;
 	switch (ci.state) {
-		case "passed":
-			return `CI passed (${count} ${count === 1 ? "check" : "checks"}).`;
+		case "passed": {
+			const passed = new Set(ci.runs.filter(run => run.conclusion === "success").map(run => run.name)).size;
+			return `CI passed (${passed} ${passed === 1 ? "check" : "checks"}).`;
+		}
+		case "cancelled": {
+			const cancelled = ci.runs.filter(run => run.conclusion === "cancelled" || run.conclusion === "stale");
+			const names = cancelled.map(run => run.name).join(", ");
+			const outcomes = [...new Set(cancelled.map(run => run.conclusion))].join(" or ");
+			return `CI did not finish: ${cancelled.length} ${cancelled.length === 1 ? "check was" : "checks were"} ${outcomes} (${names}); nothing failed.`;
+		}
 		case "failed": {
 			const failing = ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion));
 			return `CI failed: ${[...new Set(failing.map((run) => run.name))].join(", ")}.`;
@@ -1084,6 +1161,11 @@ function seededFeedback(seed: Seed, repo: string, ago: (minutes: number) => numb
 					entry("mira", "review_comment", 5, "`Intl.DateTimeFormat` gives the full name with `timeZoneName: \"longGeneric\"`.", { path: "src/station/time.ts", line: 31 }),
 				]),
 			] };
+		case 41:
+			return { notTaken: 0, batches: [batch("pending", "Collecting the comments into one batch.", [
+				entry("ada", "changes_requested", 4, "Keep the 410 answer, but also link the migration note from the README's API section."),
+				entry("jonas", "review_comment", 3, "This leaves `exportRoutes` imported and unused. The lint check in CI will flag it once it runs on this file.", { path: "src/api/index.ts", line: 7 }),
+			])] };
 		default:
 			return { batches: [], notTaken: 0 };
 	}
@@ -1093,7 +1175,9 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 	const id = `it_${hex(seed.n, 12)}`;
 	const ago = (minutes: number) => at - minutes * MINUTE;
 	const budget: ItemBudget = { ...MOCK_FACTORY_LIMITS.item, ...seed.budget };
-	const spent: ItemBudget = { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent };
+	// A seed's tokens are as reported unless it gives both: weighted, where an agent mostly rereads its context from the cache, they come to about a fifth.
+	const reported = seed.spent?.rawTokens ?? seed.spent?.tokens ?? 0;
+	const spent: ItemSpend = { turns: 0, activeSeconds: 0, hostedSeconds: 0, ...seed.spent, rawTokens: reported, tokens: seed.spent?.rawTokens === undefined ? Math.round(reported / 5) : seed.spent.tokens ?? 0 };
 	const head = seed.pr === undefined ? null : hex(seed.n);
 	const repository = seed.on.repository;
 	const place: SandboxPlace = seed.place ?? { kind: "hosted" };
@@ -1110,7 +1194,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		acceptance: seed.acceptance ?? [],
 	})) as Verdict[];
 	const last = verdicts[verdicts.length - 1];
-	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }) } : null;
+	const question: ItemQuestion | null = seed.question ? { id: `${id}:q${seed.n + 3}`, kind: seed.question.kind, text: seed.question.text, choices: seed.question.choices, askedAt: ago(seed.question.asked), ...(seed.question.asked_ && { asked: seed.question.asked_ }), ...(seed.question.check && { check: seed.question.check }), ...(seed.question.secret && { secret: seed.question.secret }) } : null;
 	const wait: Waiting | null = question ? { reason: question.kind === "budget" ? "budget" : "person", sentence: question.text, retryAt: null, since: question.askedAt } : seed.wait ? { reason: seed.wait.reason, sentence: seed.wait.sentence, retryAt: seed.wait.retryAt, since: ago(seed.wait.since) } : null;
 	const run: ItemView["run"] = seed.run
 		? {
@@ -1120,10 +1204,9 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 				stopReason: seed.run.stopReason,
 				rounds: seed.run.rounds,
 				step: { n: seed.run.step.n, kind: seed.run.step.kind, attempt: seed.run.step.attempt ?? 1, startedAt: ago(seed.run.step.started), turn: seed.run.step.turn ?? null, checks: 0, interruptions: seed.run.step.interruptions ?? 0 },
-				caps: ROUND_CAPS,
 			}
 		: null;
-	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said }));
+	const events: ItemEvent[] = (seed.events ?? []).map(([when, said, step, person, asked]) => ({ at: ago(when), by: person ? `person:${uid}` : "platform", step: step ? { run: step[0], n: step[1], kind: step[2], attempt: step[3] ?? 1 } : null, said, ...(asked !== undefined && { asked }) }));
 	const updatedAt = events.length > 0 ? Math.max(...events.map((event) => event.at)) : ago(seed.filed);
 	return {
 		id,
@@ -1171,17 +1254,70 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 /** A feature's plan as the planner files it, at `single` a single item's budget (server/src/factory/blueprint.ts, `file_plan`). */
 function featurePlan(version: number, status: FeaturePlan["status"], spec: FeaturePlan["spec"], subtasks: PlanSubtask[], questions: FeaturePlan["questions"] = []): FeaturePlan {
 	const single = MOCK_FACTORY_LIMITS.item;
-	return { version, status, questions, singleSuggested: null, spec, subtasks, budget: featureCap(single), compare: { singleBudget: { ...single } } };
+	return { version, status, questions, singleSuggested: null, spec, subtasks, budget: { tokens: single.tokens + planTokens({ subtasks }), hostedSeconds: single.hostedSeconds }, compare: { singleBudget: { ...single } } };
 }
 
-const HOUR_S = 3600;
+
+/** `?long=1`: a gate line as long as the platform writes one when a check fails with its reasons. */
+const LONG_GATE_LINE = "“Add a golden-file test for 2.4.0” stopped at the gate: `pnpm test test/golden` failed with 3 of 41 tests failing (expected CRLF line endings, got LF in rows 2–40,001; the golden file was written on a machine with core.autocrlf=true). Sent it back for a fix: round 1 of 2.";
+
+/** `?long=1`: an agent's question as agents write them, several sentences and options a sentence long. */
+const LONG_ASK: NonNullable<ItemQuestion["asked"]> = {
+	text: "The release runner gives a step 64 MiB, but the 40,000-artefact fixture holds every checksum in one JSON array that is 71 MiB on its own before any row is written. I can either (a) switch artefacts.ts to a streaming JSON parser, which touches a file another subtask also reads, or (b) keep the parser and ask the compliance team whether releases that large can be exported in two halves by platform. Option (a) is the cleaner fix but it widens what this subtask owns; option (b) keeps the change small but changes what the team receives.\n\nWhich do you want?",
+	options: ["Switch artefacts.ts to a streaming parser, even though it is outside the paths this subtask owns", "Keep the parser and export very large releases in two halves, split by platform", "Stop here and re-plan"],
+};
+
+/** A subtask's brief as a planner writes one: about twenty lines, with steps, constraints and the hand-off. */
+function longBrief(what: string): string {
+	return [
+		`Goal: ${what}. Work only inside the paths this subtask owns; anything outside them belongs to another subtask and will be rejected at integration.`,
+		"",
+		"Context: the manifest command lives in src/manifest/ and reads the release's artefact list through src/release/artefacts.ts. The CSV export is for the compliance team, who import it into a spreadsheet that expects RFC 4180 quoting, a header row, CRLF line endings and UTF-8 without a byte order mark.",
+		"",
+		"Steps:",
+		"1. Read src/manifest/index.ts and src/release/artefacts.ts to learn how artefacts are listed and in which order.",
+		"2. Add the code described above, keeping the existing text output byte-for-byte unchanged when --csv is not given.",
+		"3. Stream rows: a release can list more than 40,000 artefacts, so never build the whole CSV in memory.",
+		"4. Quote every field that contains a comma, a double quote, CR or LF; double any embedded double quote.",
+		"5. Keep column order: name, version, platform, size_bytes, sha256, signed_by, published_at (ISO 8601, UTC).",
+		"6. Add or update unit tests next to the code; use the fixtures in test/fixtures/manifest-2.4.0.json.",
+		"7. Run the checks listed under acceptance and paste their last lines into your report.",
+		"",
+		"Constraints: do not add dependencies; the repository bans new runtime packages without an issue. Do not change the public flags of other commands. Keep functions under 60 lines; the lint rule max-lines-per-function is on in CI.",
+		"",
+		"Hand-off: report what you changed, the commands you ran and their results, and anything the next subtask (see dependsOn) must know, such as exported function names and their signatures.",
+	].join("\n");
+}
+
+/** `?long=1`: the export plan with six subtasks and the search plan's questions, each as long as a planner writes them. */
+function longPlan(exportPlan: FeaturePlan, searchPlan: FeaturePlan): void {
+	const owns = (base: string) => [`${base}/**`, `${base}/index.ts`, `${base}/types.ts`, `${base}/stream.ts`, `${base}/quote.ts`, `${base}/header.ts`, `${base}/__tests__/**`, "test/fixtures/manifest-2.4.0.json", "test/fixtures/manifest-empty.json", "docs/manifest.md", "src/cli.ts", "src/release/artefacts.ts"];
+	const acceptance = (target: string) => [`Run \`pnpm test ${target}\` and it passes with no skipped tests.`, "Run `pnpm lint` and it reports no new warnings in the owned paths.", "Run `pnpm typecheck` with no errors.", "A 40,000-artefact fixture exports in under 2 seconds and under 64 MiB of memory, measured with `node --max-old-space-size=64`.", "The text output of `harbor manifest 2.4.0` without --csv is byte-for-byte what it was on main.", "The report lists every command run with its last three lines of output."];
+	const place = { prefer: "nas", reason: "nas has the release fixtures cached from the last export and both of its slots are free right now; studio is busy with the visual checks and ci-box holds no repository secrets, so nas is the only place that can run the integration test against the signed artefacts without fetching them again.", allow: ["studio"] };
+	const subtask = (key: string, title: string, dependsOn: string[]): PlanSubtask => ({ key, title, brief: longBrief(title), acceptance: acceptance(`src/${key}`), dependsOn, owns: owns(`src/${key}`), budget: { tokens: 1_500_000 }, place });
+	exportPlan.subtasks = [
+		{ ...subtask("writer", "Add the CSV writer", []) },
+		{ ...subtask("flag", "Wire --csv into the manifest command", ["writer"]), budget: { tokens: 2_000_000 } },
+		subtask("golden", "Add a golden-file test for 2.4.0", ["writer"]),
+		subtask("stream", "Stream rows for releases with 40,000 artefacts", ["writer"]),
+		subtask("docs", "Document the CSV export for the compliance team", ["flag"]),
+		subtask("bench", "Benchmark the export against the memory limit", ["stream", "golden"]),
+	];
+	exportPlan.spec.goal = "Export a release's manifest as CSV for the compliance team, who import it into a spreadsheet each quarter: every artefact as one row with its name, version, platform, size, checksum, signer and publish time, quoted as RFC 4180 says, streamed so that the largest releases (over 40,000 artefacts) export within the memory the release runner gives a step, and without changing what the command prints when --csv is not given.";
+	exportPlan.spec.requirements = acceptance("src").concat(["The CSV header names the columns in the order the compliance spreadsheet expects them.", "Rows are written in the order the release lists its artefacts."]);
+	exportPlan.overflow = true;
+	searchPlan.questions = [
+		{ id: "archived", text: "Release notes before 2.0 were written in a different format (one long HTML page per year rather than one Markdown file per release), so indexing them means writing a second parser for that format and accepting that their search results will show a year rather than a release number. Should the search index include the notes of releases older than 2.0, or should it start at 2.0 and say so in the command's help text?", options: ["Yes, index every release, including the HTML pages from before 2.0, and show the year for those", "No, start at 2.0 and mention in `harbor search --help` that older notes are not searched"] },
+		{ id: "ranking", text: "Term frequency ranks long pages above short ones that match better. Should the command rank by plain term frequency as the issue says, or by BM25, which normalises for page length but is harder to explain in the docs?", options: ["Plain term frequency, as the issue asks", "BM25, normalised for page length", "Term frequency now, with a follow-up item for BM25"] },
+	];
+}
 
 /**
  * The orchestrated features of `?items=features`, with their subtasks' items: a plan waiting for
  * approval with a question to answer first, a feature running its second subtask, and one whose first
  * subtask asks its person something (listed in Needs you under the feature's name).
  */
-function seededFeatures(at: number, uid: string): ItemView[] {
+function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	const ago = (minutes: number) => at - minutes * MINUTE;
 	const feature = (seed: Seed, plan: FeaturePlan, wait: Waiting | null): ItemView => {
 		const view = viewOf(seed, at, uid);
@@ -1190,7 +1326,7 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	const child = (parent: ItemView, key: string, seed: Seed): ItemView => {
 		const sub = parent.plan!.subtasks.find((one) => one.key === key)!;
 		const view = viewOf({ ...seed, title: sub.title, on: HARBOR, body: sub.brief, acceptance: sub.acceptance }, at, uid);
-		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { ...sub.budget }, review: { state: "off", recommendation: null }, reviewNone: "Subtasks share the feature review.", task: { ...view.task, base: `windlass/feature-${parent.id}` } };
+		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, review: { state: "off", recommendation: null }, reviewNone: FEATURE_REVIEW, task: { ...view.task, base: `windlass/feature-${parent.id}` } };
 	};
 
 	// 1. Waiting for approval: three subtasks in a chain, and a question to answer before it can be approved.
@@ -1204,9 +1340,9 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`harbor search upload retry` lists the retry section of docs/uploads.md first.", "`pnpm test` passes."],
 		},
 		[
-			{ key: "index", title: "Build the search index at release", brief: "Walk docs/ and CHANGELOG.md, tokenise each page and write search-index.json beside the release artefacts.", acceptance: ["Run `pnpm test src/search/index.test.ts`.", "The index lists every page under docs/."], dependsOn: [], owns: ["src/search/index/**", "scripts/release.ts"], budget: { tokens: 2_400_000, turns: 6, activeSeconds: 1.5 * HOUR_S, hostedSeconds: 45 * 60 } },
-			{ key: "command", title: "Add the search command", brief: "Read search-index.json and rank pages by term frequency. Print the title, path and the first matching line.", acceptance: ["Run `pnpm test src/search/command.test.ts`.", "`harbor search` with no words prints its usage."], dependsOn: ["index"], owns: ["src/search/command/**", "src/cli.ts"], budget: { tokens: 1_800_000, turns: 5, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 } },
-			{ key: "docs", title: "Document search in the README", brief: "A short section with two examples and what the index covers.", acceptance: ["Run `pnpm lint:docs`."], dependsOn: ["command"], owns: ["README.md", "docs/search.md"], budget: { tokens: 700_000, turns: 2, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 } },
+			{ key: "index", title: "Build the search index at release", brief: "Walk docs/ and CHANGELOG.md, tokenise each page and write search-index.json beside the release artefacts.", acceptance: ["Run `pnpm test src/search/index.test.ts`.", "The index lists every page under docs/."], dependsOn: [], owns: ["src/search/index/**", "scripts/release.ts"], budget: { tokens: 1_000_000 } },
+			{ key: "command", title: "Add the search command", brief: "Read search-index.json and rank pages by term frequency. Print the title, path and the first matching line.", acceptance: ["Run `pnpm test src/search/command.test.ts`.", "`harbor search` with no words prints its usage."], dependsOn: ["index"], owns: ["src/search/command/**", "src/cli.ts"], budget: { tokens: 700_000 } },
+			{ key: "docs", title: "Document search in the README", brief: "A short section with two examples and what the index covers.", acceptance: ["Run `pnpm lint:docs`."], dependsOn: ["command"], owns: ["README.md", "docs/search.md"], budget: { tokens: 300_000 } },
 		],
 		[{ id: "archived", text: "Should search include the notes of releases older than 2.0?", options: ["Yes, every release", "No, 2.0 and later"] }],
 	);
@@ -1231,11 +1367,13 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`harbor manifest 2.4.0 --csv` prints one row per artefact.", "`pnpm test` passes."],
 		},
 		[
-			{ key: "writer", title: "Add the CSV writer", brief: "A small writer in src/csv/ with quoting and a header row.", acceptance: ["Run `pnpm test src/csv`."], dependsOn: [], owns: ["src/csv/**"], budget: { tokens: 1_500_000, turns: 4, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 } },
-			{ key: "flag", title: "Wire --csv into the manifest command", brief: "Add the flag, stream the rows through the writer.", acceptance: ["Run `pnpm test src/manifest`."], dependsOn: ["writer"], owns: ["src/manifest/**"], budget: { tokens: 2_000_000, turns: 5, activeSeconds: 1.25 * HOUR_S, hostedSeconds: 40 * 60 } },
-			{ key: "golden", title: "Add a golden-file test for 2.4.0", brief: "Check the CSV of the 2.4.0 manifest against a file kept in test/golden.", acceptance: ["Run `pnpm test test/golden`."], dependsOn: ["flag"], owns: ["test/golden/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 } },
+			{ key: "writer", title: "Add the CSV writer", brief: "A small writer in src/csv/ with quoting and a header row.", acceptance: ["Run `pnpm test src/csv`."], dependsOn: [], owns: ["src/csv/**"], budget: { tokens: 600_000 } },
+			{ key: "flag", title: "Wire --csv into the manifest command", brief: "Add the flag, stream the rows through the writer.", acceptance: ["Run `pnpm test src/manifest`."], dependsOn: ["writer"], owns: ["src/manifest/**"], budget: { tokens: 800_000 } },
+			{ key: "golden", title: "Add a golden-file test for 2.4.0", brief: "Check the CSV of the 2.4.0 manifest against a file kept in test/golden.", acceptance: ["Run `pnpm test test/golden`."], dependsOn: ["flag"], owns: ["test/golden/**"], budget: { tokens: 400_000 } },
 		],
 	);
+	// `?long=1`: the texts as long as planners write them, and six subtasks, three of them at once.
+	if (long) longPlan(exportPlan, searchPlan);
 	exportPlan.approvedAt = ago(80);
 	exportPlan.approvedBy = `person:${uid}`;
 	const exporting = feature(
@@ -1249,6 +1387,26 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 	const writer = child(exporting, "writer", { n: 63, title: "", on: HARBOR, state: "done", filed: 79, run: { n: 1, started: 79, ended: 31, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 31 } }, spent: { tokens: 1_210_000, turns: 3, activeSeconds: 44 * 60, hostedSeconds: 41 * 60 } });
 	const flag = child(exporting, "flag", { n: 64, title: "", on: HARBOR, state: "working", filed: 30, run: { n: 1, started: 30, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 29, turn: "started" } }, spent: { tokens: 520_000, turns: 1, activeSeconds: 12 * 60, hostedSeconds: 12 * 60 } });
 	exporting.children = [writer, flag].map(summaryOf);
+	const longOnes: ItemView[] = [];
+	if (long) {
+		const studio: SandboxPlace = { kind: "machine", machineId: "m_studio" };
+		const onNas: SandboxPlace = { kind: "machine", machineId: "m_nas" };
+		const reason = exportPlan.subtasks[0]!.place!.reason;
+		writer.placement = { place: onNas, name: "nas", reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		flag.placement = { place: onNas, name: "nas", reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		flag.spent = { ...flag.spent, turns: 2 };
+		const golden = child(exporting, "golden", { n: 91, title: "", on: HARBOR, state: "working", filed: 29, run: { n: 1, started: 29, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 3, kind: "implement", started: 6, turn: "started" } }, spent: { tokens: 880_000, turns: 2, activeSeconds: 21 * 60, hostedSeconds: 21 * 60 } });
+		golden.placement = { place: onNas, name: "nas", reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		golden.events.push({ ...golden.events[golden.events.length - 1]!, at: ago(6), said: LONG_GATE_LINE });
+		const stream = child(exporting, "stream", { n: 92, title: "", on: HARBOR, state: "waiting", filed: 28, question: { kind: "agent_ask", text: "The agent stopped to ask you a question before it goes on.", choices: choices("reply", "give_up"), asked: 3, asked_: LONG_ASK }, run: { n: 1, started: 28, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 27 } }, spent: { tokens: 1_310_000, turns: 3, activeSeconds: 26 * 60, hostedSeconds: 26 * 60 } });
+		stream.placement = { place: studio, name: "studio", reason: "Approved overflow from ‘nas’", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+		stream.wait = { reason: "person", sentence: "Waiting for your answer to the agent's question.", since: ago(3), retryAt: null };
+		longOnes.push(golden, stream);
+		exporting.children = [writer, flag, golden, stream].map(summaryOf);
+		exporting.wait = { reason: "children", sentence: "Running “Wire --csv into the manifest command” on ‘nas’, “Add a golden-file test for 2.4.0” on ‘nas’ and “Stream rows for releases with 40,000 artefacts” on ‘studio’ (overflow from ‘nas’, whose two slots are both taken); waiting for you on “Stream rows for releases with 40,000 artefacts”; 2 of 6 subtasks not started.", since: ago(3), retryAt: null };
+		exporting.events.push({ ...exporting.events[exporting.events.length - 1]!, at: ago(6), said: LONG_GATE_LINE });
+		search.question = { ...search.question!, text: approvalText(searchPlan) };
+	}
 
 	// 3. Its first subtask asks: the agent changed nothing. The question is listed in Needs you under the feature's name.
 	const themePlan = featurePlan(
@@ -1256,8 +1414,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		"approved",
 		{ goal: "A dark theme for the release dashboard, following the system setting.", requirements: ["Colour tokens for both themes.", "The dashboard reads prefers-color-scheme."], outOfScope: ["A theme switch in the page."], acceptance: ["A screenshot of the dashboard in both themes.", "`pnpm test` passes."] },
 		[
-			{ key: "tokens", title: "Move the dashboard's colours to tokens", brief: "Replace literal colours in web/dashboard with CSS custom properties.", acceptance: ["Run `pnpm test web/dashboard`.", "A screenshot of the dashboard unchanged."], dependsOn: [], owns: ["web/dashboard/styles/**"], budget: { tokens: 1_200_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 30 * 60 } },
-			{ key: "dark", title: "Add the dark palette", brief: "Define the dark values under prefers-color-scheme.", acceptance: ["A screenshot of the dashboard in dark."], dependsOn: ["tokens"], owns: ["web/dashboard/theme/**"], budget: { tokens: 1_000_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 25 * 60 } },
+			{ key: "tokens", title: "Move the dashboard's colours to tokens", brief: "Replace literal colours in web/dashboard with CSS custom properties.", acceptance: ["Run `pnpm test web/dashboard`.", "A screenshot of the dashboard unchanged."], dependsOn: [], owns: ["web/dashboard/styles/**"], budget: { tokens: 500_000 } },
+			{ key: "dark", title: "Add the dark palette", brief: "Define the dark values under prefers-color-scheme.", acceptance: ["A screenshot of the dashboard in dark."], dependsOn: ["tokens"], owns: ["web/dashboard/theme/**"], budget: { tokens: 400_000 } },
 		],
 	);
 	themePlan.approvedAt = ago(48);
@@ -1294,8 +1452,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			],
 		},
 		[
-			{ key: "state", title: "Keep the chunk state beside the artefact", brief: "Write and read the state file, keyed by the artefact's checksum.", acceptance: ["Run `pnpm test src/upload/state.test.ts`."], dependsOn: [], owns: ["src/upload/state/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 30 * 60 } },
-			{ key: "resume", title: "Send only the missing chunks", brief: "Ask the server which chunks it holds, then send the rest in order.", acceptance: ["Run `pnpm test src/upload`."], dependsOn: ["state"], owns: ["src/upload/client.ts", "src/upload/chunks.ts"], budget: { tokens: 2_200_000, turns: 6, activeSeconds: 1.5 * HOUR_S, hostedSeconds: 45 * 60 } },
+			{ key: "state", title: "Keep the chunk state beside the artefact", brief: "Write and read the state file, keyed by the artefact's checksum.", acceptance: ["Run `pnpm test src/upload/state.test.ts`."], dependsOn: [], owns: ["src/upload/state/**"], budget: { tokens: 600_000 } },
+			{ key: "resume", title: "Send only the missing chunks", brief: "Ask the server which chunks it holds, then send the rest in order.", acceptance: ["Run `pnpm test src/upload`."], dependsOn: ["state"], owns: ["src/upload/client.ts", "src/upload/chunks.ts"], budget: { tokens: 900_000 } },
 		],
 	);
 	const resuming = feature(
@@ -1320,11 +1478,11 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["A screenshot of each capture.", "`pnpm test test/visual` passes."],
 		},
 		[
-			{ key: "fixtures", title: "Record the chart fixtures", brief: "Generate three tide days with known extremes and keep them in test/visual/fixtures.", acceptance: ["Run `pnpm test test/visual/fixtures.test.ts`."], dependsOn: [], owns: ["test/visual/fixtures/**"], budget: { tokens: 1_200_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+			{ key: "fixtures", title: "Record the chart fixtures", brief: "Generate three tide days with known extremes and keep them in test/visual/fixtures.", acceptance: ["Run `pnpm test test/visual/fixtures.test.ts`."], dependsOn: [], owns: ["test/visual/fixtures/**"], budget: { tokens: 500_000 },
 				place: { prefer: "nas", reason: "Big builds, and both its slots are free." }, needs: { cpus: 4, memoryGiB: 6 } },
-			{ key: "capture", title: "Capture the chart in both themes", brief: "Render the chart for each fixture at two widths and both themes, and save the captures.", acceptance: ["A screenshot of each capture."], dependsOn: ["fixtures"], owns: ["test/visual/capture/**"], budget: { tokens: 1_600_000, turns: 5, activeSeconds: 1 * HOUR_S, hostedSeconds: 30 * 60 },
+			{ key: "capture", title: "Capture the chart in both themes", brief: "Render the chart for each fixture at two widths and both themes, and save the captures.", acceptance: ["A screenshot of each capture."], dependsOn: ["fixtures"], owns: ["test/visual/capture/**"], budget: { tokens: 600_000 },
 				place: { prefer: "studio", reason: "The only machine that reports screenshots.", allow: ["nas"] }, needs: { screenshots: true } },
-			{ key: "compare", title: "Compare captures against the baseline", brief: "Diff each capture against the kept baseline and fail above 0.2% changed pixels.", acceptance: ["Run `pnpm test test/visual`."], dependsOn: ["capture"], owns: ["test/visual/compare/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+			{ key: "compare", title: "Compare captures against the baseline", brief: "Diff each capture against the kept baseline and fail above 0.2% changed pixels.", acceptance: ["Run `pnpm test test/visual`."], dependsOn: ["capture"], owns: ["test/visual/compare/**"], budget: { tokens: 400_000 },
 				place: { prefer: "ci-box", reason: "Idle, with four slots free." } },
 		],
 	);
@@ -1350,10 +1508,10 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["A screenshot of the first page.", "`pnpm test src/export` passes."],
 		},
 		[
-			{ key: "query", title: "Read the night's readings", brief: "Query the readings of the last night by station.", acceptance: ["Run `pnpm test src/export/query.test.ts`."], dependsOn: [], owns: ["src/export/query/**"], budget: { tokens: 800_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 } },
-			{ key: "render", title: "Render the table as a PDF", brief: "Lay out one page per station with the headless browser.", acceptance: ["Run `pnpm test src/export/pdf.test.ts`."], dependsOn: ["query"], owns: ["src/export/pdf/**"], budget: { tokens: 1_400_000, turns: 4, activeSeconds: 50 * 60, hostedSeconds: 25 * 60 },
+			{ key: "query", title: "Read the night's readings", brief: "Query the readings of the last night by station.", acceptance: ["Run `pnpm test src/export/query.test.ts`."], dependsOn: [], owns: ["src/export/query/**"], budget: { tokens: 300_000 } },
+			{ key: "render", title: "Render the table as a PDF", brief: "Lay out one page per station with the headless browser.", acceptance: ["Run `pnpm test src/export/pdf.test.ts`."], dependsOn: ["query"], owns: ["src/export/pdf/**"], budget: { tokens: 600_000 },
 				place: { prefer: "studio", reason: "Its browser is warm from the last export.", allow: ["nas"] } },
-			{ key: "proof", title: "Screenshot each page as a proof", brief: "Capture every page of the PDF and attach the first to the report.", acceptance: ["A screenshot of the first page."], dependsOn: ["render"], owns: ["test/export/proof/**"], budget: { tokens: 700_000, turns: 3, activeSeconds: 30 * 60, hostedSeconds: 15 * 60 },
+			{ key: "proof", title: "Screenshot each page as a proof", brief: "Capture every page of the PDF and attach the first to the report.", acceptance: ["A screenshot of the first page."], dependsOn: ["render"], owns: ["test/export/proof/**"], budget: { tokens: 300_000 },
 				place: { prefer: "studio", reason: "The only machine that reports screenshots." }, needs: { screenshots: true, cpus: 4 } },
 		],
 	);
@@ -1386,8 +1544,8 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`pnpm test src/alerts` passes."],
 		},
 		[
-			{ key: "detect", title: "Detect flood-line crossings", brief: "Compare each reading with the station's flood line and record a crossing once.", acceptance: ["Run `pnpm test src/alerts/detect.test.ts`."], dependsOn: [], owns: ["src/alerts/detect/**"], budget: { tokens: 900_000, turns: 3, activeSeconds: 35 * 60, hostedSeconds: 20 * 60 } },
-			{ key: "mail", title: "Send the alert mails", brief: "Mail each subscriber of the station once per crossing, through the release relay.", acceptance: ["Run `pnpm test src/alerts/mail.test.ts`."], dependsOn: ["detect"], owns: ["src/alerts/mail/**"], budget: { tokens: 1_100_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 25 * 60 },
+			{ key: "detect", title: "Detect flood-line crossings", brief: "Compare each reading with the station's flood line and record a crossing once.", acceptance: ["Run `pnpm test src/alerts/detect.test.ts`."], dependsOn: [], owns: ["src/alerts/detect/**"], budget: { tokens: 400_000 } },
+			{ key: "mail", title: "Send the alert mails", brief: "Mail each subscriber of the station once per crossing, through the release relay.", acceptance: ["Run `pnpm test src/alerts/mail.test.ts`."], dependsOn: ["detect"], owns: ["src/alerts/mail/**"], budget: { tokens: 400_000 },
 				place: { prefer: "ci-box", reason: "It holds the release relay's credentials." } },
 		],
 	);
@@ -1418,7 +1576,7 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		},
 		[],
 		[
-			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"] },
+			{ id: "mode", text: "Round half up, or half to even?", options: ["Half up", "Half to even"], why: "Half to even keeps averages of many readings unbiased; half up is what the tide tables printed on paper use." },
 			{ id: "csv", text: "Should the CSV export round too, or keep the raw millimetres?" },
 		],
 	);
@@ -1444,9 +1602,9 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 			acceptance: ["`pnpm test src/mail` passes."],
 		},
 		[
-			{ key: "templates", title: "Write the alert email templates", brief: "One template per alert kind, with a plain-text part.", acceptance: ["Run `pnpm test src/mail/templates.test.ts`."], dependsOn: [], owns: ["src/mail/templates/**"], budget: { tokens: 900_000, turns: 4, activeSeconds: 40 * 60, hostedSeconds: 20 * 60 },
+			{ key: "templates", title: "Write the alert email templates", brief: "One template per alert kind, with a plain-text part.", acceptance: ["Run `pnpm test src/mail/templates.test.ts`."], dependsOn: [], owns: ["src/mail/templates/**"], budget: { tokens: 400_000 },
 				place: { prefer: "nas", reason: "Claude Code is signed in there." }, agent: { harness: "claude", model: "opus", effort: "high" } },
-			{ key: "sender", title: "Send alerts to subscribers", brief: "Send each alert to the station's subscribers, retrying a bounce once.", acceptance: ["Run `pnpm test src/mail/send.test.ts`."], dependsOn: ["templates"], owns: ["src/mail/send/**"], budget: { tokens: 1_100_000, turns: 4, activeSeconds: 45 * 60, hostedSeconds: 20 * 60 },
+			{ key: "sender", title: "Send alerts to subscribers", brief: "Send each alert to the station's subscribers, retrying a bounce once.", acceptance: ["Run `pnpm test src/mail/send.test.ts`."], dependsOn: ["templates"], owns: ["src/mail/send/**"], budget: { tokens: 400_000 },
 				place: { prefer: "nas", reason: "Same machine as the templates." } },
 		],
 	);
@@ -1460,25 +1618,123 @@ function seededFeatures(at: number, uid: string): ItemView[] {
 		null,
 	);
 
-	return [search, exporting, writer, flag, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail];
+	// 10. Two long subtasks, as a planner writes them for a large change: long briefs, many files and checks, a reason for each place,
+	// and two questions with their background. The plan card and the plan's section show them compactly.
+	const feedbackPlan = featurePlan(
+		1,
+		"proposed",
+		{
+			goal: "Take `/windlass` feedback on pull requests opened from a session, as queued turns of that session.",
+			requirements: [
+				"A personal session's pull request is registered with its repository when it is published, and again when the session wakes.",
+				"Feedback on it queues a turn of that session; it never steers a running turn.",
+				"A duplicate or replayed delivery queues nothing twice.",
+				"Feedback from someone other than the owner waits for the owner's consent on Docker, hardened.",
+				"Item-owned sessions keep their own feedback path.",
+			],
+			outOfScope: ["Backfilling pull requests of sessions that stay dormant.", "Feedback on pull requests opened outside the platform."],
+			acceptance: ["`pnpm --filter @windlass-platform/server typecheck` passes.", "The webhook check's session cases pass.", "The docs build passes."],
+		},
+		[
+			{ key: "session-feedback", title: "Persist session PR targets and admit feedback as queued session turns", brief: "Add a separate personal-session pull request registration and lookup to githubRepository, leaving internalFind's item semantics unchanged. Wire registration into the panel's and the agent's successful publication in agent-session.ts and repair it on wake; persist and retry a failed registration, and clean up or invalidate stale and deleted targets. Bind to the installation actually used to publish, not merely the stored hint. Add a service-only session feedback action that checks the repository, installation and pull request and refuses item-owned sessions, then durably deduplicates and queues the notices. Drain when idle and after a turn fully closes, keeping the personal session's admission, redaction and usage. Do not use prompt(), which steers. Persist the taken subject with the turn's admission so retries and wakes cannot take it twice.",
+				acceptance: ["`pnpm --filter @windlass-platform/server typecheck` passes.", "Webhook-check cases prove a personal session's publication registers the right repository, installation and session, while an item's publication is not registered as a competing target.", "Service-action tests prove idle delivery starts one normal turn, busy delivery waits without steering, and duplicates do not add timeline entries.", "Tests verify the destination refuses a foreign repository, installation or pull request, deleted sessions and work-item origins.", "Prompt assertions cover owner attribution and untrusted metadata."],
+				dependsOn: [], owns: ["server/src/actors/agent-session.ts", "server/src/actors/github-repository.ts", "server/src/actors/session-feedback.ts", "server/src/github/publish.ts", "server/src/factory/feedback.ts", "server/src/contract.ts", "scripts/webhook-check.ts", "scripts/github-standin.ts"],
+				budget: { tokens: 1_000_000 },
+				place: { prefer: "nas", reason: "Online, lower load and more free memory than the other machine; the local checks need no open egress. One runner slot." } },
+			{ key: "route-feedback", title: "Route webhook feedback, acknowledge it, and verify and document the full path", brief: "Route a pull request comment that starts with /windlass to the session that opened the pull request, through the registration from the first subtask. Acknowledge it on the pull request with a reaction, and say in a reply when it waits for the owner's consent. Extend the fake GitHub to deliver comments for a session's pull request, and add end-to-end cases from delivery to the queued turn. Document the behaviour for people in the sessions page of the docs, and for operators in the webhook notes.",
+				acceptance: ["The webhook check's routing cases pass.", "A comment on a session's pull request queues one turn of that session in the end-to-end check.", "The docs build passes."],
+				dependsOn: ["session-feedback"], owns: ["server/src/github/webhook.ts", "server/src/github/routes.ts", "scripts/webhook-check.ts", "scripts/e2e.ts", "web/src/docs/content/sessions.md", "docs/webhooks.md"],
+				budget: { tokens: 600_000 },
+				place: { prefer: "nas", reason: "Same one-slot environment as the implementation; the fake GitHub and webhook checks and the docs build need no live GitHub or screenshots." } },
+		],
+		[
+			{ id: "dormant", text: "Is wake-time repair enough for sessions that stay dormant across the upgrade?", options: ["Yes: register new publications and repair on wake", "No: backfill every existing session pull request first"],
+				why: "There is no index from a repository to its sessions today: only the session holds its pull request. Repairing on wake covers every session that runs again; a backfill covers dormant ones too, and needs its own verified migration before unmatched replies can be trusted." },
+			{ id: "hardened", text: "Should someone else's feedback wait for your consent on Docker, hardened?", options: ["Yes: hold it until you consent", "No: refuse it on hardened profiles"],
+				why: "On Docker, hardened a work item stops for someone else's feedback until its owner chooses Run it anyway. Personal sessions have no such question yet; holding the feedback and asking uses the session's existing question." },
+		],
+	);
+	const sessionFeedback = feature(
+		{ n: 78, title: "Take /windlass feedback on pull requests opened from a session", on: HARBOR, state: "waiting", filed: 6, body: "Comments starting with /windlass on a session's pull request should reach that session.", acceptance: feedbackPlan.spec.acceptance, place: { kind: "machine", machineId: "m_nas" },
+			question: { kind: "plan_approval", text: approvalText(feedbackPlan), choices: choices("revise", "give_up"), asked: 2 },
+			run: { n: 1, started: 5, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "refine", started: 4 } },
+			events: [[5, "Started.", undefined, true], [4, "The planner's turn started.", [1, 1, "refine"]], [2, "The planner filed a proposal.", [1, 1, "refine"]]],
+			spent: { tokens: 240_000, turns: 1, activeSeconds: 9 * 60, hostedSeconds: 0 } },
+		feedbackPlan,
+		null,
+	);
+
+	// 11. Subtasks in parallel: one integrated, two running at once (one hosted, one on "studio" at its checks), one whose
+	// dependency is done but whose files overlap a running one's, and one waiting on a dependency still running.
+	const importPlan = featurePlan(
+		1,
+		"approved",
+		{ goal: "Import a station file in one pass: parse it, convert its units, cache it, and import it from the command line.", requirements: ["A streaming parser.", "Units converted on import.", "A cache keyed by the file's checksum.", "`harbor import <file>`."], outOfScope: ["Importing from a URL."], acceptance: ["`harbor import stations.csv` imports 12,000 stations in under a second.", "`pnpm test` passes."] },
+		[
+			{ key: "parser", title: "Parse the station file in one pass", brief: "A streaming parser in src/import/parse/.", acceptance: ["Run `pnpm test src/import/parse`."], dependsOn: [], owns: ["src/import/parse/**"], budget: { tokens: 600_000 } },
+			{ key: "units", title: "Convert units on import", brief: "Convert feet to metres and local times to UTC as rows are parsed.", acceptance: ["Run `pnpm test src/import/units`."], dependsOn: ["parser"], owns: ["src/import/units/**"], budget: { tokens: 500_000 } },
+			{ key: "cache", title: "Cache parsed stations by checksum", brief: "Keep the parsed stations keyed by the file's checksum; export the cache from src/import/index.ts.", acceptance: ["Run `pnpm test src/import/cache`."], dependsOn: ["parser"], owns: ["src/import/cache/**", "src/import/index.ts"], budget: { tokens: 700_000 }, place: { prefer: "studio", reason: "The station fixtures are cached there." } },
+			{ key: "command", title: "Add the import command", brief: "`harbor import <file>` through the parser, the units and the cache; re-export from src/import/index.ts.", acceptance: ["Run `pnpm test src/cli`."], dependsOn: ["parser"], owns: ["src/cli/import.ts", "src/import/index.ts"], budget: { tokens: 500_000 } },
+			{ key: "docs", title: "Document the import", brief: "A page in docs/ with an example run.", acceptance: ["Run `pnpm lint:docs`."], dependsOn: ["units", "command"], owns: ["docs/import.md"], budget: { tokens: 200_000 } },
+		],
+	);
+	importPlan.approvedAt = ago(64);
+	importPlan.approvedBy = `person:${uid}`;
+	const importing = feature(
+		{ n: 95, title: "Import a station file in one pass", on: TIDES, state: "waiting", filed: 90, pr: 71, body: "Importing a station file reads it three times. Read it once.", acceptance: importPlan.spec.acceptance,
+			run: { n: 1, started: 88, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "subtasks", started: 64 } },
+			events: [[88, "Started.", undefined, true], [70, "The planner filed a proposal.", [1, 1, "refine"]], [64, "Approved the plan.", [1, 1, "refine"], true], [63, "Opened draft pull request #71 for the feature branch.", [1, 2, "subtasks"]], [22, "Integrated “Parse the station file in one pass” at 8c41d9e.", [1, 2, "subtasks"]], [21, "Started “Convert units on import” and “Cache parsed stations by checksum”.", [1, 2, "subtasks"]]],
+			spent: { tokens: 1_480_000, turns: 4, activeSeconds: 48 * 60, hostedSeconds: 30 * 60 } },
+		importPlan,
+		{ reason: "children", sentence: "Running “Convert units on import” and “Cache parsed stations by checksum” on ‘studio’; “Add the import command” waits for src/import/index.ts.", since: ago(21), retryAt: null },
+	);
+	const importChild = (key: string, seed: Omit<Seed, "title" | "on">) => {
+		const made = child(importing, key, { ...seed, title: "", on: TIDES });
+		return { ...made, repository: importing.repository };
+	};
+	const parser = importChild("parser", { n: 96, state: "done", filed: 63, run: { n: 1, started: 63, ended: 22, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 22 } }, spent: { tokens: 690_000, turns: 2, activeSeconds: 38 * 60, hostedSeconds: 38 * 60 } });
+	const units = importChild("units", { n: 97, state: "working", filed: 21, run: { n: 1, started: 21, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 20, turn: "started" } }, spent: { tokens: 310_000, turns: 2, activeSeconds: 14 * 60, hostedSeconds: 14 * 60 } });
+	const cache = importChild("cache", { n: 98, state: "working", filed: 21, place: { kind: "machine", machineId: "m_studio" }, run: { n: 1, started: 19, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "run_checks", started: 2 } }, spent: { tokens: 480_000, turns: 1, activeSeconds: 17 * 60, hostedSeconds: 0 } });
+	cache.placement = { place: { kind: "machine", machineId: "m_studio" }, name: "studio", reason: importPlan.subtasks[2]!.place!.reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	importing.children = [parser, units, cache].map(summaryOf);
+	importing.subtasks = [
+		{ id: parser.id, key: "parser", state: "done", dispatchedAt: ago(63), startedAt: ago(62), wait: null },
+		{ id: units.id, key: "units", state: "working", dispatchedAt: ago(21), startedAt: ago(20), wait: null },
+		{ id: cache.id, key: "cache", state: "working", dispatchedAt: ago(21), startedAt: ago(19), wait: null },
+	];
+	importing.completedSubtasks = ["parser"];
+
+	return [search, exporting, writer, flag, ...longOnes, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback, importing, parser, units, cache];
 }
 
-/** The server's reason for no second review on a deployment without the reviewer (factory/blueprint.ts). */
+/** Match the server’s reasons when an item has no reviewer session. */
+const FEATURE_REVIEW = "the feature’s combined change is reviewed once its parts are done";
 const DEPLOYMENT_OFF = "turned off for this deployment";
-
-/** The rounds a run allows, as the server sends them: the second review's only where it can send the builder back (blueprint.ts, `reviewSendsBack`). */
-function capsFor(view: ItemView, reviewer: boolean): RoundCaps {
-	const { review: _, ...caps } = ROUND_CAPS;
-	return reviewer && view.mode !== "orchestrate" && !view.parent && view.place.kind === "hosted" && view.review?.state !== "off" ? ROUND_CAPS : caps;
-}
-const withCaps = (view: ItemView, reviewer: boolean): ItemView => (view.run ? { ...view, run: { ...view.run, caps: capsFor(view, reviewer) } } : view);
 
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
 function withoutReviewer(view: ItemView): ItemView {
-	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: DEPLOYMENT_OFF };
+	return { ...view, review: view.review ? { state: "off", recommendation: null } : null, reviews: [], reviewerSessionId: null, reviewNone: view.parent ? FEATURE_REVIEW : DEPLOYMENT_OFF };
 }
 
-const summaryOf = ({ feedback: _feedback, plan: _plan, children: _children, task: _task, run: _run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => summary;
+/** An item's summary, as the server's index keeps it: its page's own fields, and the step its run is at while it goes on (`ItemSummary.step`). */
+/** `?blocked=1`: an item's roll-up over its builder's and reviewer's turns, every kind of refusal, and requests past the 50 kept. */
+function seededBlocked(at: number): NonNullable<ItemView["blockedNetwork"]> {
+	return {
+		overflow: 5,
+		hosts: [
+			{ host: "registry.yarnpkg.com", port: null, reason: "unlisted", allow: "repository", firstAt: at - 3 * 3_600_000, lastAt: at - 50 * 60_000, count: 14 },
+			{ host: "api.segment.io", port: 443, reason: "machine_policy", allow: "machine", machineNames: ["studio-mac"], firstAt: at - 3 * 3_600_000, lastAt: at - 70 * 60_000, count: 9 },
+			{ host: "169.254.169.254", port: 80, reason: "private", allow: "never", firstAt: at - 2 * 3_600_000, lastAt: at - 2 * 3_600_000, count: 2 },
+			{ host: "smtp.mailgun.org", port: 25, reason: "provider", allow: "never", firstAt: at - 2 * 3_600_000, lastAt: at - 100 * 60_000, count: 1 },
+			{ host: "fonts.gstatic.com", port: null, reason: "unlisted", allow: "deployment", firstAt: at - 2 * 3_600_000, lastAt: at - 90 * 60_000, count: 1 },
+		],
+	};
+}
+
+const summaryOf = ({ blockedNetwork: _blocked, feedback: _feedback, plan: _plan, children: _children, task: _task, run, head: _head, events: _events, verdicts: _verdicts, verifiedCheck: _verifiedCheck, report: _report, reviews: _reviews, reviewerSessionId: _reviewer, reviewNone: _none, ...summary }: ItemView): ItemSummary => {
+	if (!run || run.endedAt !== null || ["done", "failed", "cancelled"].includes(summary.state)) return summary;
+	return { ...summary, step: { kind: run.step.kind, startedAt: run.step.startedAt, turn: run.step.turn, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } } };
+};
 
 function seedTokens(state: MockItemsState, at: number): ApiToken[] {
 	if (state === "none" || state === "loading" || state === "failed" || state === "off") return [];
@@ -1511,8 +1767,8 @@ export function createMockItems(deps: MockItemsDeps) {
 			const items = seeds(state, at, deps.machines(auth)?.list ?? null)
 				.map((seed) => withSeededReview(withSeededReport(viewOf(seed, at, auth.profile.uid), seed.n), seed.n))
 				.map((view) => (deps.reviewer === false ? withoutReviewer(view) : view))
-				.concat(state === "features" ? seededFeatures(at, auth.profile.uid) : [])
-				.map((view) => withCaps(view, deps.reviewer !== false))
+				.map((view) => (deps.blocked && view.report ? { ...view, blockedNetwork: seededBlocked(at) } : view))
+				.concat(state === "features" ? seededFeatures(at, auth.profile.uid, deps.long === true) : [])
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
@@ -1543,7 +1799,7 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	function changed(auth: AuthResult): void {
 		// As the server's live feed: the open items, the newest ended ones and the counts (`ItemFeed`).
-		const sent = itemFeed(listedItems(auth));
+		const sent = itemFeed(listedItems(auth), keptOf(auth).items.map(summaryOf));
 		for (const feed of deps.feeds(auth)) feed.onItems?.(sent);
 	}
 
@@ -1622,7 +1878,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
 		const at = deps.now();
 		const before = item.run;
-		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 }, caps: capsFor(item, deps.reviewer !== false) };
+		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 } };
 		if (item.state === "review" && item.verifiedCheck?.state === "completed")
 			item.verifiedCheck = { ...item.verifiedCheck, state: "in_progress", conclusion: null, said: `Sent back: being reworked in run ${run.n}` };
 		if (item.mode === "orchestrate") {
@@ -1633,7 +1889,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				spec: { goal: item.title, requirements: [item.task.body], outOfScope: [], acceptance: item.task.acceptance.length ? item.task.acceptance : ["Complete the requested feature."] },
 				budget: item.budget, compare: { singleBudget: MOCK_FACTORY_LIMITS.item },
 				subtasks: ["implementation", "verification"].map((key, i) => ({ key, title: i ? "Verify the feature" : item.title, brief: i ? "Add regression coverage." : item.task.body,
-					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { ...MOCK_FACTORY_LIMITS.item } })),
+					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { tokens: MOCK_FACTORY_LIMITS.item.tokens } })),
 			};
 			const text = approvalText(plan);
 			return change(auth, item, { run, state: "waiting", wait: { reason: "person", since: at, retryAt: null, sentence: text }, question: { id: item.id + ":plan" + version, kind: "plan_approval", text, askedAt: at, choices: choices("approve","revise","give_up") } }, [said,"The planner filed a proposal."], "platform");
@@ -1673,16 +1929,16 @@ export function createMockItems(deps: MockItemsDeps) {
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
 				if (plan.questions.some(q => !q.answer)) throw conflict("Answer and save the plan’s questions before approving one implementer.");
-				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = singleAfterPlanning(plan.compare.singleBudget, item.spent, item.budget);
+				item.mode = "single"; plan.status = "approved"; plan.approvedAt = at; plan.approvedBy = "person:" + auth.profile.uid; item.budget = singleAfterPlanning(plan.compare.singleBudget, item.spent);
 				return beginRun(auth, item, "Run as single item.");
 			case "edit_plan": {
 				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");
 				let edited;
-				try { edited = validatePlan(action.plan, plan.compare.singleBudget, plan.budget); }
+				try { edited = validatePlan(action.plan, plan.compare.singleBudget); }
 				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				const kind = edited.singleSuggested ? "single_suggested" : item.question?.kind === "replan_approval" ? "replan_approval" : "plan_approval";
 				const offered = kind === "single_suggested" ? choices("run_single","orchestrate_anyway") : edited.questions.some(q => !q.answer) ? choices("revise","give_up") : choices("approve","revise","give_up");
-				return change(auth, item, { plan: { ...plan, ...edited, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? approvalText({ ...plan, ...edited }) } }, ["Edited the plan."], "person");
+				return change(auth, item, { plan: { ...plan, ...edited, budget: { ...plan.budget, tokens: plan.budget.tokens - planTokens(plan) + planTokens(edited) }, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? approvalText({ ...plan, ...edited }) } }, ["Edited the plan."], "person");
 			}
 			case "approve_plan": {
 				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
@@ -1707,8 +1963,8 @@ export function createMockItems(deps: MockItemsDeps) {
 				const agentHarness = fit.decision.harness ?? "windlass";
 				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: "docker-hardened" as const }), ...(sub.agent?.model && { model: sub.agent.model }) });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
-				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:"Subtasks share the feature review.",
-					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: sub.budget, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, step: { ...item.run!.step, kind: "implement", turn: "started" } },
+				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:FEATURE_REVIEW,
+					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, startedAt: at, step: { ...item.run!.step, startedAt: at, kind: "implement", turn: "started" } },
 					place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, sub.agent?.effort ?? (agentHarness === "windlass" && !sub.agent?.model ? item.agent?.effort : undefined)) };
 				delete child.placementReview;
 				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
@@ -1757,7 +2013,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!picked) throw conflict("That is not one of the question's answers.");
 				const note = action.note?.trim() || null;
 				if (action.choice === "reply" && note === null) throw new PlatformError("user", "Write your answer to the agent.", { reason: "bad_input" });
-				const said = `Answered “${picked.label}”${note === null ? "" : `: ${note}`}.`;
+				const said = answeredWords(picked, note);
 				// A subtask that could not be placed (blueprint.ts, `askPlacement`): the planner files the rest again, the approved places are checked again, or the subtask is given up and the rest re-planned.
 				if (question.kind === "placement_refused" && plan) {
 					const sub = plan.subtasks.find((one) => question.text.startsWith(one.title + ": "));
@@ -1840,7 +2096,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async itemFeed() {
 				await answer(240);
-				return itemFeed(listedItems(auth));
+				return itemFeed(listedItems(auth), keptOf(auth).items.map(summaryOf));
 			},
 			async item(id) {
 				await answer(220);
@@ -1929,8 +2185,8 @@ export function createMockItems(deps: MockItemsDeps) {
 					question: null,
 					pullRequest: null,
 					verdict: null,
-					budget: input.mode !== "single" ? featureCap(MOCK_FACTORY_LIMITS.item) : { ...MOCK_FACTORY_LIMITS.item },
-					spent: { tokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
+					budget: { ...MOCK_FACTORY_LIMITS.item },
+					spent: { tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
 					agent: newAgent(session.harness ?? "windlass", session.model, input.effort),
 					sessionId: session.id,
 					createdAt: at,
@@ -2009,7 +2265,31 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	/** Seeds the user's items, and with them their sessions, before anything is asked of either. */
 	const prepare = (auth: AuthResult): void => void keptOf(auth);
-	return { calls, machinesChanged, prepare, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
+	/**
+	 * "Add it and continue" on an item's `secret_needed` question, sent through its builder's session (`setRequestedSecret`), as
+	 * work-item.ts `internalSetRequestedSecret`: the item claims the question, and the secret is saved and the question answered
+	 * with `add_secret`. `conflict`: why the save was refused once claimed (`secret_exists`: the name was saved under Secrets
+	 * since), and then, as blueprint.ts `settle_secret`, the question is asked again under a new id with the error, and the
+	 * refusal is thrown. Null when no item of that session asks it. The value is not kept: the mock has nowhere it would be read.
+	 */
+	function setRequestedSecret(auth: AuthResult, sessionId: string, requestId: string, name: string, conflict: (repositoryId: ItemView["repository"]["id"]) => string | null): ItemView["repository"] | null {
+		const item = keptOf(auth).items.find((one) => one.sessionId === sessionId);
+		if (!item) return null;
+		const question = item.question;
+		if (question?.kind !== "secret_needed" || question.id !== requestId || question.secret?.name !== name) throw new PlatformError("user", "That secret request is no longer open.", { reason: "item_conflict" });
+		const refused = conflict(item.repository.id);
+		if (refused !== null) {
+			const secret = question.secret;
+			const text = [`A secret was requested for ${secret.name}.`, secret.notice, refused].filter(Boolean).join("\n");
+			const reopened: ItemQuestion = { ...question, id: `${item.id}:q${item.revision + 1}`, text, askedAt: deps.now() };
+			change(auth, item, { question: reopened, wait: { reason: "person", sentence: text, retryAt: null, since: reopened.askedAt } }, [`Asked: ${text}`], "platform");
+			throw new PlatformError("user", refused, { reason: "secret_exists" });
+		}
+		const picked = question.choices.find((choice) => choice.id === "add_secret") ?? { id: "add_secret" as const, label: "Add it and continue" };
+		change(auth, item, { state: "working", wait: null, question: null }, [answeredWords(picked, null), "The turn started."], "person");
+		return item.repository;
+	}
+	return { calls, machinesChanged, prepare, setRequestedSecret, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
 }
 
 // ---- the agent's reports on the item's page (Reviewer slice R1-C) -----------------------------------
@@ -2401,6 +2681,27 @@ const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off" | null; r
 					{ kind: "question", text: "For Avonmouth and Ilfracombe the file says +5 min and the old table +7 min. Which should win?" },
 					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "should_fix", title: "The old offset table is still bundled", text: "Nothing reads it now; it could be removed with this change.", at: [{ path: "data/offsets.json", lines: { start: 1, end: 3 } }], refs: [] },
 				],
+			},
+		],
+	},
+	82: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				blocks: [
+					{ kind: "summary", text: "The footer shows the build number from BUILD_ID beside the version, and nothing when it is unset. The footer's tests cover both." },
+					{ kind: "finding", id: "r1.f1", root: "r1.f1", severity: "note", title: "BUILD_ID is read on every render", text: "It could be read once when the module loads.", at: [{ path: "src/footer.tsx", lines: { start: 6, end: 9 } }], refs: [] },
+				],
+			},
+		],
+	},
+	83: {
+		state: "filed",
+		reviews: [
+			{
+				recommendation: "approve",
+				blocks: [{ kind: "summary", text: "Each station file is read once now, and the parsed rows are passed on. I could not time the whole import in my sandbox; the unit tests pass." }],
 			},
 		],
 	},

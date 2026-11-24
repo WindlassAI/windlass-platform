@@ -11,9 +11,12 @@ import "./styles/new-agent.css";
 import "./styles/session.css";
 import "./styles/github.css";
 import "./styles/usage.css";
+import "./styles/billing.css";
 import "./styles/repository.css";
 import "./styles/machines.css";
 import "./styles/items.css";
+import "./styles/workspace.css";
+import "./styles/feed.css";
 import "./styles/landing.css";
 import "./styles/docs.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
@@ -45,15 +48,17 @@ function mockQuestionTimeout(): number | undefined {
 async function createPlatformClient(): Promise<PlatformClient> {
 	// Each implementation is its own chunk: the mock never loads RivetKit, the real client never loads the fixtures.
 	if (wantsMock()) {
-		const { createMockClient, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import("./api/mock");
+		const { createMockClient, MOCK_BILLING_STATES, MOCK_MACHINE_SESSIONS, MOCK_MACHINE_STATES } = await import("./api/mock");
 		const { MOCK_ITEMS_STATES } = await import("./api/mock-items");
 		// `?github=off` plays a deployment with no GitHub App, `?sandbox=e2b` one on E2B,
 		// `?usage=low|used|full` a day with little sandbox time left, one that is used up, and an account at its cap of sandboxes,
 		// `?account=empty` a user who has saved nothing for their account,
 		// `?models=unavailable` one whose ChatGPT plan's models could not be read, so that the stand-in list is offered,
-		// `?machine=none|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
-		// `?machineSession=answering|not_answering|offline|removed` how the agent on the machine "nas" finds it (`MockMachineSession`),
+		// `?machine=none|claude-signed-out|claude-unchecked|offline|pairing|outdated|docker|clock|key|full|unpublished|stale|failed|loading|off` the user's machines in that state (`MockMachineState`),
+		// `?machineSession=answering|not_answering|offline|removed|paused` how the agent on the machine "nas" finds it (`MockMachineSession`; `paused`: its turn paused while the machine is away),
+		// `?resume=1` a turn paused by a server restart and one that resumed after it,
 		// `?items=few|features|none|full|many|loading|failed|off` the user's work items and API tokens in that state (`MockItemsState`), `off` a deployment without them,
+		// `&long=1` with `items=features`, the features' texts as long as planners and agents write them,
 		// and `?reviewer=off` a deployment without the second review.
 		const params = new URLSearchParams(location.search);
 		const usage = params.get("usage");
@@ -65,12 +70,17 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			github: params.get("github") !== "off",
 			sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker",
 			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
+			// `?billing=free|free-low|free-used|pro|pro-capped|pro-past-due` a deployment with plans, the account in that state (`MockBillingState`).
+			billing: MOCK_BILLING_STATES.find((state) => state === params.get("billing")),
 			// The user has MCP servers of their own and secrets for them saved, unless the address says `account=empty`.
 			account: params.get("account") === "empty" ? "empty" : "seeded",
 			models: params.get("models") === "unavailable" ? "unavailable" : "account",
 			machine: MOCK_MACHINE_STATES.find((state) => state === machine),
 			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
 			items: MOCK_ITEMS_STATES.find((state) => state === items),
+			long: params.get("long") === "1",
+			blocked: params.get("blocked") === "1",
+			resume: params.get("resume") === "1",
 			reviewer: params.get("reviewer") !== "off",
 		});
 		// For looking at states by hand, in the console: `__wlpMock.simulateDrop(4000)` (reconnecting),

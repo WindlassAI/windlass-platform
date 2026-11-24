@@ -46,6 +46,9 @@ export function opened(ws: WebSocket): Promise<void> {
 
 const RECORDED: WindlassEvent[] = readFileSync(FIXTURE, "utf8").split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line) as WindlassEvent).filter((event) => event.type !== "cli.summary");
 
+/** The text of every `session/prompt` an engine of the stand-in was sent, oldest first: what a resumed turn was given. */
+export const enginePrompts: string[] = [];
+
 /** `windlass acp`, as little of it as a turn needs: it replays one recorded turn. "(slow)" in the prompt spaces its events out. */
 class Engine {
 	private session = `ses_standin${randomBytes(6).toString("hex")}`;
@@ -91,6 +94,7 @@ class Engine {
 			case "session/prompt": {
 				this.prompt = m.id;
 				const text = JSON.stringify(m.params?.prompt ?? "");
+				enginePrompts.push(((m.params?.prompt as Array<{ text?: unknown }> | undefined) ?? []).map((part) => String(part.text ?? "")).join(""));
 				if (text.includes("(session title)")) {
 					this.send({ method: "session/update", params: { sessionId: this.session, update: { sessionUpdate: "session_info_update", title: "Inspect the files" } } });
 				}
@@ -162,8 +166,12 @@ export class StandInRunner {
 	usedTickets: Array<{ sessionId: string; ticket: string }> = [];
 	cancels: string[] = [];
 	leftovers = 0;
+	/** Agent processes started, of any session: a turn taken up after a restart starts none. */
+	engineStarts = 0;
 	/** The machine is at its owner's cap (`--max-sandboxes`): a `create` is refused as the real runner refuses it. */
 	full = false;
+	/** Its owner's `--max-sandboxes`: a `create` for a new session past this many is refused, as `full` is. */
+	maxSandboxes: number | undefined = undefined;
 	/** How many create replies to lose by restarting before answering or reporting the container. */
 	loseCreates = 0;
 	creates = 0;
@@ -255,6 +263,15 @@ export class StandInRunner {
 		}
 	}
 
+	/** The session's grace ran out on the runner: its conversation ends, and what it ran is stopped (the orphan rule). */
+	expireGrace(sessionId: string): void {
+		const served = this.served.get(sessionId);
+		if (!served) return;
+		this.served.delete(sessionId);
+		served.channel.close("The platform did not come back within ten minutes.");
+		served.ws?.close();
+	}
+
 	/** The runner process dies and starts again: every channel is gone, the containers and what runs in them are not. */
 	async restartProcess(): Promise<void> {
 		const served = [...this.served.values()];
@@ -337,7 +354,7 @@ export class StandInRunner {
 				// As the runner does: a session's sandbox, once made, is the answer to its every `create`, also after a restart.
 				const had = [...this.boxes.values()].find((existing) => existing.sessionId === sessionId);
 				// The real runner's sentence (runner/src/docker-executor.ts), sent as a SandboxUserError is (runner/src/session.ts).
-				if (!had && this.full) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
+				if (!had && (this.full || (this.maxSandboxes !== undefined && this.boxes.size >= this.maxSandboxes))) return channel.refuse(op, { kind: "user", message: "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." });
 				const made: Box = had ?? { id: `${this.id.machineId}-${randomBytes(6).toString("hex")}`, sessionId, size: op.args.size, profile: op.args.profile, harness: op.args.harness, state: "running", files: new Map(), engines: new Set() };
 				this.boxes.set(made.id, made);
 				if (this.loseCreates > 0) {
@@ -394,6 +411,7 @@ export class StandInRunner {
 					engine = { input: chunk => { this.acpInput.push(chunk); agent.input(chunk); }, stop: () => agent.stop() };
 				} else engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta)) : null;
 				if (engine) box.engines.add(engine);
+				if (engine) this.engineStarts += 1;
 				served.processes.set(op.id, { engine, box });
 				return channel.respond(op, null);
 			}

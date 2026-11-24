@@ -135,10 +135,17 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 8px;
+	min-width: 0;
+	max-width: 100%;
 	font-family: var(--font-mono);
 	font-size: 11.5px;
 	color: var(--ink-faint);
 	white-space: nowrap;
+}
+/* A word longer than the column is cut, never run into the time beside it. */
+.item-track-word {
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 .item-track-none {
 	min-width: 0;
@@ -310,6 +317,13 @@
 	background: var(--accent-text);
 	animation: item-now 1.8s ease-in-out infinite;
 }
+/* Where a waiting item stands: not done, and not moving. */
+.item-stage-at .item-stage-bar {
+	background: var(--line-strong);
+}
+.item-stage-at .item-stage-name {
+	color: var(--ink);
+}
 .item-stage-now .item-stage-name,
 .item-stages-yours .item-stage-name {
 	color: var(--accent-text);
@@ -423,6 +437,15 @@
 .item-note {
 	min-height: 64px;
 }
+/* A check the sandbox could not run: its row and the end of its output, as the session's check results show them. */
+.item-check {
+	display: grid;
+	gap: 8px;
+	min-width: 0;
+}
+.item-check code {
+	overflow-wrap: anywhere;
+}
 /* The agent's own question: a quotation, set apart from the platform's sentence by a rule and a caption that says whose it is. */
 .item-asked {
 	display: grid;
@@ -459,11 +482,179 @@
 	overflow-wrap: anywhere;
 	text-align: left;
 }
+/* Options of a sentence's length: one full-width row each, the label above them. */
+.item-asked-options-stacked {
+	flex-direction: column;
+	align-items: stretch;
+}
+.item-asked-options-stacked .item-asked-option {
+	justify-content: flex-start;
+	padding-top: 6px;
+	padding-bottom: 6px;
+	line-height: 1.4;
+}
 .item-choices {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
 }
+/* The agent's request for a secret (`request_secret`): the question card's neutral look, the name in monospace, the
+   agent's reason quoted as its own, and a field for the value with its show and hide beside it. */
+.secret-ask {
+	display: grid;
+	gap: 12px;
+	min-width: 0;
+}
+.secret-ask-title {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	max-width: 74ch;
+	font-size: var(--text-16);
+	font-weight: var(--weight-medium);
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+.secret-ask-lock {
+	flex: none;
+	align-self: center;
+	color: var(--ink-faint);
+}
+.secret-ask-name {
+	font-family: var(--font-mono);
+	font-size: 0.9em;
+	font-weight: var(--weight-medium);
+	overflow-wrap: anywhere;
+}
+.secret-ask-why {
+	padding-top: 4px;
+	padding-bottom: 4px;
+}
+.secret-ask-form {
+	display: grid;
+	gap: 6px;
+	min-width: 0;
+}
+.secret-ask-field {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 520px;
+}
+.secret-ask-field .input {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.secret-ask-toggle {
+	flex: none;
+	min-width: 56px;
+}
+.secret-ask-where {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink);
+	overflow-wrap: anywhere;
+}
+.secret-ask-choices {
+	margin-top: 6px;
+}
+/* The platform's own lines about the request: framed, with its source named, apart from the agent's quoted reason. */
+.secret-notice {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+	max-width: 74ch;
+	padding: 9px 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-pop);
+	background: var(--bg-raised);
+	font-size: var(--size-small);
+	line-height: 1.5;
+}
+.secret-notice > svg {
+	flex: none;
+	margin-top: 3px;
+	color: var(--ink-faint);
+}
+.secret-notice-body {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+.secret-notice-who {
+	font-size: 12px;
+	font-weight: var(--weight-medium);
+	color: var(--ink-faint);
+}
+.secret-notice-line {
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+/* Saved for the whole account: every agent of the person would have it. */
+.secret-notice-account {
+	border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+.secret-notice-account > svg {
+	color: var(--warn);
+}
+.secret-notice-account .secret-notice-who strong {
+	font-weight: var(--weight-medium);
+	color: var(--warn);
+}
+.secret-ask-account {
+	max-width: 74ch;
+	margin-bottom: 4px;
+	border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+.secret-ask-account strong {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.secret-ask-saved .secret-ask-name {
+	font-size: var(--size-mono-small);
+}
+/* Above a session's field: the dock's size, its parts closer together. */
+.secret-ask-compact {
+	gap: 8px;
+}
+.secret-ask-compact .secret-ask-title {
+	font-size: var(--size-small);
+}
+.secret-ask-compact .item-asked-text {
+	font-size: var(--size-small);
+}
+/* The field and the answers on one row, the note under them; stacked where the row has no room. */
+.secret-ask-compact .secret-ask-form {
+	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-areas: "field choices" "note note";
+	align-items: center;
+	gap: 6px 10px;
+}
+.secret-ask-compact .secret-ask-field {
+	grid-area: field;
+	max-width: none;
+}
+.secret-ask-compact .secret-ask-choices {
+	grid-area: choices;
+	margin-top: 0;
+}
+.secret-ask-compact .secret-ask-note {
+	grid-area: note;
+	max-width: none;
+}
+.secret-ask-compact .secret-ask-form-account {
+	grid-template-areas: "note note" "field choices";
+}
+@media (max-width: 720px) {
+	.secret-ask-compact .secret-ask-form {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-areas: "field" "note" "choices";
+	}
+	.secret-ask-compact .secret-ask-form-account {
+		grid-template-areas: "note" "field" "choices";
+	}
+}
+
 .item-raise {
 	display: grid;
 	gap: 12px;
@@ -801,6 +992,12 @@
 .item-cost .usage-number {
 	text-align: left;
 }
+.item-cost-raw {
+	display: block;
+	margin-top: 2px;
+	font-size: 12px;
+	font-weight: 400;
+}
 .item-cost-meter {
 	display: flex;
 	align-items: center;
@@ -882,7 +1079,7 @@
 }
 .item-event {
 	display: grid;
-	grid-template-columns: 96px 150px minmax(0, 1fr);
+	grid-template-columns: 96px 108px minmax(0, 1fr);
 	column-gap: 14px;
 	align-items: baseline;
 	padding: 8px 16px;
@@ -899,16 +1096,34 @@
 }
 .item-event-step {
 	color: var(--ink-dim);
+	white-space: normal;
 }
 .item-event-said {
 	min-width: 0;
 	overflow-wrap: anywhere;
+}
+/* The agent's question on its log entry: under the sentence, quoted as the question card quotes it. */
+.item-event-asked {
+	grid-column: 3;
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+	margin: 6px 0 2px;
+	padding: 2px 0 2px 12px;
+	border-left: 2px solid var(--line-strong);
 }
 
 /* ---- usage and settings ----------------------------------------------------------------------- */
 
 .factory-limits > div {
 	grid-template-columns: 112px 132px minmax(0, 1fr);
+}
+/* A limit in words rather than one figure: it takes the number's column and the gloss's, as one line where it fits. */
+.factory-limit-text {
+	grid-column: 2 / -1;
+	font-size: var(--size-small);
+	line-height: 1.45;
+	color: var(--ink);
 }
 .factory-cost .tone-faint {
 	font-size: var(--size-mono-small);
@@ -948,6 +1163,9 @@
 	.factory-limits .usage-number {
 		text-align: left;
 	}
+	.factory-limits .factory-limit-text {
+		grid-column: 1;
+	}
 	.item-raise-fields {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -984,7 +1202,8 @@
 	.item-event-step:empty {
 		display: none;
 	}
-	.item-event-said {
+	.item-event > .long-text,
+	.item-event-asked {
 		grid-column: 2;
 	}
 }
@@ -1455,9 +1674,88 @@ a.plan-task-title:hover {
 	line-height: 1.5;
 	color: var(--ink-dim);
 }
+/* In the row, two lines of the brief: the whole of it is under Details. */
+.plan-task-brief-short {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+}
+.plan-task-files {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-faint);
+}
 .plan-task-facts {
 	display: grid;
 	gap: 6px;
+	margin-top: 8px;
+}
+/* A subtask's Details: the whole brief, why it runs where it does, its files and its checks. */
+.plan-task-more {
+	margin-top: 8px;
+	font-size: var(--text-13);
+}
+.plan-task-more summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	color: var(--ink-faint);
+	list-style: none;
+}
+.plan-task-more summary::-webkit-details-marker,
+.plan-spec-fold summary::-webkit-details-marker {
+	display: none;
+}
+.plan-task-more summary:hover,
+.plan-task-more[open] summary {
+	color: var(--ink-dim);
+}
+.plan-task-more-chevron,
+.plan-spec-fold-chevron {
+	transition: transform var(--dur-hover) var(--ease);
+}
+.plan-task-more[open] .plan-task-more-chevron,
+.plan-spec-fold[open] .plan-spec-fold-chevron {
+	transform: rotate(90deg);
+}
+.plan-task-more > .plan-task-brief {
+	margin-top: 8px;
+}
+.plan-task-more-facts {
+	display: grid;
+	gap: 6px;
+	margin-top: 10px;
+}
+.plan-task-more-facts > div {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+}
+.plan-task-more-facts dt {
+	font-size: 12px;
+	color: var(--ink-faint);
+}
+.plan-task-more-facts .plan-place-why {
+	color: var(--ink-dim);
+}
+/* The spec under the goal: one line that counts its parts, open for the lists. */
+.plan-spec-fold {
+	margin-top: 8px;
+}
+.plan-spec-fold summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+	list-style: none;
+}
+.plan-spec-fold[open] > .plan-spec {
 	margin-top: 10px;
 }
 .plan-task-facts > div {
@@ -1774,19 +2072,10 @@ a.plan-task-title:hover {
 	margin: 8px 0 0;
 }
 .plan-unattended-row {
-	display: flex;
-	align-items: baseline;
-	gap: 8px;
 	padding: 4px 0;
-	font-size: var(--text-13);
-	line-height: 1.5;
-	color: var(--ink);
-	cursor: pointer;
 }
-.plan-unattended-row input {
-	flex: none;
-	transform: translateY(2px);
-	accent-color: var(--ink);
+.plan-unattended-row .check-label {
+	font-size: var(--text-13);
 }
 .plan-unattended-row strong {
 	font-weight: var(--weight-medium);
@@ -1898,7 +2187,6 @@ a.plan-task-title:hover {
 .plan-total {
 	padding: 14px 18px 16px;
 	border-top: 1px solid var(--line);
-	background: var(--bg-sunk);
 }
 .plan-total-figures {
 	display: grid;
@@ -1934,26 +2222,32 @@ a.plan-task-title:hover {
 
 /* The approval question: the plan's own questions, each its options as a choice. */
 .plan-version {
+	white-space: nowrap;
 	font-family: var(--font-mono);
 	font-size: 11.5px;
 	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
 }
+/* The plan's own questions: each a short bold question, its background folded, its options as radio rows. */
 .plan-asks {
 	display: grid;
-	gap: 12px;
-	padding-top: 12px;
+	gap: 16px;
+	padding-top: 14px;
 	border-top: 1px solid var(--line);
 }
 .plan-ask {
 	display: grid;
-	gap: 6px;
+	gap: 8px;
+	max-width: 74ch;
 }
 .plan-ask-text {
 	font-size: var(--text-14);
+	font-weight: var(--weight-strong);
 	line-height: 1.45;
+	color: var(--ink);
 }
 .plan-ask-answered .plan-ask-text {
+	font-weight: var(--weight-medium);
 	color: var(--ink-dim);
 }
 .plan-ask-answer {
@@ -1964,9 +2258,80 @@ a.plan-task-title:hover {
 	content: "→ ";
 	color: var(--ink-faint);
 }
+.plan-ask-why {
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.plan-ask-why summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	color: var(--ink-faint);
+	list-style: none;
+}
+.plan-ask-why summary::-webkit-details-marker {
+	display: none;
+}
+.plan-ask-why[open] .plan-task-more-chevron {
+	transform: rotate(90deg);
+}
+.plan-ask-why summary:hover,
+.plan-ask-why[open] summary {
+	color: var(--ink-dim);
+}
+.plan-ask-why p {
+	margin-top: 4px;
+	line-height: 1.5;
+}
 .plan-ask-options {
-	justify-self: start;
-	flex-wrap: wrap;
+	display: grid;
+	gap: 2px;
+}
+.plan-ask-option {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 6px 8px;
+	border-radius: var(--r-control);
+	font-size: var(--text-13);
+	line-height: 1.45;
+	color: var(--ink-dim);
+	cursor: pointer;
+}
+.plan-ask-option:hover {
+	background: var(--bg-hover);
+	color: var(--ink);
+}
+.plan-ask-chosen {
+	color: var(--ink);
+}
+/* The radio circle, drawn as the checkbox's box is (base.css .check-box), round. */
+.plan-ask-dot {
+	flex: none;
+	width: 16px;
+	height: 16px;
+	margin-top: 1px;
+	border: 1.5px solid var(--ink-faint);
+	border-radius: 50%;
+	transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+.plan-ask-chosen .plan-ask-dot {
+	border-color: var(--accent);
+	box-shadow: inset 0 0 0 3px var(--bg), inset 0 0 0 10px var(--accent);
+}
+.plan-ask-option:has(.check-input:focus-visible) .plan-ask-dot {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+.plan-ask-option:has(.check-input:disabled) {
+	cursor: default;
+	opacity: 0.6;
+}
+.plan-ask-label {
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 .eyebrow-link {
 	color: var(--ink-dim);
@@ -2365,10 +2730,6 @@ a.plan-task-title:hover {
 	color: var(--ink-faint);
 	font-size: var(--size-small);
 }
-.gh-more {
-	margin-top: 4px;
-	font-size: var(--size-small);
-}
 .gh-counted {
 	margin-top: 4px;
 	padding-top: 12px;
@@ -2395,4 +2756,518 @@ a.plan-task-title:hover {
 		order: 2;
 		flex-basis: 100%;
 	}
+}
+
+/* The approved plan, folded under the subtasks block: its goal, then one line that opens it and counts what it holds. */
+.plan-folded {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	margin-top: 6px;
+	font-size: var(--text-13);
+}
+
+/* ---- a feature's subtasks as they run (Subtasks.tsx) ------------------------------------------- */
+.subtask-tally {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 2px 10px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.subtask-tally strong {
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+}
+.subtask-tally-asks,
+.subtask-tally-asks strong {
+	color: var(--needs);
+}
+.subtask-tally-stopped strong {
+	color: var(--bad);
+}
+.subtask-segments {
+	display: inline-flex;
+	gap: 3px;
+}
+.subtask-segment {
+	width: 14px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--bg-active);
+}
+.subtask-segment-running {
+	background: var(--accent-text);
+}
+.subtask-segment-asks {
+	background: var(--needs);
+}
+.subtask-segment-done {
+	background: var(--ink-faint);
+}
+.subtask-segment-stopped {
+	background: var(--bad);
+}
+
+.subtasks-block {
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.subtasks-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 14px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--line);
+}
+.subtasks-title {
+	font-size: var(--size-text);
+	font-weight: var(--weight-strong);
+}
+.subtasks-head .subtask-segments {
+	margin-left: auto;
+}
+/* The three groups: a quiet label row each, then compact rows. */
+.subtask-group + .subtask-group {
+	border-top: 1px solid var(--line);
+}
+.subtask-group-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 8px;
+	padding: 10px 16px 2px;
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.subtask-group-count {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 400;
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-faint);
+}
+.subtask-group-done .subtask-group-head {
+	padding-bottom: 10px;
+}
+.subtask-group-done .subtask-group-count {
+	font-family: inherit;
+	font-size: 12.5px;
+}
+.subtask-group-toggle.fold-toggle {
+	margin-top: 0;
+	font-size: 12.5px;
+}
+.subtask-group-done .subtask-runs:not([hidden]) {
+	margin-top: -4px;
+	padding-bottom: 4px;
+}
+.subtask-runs > li + li {
+	border-top: 1px solid var(--line);
+}
+.subtask-run {
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr) auto;
+	column-gap: 12px;
+	align-items: start;
+	padding: 9px 16px;
+}
+/* A subtask that asks: a rule in the needs hue at its edge, never a fill. */
+.subtask-run-asks-row,
+.subtask-run.subtask-run-asks {
+	box-shadow: inset 2px 0 0 var(--needs);
+}
+.subtask-run-glyph {
+	display: grid;
+	place-items: center;
+	height: 20px;
+}
+.subtask-run-main {
+	min-width: 0;
+}
+.subtask-run-title {
+	display: flex;
+	gap: 8px;
+	min-width: 0;
+	font-weight: var(--weight-medium);
+}
+.subtask-run-title > :last-child {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.subtask-run-n {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-weight: 400;
+	color: var(--ink-faint);
+	line-height: 1.7;
+}
+.subtask-run-link {
+	color: var(--ink);
+	text-decoration: none;
+}
+.subtask-run-link:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+/* Inline text, so that a long reason wraps as a sentence does. */
+.subtask-run-doing {
+	margin-top: 1px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.subtask-run-word {
+	margin-right: 8px;
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.subtask-run-asks .subtask-run-word,
+.subtask-phase-conflict .subtask-run-word {
+	color: var(--needs);
+}
+.subtask-phase-failed .subtask-run-word {
+	color: var(--bad);
+}
+/* Not started yet: its word as quiet as its glyph. */
+.subtask-phase-after .subtask-run-word,
+.subtask-phase-files .subtask-run-word,
+.subtask-phase-slot .subtask-run-word,
+.subtask-phase-integrated .subtask-run-word,
+.subtask-phase-cancelled .subtask-run-word {
+	font-weight: 400;
+	color: var(--ink-dim);
+}
+.subtask-run-fact {
+	overflow-wrap: anywhere;
+}
+/* A subtask named inside a sentence: its number in the mono face, its title cut to fit. */
+.subtask-named .subtask-run-n {
+	margin-right: 4px;
+	line-height: inherit;
+}
+.subtask-named-link {
+	color: var(--ink);
+	text-decoration: none;
+}
+.subtask-named-link:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.subtask-run-asks {
+	margin-top: 8px;
+	font-size: var(--text-13);
+}
+.subtask-run-answer {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 8px;
+}
+/* Where it runs · for how long · its session, on the right; under the title on a phone. */
+.subtask-run-facts {
+	display: flex;
+	align-items: baseline;
+	gap: 14px;
+	font-size: var(--text-13);
+	white-space: nowrap;
+}
+.subtask-run-place {
+	max-width: 16ch;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--ink-dim);
+}
+.subtask-run-time {
+	min-width: 5ch;
+	text-align: right;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-dim);
+}
+.subtasks-foot {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 16px;
+	padding: 10px 16px;
+	border-top: 1px solid var(--line);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+}
+@media (max-width: 760px) {
+	/* On a phone: title and what it does on top, then place · time · session on one line under them. */
+	.subtask-run {
+		grid-template-columns: 20px minmax(0, 1fr);
+		row-gap: 4px;
+	}
+	.subtask-run-facts {
+		grid-column: 2;
+		gap: 12px;
+	}
+	.subtask-run-time {
+		min-width: 0;
+		text-align: left;
+	}
+}
+
+/* A subtask's place among its siblings, under its title. */
+/* Its width is the header's, never the sum of its names: they are cut to fit. */
+.subtask-strip {
+	contain: inline-size;
+	width: 100%;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	margin-top: 10px;
+	font-size: var(--text-13);
+}
+.subtask-chips {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.subtask-chip {
+	display: inline-grid;
+	place-items: center;
+	min-width: 22px;
+	height: 22px;
+	padding: 0 5px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-item);
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+a.subtask-chip:hover {
+	border-color: var(--ink-faint);
+	color: var(--ink);
+}
+.subtask-chip-running {
+	border-color: var(--accent-edge);
+	color: var(--accent-text);
+}
+.subtask-chip-asks {
+	border-color: var(--needs-edge);
+	color: var(--needs);
+}
+.subtask-chip-done {
+	color: var(--ink-faint);
+}
+.subtask-chip-to_go {
+	border-style: dashed;
+	color: var(--ink-faint);
+}
+.subtask-chip-current {
+	border-width: 2px;
+	border-color: var(--ink);
+	color: var(--ink);
+	font-weight: var(--weight-strong);
+}
+.subtask-strip-alongside {
+	min-width: 0;
+	color: var(--ink-dim);
+}
+
+/* Under a feature's row in the Factory: its tally, and its active subtasks. */
+.factory-subtasks {
+	margin-top: 4px;
+}
+.factory-subtasks-tally {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 12px;
+}
+.factory-subtask-list {
+	display: grid;
+	gap: 2px;
+	margin: 6px 0 2px;
+}
+.factory-subtask {
+	display: grid;
+	grid-template-columns: 8px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 10px;
+	font-size: var(--text-13);
+}
+.factory-subtask-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent-text);
+}
+.factory-subtask-asks .factory-subtask-dot {
+	background: var(--needs);
+}
+.factory-subtask-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--ink);
+	text-decoration: none;
+}
+.factory-subtask-title:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.factory-subtask-doing {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-dim);
+	white-space: nowrap;
+}
+.factory-subtask-asks .factory-subtask-doing {
+	color: var(--needs);
+}
+
+/* The Checks panel: one line of what is open, then CI, the user's checks, the review and GitHub as rows in the facts card. */
+.checks-at {
+	margin-top: 0;
+	font-weight: var(--weight-regular);
+	letter-spacing: 0;
+}
+.checks-summary {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+	margin: 8px 0 12px;
+	font-size: var(--text-15);
+	font-weight: var(--weight-medium);
+	line-height: 1.4;
+}
+.checks-summary .outcome,
+.checks-summary .item-row-review {
+	margin-left: auto;
+}
+.checks-summary-main {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	min-width: 0;
+}
+.checks-summary-mark {
+	flex: none;
+	margin-top: 2px;
+}
+.checks-dot {
+	width: 7px;
+	height: 7px;
+	margin-top: 7px;
+	border-radius: 50%;
+	background: var(--warn);
+}
+.checks-dot.checks-dot-bad {
+	background: var(--bad);
+}
+.checks-groups dd > * + * {
+	margin-top: 4px;
+}
+.checks-head,
+.checks-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 2px 8px;
+	min-width: 0;
+}
+.checks-rows {
+	display: grid;
+	gap: 4px;
+}
+.checks-glyph {
+	flex: none;
+}
+.checks-glyph-dash {
+	position: relative;
+	width: 13px;
+	height: 13px;
+	color: var(--ink-faint);
+}
+.checks-glyph-dash::before {
+	content: "";
+	position: absolute;
+	left: 3px;
+	right: 3px;
+	top: 6px;
+	height: 1.5px;
+	border-radius: 1px;
+	background: currentColor;
+}
+.checks-said {
+	max-width: 74ch;
+}
+.checks-where {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
+	overflow-wrap: anywhere;
+}
+.checks-finding-toggle {
+	align-items: baseline;
+	min-width: 0;
+	color: var(--ink);
+	text-align: left;
+}
+.checks-finding-toggle .machine-chevron {
+	flex: none;
+	align-self: center;
+}
+.checks-finding-title {
+	overflow-wrap: anywhere;
+}
+.checks-finding-body {
+	display: grid;
+	gap: 6px;
+	flex-basis: 100%;
+	min-width: 0;
+	padding: 2px 0 6px 14px;
+}
+.checks-comment > .long-text,
+.checks-ask > .long-text {
+	flex-basis: 100%;
+	min-width: 0;
+}
+.checks-quote {
+	max-width: 74ch;
+	color: var(--ink-dim);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.checks-open {
+	margin-left: auto;
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+}
+.checks-ask-label {
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+}
+.checks-more {
+	margin-top: 6px;
+}
+.checks-fold > * + * {
+	margin-top: 8px;
+}
+@media (max-width: 760px) {
+	.checks-summary .outcome,
+	.checks-summary .item-row-review {
+		margin-left: 0;
+	}
+	.checks-groups > div > dt {
+		margin-bottom: 2px;
+	}
+}
+.checks-rows[hidden],
+.checks-finding-body[hidden] {
+	display: none;
 }

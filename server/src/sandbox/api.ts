@@ -34,7 +34,7 @@
 
 import type { SnapshotSelection, SnapshotSource } from "./snapshot-key.js";
 
-import type { AcpContext, AcpUpdate, EgressMode, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, TurnUsage, WindlassEvent } from "../contract.js";
+import type { AcpContext, AcpUpdate, EgressMode, HostedSize, HostedSizeOption, SessionMode, ModelList, RepositoryCheck, SandboxProfile, SandboxProfileId, TurnUsage, WindlassEvent } from "../contract.js";
 import type { Redactor } from "../repo-secrets.js";
 import type { HarnessId } from "./harness.js";
 import type { ProjectChecks } from "../windlass-config.js";
@@ -88,6 +88,7 @@ export interface ExecResult {
  */
 /** A runner's own measure of making a sandbox, in milliseconds (protocol.ts `connect`). */
 export interface RunnerStartTimes {
+	spare?: true;
 	/** Checking the images, and pulling one when `pulled`. */
 	image: number;
 	pulled?: true;
@@ -102,6 +103,11 @@ export interface RunnerStartTimes {
  */
 export type StartMark = "relay" | "process" | "initialized" | "prompted" | "output";
 
+/** The runner knows which policy refused a request. The session adds the machine name and available action. */
+export type ProxyBlockedHost = Pick<import("../contract.js").BlockedHost, "host" | "port" | "firstAt" | "lastAt" | "count"> & {
+	reason: Exclude<import("../contract.js").BlockedHost["reason"], "unlisted">;
+};
+
 export interface SandboxHandle {
 	readonly id: string;
 	/** The workspace directory inside the sandbox: "/workspace". */
@@ -109,6 +115,11 @@ export interface SandboxHandle {
 	/** On a personal machine, the connected runner's permission to use its browser. */
 	readonly runnerScreenshots?: boolean;
 	readonly snapshot?: SnapshotSource;
+	/**
+	 * The image the sandbox was made from, as its place names it: the Docker image id, E2B's template build, a
+	 * runner's image id to a server that named `environment-image`. What a prepared environment records. Absent where the place does not say.
+	 */
+	readonly image?: string;
 	readonly profile: SandboxProfileId;
 	/**
 	 * Docker: this sandbox's Windlass data directory is a volume of its own (SESSION_VOLUME_PROFILES),
@@ -117,10 +128,30 @@ export interface SandboxHandle {
 	 */
 	readonly ownData?: boolean;
 	/**
+	 * What the provider had to do to this sandbox on this connect, for the turn's timeline (E2B: it did not
+	 * answer and was started again from its disk). Absent when nothing out of the way happened.
+	 */
+	readonly notice?: string;
+	/**
+	 * With `notice`: the sandbox had stopped answering and its memory was used up when it did, as the
+	 * provider's metrics or the guest's own counters said (E2B). What a work item asks its person about.
+	 */
+	readonly outOfMemory?: OutOfMemory;
+	/**
+	 * The sandbox's own OOM kill count and memory limit in MiB, read at turn start and end. E2B reads the
+	 * guest's /proc/vmstat; a machine runner reads its session container's cgroup. Null when unavailable.
+	 */
+	memoryEvents?(): Promise<{ oomKills: number; totalMiB: number } | null>;
+	/** The most memory the provider sampled the sandbox using since `sinceMs`, when it came near its total (E2B's metrics). */
+	memoryPeak?(sinceMs: number): Promise<OutOfMemory | null>;
+	/**
 	 * What a runner said of making this sandbox, on the first connect after its create, to a server that
 	 * named `start-times` (StartTimes.image, pulled, runnerCreate). Absent elsewhere.
 	 */
 	readonly runnerStart?: RunnerStartTimes;
+	/** Recipe this workspace was prepared for, until the session records its clone. */
+	readonly readyKey?: string;
+	readonly readySetup?: import("../runner/spare-recipe.js").SpareSetup;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
@@ -131,6 +162,8 @@ export interface SandboxHandle {
 	 * that many it has seen do not use up the limit and hide one it has not. Absent where nothing records them.
 	 */
 	blockedHosts?(skip?: Iterable<string>): Promise<string[]>;
+	/** A restricted runner proxy. The first read opens the turn, subsequent reads repeat its cumulative counts. */
+	blockedNetwork?(turn: number, retained: Pick<ProxyBlockedHost, "host" | "port">[]): Promise<{ broker: string; hosts: ProxyBlockedHost[]; overflow: number }>;
 	/**
 	 * Docker only: install the mirror a clone staged at `/tmp/wlp-transport-<stage>.mirror` in this
 	 * sandbox's slot, from a helper container outside the sandbox, and remove the stage. True when the
@@ -151,10 +184,14 @@ export interface ConnectOptions {
 }
 
 export interface CreateSandboxInput {
+	/** Evaluated only for a machine advertising ready sandboxes. */
+	spareRecipe?: (ready: number) => Promise<import("../runner/spare-recipe.js").SpareRecipe | undefined>;
 	/** As `ConnectOptions.network`, from the first command in the sandbox. */
 	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
 	size?: number;
+	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. Left out: the smallest. */
+	hostedSize?: HostedSize;
 	fromSnapshot?: SnapshotSelection;
 	/** Immutable GitHub repository ID for a transport-owned Docker mirror. */
 	mirrorRepo?: string;
@@ -167,6 +204,15 @@ export interface CreateSandboxInput {
 	uid: string;
 	sessionId: string;
 	profile: SandboxProfileId;
+}
+
+/** A sandbox that ran out of memory: how much it used of how much, in MiB, and its size. */
+export interface OutOfMemory {
+	usedMiB: number;
+	totalMiB: number;
+	size?: HostedSize;
+	/** The next size the deployment offers, set by the session: what a work item offers to go on in. */
+	larger?: HostedSize;
 }
 
 /** A sandbox as its provider lists it for a user. */
@@ -199,10 +245,20 @@ export interface Sandboxes {
 	 */
 	price(): SandboxPrice | null;
 	/**
+	 * The sizes a sandbox can be made in, smallest first, each with its estimated price. Absent where
+	 * every sandbox has one size (Docker, machines: a machine's slot is its runner's, `--slot-memory`).
+	 */
+	sizes?(): HostedSizeOption[];
+	/**
 	 * The user's sandboxes as the provider has them now, running and paused, whichever server made
 	 * them: what the count of the sandboxes a user keeps is held against (usage.ts, `reconcile`).
 	 */
 	list(uid: string): Promise<ListedSandbox[]>;
+	/**
+	 * The users that have sandboxes of this deployment at the provider: whose actors the server asks, every 30
+	 * minutes, to remove the ones whose session is gone (user.ts `reconcileKept`). Hosted layers only.
+	 */
+	owners?(): Promise<string[]>;
 	/**
 	 * Whether Windlass's data directory, and with it Windlass's own sessions, is on the sandbox's own disk
 	 * and goes when the sandbox does. False on Docker, where it is a volume of the user's that outlives
@@ -451,7 +507,32 @@ export interface TurnControl {
 	cancelCall(messageId: string, callId: string): Promise<{ stopped: boolean; message: string | null }>;
 }
 
+/**
+ * What a running turn needs to take up its process again on a server that restarted while a machine's
+ * runner kept the process running (runner/journal.ts). Plain JSON, stored with the timeline: it holds
+ * no secret, only what the timeline and the turn's own protocol state already have. `harness` says
+ * whose `state` it is: a harness takes up only its own.
+ */
+export interface TurnCheckpoint {
+	harness: string;
+	/** The runner's id of the process (`SandboxProcess.runnerProcess`) and its wlp-run tag. */
+	process: string;
+	tag: string;
+	state: Record<string, unknown>;
+}
+
 export interface RunTurnInput {
+	/**
+	 * Told once the turn can say what it would need to be taken up again (`TurnCheckpoint`): `read`
+	 * answers that now, synchronously, or null when it cannot be taken up from here (not prompted yet,
+	 * stopping, or a provider that cannot keep a process across a restart). A harness that cannot take
+	 * up a process never calls it.
+	 */
+	onCheckpoint?: (read: () => TurnCheckpoint | null) => void;
+	/** Take up the process this checkpoint names instead of starting one: the turn goes on where it was. */
+	reattach?: TurnCheckpoint;
+	/** When the platform stops the turn, ms since the epoch: Windlass's shell calls may not ask for a timeout beyond it (windlass-config.ts `TURN_TIME_HOOK`). */
+	endsAt?: number;
 	/** Told at each point of the turn's start (StartMark); `ms` with `relay`. A listener's failure does not stop the turn. */
 	onStartMark?: (mark: StartMark, ms?: number) => void;
 	/** Selection captured when the prompt was accepted. Absent uses the harness or profile default. */
@@ -482,6 +563,13 @@ export interface RunTurnInput {
 	untrusted?: string[];
 	onUntrustedUnmarked?: () => void;
 	/**
+	 * A turn that resumes after a restart or a machine away (`windlassSessionId` set, `prompt` a short
+	 * "carry on"): what goes instead when the agent's saved session cannot be continued after all (Windlass
+	 * no longer has it, or an ACP adapter cannot load it), so that the agent is given the whole task. Its
+	 * own outside sources go with it, as `untrusted` does with `prompt`. `RunTurnResult.resumed` is false then.
+	 */
+	fresh?: { prompt: string; untrusted?: string[] };
+	/**
 	 * The layer stops answering for `TurnPersonalServer.unasked` once the engine reports the session
 	 * tainted (`taint.noticed`), also part way through the turn: from then on such a call's question goes
 	 * to `onQuestion` like any other. For a turn nobody watches, where Windlass's asking again after taint
@@ -508,7 +596,8 @@ export interface RunTurnInput {
 	 * have left them in a file): each is taken out of everything the turn hands back, which is every
 	 * event, question, description of a server, `stderrTail` and `failure`. A value that streaming
 	 * output splits over two pieces is held back until it is whole. Nothing of this is kept by the
-	 * layer when the turn has ended.
+	 * layer when the turn has ended. ACP turns use the same protected process environment for
+	 * agent-scoped names the owner explicitly supplied to that session, with both env lists empty.
 	 */
 	secrets?: TurnSecrets;
 	/**
@@ -529,6 +618,8 @@ export interface RunTurnInput {
 	 * `checks: "platform"` has them run by the platform when its prompt ends (platform-checks.ts).
 	 */
 	checks?: RepositoryCheck[];
+	/** A checks-only builder turn runs all saved platform checks, even on an unchanged tree. */
+	forceChecks?: boolean;
 	/**
 	 * For `checks: "platform"`: what the platform's run of the checks came to, as the events Windlass records
 	 * of its own gate (for `VerificationLog`), each with the timeline's note where there is one.
@@ -616,6 +707,8 @@ export interface RunTurnInput {
 	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	/** A work item's builder asks its person a question (`ask_person`); returns what the agent is told, at once. Given only with `onReport`. */
 	onAsk?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
+	/** Ask the owner for a missing environment variable. The agent only receives the receipt. */
+	onRequestSecret?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	onReview?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	reportScreenshots?: boolean;
 	/** The agent pushes the session's branch (`push`). Given with `onFetchBase`. */
@@ -627,6 +720,11 @@ export interface RunTurnInput {
 	 * For `steps: "platform"`, the most tool calls, counted by the platform (platform-steps.ts).
 	 */
 	maxSteps?: number;
+	/**
+	 * An ACP agent's turn ends when the agent sends nothing for this long while no call of its own is running and
+	 * nobody is being asked (acp-harness.ts). Left out: `ACP_IDLE_MS`.
+	 */
+	idleMs?: number;
 }
 
 /** What a turn's Windlass had for checks when its session was opened, as far as the layer saw. */

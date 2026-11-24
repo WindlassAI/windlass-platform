@@ -7,6 +7,9 @@ The short-lived ChatGPT token a Windlass turn gets. Each token lasts about an ho
 ### Agent
 A coding agent working on one task, with its own conversation and sandbox. Each has its own page, at `/agents/<id>`. Also called a session.
 
+### Budget
+What a work item may spend before it asks you for more: one figure of cost-weighted tokens, where an input token read from the prompt cache counts as a tenth, and on this platform its hosted sandbox time. Used up, the item pauses and keeps its work. See [When the budget is used](/docs/factory#when-the-budget-is-used).
+
 ### Checks
 Commands you set for a repository. Windlass runs them before it calls a turn done, and sends the agent back with what fails.
 

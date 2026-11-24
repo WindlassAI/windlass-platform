@@ -124,3 +124,16 @@ export function localTime(at: number): string {
 export function utcDay(day: string): string {
 	return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
 }
+
+/** A size in bytes as people read it, in units of 1,024: "2 MB", "1 GB", "512 KB", "1.5 GB". */
+export function byteSize(bytes: number): string {
+	const units = ["bytes", "KB", "MB", "GB", "TB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit += 1;
+	}
+	const shown = unit === 0 ? String(Math.round(value)) : value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
+	return `${shown} ${units[unit]}`;
+}

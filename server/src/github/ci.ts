@@ -31,6 +31,7 @@
  *   rate limits       https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api (403 or 429; `x-ratelimit-remaining: 0` with `x-ratelimit-reset`, or `retry-after`)
  */
 
+import { parse } from "yaml";
 import type { GithubId } from "../contract.js";
 import { decimalId, ownApp } from "./ids.js";
 import { type GithubApp, GithubError } from "./app.js";
@@ -64,7 +65,7 @@ export const LOG_TAIL_CHARS = 16_000;
 export const LOG_MAX_BYTES = 16 * 1024 * 1024;
 /** Logs are read for at most this many failing jobs per reading. */
 export const LOGS_PER_READING = 3;
-/** Actions job records read per reading to confirm that a job never started (one small request each). */
+/** Maximum job records read per CI poll to classify failures and cancellations. */
 export const JOB_READS_PER_READING = 20;
 
 /** One check run or commit status of the head. */
@@ -72,7 +73,7 @@ export interface CiRun {
 	name: string;
 	/** The app that reported it ("github-actions"), or "status" for a commit status. */
 	app: string;
-	state: "pending" | "passed" | "failed" | "not_run" | "neutral";
+	state: "pending" | "passed" | "failed" | "not_run" | "cancelled" | "neutral";
 	/** GitHub's word: a check run's `conclusion` (or its `status` while it runs), a status's `state`. */
 	conclusion: string;
 	url: string;
@@ -80,6 +81,8 @@ export interface CiRun {
 	summary: string;
 	/** For a GitHub Actions check run: its job's id, whose log can be read. */
 	jobId: string | null;
+	/** Present only for an infrastructure cancellation confirmed on this head. */
+	retryRunId?: string;
 }
 
 /** The end of a failing job's log. Untrusted: what code from the branch printed. */
@@ -95,10 +98,10 @@ export type CiReading =
  * What a reading comes to for the factory. "retry": nothing was learnt, look again later.
  * "incomplete": every run read has finished and none failed, but GitHub listed more than are read
  * (`truncated`): a failure may be among the rest, so it is not a pass. "skipped": CI ran, every run has
- * finished, none failed and none passed (all skipped, cancelled or neutral): nothing in it verified the
+ * finished, none failed and none passed (all skipped or neutral): nothing in it verified the
  * work, which is not the same as no CI. "not_run": GitHub explicitly said a job never started.
  */
-export type CiState = "passed" | "not_run" | "failed" | "pending" | "none" | "skipped" | "not_permitted" | "incomplete" | "retry";
+export type CiState = "cancelled" | "passed" | "not_run" | "failed" | "pending" | "none" | "skipped" | "not_permitted" | "incomplete" | "retry";
 
 export function ciState(reading: CiReading): CiState {
 	if (reading.kind === "not_permitted") return "not_permitted";
@@ -110,7 +113,8 @@ export function ciState(reading: CiReading): CiState {
 	if (reading.runs.some((run) => run.state === "not_run")) return "not_run";
 	if (reading.runs.some((run) => run.state === "pending")) return "pending";
 	if (reading.truncated) return "incomplete";
-	// A pass needs a check that passed: a run of nothing but skipped or cancelled jobs verified nothing.
+	if (reading.runs.some((run) => run.state === "cancelled")) return "cancelled";
+	// At least one check must have verified the work.
 	return reading.runs.some((run) => run.state === "passed") ? "passed" : "skipped";
 }
 
@@ -150,7 +154,7 @@ function checkRunOf(fields: Record<string, unknown>, candidates: Candidate[]): C
 	const app = text(record(fields.app).slug) || "unknown";
 	const status = text(fields.status);
 	const conclusion = text(fields.conclusion);
-	const state = status !== "completed" ? "pending" : FAILING.has(conclusion) ? "failed" : conclusion === "success" ? "passed" : "neutral";
+	const state = status !== "completed" ? "pending" : FAILING.has(conclusion) ? "failed" : conclusion === "success" ? "passed" : conclusion === "cancelled" || conclusion === "stale" ? "cancelled" : "neutral";
 	const output = record(fields.output);
 	const summary = plain([text(output.title), text(output.summary)].filter((part) => part !== "").join(": "));
 	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? decimalId(fields.id) : null };
@@ -172,9 +176,20 @@ function statusOf(value: unknown): CiRun | null {
 	return { name, app: "status", state, conclusion: word, url: text(fields.target_url), summary: short(plain(text(fields.description)), 500), jobId: null };
 }
 
-const priority: Record<CiRun["state"], number> = { neutral: 0, passed: 1, pending: 2, not_run: 3, failed: 4 };
+const priority: Record<CiRun["state"], number> = { neutral: 0, passed: 1, cancelled: 2, pending: 3, not_run: 4, failed: 5 };
 
-/** One entry per name in this reading of one commit; a real failure wins in either arrival order. */
+/** GitHub allocates a new check-run id for each attempt. Discard superseded attempts before reading diagnostics. */
+function latestAttempts(checks: Record<string, unknown>[]) {
+	const latest = new Map<string, Record<string, unknown>>();
+	for (const check of checks) {
+		const key = JSON.stringify([record(check.app).slug, check.name]);
+		const prior = latest.get(key);
+		if (!prior || BigInt(decimalId(check.id) ?? 0) > BigInt(decimalId(prior.id) ?? 0)) latest.set(key, check);
+	}
+	return [...latest.values()];
+}
+
+/** If different reporters share a name, retain the most consequential current result. */
 function distinctChecks(runs: CiRun[]): CiRun[] {
 	const byName = new Map<string, CiRun>();
 	for (const run of runs) {
@@ -256,12 +271,115 @@ export interface CiTarget {
 	head: string;
 }
 
+export type CancelledJob = Pick<CiRun, "name" | "jobId" | "retryRunId">;
+
+async function readWorkflowJobs(app: GithubApp, token: string, target: CiTarget, runId: string, head: string) {
+	const { owner, name } = target;
+	const run = record((await app.call({ path: `/repos/${owner}/${name}/actions/runs/${runId}`, auth: { bearer: token }, what: "find the cancelled job’s workflow" })).body);
+	// These events load the workflow from the run's head. A pull request can use a synthetic merge revision.
+	if (!["push", "workflow_dispatch", "schedule", "merge_group"].includes(text(run.event)) || run.head_sha !== head || !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(text(run.path))) return {};
+	const source = await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
+		t => app.fileAt(t, owner, name, text(run.path), head), { reuse: true });
+	return record(record(parse(source, { maxAliasCount: 50 })).jobs);
+}
+
+function jobTimeout(jobs: Record<string, unknown>, name: string): unknown {
+	const matches = [];
+	for (const [id, definition] of Object.entries(jobs)) {
+		const job = record(definition);
+		const label = job.name ?? id;
+		// An expression or reusable workflow can supply a different job's display name at runtime.
+		if (typeof label !== "string" || label.includes("${{") || job.uses) return undefined;
+		if (label === name) matches.push(job);
+	}
+	return matches.length === 1 ? matches[0]!["timeout-minutes"] : undefined;
+}
+
+async function markRetryable(app: GithubApp, token: string, target: CiTarget, head: string, cancelled: CiRun[], budget: number) {
+	const definitions = new Map<string, Promise<Record<string, unknown>>>();
+	for (const run of cancelled) {
+		if (run.conclusion !== "cancelled" || !run.jobId) continue;
+		if (budget-- <= 0) break;
+		try {
+			const job = record((await app.call({ path: `/repos/${target.owner}/${target.name}/actions/jobs/${run.jobId}`,
+				auth: { bearer: token }, what: "check why the Actions job was cancelled" })).body);
+			const runId = decimalId(job.run_id);
+			if (!runId || job.head_sha !== head || job.conclusion !== "cancelled" || decimalId(job.id) !== run.jobId) continue;
+			const unassigned = job.runner_id === 0 || job.runner_id === null || (job.runner_id === undefined && "runner_name" in job);
+			if (unassigned && (job.runner_name == null || job.runner_name === "") && Array.isArray(job.steps) &&
+				job.steps.every(step => !record(step).started_at && (record(step).status === "queued" || record(step).conclusion === "skipped"))) {
+				run.retryRunId = runId;
+				continue;
+			}
+			const elapsed = Date.parse(text(job.completed_at)) - Date.parse(text(job.started_at));
+			if (!(elapsed > 0)) continue;
+			let minutes = job.timeout_minutes ?? job["timeout-minutes"];
+			if (minutes === undefined) {
+				if (!definitions.has(runId)) definitions.set(runId, readWorkflowJobs(app, token, target, runId, head));
+				minutes = jobTimeout(await definitions.get(runId)!, text(job.name));
+			}
+			if (typeof minutes === "string" && /^\d+$/.test(minutes)) minutes = Number(minutes);
+			if (typeof minutes === "number" && Number.isSafeInteger(minutes) && minutes > 0 && elapsed >= minutes * 60_000) run.retryRunId = runId;
+		} catch { /* Without positive evidence, leave this job stopped. */ }
+	}
+}
+
+/** GitHub reruns failed jobs and their dependents together. Every affected job must be safe to restart. */
+export async function rerunCancelled(app: GithubApp, target: CiTarget, jobs: CancelledJob[]) {
+	const accepted: string[] = [];
+	const problems = new Set<string>();
+	const workflows = new Map<string, Set<string>>();
+	for (const { jobId, retryRunId } of jobs) {
+		// Effects stored by older versions did not record why the job was cancelled.
+		if (!retryRunId || !jobId) continue;
+		if (!workflows.has(retryRunId)) workflows.set(retryRunId, new Set());
+		workflows.get(retryRunId)!.add(jobId);
+	}
+	const problem = (error: GithubError) => error.status === 403 && !error.rateLimited
+		? "GitHub refused Actions: write for this installation" : error.message;
+	if (workflows.size) {
+		try {
+			await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", actions: "write" } }, async token => {
+				const auth = { bearer: token };
+				for (const [runId, ids] of workflows) {
+					try {
+						const path = `/repos/${target.owner}/${target.name}/actions/runs/${runId}`;
+						const listing = await app.pages({ path: path + "/jobs", query: { filter: "latest" }, auth, what: "verify the workflow jobs before rerunning" }, body => {
+							const jobs = record(body).jobs;
+							if (!Array.isArray(jobs)) throw new Error("GitHub did not list the workflow jobs.");
+							return jobs.map(record);
+						});
+						const affected = listing.items.filter(job => !["success", "skipped", "neutral"].includes(text(job.conclusion)));
+						const expected = new Set(ids);
+						if (listing.truncated || !affected.every(job => job.head_sha === target.head && job.status === "completed" &&
+							job.conclusion === "cancelled" && expected.delete(decimalId(job.id) ?? "")) || expected.size) {
+							problems.add("the workflow includes other jobs or its attempts changed");
+							continue;
+						}
+						await app.call({ method: "POST", path: path + "/rerun-failed-jobs", auth, what: "rerun the cancelled jobs" });
+						accepted.push(...ids);
+					} catch (error) {
+						if (!(error instanceof GithubError)) throw error;
+						problems.add(problem(error));
+					}
+				}
+			});
+		} catch (error) {
+			if (!(error instanceof GithubError)) throw error;
+			problems.add(error.status === 422 ? "the installation did not grant Actions: write" : problem(error));
+		}
+	}
+	const said = [accepted.length ? "Requested a GitHub Actions rerun for the cancelled checks." : "",
+		problems.size ? `Could not request ${accepted.length ? "every" : "a"} rerun: ${[...problems].join(". ")}.` : ""].filter(Boolean).join(" ");
+	return { accepted, said: said || "No cancelled checks were confirmed eligible for a rerun." };
+}
+
 /** Resolve ambiguous failures before collapsing names or choosing any logs to download. */
 async function readRuns(app: GithubApp, token: string, target: CiTarget, head: string, checks: unknown[], statuses: unknown[], truncated: boolean): Promise<CiReading> {
 	const candidates: Candidate[] = [];
 	let remainingJobReads = JOB_READS_PER_READING;
 	const fromHead = checks.map(record).filter((fields) => (!fields.head_sha || fields.head_sha === head) && !ownApp(record(fields.app), app.settings));
-	let runs = [...fromHead.map((fields) => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
+	let runs = [...latestAttempts(fromHead).map((fields) => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
 	if (candidates.length) {
 		let messages = new Map<string, string>();
 		let unread: CiReading = { kind: "failed", said: "GitHub did not return the check annotations" };
@@ -304,7 +422,9 @@ async function readRuns(app: GithubApp, token: string, target: CiTarget, head: s
 	const failing = runs.filter((run): run is CiRun & { jobId: string } => run.state === "failed" && run.jobId !== null).slice(0, LOGS_PER_READING);
 	const logs: CiLog[] = [];
 	for (const run of failing) logs.push(await readLog(app, token, target.owner, target.name, run));
-	return { kind: "read", head, runs, truncated, logs };
+	const reading = { kind: "read" as const, head, runs, truncated, logs };
+	if (ciState(reading) === "cancelled") await markRetryable(app, token, target, head, runs.filter(run => run.state === "cancelled"), remainingJobReads);
+	return reading;
 }
 
 /** Reads the CI of a commit. Never throws for anything GitHub answers: every outcome is a `CiReading`. */

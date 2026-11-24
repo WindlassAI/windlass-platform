@@ -104,16 +104,23 @@ async function enter(): Promise<void> {
 }
 
 /**
- * The pill of a picker, by the name the chip it replaced had: where it runs and its sandbox are one
- * pill now ("on" and "sandbox"), and its value is what the pill shows.
+ * The control of a picker, by the name the chip it replaced had: where it runs, its sandbox and the
+ * repository are one pill ("on", "sandbox", "repo"), the effort is shown on the agent's pill and chosen
+ * in its menu, and the mode is in the options. Its value is what the control shows.
  */
-const PICKERS: Record<string, string> = { repo: "repo", on: "where", sandbox: "where", agent: "agent", mode: "mode", criteria: "criteria", setup: "setup" };
+const PICKERS: Record<string, string> = { repo: "where", on: "where", sandbox: "where", agent: "agent", effort: "agent", mode: "options", criteria: "criteria", setup: "setup" };
 const pill = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement | null;
-const value = (label: string) => (label === "sandbox" ? pill(label)?.dataset.sandbox : pill(label)?.dataset.value) ?? null;
-/** Opens the pill's picker. */
+const value = (label: string) => (label === "sandbox" ? pill(label)?.dataset.sandbox : label === "repo" ? pill(label)?.dataset.repo : label === "effort" ? pill(label)?.dataset.effort : pill(label)?.dataset.value) ?? null;
+/** Opens the control's picker. */
 const open = (label: string) => act(() => (pill(label) as HTMLButtonElement).click());
-/** The open picker: a menu or a small form, drawn at the end of the page. */
-const pop = () => document.querySelector(".ui-pop") as HTMLElement;
+/** Opens the repository's picker: its row in the where menu. */
+async function openRepo(): Promise<void> {
+	open("where");
+	act(() => (pop().querySelector('[data-value="repo"]') as HTMLElement).click());
+	await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 5))));
+}
+/** The open picker, the newest one: a menu or a small form, drawn at the end of the page. */
+const pop = () => [...document.querySelectorAll(".ui-pop")].at(-1) as HTMLElement;
 /** Chooses the row of this value in the open menu. */
 const pick = (value: string) => act(() => (pop().querySelector(`[data-value="${value}"]`) as HTMLElement).click());
 /** Opens a row's submenu as the keyboard does (→ on the highlighted row), and chooses in it. */
@@ -122,9 +129,16 @@ function pickIn(row: string, value: string): void {
 	act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
 	act(() => (document.querySelector(`.ui-pop-sub [data-value="${value}"]`) as HTMLElement).click());
 }
-/** Chooses a mode in the mode's menu, by its name. */
+/** Chooses a model in the agent's menu, then an effort in the same menu, under the models. */
+function pickModelEffort(model: string, effort: string): void {
+	pick(model);
+	open("agent");
+	expect(pop().querySelector(`[data-value="${effort}"]`)?.closest('[role="group"]')?.textContent ?? pop().textContent).toContain("Effort");
+	pick(effort);
+}
+/** Chooses a mode in the options, by its name. */
 function mode(name: string): void {
-	open("mode");
+	open("options");
 	const option = [...pop().querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.querySelector(".ui-item-label")?.textContent === name) as HTMLElement;
 	act(() => option.click());
 }
@@ -150,6 +164,15 @@ describe("the start composer", () => {
 		expect(prompted).toEqual([expect.objectContaining({ text: "Run the tests and fix what fails" })]);
 		expect(prompted[0]?.effort).toBeUndefined();
 		expect(location.pathname).toMatch(/^\/agents\/[0-9a-f]+$/);
+	});
+
+	it("sends the hosted size chosen in the options, and the default for agents otherwise", async () => {
+		await show();
+		write("Run the typecheck");
+		open("options");
+		await act(async () => ([...pop().querySelectorAll('[role="menuitemradio"]')].find((row) => row.textContent?.startsWith("Large")) as HTMLElement).click());
+		await enter();
+		expect(created[0]?.hostedSize).toBe("large");
 	});
 
 	it("does nothing on Enter with an empty task, and creates without a prompt from the line under it", async () => {
@@ -178,16 +201,73 @@ describe("the start composer where it offers no switch", () => {
 		sessionStorage.setItem("wlp.new-agent.draft", JSON.stringify({ prompt: "Add a health check", kind: "item", criteria: "It answers 200." }));
 		await show();
 		expect(field().value).toBe("Add a health check");
-		expect(host.querySelector(".start-kind")).toBeNull();
 		expect(pill("agent")).not.toBeNull();
 		expect(pill("criteria")).toBeNull();
+	});
+});
+
+describe("the start composer's one-line tray", () => {
+	it("is +, the agent, where, options, the lock and Launch, in that order", async () => {
+		await show();
+		const tray = host.querySelector(".start-tools") as HTMLElement;
+		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["setup", "agent", "where", "options", "lock"]);
+		expect(tray.querySelector(".tray-end .start-launch")).not.toBeNull();
+		// No mode pill, no effort pill and no line of facts under the box: they are in the menus and the lock.
+		expect(host.querySelector('[data-picker="mode"], [data-picker="effort"], [data-picker="repo"]')).toBeNull();
+		expect(host.querySelector("p.start-sandbox")).toBeNull();
+	});
+
+	it("has one where control: the place and the repository at its branch, chosen in one menu", async () => {
+		await show();
+		const where = pill("where") as HTMLButtonElement;
+		expect(where.dataset.value).toBe("Hosted");
+		expect(where.dataset.repo).toBe("acme/harbor @ main");
+		expect(where.textContent).toContain("Hosted");
+		expect(where.textContent).toContain("harbor");
+		expect(where.textContent).toContain("main");
+		expect(where.querySelector(".repo-tile")).not.toBeNull();
+		open("where");
+		const labels = [...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent);
+		expect(labels).toEqual(["Hosted", "Your machines", "Repository"]);
+		const repoRow = pop().querySelector('[data-value="repo"]') as HTMLElement;
+		expect(repoRow.textContent).toContain("acme/harbor");
+		expect(repoRow.textContent).toContain("at main");
+		// Its row opens the repository's picker in the menu's place.
+		act(() => repoRow.click());
+		await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 5))));
+		expect(pop().textContent).toContain("Paste an address");
+		expect(document.querySelectorAll(".ui-pop")).toHaveLength(1);
+	});
+
+	it("chooses the effort in the agent's menu, under the models, and shows it as bars on the agent", async () => {
+		await show();
+		open("agent");
+		const groups = [...pop().querySelectorAll(".ui-menu-group")];
+		expect(groups.at(-1)?.querySelector(".ui-menu-group-label b")?.textContent).toBe("Effort");
+		pick("windlass:gpt-6.1-sol");
+		open("agent");
+		pick("high");
+		expect(value("effort")).toBe("high");
+		expect(pill("agent")?.querySelectorAll(".effort-bars .effort-bar-on").length).toBeGreaterThan(0);
+		expect(pill("agent")?.getAttribute("aria-label")).toContain("effort high");
+	});
+
+	it("keeps the mode in the options, with the sandbox's sentence, which the lock's tooltip also says", async () => {
+		await show();
+		const lock = pill("lock") as HTMLButtonElement;
+		const sentence = lock.getAttribute("aria-label") ?? "";
+		// Where the deployment offers hosted sizes, the sentence names the size and its price, and the options list them first.
+		expect(sentence).toMatch(/Runs hosted, Small \(1 vCPU, 1 GiB, about \$0\.067\/h\)\.$/);
+		open("options");
+		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Hosted size", "Mode"]);
+		expect(pop().querySelector(".tray-safety")?.textContent).toBe(sentence);
 	});
 });
 
 describe("each picker of the start composer", () => {
 	it("sends no repository, chosen in the repository's picker", async () => {
 		await show();
-		open("repo");
+		await openRepo();
 		press("No repository");
 		expect(value("repo")).toBe("none");
 		write("Look around");
@@ -199,7 +279,7 @@ describe("each picker of the start composer", () => {
 
 	it("sends a pasted address", async () => {
 		await show();
-		open("repo");
+		await openRepo();
 		press("Paste an address");
 		write("https://example.com/acme/pier.git", pop().querySelector('input[type="url"]') as HTMLInputElement);
 		expect(value("repo")).toBe("example.com/acme/pier");
@@ -252,11 +332,29 @@ describe("each picker of the start composer", () => {
 		expect(created[0]?.model).toBeUndefined();
 	});
 
+	it("switches agent in one press from the logo row at the top of the agent's menu", async () => {
+		await show();
+		open("on");
+		pick("m_nas");
+		await settle();
+		open("agent");
+		const row = pop().querySelector('[aria-label="Switch agent"]') as HTMLElement;
+		expect([...row.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toContain("Claude Code");
+		expect(row.querySelector('[aria-pressed="true"]')?.getAttribute("aria-label")).toBe("Windlass");
+		act(() => (row.querySelector('[aria-label="Claude Code"]') as HTMLButtonElement).click());
+		expect(value("agent")?.startsWith("Claude Code · ")).toBe(true);
+	});
+
 	it("sends the model chosen with the agent, and the effort with its first prompt", async () => {
 		await show();
 		open("agent");
-		pickIn("windlass:gpt-6.1-sol", "low");
-		expect(value("agent")).toBe("Windlass · gpt-6.1-sol · low");
+		pickModelEffort("windlass:gpt-6.1-sol", "low");
+		expect(value("agent")).toBe("Windlass · gpt-6.1-sol");
+		expect(value("effort")).toBe("low");
+		// The agent's menu lists models only: the efforts are the effort picker's.
+		open("agent");
+		expect(pop().querySelector(".ui-pop-sub, [aria-haspopup]")).toBeNull();
+		open("agent");
 		write("Fix the flaky test");
 		await enter();
 		expect(created[0]?.model).toBe("gpt-6.1-sol");
@@ -287,8 +385,9 @@ describe("each picker of the start composer", () => {
 			["Sonnet", false],
 			["haiku", false],
 		]);
-		pickIn("claude:sonnet", "high");
-		expect(value("agent")).toBe("Claude Code · Sonnet · high");
+		pickModelEffort("claude:sonnet", "high");
+		expect(value("agent")).toBe("Claude Code · Sonnet");
+		expect(value("effort")).toBe("high");
 		write("Add the test command to the README");
 		await enter();
 		expect(created[0]).toMatchObject({ harness: "claude", model: "sonnet" });
@@ -315,8 +414,9 @@ describe("each picker of the start composer", () => {
 		pick("claude:haiku");
 		expect(value("agent")).toBe("Claude Code · Haiku");
 		open("agent");
-		pickIn("claude:opus", "high");
-		expect(value("agent")).toBe("Claude Code · Opus (default) · high");
+		pickModelEffort("claude:opus", "high");
+		expect(value("agent")).toBe("Claude Code · Opus (default)");
+		expect(value("effort")).toBe("high");
 		write("Add the test command to the README");
 		await enter();
 		expect(created[0]).toMatchObject({ harness: "claude" });
@@ -444,7 +544,7 @@ describe("the start composer and the visit to GitHub", () => {
 		open("on");
 		pick("m_nas");
 		mode("Ask");
-		open("repo");
+		await openRepo();
 		expect(value("repo")).toBe("none");
 		// The browser leaves for GitHub here; jsdom stays, with what was kept for the way back.
 		press("Connect GitHub");
@@ -503,7 +603,7 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		popupOpens();
 		await show({ who });
 		write("Add a health check");
-		open("repo");
+		await openRepo();
 		press("Connect GitHub");
 		await settle(40);
 		// The window went to GitHub; this page stayed, and kept nothing for a way back.
@@ -521,7 +621,7 @@ describe("connecting GitHub from the start composer in a popup", () => {
 	it("offers reconnect in the picker and opens GitHub for the connected user", async () => {
 		popupOpens();
 		await show();
-		open("repo");
+		await openRepo();
 		expect(pop().textContent).toContain("Installed by someone else? Reconnect GitHub to pick it up.");
 		press("Reconnect GitHub");
 		await settle();
@@ -533,7 +633,7 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		popupOpens();
 		await show({ who });
 		write("Add a health check");
-		open("repo");
+		await openRepo();
 		press("Connect GitHub");
 		await settle(40);
 		act(() => opened?.close());
@@ -550,7 +650,7 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		window.open = (() => (asked++, null)) as typeof window.open;
 		await show({ who });
 		write("Add a health check");
-		open("repo");
+		await openRepo();
 		press("Connect GitHub");
 		await settle();
 		expect(asked).toBe(1);

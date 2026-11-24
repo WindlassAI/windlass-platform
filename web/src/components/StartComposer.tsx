@@ -1,12 +1,14 @@
 /**
  * The start of an agent: a composer, not a form. Typing the task and pressing Enter launches it with
- * the choices already standing. The choices are a toolbar of pills inside the composer's box: the
- * agent and its model (effort in a submenu), where it runs (hosted or one of the user's machines,
- * each with its sandboxes in a submenu), the repository at a branch (filtered as you type, branches in
- * a submenu), and the mode; "+" holds the repository's setup command and secrets. Launch is a split
- * button whose menu creates the agent without sending the task. Under the box, one line says what
- * the chosen sandbox lets the agent's commands do and where it runs. On a phone the pills fold into
- * one summary row that opens a "Launch settings" sheet, each setting's list pushed into it. Home has
+ * the choices already standing. The choices are one line inside the composer's box (the pieces are
+ * components/TrayControls.tsx): "+" for the repository's setup command and secrets; the agent with its
+ * model and effort bars, whose menu holds the agents' models and, last, the effort; one "where" pill,
+ * the place and the repository at a branch, whose menu holds where it runs (hosted or one of the
+ * user's machines, each with its sandboxes in a submenu) and the repository (filtered as you type,
+ * branches in a submenu); an options icon for the rarer settings (the mode, and the sentence on what
+ * the sandbox lets the agent's commands do); a lock whose tooltip is that sentence; and Launch, a split
+ * button whose menu creates the agent without sending the task. On a phone the same line keeps its
+ * glyphs and the repository's name, and each menu opens as a sheet. Home and a repository's page have
  * it at the top, and `/new` on a page of its own.
  *
  * What each choice starts on, field by field: the choice made here, then the chosen repository's saved
@@ -27,34 +29,38 @@
  * Connecting GitHub is offered only in the repository's picker. It leaves the page, so the task and
  * every choice made here are kept (`LaunchDraft`) and put back on the way in, with the picker open.
  *
- * Where the deployment offers work items and the page asks for it (`switchable`, the Factory page), a
- * switch turns it to filing one ("Work item"): the text's first line is the item's title and the rest
- * what to do (`itemOf`), a repository of the GitHub connection is required, and the pills are the
- * repository, where it runs, its agent and model and its acceptance criteria. An item runs Windlass in its profile's mode unless an agent
+ * On the Factory page (`kind` "item") it files a work item: the text's first line is the item's title
+ * and the rest what to do (`itemOf`), a repository of the GitHub connection is required, and the line
+ * is the same: the agent and model, where (the place and the repository), options, and File. File's
+ * main button says how the item runs, "File · Plan first" or "File · Quick", the last choice in this
+ * browser; its menu switches between them and files a draft. The done-when criteria are one line under
+ * the text, opened only when used. An item runs Windlass in its profile's mode unless an agent
  * its machine is signed into is chosen (`itemHarnesses`), which runs Quick and without asking (Codex: in its own sandbox by default, without asking only on "Docker, hardened"). Its effort, one its agent offers for the model, runs every turn of the item. Enter files and starts it,
  * the launch menu files a draft, and the page stays where it is: filing several in a row is the
  * factory's normal use. The repository starts on the page's, else the newest item's, else the newest
  * agent's.
  */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { monthReset, monthState } from "../lib/hosted";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { effortChoices, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
+import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
 import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
+import { perHour, sizeName, sizeSpec, startingSize } from "../lib/sizes";
 import { clockTime, useMachines } from "../screens/Machines";
 import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
-import { ArrowUpIcon, BranchIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SendIcon, SlidersIcon, WarnIcon } from "./Icons";
+import { ArrowUpIcon, CheckIcon, CloudIcon, LockIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
-import { ModePicker, modeMenu } from "./Modes";
+import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { capabilitiesOf, machineAgentLine, machineHarness } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses, onPullRequest } from "./PlaceChoice";
@@ -63,14 +69,17 @@ import { SecretsField } from "./Secrets";
 import { SetupField, useSetupDraft } from "./SetupCommand";
 import { HarnessStatus } from "./HarnessStatus";
 import { KeyHints, Kbd } from "./ui/Kbd";
-import { Menu, MenuSheet, PickerPanel, type MenuGroup, type MenuItem, type MenuSpec, type TriggerProps } from "./ui/Menu";
-import { AgentGlyph, Pill } from "./ui/Pill";
+import { Menu, MenuList, PickerPanel, type MenuGroup, type MenuItem, type MenuSpec } from "./ui/Menu";
+import { Popover } from "./ui/Popover";
+import { AgentGlyph, AgentLogo } from "./ui/Pill";
+import { RepoTile } from "./RepoTile";
+import { AgentPill, LockHint, OptionsButton, WherePill, effortGroup } from "./TrayControls";
 import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
-import { ItemModePicker, ItemModeCost } from "./ItemModePicker";
-import { orchestrateProblem } from "../lib/feature";
+
+import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
 
 /** Whether any of the chosen sandbox's three facts is open: said in the warning tone. */
 function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boolean {
@@ -111,13 +120,16 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 }
 
 /** What launching runs into now, before anything is sent: `warn` when the agent could not start at all. */
-function launchLimit(numbers: UsageNumbers | null): { text: string; warn: boolean } | null {
+function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text: string; warn: boolean } | null {
 	if (numbers === null) return null;
 	const left = allowanceState(numbers, USAGE_LOW_SHARE);
 	const resets = localTime(numbers.resetsAt);
+	// The month's hosted minutes, where a plan sets them: one on the user's own machine is never counted.
+	// Near the limit the page's own notice says so (components/Plan.tsx); at it, what launching here does, unless that notice is on the page too.
+	if (numbers.hosted && monthState(numbers) === "used") return hostedNotice ? null : { warn: true, text: `Hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
 	if (left === "used") return { warn: true, text: `Today's sandbox time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
 	const { kept, limit } = numbers.sandboxes;
-	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} sandboxes, the most an account may have. An agent launched now is created, and cannot start working until you free a sandbox.` };
+	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} hosted sandboxes, the most an account may have. An agent launched here now is created, and cannot start working until you free one. One on your own machine is not counted.` };
 	if (left === "low" && numbers.leftSeconds !== null) return { warn: false, text: `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped, with its files kept; the allowance is whole again at ${resets}.` };
 	return null;
 }
@@ -168,8 +180,41 @@ export function useCatalog(machine: MachineSummary | null, id: "claude" | "openc
 	return { options: match?.options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
 }
 
-/** The pickers the composer opens: one at a time. The phone's settings sheet is one of them. */
-type Picker = "repo" | "where" | "agent" | "mode" | "criteria" | "plus" | "settings";
+/** The pickers the composer opens: one at a time. "repo" is the address form, opened from the where menu. */
+type Picker = "repo" | "where" | "agent" | "options" | "plus";
+
+const ITEM_MODE_KEY = "wlp.factory.item-mode";
+
+/** How the last work item filed in this browser runs; Plan first where it keeps nothing. */
+export function loadItemMode(storage: Pick<Storage, "getItem"> | null = safeStorage()): ItemMode {
+	try {
+		return storage?.getItem(ITEM_MODE_KEY) === "single" ? "single" : "orchestrate";
+	} catch {
+		return "orchestrate";
+	}
+}
+
+function saveItemMode(mode: ItemMode, storage: Pick<Storage, "setItem"> | null = safeStorage()): void {
+	try {
+		storage?.setItem(ITEM_MODE_KEY, mode);
+	} catch {
+		// Kept for this visit only.
+	}
+}
+
+function safeStorage(): Storage | null {
+	try {
+		return typeof localStorage === "undefined" ? null : localStorage;
+	} catch {
+		return null;
+	}
+}
+
+/** The two ways a work item runs, as File's menu says them. */
+export const ITEM_MODE_LINES: Record<ItemMode, string> = {
+	orchestrate: "A planner splits it into subtasks you approve, then they run.",
+	single: "One agent goes straight to a pull request.",
+};
 
 /** "github.com/acme/web" for a pasted address: the chip's few words. */
 const shortAddress = (url: string) => url.replace(/^https:\/\//, "").replace(/\.git$/, "");
@@ -181,12 +226,12 @@ export interface StartComposerProps {
 	repositoryId?: GithubId;
 	/** Puts the focus in the field when it is shown. */
 	autoFocus?: boolean;
-	/** What it starts on: an agent, or a work item to file. Work items need the deployment to offer them. */
+	/** What it starts on: an agent, or a work item to file (the Factory page). Work items need the deployment to offer them. */
 	kind?: StartKind;
-	/** Offers the switch between the two, where the deployment offers work items. */
-	switchable?: boolean;
 	/** The user's work items, live, where the page has them: a work item starts on the newest one's repository. Null until they arrive. */
 	items?: readonly ItemSummary[] | null;
+	/** The page shows the month's hosted minutes in its own notice (components/Plan.tsx, `HostedNotice`): not said again here. */
+	hostedNotice?: boolean;
 }
 
 export type StartKind = "agent" | "item";
@@ -194,24 +239,32 @@ export type StartKind = "agent" | "item";
 /** The refusals of a machine that the list of machines may be behind on: it is read again. */
 const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"] as const;
 
-export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: startKind = "agent", switchable = false, items }: StartComposerProps) {
+export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: kindChoice = "agent", items, hostedNotice = false }: StartComposerProps) {
 	const { client, platform, explain } = useApp();
 	const auth = useAuth();
 	const info = platform.info;
 	const github = useGithub();
-	const limit = launchLimit(useAllowance());
+	const allowance = useAllowance();
+	const limit = launchLimit(allowance, hostedNotice);
+	// Where the deployment has plans, the sizes the account's plan offers (Free has no large).
+	const planSizes = allowance?.hosted?.plan ? (info?.billing?.plans.find((plan) => plan.id === allowance.hosted!.plan)?.sizes ?? null) : null;
 	const surface = useSurface();
 	const phone = surface === "sheet";
-	const ids = { text: useId(), hint: useId(), keys: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), sandboxes: useId(), models: useId(), efforts: useId(), kind: useId(), criteria: useId(), criteriaNote: useId() };
+	const ids = { text: useId(), hint: useId(), keys: useId(), repo: useId(), repoLabel: useId(), repoNote: useId(), criteria: useId(), criteriaNote: useId() };
 	// What the composer held before its user left to connect GitHub, once.
 	const [draft] = useState(takeLaunchDraft);
 
 	const [prompt, setPrompt] = useState(draft?.prompt ?? "");
-	// Agent or work item: the page's, unless its user switched before leaving for GitHub on a page that offers the switch. Without work items on this deployment, an agent.
-	const [kindChoice, setKind] = useState<StartKind>((switchable ? draft?.kind : null) ?? startKind);
+	// Agent or work item: the page's. Without work items on this deployment, an agent.
 	const item = kindChoice === "item" && Boolean(info?.items);
-	const [itemMode, setItemMode] = useState<ItemMode>(draft?.itemMode ?? "orchestrate");
+	// How a work item runs: what it was before leaving for GitHub, else the last choice in this browser.
+	const [itemMode, setItemModeState] = useState<ItemMode>(() => draft?.itemMode ?? loadItemMode());
+	const setItemMode = (mode: ItemMode) => {
+		setItemModeState(mode);
+		saveItemMode(mode);
+	};
 	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
+	const [criteriaOpen, setCriteriaOpen] = useState(false);
 	// The work item filed last from here, said under the field until another is written.
 	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean; feature: boolean } | null>(null);
 	// The user's own choices here: none until they make one, so that the defaults can stand in.
@@ -225,24 +278,26 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [placeChoice, setPlace] = useState<string | null | undefined>(draft?.place === "platform" ? null : (draft?.place ?? undefined));
 	const [harnessChoice, setHarness] = useState<HarnessId | null>(draft?.harness === "windlass" || draft?.harness === "claude" || draft?.harness === "opencode" || draft?.harness === "codex" ? draft.harness : null);
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
+	/** The hosted size chosen here; null: the repository's saved one, else the default for agents or work items. */
+	const [sizeChoice, setSizeChoice] = useState<HostedSize | null>(null);
 	const [open, setOpen] = useState<Picker | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
-	const anchors = { repo: useRef<HTMLButtonElement>(null), plus: useRef<HTMLButtonElement>(null), criteria: useRef<HTMLButtonElement>(null), settings: useRef<HTMLButtonElement>(null) };
-	const search = useRepositorySearch(open === "repo" || open === "settings", github.status?.connection?.connectedAt ?? null);
+	const anchors = { where: useRef<HTMLSpanElement>(null), plus: useRef<HTMLButtonElement>(null) };
+	const search = useRepositorySearch(open === "repo" || open === "where", github.status?.connection?.connectedAt ?? null);
 	const branches = useBranches();
 
-	// Back from GitHub: the repository's picker is open, where its user left. Connected from the popup, it
-	// opens again once the connection is there: its address form gives way to the list, and closes as it goes.
+	// Back from GitHub: the where menu is open, where its user left. Connected from the popup, it
+	// opens again once the connection is there, with the repositories in it.
 	const returned = github.notice?.where === "launch" || github.busy === "finishing";
 	const nowConnected = github.status?.connection != null;
 	useEffect(() => {
 		if (!returned) return;
 		// After the swap has settled: the address form's focus going back to the pill closes the list as it opens.
-		const timer = setTimeout(() => setOpen((now) => (now === "settings" ? now : "repo")), 0);
+		const timer = setTimeout(() => setOpen(phone ? "where" : "repo"), 0);
 		return () => clearTimeout(timer);
-	}, [returned, nowConnected]);
+	}, [returned, nowConnected, phone]);
 
 	useEffect(() => {
 		if (autoFocus) area.current?.focus();
@@ -346,6 +401,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const runsHere = (id: HarnessId) => (item ? itemProfilesHere(chosenMachine, id).length > 0 : hardened);
 	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
+	// ---- the hosted size: where the deployment offers more than one, for a hosted sandbox -----------------
+	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id)) : [];
+	const savedSize = saved.defaults?.hostedSize ?? null;
+	const defaultSize = sizes.length > 1 ? startingSize(sizes, savedSize, item) : null;
+	const hostedSize = defaultSize === null ? null : sizeChoice !== null && sizes.some((size) => size.id === sizeChoice) ? sizeChoice : defaultSize;
+	const hostedOption = sizes.find((size) => size.id === hostedSize) ?? null;
 	// The agent the last one was, where it cannot be this one's: said in the agent's picker.
 	const harnessProblem =
 		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
@@ -432,6 +493,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				repoUrl: repo.kind === "address" && repo.url !== "" ? repo.url : undefined,
 				repository,
 				setupCommand: repository ? setup.toSave : undefined,
+				...(hostedSize ? { hostedSize } : {}),
 			};
 			// One key for the agent: launching again after an answer that never came, with nothing changed, makes no second one.
 			asked.current = submissionOf(JSON.stringify(input), asked.current);
@@ -477,6 +539,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			...(model && (other || modelChoice !== "") ? { model } : {}),
 			// Every turn of the item runs at it; left out, at the agent's default.
 			...(effort && effort !== "default" ? { effort } : {}),
+			...(hostedSize ? { hostedSize } : {}),
 		};
 		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
 		asked.current = submissionOf(JSON.stringify(input), asked.current);
@@ -486,7 +549,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			asked.current = null;
 			setPrompt("");
 			setCriteria("");
-			setItemMode("orchestrate");
+			setCriteriaOpen(false);
 			setFiled({ id: made.id, title: made.title, started: now, feature: input.mode === "orchestrate" });
 		} catch (failure) {
 			setError(explain(failure));
@@ -680,12 +743,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			{repoActions}
 		</div>
 	);
-	const repoPill = (props: TriggerProps) => (
-		<Pill {...props} data-picker="repo" data-value={repoValue} icon={<RepoIcon size={15} />} secondary={repo.kind === "github" ? <BranchSecondary branch={repo.picked.branch} /> : undefined} dot={repoWarn ? "warn" : null} dotLabel={repoWarn ? "needs a look" : undefined} aria-busy={repoReading} aria-label={`Repository: ${repoValue}`}>
-			{repoReading ? "…" : repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "Choose a repository" : "No repository"}
-		</Pill>
-	);
-
 	// ---- where it runs, and its sandbox -------------------------------------------------------------
 	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(chosenMachine) && candidate.id === "docker-windlass-sandbox")));
 	const sandboxWarn = (chosenProfile !== null && sandboxOpen(chosenProfile, claude)) || (!other && ignored.profile !== null) || defaultsErrors.length > 0 || available.length === 0;
@@ -761,10 +818,25 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					},
 				]
 			: [{ id: "profiles", label: "Sandbox", note: "hosted", items: profileRows(null) }];
+	// The repository, as the where menu's last row: its picker in a submenu, or the address form.
+	const repoRow: MenuItem = {
+		id: "repo",
+		value: "repo",
+		label: repoReading ? "Repository" : repo.kind === "github" ? repositoryName(repo.picked.repository) : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "Choose a repository" : "No repository",
+		textValue: "repository",
+		description: repoReading ? "being read" : repo.kind === "github" ? `at ${repo.picked.branch}` : repo.kind === "address" && repo.url !== "" ? "cloned from its address" : item ? "a repository of your GitHub connection" : "starts in an empty repository",
+		icon: repo.kind === "github" ? <RepoTile name={repo.picked.repository.name} size="sm" /> : <RepoIcon size={15} />,
+		tone: repoWarn ? ("warn" as const) : undefined,
+		// On a phone its list or form is pushed into the sheet; on a wide screen it takes the menu's place, anchored to the pill.
+		...(phone ? (repoSpec ? { submenu: repoSpec } : { panel: addressForm }) : { onSelect: () => setTimeout(() => setOpen("repo"), 0) }),
+	};
+	// A work item on no machine of the user's runs hosted: only the repository is chosen.
+	const whereChoices: MenuGroup[] = item && mine.length === 0 ? [] : whereGroups;
 	const whereSpec: MenuSpec = {
-		label: mine.length > 0 ? "Where it runs" : "Sandbox",
+		label: "Where it runs, and on what",
 		width: 320,
-		hints: { right: "sandbox" },
+		submenuWidth: 340,
+		hints: { right: "open" },
 		header:
 			whereNotes.length > 0 ? (
 				<>
@@ -775,7 +847,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					))}
 				</>
 			) : undefined,
-		groups: whereGroups,
+		groups: [...whereChoices, { id: "repository", label: "Repository", items: [repoRow] }],
 		footer: profileChanged ? (
 			<button type="button" className="ui-menu-action start-back" onClick={() => setProfile(null)}>
 				Back to the default ({whose(defaults.from.profile)}: {info?.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? defaults.profile})
@@ -783,69 +855,30 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		) : undefined,
 	};
 	const placeName = chosenMachine ? machineLabel(chosenMachine) : "Hosted";
+
 	const whereWarn = placeProblem !== null || chosenMachine?.status === "offline" || (!item && sandboxWarn);
-	const showWhere = mine.length > 0 || !item;
-	const wherePill = (props: TriggerProps) => (
-		<Pill
-			{...props}
-			data-picker="where"
-			data-value={placeName}
-			data-sandbox={chosenProfile?.name ?? "none"}
-			icon={chosenMachine ? <MachineIcon size={15} /> : <CloudIcon size={15} />}
-			secondary={!item && chosenProfile ? `· ${chosenProfile.name}` : undefined}
-			dot={whereWarn ? "warn" : profileChanged ? "changed" : chosenMachine ? (chosenMachine.status === "online" ? "ok" : "off") : null}
-			dotLabel={whereWarn ? "something is open, or cannot be used: see its picker" : chosenMachine ? chosenMachine.status : undefined}
-			className={profileChanged ? "ui-pill-changed" : undefined}
-			aria-label={`Where it runs: ${placeName}${!item && chosenProfile ? `, ${chosenProfile.name}` : ""}`}
-		>
-			{placeName}
-		</Pill>
-	);
 
 	// ---- the agent and its model --------------------------------------------------------------------
-	/** The rows of one harness's models, each with its efforts in a submenu. */
+	/** The rows of one harness's models: models only, the effort being the menu's last group. */
 	const modelRows = (harnessId: HarnessId, list: typeof modelList): MenuItem[] => {
 		if (list === null || list.models.length === 0) return [];
 		const isOther = harnessId !== "windlass";
-		return list.models.map(({ id, name: reportedName, efforts: rowEfforts }) => {
+		return list.models.map(({ id, name: reportedName }) => {
 			const isDefault = id === list.defaultModel;
 			const name = isOther && reportedName ? reportedName : id;
 			const here = harness === harnessId;
 			// Another harness's reported default is its "": chosen, nothing is sent.
 			const checked = here && (isOther && model === "" ? isDefault : model === id);
-			const pick = (to: string | null) => {
-				setHarness(harnessId);
-				setModel(id);
-				if (to !== null) setEffort(to);
-			};
 			return {
 				id: `${harnessId}:${id}`,
 				label: name,
 				icon: <AgentGlyph harness={HARNESS_NAMES[harnessId]} accent={harnessId === "windlass" && isDefault} />,
-				description: rowEfforts.length > 0 ? (checked && effort ? `effort ${effort} · ${rowEfforts.length} levels` : `${rowEfforts.length} effort levels`) : undefined,
 				trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
 				checked,
-				onSelect: () => pick(null),
-				submenu:
-					rowEfforts.length > 0
-						? {
-								label: `Effort for ${name}`,
-								width: 200,
-								groups: [
-									{
-										id: "efforts",
-										label: `Effort for ${name}`,
-										items: effortChoices(rowEfforts).map((level, index) => ({
-											id: level || "default",
-											label: level || "default",
-											icon: <EffortBars level={index} of={rowEfforts.length} />,
-											checked: checked && (effort || "default") === (level || "default"),
-											onSelect: () => pick(level),
-										})),
-									},
-								],
-							}
-						: undefined,
+				onSelect: () => {
+					setHarness(harnessId);
+					setModel(id);
+				},
 			};
 		});
 	};
@@ -897,16 +930,48 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			}];
 		}),
 	];
+	// One button a logo for each agent the chosen place offers: a press switches to it, on its default model.
+	const agentsHere = agentGroups.filter((group) => !group.id.endsWith(":elsewhere") && group.items.some((row) => !row.disabled));
+	const agentSwitch =
+		agentsHere.length > 1 ? (
+			<div className="agent-switch" role="group" aria-label="Switch agent">
+				{agentsHere.map((group) => {
+					const id = group.id as HarnessId;
+					const chosen = harness === id;
+					return (
+						<Tooltip key={id} content={HARNESS_NAMES[id]}>
+							<button
+								type="button"
+								className={`agent-switch-button${chosen ? " agent-switch-chosen" : ""}`}
+								aria-pressed={chosen}
+								aria-label={HARNESS_NAMES[id]}
+								onClick={() => {
+									if (!chosen) {
+										setHarness(id);
+										setModel("");
+									}
+									setOpen(null);
+								}}
+							>
+								<AgentLogo id={id} size={18} />
+							</button>
+						</Tooltip>
+					);
+				})}
+			</div>
+		) : null;
+	// The effort, the agent menu's last group: the pill shows it as bars.
+	const effortModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
+	const effortRows = effortGroup(efforts, effort, effortModel, setEffort);
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
 		width: 304,
 		maxHeight: 520,
-		submenuWidth: 200,
-		hints: { right: "effort" },
 		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
 		header:
-			offersOther || (!other && ignored.model) || harnessProblem ? (
+			agentSwitch || offersOther || (!other && ignored.model) || harnessProblem ? (
 				<>
+					{agentSwitch}
 					{chosenMachine && offersOther
 						? <details className="agent-commands">
 								<summary>Terminal sign-in commands</summary>
@@ -920,7 +985,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
 				</>
 			) : undefined,
-		groups: agentGroups,
+		groups: [...agentGroups, ...(effortRows ? [effortRows] : [])],
 		footer: (
 			<>
 				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn, and there is" : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides, and there is" : " There is"} no second reviewer on a machine.</p> : null}
@@ -935,35 +1000,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		),
 	};
 	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
-	const shownEffort = effort;
-	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`;
+	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}`;
 	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
-	const agentPill = (props: TriggerProps) => (
-		<Pill
-			{...props}
-			data-picker="agent"
-			data-value={agentValue}
-			icon={<AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />}
-			secondary={`· ${agentModel}${shownEffort ? ` · ${shownEffort}` : ""}`}
-			dot={agentWarn ? "warn" : modelChanged ? "changed" : null}
-			dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined}
-			className={modelChanged ? "ui-pill-changed" : undefined}
-			aria-label={`Agent: ${agentValue}`}
-		>
-			{HARNESS_NAMES[harness]}
-		</Pill>
-	);
-
-	// ---- the mode, the criteria, the setup ------------------------------------------------------------
-	const modeOpen = mode !== null && OPEN_MODES.has(mode.id);
-	const modeSpec = modes && mode ? modeMenu(modes.modes, mode.id, setMode, modeOpen) : null;
-	const modeControl = modes && mode ? <ModePicker modes={modes.modes} current={mode.id} disabled={busy !== null} warn={modeOpen} onChoose={setMode} open={open === "mode"} onOpenChange={openOnly("mode")} /> : null;
 
 	const criteriaValue = acceptance.length === 0 ? "none" : count(acceptance.length);
 	const criteriaField = (
 		<div className="start-criteria">
 			<label className="label" htmlFor={ids.criteria}>
-				Acceptance criteria<span className="label-optional">optional</span>
+				Done when<span className="label-optional">optional</span>
 			</label>
 			<textarea id={ids.criteria} className={`input textarea item-criteria${criteriaWrong ? " input-invalid" : ""}`} value={criteria} onChange={(event) => setCriteria(event.target.value)} readOnly={busy !== null} aria-describedby={ids.criteriaNote} aria-invalid={criteriaWrong !== null || undefined} data-autofocus />
 			<p className={`field-note${criteriaWrong ? " tone-bad" : ""}`} id={ids.criteriaNote}>
@@ -976,7 +1020,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
 	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !other;
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
-	const itemModeControl = orchestrateOffered ? <ItemModePicker costId={ids.kind + "-cost"} value={other ? "single" : itemMode} onChange={setItemMode} disabled={busy !== null || other !== null} /> : null;
+	const shownItemMode: ItemMode = other ? "single" : itemMode;
 
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
@@ -996,7 +1040,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				: reading
 					? "Reading your repositories…"
 					: repoMissing
-						? "A work item needs a repository: choose one under “repo”."
+						? "A work item needs a repository: choose one under “where”."
 						: null
 		: info === null
 			? "Asking the server which sandboxes it has…"
@@ -1014,9 +1058,27 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const runSecondary = () => void (item ? file(false) : start(false));
 	const launchMenu: MenuSpec = {
 		label: item ? "Filing options" : "Launch options",
-		width: 260,
+		width: item ? 300 : 260,
 		hints: false,
 		groups: [
+			...(item && orchestrateOffered
+				? [
+						{
+							id: "how",
+							label: "How it runs",
+							items: (["orchestrate", "single"] as const).map((one) => ({
+								id: one,
+								value: one,
+								label: ITEM_MODE_WORDS[one].name,
+								description: one === "orchestrate" && other ? `${other} runs Quick: Plan first is Windlass's.` : ITEM_MODE_LINES[one],
+								wrap: true,
+								checked: shownItemMode === one,
+								disabled: busy !== null || (one === "orchestrate" && other !== null),
+								onSelect: () => setItemMode(one),
+							})),
+						},
+					]
+				: []),
 			{
 				id: "launch",
 				items: [
@@ -1033,60 +1095,106 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		],
 	};
 	const launchWord = busy === "creating" ? "Creating" : busy === "prompting" ? "Sending" : busy === "filing" ? "Filing" : item ? "File" : "Launch";
+	const launchLabel = item && orchestrateOffered && busy === null ? `${launchWord} · ${ITEM_MODE_WORDS[shownItemMode].name}` : launchWord;
 
-	// ---- the line under the box: what the sandbox lets its commands do, and where -----------------
+	// ---- what the sandbox lets its commands do, and where: the lock's tooltip and the options' last line ----
 	const facts = !item && chosenProfile ? sandboxFacts(chosenProfile, claude) : [];
-	const where = chosenMachine ? `runs on ${machineLabel(chosenMachine)}` : "runs hosted";
+	const where = chosenMachine ? `runs on ${machineLabel(chosenMachine)}` : hostedOption ? `runs hosted, ${sizeName(hostedOption.id)} (${sizeSpec(hostedOption.id)}${perHour(hostedOption.usdPerHour) ? `, about ${perHour(hostedOption.usdPerHour)}` : ""})` : "runs hosted";
 	const anyOpen = facts.some((fact) => fact.open);
+	const safety = facts.length > 0 ? sentence([...facts.map((fact) => fact.long), where]) : null;
 
-	// ---- the phone: one summary row, a sheet of settings --------------------------------------------------
-	const summary = [item && !other ? null : agentModel, placeName, repo.kind === "github" ? repo.picked.repository.name : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : item ? "no repository" : null, item ? null : (mode?.name ?? null), item && acceptance.length > 0 ? `${count(acceptance.length)} criteria` : null].filter((part) => part !== null);
-	const anyWarn = repoWarn || whereWarn || agentWarn || modeOpen || criteriaWrong !== null || orchestrateWarn !== null;
-	const settingsSpec: MenuSpec = {
-		label: "Settings",
-		groups: [
-			{
-				id: "settings",
-				items: [
-					{ id: "agent", label: "Agent & model", icon: <AgentGlyph harness={HARNESS_NAMES[harness]} accent={harness === "windlass"} />, description: agentValue, tone: agentWarn ? ("warn" as const) : undefined, submenu: agentSpec },
-					...(showWhere ? [{ id: "where", label: mine.length > 0 ? "Where it runs" : "Sandbox", icon: chosenMachine ? <MachineIcon size={16} /> : <CloudIcon size={16} />, description: !item && chosenProfile ? `${placeName} · ${chosenProfile.name}` : placeName, tone: whereWarn ? ("warn" as const) : undefined, submenu: whereSpec }] : []),
-					{ id: "repo", label: "Repository", icon: <RepoIcon size={16} />, description: repoValue, tone: repoWarn ? ("warn" as const) : undefined, onSubmenuOpen: () => setOpen("settings"), ...(repoSpec ? { submenu: repoSpec } : { panel: addressForm }) },
-					...(!item && modeSpec && mode ? [{ id: "mode", label: "Mode", icon: <ShieldGlyph />, description: mode.name, tone: modeOpen ? ("warn" as const) : undefined, submenu: modeSpec }] : []),
-					...(item ? [{ id: "criteria", label: "Acceptance criteria", icon: <SlidersIcon size={16} />, description: criteriaValue, tone: criteriaWrong ? ("warn" as const) : undefined, panel: criteriaField }] : []),
-					...(hasSetup && setupForm ? [{ id: "setup", label: "Setup and secrets", icon: <PlusIcon size={16} />, description: setupSummary ?? undefined, panel: setupForm }] : []),
-				],
-			},
-		],
+	// ---- the options: the rarer settings ------------------------------------------------------------
+	const modeOpen = mode !== null && OPEN_MODES.has(mode.id);
+	const modeRows: MenuItem[] = modes && mode ? (modeMenu(modes.modes, mode.id, setMode, modeOpen).groups[0]?.items ?? []).map((row) => ({ ...row, wrap: true })) : [];
+	const optionsGroups: MenuGroup[] = item
+		? [
+				{
+					id: "repository",
+					label: "Repository",
+					items: [
+						chosen
+							? {
+									id: "saved",
+									label: "Saved settings",
+									description: platform.info?.items?.screenshots === false ? "Screenshots are off for this deployment" : saved.defaults ? (saved.defaults.screenshots ? "Its agents take screenshots for their reports" : "Screenshots are off for this repository") : `What is saved for ${chosen.repository.name}`,
+									icon: <SlidersIcon size={15} />,
+									onSelect: () => navigate({ name: "repository", id: chosen.repository.id, view: "settings", section: saved.defaults ? "screenshots" : undefined }),
+								}
+							: { id: "saved", label: "Saved settings", description: "Choose a repository first", icon: <SlidersIcon size={15} />, disabled: true },
+					],
+				},
+			]
+		: [{ id: "modes", label: "Mode", items: modeRows.length > 0 ? modeRows : [{ id: "mode:none", label: "No modes", description: "This agent has no modes to choose", disabled: true }] }];
+	// The size of a hosted sandbox, with what an hour of it is estimated to cost; the daily sandbox time counts every size the same.
+	const sizeGroups: MenuGroup[] = hostedSize
+		? [
+				{
+					id: "size",
+					label: "Hosted size",
+					items: sizes.map((size) => ({
+						id: `size:${size.id}`,
+						value: size.id,
+						label: `${sizeName(size.id)} · ${sizeSpec(size.id)}`,
+						description: size.id === savedSize && chosen ? `Saved for ${chosen.repository.name}` : size.id === defaultSize ? (item ? "The default for work items" : "The default for agents") : undefined,
+						trailing: perHour(size.usdPerHour) ?? undefined,
+						checked: hostedSize === size.id,
+						disabled: busy !== null,
+						onSelect: () => setSizeChoice(size.id),
+					})),
+				},
+			]
+		: [];
+	const optionsSpec: MenuSpec = {
+		label: item ? "Filing options" : "Options",
+		width: 320,
+		hints: false,
+		groups: [...sizeGroups, ...optionsGroups],
+		footer:
+			safety || (item && chosenMachine) ? (
+				<p className={`ui-menu-note tray-safety${anyOpen ? " tone-warn" : ""}`}>
+					{anyOpen ? <WarnIcon size={13} /> : <LockIcon size={13} />}
+					<span>{safety ?? whereNotes.find((note) => !note.warn)?.text}</span>
+				</p>
+			) : undefined,
 	};
+	const optionsLabel = item ? "Filing options" : `Options${mode ? `: mode ${mode.name}` : ""}${hostedSize ? `, ${sizeName(hostedSize)} sandbox` : ""}`;
 
-	const kindSwitch =
-		switchable && info?.items ? (
-			<div className="segmented start-kind" role="radiogroup" aria-label="What to start">
-				{(["agent", "item"] as const).map((option) => (
-					<label key={option} className={`segment${kindChoice === option ? " segment-chosen" : ""}`}>
-						<input
-							className="segment-radio"
-							type="radio"
-							name={ids.kind}
-							value={option}
-							checked={kindChoice === option}
-							disabled={busy !== null}
-							onChange={() => {
-								setKind(option);
-								setOpen(null);
-								setError(null);
-								setFiled(null);
-							}}
-						/>
-						{option === "agent" ? "Agent" : "Work item"}
-					</label>
-				))}
+	// ---- the done-when criteria of a work item: one line under the text, opened only when used --------
+	const criteriaLine = item ? (
+		criteriaOpen ? (
+			<div className="start-criteria-inline">
+				{criteriaField}
+				<button type="button" className="button button-quiet button-small start-criteria-done" onClick={() => (setCriteriaOpen(false), area.current?.focus())}>
+					Done
+				</button>
 			</div>
-		) : null;
+		) : acceptance.length > 0 ? (
+			<div className="start-criteria-list" data-picker="criteria-list">
+				<ul aria-label="Done when">
+					{acceptance.slice(0, 4).map((line, index) => (
+						<li key={index}>
+							<CheckIcon size={12} />
+							<span>{line}</span>
+						</li>
+					))}
+					{acceptance.length > 4 ? <li className="start-criteria-more">and {count(acceptance.length - 4)} more</li> : null}
+				</ul>
+				<button type="button" className="link start-criteria-edit" data-picker="criteria" data-value={criteriaValue} onClick={() => setCriteriaOpen(true)} aria-label={`Done-when criteria: ${criteriaValue}. Edit`}>
+					Edit
+				</button>
+				{criteriaWrong ? <p className="field-note tone-bad">{criteriaWrong}</p> : null}
+			</div>
+		) : (
+			<button type="button" className="start-criteria-add" data-picker="criteria" data-value={criteriaValue} onClick={() => setCriteriaOpen(true)} disabled={busy !== null}>
+				<PlusIcon size={13} />
+				Add done-when criteria
+			</button>
+		)
+	) : null;
 
 	return (
 		<form
-			className={`composer start${busy ? " composer-busy" : ""}${phone ? " start-phone" : ""}`}
+			className={`composer start start-line${item ? " start-item" : ""}${busy ? " composer-busy" : ""}${phone ? " start-phone" : ""}`}
 			onSubmit={(event) => {
 				event.preventDefault();
 				if (item) void file(true);
@@ -1109,8 +1217,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					</span>
 				</p>
 			) : null}
-			{phone && (kindSwitch || itemModeControl) ? <div className="start-kinds">{kindSwitch}{itemModeControl}</div> : null}
-			{phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} mode={itemMode} />}
 			<div className="start-box">
 				<label className="visually-hidden" htmlFor={ids.text}>
 					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
@@ -1129,89 +1235,95 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					enterKeyHint="send"
 				/>
 				<KeyHints id={ids.keys} className="start-keys" hints={item ? [["↵", "file and start"], ["⇧↵", "new line"]] : [["↵", "launch"], ["⇧↵", "new line"]]} />
-				<div className="start-tools">
-					{phone ? (
-						<>
-							<button type="button" ref={anchors.settings} className="start-summary" data-picker="settings" aria-haspopup="dialog" aria-expanded={open === "settings"} onClick={() => setOpen(open === "settings" ? null : "settings")}>
-								<SlidersIcon size={15} />
-								<span className="start-summary-text">
-									{summary.map((part, index) => (
-										<span key={index}>{index === 0 ? <b>{part}</b> : ` · ${part}`}</span>
-									))}
-								</span>
-								{anyWarn ? <span className="ui-dot ui-dot-warn" role="img" aria-label="something needs a look" /> : chosenMachine?.status === "online" ? <span className="ui-dot ui-dot-ok" aria-hidden="true" /> : null}
+				{criteriaLine}
+				<div className="start-tools tray">
+					{hasSetup ? (
+						<Tooltip content="Setup command and secrets">
+							<button type="button" ref={anchors.plus} className="tray-icon start-plus" data-picker="setup" aria-haspopup="dialog" aria-expanded={open === "plus"} aria-label={`Setup command and secrets${setupSummary ? `: ${setupSummary}` : ""}`} onClick={() => setOpen(open === "plus" ? null : "plus")}>
+								<PlusIcon size={15} />
 							</button>
-							<button type="submit" className="start-send" disabled={item ? !canFile : !canLaunch} aria-label={launchWord}>
-								<ArrowUpIcon size={16} />
-							</button>
-							<MenuSheet open={open === "settings"} spec={settingsSpec} title={item ? "Filing settings" : "Launch settings"} onClose={close} anchor={anchors.settings} settings footer={<button type="button" className="ui-menu-action start-secondary" onClick={() => (close(), runSecondary())} disabled={secondaryDisabled}>{secondary}</button>} />
-						</>
-					) : (
-						<>
-							{kindSwitch}
-							{hasSetup || (item && chosen) ? (
-								<Tooltip content={item ? "Repository notes" : "Setup command and secrets"}>
-									<button type="button" ref={anchors.plus} className="start-plus" data-picker="setup" aria-haspopup="dialog" aria-expanded={open === "plus"} aria-label={item ? "Repository notes" : `Setup command and secrets${setupSummary ? `: ${setupSummary}` : ""}`} onClick={() => setOpen(open === "plus" ? null : "plus")}>
-										<PlusIcon size={15} />
-									</button>
-								</Tooltip>
-							) : null}
-							<Menu spec={agentSpec} open={open === "agent"} onOpenChange={openOnly("agent")} trigger={agentPill} surface="popover" />
-							{showWhere && (mine.length > 0 || !item) ? <Menu spec={whereSpec} open={open === "where"} onOpenChange={openOnly("where")} trigger={wherePill} surface="popover" /> : null}
-							{repoSpec ? (
-								<Menu spec={repoSpec} open={open === "repo"} onOpenChange={openOnly("repo")} trigger={repoPill} surface="popover" />
-							) : (
-								repoPill({ ref: anchors.repo, "aria-haspopup": "dialog", "aria-expanded": open === "repo", "data-state": open === "repo" ? "open" : "closed", onClick: () => setOpen(open === "repo" ? null : "repo"), onKeyDown: () => undefined })
+						</Tooltip>
+					) : null}
+					<Menu
+						spec={agentSpec}
+						open={open === "agent"}
+						onOpenChange={openOnly("agent")}
+						surface={phone ? undefined : "popover"}
+						trigger={(props) => (
+							<AgentPill trigger={props} harness={harness} name={HARNESS_NAMES[harness]} model={agentModel} effort={effort} efforts={efforts} dot={agentWarn ? "warn" : modelChanged ? "changed" : null} dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined} changed={modelChanged} data-value={agentValue} data-effort={effort || "default"} />
+						)}
+					/>
+					<span className="tray-where-anchor" ref={anchors.where}>
+						<Menu
+							spec={whereSpec}
+							open={open === "where"}
+							onOpenChange={openOnly("where")}
+							surface={phone ? undefined : "popover"}
+							trigger={(props) => (
+								<WherePill
+									trigger={props}
+									machine={chosenMachine !== null}
+									place={placeName}
+									repository={repo.kind === "github" ? repositoryName(repo.picked.repository) : repo.kind === "address" && repo.url !== "" ? shortAddress(repo.url) : null}
+									branch={repo.kind === "github" ? repo.picked.branch : null}
+									empty={item ? "Choose a repository" : "No repository"}
+									emptyShort={item ? "Repo?" : "No repo"}
+									required={item}
+									reading={repoReading}
+									dot={whereWarn || repoWarn ? "warn" : profileChanged ? "changed" : chosenMachine ? (chosenMachine.status === "online" ? "ok" : "off") : null}
+									dotLabel={whereWarn || repoWarn ? "something is open, or cannot be used: see its menu" : chosenMachine ? chosenMachine.status : undefined}
+									changed={profileChanged}
+									data-value={placeName}
+									data-sandbox={chosenProfile?.name ?? "none"}
+									data-repo={repoValue}
+								/>
 							)}
-							{item ? (
-								<Pill ref={anchors.criteria} data-picker="criteria" data-value={criteriaValue} icon={<SlidersIcon size={14} />} dot={criteriaWrong ? "warn" : null} aria-haspopup="dialog" aria-expanded={open === "criteria"} data-state={open === "criteria" ? "open" : "closed"} onClick={() => setOpen(open === "criteria" ? null : "criteria")} aria-label={`Acceptance criteria: ${criteriaValue}`}>
-									{acceptance.length === 0 ? "Criteria" : `${count(acceptance.length)} criteria`}
-								</Pill>
-							) : null}
-							<span className="start-tools-end">
-								{item ? itemModeControl : modeControl}
-								<SplitButton type="submit" className="start-launch" icon={<SendIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"}>
-									{launchWord}
-								</SplitButton>
-							</span>
-							<PickerPanel open={open === "repo" && !repoSpec} onClose={close} anchor={anchors.repo} title="Repository" surface="popover">
-								{addressForm}
-							</PickerPanel>
-							<PickerPanel open={open === "plus"} onClose={close} anchor={anchors.plus} title={item ? "Repository" : `Before the agent starts${chosen ? ` · ${chosen.repository.name}` : ""}`} width={380} surface="popover">
-								{item ? shots : setupForm}
-							</PickerPanel>
-							<PickerPanel open={open === "criteria"} onClose={close} anchor={anchors.criteria} title="Acceptance criteria" surface="popover">
-								{criteriaField}
-							</PickerPanel>
-						</>
+						/>
+					</span>
+					<span className="start-tools-end tray-end">
+						<Menu spec={optionsSpec} open={open === "options"} onOpenChange={openOnly("options")} align="end" surface={phone ? undefined : "popover"} trigger={(props) => <OptionsButton trigger={props} label={optionsLabel} value={mode?.name} dot={modeOpen || orchestrateWarn !== null ? "warn" : null} />} />
+						{safety && !phone ? (
+							<LockHint sentence={safety} open={anyOpen}>
+								<span className="visually-hidden">
+									{facts.map((fact) => (
+										<span key={fact.text} className={fact.open ? "start-fact-open" : undefined}>
+											{fact.text} ({fact.long})
+										</span>
+									))}
+									<span>{where}</span>
+								</span>
+							</LockHint>
+						) : null}
+						<SplitButton type="submit" className="start-launch" icon={<ArrowUpIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"} aria-label={launchLabel} data-mode={item && orchestrateOffered ? shownItemMode : undefined}>
+							<span className="tray-hide-phone">{launchLabel}</span>
+						</SplitButton>
+					</span>
+					{repoSpec && !phone ? (
+						<Popover open={open === "repo"} anchor={anchors.where} onClose={close} width={repoSpec.width ?? 340} maxHeight={repoSpec.maxHeight ?? 420} role="group" label={repoSpec.label} initialFocus="none" className="ui-pop-menu">
+							<MenuList spec={repoSpec} surface="popover" onClose={close} />
+						</Popover>
+					) : (
+						<PickerPanel open={open === "repo"} onClose={close} anchor={anchors.where} title="Repository" surface="popover">
+							{addressForm}
+						</PickerPanel>
 					)}
+					<PickerPanel open={open === "plus"} onClose={close} anchor={anchors.plus} title={`Before the agent starts${chosen ? ` · ${chosen.repository.name}` : ""}`} width={380}>
+						{setupForm}
+					</PickerPanel>
 				</div>
 			</div>
-			{!phone && itemModeControl && <ItemModeCost id={ids.kind + "-cost"} mode={itemMode} />}
-			{facts.length > 0 || chosenMachine ? (
-				<p className={`start-sandbox${anyOpen ? " start-sandbox-open" : ""}`} title={facts.map((fact) => fact.long).join("; ") || undefined}>
-					{anyOpen ? <WarnIcon size={13} /> : <ShieldGlyph />}
-					{facts.map((fact) => (
-						<span key={fact.text} className={fact.open ? "start-fact-open" : undefined}>
-							{fact.text}
-							<span className="visually-hidden"> ({fact.long})</span>
-						</span>
-					))}
-					<span>{where}</span>
-				</p>
-			) : null}
 			{filing ? (
-				<p className="start-line start-title">
+				<p className="start-line-note start-title">
 					Title: <span className="start-title-text">{filing.title}</span>
 				</p>
 			) : null}
 			{orchestrateWarn ? (
-				<p className="field-note tone-warn start-line" role="status">
+				<p className="field-note tone-warn start-line-note" role="status">
 					{orchestrateWarn}
 				</p>
 			) : null}
 			{filed && !filing ? (
-				<p className="field-note start-line start-filed" role="status">
+				<p className="field-note start-line-note start-filed" role="status">
 					Filed “{filed.title}”{filed.started ? (filed.feature ? ": its plan comes to you for approval" : "") : " as a draft"}.{" "}
 					<a className="link" {...linkProps({ name: "item", id: filed.id })}>
 						Open
@@ -1219,7 +1331,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				</p>
 			) : null}
 			{chosenMachine?.status === "offline" && !item ? (
-				<p className="field-note tone-warn start-line" role="status">
+				<p className="field-note tone-warn start-line-note" role="status">
 					“{machineLabel(chosenMachine)}” is offline since {clockTime(chosenMachine.since, now)}. The agent is created now, and a prompt sent before the machine is back fails. {task === "" ? "Write to it once the machine is online." : "Create it without sending the task, and the task waits in its composer."}
 				</p>
 			) : null}
@@ -1231,34 +1343,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	);
 }
 
-/** The branch after the repository's name: "/ ⑂ main". */
-function BranchSecondary({ branch }: { branch: string }) {
-	return (
-		<span className="start-branch">
-			<span className="start-branch-slash" aria-hidden="true">
-				/
-			</span>
-			<BranchIcon size={13} />
-			{branch}
-		</span>
-	);
-}
-
-/** An effort as bars, filled to its level. */
-function EffortBars({ level, of }: { level: number; of: number }) {
-	return (
-		<span className="effort-bars" aria-hidden="true">
-			{Array.from({ length: Math.max(of, 3) }, (_, index) => (
-				<i key={index} className={index < level ? "effort-bar-on" : undefined} style={{ height: 3 + index * (7 / Math.max(of - 1, 1)) }} />
-			))}
-		</span>
-	);
-}
-
-function ShieldGlyph() {
-	return (
-		<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
-			<path d="M8 2 13 4v3.6c0 3-2.2 5.2-5 6.4-2.8-1.2-5-3.4-5-6.4V4z" />
-		</svg>
-	);
+/** Phrases as sentences: "runs hosted" → "Runs hosted.", one after another. */
+function sentence(parts: readonly string[]): string {
+	return parts
+		.map((part) => part.trim().replace(/\.$/, ""))
+		.filter((part) => part !== "")
+		.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}.`)
+		.join(" ");
 }

@@ -9,9 +9,25 @@ const { once } = require('node:events');
 // URL /etc/codex/requirements.toml allows; codex-acp's own bridge would pick a random port. codex-acp drops
 // a requested server that any config layer names, even the repository's .codex/ that Codex does not load:
 // DISABLE_MCP_CONFIG_FILTERING keeps the platform's, so a repository cannot take its tools away.
+//
+// The platform names the turn's model in WLP_CODEX_MODEL. codex-acp resumes a session with the model of Codex's
+// config, not the one it was recorded with, and only then takes the platform's model selection: without it in
+// CODEX_CONFIG, every resumed turn would start on Codex's default model.
+function codexEnv(env) {
+  const config = env.CODEX_CONFIG ? JSON.parse(env.CODEX_CONFIG) : {};
+  const model = env.WLP_CODEX_MODEL;
+  if (model && /^[A-Za-z0-9._:-]{1,128}$/.test(model)) config.model = model;
+  const out = { ...env, CODEX_PATH: '/usr/local/bin/wlp-codex-app-server', WLP_ACP_MCP_PORT: '17895', DISABLE_MCP_CONFIG_FILTERING: 'true' };
+  delete out.WLP_CODEX_MODEL;
+  if (Object.keys(config).length) out.CODEX_CONFIG = JSON.stringify(config);
+  return out;
+}
+if (require.main !== module) module.exports = { codexEnv };
+else main();
+function main() {
 const child = spawn(process.execPath, ['/usr/local/bin/wlp-acp-mcp.mjs', process.execPath, '/opt/wlp-codex/node_modules/@agentclientprotocol/codex-acp/dist/index.js'], {
   stdio: ['pipe', 'inherit', 'inherit'],
-  env: { ...process.env, CODEX_PATH: '/usr/local/bin/wlp-codex-app-server', WLP_ACP_MCP_PORT: '17895', DISABLE_MCP_CONFIG_FILTERING: 'true' },
+  env: codexEnv(process.env),
 });
 child.on('exit', code => process.exit(code ?? 1));
 child.stdin.on('error', () => process.exit(1));
@@ -30,3 +46,4 @@ child.stdin.on('error', () => process.exit(1));
   }
   child.stdin.end();
 })().catch(() => { child.kill(); process.exitCode = 1; });
+}

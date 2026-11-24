@@ -29,7 +29,7 @@ The runner takes one command. With none, it runs `run`.
 | Command | What it does |
 | --- | --- |
 | `run` | Runs the runner's service. This is the default. |
-| `setup` | Pairs the machine in your terminal, asks to sign in each agent given with `--harness`, then prints the command that starts the runner in the background. See [Add a machine](/docs/machines#1-start-the-runner). |
+| `setup` | Sets the machine up in your terminal, one step at a time: pairs it, signs its agents in, asks for its profiles, network and limits, then starts the runner in the background and waits until it is online. See [Setup](#setup) and [Add a machine](/docs/machines#1-start-the-runner). With `--harness`, it asks line by line to sign in each agent given, then prints the command that starts the runner instead. |
 | `pair` | Makes a new pairing code, for example after the code expired or after the machine was removed. |
 | `status` | Says whether the runner is connected, its network mode, the limits in force, and for each pairing each enabled agent’s sign-in status, its sandboxes and its data volume. |
 | `log` | Prints the runner's own record of what it was asked to do, for the last 14 days. |
@@ -37,9 +37,28 @@ The runner takes one command. With none, it runs `run`.
 | `login claude`, `login opencode`, `login codex` | Signs that agent in on this machine, in your terminal. The machine must be paired first. With `opencode`, `--provider ID` skips the list of providers. See [Sign agents in](/docs/machines#sign-agents-in) and [Codex sign-in](#codex-sign-in). |
 | `logout claude`, `logout opencode`, `logout codex` | Signs that agent out, for this pairing and every earlier one. |
 
+### Setup
+
+`setup` runs in a one-off container with the Docker socket and the `windlass-runner` volume, as the one-line install starts it:
+
+```sh
+docker run -it --rm --log-driver none -v /var/run/docker.sock:/var/run/docker.sock \
+  -v windlass-runner:/var/lib/windlass-runner <runner image> setup --platform <platform address>
+```
+
+| Form | What it does |
+| --- | --- |
+| `setup` | Every step. Your earlier answers are the defaults. |
+| `setup --quick` | Only what is missing: a pairing, a name, an agent that is not signed in, a step never answered. |
+| `setup name`, `setup agents`, `setup profile`, `setup network`, `setup limits` | That step alone, then the summary and the start. The machine must be paired. |
+| `setup claude`, `setup codex`, `setup opencode` | Signs that agent in, and adds it to the agents the machine offers. |
+| `setup --no-tui` | The same steps as numbered lines: Enter takes the default, `b` goes back and `q` cancels. Setup uses lines by itself when it has no terminal; then it takes the defaults and signs no agent in. |
+
+Setup keeps its answers in `setup.json` in the volume. The options of [Run options](#run-options) given to `setup` become its defaults, and those it does not ask about, such as `--slot-cpus`, are passed on to the runner it starts. With `--harness`, `setup` is the line-by-line setup from before, and prints the start command instead of running it.
+
 ### Codex sign-in
 
-Enable Codex during `windlass-runner setup`, or start the runner with `--harness codex`. Run `windlass-runner login codex` in the machine’s terminal and enter your own OpenAI API key at the hidden prompt. Usage is billed to the API account. ChatGPT device login is available on installations where the owner has enabled it for validation.
+Enable Codex during `windlass-runner setup`, or start the runner with `--harness codex`. Run `windlass-runner login codex` in the machine’s terminal and choose how to sign in: **1) ChatGPT (device code)**, which opens a code to enter at OpenAI's verification page and uses your ChatGPT plan, or **2) OpenAI API key**, entered at a hidden prompt and billed to the API account. Work items run Codex only with a ChatGPT sign-in for now.
 
 The machine’s relay holds the credential. Commands in a session can use its relay to make model requests. On the hardened Docker profile, **Container access** runs commands as `agent` in the session’s container under the machine’s egress setting; the container is the boundary. On the Windlass sandbox profile, once the machine passes its Codex probe, Codex offers **Read-only** and **Workspace access** (the default). In both, commands run in Codex’s own sandbox without network. Read-only changes no files, and Workspace access changes files only in the workspace. Codex may ask to run a command outside its sandbox or to edit outside it, and on this profile every such request is refused, even one you would allow. The timeline notes each refusal. Container access and Auto review are not offered there, because that profile’s container is loosened so that a sandbox can run inside it. Choose **Plan mode** to request a plan before changes.
 
@@ -83,15 +102,18 @@ docker start windlass-runner
 
 ## Run options
 
+The sizing defaults below apply when all sizing options are left unset, including `WLP_RUNNER_CPUS`.
+
 These options go after the runner image, with the `run` command or with no command. `setup` takes the same options, and passes them on to the command it prints. `--name` also works with `pair`.
 
 | Option | Default | What it does |
 | --- | --- | --- |
 | `--platform URL` | The saved platform | The platform to connect to. It must be HTTPS, or HTTP on loopback. |
-| `--slots N`, `--max-turns N` | 2 on a 1–2 CPU machine, otherwise 2–16 based on available CPUs | Total turn capacity in slots (1–64). A personal session uses one slot. Large factory sessions use more. |
-| `--slot-cpus X` | Half the CPUs on a 1–2 CPU machine, otherwise 2 | CPU limit per slot. Overrides `WLP_RUNNER_CPUS`. |
-| `--slot-memory Nm\|Ng` | 1.5 GiB on a 1–2 CPU machine, otherwise a share of available memory | Memory per slot, at least 1 GiB. The swap limit equals the memory limit. |
-| `--sandbox-memory Ng` | Host memory after reserves on machines with 3 or more CPUs | Total memory budget used to size the slots. |
+| `--slots N`, `--max-turns N` | As many 2 CPU, 4 GiB slots as fit after host reserves (1–16) | Total turn capacity in slots (1–64). A personal session uses one slot. Large factory sessions use more. |
+| `--spares N` | 1 | Prepare up to two ready sandboxes for the most recently used repository when slots and disk are free. Set to 0 to disable. |
+| `--slot-cpus X` | 2, or all cores if a full slot cannot fit after reserves | CPU limit per slot. Overrides `WLP_RUNNER_CPUS`. |
+| `--slot-memory Nm\|Ng` | An even share of usable memory (4–8 GiB) in quarter-GiB steps, or up to 4 GiB if a full slot cannot fit | Memory per slot, at least 1 GiB. The swap limit equals the memory limit. |
+| `--sandbox-memory Ng` | Host memory after reserves | Total memory budget used to size the slots. |
 | `--max-running N` | No limit | How many sandboxes may run at once. |
 | `--max-sandboxes N` | No limit | How many sandboxes may be kept on this machine. |
 | `--snapshot-disk SIZE` | 10GB | Disk for all setup snapshots on this machine. |
@@ -111,7 +133,7 @@ The runner saves `--name`, `--egress`, `--egress-allow`, `--egress-domains` and 
 
 `N` is a positive whole number. A turn that would pass `--max-running` or `--max-sandboxes` ends with, for example, "This machine has reached its own limit on kept sandboxes, set by --max-sandboxes." The Machines page shows these limits under **Sandbox limit**, and says they are set on the machine, not there.
 
-`SIZE` is a number with `MB`, `GB` or `TB`, such as `20GB` or `512MB`. The platform can cap the snapshot options: it can hold `--snapshot-disk` and `--snapshot-user` to at most its own limit, and `--keep-free` to at least its own. A small machine can lower `--keep-free`, down to the platform's floor. The Machines page shows the limits in force under **Snapshot storage**. These options need runner 0.3.2 or later.
+`SIZE` is a number with `MB`, `GB` or `TB`, such as `20GB` or `512MB`. The platform can cap the snapshot options: it can hold `--snapshot-disk` and `--snapshot-user` to at most its own limit, and `--keep-free` to at least its own. A small machine can lower `--keep-free`, down to the platform's floor. The Machines page shows the limits in force under **Snapshot storage**. These options need runner 0.3.2 or later. A [prepared environment](/docs/settings#environment) is kept under the same limits: when a build's image does not fit, the build says so and sessions start cold.
 
 ### Allowed profiles
 
@@ -131,7 +153,7 @@ See [The two Docker profiles](/docs/security#the-two-docker-profiles) for what e
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `WLP_RUNNER_CPUS` | Half the CPUs on a 1–2 CPU machine, otherwise 2 | The CPU cap of each slot. It must be at least 0.01. |
+| `WLP_RUNNER_CPUS` | 2, or all cores if a full slot cannot fit after reserves | The CPU cap of each slot. It must be at least 0.01. |
 | `WLP_RUNNER_STATE_DIR` | `/var/lib/windlass-runner` | Where the runner keeps its key and state. |
 
 Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image in the `docker run` command.
@@ -159,7 +181,11 @@ Pass a variable with `-e`, for example `-e WLP_RUNNER_CPUS=2`, before the image 
 | "Give --snapshot-disk a size such as 20GB or 512MB." | Write the size with `MB`, `GB` or `TB`. The two snapshot sizes must be above 0. |
 | "Choose --harness claude, --harness opencode or --harness codex." | Those are the agents a runner can offer. |
 | "Use --harness opencode with a runner built with the pinned OpenCode image." | This runner image has no OpenCode. Use the image from the Machines page. Claude Code says the same for `--harness claude`. |
-| "The runner is already using this state. Use login <agent> in the running runner." | Setup cannot run beside the runner. Use `login` in the running container, or remove it first. |
+| "The runner is already using this state. Use login <agent> in the running runner." | The line-by-line setup cannot run beside the runner. Use `login` in the running container, remove it first, or run `setup` without `--harness`. |
+| "Use setup, setup --quick, or setup with one of: name, agents, claude, codex, opencode, profile, network, limits." | Give one of those steps, or none. |
+| "Pair this machine first: run setup." | A single step needs a paired machine. Run `setup` with no step. |
+| "The runner is not online after 3 minutes …" or "The runner stopped. Read why with: docker logs windlass-runner" | Setup started the runner, but it did not report **Online**. Read `docker logs windlass-runner`. |
+| "Invalid setup.json. Repair or remove that file in the runner state volume." | Remove `setup.json` from the volume; setup then asks every step again. |
 | "Mount the Docker socket and runner state for setup." | Copy the setup command from the Machines page: it mounts both. |
 | "Pair this machine before signing in to Claude Code." | Pair the machine, then run `login` again. OpenCode says the same. |
 | "Attach a terminal to sign in interactively." | Run `login` with `docker exec -it`, so it has a terminal. |

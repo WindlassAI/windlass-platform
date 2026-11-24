@@ -14,18 +14,19 @@ import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
-import type { ChoiceId, ItemBudget, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
+import type { OutOfMemory } from "../sandbox/api.js";
+import type { ChoiceId, HostedSize, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
-import type { CiReading, CiState } from "../github/ci.js";
+import type { CancelledJob, CiReading, CiState } from "../github/ci.js";
 
 // What the web sees of these is in the contract; they are named here as the factory's modules use them.
-export type { ChoiceId, FactoryLimits, ItemBudget, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
+export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
 
 // ---------------------------------------------------------------------------------------------
 // The item
 // ---------------------------------------------------------------------------------------------
 
-export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "conflict" | "review" | "review_fix";
+export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix";
 
 /** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
@@ -41,6 +42,8 @@ export interface GateEvidence {
 export interface CiProgress {
 	/** Older item rows predate webhook polling. */
 	webhooks?: boolean;
+	/** The person accepted CI alone for this published head. A new publication starts without it. */
+	ciAlone?: true;
 	lastReadState?: CiState;
 	head: string;
 	/** When it was pushed: CI's waits (CI_POLLING) count from here. */
@@ -68,12 +71,24 @@ export interface CiProgress {
 export interface Run extends ItemRun {
 	/** The fingerprint of the last failure a fix turn was started for. */
 	lastFailure: string | null;
+	/**
+	 * Every failure a fix turn was started for in this run, by fingerprint (the stuck detector, blueprint.ts
+	 * `nextTurn`): the same one again stops the run and asks. Absent on runs stored before: `lastFailure` only.
+	 */
+	failures?: string[];
+	/** Set while the workspace is pushed for "Hand it over as it is" (blueprint.ts `answer`): it is handed over once pushed. */
+	handOver?: true;
+	/** A person's base update stays attached to its publish step across retries. */
+	updateFromBase?: { head: string; at: number };
 	/** The turn that produced the work about to be published, including across publish retries. */
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: RunReview | null;
-	/** Questions the builder asked the person in this run (`ask_person`, at most `RULES.asks`). Absent on runs stored before the tool: none. */
+	/** Questions asked with `ask_person` plus all `request_secret` attempts in this run. Absent on runs stored before the tool: none. */
 	asks?: number;
+	/** Delivery whose secret request was already charged before checking its name. */
+	secretAttemptKey?: string;
+	declinedSecrets?: string[];
 }
 
 /** A blocking finding of a review, as the next round's reviewer must answer it (`earlier` blocks). */
@@ -145,11 +160,19 @@ export interface IntegrationRun extends IntegrationView {
 	charged: boolean;
 }
 
+export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean });
+
 export interface FeatureJob {
-	/** A cross-repo feature's child: the head of its repository's feature branch it started from. */
+	/** Immutable tip from which this child branches, after repository setup at the original seed. */
 	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
 	dispatchKey?: string;
+	dispatchedAt?: number;
+	startedAt?: number;
+	wait?: string;
+	placementRefusal?: string;
+	/** Last serialized integration result, retained so a restarted child can receive it again. */
+	join?: JoinResult;
 	route?: PlacementRoute;
 	warm?: string[];
 	placement?: ChildPlacement;
@@ -158,7 +181,9 @@ export interface FeatureJob {
 	id: string;
 	task: import("../contract.js").PlanSubtask;
 	state: import("../contract.js").ItemState;
-	spent: ItemBudget;
+	spent: ItemSpend;
+	/** The subtask's budget as its item last said it: its plan's, and what the person gave it since. Absent until it said. */
+	budget?: ItemBudget;
 	head: string | null;
 	report: string;
 }
@@ -181,6 +206,10 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
+	claimedSecret?: Question;
+	/** One rerun request per commit. Keep the original job ids to distinguish a fresh attempt from a delayed listing. */
+	ciReruns?: Record<string, { jobs: CancelledJob[]; reported?: boolean }>;
 	/**
 	 * The person's own words to the work since it was filed, oldest first, the newest kept (`RULES.personDecisions`): their
 	 * send-back notes, their answers' notes and their own feedback on GitHub. The second reviewer is given them as the person's
@@ -192,14 +221,14 @@ export interface FactoryItem {
 	integration?: IntegrationRun;
 	feedbackReplans?: number;
 	/**
-	 * What the planner had spent, closing work and subtasks left out, when the latest feedback re-plan began.
-	 * Planning counts its share from here, so each feedback re-plan gets a share of its own; the feature budget
-	 * and its closing reserve still bound it.
+	 * A feature's own token allowance: what its planner, its summary and its review may spend, apart from its
+	 * subtasks. It starts at one item's budget (`singleBudget`) and grows by what the person gives it. The
+	 * feature's budget is this and its subtasks' budgets together (blueprint.ts `featureTotal`). Absent on a
+	 * feature stored before it was kept: `singleBudget.tokens`.
 	 */
-	planningBase?: ItemBudget;
-	/** Closing work is charged to the feature, outside its planner allowance. */
-	beforeClosing?: ItemBudget;
-	closingSpend?: ItemBudget;
+	ownTokens?: number;
+	/** Turns counted toward the backstop from here (`RULES.turnBackstop`): set when the person lets the item go on past it. */
+	backstopFrom?: number;
 	feedback?: {
 		held: string[] | null;
 		heldText: string;
@@ -218,12 +247,16 @@ export interface FactoryItem {
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
+	joining?: { child: string; key: string };
+	stoppedJob?: string;
+	retryChildren?: boolean;
 	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
+	/** The feature commit after this child's successful join. Its own pushed head stays on the child. */
+	integratedHead?: string;
 	cancelAfterIntegration?: boolean;
 	approvedPlan?: import("../contract.js").FeaturePlan;
-	approvedAllocation?: ItemBudget;
 	mode?: import("../contract.js").ItemMode;
 	singleBudget?: ItemBudget;
 	filedTurn?: string;
@@ -251,11 +284,11 @@ export interface FactoryItem {
 	 */
 	unsandboxed?: string[];
 	/** Absent on items persisted before second review was available. */
-	reviewer?: { on: true } | { off: "deployment" | "profile" };
+	reviewer?: { on: true } | { off: "deployment" | "profile" | "feature" };
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;
-	spent: ItemBudget;
+	spent: ItemSpend;
 	/** Absent for items filed before agents could be chosen: Windlass. */
 	agent?: import("../contract.js").ItemAgent;
 	/** Since when the item is "working": active time (§2.4) is the sum of such stretches. */
@@ -273,8 +306,12 @@ export interface FactoryItem {
 // Questions (§9)
 // ---------------------------------------------------------------------------------------------
 
-/** What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. */
-export type StopCause = "repeated" | "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | keyof ItemBudget;
+/**
+ * What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. "repeated": the same
+ * failure twice (the stuck detector); "turns": the backstop on an item's turns; "interruptions": a step cut
+ * off again and again by deploys or restarts. The others of older stored questions are answered as "repeated".
+ */
+export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate" | "ci" | "conflict" | "review" | "sandboxes" | keyof ItemBudget;
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {
@@ -291,6 +328,8 @@ export type HandoffReview = { review: string; reviewNone: null; assessment?: Che
 
 /** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
+	/** Include this continuation’s instructions when the agent needs the whole task again. */
+	includeInFresh?: boolean;
 	kind: TurnStepKind;
 	/** Absent on builder plans, including resume plans saved before reviewer sessions. */
 	to?: "work" | "review";
@@ -298,9 +337,9 @@ export interface TurnPlan {
 	text: string;
 	/** Range occupied by the quoted batch. A held batch's line locations are rendered against the head at handoff. */
 	feedbackQuote?: { head: string | null; start: number; length: number };
-	/** False: another attempt of the current step (after an interruption). */
+	/** False: another attempt of the current step. */
 	newStep: boolean;
-	/** The round counter the turn uses (§2.4); "interruptions": the step's cut-off turns, counted when they end. */
+	/** The round the turn counts in (`Run.rounds`, shown and never capped); "interruptions": the step's cut-off turns, counted when they end. */
 	charge: "plan" | "gate" | "ci" | "conflict" | "review" | "interruptions" | null;
 	/** For a fix turn: the failure it is for (§2.1 step 5). */
 	fingerprint: string | null;
@@ -336,8 +375,10 @@ export type Cause = string;
 
 /** What the agent's turn used: tokens of this turn (`turnTokens`), and the sandbox seconds the ledger holds for the item's session so far (`ledgerSeconds`). */
 export interface TurnSpend {
-	/** Counted against the item's token budget: none where the agent's tokens are not (budget.ts, `agentTurn`). */
+	/** Counted against the item's token budget, cost-weighted (budget.ts `weightedTokens`): none where the agent's tokens are not (budget.ts, `agentTurn`). */
 	tokens: number;
+	/** The same tokens as reported, cached input at full count. Absent where none are counted, and on outbox rows stored before: `tokens`. */
+	rawTokens?: number;
 	hostedSeconds: number;
 	/** What a machine harness reported of the turn. Absent for Windlass. */
 	agent?: AgentTurn;
@@ -370,11 +411,13 @@ export type Fact =
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
-	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemBudget }
-	| { kind: "place_child"; at: number; key: string; inventory: PlacementInventory }
+	| { kind: "claim_join"; at: number; child: string; key: string }
+	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
+	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
+	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
 	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
-	| { kind: "child_update"; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemBudget; report: string; head: string | null }
-	| { kind: "integrated"; at: number; key: string }
+	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
+	| { kind: "integrated"; head?: string; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
@@ -388,18 +431,30 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
+	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
+	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
+	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
+	| { kind: "session_deleted"; at: number; key: string }
 	| { kind: "turn_started"; at: number; key: string }
 	/** The session's answer to `check_turn`: that turn still runs. `key` is the check's. */
 	| { kind: "turn_running"; at: number; key: string }
+	/** The turn of `key` is paused, not ended: its machine went away mid-turn (`since`). It resumes by itself when the machine is back. */
+	| { kind: "turn_paused"; at: number; key: string; since: number; machine: string | null }
+	/** The paused turn of `key` runs again: its machine came back after `offlineMs`. */
+	| { kind: "turn_resumed"; at: number; key: string; offlineMs: number }
+	/** The paused turn of `key` has waited for its machine since `since`, long enough (WLP_MACHINE_AWAY_ASK_MS) to ask the person once. */
+	| { kind: "machine_away"; at: number; key: string; since: number; machine: string | null }
 	| {
 			kind: "turn_ended";
 			at: number;
 			key: string;
 			outcome: TurnOutcome;
+			/** The configured limit when the harness ended this turn at its step limit. */
+			stepLimit?: number;
 			verified: Verified | null;
 			flags: VerifiedFlag[];
 			/** Whether there is something to push: the workspace or local commits differ from what GitHub has of the branch (from the base, before the first push). */
@@ -408,6 +463,7 @@ export type Fact =
 			report: AgentReport | string | null;
 			/** The question the builder asked its person in the turn (`ask_person`), cleaned by the session. */
 			asked?: AgentAsk | null;
+			secret?: Question["secret"];
 			/** A push made by the host tool can precede the item's publish step. */
 			pushedHead?: string | null;
 			/**
@@ -427,15 +483,32 @@ export type Fact =
 			 * (Codex on "Docker + Windlass sandbox"): the platform's note, never the agent's words.
 			 */
 			escaped?: string;
+			/**
+			 * Set when the session could not prepare the turn's sandbox (connect, resume, its network, a clone): the
+			 * session's sentence. The agent never ran, so it is no cut-off: the step is tried once more, then the person is asked.
+			 */
+			sandboxFailed?: string;
+			/**
+			 * Set when the turn's hosted sandbox ran out of memory (E2B's metrics, or its kernel killed programs for
+			 * memory): how much of how much, in MiB, and the size. The item asks whether to go on in a larger one.
+			 */
+			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; spend: TurnSpend }
+	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
+	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
+	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
+	| { kind: "sandbox_resize_refused"; at: number; key: string; plan: TurnPlan; size: HostedSize }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
+	| { kind: "base_conflict"; at: number; key: string }
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
+	| { kind: "secret_attempt"; at: number; key: string; previous: number }
+	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: CancelledJob[]; openItems: number }
+	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
@@ -460,6 +533,7 @@ export type VerifiedCheckEffect = {
 
 export type Effect =
 	| VerifiedCheckEffect
+	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
@@ -472,16 +546,19 @@ export type Effect =
 	| { kind: "poll_integration"; key: string; attempt: number; at: number }
 	/** A cross-repo feature: read its pull request in `repo`. */
 	| { kind: "poll_repo_pr"; key: string; repo: string; pr: number; at: number }
-	| { kind: "dispatch"; key: string; at?: number }
+	| { kind: "dispatch"; child?: string; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | "run_checks" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }
+	/** Remove the session's sandbox (the person chose a fresh one); `sandbox_freed` with `plan` follows. */
+	| { kind: "fresh_sandbox"; key: string; plan: TurnPlan; to?: "review"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
+	| { kind: "rerun_ci"; key: string; head: string; jobs: CancelledJob[]; openItems: number }
 	| { kind: "poll_ci"; key: string; head: string; at: number; notBefore?: number }
 	| { kind: "poll_pr"; key: string; pr: number; at: number }
 	/** Record the question and show it ("Needs you"). */

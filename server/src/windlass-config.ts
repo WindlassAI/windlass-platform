@@ -32,6 +32,13 @@
  *
  * The layer reads the repository's own check settings to explain which checks ran.
  *
+ * The file also holds one hook of the platform's (`TURN_TIME_HOOK`, Windlass's hooks/README.md): before each
+ * shell call it refuses a `timeout` longer than what is left of the turn (`TURN_DEADLINE_FILE`, written at the
+ * turn's start). Windlass lets a call ask for up to an hour, and a turn may run 45 minutes: a command that hangs
+ * (a guest out of memory) would otherwise hold the turn to its end. A hook cannot change a call's arguments, so
+ * the agent is told the most it may ask for and runs it again. The platform's hook is replaced each time by name;
+ * the file's other hooks stay.
+ *
  * Nothing here runs anything or touches a file: these are the texts, and sandbox/turn.ts reads and
  * writes them.
  */
@@ -42,6 +49,36 @@ import { PUBLISH_SERVER } from "./agent-publish.js";
 export const WINDLASS_CONFIG_FILE = "/home/agent/.config/windlass/config.json";
 /** The platform's list of the servers it wrote into that file. */
 export const PLATFORM_SERVERS_FILE = "/home/agent/.local/state/windlass-platform-servers.json";
+
+/** When the turn at hand ends, in seconds since the epoch by the sandbox's own clock: written at its start, removed at its end. */
+export const TURN_DEADLINE_FILE = "/home/agent/.local/state/windlass-platform-turn-deadline";
+/** The platform's hook's name: no hook of the file's under it is kept. */
+export const TURN_TIME_HOOK_NAME = "windlass-platform-turn-time";
+/** What is kept back of the turn for its end: the agent's last words and the platform's closing. */
+export const TURN_CLOSE_SECONDS = 60;
+
+/**
+ * The hook (Windlass's `beforeTool`, for `shell`): exit 2 refuses the call with stdout as the reason. No deadline,
+ * one that is not a number, or one long past (a file a turn that was cut off left) refuses nothing; neither does a
+ * background call without a timeout, which the turn's end stops. The call's arguments are the event's JSON line on
+ * stdin; a `"timeout"` inside the command's text is escaped there (`\"timeout\"`), so only the argument is read.
+ */
+const TURN_TIME_SCRIPT = [
+	`d=$(cat ${TURN_DEADLINE_FILE} 2>/dev/null) || exit 0`,
+	`case "$d" in ''|*[!0-9]*) exit 0;; esac`,
+	`left=$(( d - $(date +%s) ))`,
+	`[ "$left" -gt -300 ] || exit 0`,
+	`e=$(cat)`,
+	`t=$(printf '%s' "$e" | grep -o '[^\\]"timeout": *[0-9]*' | head -n 1 | grep -o '[0-9]*$')`,
+	`if [ -z "$t" ]; then printf '%s' "$e" | grep -q '[^\\]"background": *true' && exit 0; t=120; fi`,
+	`max=$(( left - ${TURN_CLOSE_SECONDS} ))`,
+	`if [ "$max" -lt 5 ]; then echo "This turn ends in $(( left > 0 ? left : 0 )) seconds, so there is no time for another command. Stop here: say what is done and what is left."; exit 2; fi`,
+	`if [ "$t" -gt "$max" ]; then echo "This turn ends in about $(( (left + 30) / 60 )) minutes, so a command may run at most $max seconds now. Run it again with a timeout of $max or less, or split it into shorter steps."; exit 2; fi`,
+	"exit 0",
+].join("\n");
+
+/** The platform's hook as the file holds it: a hook that cannot run lets the call through (`onError: "allow"`). */
+export const TURN_TIME_HOOK = { name: TURN_TIME_HOOK_NAME, tools: ["shell"], command: TURN_TIME_SCRIPT, timeoutSeconds: 5, onError: "allow" } as const;
 
 /** The file's `wake` section: no session the platform opens is offered the wake-up tools. */
 export const PLATFORM_WAKE = { enabled: false } as const;
@@ -134,11 +171,17 @@ export function platformConfig(text: string | null, written: string | null, serv
 		next[server.name] = server.definition;
 	}
 
+	// The file's own hooks stay; the platform's goes first among those before a call, in place of any of its name.
+	const hooks = config.hooks === undefined ? {} : config.hooks;
+	if (!isObject(hooks) || (hooks.beforeTool !== undefined && !Array.isArray(hooks.beforeTool))) return null;
+	const theirs = ((hooks.beforeTool as unknown[] | undefined) ?? []).filter((hook) => !(isObject(hook) && hook.name === TURN_TIME_HOOK_NAME));
+	const hooksNow = { ...hooks, beforeTool: [TURN_TIME_HOOK, ...theirs] };
+
 	const { servers: _servers, ...restOfMcp } = mcp;
 	// `checks`, `requiredChecks`, `verify` and `wake` are the platform's: what the file had under them goes.
-	const { mcp: _mcp, checks: _checks, requiredChecks: _required, verify: _verify, wake: _wake, ...rest } = config;
+	const { mcp: _mcp, checks: _checks, requiredChecks: _required, verify: _verify, wake: _wake, hooks: _hooks, ...rest } = config;
 	const mcpNow = Object.keys(next).length > 0 ? { ...restOfMcp, servers: next } : restOfMcp;
-	const configNow = { ...rest, ...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}), wake: PLATFORM_WAKE };
+	const configNow = { ...rest, ...(Object.keys(mcpNow).length > 0 ? { mcp: mcpNow } : {}), hooks: hooksNow, wake: PLATFORM_WAKE };
 	return {
 		config: `${JSON.stringify(configNow, null, 2)}\n`,
 		written: now.names.length === 0 ? null : `${JSON.stringify(now)}\n`,

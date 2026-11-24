@@ -1,21 +1,20 @@
 /** The shell: which screen the address asks for, behind the sign-in where it has to be. */
-import type { GithubId } from "@contract";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Mark } from "./components/Icons";
 import { TopBar } from "./components/TopBar";
 import { linkProps, navigate, useRoute, type Route } from "./lib/router";
 import { useTheme } from "./lib/theme";
 import { Factory } from "./screens/Factory";
-import { Home } from "./screens/Home";
 import { Item, ItemCrumb, useItem } from "./screens/Item";
 import { asking, useItems } from "./screens/Items";
 import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
-import { Repository, RepositoryCrumb, useRepository, type RepositoryTab } from "./screens/Repository";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Settings, SettingsCrumb } from "./screens/Settings";
+import { Plans, PlansCrumb } from "./screens/Plans";
 import { MockAuthorize, SignIn } from "./screens/SignIn";
 import { Usage, UsageCrumb } from "./screens/Usage";
+import { Workspace, type Selection } from "./screens/Workspace";
 import { LANDING_TITLE } from "./site/content";
 import { Landing } from "./site/Landing";
 import { useApp } from "./state/app";
@@ -37,6 +36,9 @@ function useHidden(): boolean {
 
 function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const state = useSession(sessionId);
+	const { platform } = useApp();
+	// A work item's agent: its item, for the crumb (its feature, for a subtask) and to say when it waits for an answer.
+	const item = useItem(state.summary?.item?.id ?? "", Boolean(state.summary?.item) && Boolean(platform.info?.items)).view;
 	// Read once for the bar and the session both: the machine an agent on one of the user's machines runs on.
 	const machine = useSessionMachine(state.summary?.place);
 	const hidden = useHidden();
@@ -49,9 +51,9 @@ function SessionRoute({ sessionId, theme, onToggleTheme }: { sessionId: string; 
 	return (
 		<div className="app app-fixed">
 			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
-				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} summary={state.summary ?? null} />
+				<SessionCrumb title={state.summary?.title ?? null} status={state.summary?.status ?? null} place={state.summary?.place} machine={machine} item={state.summary?.item} harness={state.summary?.harness} summary={state.summary ?? null} itemView={item} />
 			</TopBar>
-			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} />
+			<Session key={sessionId} sessionId={sessionId} state={state} machine={machine} item={item} />
 		</div>
 	);
 }
@@ -77,38 +79,41 @@ function ItemRoute({ itemId, theme, onToggleTheme }: { itemId: string; theme: Re
 	);
 }
 
-/** A repository's page: `view`, its work or its settings. With `launching`, the new agent's page in its place, with that repository chosen. */
-function RepositoryRoute({ repositoryId, view, launching, theme, onToggleTheme }: { repositoryId: GithubId; view: RepositoryTab; launching: boolean; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
-	const page = useRepository(repositoryId);
-	useEffect(() => {
-		document.title = `${launching ? "New agent · " : ""}${page.name ?? "Repository"}${view === "settings" && !launching ? " · Settings" : ""} · Windlass`;
-	}, [page.name, view, launching]);
-	return (
-		<div className="app">
-			<TopBar theme={theme} onToggleTheme={onToggleTheme}>
-				<RepositoryCrumb name={page.name} />
-			</TopBar>
-			{launching ? <NewAgent repositoryId={repositoryId} over={view === "settings" ? "settings" : undefined} /> : <Repository page={page} view={view} />}
-		</div>
-	);
-}
-
 /**
- * Home and the Factory page, with "Agents · Factory" in the bar where the deployment offers work items:
- * the user's items are read once for the bar's count and the page both.
+ * The Agents home, with "Agents · Factory" in the bar where the deployment offers work items: everything,
+ * the agents on no repository, or one repository, chosen in its rail. The user's items are read once for
+ * the bar's count and the page both.
  */
-function ListRoute({ route, theme, onToggleTheme }: { route: Extract<Route, { name: "home" | "factory" }>; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
+function WorkspaceRoute({ selection, theme, onToggleTheme }: { selection: Selection; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
 	const items = useItems(offered);
 	const waiting = asking(items.list ?? []).length;
 	useEffect(() => {
-		document.title = route.name === "factory" ? `${waiting > 0 ? `(${waiting}) ` : ""}Factory · Windlass` : "Agents · Windlass";
-	}, [route.name, waiting]);
+		// A repository's side names itself in the title.
+		if (selection.kind !== "repository") document.title = selection.kind === "none" ? "No repository · Agents · Windlass" : "Agents · Windlass";
+	}, [selection.kind]);
+	return (
+		<div className="app app-workspace">
+			<TopBar theme={theme} onToggleTheme={onToggleTheme} current="home" asking={offered ? waiting : 0} />
+			<Workspace selection={selection} items={items} />
+		</div>
+	);
+}
+
+/** The Factory page, with "Agents · Factory" in the bar: the user's items are read once for the bar's count and the page both. */
+function FactoryRoute({ route, theme, onToggleTheme }: { route: Extract<Route, { name: "factory" }>; theme: ReturnType<typeof useTheme>[0]; onToggleTheme(): void }) {
+	const { platform } = useApp();
+	const offered = Boolean(platform.info?.items);
+	const items = useItems(offered);
+	const waiting = asking(items.list ?? []).length;
+	useEffect(() => {
+		document.title = `${waiting > 0 ? `(${waiting}) ` : ""}Factory · Windlass`;
+	}, [waiting]);
 	return (
 		<div className="app">
-			<TopBar theme={theme} onToggleTheme={onToggleTheme} current={route.name} asking={offered ? waiting : 0} />
-			{route.name === "factory" ? <Factory filters={{ repository: route.repository, from: route.from }} items={items} /> : <Home items={offered ? items.list : []} />}
+			<TopBar theme={theme} onToggleTheme={onToggleTheme} current="factory" asking={offered ? waiting : 0} />
+			<Factory filters={{ repository: route.repository, from: route.from }} items={items} />
 		</div>
 	);
 }
@@ -119,12 +124,12 @@ export function App() {
 	const [theme, toggleTheme] = useTheme();
 
 	// Home is the landing page for someone who is not signed in, so it is the one list that does not send them to sign in.
-	const needsAuth = route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
+	const needsAuth = (route.name === "home" && route.scope === "none") || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "plans" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
 	const noMachines = route.name === "machines" && auth !== null && platform.info !== null && !platform.info.machines;
 	/** Nor one that does not offer work items an item's page. */
 	const noItems = (route.name === "item" || route.name === "factory") && auth !== null && platform.info !== null && !platform.info.items;
-	/** The repository whose page is shown: its own address, or the new agent's page for it. */
+	/** The repository chosen in the Agents home: its own address, or the address that once launched a new agent on it. */
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
 		if (needsAuth && !auth) navigate({ name: "signin" }, { replace: true });
@@ -133,7 +138,7 @@ export function App() {
 
 	useEffect(() => {
 		if (route.name === "docs") return;
-		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
+		if ((route.name !== "session" && route.name !== "item" && route.name !== "home" && route.name !== "factory" && repositoryId === null) || noItems) document.title = route.name === "signin" ? "Sign in · Windlass" : route.name === "notfound" || noMachines || noItems ? "Not found · Windlass" : route.name === "usage" ? "Usage · Windlass" : route.name === "settings" ? "Settings · Windlass" : route.name === "plans" ? "Plans · Windlass" : route.name === "machines" ? "Machines · Windlass" : route.name === "new" ? "New agent · Windlass" : "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
 	useEffect(() => {
@@ -179,7 +184,9 @@ export function App() {
 
 	if (route.name === "item") return <ItemRoute key={route.id} itemId={route.id} theme={theme} onToggleTheme={toggleTheme} />;
 
-	if (repositoryId !== null) return <RepositoryRoute key={repositoryId} repositoryId={repositoryId} view={(route.name === "repository" ? route.view : route.name === "new" ? route.over : undefined) ?? "work"} launching={route.name === "new"} theme={theme} onToggleTheme={toggleTheme} />;
+	if (repositoryId !== null) return <WorkspaceRoute selection={{ kind: "repository", id: repositoryId, view: route.name === "repository" ? route.view : undefined, launching: route.name === "new" }} theme={theme} onToggleTheme={toggleTheme} />;
+
+	if (route.name === "home") return <WorkspaceRoute selection={route.scope === "none" ? { kind: "none" } : { kind: "everything" }} theme={theme} onToggleTheme={toggleTheme} />;
 
 	if (route.name === "usage") {
 		return (
@@ -212,7 +219,18 @@ export function App() {
 		);
 	}
 
-	if (route.name === "home" || route.name === "factory") return <ListRoute route={route} theme={theme} onToggleTheme={toggleTheme} />;
+	if (route.name === "plans") {
+		return (
+			<div className="app">
+				<TopBar theme={theme} onToggleTheme={toggleTheme}>
+					<PlansCrumb />
+				</TopBar>
+				<Plans />
+			</div>
+		);
+	}
+
+	if (route.name === "factory") return <FactoryRoute route={route} theme={theme} onToggleTheme={toggleTheme} />;
 
 	return (
 		<div className="app">

@@ -98,8 +98,16 @@ export function listedItems(items: Iterable<ItemSummary>): ItemSummary[] {
 		.sort(byFiling);
 }
 
-/** What the live feed carries of a list (`listedItems`, any order): every open item, the first page of ended ones, and the counts. */
-export function itemFeed(list: readonly ItemSummary[]): ItemFeed {
+/** Every open subtask among the items held, under its own title, newest filed first: `ItemFeed.children`. */
+export function openChildren(items: Iterable<ItemSummary>): ItemSummary[] {
+	return [...items].filter((item) => item.parent && !ENDED.has(item.state)).sort(byFiling);
+}
+
+/**
+ * What the live feed carries of a list (`listedItems`, any order): every open item, the first page of
+ * ended ones, and the counts; with every item held (`all`), the open subtasks beside them.
+ */
+export function itemFeed(list: readonly ItemSummary[], all?: Iterable<ItemSummary>): ItemFeed {
 	const sorted = [...list].sort(byFiling);
 	const open: ItemSummary[] = [];
 	const ended: ItemSummary[] = [];
@@ -119,5 +127,5 @@ export function itemFeed(list: readonly ItemSummary[]): ItemFeed {
 			open.push(item);
 		}
 	}
-	return { open, ended, counts: { ended: endedCount, byRepository: [...rows.values()] } };
+	return { open, ended, counts: { ended: endedCount, byRepository: [...rows.values()] }, ...(all && { children: openChildren(all) }) };
 }

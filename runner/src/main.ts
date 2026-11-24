@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { boolean, count, is, nullable, object, optional, text } from "../../server/src/runner/check.js";
-import { validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
+import { SERVER_CAPABILITIES, validMachineName, REFUSED_RETRY_MS } from "../../server/src/runner/control.js";
 import { pairingTrust } from "./state.js";
 import { MACHINE_PROFILES, machineProfile, PROTOCOL_VERSION } from "../../server/src/runner/protocol.js";
 import type { Socket } from "node:net";
@@ -15,7 +15,8 @@ import { storeProvider, changeProviderLogin, currentProvider, installedProvider,
 import { changeCodexLogin, codexLogin } from "./codex-login.js";
 import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
-import { removeRelay } from "./claude-relay.js";
+import { setupWizard, wantsWizard } from "./setup-run.js";
+import { relayNotes, removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
 import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
 import { localSizing, storeFlags } from "./sizing.js";
@@ -44,13 +45,14 @@ async function main() {
 		provider: { type: "string" }, egress: { type: "string" }, "egress-allow": { type: "string" }, "egress-domains": { type: "string" },
 		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false },
 		slots: { type: "string" }, "slot-cpus": { type: "string" }, "slot-memory": { type: "string" }, "sandbox-memory": { type: "string" }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
-		"snapshot-disk": { type: "string" }, "snapshot-user": { type: "string" }, "keep-free": { type: "string" },
+		spares: { type: "string" }, "snapshot-disk": { type: "string" }, "snapshot-user": { type: "string" }, "keep-free": { type: "string" },
+		quick: { type: "boolean" }, "no-tui": { type: "boolean" },
 	} });
 	const command = positionals[0] ?? "run";
 	// A release can publish this report without mounting runner state or a Docker socket.
 	if (command === "capabilities" && positionals.length === 1) {
 		const harnesses = (["claude", "opencode", "codex"] as const).filter(id => harnessImage(id));
-		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses }));
+		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses, capabilities: SERVER_CAPABILITIES }));
 		return;
 	}
 	if (command === "image-pins" && positionals.length === 1) {
@@ -66,10 +68,12 @@ async function main() {
 	const changeLogin = agent === "codex" ? changeCodexLogin : agent === "opencode" ? changeProviderLogin : changeClaudeLogin;
 	const label = agent === "codex" ? "Codex" : agent === "opencode" ? "OpenCode" : "Claude Code";
 	if (values.provider && !(agent === "opencode" && command === "login")) throw new RunnerError("Use --provider with login opencode.");
+	// Setup without --harness is the wizard; it takes one section name, such as setup network.
+	const wizard = command === "setup" && wantsWizard(values);
 	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode", "codex"].includes(agent)
-		: positionals.length <= 1 && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
+		: positionals.length <= (wizard ? 2 : 1) && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [setup|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].");
+		throw new RunnerError("Use windlass-runner [setup [--quick|--no-tui|name|agents|claude|codex|opencode|profile|network|limits]|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--spares 0|1|2] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].");
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
 	const requestedEgress = egressFlags(values.egress, values["egress-allow"], values["egress-domains"]);
@@ -91,7 +95,11 @@ async function main() {
 	const slots = sizingCommand ? localSizing(values) : null;
 	if (!sizingCommand && [values["snapshot-disk"], values["snapshot-user"], values["keep-free"]].some(v => v !== undefined))
 		throw new RunnerError("Use --snapshot-disk, --snapshot-user and --keep-free with run or setup.");
-	const limits = { slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]), store: storeFlags(values) };
+	if (values.spares !== undefined && (!sizingCommand || !/^[012]$/.test(values.spares))) throw new RunnerError("Give --spares 0, 1 or 2 with run or setup.");
+	const limits = { spares: Number(values.spares ?? 1), slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]), store: storeFlags(values) };
+	if ((values.quick || values["no-tui"]) && command !== "setup") throw new RunnerError("Use --quick and --no-tui with setup.");
+	if (values.quick && !wizard) throw new RunnerError("Use --quick with setup alone, without --harness.");
+	if (wizard) return setupWizard(positionals.slice(1), values);
 	if (command === "log") return showLog();
 	const abort = new AbortController();
 	const stop = () => abort.abort();
@@ -152,6 +160,11 @@ async function main() {
 				if (offered || claude || harnessImage("claude")) {
 					const signIn = await claudeSignIn(executor);
 					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
+				}
+				// What each relay refused or passed on differently, latest last.
+				for (const [relay, label] of [["codex", "Codex"], ["opencode", "OpenCode"], ["claude", "Claude Code"]] as const) {
+					const notes = await relayNotes(executor, relay).catch(() => []);
+					if (notes.length) console.log(`  ${label} relay, latest notes:\n${notes.map(line => "    " + line).join("\n")}`);
 				}
 				try {
 					await executor.discover();
@@ -217,7 +230,7 @@ async function main() {
 								if (launch?.importFile && await importOpenCode(launch.importFile, p => terminalQuestion(p, abort.signal),
 									(provider,key) => storeProvider(machine,{provider,key}), login)) return;
 								await login();
-							});
+							}, console.log, () => abort.signal.aborted);
 						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
 						if (values["slot-cpus"] === undefined && process.env.WLP_RUNNER_CPUS !== undefined) flags.push("--slot-cpus", String(slots!.unit.cpus));
 						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));

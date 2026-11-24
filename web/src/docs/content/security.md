@@ -1,6 +1,6 @@
 ## The rule that holds everywhere
 
-Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, the sandbox gets a file for that turn. Where the [model relay](#the-model-relay) runs, the file holds only a placeholder for the turn, and the access token stays outside the sandbox. Elsewhere the file holds a short-lived access token, as described [without the relay](#without-the-relay). A demo turn receives neither. The **sandbox** chip says which applies to each sandbox.
+Your ChatGPT sign-in is never in a sandbox. The platform keeps it. For a Windlass turn using your ChatGPT plan, the sandbox gets a file for that turn. Where the [model relay](#the-model-relay) runs, the file holds only a placeholder for the turn, and the access token stays outside the sandbox. Elsewhere the file holds a short-lived access token, as described [without the relay](#without-the-relay). A demo turn receives neither. Each sandbox row of the **where** menu says which applies.
 
 ### The model relay
 
@@ -25,7 +25,7 @@ In **Settings**, choose **Sign out everywhere** to end all browser sign-ins for 
 
 ## Where sandboxes run
 
-- **On this platform.** The platform makes and controls the sandbox. A platform runs its sandboxes on one provider: Docker, or E2B microVMs. The **sandbox** chip lists the ones it offers, with the layers that isolate each.
+- **On this platform.** The platform makes and controls the sandbox. A platform runs its sandboxes on one provider: Docker, or E2B microVMs. The **where** menu lists the ones it offers, with the layers that isolate each.
 - **On one of your machines.** The runner makes a Docker container there. The platform does not control the machine. See [On your machine](#on-your-machine).
 
 ## What every Docker sandbox gets
@@ -88,7 +88,7 @@ E2B never lets a sandbox reach private or link-local addresses on its side, in a
 | Restricted | Only the model API, GitHub, the bucket that keeps the agent's memory, the hosts the operator lists, such as the npm and PyPI registries, and the hosts the repository's network list allows (repository settings, **Network**). Other names do not resolve, and the timeline names each host a command could not reach. |
 | None | Only the model API and that bucket. A session here cannot have a repository: "This deployment's hosted sandboxes have no network for repositories (WLP_E2B_NETWORK=none). Start the session without a repository, or on a machine of yours." |
 
-The **sandbox** chip and each E2B sandbox's description say which applies. Every host that is allowed is still a way out: in **Restricted**, a command could push to a repository on GitHub with a credential of its own. Address `169.254.169.254` answers in every mode: it is the microVM's own Firecracker metadata service, not a cloud provider's, and holds nothing of other sandboxes.
+The sandbox rows of the **where** menu and each E2B sandbox's description say which applies. Every host that is allowed is still a way out: in **Restricted**, a command could push to a repository on GitHub with a credential of its own. Address `169.254.169.254` answers in every mode: it is the microVM's own Firecracker metadata service, not a cloud provider's, and holds nothing of other sandboxes.
 
 ## On your machine
 
@@ -116,6 +116,8 @@ The platform can ask the runner only for what its protocol names. In short, it c
 - read and write text files in a sandbox, and write secret files there.
 
 It cannot sign an agent in or out. That is done only in a terminal on the machine.
+
+With those same requests it builds a repository's [prepared environment](/docs/settings#environment) on the machine: a sandbox where it clones the repository, runs the setup command and the saved checks, and keeps the image only when they pass. It does this only for repositories your sessions or work items ran there lately, never on a machine set to **When named** or **Never** under [Let features use it](/docs/machines#let-features-use-it), and within the machine's snapshot limits.
 
 > **Careful** The platform can run any command in the containers the runner made, Claude Code's and OpenCode's included. In those containers, commands can use the session’s model relay and consume your quota. Older runners with the login volume mounted in the session also expose the Claude setup token.
 

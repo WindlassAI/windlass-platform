@@ -33,6 +33,8 @@ env:
 jobs:
   plan:
     name: Choose the checks
+    # Dependency bump PRs get the plain CI only; heavy runs would hold the runners for hours.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

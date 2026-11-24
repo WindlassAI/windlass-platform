@@ -11,7 +11,8 @@
  * move too. Under prefers-reduced-motion each holds its finished state.
  */
 import type { ReactNode } from "react";
-import { ArrowUpIcon, AskIcon, BranchIcon, CheckIcon, CloudIcon, FileIcon, LockIcon, MachineIcon, MoonIcon, PullRequestIcon, RepoIcon, ShieldIcon, SteerIcon, StopIcon, SunIcon, ThoughtIcon, WarnIcon } from "../components/Icons";
+import { ClaudeLogo } from "../components/AgentLogos";
+import { ArrowUpIcon, AskIcon, BranchIcon, CheckIcon, CloudIcon, FileIcon, LockIcon, MachineIcon, Mark, MoonIcon, PullRequestIcon, RepoIcon, ShieldIcon, SteerIcon, StopIcon, SunIcon, ThoughtIcon, WarnIcon } from "../components/Icons";
 import { ACCESS_URL } from "./config";
 import { AGENTS, FACTORY_STEPS, FAQ, SESSION_FEATURES, type Feature } from "./content";
 
@@ -261,7 +262,10 @@ function SessionFrame() {
 						</div>
 						<div className="lp-composer-tools">
 							<span className="lp-pill">
-								<span className="lp-glyph lp-glyph-accent">W</span>Windlass
+								<span className="lp-glyph lp-glyph-accent" aria-hidden="true">
+									<Mark size={12} />
+								</span>
+								Windlass
 							</span>
 							<span className="lp-pill">
 								<CloudIcon size={13} />
@@ -409,7 +413,10 @@ function SteerCard() {
 				<div className="lp-card-bar">
 					<b>Metres and feet settings panel</b>
 					<span className="lp-card-meta">
-						<span className="lp-glyph">C</span> Claude Code · on your machine
+						<span className="lp-glyph" aria-hidden="true">
+							<ClaudeLogo size={12} />
+						</span>{" "}
+						Claude Code · on your machine
 					</span>
 				</div>
 				<ol className="lp-rows lp-steer-rows">
@@ -619,7 +626,7 @@ function WhereItRuns() {
 						</p>
 						<h3 className="lp-place-title">A runner that dials out</h3>
 						<p className="lp-place-text">
-							Pair a Linux machine with Docker. A small runner on it connects out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
+							Pair a Mac, Linux or Windows (WSL) machine with Docker. A small runner on it connects out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
 						</p>
 						<div className="lp-dial" aria-hidden="true">
 							<div className="lp-dial-box">

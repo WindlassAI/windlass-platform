@@ -46,21 +46,46 @@ export async function claudeSignIn(machine: MachineDocker): Promise<"none" | "to
 	} catch { return "unknown"; }
 }
 
-export async function loginFileState(machine: MachineDocker): Promise<"none" | "token" | "unknown"> {
+/** A line of Docker's own output that may go in the runner's log and its report: short, printable, never a token. */
+export function dockerReason(text: string): string {
+	const line = text.split(/\r?\n/).map(part => part.trim()).find(Boolean) ?? "";
+	return /^[\x20-\x7e]{1,200}$/.test(line) && !/sk-ant-|Bearer\s/i.test(line) ? line : "Docker gave no printable reason";
+}
+
+/**
+ * Whether the Claude Code login volume holds a token, without reading it: Docker's archive stat of the file in a
+ * container that is created and never started. `start` (the service's own checks, never `status`) adds a second
+ * way where that stat cannot be had, as under Docker Desktop: the same container is started, runs `test -s` on the
+ * file, and its exit says. `why` is told what made an answer "unknown".
+ */
+export async function loginFileState(machine: MachineDocker, options: { start?: boolean; why?: (reason: string) => void } = {}): Promise<"none" | "token" | "unknown"> {
 	if (!await machine.ownedVolume(false, machine.claudeVolume)) return "none";
 	const container = (await docker(["create", ...NO_LOGS, "--network", "none", "--label", LABEL_ARG,
-		...volumeFlags(machine, true), image, "true"], { check: true })).stdout.trim();
+		...volumeFlags(machine, true), image, "test", "-s", `${loginDir}/token`], { check: true })).stdout.trim();
 	try {
+		let reason: string;
 		const result = await docker(["system", "dial-stdio"], { timeoutMs: 15_000,
 			stdin: `HEAD /containers/${container}/archive?path=${loginDir}/token HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n` });
-		if (result.code !== 0) return "unknown";
-		if (result.stdout.startsWith("HTTP/1.1 404 ")) return "none";
-		const header = /^X-Docker-Container-Path-Stat: ([^\r\n]+)/im.exec(result.stdout);
-		if (!header || !result.stdout.startsWith("HTTP/1.1 200 ")) return "unknown";
-		const stat = JSON.parse(Buffer.from(header[1], "base64").toString());
-		if (stat.name !== "token" || !(Number.isInteger(stat.mode) && stat.mode >= 0 && stat.mode <= 0o777) || !Number.isSafeInteger(stat.size)) return "unknown";
-		return stat.size > 0 ? "token" : "none";
-	} finally { await docker(["rm", "-v", container], { check: true }); }
+		if (result.code !== 0) reason = `docker system dial-stdio exited ${result.code}: ${dockerReason(result.stderr)}`;
+		else if (result.stdout.startsWith("HTTP/1.1 404 ")) return "none";
+		else {
+			const header = /^X-Docker-Container-Path-Stat: ([^\r\n]+)/im.exec(result.stdout);
+			if (!header || !result.stdout.startsWith("HTTP/1.1 200 ")) reason = `Docker answered the file check with ${dockerReason(result.stdout)}`;
+			else {
+				const stat = JSON.parse(Buffer.from(header[1], "base64").toString());
+				if (stat.name === "token" && Number.isInteger(stat.mode) && stat.mode >= 0 && stat.mode <= 0o777 && Number.isSafeInteger(stat.size)) return stat.size > 0 ? "token" : "none";
+				reason = "Docker described the login file in a way the runner does not read";
+			}
+		}
+		if (options.start) {
+			const started = await docker(["start", "-a", container], { timeoutMs: 30_000 });
+			if (started.code === 0) return "token";
+			if (started.code === 1) return "none";
+			reason += `; the helper container exited ${started.code}: ${dockerReason(started.stderr)}`;
+		}
+		options.why?.(reason);
+		return "unknown";
+	} finally { await docker(["rm", "-f", "-v", container], { check: true }); }
 }
 
 export async function pastedToken(signal: AbortSignal, provider?: string) {

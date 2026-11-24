@@ -1,6 +1,6 @@
 /**
  * The composer: Enter sends, Shift-Enter makes a new line. Helm's box: the field, then a toolbar inside
- * it with the mode and model pills (the model's efforts in its submenu) and Send, Steer and Stop. While a turn runs (or waits on a question)
+ * it with the mode, model and effort pills and Send, Steer and Stop. While a turn runs (or waits on a question)
  * what is sent steers that turn, and Stop sits beside Send. While the sandbox starts or the turn stops
  * it cannot send and says why. The model and effort for the next turn sit beside it; they do not
  * apply to a steer, so they are off while a turn runs. The models are the user's own, the efforts
@@ -35,7 +35,7 @@ import { count } from "../lib/format";
 import { effortChoices, effortsOf, modelIds, saysDefault, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
-import { ArrowUpIcon, ChevronIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
+import { ArrowUpIcon, ChevronIcon, PauseIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
 import { ModePicker } from "./Modes";
 import { KeyHints } from "./ui/Kbd";
 import { Menu, type MenuSpec } from "./ui/Menu";
@@ -75,6 +75,11 @@ export interface ComposerProps {
 	mode?: string | null;
 	/** Puts the agent in a mode from its next prompt; rejects with what the client threw. */
 	onMode?(mode: string): Promise<void>;
+	/**
+	 * The agent's own plan mode, where it has one (`SessionCapabilities.planMode`): whether the next turn that starts
+	 * plans and changes nothing. No picker without it.
+	 */
+	planMode?: { on: boolean; onChange(on: boolean): void } | null;
 }
 
 /** Why nothing can be sent right now. */
@@ -153,7 +158,7 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 	);
 }
 
-export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode }: ComposerProps) {
+export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode, planMode = null }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -177,7 +182,9 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 
 	const idle = status === "idle";
 	/** A turn is under way and takes messages: what is sent steers it. */
-	const steering = status === "running" || status === "waiting";
+	/** The turn is paused (its server restarted, or its machine went away): what is sent is held, and given to the agent when it resumes. */
+	const holding = status === "paused";
+	const steering = status === "running" || status === "waiting" || holding;
 	const writable = (idle || steering) && !closed;
 	const busy = !writable || sending;
 	const currentModel = chosenModel ?? model;
@@ -194,7 +201,6 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 		const name = modelById.get(id)?.name || id;
 		return id === models?.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
 	};
-	const effortPicker = harness === null || efforts.length > 0;
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
 	const reason = closed || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
@@ -313,35 +319,17 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 	const modelMenu: MenuSpec = {
 		label: "Model",
 		width: 280,
-		submenuWidth: 200,
-		hints: { right: "effort" },
 		groups: [
 			{
 				id: "models",
 				label: harness === null ? "Model" : `${harness}'s models`,
 				note: models && harness === null ? modelsNoteShort(models) : undefined,
-				items: listed.map((id) => {
-					const rowEfforts = modelById.get(id)?.efforts ?? [];
-					const choose = (level: string | null) => {
-						setChosenModel(id);
-						if (level !== null) setEffort(level);
-					};
-					return {
-						id,
-						label: harnessModelLabel(id),
-						description: rowEfforts.length > 0 ? (id === currentModel && currentEffort ? `effort ${currentEffort}` : `${rowEfforts.length} effort levels`) : undefined,
-						checked: id === currentModel,
-						onSelect: () => choose(null),
-						submenu:
-							rowEfforts.length > 0
-								? {
-										label: `Effort for ${harnessModelLabel(id)}`,
-										width: 200,
-										groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(id)}`, items: effortChoices(rowEfforts).map((level) => ({ id: level || "default", label: level || "default", checked: id === currentModel && (currentEffort || "default") === (level || "default"), onSelect: () => choose(level) })) }],
-									}
-								: undefined,
-					};
-				}),
+				items: listed.map((id) => ({
+					id,
+					label: harnessModelLabel(id),
+					checked: id === currentModel,
+					onSelect: () => setChosenModel(id),
+				})),
 			},
 		],
 		footer: models ? <p className="ui-menu-note">{harness === null ? modelsNote(models) : `The models ${harness} offered for this agent.`}</p> : undefined,
@@ -352,27 +340,57 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			spec={modelMenu}
 			side="top"
 			trigger={(props) => (
-				<Pill {...props} data-picker="model" data-value={currentModel} disabled={!idle} secondary={currentEffort ? `· ${currentEffort}` : undefined} aria-label={`Model: ${harnessModelLabel(currentModel)}${currentEffort ? `, effort ${currentEffort}` : ""}${modelTitle ? `. ${modelTitle}` : ""}`}>
+				<Pill {...props} data-picker="model" data-value={currentModel} disabled={!idle} aria-label={`Model: ${harnessModelLabel(currentModel)}${modelTitle ? `. ${modelTitle}` : ""}`}>
 					{harnessModelLabel(currentModel)}
 				</Pill>
 			)}
 		/>
 	);
 
-	// A harness that offers one model and efforts for it: the efforts on their own.
+	// The chosen model's efforts, as their own picker beside the model: every agent whose model has efforts.
 	const effortMenu: MenuSpec = {
 		label: "Effort",
 		width: 200,
 		groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(currentModel)}`, items: effortChoices(efforts).map((level) => ({ id: level || "default", label: level || "default", checked: (currentEffort || "default") === (level || "default"), onSelect: () => setEffort(level) })) }],
 	};
 	const effortPill =
-		!modelPicker && effortPicker && efforts.length > 0 ? (
+		efforts.length > 0 ? (
 			<Menu
 				spec={effortMenu}
 				side="top"
 				trigger={(props) => (
 					<Pill {...props} data-picker="effort" data-value={currentEffort} disabled={!idle} aria-label={`Effort: ${currentEffort || "default"}${modelTitle ? `. ${modelTitle}` : ""}`}>
 						{currentEffort ? `effort ${currentEffort}` : "default effort"}
+					</Pill>
+				)}
+			/>
+		) : null;
+
+	// The agent's plan mode for the next turn that starts: a steer joins the running turn, which keeps its own.
+	const planMenu: MenuSpec | null = planMode
+		? {
+				label: "Plan mode",
+				width: 260,
+				groups: [
+					{
+						id: "plan",
+						label: "Plan mode",
+						items: [
+							{ id: "off", label: "Off", description: "The agent works on the task", checked: !planMode.on, onSelect: () => planMode.onChange(false) },
+							{ id: "on", label: "On", description: "The agent plans and changes nothing", checked: planMode.on, onSelect: () => planMode.onChange(true) },
+						],
+					},
+				],
+			}
+		: null;
+	const planPill =
+		planMode && planMenu ? (
+			<Menu
+				spec={planMenu}
+				side="top"
+				trigger={(props) => (
+					<Pill {...props} data-picker="plan-mode" data-value={planMode.on ? "on" : "off"} disabled={!idle || !!closed} secondary={planMode.on ? "· on" : "· off"} aria-label={`Plan mode: ${planMode.on ? "on" : "off"}${idle ? "" : ". For the next turn; the running turn keeps its own"}`}>
+						Plan mode
 					</Pill>
 				)}
 			/>
@@ -435,8 +453,8 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 			<div className="composer-box">
 				<div className="composer-row">
 					<label className="composer-caret" htmlFor={ids.text}>
-						{steering ? <SteerIcon size={15} /> : <ChevronIcon size={16} />}
-						<span className="visually-hidden">{steering ? "Message to the running turn" : "Prompt"}</span>
+						{holding ? <PauseIcon size={15} /> : steering ? <SteerIcon size={15} /> : <ChevronIcon size={16} />}
+						<span className="visually-hidden">{holding ? "Message held for the paused turn" : steering ? "Message to the running turn" : "Prompt"}</span>
 					</label>
 					<textarea
 						ref={area}
@@ -444,7 +462,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						className="composer-text"
 						rows={1}
 						value={text}
-						placeholder={closed ? "Nothing can be sent to this agent" : idle ? "Tell the agent what to do" : steering ? "Steer — it reads this at its next step" : status === "stopping" ? "Stopping…" : "Starting…"}
+						placeholder={closed ? "Nothing can be sent to this agent" : idle ? "Tell the agent what to do" : holding ? "Held until the turn resumes — it reads this then" : steering ? "Steer — it reads this at its next step" : status === "stopping" ? "Stopping…" : "Starting…"}
 						onChange={(event) => setText(event.target.value)}
 						onKeyDown={onKeyDown}
 						disabled={!writable || sending}
@@ -464,7 +482,10 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 						</>
 					) : null}
 					{modelPicker ? (
-						modelPill
+						<>
+							{modelPill}
+							{effortPill}
+						</>
 					) : (
 						<>
 							{effortPill}
@@ -473,13 +494,14 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 							</span>
 						</>
 					)}
+					{planPill}
 					{modelPicker && standIn && models ? (
 						<span className="mini-note" title={modelsNote(models)}>
 							{modelsNoteShort(models)}
 						</span>
 					) : null}
 					<span className="composer-tools-end">
-						<KeyHints id={ids.keys} className="composer-keys" hints={steering ? [["↵", "steer"]] : [["↵", "send"], ["⇧↵", "new line"]]} />
+						<KeyHints id={ids.keys} className="composer-keys" hints={holding ? [["↵", "hold"]] : steering ? [["↵", "steer"]] : [["↵", "send"], ["⇧↵", "new line"]]} />
 						{!idle ? (
 							<button type="button" className="button button-stop button-small composer-action" onClick={stop} disabled={status === "stopping" || stopping || !online} aria-label={status === "stopping" || stopping ? "Stopping" : "Stop the turn"}>
 								<StopIcon size={12} />
@@ -487,16 +509,16 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 							</button>
 						) : null}
 						{idle || steering ? (
-							<button type="submit" className={`button button-small composer-action composer-send ${idle ? "button-primary" : "button-outline composer-steer"}`} disabled={!canSend} aria-label={steering ? "Steer: send to the running turn" : sending ? "Sending" : "Send"}>
-								{steering ? <SteerIcon size={14} /> : <ArrowUpIcon size={14} />}
-								<span>{sending ? "Sending" : steering ? "Steer" : "Send"}</span>
+							<button type="submit" className={`button button-small composer-action composer-send ${idle ? "button-primary" : "button-outline composer-steer"}`} disabled={!canSend} aria-label={holding ? "Hold: given to the turn when it resumes" : steering ? "Steer: send to the running turn" : sending ? "Sending" : "Send"}>
+								{holding ? <PauseIcon size={14} /> : steering ? <SteerIcon size={14} /> : <ArrowUpIcon size={14} />}
+								<span>{sending ? "Sending" : holding ? "Hold" : steering ? "Steer" : "Send"}</span>
 							</button>
 						) : null}
 					</span>
 				</div>
 			</div>
 			<p className={`composer-hint${reason ? " composer-reason" : steering ? " composer-steer-hint" : ""}${tooLong ? " tone-bad" : ""}`} id={ids.reason} role={reason ? "status" : undefined}>
-				{tooLong ? `${count(text.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}` : (reason ?? (steering ? "The agent reads it after its current step." : null))}
+				{tooLong ? `${count(text.length - MAX_PROMPT_CHARS)} characters over the limit of ${count(MAX_PROMPT_CHARS)}` : (reason ?? (holding ? "The turn is paused: this is held, and the agent reads it when the turn resumes." : steering ? "The agent reads it after its current step." : null))}
 			</p>
 		</form>
 	);

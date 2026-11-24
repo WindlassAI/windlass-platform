@@ -94,9 +94,9 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 				throw translated(error);
 			}
 		},
-		async connect(sandboxId, timeoutMs) {
+		async connect(sandboxId, timeoutMs, options = {}) {
 			try {
-				return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs }));
+				return connection(await Sandbox.connect(sandboxId, { ...api, timeoutMs, ...(options.reboot ? { onResume: "reboot" as const } : {}) }));
 			} catch (error) {
 				if (error instanceof NotFoundError) return undefined;
 				// Its snapshot was taken while the sandbox was hung: E2B will not restore that memory. Booted from its disk the
@@ -183,13 +183,23 @@ export function createE2bSdkClient(apiKey: string): E2bClient {
 				throw translated(error);
 			}
 		},
+		async metrics(sandboxId, sinceMs) {
+			try {
+				const samples = await Sandbox.getMetrics(sandboxId, { ...api, start: new Date(sinceMs) });
+				return samples.map((one) => ({ at: one.timestamp.getTime(), memUsed: one.memUsed, memTotal: one.memTotal }));
+			} catch (error) {
+				if (error instanceof NotFoundError) return [];
+				throw translated(error);
+			}
+		},
 		async templateBuild(template) {
 			const [name, tag = "default"] = template.split(":");
 			try {
 				const tags = await Template.getTags(name, api);
 				return tags.find((found) => found.tag === tag)?.buildId ?? null;
 			} catch (error) {
-				if (error instanceof NotFoundError) return null;
+				// An unknown template is a TemplateError with status 404 (SDK 2.63.0), not a NotFoundError.
+				if (error instanceof NotFoundError || (error as { statusCode?: unknown }).statusCode === 404) return null;
 				throw translated(error);
 			}
 		},

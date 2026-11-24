@@ -23,7 +23,7 @@ item's page is not found), the `user` actor's item and API token actions (`listI
 `createItem`, `actOnItem`, `apiTokens`, `createApiToken`, `revokeApiToken`) refuse with `items_off`
 ("Work items are not available on this platform."), `/api/items` answers 404, `not_found`, before any
 token is read, and platform info has no `items`. Two things are not switched: `factoryLimits` answers
-either way, since `WLP_FACTORY_RUNNING_TURNS` is also the ceiling on a person's own running agents
+either way, since `WLP_FACTORY_HOSTED_RUNNING` is also the ceiling on a person's own hosted agents
 ([Usage and limits](architecture.md#usage-and-limits)); and the `workItem` actors and their tables stay, so an item that exists goes on
 with its steps while the switch is off, and turning it off and on again loses nothing. While it is off,
 nobody can file, read or act on an item.
@@ -94,7 +94,7 @@ or hand over the commit the run already pushed.
   is answered at once, makes the item's question when the turn ends (`agent_ask`, at most 3 a run, 1 a
   turn), and resumes the step with the person's answer ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)). On a machine using `docker-hardened`, Windlass runs shell commands unasked
   inside the runner's container. There is no per-command sandbox. Those commands can reach the machine's
-  local network and read the session's access token. A turn takes at most 60 steps. The agent is not given `publish`, since the
+  local network and read the session's access token. A builder turn has a backstop of 400 steps and a reviewer turn has 40. The agent is not given `publish`, since the
   platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a
   description that the platform puts on the pull request, and what it is unsure of, and `push` and
   `fetch_base` as a person's agent is ([The agent's own tools](github-and-repositories.md#the-agents-own-tools)): it may push the item's branch during its
@@ -118,22 +118,27 @@ or hand over the commit the run already pushed.
   someone else pushed to is handed over as it is, not verified, and its verdict is made again when that
   happens after the handover.
 - **Limits are waits.** Nothing is refused for lack of room. An item that cannot go on now waits and says
-  for what, with its numbers ("Waiting for one of your 5 factory turns; 5 are running (…)."): a free turn,
-  a free place among the kept sandboxes, the day's allowance (until 00:00 UTC), one of the user's hosted
-  sandboxes running at once, the deployment's cap on running sandboxes, or fewer of the user's items in
-  review, which holds back new work and never work in progress. A request is tried again when a turn is
+  for what, with its numbers ("Waiting for one of your 3 hosted sandboxes that run at once: 3 running
+  now."): a free place among the kept sandboxes, the day's allowance (until 00:00 UTC), one of the user's
+  hosted sandboxes running at once, the deployment's cap on running sandboxes, or, on a machine, its
+  runner's slots. A request is tried again when a turn is
   given back or one of the person's own agents goes idle, and otherwise after 30 seconds, then twice as long
   each time up to five minutes. Requests are taken oldest first, and an item has at most one turn
   waiting, so the items take turns.
-- **The same ceiling as the person's own agents.** `WLP_FACTORY_RUNNING_TURNS` counts the person's own
-  turns and the items' together, and is the ceiling on the person's own running agents ("Usage and
-  limits"). The items' share, `WLP_FACTORY_TURNS`, is held at least one below it (unless the ceiling is
-  1), so a person's own prompt never waits behind the factory. A machine item's turn uses this share
-  and counts toward the person's running-turn ceiling. Hosted running, kept-sandbox and time caps apply
-  only to hosted items. The machine enforces its runner's own caps.
-- **The cost of an item** is its tokens, turns, working time and hosted sandbox time, against its budget, on
-  the item's page and the usage page. A machine item has zero hosted seconds and has only the first three limits. Working time leaves out what it waited for. A budget used up is a
-  question, and "Raise the limit and go on" takes the person's new figures for that item.
+- **One ceiling on hosted sandboxes.** `WLP_FACTORY_HOSTED_RUNNING` counts the person's own hosted
+  agents at work and the items' hosted turns together ("Usage and limits"). A machine item's turn never
+  counts and never waits for it: the machine's runner bounds it with its own slots, and queues turns past
+  them. Kept-sandbox and time caps apply only to hosted items.
+- **The cost of an item** is its tokens, cost-weighted (cached input at a tenth, `CACHED_INPUT_WEIGHT` in
+  factory/budget.ts), and its hosted sandbox time, against its budget, with the tokens as reported, its turns
+  and its working time beside them, on the item's page and the usage page. A machine item has zero hosted
+  seconds. A budget used up is a question: "Give it N more" goes on in the same session and sandbox (a
+  subtask's extra adds to its feature's budget), "Hand it over as it is" pushes the workspace first when
+  nothing is pushed, "Give up". No choice throws work away.
+- **One stuck detector.** Rounds of fixing are not capped. A fix turn for a failure the run already had a
+  fix turn for (the same fingerprint of failing checks, CI, a base conflict, or the same blocking review
+  findings) stops the run and asks. A backstop of 60 turns an item (`RULES.turnBackstop`) ends a loop that
+  never repeats; 3 cut-off turns a step, provider-limit retries and push retries stay internal and mechanical.
 
 **CI needs the GitHub App's three read permissions** ([The GitHub App](operating.md#the-github-app)). Without them, or before an
 installation has accepted them, an item waits for no CI: it is handed over saying that CI was not read.
@@ -222,7 +227,7 @@ as well as an item's:
   turn's, and the item's gate and verdict read them the same way. The timeline gets a note per run. A turn
   whose checks ended `unresolved` ends `unresolved`.
 - **Steps.** `sandbox/platform-steps.ts` counts each `tool_call` update with a new call id, over every
-  prompt of the turn. The limit is the item's `maxSteps` (`RULES.maxSteps`, 60; the reviewer's 40). When the
+  prompt of the turn. The limit is the item's `maxSteps` (`RULES.maxSteps`, 400; the reviewer's 40). When the
   agent starts the call past it, the harness sends `session/cancel`, the turn ends `unresolved` with a
   timeline note, and no check runs. `turn.ended.steps` is the count in every ACP turn.
 
@@ -337,8 +342,12 @@ displayed version. `approve_plan` requires that same version and answered questi
 Approval requires saved checks and evidence of push CI on the planned Windlass branches. It opens
 a draft PR on `windlass/feature-<item-id>`. When GitHub refuses drafts, it opens an ordinary PR
 whose description marks the feature as in progress. Each child starts from that branch and
-has its own session. Passing local checks and passing CI on the child's pushed SHA let the platform
-fast-forward the feature branch. Repositories using only pull-request workflows need a push or
+has its own session. The Factory dispatches up to three children whose dependencies have integrated and whose
+owned paths are disjoint within their repository. A missing or empty path list runs alone. Each child reserves
+its planned tokens and a proportional share of hosted time and goes through the account's normal place queue.
+Completion releases the unused reservation. After local checks and push CI pass, the parent serializes updates
+to the feature branch by fast-forward or merge commit. A conflict sends the child to merge the latest feature
+branch and pass both gates again. Summary and whole-feature review wait for every child. Repositories using only pull-request workflows need a push or
 external check for child commits. The preflight reads enabled Actions workflows and their branch filters. It also recognizes successful
 external checks or statuses on a prior standalone Windlass push. A missing child check offers a wait
 for late CI. Stopping there ends orchestration and offers handover of the last integrated head. Child questions appear
@@ -486,16 +495,14 @@ to off for new items unless the deployment enables it.
 
 ## Limits
 
-The limits are the deployment's, the same for every user, set by its owner; a user cannot raise them. A
+The limits are the deployment's, set by its owner and overridable per user; a user cannot raise them, but gives an item more budget when it asks. A
 setting that is not a whole number in its range stops the server when it starts.
 
 | Limit | Setting | Default |
 |---|---|---|
-| A user's turns running at once, their own and their items' together | `WLP_FACTORY_RUNNING_TURNS` | 6 (at most 100) |
-| Of those, the items' | `WLP_FACTORY_TURNS` | 5; one set higher is held to one less than `WLP_FACTORY_RUNNING_TURNS`, and to 1 at least |
-| The user's hosted sandboxes running at once beside which an item's turn may start | `WLP_FACTORY_HOSTED_RUNNING` | 3 |
-| Items in review at which new items wait | `WLP_FACTORY_REVIEW_CAP` | 6 |
-| A new item's budget: tokens, turns, working seconds, hosted sandbox seconds | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | 6,000,000 tokens, 14 turns, 14400 (4 hours), 7200 (2 hours) |
+| A user's hosted sandboxes at work at once, their own agents and their items' together | `WLP_FACTORY_HOSTED_RUNNING` | 3 (at most 100) |
+| A new item's budget: cost-weighted tokens, hosted sandbox seconds | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | 2,000,000 tokens, 7200 (2 hours) |
+| Items a user files from GitHub a UTC day, drafts among them | `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | 20 |
 
 An item's hosted sandbox counts against the user's daily allowance and kept sandboxes as any other ("Usage
 and limits"), whose defaults are sized for a few agents by hand, not for many items a day.

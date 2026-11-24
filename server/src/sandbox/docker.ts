@@ -24,12 +24,13 @@ export const LABEL_ARG = `${LABEL}=1`;
 export const MACHINE_LABEL = `${LABEL}.machine`;
 /**
  * The log policy of every container the platform and the runner start, whatever the daemon's default. Nothing
- * reads the log of a session, relay, egress or helper container, and the agent can write to a session
+ * reads the log of a session, egress or helper container, and the agent can write to a session
  * container's main process output, so those keep none: an unbounded default log would let it fill the host's
- * disk. The runner's own container keeps a small rotated log, because `docker logs windlass-runner` is how an
+ * disk. Machine relays and the runner keep rotated logs, because `docker logs windlass-runner` is how an
  * operator reads it.
  */
 export const NO_LOGS = ["--log-driver", "none"];
+export const RELAY_LOGS = ["--log-driver", "json-file", "--log-opt", "max-size=4m", "--log-opt", "max-file=2"];
 export const RUNNER_LOGS = ["--log-driver", "json-file", "--log-opt", "max-size=16m", "--log-opt", "max-file=3"];
 
 export interface DockerResult {

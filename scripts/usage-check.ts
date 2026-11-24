@@ -12,7 +12,7 @@
  * claimed in one step, given back, and held against what the provider lists.
  */
 
-import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, dayOf, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
+import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, cutTurnUsage, cutTurnUsageNote, dayOf, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -163,7 +163,7 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	const three = book.reserve(at(0), { id: "c1", session: "c", keep: true, fresh: true });
 	expect("a place is counted and claimed with the hold: of three that ask with a cap of two, the third is refused", one.ok && two.ok && !three.ok && three.reason === "sandboxes" && book.kept().length === 2);
 	expect("the refusal took no hold either", book.holdOf("c") === null && book.numbers(at(0)).heldSeconds === 1200);
-	expect("the refusal says what to do", sandboxRefusal(book.numbers(at(0))).includes("You keep 2 sandboxes") && sandboxRefusal(book.numbers(at(0))).includes("Usage page"));
+	expect("the refusal says what to do", sandboxRefusal(book.numbers(at(0))).includes("You keep 2 hosted sandboxes") && sandboxRefusal(book.numbers(at(0))).includes("Usage page"));
 	expect("a session that has its place is not counted twice", book.reserve(at(10), { id: "a2", session: "a", keep: true, settle: { hold: "a1", seconds: 10 } }).ok && book.kept().length === 2);
 	expect("a session that needs no place is not held to the cap", book.reserve(at(10), { id: "d1", session: "d", fresh: true }).ok);
 	book.release("a");
@@ -203,6 +203,25 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	expect("a free place is taken in the same step", taken.ok && taken.change.kept.length === 1 && book.keeps("z") && book.atCap("w"));
 	book.reconcile(at(3), ["x"]);
 	expect("held against a list that does not have its sandbox yet, a place just claimed is kept", book.keeps("z") && book.kept().length === 2);
+}
+
+// A work item counts as one place: its reviewer shares its builder's (`UsageBook.sharing`, user.ts `itemSharing`).
+{
+	const book = new UsageBook(LIMITS);
+	book.sharing = (session) => (session === "reviewer" ? "builder" : undefined);
+	book.claim(at(0), "builder");
+	book.claim(at(0), "other");
+	expect("with the builder's place and another, the account is at its cap of 2", book.atCap("third") && book.numbers(at(0)).sandboxes.kept === 2);
+	expect("the item's reviewer is not: it shares its builder's place", !book.atCap("reviewer"));
+	const reviewer = book.reserve(at(1), { id: "r1", session: "reviewer", keep: true, fresh: true });
+	expect("the reviewer's sandbox is made, and the count stays 2 of 2", reviewer.ok && book.keeps("reviewer") && book.numbers(at(1)).sandboxes.kept === 2 && book.kept().length === 3);
+	book.release("builder");
+	expect("once its builder's place is freed, the reviewer's claim counts as its own", !book.shares("reviewer") && book.numbers(at(2)).sandboxes.kept === 2 && book.atCap("third"));
+	const lone = new UsageBook(LIMITS);
+	lone.sharing = (session) => (session === "reviewer" ? "builder" : undefined);
+	lone.claim(at(0), "a");
+	lone.claim(at(0), "b");
+	expect("a reviewer whose builder holds no place needs one of its own", lone.atCap("reviewer"));
 }
 
 // Until when a sandbox that is found stopped can have run, and how lengths of time are said.
@@ -255,6 +274,23 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	expect("a hold that is not renewed stops its sandbox 30 s before the book stops counting it", holdDeadline(at(0), 600) === at(600 + HOLD_GRACE_SECONDS - 30) && hold.ok && holdDeadline(at(0), hold.hold.seconds) < hold.hold.expiresAt);
 	expect("not at the end of the hold: the book still counts what runs past it until then", holdDeadline(at(0), 600) > at(600) + 60_000);
 	expect("a lease without grace stops the same margin before it runs out", holdDeadline(at(0), 180, 0) === at(150));
+}
+
+
+// A turn cut off with its server: what its finished model requests reported is its usage, as the summary would have summed it.
+{
+	const ev = (type: string, usage: unknown) => ({ type, v: 1, seq: 0, time: 0, data: { messageId: "m", usage } }) as never;
+	const used = cutTurnUsage([
+		ev("step.started", null),
+		ev("step.ended", { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 50, reasoningTokens: 10 }),
+		ev("step.failed", { inputTokens: 200, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }),
+		ev("compaction.ended", { inputTokens: 300, cachedInputTokens: 0, outputTokens: 40, reasoningTokens: 0 }),
+		ev("step.ended", null),
+		ev("tool.ended", { inputTokens: 9999, cachedInputTokens: 0, outputTokens: 9999, reasoningTokens: 0 }),
+	]);
+	expect("a cut-off turn's usage is the sum of its finished requests' reports", used !== null && used.inputTokens === 1500 && used.cachedInputTokens === 800 && used.outputTokens === 90 && used.reasoningTokens === 10, JSON.stringify(used));
+	expect("a cut-off turn whose requests reported nothing has no usage, not zero", cutTurnUsage([ev("step.started", null), ev("step.ended", null)]) === null);
+	expect("the timeline says what of a cut-off turn is counted", /1,590 tokens/.test(cutTurnUsageNote(used)) && /none are counted/.test(cutTurnUsageNote(null)));
 }
 
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);

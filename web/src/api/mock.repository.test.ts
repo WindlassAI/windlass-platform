@@ -54,7 +54,7 @@ describe("the mock's repository page", () => {
 		expect(await user.saveRepositoryDefaults(7103, { profile: "docker-hardened" })).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		expect(await user.saveRepositoryDefaults(7103, {})).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		expect(await user.saveRepositoryDefaults(7103, { model: null })).toMatchObject({ profile: "docker-hardened", model: null });
-		expect(await user.saveRepositoryDefaults(7103, { profile: null })).toEqual({ screenshots: false, profile: null, model: null, updatedAt: null });
+		expect(await user.saveRepositoryDefaults(7103, { profile: null })).toEqual({ screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null });
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7103)).toBe(false);
 		// Something saved for a repository no agent is on is listed under the name GitHub has for it.
 		await user.saveRepositoryDefaults(7110, { model: "gpt-6-luna" });
@@ -202,15 +202,20 @@ describe("the mock's repository page", () => {
 	it("names the repositories something is saved for, and deleting what is saved for one takes it off the list", async () => {
 		const mock = make();
 		const user = mock.user(ada);
-		expect((await user.savedRepositories()).map((repository) => `${repository.id} ${repository.name}`)).toEqual(["7101 acme/harbor", "7190 acme/old-pier", "7105 acme/quay", "7102 ada/tide-tables"]);
+		expect((await user.savedRepositories()).map((repository) => `${repository.id} ${repository.name}`)).toEqual(["7101 acme/harbor", "7190 acme/old-pier", "7105 acme/quay", "7106 acme/signal-flags", "7102 ada/tide-tables"]);
 		const emptied = await user.forgetRepository(7190);
 		expect(emptied).toMatchObject({ defaults: { profile: null, model: null }, approvals: [], saved: { setup: false, secrets: 0, checks: 0, network: 0 } });
 		expect((await user.repositorySetup(7190)).command).toBe("");
 		expect((await user.repositorySecrets(7190, "docker-windlass-sandbox")).secrets).toEqual([]);
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7190)).toBe(false);
-		// The two independent agents stay when the repository settings are forgotten.
+		// Independent agents stay when the repository settings are forgotten.
+		const independentIds = async () => (await user.listSessions())
+			.filter((session) => session.repository?.id === 7101 && !session.item)
+			.map((session) => session.id).sort();
+		const before = await independentIds();
+		expect(before.length).toBeGreaterThan(0);
 		await user.forgetRepository(7101);
-		expect((await user.listSessions()).filter((session) => session.repository?.id === 7101 && !session.item)).toHaveLength(2);
+		expect(await independentIds()).toEqual(before);
 		expect(await make({ github: false }).user(ada).savedRepositories()).toEqual([]);
 		mock.dispose();
 	});

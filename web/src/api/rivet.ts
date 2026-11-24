@@ -200,7 +200,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 	// ASSUMPTION 2: `params` on the handle is what `onBeforeConnect` receives, for `.connect()` and for stateless actions alike.
 	const userHandle = (auth: AuthResult) => lazy(async () => (await connect()).getOrCreate<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
 	// ASSUMPTION 3: a session's actor is created by `user.createSession`, so the web app only ever looks it up.
-	const sessionHandle = (auth: AuthResult, sessionId: string) => lazy(async () => (await connect()).get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], { params: { token: auth.token } }));
+	const sessionHandle = async (auth: AuthResult, sessionId: string) => (await connect()).get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], { params: { token: auth.token } });
 
 	/**
 	 * A connection that keeps a feed alive: `load` runs on every "connected" (the first and each
@@ -213,6 +213,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		report: (state: ConnectionState, error?: PlatformError) => void,
 		load: (conn: Conn, isCurrent: () => boolean) => Promise<void>,
 		listen: (conn: Conn) => Array<() => void>,
+		checkMissing?: () => Promise<unknown>,
 	): { reload: () => void; close: () => void } {
 		let conn: Conn | null = null;
 		let closed = false;
@@ -223,14 +224,46 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		let lastError: PlatformError | null = null;
 		let offs: Array<() => void> = [];
 
+		let probe: ReturnType<typeof setTimeout> | undefined;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			clearTimeout(patience);
+			clearTimeout(probe);
+			for (const off of offs) off();
+			conn?.dispose().catch(() => undefined);
+		};
+		const missing = (error: PlatformError) => {
+			if (!checkMissing || error.code !== "not_found") return false;
+			close();
+			report("failed", error);
+			return true;
+		};
+		// Browsers can hide an HTTP 404 during a WebSocket upgrade behind close code 1006.
+		// While the socket is stuck opening, HTTP can distinguish deletion from a network outage.
+		const checkOpening = () => {
+			if (!checkMissing || closed || probe !== undefined) return;
+			const timer = setTimeout(async () => {
+				if (conn && conn.connStatus !== "connected" && conn.connStatus !== "idle") {
+					try { await checkMissing(); }
+					catch (error) { if (!closed && probe === timer) missing(toPlatformError(error, shown)); }
+				}
+				if (probe !== timer) return;
+				probe = undefined;
+				if (conn && conn.connStatus !== "connected" && conn.connStatus !== "idle") checkOpening();
+			}, CONNECT_PATIENCE_MS);
+			probe = timer;
+		};
+
 		const reload = () => {
 			const open = conn;
-			if (!open) return;
+			if (closed || !open) return;
 			const mine = ++generation;
 			const isCurrent = () => !closed && mine === generation;
 			load(open, isCurrent).catch((error: unknown) => {
 				if (!isCurrent()) return;
 				const failure = toPlatformError(error, shown);
+				if (missing(failure)) return;
 				// A connection that drops during the load is retried by RivetKit; anything else is final.
 				if (open.connStatus === "connected") report("failed", failure);
 				else lastError = failure;
@@ -240,6 +273,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		const onStatus = (status: ActorConnStatus) => {
 			if (closed) return;
 			if (status === "connected") {
+				clearTimeout(probe);
+				probe = undefined;
 				everConnected = true;
 				reportedFailure = false;
 				reload();
@@ -250,6 +285,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 				report("failed", lastError ?? new PlatformError("network", `The connection to ${shown} could not be opened.`));
 			} else {
 				generation++;
+				checkOpening();
 				if (!reportedFailure) report(everConnected ? "reconnecting" : "connecting");
 			}
 		};
@@ -266,6 +302,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 					opened.onError((error) => {
 						if (closed) return;
 						lastError = toPlatformError(error, shown);
+						if (missing(lastError)) return;
 						// Whatever RivetKit does next (it may keep retrying), these two will not get better by waiting.
 						if (lastError.code === "unauthorized" || lastError.code === "not_found") {
 							generation++;
@@ -276,6 +313,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 				];
 				// The connection opens by itself; if it is already open, the status callback will not fire for it.
 				if (opened.connStatus === "connected") onStatus("connected");
+				else checkOpening();
 			},
 			(error: unknown) => {
 				// The server refused to say how to connect: asking again will not change that.
@@ -292,15 +330,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			report("failed", lastError ?? source.failure() ?? new PlatformError("network", `The server at ${shown} is not answering.`));
 		}, CONNECT_PATIENCE_MS);
 
-		return {
-			reload,
-			close: () => {
-				closed = true;
-				clearTimeout(patience);
-				for (const off of offs) off();
-				conn?.dispose().catch(() => undefined);
-			},
-		};
+		return { reload, close };
 	}
 
 	function userApi(auth: AuthResult): UserApi {
@@ -325,6 +355,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			saveRepositorySetup: (repositoryId, command) => act("saveRepositorySetup", { repositoryId, command }),
 			repositoryChecks: (repositoryId) => act("repositoryChecks", repositoryId),
 			saveRepositoryChecks: (repositoryId, checks) => act("saveRepositoryChecks", { repositoryId, checks }),
+			repositoryEnvironments: (repositoryId) => act("repositoryEnvironments", repositoryId),
+			rebuildEnvironment: (repositoryId, place) => act("rebuildEnvironment", { repositoryId, ...(place !== undefined && { place }) }),
+			saveEnvironmentSchedule: (repositoryId, schedule) => act("saveEnvironmentSchedule", { repositoryId, schedule }),
 			repositoryNetwork: (repositoryId) => act("repositoryNetwork", repositoryId),
 			saveRepositoryNetwork: (repositoryId, entries) => act("saveRepositoryNetwork", { repositoryId, entries }),
 			dismissNetworkRequest: (repositoryId, host) => act("dismissNetworkRequest", { repositoryId, host }),
@@ -349,6 +382,10 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			allowance: () => act("allowance"),
 			usage: () => act("usage"),
 			freeSandbox: (sessionId) => act("freeSandbox", sessionId),
+			billing: () => act("billing"),
+			billingCheckout: (input) => act("billingCheckout", input),
+			billingPortal: (input) => act("billingPortal", input),
+			setOverageCap: (input) => act("setOverageCap", input),
 			machines: () => act("machines"),
 			machineCatalog: input => act("machineCatalog", input),
 			claimMachine: (input) => act("claimMachine", input),
@@ -407,7 +444,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 	}
 
 	function sessionApi(auth: AuthResult, sessionId: string): SessionApi {
-		const handle = sessionHandle(auth, sessionId);
+		const freshHandle = () => sessionHandle(auth, sessionId);
+		const handle = lazy(freshHandle);
 		const act = <K extends keyof AgentSessionActions & string>(name: K, ...args: Parameters<AgentSessionActions[K]>) => call<AgentSessionActions, K>(handle(), name, ...(args as never));
 		const reloads = new Set<() => void>();
 		return {
@@ -425,6 +463,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
 			forgetServer: (name) => act("forgetServer", { name }),
 			allowHost: (host) => act("allowHost", { host }),
+			setRequestedSecret: (input) => act("setRequestedSecret", input),
 			resync() {
 				for (const reload of reloads) reload();
 			},
@@ -457,6 +496,12 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 							if (live) feed.onItem(item);
 							else early.push(item);
 						}),
+						// A newer revision of a turn's `network.blocked` row, with the seq it replaces: the reducer swaps it in place.
+						// Kept with the items before the snapshot, which carries a revision at least as new.
+						conn.on("networkBlocked" satisfies keyof AgentSessionEvents, (item: AgentSessionEvents["networkBlocked"]) => {
+							if (live) feed.onItem(item);
+							else early.push(item);
+						}),
 						conn.on("delta" satisfies keyof AgentSessionEvents, (delta: AgentSessionEvents["delta"]) => {
 							if (live) feed.onDelta(delta);
 						}),
@@ -474,6 +519,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 							if (live) feed.onMachine?.(machine);
 						}),
 					],
+					// Resolve by key on a fresh handle. An old handle can cache the deleted actor ID.
+					async () => (await freshHandle()).resolve(),
 				);
 				reloads.add(feedConn.reload);
 				return () => {

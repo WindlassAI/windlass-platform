@@ -24,6 +24,7 @@ import type {
 	GithubRepositoryList,
 	GithubStatus,
 	HostAllowed,
+	SetRequestedSecretInput,
 	ItemAction,
 	ItemFeed,
 	ItemListPage,
@@ -43,6 +44,8 @@ import type {
 	PublishState,
 	RepositoryCheck,
 	RepositoryChecks,
+	RepositoryEnvironments,
+	EnvironmentSchedule,
 	RepositoryDefaults,
 	RepositoryNetwork,
 	RepositorySecrets,
@@ -56,7 +59,10 @@ import type {
 	SessionSummary,
 	TimelineItem,
 	UsageNumbers,
+	HostedSize,
 	UsageView,
+	BillingPeriod,
+	BillingView,
 	UserActions,
 	UserProfile,
 	WorkspaceFile,
@@ -136,6 +142,7 @@ export interface UserFeed {
 export interface SessionFeed {
 	/** The whole session: once when the feed opens and again after every reconnect. Rebuild from it. */
 	onSnapshot(snapshot: SessionSnapshot): void;
+	/** A stored timeline entry, and a newer revision of a `network.blocked` row (the `networkBlocked` event), which keeps its `seq`. */
 	onItem(item: TimelineItem): void;
 	onDelta(delta: LiveDelta): void;
 	onSummary(summary: SessionSummary): void;
@@ -173,6 +180,11 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	repositoryChecks(repositoryId: GithubId): Promise<RepositoryChecks>;
 	/** Saves the list whole, or none with an empty one. Throws with reason `bad_checks` for a list that cannot be saved. */
 	saveRepositoryChecks(repositoryId: GithubId, checks: RepositoryCheck[]): Promise<RepositoryChecks>;
+	/** The repository's prepared environments, one per place, and how often they are rebuilt (environments.ts). */
+	repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments>;
+	/** Builds them again now, at one place or at each. Throws with reason `environment_refused` when none can be built. */
+	rebuildEnvironment(repositoryId: GithubId, place?: string): Promise<RepositoryEnvironments>;
+	saveEnvironmentSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule): Promise<RepositoryEnvironments>;
 	/** The repository's network list, the requests its sessions filed, and what the deployment's hosted sandboxes reach anyway. */
 	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
 	/** Saves the list whole: preset ids and exact host names. Throws with reason `bad_network` for an entry or a length that cannot be saved. */
@@ -199,7 +211,7 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	 */
 	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
 	/** Saves what new agents on a repository start with: a field left out stays, null saves none. Throws with reason `bad_input` or `bad_model` for what the deployment does not offer. */
-	saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/** Forgets the remembered approvals of that MCP server for a repository. */
 	forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView>;
 	/** Deletes everything kept for a repository: setup command, checks, secrets, defaults and remembered approvals. The agents on it stay. */
@@ -227,6 +239,14 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	allowance(): Promise<UsageNumbers>;
 	/** The usage page: the numbers, today by agent, the kept sandboxes, the last two weeks and what a second is estimated to cost. */
 	usage(): Promise<UsageView>;
+	/** The account's plan and this month's hosted minutes; `{ enabled: false }` where the deployment has no billing (`PlatformInfo.billing`). */
+	billing(): Promise<BillingView>;
+	/** A checkout for Pro at the payment provider: the address to send the browser to. Throws with reason `billing_off`, `already_subscribed` or `billing_unavailable`. */
+	billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }>;
+	/** The payment provider's customer portal, to change the card or cancel. Throws with reason `no_customer` or `billing_unavailable`. */
+	billingPortal(input: { origin: string }): Promise<{ url: string }>;
+	/** Sets the monthly overage spend cap, in US cents. Throws with reason `bad_input`. */
+	setOverageCap(input: { cents: number }): Promise<BillingView>;
 	/** Frees one agent's sandbox to make room: its workspace files go, the agent and its conversation stay. Throws with reason `sandbox_busy` while it works. */
 	freeSandbox(sessionId: string): Promise<UsageView>;
 	/** The user's machines, the first paired first. The machine calls throw with reason `machines_off` where the deployment has none (`PlatformInfo.machines`). */
@@ -299,6 +319,11 @@ export interface SessionApi {
 	forgetServer(name: string): Promise<SessionServers>;
 	/** "Allow for this repository": adds a blocked host to the network list of the session's repository, and lets its running sandbox reach it at once. */
 	allowHost(host: string): Promise<HostAllowed>;
+	/**
+	 * The value for the agent's open `request_secret` (an item's `secret_needed` question, or `SessionSnapshot.secretRequest`):
+	 * saved for the session's repository, or for the account, and the requesting work goes on. The value goes only here.
+	 */
+	setRequestedSecret(input: SetRequestedSecretInput): Promise<void>;
 }
 
 export interface PlatformClient {

@@ -358,6 +358,10 @@
 }
 
 @media (max-width: 760px) {
+	.usage-sizes {
+		padding-left: 14px;
+		padding-right: 14px;
+	}
 	/* What each agent's sandbox holds is in the day's figures above; a narrow table leaves it out. */
 	.usage-wide {
 		display: none;
@@ -459,4 +463,37 @@
 .usage-today .usage-facts > div {
 	padding-left: 20px;
 	padding-right: 20px;
+}
+
+/* Hosted sizes: one quiet row each, under the day's figures; and an agent's size beside its name. */
+.usage-sizes {
+	padding: 14px 20px 18px;
+	border-top: 1px solid var(--line);
+}
+.usage-sizes .usage-lede {
+	margin-top: 0;
+}
+.usage-size-list {
+	display: grid;
+	gap: 6px;
+	margin: 10px 0 0;
+	padding: 0;
+	list-style: none;
+	max-width: 420px;
+}
+.usage-size-list li {
+	display: grid;
+	grid-template-columns: 88px 1fr auto;
+	gap: 12px;
+	align-items: baseline;
+	font-size: var(--size-small);
+}
+.usage-size-name {
+	font-weight: 600;
+}
+.usage-size-tag {
+	margin-left: 8px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+	color: var(--ink-faint);
 }

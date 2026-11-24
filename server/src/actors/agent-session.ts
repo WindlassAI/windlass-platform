@@ -1,3 +1,5 @@
+import { spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
+import { refHead } from "../github/feature.js";
 /**
  * `agentSession`, key [uid, sessionId]: one agent, its sandbox, its timeline and its turns.
  *
@@ -157,6 +159,7 @@ import {
 	type SandboxProfileId,
 	type SessionServers,
 	type SessionSnapshot,
+	type SetRequestedSecretInput,
 	type SessionStatus,
 	type SessionSummary,
 	type StartTimes,
@@ -169,23 +172,32 @@ import {
 	type WindlassEvent,
 	type WorkspaceFile,
 	WIDE_HOSTS,
+	largerHostedSize,
+	type HostedSize,
+	isHostedSize,
+	outOfMemoryWords,
 } from "../contract.js";
+import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../blocked-network.js";
+import { billing } from "../billing/config.js";
+import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
-import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
+import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
-import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
+import { type PublishEvidence, BaseMergeConflict, updateBranchFromBase, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
-import type { AccessToken, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { AccessToken, OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
+import type { ConversationRecord } from "../runner/channel.js";
+import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, readConversation, saveCheckpoint, saveReceived } from "../runner/journal.js";
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
-import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
+import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, MAX_SECRET_REQUESTS, secretRequestLimit, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -207,11 +219,14 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { agentTurn, turnTokens } from "../factory/budget.js";
-import { reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
-import { itemActor, grantIsValid, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { judgeChecks } from "../environments.js";
+import { outputExcerpt } from "../factory/check-environment.js";
+import { PlatformChecks } from "../sandbox/platform-checks.js";
+import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
-import { REPORT_TAKEN, askPerson } from "../agent-publish.js";
+import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
@@ -233,7 +248,9 @@ import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
-import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { CRASHES_ALLOWED, type PauseReason, type TurnRun, addUsage, crashCount, pausedLine, resumePrompt, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
+import { ConversationLost } from "../runner/channel.js";
+import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits
@@ -307,7 +324,22 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 // ---------------------------------------------------------------------------------------------
 
 interface SessionMeta {
+	secretRequest?: SessionSnapshot["secretRequest"];
+	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */
+	secretAsks?: number;
+	secretRefusalRun?: string;
+	declinedSecrets?: string[];
+	/** The current conversation has seen outside text, including turns on harnesses without a taint marker. */
+	secretRequestBlocked?: boolean;
 	size?: number;
+	/** A session that only builds the repository's prepared environment (user-environments.ts): one turn, no agent. */
+	environmentBuild?: EnvironmentBuildOrigin;
+	/** The validated environment the current sandbox started from (SessionSummary.environment); null once it has another. */
+	environment?: SessionSummary["environment"] | null;
+	/** Hosted, where the layer offers sizes: what its sandboxes are made in. A sandbox keeps its size; another is a new sandbox. */
+	hostedSize?: HostedSize;
+	/** The sandbox whose running out of memory a turn's end noted: its restart at the next connect is not asked about again. */
+	memoryNoted?: string;
 	uid: string;
 	sessionId: string;
 	demo: boolean;
@@ -349,11 +381,15 @@ interface SessionMeta {
 	harnessModels?: ModelList | null;
 	/** The harness's own conversation id, kept across turns. */
 	windlassSessionId: string | null;
+	/** True for a conversation opened with the feature summary's tool list. */
+	summaryConversation?: true;
 	turnStartedAt: number | null;
 	/** When this session was created, last ran a turn, or last used its workspace. */
 	lastUsedAt: number;
 	/** The idle check the durable schedule holds: its id, and when it fires. */
 	idleCheck?: { id: string; at: number } | null;
+	/** The last turn ended on an approval nobody answered in a hosted sandbox: the sandbox pauses at once, not after the idle time. */
+	pauseNow?: true;
 	/** Set when the session was launched on a repository of the user's GitHub connection (`repoUrl` is its address). */
 	repo?: StoredRepository | null;
 	/** The branch the platform pushes the session's work to: named when it first pushes, and kept. */
@@ -417,6 +453,8 @@ interface SessionMeta {
 	networkHosts?: string[];
 	/** The blocked hosts the timeline named for the sandbox it has now: each is named once per sandbox (`noteBlockedHosts`). */
 	hostsNoted?: string[];
+	/** Lifetime totals and a monotone receipt for the item actor. */
+	blocked?: { revision: number; network: BlockedNetwork };
 	snapshotCommit?: string | null;
 	cloneDirectory?: string;
 	/** A cross-repo feature's planning turn put its other repositories' trees in the workspace (`planningInputs`). */
@@ -464,6 +502,12 @@ interface SessionMeta {
 	machineName: string | null;
 	/** What the item's agent last filed with `report`: the pull request's title and description. */
 	report?: (AgentReport & { run: number }) | null;
+	/**
+	 * With WLP_TURN_RESUME, the running turn's own record (turn-resume.ts): what pausing and resuming it
+	 * needs. Set when a turn is accepted, removed when it ends. `paused` in it, with status "paused": the
+	 * turn waits to resume.
+	 */
+	run?: TurnRun | null;
 }
 
 /** What `prompt()` answers: the turn the message is in, and whether it was steered into one that ran. */
@@ -493,6 +537,15 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
+	/** The turn is being stopped so that it pauses instead of ending (`pauseTurn`): its server is going away, or its machine went. */
+	pausing?: PauseReason;
+	/** A segment that resumes a paused turn (`resumePaused`): why it paused, for how long, and what the person sent meanwhile. */
+	resume?: { reason: PauseReason; pausedMs: number; held: string[] };
+	finishNetwork?: () => Promise<void>;
+	/** What the turn would need to be taken up again by a restarted server (`RunTurnInput.onCheckpoint`), read with each timeline write. */
+	checkpoint?: () => TurnCheckpoint | null;
+	/** A turn a restarted server takes up: its process goes on (`RunTurnInput.reattach`). */
+	reattach?: TurnCheckpoint;
 	planMode?: boolean;
 	openAcp?: () => NewItem | null;
 	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
@@ -543,7 +596,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
 }
 
 /**
@@ -552,9 +605,11 @@ interface ActiveTurn {
  * values out of text.
  */
 interface HeldSecrets {
+	requestedNames?: string[];
 	/** Read before the turn had a number (the prompt's own row is redacted with them): what could not be opened, for the turn to tell once. */
 	unopened: string[];
 	snapshotSetup?: SealedSecrets["snapshotSetup"];
+	environment?: SealedSecrets["environment"];
 	screenshots: boolean;
 	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
 	opened: OpenedSecret[];
@@ -595,8 +650,11 @@ async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promis
 }
 
 interface SessionVars {
+	savingSecret?: boolean;
 	/** Null for an actor that `user` did not create: it rejects everything and removes itself. */
 	meta: SessionMeta | null;
+	/** A build session's result, once its setup and checks ran (`buildEnvironment`); reported when its turn has closed. */
+	environmentResult?: EnvironmentBuildResult;
 	nextSeq: number;
 	/** Timeline items not yet in SQLite, in `seq` order. */
 	unwritten: TimelineItem[];
@@ -668,6 +726,18 @@ interface SessionVars {
 	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
 	 */
 	runner: RunnerLink | null;
+	/**
+	 * With WLP_RUNNER_DURABLE_TURNS, the writer that stores the runner conversation's outgoing frames
+	 * (runner/journal.ts), and the conversation read back when the actor woke with a turn to take up.
+	 */
+	journal: OutgoingJournal | null;
+	restored: ConversationRecord | null;
+	/** When the wake that takes a machine turn up after a crash was last scheduled (`armTakeUp`). */
+	takeUpArmedAt: number;
+	/** True while a paused turn is being resumed (`resumePaused`): nothing else takes the session meanwhile. */
+	resuming: boolean;
+	/** Re-arms the wake that resumes the running turn after a crash (`heartbeat`); null between turns. */
+	heartbeat: ReturnType<typeof setInterval> | null;
 	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
 	setupReap: Promise<void> | null;
 	/** The running turn's start clock (start-times.ts), which `openSandbox` tells when the sandbox and the workspace are ready. */
@@ -694,6 +764,7 @@ interface Ctx {
 }
 
 type NewItem =
+	| Omit<NetworkBlockedItem, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "user" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "platform" }>, "seq" | "at">
 	| Omit<Extract<TimelineItem, { kind: "acp" }>, "seq" | "at">
@@ -751,9 +822,41 @@ function runnerLink(c: Ctx, machineId: string): RunnerLink {
 			(reach) => {
 				if (!c.vars.stopping) c.broadcast("machine", reach);
 			},
+			durableTurns(c) ? { from: c.vars.restored, onDirty: () => conversationDirty(c) } : undefined,
 		);
+		c.vars.restored = null;
 	}
 	return c.vars.runner;
+}
+
+/** WLP_RUNNER_DURABLE_TURNS: a machine session keeps its runner conversation and its turn's protocol state (runner/journal.ts). */
+function durableTurns(c: Ctx): boolean {
+	return config.machines?.durableTurns === true && c.vars.meta?.place.kind === "machine";
+}
+
+/** How often a turn that can be taken up after a crash re-arms the wake that would take it up. */
+const TAKE_UP_ARM_MS = 60_000;
+
+/** The runner conversation has something to store: frames to write ahead, or more received than committed. */
+function conversationDirty(c: Ctx): void {
+	const journal = c.vars.journal ??= new OutgoingJournal(c.db, () => c.vars.runner?.channel ?? null, () => {
+		// What was received is committed with the timeline it produced: a write comes soon, items or not.
+		const channel = c.vars.runner?.channel;
+		if (channel && channel.receivedCount > 0) scheduleWrite(c, true);
+	});
+	journal.dirty();
+}
+
+/**
+ * While a machine turn can be taken up, a wake is kept scheduled a minute ahead: a server that crashed
+ * runs no `onSleep`, and this brings the session back within the runner's grace on whichever server
+ * is up. A wake with nothing to take up does nothing.
+ */
+function armTakeUp(c: Ctx): void {
+	const now = Date.now();
+	if (c.vars.stopping || now - c.vars.takeUpArmedAt < TAKE_UP_ARM_MS / 2) return;
+	c.vars.takeUpArmedAt = now;
+	void c.schedule.at(now + TAKE_UP_ARM_MS, "internalTakeUp").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that takes a machine turn up after a crash", error: describeError(error) }));
 }
 
 /** The runner's own socket to the session: it proves itself in its first frame, not with a user's token. */
@@ -770,6 +873,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		title: meta.title,
 		place: meta.place,
 		profile: meta.profile,
+		...(meta.hostedSize && { hostedSize: meta.hostedSize }),
 		model: meta.model,
 		mode: meta.mode,
 		availableModes: meta.availableModes,
@@ -778,12 +882,15 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
 		status: meta.status,
+		...(meta.status === "paused" && meta.run?.paused ? { paused: { reason: meta.run.paused.reason, since: meta.run.paused.at, held: meta.run.held?.length ?? 0 } } : {}),
 		turns: meta.turns,
 		lastOutcome: meta.lastOutcome,
 		...(meta.startTimes?.length ? { startTimes: meta.startTimes } : {}),
 		sandbox: meta.sandbox,
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
 		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder" } } : {}),
+		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
+		...(meta.environment ? { environment: meta.environment } : {}),
 	};
 }
 
@@ -813,6 +920,7 @@ async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]
 
 /** Writes the waiting items, a batch per statement. Only ever called from inside the queue. */
 async function writeItems(c: Ctx): Promise<void> {
+	if (c.vars.runner?.durable) return writeDurably(c);
 	const waiting = c.vars.unwritten;
 	while (waiting.length > 0) {
 		const batch = waiting.slice(0, WRITE_BATCH);
@@ -822,18 +930,71 @@ async function writeItems(c: Ctx): Promise<void> {
 			const tokens = turnTokens(reportedModelUsage(item.event));
 			return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
 		}) : [];
-		if (receipts.length) {
+		const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
+		if (receipts.length || network) {
 			// These are the model requests summed by the turn summary. Keep their original UTC day
 			// and sequence number, including when a turn is interrupted or a delivery is retried.
 			await c.db.transaction(async tx => {
 				await insertItems(tx, batch);
 				for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
+				if (network && meta) {
+					await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+					if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...network });
+				}
 			}, { name: "timeline.usage" });
-			if (!c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
+			if (!c.vars.stopping && (receipts.length || meta?.origin)) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
 		} else await insertItems(c.db, batch);
 		// Items made meanwhile were added behind the batch.
 		waiting.splice(0, batch.length);
 	}
+}
+
+/**
+ * `writeItems` for a machine session whose runner conversation is kept (runner/journal.ts): what was
+ * received, the timeline it produced and the turn's checkpoint, read in one synchronous step and written
+ * in one transaction, and only then acknowledged to the runner. A server that stops at any moment has
+ * either all of it or none: the runner sends again whatever is past the stored count, so each of its
+ * messages is taken once.
+ */
+async function writeDurably(c: Ctx): Promise<void> {
+	const channel = c.vars.runner!.channel;
+	const waiting = c.vars.unwritten;
+	// From here to the transaction nothing is awaited: the count, the items and the checkpoint say the same moment.
+	const conversation = channel.conversationId;
+	const received = channel.receivedCount;
+	const turn = c.vars.turn;
+	const checkpoint = turn?.checkpoint?.() ?? null;
+	const items = waiting.slice();
+	const meta = c.vars.meta;
+	let flush = false;
+	let stored = false;
+	await c.db.transaction(async tx => {
+		for (let at = 0; at < items.length; at += WRITE_BATCH) {
+			const batch = items.slice(at, at + WRITE_BATCH);
+			const receipts = meta && usesPlatformModel(meta.place, meta.harness) ? batch.flatMap(item => {
+				if (item.kind !== "windlass") return [];
+				const tokens = turnTokens(reportedModelUsage(item.event));
+				return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
+			}) : [];
+			const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
+			await insertItems(tx, batch);
+			for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
+			if (network && meta) {
+				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+				if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...network });
+			}
+			if (receipts.length || (network && meta?.origin)) flush = true;
+		}
+		// While a process waits to be taken up, the output kept for it is in no item yet: nothing of it counts as stored.
+		if (c.vars.runner?.holding) return;
+		stored = await saveReceived(tx, conversation, received);
+		// A checkpoint goes with the timeline of its moment; none (the turn is not one to take up) takes the old one out.
+		await saveCheckpoint(tx, turn?.number ?? 0, checkpoint);
+	}, { name: "timeline.durable" });
+	waiting.splice(0, items.length);
+	if (stored) channel.committed(conversation, received);
+	if (checkpoint) armTakeUp(c);
+	if (flush && !c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
 }
 
 /** Brings SQLite up to date with memory: the waiting items and the meta row. Never throws. */
@@ -867,9 +1028,16 @@ function queueWrite(c: Ctx): void {
 	});
 }
 
-/** A turn can produce thousands of items: they are written in batches, shortly after they are made. */
-function scheduleWrite(c: Ctx): void {
+/** A turn can produce thousands of items: they are written in batches, shortly after they are made. `always`: a durable conversation's count is due, items or not. */
+function scheduleWrite(c: Ctx, always = false): void {
 	if (c.vars.flushQueued) return;
+	if (always && c.vars.unwritten.length === 0 && !c.vars.flushTimer) {
+		c.vars.flushTimer = setTimeout(() => {
+			c.vars.flushTimer = null;
+			queueWrite(c);
+		}, FLUSH_DELAY_MS);
+		return;
+	}
 	if (c.vars.unwritten.length >= FLUSH_AT) {
 		queueWrite(c);
 		return;
@@ -881,9 +1049,10 @@ function scheduleWrite(c: Ctx): void {
 	}, FLUSH_DELAY_MS);
 }
 
-function numberItem(c: Ctx, item: NewItem): TimelineItem {
+function numberItem(c: Ctx, item: NewItem, at = Date.now()): TimelineItem {
+	// Network observations scrub their free text before aggregation. Keep protocol enum values intact.
 	const redactor = c.vars.turn?.secrets?.redactor;
-	const numbered = { ...(redactor ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	const numbered = { ...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item), seq: c.vars.nextSeq, at } as TimelineItem;
 	return numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
 }
 
@@ -892,8 +1061,8 @@ function numberItem(c: Ctx, item: NewItem): TimelineItem {
  * a turn holds its repository's secrets, their values are taken out of every text of the item first,
  * whatever wrote it: nothing a turn adds to the timeline carries one.
  */
-function append(c: Ctx, item: NewItem): TimelineItem {
-	const full = numberItem(c, item);
+function append(c: Ctx, item: NewItem, at?: number): TimelineItem {
+	const full = numberItem(c, item, at);
 	c.vars.nextSeq += 1;
 	c.vars.unwritten.push(full);
 	c.broadcast("item", full);
@@ -906,7 +1075,7 @@ function note(
 	turn: number,
 	level: "info" | "warn" | "error",
 	text: string,
-	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | null = null,
+	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | { code: "turn_paused" | "turn_resumed" } | null = null,
 ): void {
 	append(c, { turn, kind: "platform", level, text, ...(mark ?? {}) });
 }
@@ -1101,25 +1270,6 @@ function shellQuote(text: string): string {
 }
 
 /**
- * Clones into the workspace. A new sandbox's workspace holds an empty repository and nothing else, which
- * the clone replaces; if anything else is there, the clone goes into a directory of its own.
- */
-function cloneCommand(repoUrl: string): string {
-	const url = shellQuote(repoUrl);
-	const name = (repoUrl.replace(/\/+$/, "").split("/").pop() ?? "repo").replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
-	return [
-		"set -e",
-		CLONE_GIT_START,
-		`if [ -z "$(ls -A | grep -v '^\\.git$' || true)" ]; then`,
-		"  rm -rf .git",
-		`  git clone --quiet -- ${url} "$(pwd -P)"`,
-		"else",
-		`  git clone --quiet -- ${url} "$(pwd -P)"/${shellQuote(name)}`,
-		"fi",
-	].join("\n");
-}
-
-/**
  * `git status`, without taking a lock an agent's own git command could trip over. Like every git of the
  * platform's in the workspace, after `WORKSPACE_GIT_START` (github/git.ts): it runs outside Windlass's
  * sandbox, so a repository whose configuration would make git start a program is not run in at all.
@@ -1184,25 +1334,27 @@ async function snapshotPlan(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | nu
 	if (!project || !app || !repo) return null;
 	try {
 		const saved = secrets.snapshotSetup, command = saved.command;
-		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : repo.branch;
+		const revision = meta.origin?.role === "reviewer" ? meta.reviewBase : meta.origin?.childBranch?.start ?? repo.branch;
 		if (!revision) return null;
 		const key = { repo: String(repo.id), attempt: randomBytes(16).toString("hex"), generation: snapshotGeneration(String(repo.id), saved.updatedAt, saved.connectedAt) };
-		const mayWrite = snapshotWriter(meta.origin) && !meta.pushedHead && !meta.windlassSessionId && !(await childSetupSeed(c, meta));
-		// A never-saved setup needs no Docker index lookup, runner request or GitHub tree.
-		if (!saved.previouslySaved || !(await layer.sandboxes.hasSnapshot(meta.uid, key.repo))) {
-			if (!mayWrite) return null;
+		// A build always starts cold, and is the only kind of session that saves an image (environments.ts).
+		if (meta.environmentBuild) {
+			if (meta.pushedHead || meta.windlassSessionId) return null;
 			return { key: { ...key, inputs: DEFERRED_INPUTS }, commit: "", defaultBranch: repo.branch, writer: true, command, updatedAt: saved.updatedAt };
 		}
+		// Only a validated environment's image is started from: one that is not ready and current at this place, or not
+		// there at all, leaves the session to start cold, as it would with none.
+		if (!secrets.environment?.usable || !saved.previouslySaved || !(await layer.sandboxes.hasSnapshot(meta.uid, key.repo))) return null;
 		const connection = await githubConnection(c, meta);
 		if (!connection || connection.connectedAt !== saved.connectedAt) return null;
 		const { commit, dependencies, defaultBranch } = await setupRevision(app, connection, repo, revision);
 		if (!dependencies) return null;
-		return { writer: mayWrite && repo.branch === defaultBranch, key: { ...key, inputs: digest([dependencies, saved.command]) },
+		return { writer: false, key: { ...key, inputs: digest([dependencies, saved.command]) },
 			commit, defaultBranch, command, updatedAt: saved.updatedAt };
 	} catch { return null; } // A missing permission, truncated tree or unavailable API still allows a normal clone.
 }
 
-async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, plan: SnapshotPlan | null) {
+async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, plan: SnapshotPlan | null, validated?: SealedSecrets["environment"]) {
 	const source = sandbox.snapshot, repo = meta.repo, app = githubApp();
 	if (!source || !repo || !app || !plan || source.attempt !== plan.key.attempt || source.repo !== plan.key.repo || source.inputs !== plan.key.inputs || source.generation !== plan.key.generation) return false;
 	const work = meta.origin?.role !== "reviewer" && meta.pushedHead ? meta.publishBranch : null;
@@ -1216,6 +1368,9 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 		head = pinned.marks.get("work") ?? "";
 		if (head !== plan.commit) return false;
 		repo.baseSha = plan.commit;
+	} else if (meta.origin?.childBranch) {
+		head = await putOnWork(sandbox, ".", meta.origin.childBranch.name, meta.origin.childBranch.start);
+		repo.baseSha = head;
 	} else head = await putOnWork(sandbox, ".", repo.branch);
 	if (head !== plan.commit) {
 		// The branch moved during startup. Decide using the immutable tree we actually checked out.
@@ -1234,7 +1389,10 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 	meta.cloned = true;
 	meta.setupDue = null;
 	meta.snapshotCommit = source.commit;
-	note(c, turn, "info", `Started from a prepared sandbox. Setup ran at ${source.commit} on ${new Date(source.created).toISOString()}.`);
+	meta.environment = validated?.usable ? { commit: validated.commit, validatedAt: validated.validatedAt, checks: validated.checks } : null;
+	note(c, turn, "info", meta.environment
+		? `Started from a validated environment: setup and ${meta.environment.checks === 1 ? "the saved check" : `${meta.environment.checks} saved checks`} passed at ${meta.environment.commit.slice(0, 12)} on ${new Date(meta.environment.validatedAt).toISOString()}.`
+		: `Started from a prepared sandbox. Setup ran at ${source.commit} on ${new Date(source.created).toISOString()}.`);
 	await persist(c);
 	return true;
 }
@@ -1253,7 +1411,7 @@ const MAX_HOSTS_NOTED = 40;
  * requests on its repository's network list. Only where the deployment's hosted sandboxes are
  * `restricted`, where a list can help. Never throws: it only reports.
  */
-async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
+async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer, observed: (hosts: string[]) => void): Promise<void> {
 	if (meta.place.kind !== "hosted" || !sandbox.blockedHosts || layer.sandboxes.egress?.() !== "restricted") return;
 	const allowed = new Set(meta.networkHosts ?? []);
 	const noted = new Set(meta.hostsNoted ?? []);
@@ -1266,8 +1424,9 @@ async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox
 		c.log.warn({ msg: "could not read which hosts the sandbox could not reach", error: describeError(error) });
 		return;
 	}
-	const named = found.filter((host) => !allowed.has(host) && !noted.has(host)).slice(0, MAX_HOSTS_NOTED - noted.size);
+	const named = found.filter((host) => !allowed.has(host) && !noted.has(host) && (!c.vars.turn?.secrets || c.vars.turn.secrets.redactor.text(host) === host)).slice(0, MAX_HOSTS_NOTED - noted.size);
 	if (named.length === 0) return;
+	observed(named);
 	meta.hostsNoted = [...noted, ...named];
 	const project = setupProjectOf(meta);
 	for (const host of named) append(c, { turn, kind: "platform", level: "warn", text: blockedHostNote(host, project?.label ?? null), code: "host_blocked", host, ...(project ? { repository: true } : {}) });
@@ -1287,9 +1446,124 @@ async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox
 	void persist(c);
 }
 
+/** Only the first version consumes a sequence number. A replacement is durable before its live event.
+ * The session totals and the item's outbox receipt commit alongside the same timeline version. */
+function blockedRecorder(c: Ctx, meta: SessionMeta, turn: number) {
+	const before = meta.blocked?.network ?? emptyNetwork();
+	let row: NetworkBlockedItem | undefined;
+	let saved = JSON.stringify(emptyNetwork());
+	return async (snapshot: BlockedNetwork) => {
+		const network = limitNetwork(before, snapshot);
+		const signature = JSON.stringify(network);
+		if (signature === saved) return;
+		const blocked = { revision: (meta.blocked?.revision ?? 0) + 1, network: unionNetwork(before, network) };
+		if (!row) {
+			meta.blocked = blocked;
+			row = append(c, { kind: "network.blocked", revision: blocked.revision, turn, ...network }) as NetworkBlockedItem;
+			await serial(c, () => writeItems(c));
+		} else {
+			const item = { ...row, ...network, revision: blocked.revision };
+			await serial(c, async () => {
+				await writeItems(c);
+				await c.db.transaction(async tx => {
+					await insertItems(tx, [item]);
+					await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify({ ...meta, blocked }));
+					if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...blocked });
+				}, { name: "session.network" });
+				meta.blocked = blocked;
+			});
+			c.broadcast("networkBlocked", item);
+			if (meta.origin) await flushOutbox(c, meta.uid);
+		}
+		saved = signature;
+	};
+}
+
+export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer) {
+	const proxy = sandbox.blockedNetwork?.bind(sandbox);
+	const dns = meta.place.kind === "hosted" && sandbox.blockedHosts && layer.sandboxes.egress?.() === "restricted";
+	if (!proxy && !dns) return;
+	const save = blockedRecorder(c, meta, turn);
+	const lookups = emptyNetwork();
+	let broker: string | undefined;
+	let previousBrokers = emptyNetwork(), current = emptyNetwork();
+	return watchNetwork(async () => {
+		if (proxy) {
+			const retained = meta.blocked?.network.hosts.map(({ host, port }) => ({ host, port })) ?? [];
+			const snapshot = await proxy(turn, retained);
+			if (broker && broker !== snapshot.broker) previousBrokers = unionNetwork(previousBrokers, current);
+			broker = snapshot.broker;
+			const redactor = c.vars.turn?.secrets?.redactor;
+			const name = c.vars.runner?.known?.name || meta.machineName || (meta.place.kind === "machine" ? meta.place.machineId : "");
+			current = { overflow: snapshot.overflow, hosts: snapshot.hosts.map(entry => {
+				const host = entry.host && redactor && redactor.text(entry.host) !== entry.host ? null : entry.host;
+				return { ...entry, host, machineNames: [redactor?.text(name) ?? name], allow: entry.reason === "machine_policy" && host && isHostName(host) ? "machine" : "never" };
+			}) };
+			await save(unionNetwork(previousBrokers, current));
+		} else {
+			const before = lookups.hosts.length;
+			await noteBlockedHosts(c, meta, turn, sandbox, layer, names => {
+				const at = Date.now();
+				for (const host of names) lookups.hosts.push({ host, port: null, reason: "unlisted", allow: setupProjectOf(meta) ? "repository" : "deployment", count: 1, firstAt: at, lastAt: at });
+			});
+			await save(lookups);
+			return lookups.hosts.length > before;
+		}
+	}, error => c.log.warn({ msg: "could not read blocked network requests", error: describeError(error) }), () => c.vars.stopping || c.vars.destroying);
+}
+
+/** Apply the account's size decision once, even if both the hold and the place claim observe the downgrade. */
+export function applySandboxClamp(meta: Pick<SessionMeta, "hostedSize">, size: HostedSize | undefined, notify: (text: string) => void): boolean {
+	if (!size || meta.hostedSize === size) return false;
+	meta.hostedSize = size;
+	notify(`This agent's next sandbox is ${size}: large sandboxes are part of Pro.`);
+	return true;
+}
+
+// An empty pool still needs an authorized seed. Repeated cold creates for the same
+// branch can reuse its head briefly. A claim always observes the head afresh.
+let lastSpareHead: { key: string; commit: string; until: number } | undefined;
+export async function spareHead(key: string, seedOnly: boolean, read: () => Promise<string>) {
+	if (seedOnly && lastSpareHead?.key === key && Date.now() < lastSpareHead.until) return lastSpareHead.commit;
+	const commit = await read();
+	lastSpareHead = { key, commit, until: Date.now() + 30_000 };
+	return commit;
+}
+
+export function readySetupItems(turn: number, recipe: NonNullable<SpareRecipe["connected"]>, setup: SpareSetup) {
+	const item = { turn, kind: "setup" as const, id: `su_${randomBytes(6).toString("hex")}`, command: recipe.command,
+		limitMs: recipe.timeoutMs, output: "", truncated: false };
+	return [
+		{ ...item, state: "started" as const, at: setup.startedAt, exitCode: null, durationMs: null },
+		{ ...item, state: "succeeded" as const, at: setup.startedAt + setup.durationMs, exitCode: 0, durationMs: setup.durationMs },
+	];
+}
+
+/** Resolve the current permission and immutable base outside the machine. A mirror alone
+ * cannot establish either. Only the ordinary base checkout can run setup in advance. */
+async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, plan: SnapshotPlan | null, seedOnly = false): Promise<SpareRecipe | undefined> {
+	if (!meta.repoUrl || (meta.profile !== "docker-hardened" && meta.harness !== "codex") || meta.environmentBuild ||
+		meta.windlassSessionId || meta.pushedHead || meta.origin?.role === "reviewer" || meta.origin?.owns !== undefined || plan?.writer) return;
+	if (!meta.repo) return spareRecipe({ url: meta.repoUrl }) ? { url: meta.repoUrl } : undefined;
+	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
+	if (!project || !app || !secrets || secrets.opened.length || secrets.unopened.length || await childSetupSeed(c, meta)) return;
+	const connection = await githubConnection(c, meta);
+	if (!connection) return;
+	const saved = await userActor(c, meta.uid).internalSetupCommand(project.key);
+	const { installation, repository } = await sessionRepository(app, connection, repo, "read");
+	const key = digest([meta.uid, connection.connectedAt, installation.id, repo.id, repo.branch]);
+	const commit = plan?.commit || await spareHead(key, seedOnly, () => app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read" } },
+		token => refHead(app, token, repository.owner, repository.name, repo.branch), { revokeAfter: true }));
+	const recipe = { url: app.cloneUrl(repository.owner, repository.name), connected: { repo: String(repo.id), branch: repo.branch, commit,
+		command: saved.command?.trim() ?? "", timeoutMs: config.setupTimeoutMs, generation: snapshotGeneration(String(repo.id), saved.updatedAt, connection.connectedAt) } };
+	return spareRecipe(recipe) ? recipe : undefined;
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
+	let recipe: SpareRecipe | undefined;
+	let ready = false;
 	// A setup cut off with the server is being stopped: let it finish first, or it could stop this turn's processes.
 	await c.vars.setupReap;
 	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it. A host
@@ -1307,6 +1581,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	if (handle?.ownData) meta.ownDataSandbox = handle.id;
 	if (handle) {
 		if (meta.sandbox === "paused") note(c, turn, "info", "Resuming sandbox");
+		if (handle.notice) note(c, turn, "warn", handle.notice);
 		noteSandbox(c, meta, "running");
 	} else {
 		if (meta.sandboxId) {
@@ -1318,6 +1593,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// What is known of a setup run, and of the Windlass that was asked, was the old sandbox's.
 		meta.accountSecrets = null;
 		meta.snapshotCommit = null;
+		meta.environment = null;
 		meta.setupDue = null;
 		meta.setupRunning = null;
 		meta.setupUnfinished = null;
@@ -1330,8 +1606,13 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (hostedLimitsApply(meta.place)) {
 			// The place is claimed where the sandbox is made: the hold's reserve asked for one only if the session
 			// had no sandbox then, and the one it had may have been found gone above.
-			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId);
+			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId, meta.hostedSize);
 			if (!place.ok) throw new TurnProblem("numbers" in place ? sandboxRefusal(place.numbers) : "The agent was deleted.");
+			if (applySandboxClamp(meta, place.clampedSize, text => note(c, turn, "info", text))) {
+				await persist(c);
+				// The previous sandbox disappeared, or the plan changed since the reserve. Trade its hold at the new weight.
+				await holdSandbox(c, meta, false);
+			}
 		}
 		note(c, turn, "info", "Creating sandbox");
 		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
@@ -1339,7 +1620,14 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		const vars = c.vars;
 		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;
 		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
-		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot, mirrorRepo: meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
+		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot,
+			...(allowSnapshot && meta.place.kind === "machine" && meta.repoUrl && { spareRecipe: async (ready: number) => {
+				const candidate = await readyRecipe(c, meta, secrets, plan, ready === 0);
+				// A spare may finish after an empty report. Revalidate before accepting that claim.
+				if (ready > 0) recipe = candidate;
+				return candidate;
+			} }),
+			mirrorRepo: meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1358,6 +1646,11 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		handle = await layer.sandboxes.connect(id, connectOptions(meta));
 		if (!handle) throw new TurnProblem("The new sandbox disappeared right after it was created.");
 		c.vars.startClock?.sandbox(Date.now() - making, true, handle.runnerStart);
+		// The repository's environment at this place: its image went missing (stale, build again), or it has none yet (build one).
+		if (!meta.environmentBuild && meta.repo && secrets?.snapshotSetup && canReuseSnapshot(snapshotsFor(meta.place), meta.harness, secrets.opened.length)) {
+			const kind = secrets.environment?.usable ? (plan && !handle.snapshot ? "missed" : null) : "cold";
+			if (kind) void c.keepAwake(userActor(c, meta.uid).internalEnvironmentNudge(meta.sessionId, kind).catch(() => undefined));
+		}
 		// Recorded for this sandbox from what it has, not from what the provider would make now.
 		meta.ownDataSandbox = handle.ownData ? id : null;
 		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes, id))) {
@@ -1373,9 +1666,31 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (meta.windlassSessionId && !(await privateSessionData(meta, layer.sandboxes, id))) meta.freshWorkspace = true;
 	}
 
+	if (!meta.cloned && handle.readyKey) {
+		// A replayed create (or connect after an actor restart) must agree with today's recipe too.
+		recipe ??= allowSnapshot ? await readyRecipe(c, meta, secrets, plan).catch(() => undefined) : undefined;
+		if (!recipe || digest([recipe]) !== handle.readyKey || (!handle.snapshot && recipe.connected?.command && !handle.readySetup)) {
+			await layer.sandboxes.destroy(handle.id);
+			meta.sandboxId = null;
+			await persist(c);
+			return openSandbox(c, meta, turn, signal, layer, secrets, false);
+		}
+		if (!handle.snapshot) {
+			if (meta.repo && recipe.connected) meta.repo.baseSha = recipe.connected.commit;
+			if (recipe.connected?.command && handle.readySetup) {
+				for (const item of readySetupItems(turn, recipe.connected, handle.readySetup)) append(c, item, item.at);
+			}
+			meta.cloneDirectory = ".";
+			meta.setupDue = null;
+			meta.cloned = true;
+			await persist(c);
+		}
+		ready = true;
+	}
+
 	if (!meta.cloned && handle.snapshot) {
 		// A restarted actor can find the container before it recorded the successful refresh.
-		if (!await restorePrepared(c, meta, turn, handle, plan).catch(() => false)) {
+		if (!await restorePrepared(c, meta, turn, handle, plan, secrets?.environment).catch(() => false)) {
 			await layer.sandboxes.destroy(handle.id);
 			meta.sandboxId = null;
 			meta.cloned = false;
@@ -1385,6 +1700,10 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 	}
 
+	if (ready) note(c, turn, "info", "Started from a ready sandbox.");
+	const active = c.vars.turn;
+	if (active) active.finishNetwork = await observeNetwork(c, meta, turn, handle, layer);
+
 	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
 	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
 	// What a setup run that was cut off with its server left running is not the agent's to find at work.
@@ -1392,8 +1711,6 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	// The repository's setup command, once in this sandbox, before Windlass is started in it, on the base; only then the session's branch.
 	if (meta.repo && meta.cloned && typeof meta.setupDue === "string" && !signal.aborted) {
 		await runSetup(c, meta, turn, handle, signal, secrets, plan, layer);
-		// What the setup command could not reach is said before the agent starts on it.
-		await noteBlockedHosts(c, meta, turn, handle, layer);
 	}
 	if (meta.origin?.role !== "reviewer" && meta.repo && meta.workDue && !signal.aborted) await putWorkspaceOnWork(c, meta, turn, handle);
 	if (meta.repoUrl && !meta.cloned && !signal.aborted) {
@@ -1619,6 +1936,7 @@ function busy(c: Ctx): boolean {
 function markUsed(c: Ctx, meta: SessionMeta): void {
 	if (c.vars.turn) return;
 	meta.lastUsedAt = Date.now();
+	delete meta.pauseNow;
 	armMeter(c, meta);
 	void c.keepAwake(armIdle(c, meta));
 }
@@ -1842,7 +2160,9 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
 		unopened: turn === null ? unopened : [],
+		requestedNames: sealed.requestedNames,
 		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
+		environment: project && sealed.project === project.key ? sealed.environment : undefined,
 		// Off for the whole deployment wins over the repository's choice, also for a sandbox made before it was turned off.
 		screenshots: sealed.screenshots === true && config.factory.screenshots,
 		opened: sealed.redactOnly ? [] : opened,
@@ -1930,19 +2250,23 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	const due = meta.workDue;
 	const repo = meta.repo;
 	if (!due || !repo) return;
+	const child = meta.origin?.childBranch;
+	const fresh = !meta.pushedHead && child ? child : null;
+	const branch = fresh?.name ?? due.branch;
 	let head: string;
 	try {
-		head = await putOnWork(sandbox, due.directory, due.branch);
+		head = await putOnWork(sandbox, due.directory, branch, fresh?.start);
 	} catch (error) {
-		throw new TurnProblem(`The new sandbox could not be put on ${due.branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
+		throw new TurnProblem(`The new sandbox could not be put on ${branch}, so nothing was started (${describeError(error)}). Send the prompt again.`);
 	}
 	meta.workDue = null;
-	if (due.branch !== repo.branch) meta.pushedHead = head;
+	if (child) repo.baseSha = child.start;
+	if (!fresh && branch !== repo.branch) meta.pushedHead = head;
 	c.vars.unpushed = null;
 	const base = due.setupBase ?? repo.branch;
 	// Every agent is told, in a person's session and in an item's alike (`platformNotes`).
-	if (due.setUp) meta.setupOnBase = { branch: due.branch, base };
-	note(c, turn, "info", `Put the workspace on ${due.branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
+	if (due.setUp) meta.setupOnBase = { branch, base };
+	note(c, turn, "info", `Put the workspace on ${branch} at ${head.slice(0, 7)}.${due.setUp ? ` The setup command ran on ${base} before that, so what the branch changed in its dependencies is not installed.` : ""}`);
 	await persist(c);
 }
 
@@ -2040,29 +2364,59 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	console.log(`[wlp] setup.ran session=${meta.sessionId} sandbox=${sandbox.id} project=${project.key} state=${result.state} exit=${result.exitCode ?? "none"} ms=${result.durationMs}`);
 	await persist(c);
 	if (result.cleanupPending) throw new TurnProblem("The platform could not stop leftover setup processes. Send the prompt again to retry cleanup.");
-	if (plan && original && (!plan.commit || original === plan.commit) && !signal.aborted &&
-		layer.sandboxes.saveSnapshot && canSaveSnapshot(meta.origin, handed.length, result.state === "succeeded", result.durationMs, config.snapshotMinSetupMs)) {
-		// The setup can outlive an edit or a disconnect. Do not replace the newer image with its result.
-		const [current, connection] = await Promise.all([
-			orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS),
-			githubConnection(c, meta).catch(() => null),
-		]);
-		if (!current || !connection || current.command !== plan.command ||
-			snapshotGeneration(plan.key.repo, current.updatedAt, connection.connectedAt) !== plan.key.generation) return;
-		let inputs = plan.key.inputs;
-		if (inputs === DEFERRED_INPUTS) {
-			const app = githubApp(), repo = meta.repo;
-			if (!app || !repo) return;
-			const revision = await setupRevision(app, connection, repo, original).catch(() => null);
-			if (!revision?.dependencies || revision.commit !== original || revision.defaultBranch !== repo.branch) return;
-			inputs = digest([revision.dependencies, command]);
-		}
-		const began = Date.now();
-		note(c, turn, "info", "Saving a prepared sandbox for later sessions");
-		const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: original, created: began }).catch(() => false);
-		if (saved) await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt, meta.place.kind === "hosted" ? "hosted" : meta.place.machineId).catch(() => undefined);
-		note(c, turn, "info", saved ? `Saved the prepared sandbox in ${Math.round((Date.now()-began)/1000)} seconds.` : "The prepared sandbox could not be saved.");
+	if (meta.environmentBuild) c.vars.environmentResult = await buildEnvironment(c, meta, turn, sandbox, signal, secrets, plan, layer, { result, output, original: original ?? null, command });
+}
+
+/**
+ * A build session's work after its setup ran (environments.ts): every saved check once, then the image, saved only
+ * when setup and every check passed. A failed build saves nothing, so the snapshot store keeps the last ready image.
+ * Never throws: what went wrong is the result.
+ */
+async function buildEnvironment(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null, plan: SnapshotPlan | null, layer: SandboxLayer,
+	setup: { result: Awaited<ReturnType<typeof runSetupCommand>>; output: string; original: string | null; command: string }): Promise<EnvironmentBuildResult> {
+	const commit = setup.original ?? meta.repo?.baseSha ?? "";
+	const base: EnvironmentBuildResult = { finishedAt: null, commit: /^[a-f0-9]{40}$/.test(commit) ? commit : "", image: sandbox.image ?? "", checks: [], failure: null, snapshot: false };
+	if (setup.result.state !== "succeeded") {
+		const how = setup.result.state === "timed_out" ? "ran out of time" : setup.result.exitCode !== null ? `exited with ${setup.result.exitCode}` : "did not finish";
+		return { ...base, finishedAt: Date.now(), failure: { kind: "setup", check: null, line: `The setup command ${how}.`, excerpt: outputExcerpt(setup.output) } };
 	}
+	const checks = secrets?.checks ?? [];
+	// Files the checks write (build outputs, caches the repository ignores) stay; tracked files they change go back.
+	const clean = (await sandbox.run("git status --porcelain", { cwd: sandbox.cwd, timeoutMs: 60_000, signal }).catch(() => null))?.stdout.trim() === "";
+	note(c, turn, "info", checks.length ? `Validating: running ${checks.length === 1 ? "the saved check" : `the ${checks.length} saved checks`}.` : "No checks are saved, so the environment is validated by its setup alone.");
+	const ran = await new PlatformChecks(sandbox, checks, () => undefined, { agent: "the build", redactor: secrets?.redactor, signal }).runAll();
+	const judged = judgeChecks(ran);
+	for (const r of judged.checks) note(c, turn, r.status === "passed" ? "info" : "warn", `${r.name}: ${r.status.replace("_", " ")}${r.environment ? ` (the sandbox could not run it: ${r.environment.replace("_", " ")})` : ""}.`);
+	const done = { ...base, checks: judged.checks, ...(judged.codeFailures.length && { codeFailures: judged.codeFailures }) };
+	if (signal.aborted) return { ...done, finishedAt: Date.now(), failure: { kind: "setup", check: null, line: "The build was stopped.", excerpt: "" } };
+	if (judged.failure) return { ...done, finishedAt: Date.now(), failure: judged.failure };
+	if (clean) await sandbox.run("git reset -q --hard HEAD && git clean -fdq", { cwd: sandbox.cwd, timeoutMs: 120_000, signal }).catch(() => undefined);
+	// A quick setup is validated, and keeps no image: starting cold costs little more than starting from one.
+	if (setup.result.durationMs < config.snapshotMinSetupMs) return { ...done, finishedAt: Date.now() };
+	const saveFailed = (line: string): EnvironmentBuildResult => ({ ...done, finishedAt: Date.now(), failure: { kind: "save", check: null, line, excerpt: "" } });
+	if (!plan || !setup.original || !layer.sandboxes.saveSnapshot || (plan.commit && setup.original !== plan.commit)) return saveFailed("This place cannot keep a prepared sandbox of this repository.");
+	const project = setupProjectOf(meta);
+	const [current, connection] = await Promise.all([
+		project ? orNull(userActor(c, meta.uid).internalSetupCommand(project.key), RECALL_WAIT_MS) : null,
+		githubConnection(c, meta).catch(() => null),
+	]);
+	// The setup was changed, or GitHub reconnected, while it ran: what it made is not the current one's.
+	if (!project || !current || !connection || current.command !== plan.command || snapshotGeneration(plan.key.repo, current.updatedAt, connection.connectedAt) !== plan.key.generation)
+		return saveFailed("The setup command or the GitHub connection changed while it ran.");
+	let inputs = plan.key.inputs;
+	if (inputs === DEFERRED_INPUTS) {
+		const app = githubApp(), repo = meta.repo;
+		const revision = app && repo ? await setupRevision(app, connection, repo, setup.original).catch(() => null) : null;
+		if (!revision?.dependencies || revision.commit !== setup.original || revision.defaultBranch !== repo?.branch) return saveFailed("The repository has no lockfile the platform can key a prepared sandbox on.");
+		inputs = digest([revision.dependencies, setup.command]);
+	}
+	const began = Date.now();
+	note(c, turn, "info", judged.codeFailures.length ? `The sandbox ran every check; ${judged.codeFailures.join(", ")} failed on the base commit's code. Saving the prepared sandbox.` : "Every check passed. Saving the prepared sandbox.");
+	const saved = await layer.sandboxes.saveSnapshot(sandbox.id, { ...plan.key, inputs, commit: setup.original, created: began }).catch(() => false);
+	if (!saved) return saveFailed("The prepared sandbox could not be saved here: the place's storage limits, or its free disk, left no room.");
+	await userActor(c, meta.uid).internalSnapshotSaved(project.key, plan.updatedAt, connection.connectedAt, meta.place.kind === "hosted" ? "hosted" : meta.place.machineId).catch(() => undefined);
+	note(c, turn, "info", `Saved the prepared sandbox in ${Math.round((Date.now() - began) / 1000)} seconds.`);
+	return { ...done, finishedAt: Date.now(), snapshot: true };
 }
 
 /** Shortens `text` to about `limit` characters, at the end of a paragraph or a sentence where there is one. */
@@ -2204,7 +2558,7 @@ const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pul
  * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
  * everything itself (`agentPush`), and then an open pull request is only described again.
  */
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork, updateFromBase?: { head: string; at: number }): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -2225,14 +2579,15 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
-		if (branchOnly) {
+		if (branchOnly || updateFromBase) {
 			const evidence = await evidenceOf(c, meta, null);
-			const pushed = await pushWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact }, message.title);
-			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked child commit.", { code: "publish_failed" });
+			const input = { app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact };
+			const pushed = updateFromBase ? await updateBranchFromBase(input, updateFromBase) : await pushWork(input, message.title);
+			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked item commit.", { code: "publish_failed" });
 			recordPushHead(meta, sandbox, pushed.head);
 			return { state: await afterPublish(c, meta, sandbox), opened: false };
 		}
-		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
+		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, blockedNetwork, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
 		meta.updatedAt = Date.now();
@@ -2369,27 +2724,34 @@ function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: Tu
 		choices,
 		subagent: typeof question.subagent === "string" && question.subagent !== "" ? question.subagent : null,
 		askedAt: now,
-		expiresAt: now + config.questionTimeoutMs,
+		expiresAt: now + questionWait(meta),
 	};
 	return new Promise<TurnAnswer>((resolve, reject) => {
 		const settled = (): void => {
 			withdrawn.removeEventListener("abort", onWithdrawn);
 			active.unsettled.delete(asked);
 		};
+		const wait = questionWait(meta);
 		const asked: Asked = {
 			pending,
 			timer: setTimeout(() => {
 				// Nobody answered: the turn must not wait for ever, and the model should know why it was refused.
 				if (active.question !== asked) return;
 				takeQuestion(c, meta, active);
-				note(c, active.number, "warn", `Nobody answered "${pending.title}" within ${duration(config.questionTimeoutMs)}, so it was declined.`, {
+				// A hosted sandbox runs, and costs, while it waits: the turn ends, and the sandbox pauses at once (`pauseNow`).
+				const hosted = hostedLimitsApply(meta.place);
+				note(c, active.number, "warn", hosted
+					? `Nobody answered "${pending.title}" within ${duration(wait)}, so the turn was ended and its sandbox paused. Send a prompt to go on.`
+					: `Nobody answered "${pending.title}" within ${duration(wait)}, so it was declined.`, {
 					code: "question_expired",
 					call: { messageId: pending.messageId, callId: pending.callId },
 				});
+				if (hosted) meta.pauseNow = true;
 				publish(c);
 				void persist(c);
-				asked.decline(`Nobody answered within ${duration(config.questionTimeoutMs)}, so the platform declined this call for the user.`);
-			}, config.questionTimeoutMs),
+				asked.decline(`Nobody answered within ${duration(wait)}, so the platform declined this call for the user.`);
+				if (hosted) abortTurn(c, meta, active);
+			}, wait),
 			answer: (answer) => {
 				settled();
 				resolve(answer);
@@ -2894,6 +3256,11 @@ async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, san
 	}
 }
 
+/** How long a turn's question waits for its answer: shorter in a hosted sandbox, which runs while it waits. */
+function questionWait(meta: SessionMeta): number {
+	return hostedLimitsApply(meta.place) ? config.hostedQuestionTimeoutMs : config.questionTimeoutMs;
+}
+
 /** Stops the turn. The question it may be waiting on goes first: nobody can answer a turn that is ending. */
 function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
 	active.stopping = true;
@@ -2989,7 +3356,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
+			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, hostedSize: meta.hostedSize ?? "small", keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
@@ -3005,6 +3372,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	meta.meterAsked = null;
 	void persist(c);
 	if (answer.ok) {
+		applySandboxClamp(meta, answer.clampedSize, text => note(c, c.vars.turn?.number ?? 0, "info", text));
 		// A renewal goes on with the use the hold was for; anything that starts takes a use of its own.
 		const use = !fresh && open ? open.use : answer.hold.id;
 		meta.meter = { hold: answer.hold.id, since: now, seconds: answer.hold.seconds, use, ...(open?.seen ? { seen: open.seen } : {}) };
@@ -3352,7 +3720,7 @@ function removedWhenIdle(meta: SessionMeta): boolean {
 /** When the sandbox is next due: to be suspended while it runs, to be removed while it exists. Null when there is none. */
 function idleDue(meta: SessionMeta): number | null {
 	if (!meta.sandboxId) return null;
-	if (meta.sandbox === "running") return meta.lastUsedAt + config.idleSuspendMs;
+	if (meta.sandbox === "running") return meta.lastUsedAt + (meta.pauseNow ? 0 : config.idleSuspendMs);
 	return removedWhenIdle(meta) ? meta.lastUsedAt + config.idleDestroyMs : null;
 }
 
@@ -3403,7 +3771,9 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 	const since = meta.lastUsedAt;
 	const now = Date.now();
 	const remove = id !== null && removedWhenIdle(meta) && now >= since + config.idleDestroyMs;
-	const suspend = id !== null && !remove && meta.sandbox === "running" && now >= since + config.idleSuspendMs;
+	const pauseNow = meta.pauseNow === true;
+delete meta.pauseNow;
+const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNow || now >= since + config.idleSuspendMs);
 	let retry = 0;
 	if (id && (remove || suspend)) {
 		// Set in the same step as the checks above: from here a prompt waits for it.
@@ -3421,7 +3791,7 @@ async function idleCheck(c: Ctx, meta: SessionMeta): Promise<void> {
 					console.log(`[wlp] sandbox.idle_suspended id=${id} session=${meta.sessionId}`);
 					meta.sandbox = "paused";
 					const use = useOf(meta);
-					note(c, meta.turns, "info", `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
+					note(c, meta.turns, "info", pauseNow ? "Paused the sandbox: its turn ended on a question nobody answered. The next prompt resumes it." : `Suspended the sandbox after ${duration(config.idleSuspendMs)} without use; the next prompt resumes it.`);
 					await closeMeter(c, meta, "now", use);
 				} else {
 					// Paused by a sleep, or gone: nothing to suspend, and nothing to say.
@@ -3493,11 +3863,19 @@ function itemPrompt(row: InboxRow): string {
 /** Runs one accepted turn to its `turn.ended`. `release` gives back the sandbox its acceptance took (`takeSandbox`). Never rejects. */
 async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void): Promise<void> {
 	const machine = meta.place.kind === "machine" ? machineActor(() => c.client(), meta.uid, meta.place.machineId) : null;
+	// A turn that can be resumed keeps its wake from the start, while its sandbox is still being had as well.
+	if (meta.run?.turn === active.number) heartbeat(c, true);
 	try {
 		await executeTurn(c, meta, active, text, release, machine);
 	} finally {
 		if (machine) await machine.releaseSlot(meta.sessionId, active.number).catch(error =>
 			c.log.warn({ msg: "could not release machine turn slot", error: describeError(error) }));
+		// A build reports once its turn has closed: the user's actor deletes the session on it.
+		if (meta.environmentBuild) {
+			const result = c.vars.environmentResult ?? { finishedAt: Date.now(), commit: "", image: "", checks: [], snapshot: false, failure: { kind: "setup" as const, check: null, line: "The build could not start its sandbox.", excerpt: "" } };
+			void c.keepAwake(userActor(c, meta.uid).internalEnvironmentResult(meta.sessionId, result).catch(error =>
+				c.log.warn({ msg: "could not report the environment build", error: describeError(error) })));
+		}
 	}
 }
 
@@ -3512,6 +3890,40 @@ function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | nu
 	});
 }
 
+async function resizeOptions(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<HostedSize[]> {
+	if (meta.place.kind === "hosted" && billing()) return userActor(c, meta.uid).internalHostedSizes();
+	return layer.sandboxes.sizes?.().map(size => size.id) ?? [];
+}
+
+function withLarger(memory: OutOfMemory, offered: HostedSize[]): OutOfMemory {
+	return { ...memory, larger: largerHostedSize(memory.size ?? "large", offered) ?? undefined };
+}
+
+/** Compare the sandbox's own kill counts over the turn. A silent E2B guest can also be diagnosed from its provider's samples. */
+export async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, start: { oomKills: number; totalMiB: number } | null, began: number, turn: number): Promise<void> {
+	if (!start) return;
+	try {
+		const end = await sandbox.memoryEvents?.().catch(() => null);
+		const killed = end ? end.oomKills - start.oomKills : 0;
+		if (end && killed <= 0) return;
+		const peak = (await sandbox.memoryPeak?.(began).catch(() => null)) ?? null;
+		if (peak === null && !end) return;
+		const hosted = meta.place.kind === "hosted";
+		const memory: OutOfMemory = peak ?? { usedMiB: end!.totalMiB, totalMiB: end!.totalMiB, ...(hosted && meta.hostedSize && { size: meta.hostedSize }) };
+		const layer = hosted ? await layerOf(c, meta) : null;
+		const offered = layer ? await resizeOptions(c, meta, layer) : undefined;
+		const what = end ? ` Its kernel stopped ${killed === 1 ? "a program" : `${killed} programs`} to free memory during this turn: a command that ended with "Killed" or exit code 137 was one of them.` : " It stopped answering commands.";
+		note(c, turn, "warn", `${outOfMemoryWords(memory, offered, meta.place.kind)}${what}`);
+		const allocation = hosted ? `size=${meta.hostedSize ?? "small"} used=${memory.usedMiB}` : "place=machine";
+		console.log(`[wlp] sandbox.out_of_memory session=${meta.sessionId} turn=${turn} ${allocation} total=${memory.totalMiB} killed=${killed}`);
+		if (active.item) active.item.outOfMemory = offered ? withLarger(memory, offered) : memory;
+		// Its next connect finds it silent and restarts it: the item has been told of this sandbox's memory already.
+		meta.memoryNoted = sandbox.id;
+	} catch (error) {
+		c.log.warn({ msg: "could not read the sandbox's memory at the turn's end", error: String(error) });
+	}
+}
+
 async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void, machine: ReturnType<typeof machineActor> | null): Promise<void> {
 	const startedAt = Date.now();
 	const turn = active.number;
@@ -3523,8 +3935,15 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
-	const untrusted = active.item?.row.untrusted ?? [];
-	const handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+	let untrusted = active.item?.row.untrusted ?? [];
+	let outsideText = untrusted.length > 0 || !!active.item?.row.fresh?.untrusted.length;
+	let handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+	/** Refuses the turn on "Docker, hardened" for someone else's text in `retryText`; the item asks, and can run it anyway. */
+	const refuseUntrusted = (item: NonNullable<ActiveTurn["item"]>, stop: Extract<typeof handling, { kind: "stop" }>, retryText: string): never => {
+		item.refused = stop.reason;
+		item.untrustedRefusal = { sources: stop.sources, retry: { text: retryText, fetchBase: item.row.fetchBase, untrusted } };
+		throw new TurnProblem(stop.reason);
+	};
 	const unmarked = (text: string) => {
 		if (meta.untrustedUnmarkedNoted) return;
 		meta.untrustedUnmarkedNoted = true;
@@ -3532,6 +3951,20 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		void persist(c);
 	};
 	const signal = active.controller.signal;
+	/** The turn's own record (WLP_TURN_RESUME): its segments, its limit across pauses, and what pausing it needs. */
+	const run = meta.run?.turn === turn ? meta.run : null;
+	/** The runner conversation's losses when the agent started (`ServerChannel.losses`): more at its end, and the machine went away mid-turn. */
+	let lossesAtStart: number | null = null;
+	let agentStarted = false;
+	let thrown: unknown = null;
+	/** What a resumed turn's agent is given instead of its "carry on" should its saved session be gone after all. */
+	let fresh: RunTurnInput["fresh"];
+	/** Told the first time the agent says anything: from then on a resume continues its conversation of this turn. */
+	const prompted = () => {
+		if (!run || run.prompted) return;
+		run.prompted = true;
+		void persist(c);
+	};
 	let resumed = meta.windlassSessionId;
 	let layer: SandboxLayer | null = null;
 	let result: RunTurnResult | null = null;
@@ -3562,6 +3995,13 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let events = 0;
 	let open = true;
 	let used: SandboxHandle | null = null;
+	/** While `openSandbox` runs: an error then is the sandbox's, not the agent's (`sandboxFailed`). */
+	let opening = false;
+	/** When the turn's limit stops it, ms since the epoch: set when its clock starts. */
+	let turnEndsAt = Date.now() + TURN_TIMEOUT_MS;
+	/** `TurnSandbox.memoryEvents` when the sandbox was opened. */
+	let memoryAtStart: { oomKills: number; totalMiB: number } | null = null;
+	const turnBegan = Date.now();
 	/** The meter's use when the turn ended (`meterAfterTurn`). */
 	let meterUse: string | null = null;
 	/** A request of the agent's to publish or push, kept until it is handled: the turn does not close under it. */
@@ -3596,11 +4036,20 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			}
 		}
 		clock = c.vars.startClock = startClock(c, meta, turn, machine ? Date.now() - waiting : null);
+		// A resumed turn has what is left of its limit, never less than the floor: the time it was paused does not count.
+		const limitMs = segmentLimit(TURN_TIMEOUT_MS, config.turnResume.floorMs, run);
+		if (run) {
+			run.segmentAt = Date.now();
+			heartbeat(c, true);
+		}
+		// The deadline the sandbox is told (the turn-deadline hook) is this segment's: what is left, with the floor.
+		turnEndsAt = Date.now() + limitMs;
 		limit = setTimeout(() => {
 			if (!open) return;
-			note(c, turn, "warn", `This turn ran for ${duration(TURN_TIMEOUT_MS)}, which is the limit, so it was stopped.`);
+			const ran = run && run.resumes > 0 ? `This turn ran for ${duration(run.activeMs + limitMs)}, not counting the time it was paused; the limit is ${duration(TURN_TIMEOUT_MS)}, so it was stopped.` : `This turn ran for ${duration(TURN_TIMEOUT_MS)}, which is the limit, so it was stopped.`;
+			note(c, turn, "warn", ran);
 			abortTurn(c, meta, active);
-		}, TURN_TIMEOUT_MS);
+		}, limitMs);
 
 		layer = await layerOf(c, meta);
 		if (reviewer && meta.harness && meta.harness !== "windlass") throw new TurnProblem("A work item's reviewer runs only with Windlass.");
@@ -3617,19 +4066,32 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
 		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
-		if (active.item && handling.kind === "stop") {
-			const { reason, sources: outside } = handling;
-			const { text: retryText, fetchBase } = active.item.row;
-			active.item.refused = reason;
-			active.item.untrustedRefusal = { sources: outside, retry: { text: retryText, fetchBase, untrusted } };
-			throw new TurnProblem(reason);
-		}
+		if (active.item && handling.kind === "stop") refuseUntrusted(active.item, handling, active.item.row.text);
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
+		opening = true;
 		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
+		opening = false;
 		clock.opened();
+		// A build's turn ends here: it starts no agent (`buildEnvironment` ran in the setup).
+		if (meta.environmentBuild) {
+			c.vars.environmentResult ??= { finishedAt: Date.now(), commit: "", image: sandbox.image ?? "", checks: [], snapshot: false,
+				failure: { kind: meta.cloned ? "setup" : "clone", check: null, line: meta.cloned ? "The setup command did not run." : "The repository could not be cloned.", excerpt: "" } };
+			throw new TurnProblem("The environment build ended.");
+		}
 		used = sandbox;
+		// The sandbox’s own kill count, to compare at the end of the turn.
+		memoryAtStart = (await sandbox.memoryEvents?.().catch(() => null)) ?? null;
+		// A resumed turn in the same sandbox measures from where its first segment there began: a pause is no fresh start.
+		if (run?.memory?.sandboxId === sandbox.id) memoryAtStart = { oomKills: run.memory.oomKills, totalMiB: run.memory.totalMiB };
+		else if (run && memoryAtStart) run.memory = { sandboxId: sandbox.id, ...memoryAtStart };
+		if (sandbox.outOfMemory && active.item && meta.memoryNoted !== sandbox.id) {
+			// It had run out of memory before this turn, and was restarted: in the same size the same commands run it out again,
+			// so a work item asks its person first, where a larger size is offered. A person's own agent goes on: they read the note.
+			active.item.outOfMemory = withLarger(sandbox.outOfMemory, await resizeOptions(c, meta, layer));
+			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
+		}
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
 		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
 			c.log.warn({ msg: "Provider login generation unavailable for this turn" });
@@ -3646,8 +4108,47 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
+		// Windlass freezes model-visible tools at the first prompt. Resuming the planner does not
+		// add report to that baseline. Switch conversations at the summary boundary, retaining the workspace
+		// and the platform timeline. A retry or paused segment of that summary can resume its own.
+		const summary = active.item?.row.agent === "summary";
+		if (summary !== !!meta.summaryConversation) {
+			meta.windlassSessionId = null;
+			meta.summaryConversation = summary || undefined;
+		}
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
+		// A turn that resumes after a pause: its agent goes on with a short "carry on" when it has its conversation of the turn,
+		// and is given the whole task when it has not (a new sandbox, a memory that was lost); also when the saved session turns
+		// out to be gone only once the agent is asked for it (`fresh`). The whole task's sources go by the same rule as any turn's.
+		if (active.resume && run?.prompted) {
+			const whole = await wholeTask(c, meta, active, turn);
+			outsideText ||= whole.untrusted.length > 0;
+			const wholeHandling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted: whole.untrusted, unsandboxed: whole.unsandboxed });
+			if (resumed) {
+				untrusted = [];
+				handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
+				if (wholeHandling.kind !== "stop") fresh = { prompt: whole.text, ...(wholeHandling.kind === "marked" && { untrusted: wholeHandling.sources }) };
+			} else {
+				text = whole.text;
+				untrusted = whole.untrusted;
+				handling = wholeHandling;
+				if (active.item && handling.kind === "stop") refuseUntrusted(active.item, handling, whole.text);
+				note(c, turn, "info", "The agent no longer has its earlier conversation of this turn, so it was given the whole task again.");
+			}
+		} else if (active.item) {
+			// A step that goes on, in an agent that has no conversation of it (a new sandbox, a memory that was lost): "continue
+			// from where you were" would mean nothing to it, so it is given the step's whole task instead.
+			const chosen = itemTurnText(active.item.row, text, resumed);
+			if (chosen.fresh) {
+				// The whole task's sources are its own (a GitHub issue's text), and go by the same rule as any turn's.
+				text = chosen.text;
+				untrusted = chosen.untrusted;
+				handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: chosen.unsandboxed });
+				if (handling.kind === "stop") refuseUntrusted(active.item, handling, chosen.text);
+				note(c, turn, "info", "The agent no longer has its earlier conversation of this step, so it was given the whole task again.");
+			}
+		}
 		if (!signal.aborted && meta.status === "starting") {
 			meta.status = "running";
 			publish(c);
@@ -3657,9 +4158,15 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
+			// A machine turn whose conversation is kept: what it would need to be taken up after a restart, read with each timeline write.
+			...(c.vars.runner?.durable && {
+				onCheckpoint: (read: () => TurnCheckpoint | null) => { if (open) active.checkpoint = read; },
+				...(active.reattach && { reattach: active.reattach }),
+			}),
 			onStartMark: (point, ms) => clock?.mark(point, ms),
 			onAcpUpdate: update => {
 				if (!open) return;
+				prompted();
 				if (update.sessionUpdate === "usage_update" && update.rateLimit) recordLimit(update.rateLimit);
 				if (caps.events === "acp") acpTimeline.update(update);
 				const title = generatedSessionTitle(update, { typed: meta.titleIsTyped, item: meta.origin }, active.secrets?.redactor);
@@ -3701,11 +4208,55 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
 			return tracked(filings);
 		} : undefined;
+		meta.secretRequestBlocked = outsideText || ((!!resumed || !!active.resume) && !!meta.secretRequestBlocked);
+		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret") ? async (request, withdrawn) => {
+			const refuse = async (message: string) => {
+				const scope = item ? item.row.key.split(":").slice(0, 2).join(":") : "session";
+				if (meta.secretRefusalRun !== scope) {
+					meta.secretRefusalRun = scope;
+					note(c, turn, "warn", "A secret request was refused.");
+					await persist(c);
+				}
+				return message;
+			};
+			const validate = () => requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, held.redactor);
+			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+			const taken = validate();
+			const name = taken.request?.name ?? "";
+			let problem: string | null;
+			try {
+				if (item) {
+					problem = await itemActor(c, meta.uid, item.row.itemId).internalSecretRequestLimit(item.row.key, name);
+				} else {
+					const attempts = meta.secretAsks ?? 0;
+					problem = secretRequestLimit(name, attempts, meta.declinedSecrets ?? [], "session");
+					if (attempts < MAX_SECRET_REQUESTS) {
+						meta.secretAsks = attempts + 1;
+						await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
+					}
+				}
+				if (!problem && !taken.request) problem = taken.told;
+				if (!problem) problem = await secretsActor(c, meta.uid, meta.sessionId).internalRequestedSecretConflict(meta.sessionId, name);
+			} catch {
+				problem = "The platform could not check this secret request. Try again.";
+			}
+			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+			if (problem) return refuse(problem);
+			// Another tool call or a third-party event may have landed during the lookups.
+			const current = validate();
+			if (!current.request) return refuse(current.told);
+			const notice = secretRequestNotice(caps.events === "acp", !setupProjectOf(meta));
+			const secretRequest = { ...current.request, notice, id: String(turn) };
+			meta.secretRequest = secretRequest;
+			append(c, { turn, kind: "platform", level: "info", text: `A secret was requested for ${name}.\n${notice}`, secretRequest });
+			await persist(c);
+			return current.told;
+		} : undefined;
 		// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
 		// and only on a delivery that says how many the run has left.
 		const onAsk: RunTurnInput["onAsk"] = item && !planner && !reviewer && typeof item.row.asksLeft === "number" && platformTool("ask_person") ? (request, withdrawn) => {
 			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
-			const taken = askPerson(request.arguments, { already: !!item.asked, left: item.row.asksLeft ?? 0 }, held.redactor);
+			const taken = askPerson(request.arguments, { already: !!item.asked || !!meta.secretRequest, left: item.row.asksLeft ?? 0 }, held.redactor);
 			if (taken.asked) item.asked = taken.asked;
 			note(c, turn, taken.asked ? "info" : "warn", taken.said);
 			return taken.told;
@@ -3716,24 +4267,32 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const repoTools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 		const onPush: RunTurnInput["onPush"] = repoTools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined;
 		const onFetchBase: RunTurnInput["onFetchBase"] = repoTools && platformTool("fetch_base") ? (request) => agentFetchBase(c, meta, active, sandbox, request) : undefined;
+		lossesAtStart = c.vars.runner?.channel.losses ?? null;
+		agentStarted = true;
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
 				...common,
 				prompt: notes.text + text,
+				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 				...(item && { unattended: true }),
 				onReport,
 				onAsk,
+				onRequestSecret,
 				// Over MCP a publish is always put to the person, never "for this session": any process in the container may have asked.
 				onPublish: repoTools && !item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, "none", request, withdrawn)) : undefined,
 				onPush,
 				onFetchBase,
-				secrets: { env: {}, withholdEnv: [], passEnv: [], redactor: held.redactor },
+				secrets: { env: Object.fromEntries((meta.repo ? held.opened : held.account)
+					.filter(s => s.scope === "agent" && held.requestedNames?.includes(s.name)).map(s => [s.name, s.value])),
+					withholdEnv: [], passEnv: [], redactor: held.redactor },
 				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
 				// and records them as Windlass's gate would be; and the step limit, which the platform counts (platform-steps.ts).
 				checks: planner || reviewer ? [] : held.checks,
+				forceChecks: item?.row.agent === "run_checks",
 				onChecks: (event, said) => {
+					if (event.type === "synthetic.appended" && event.data?.origin === "check_report") meta.secretRequestBlocked = true;
 					active.checks.note(event);
 					if (open && said) note(c, turn, said.level, said.text);
 				},
@@ -3838,8 +4397,11 @@ fi`, { signal, timeoutMs: 5000 });
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
 				},
 				prompt: notes.text + text,
+				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
-				...(handling.kind === "marked" && { untrusted: handling.sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(handling.sources)); } }),
+				// A command's timeout is held to what is left of the turn (windlass-config.ts `TURN_TIME_HOOK`).
+				endsAt: turnEndsAt,
+				...(handling.kind === "marked" && ((sources) => ({ untrusted: sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(sources)); } }))(handling.sources)),
 				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
 				...(item && { unaskedUntilTainted: true }),
 				reportScreenshots: browser,
@@ -3878,10 +4440,12 @@ fi`, { signal, timeoutMs: 5000 });
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
 				onReport,
 				onAsk,
+				onRequestSecret,
 				script: meta.demo ? layer.windlass.demoScript(text, turn) : undefined,
 				onEvent: (event) => {
 					if (!open) return;
 					events += 1;
+					prompted();
 					try {
 						// Windlass echoes the submitted brief in this event. Keep its receipt, with the same short text as the user row.
 						if (storedBrief !== null && event.type === "inbox.enqueued" && event.data?.origin === null) {
@@ -3932,6 +4496,7 @@ fi`, { signal, timeoutMs: 5000 });
 			if (events > 0) notes.told();
 		}
 	} catch (error) {
+		thrown = error;
 		const failure = checkout && meta.repo && error instanceof GithubError ? problemOf(error, meta.repo.owner, meta.repo.name) : error;
 		if (checkout && active.item && !signal.aborted && (failure instanceof ReviewRefused || (failure instanceof GithubProblem && (failure.code === "github_denied" || failure.code === "github_gone")))) {
 			const reason = active.secrets?.redactor.text(failure.message) ?? failure.message;
@@ -3943,10 +4508,14 @@ fi`, { signal, timeoutMs: 5000 });
 			// An error's text is the sandbox's or the provider's: the repository's saved values are taken out of it before it is logged or shown.
 			const clean = (text: string) => active.secrets?.redactor.text(text) ?? text;
 			problem = clean(error instanceof TurnProblem || isSandboxUserError(error) ? error.message : `The sandbox failed: ${describeError(error)}`);
+			// The sandbox could not be prepared (connect, resume, its network, a clone): the agent never ran. A deployment that
+			// is full or a machine away have their own handling above; a turn the session refused is no sandbox's fault.
+			if (active.item && opening && !active.item.refused && !(error instanceof TurnProblem) && !(error instanceof DeploymentFull) && !(error instanceof MachineUnreachable)) active.item.sandboxFailed = clean(isSandboxUserError(error) ? error.message : describeError(error));
 			if (error instanceof TurnProblem) c.log.warn({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error.message) });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
 	}
+	await active.finishNetwork?.();
 	// A turn that ended before its agent's first output keeps what it measured.
 	clock?.finish();
 	if (c.vars.startClock === clock) c.vars.startClock = null;
@@ -3957,23 +4526,45 @@ fi`, { signal, timeoutMs: 5000 });
 	sealTurn(c, meta, active);
 	// A push for the agent that was under way when the turn ended is finished first: the turn does not close under it.
 	if (active.publishes.size > 0) await Promise.allSettled([...active.publishes]);
+	// The machine went away under the turn (its conversation was lost, or it could not be had for a resume): the turn pauses
+	// until it is back instead of ending. Not when the turn was stopped meanwhile, by its person or its limit.
+	const lostLink = (lossesAtStart !== null && (c.vars.runner?.channel.losses ?? 0) > lossesAtStart)
+		|| ((agentStarted || active.resume !== undefined || active.item?.started === true) && (thrown instanceof ConversationLost || (thrown instanceof MachineUnreachable && thrown.reason === "offline")));
+	if (run && meta.place.kind === "machine" && !signal.aborted && lostLink) active.pausing ??= "machine";
+	// A turn that ended by itself just as the server went away has ended: only one that was cut short pauses.
+	const ownEnd = !!result && !result.aborted && (capabilitiesOf(meta.harness).events === "acp" ? !!result.acp?.stopReason && result.acp.stopReason !== "cancelled" : !!result.summary && result.summary.outcome !== "interrupted");
+	const pausing = !!active.pausing && !!run && meta.run === run && !c.vars.destroying && !active.item?.withdrawn && !active.outOfTime && (active.pausing === "machine" || !ownEnd);
+	// The sandbox's memory is read at the turn's end, not at a pause: a server going away, or a machine away, is no guest that
+	// stopped answering. The resumed segment compares with the same start (`TurnRun.memory`).
+	if (!pausing && used && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
+	if (pausing && active.pausing && run) {
+		try {
+			await pauseTurn(c, meta, active, active.pausing, usageOf(result?.summary?.usage) ?? result?.acp?.tokens ?? null, result);
+		} catch (error) {
+			c.log.error({ msg: "could not pause the turn", error: describeError(error) });
+		}
+		release();
+		return;
+	}
+	heartbeat(c, false);
 
 	try {
 		const caps = capabilitiesOf(meta.harness);
 		const summary = result?.summary ?? null;
-		// Windlass's summary event, or what an ACP agent answered its prompt with.
-		const usage = usageOf(summary?.usage) ?? result?.acp?.tokens ?? null;
+		// Windlass's summary event, or what an ACP agent answered its prompt with; with what the turn's earlier segments used.
+		const usage = addUsage(run?.usage ?? null, usageOf(summary?.usage) ?? result?.acp?.tokens ?? null);
 		// Settle all reported requests before this turn's completion can admit more work.
 		if (usesPlatformModel(meta.place, meta.harness)) {
 			await serial(c, () => writeItems(c));
 			await sendOutbox(c, meta.uid);
 		}
 		let outcome: TurnOutcome;
+		let stepLimit: number | undefined;
 		let message: string | null = null;
 		if (caps.events === "acp") {
 			const reason = result?.acp?.stopReason;
 			if (result?.acp && result.windlassSessionId) meta.harnessModels = result.acp.models;
-			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, "warn", `${harnessName(meta.harness)} could not continue the conversation; the files are as they were.`);
+			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, fresh ? "info" : "warn", fresh ? `${harnessName(meta.harness)} could not continue its saved conversation, so it was given the whole task again.` : `${harnessName(meta.harness)} could not continue the conversation; the files are as they were.`);
 			if (result?.failure || problem) {
 				outcome = "error";
 				message = result?.failure?.message ?? problem;
@@ -3982,7 +4573,8 @@ fi`, { signal, timeoutMs: 5000 });
 			} else if (result?.acp?.stepLimit !== undefined && !result.aborted && !signal.aborted) {
 				// The platform stopped the turn at its step limit (platform-steps.ts), as Windlass stops at its own.
 				outcome = "unresolved";
-				note(c, turn, "warn", stepLimitNote(harnessName(meta.harness), result.acp.stepLimit));
+				stepLimit = result.acp.stepLimit;
+				note(c, turn, "warn", stepLimitNote(harnessName(meta.harness), stepLimit));
 			} else if (reason === "cancelled" || result?.aborted || signal.aborted) outcome = "stopped";
 			// Checks the platform ran still failed, or could not start: the turn ends as Windlass's does then.
 			else if (reason === "end_turn") outcome = result?.acp?.checks === "unresolved" ? "unresolved" : "succeeded";
@@ -4013,6 +4605,7 @@ fi`, { signal, timeoutMs: 5000 });
 			} else if (reported !== undefined && WINDLASS_OUTCOMES.includes(reported)) {
 				// Windlass's own outcome stands. If the turn failed, its events in the timeline say how.
 				outcome = reported;
+				if (typeof summary?.stepLimit === "number") stepLimit = summary.stepLimit;
 				// Unless the platform failed it: the turn's access token ran out and could not be replaced. Windlass's
 				// events say that in words meant for whoever hands the token in; the sandbox layer's sentence is for the user.
 				if (failure?.reason === "token_unavailable" && said) message = said;
@@ -4063,8 +4656,6 @@ fi`, { signal, timeoutMs: 5000 });
 		if (used) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
 			const saving = caps.backups && result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
-			// What the turn's commands could not reach, named before the turn is reported as ended.
-			if (layer && !c.vars.stopping && !c.vars.destroying) await noteBlockedHosts(c, meta, turn, used, layer);
 			const copied = reviewer || c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
 			if (!copied) await dropWorkspace(c);
 			await saving;
@@ -4083,9 +4674,11 @@ fi`, { signal, timeoutMs: 5000 });
 			outcome,
 			exitCode: result?.exitCode ?? null,
 			steps: typeof summary?.steps === "number" ? summary.steps : typeof result?.acp?.steps === "number" ? result.acp.steps : null,
-			durationMs: typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
+			// A turn that was paused ran in segments: their running time, without the pauses.
+			durationMs: run && run.resumes > 0 ? run.activeMs + (Date.now() - run.segmentAt) : typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
 			usage,
 			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),
+			...(caps.events === "acp" && meta.windlassSessionId ? { sessionId: meta.windlassSessionId } : {}),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
 			message,
 			verified,
@@ -4108,6 +4701,7 @@ fi`, { signal, timeoutMs: 5000 });
 		meta.updatedAt = Date.now();
 		meta.lastUsedAt = meta.updatedAt;
 		meta.turnStartedAt = null;
+		meta.run = null;
 		// In the step that lets the next prompt in: what this turn leaves to settle is the hold it has now.
 		meterUse = useOf(meta);
 		c.vars.closingItem = active.item?.row.key;
@@ -4119,7 +4713,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
-		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, stepLimit, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -4128,6 +4722,7 @@ fi`, { signal, timeoutMs: 5000 });
 		meta.status = "idle";
 		meta.lastUsedAt = Date.now();
 		meta.turnStartedAt = null;
+		meta.run = null;
 		if (c.vars.turn === active) meterUse = useOf(meta);
 		c.vars.turn = null;
 		c.vars.pending = [];
@@ -4174,6 +4769,391 @@ async function within(promise: Promise<unknown> | null, ms: number): Promise<voi
 		}),
 	]);
 	clearTimeout(timer);
+}
+
+/**
+ * On wake, a machine turn whose server stopped while it ran: with its conversation and checkpoint in
+ * storage (runner/journal.ts), the runner may still have its process, within its grace. The process is
+ * held before anything can ask for the runner's socket, and the turn runs again from `executeTurn`
+ * with the checkpoint, which takes the process up instead of starting one. False when there is nothing
+ * to take up; what was stored is then forgotten, and the turn is cut short as always.
+ */
+async function takeUpTurn(c: Ctx, meta: SessionMeta): Promise<boolean> {
+	if (meta.place.kind !== "machine") return false;
+	try {
+		const [conversation, saved] = durableTurns(c) ? await Promise.all([readConversation(c.db), readCheckpoint<TurnCheckpoint>(c.db)]) : [null, null];
+		if (!conversation || !saved || saved.turn !== meta.turns || saved.data.harness !== (meta.harness ?? "windlass") || c.vars.runner) {
+			await forgetConversation(c.db);
+			return false;
+		}
+		c.vars.restored = conversation;
+		const link = runnerLink(c, meta.place.machineId);
+		if (!link.hold(saved.data.process)) {
+			link.close();
+			c.vars.runner = null;
+			await forgetConversation(c.db);
+			return false;
+		}
+		const row = await rowOfTurn(c.db, meta.turns);
+		const run = row ? Number(row.key.split(":")[1]) : null;
+		const active: ActiveTurn = {
+			number: meta.turns, effort: null, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(),
+			reattach: saved.data,
+			...(row && { item: { row: { ...row, slot: row.slot ?? "" }, report: meta.report && meta.report.run === run ? meta.report : null, full: null, started: true, pushedAtStart: meta.pushedHead ?? null } }),
+		};
+		c.vars.turn = active;
+		console.log(`[wlp] turn.take_up session=${meta.sessionId} turn=${meta.turns} machine=${meta.place.machineId}: the server stopped while the turn ran; taking its process up again`);
+		active.done = c.keepAwake(runTurn(c, meta, active, "", takeSandbox(c)).finally(() => {
+			// A process the turn never took up (it could not go on) is stopped on the runner.
+			c.vars.runner?.release();
+		}));
+		return true;
+	} catch (error) {
+		c.log.warn({ msg: "could not take up the machine turn after the restart; it is cut short", error: describeError(error) });
+		return false;
+	}
+}
+
+/** Whether going to sleep keeps the running turn for the next server: a machine turn that can be taken up, on a runner that keeps it through the grace. */
+function keepsTurn(c: Ctx): boolean {
+	const link = c.vars.runner;
+	return !!link?.durable && link.known?.report?.resumableConversation === true && !!c.vars.turn?.checkpoint?.();
+}
+
+/**
+ * `onSleep` for a turn the runner keeps (`keepsTurn`): nothing is stopped. The timeline, the count of
+ * what was received and the checkpoint are stored, the frames being written ahead with them, and the
+ * socket is let go without ending the conversation; the runner keeps the process through its grace,
+ * and a wake shortly after takes it up on whichever server is up. False when the turn is not one to keep.
+ */
+async function keepTurn(c: Ctx): Promise<boolean> {
+	if (!keepsTurn(c)) return false;
+	const link = c.vars.runner!;
+	await persist(c);
+	await c.vars.journal?.settle();
+	await c.schedule.at(Date.now() + 3_000, "internalTakeUp").catch(() => undefined);
+	c.vars.journal?.close();
+	link.abandon();
+	console.log(`[wlp] turn.kept session=${c.key[1]} turn=${c.vars.turn?.number}: the runner keeps the turn's process through the restart`);
+	return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pause and resume (WLP_TURN_RESUME, turn-resume.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** How often a turn that waits for its machine looks whether it is back, besides the wake the machine itself sends. */
+const MACHINE_RECHECK_MS = 5 * 60_000;
+/** How soon a resume that could not happen (the user's actor or the layer did not answer) is tried again. */
+const RESUME_RETRY_MS = 60_000;
+/** The most messages held for a paused turn. */
+const MAX_HELD = 20;
+
+/** Whether this session's turns pause and resume instead of being cut short. */
+function resumesTurns(meta: SessionMeta): boolean {
+	return config.turnResume.enabled && !meta.environmentBuild;
+}
+
+function newRun(meta: SessionMeta, turn: number, effort: string | null, planMode: boolean, now: number, fromSeq: number): TurnRun | null {
+	if (!resumesTurns(meta)) return null;
+	return { turn, effort, ...(planMode && { planMode: true }), activeMs: 0, segmentAt: now, fromSeq, usage: null, resumes: 0, crashes: 0 };
+}
+
+/**
+ * While a turn runs, a wake is kept scheduled ahead of it (WLP_TURN_HEARTBEAT_MS): a server that crashed runs no
+ * `onSleep`, and this brings the session back on whichever server is up, where `onWake` pauses the turn and resumes it.
+ * A wake that finds the turn running does nothing.
+ */
+function heartbeat(c: Ctx, on: boolean): void {
+	if (c.vars.heartbeat) clearInterval(c.vars.heartbeat);
+	c.vars.heartbeat = null;
+	if (!on) return;
+	const arm = () => {
+		try {
+			if (c.vars.stopping) return;
+			void c.schedule.at(Date.now() + config.turnResume.heartbeatMs, "internalResumeTurn").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that resumes the turn after a crash", error: describeError(error) }));
+		} catch {
+			// The actor is going away: its turn pauses in `onSleep`, or its next wake finds it.
+		}
+	};
+	arm();
+	c.vars.heartbeat = setInterval(arm, Math.max(1_000, Math.floor(config.turnResume.heartbeatMs / 2)));
+}
+
+/** A turn the server stops from under it pauses instead of ending, unless its person or the platform was already stopping it. */
+function markPausing(c: Ctx, meta: SessionMeta): void {
+	const active = c.vars.turn;
+	if (!active || !resumesTurns(meta) || meta.run?.turn !== active.number || active.stopping || active.closed || c.vars.destroying || active.item?.withdrawn) return;
+	active.pausing ??= "restart";
+}
+
+/**
+ * The turn stops running but does not end: the same turn number, no `turn.ended`, nothing to the item (it sees a turn
+ * that still runs). What it ran and used so far is kept with the turn's record, and a wake is scheduled: a server that is
+ * up then resumes it. A machine's turn waits for the machine (`machinePaused`).
+ */
+async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: PauseReason, usage: TurnUsage | null, result: RunTurnResult | null): Promise<void> {
+	const run = meta.run!;
+	const turn = active.number;
+	const now = Date.now();
+	heartbeat(c, false);
+	run.activeMs += Math.max(0, now - run.segmentAt);
+	run.usage = addUsage(run.usage, usage);
+	run.paused = { reason, at: now };
+	if (result?.windlassSessionId) meta.windlassSessionId = result.windlassSessionId;
+	// What the turn wrote to Windlass's session was not copied out of the sandbox: the copy is behind it.
+	if (meta.backup) meta.memoryTurn = turn;
+	note(c, turn, "info", pausedLine(reason, meta.machineName), { code: "turn_paused" });
+	c.vars.pending = [];
+	meta.status = "paused";
+	meta.updatedAt = now;
+	c.vars.turn = null;
+	publish(c);
+	console.log(`[wlp] turn.paused session=${meta.sessionId} turn=${turn} reason=${reason} active_ms=${run.activeMs}`);
+	if (reason === "machine") await machinePaused(c, meta, run);
+	await persist(c);
+	if (reason === "restart") await c.schedule.at(now + config.turnResume.delayMs, "internalResumeTurn").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that resumes the turn", error: describeError(error) }));
+}
+
+/**
+ * A turn paused because its machine went away: an item's turn slot goes back to the queue (other items run meanwhile)
+ * and the item is told it waits, with no failure and no question; the machine is told to wake the session when its
+ * runner is back; and the session looks by itself now and then, in case that wake is lost. After
+ * WLP_MACHINE_AWAY_ASK_MS the item asks its person once (`internalMachineAsk`).
+ */
+async function machinePaused(c: Ctx, meta: SessionMeta, run: TurnRun): Promise<void> {
+	const paused = run.paused;
+	if (!paused || meta.place.kind !== "machine") return;
+	const row = await rowOfTurn(c.db, run.turn);
+	if (row && !paused.told) {
+		const slot = paused.slotFreed ? null : row.slot;
+		await serial(c, () => c.db.transaction(async (tx) => {
+			if (slot) {
+				await tx.execute("UPDATE inbox SET slot = NULL WHERE key = ? AND state = 'started'", row.key);
+				await queueMessage(tx, { to: "user", done: { slot, key: row.key } });
+			}
+			await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "turn_paused", at: Date.now(), key: row.key, since: paused.at, machine: meta.machineName } });
+		}, { name: "inbox.paused" }));
+		paused.slotFreed = true;
+		paused.told = true;
+		await flushOutbox(c, meta.uid);
+		await c.schedule.at(paused.at + config.turnResume.machineAskMs, "internalMachineAsk").catch(() => undefined);
+	}
+	await machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, true).catch((error: unknown) => c.log.warn({ msg: "could not ask the machine to wake this session when it is back", error: describeError(error) }));
+	// One look at a time: every wake of the session (an item's check of its turn, the machine's) would otherwise add one.
+	const now = Date.now();
+	if ((paused.lookAt ?? 0) <= now) {
+		paused.lookAt = now + MACHINE_RECHECK_MS;
+		await c.schedule.at(paused.lookAt, "internalResumeTurn").catch(() => undefined);
+	}
+}
+
+/** The words of the turn that is resumed: its own prompt when the agent never had it, with what was held for it. */
+async function resumeText(c: Ctx, meta: SessionMeta, run: TurnRun, row: InboxRow | null, reason: PauseReason, held: string[]): Promise<string> {
+	if (run.prompted) return resumePrompt(reason, held);
+	if (row) return row.text;
+	const [first] = await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'user' ORDER BY seq LIMIT 1", run.turn);
+	const item = first ? (JSON.parse(first.item) as TimelineItem) : null;
+	const prompt = item?.kind === "user" ? item.text : "";
+	return held.length ? `${prompt}\n\n${held.join("\n\n")}` : prompt;
+}
+
+/**
+ * The whole task of a resumed turn whose agent no longer has its conversation of it: an item's comes with its delivery
+ * (`itemTurnText`, or the step's own text when the delivery carries none); a person's session's is rebuilt from the
+ * timeline (`sessionWholeTask`).
+ */
+async function wholeTask(c: Ctx, meta: SessionMeta, active: ActiveTurn, turn: number): Promise<{ text: string; untrusted: string[]; unsandboxed?: boolean }> {
+	const item = active.item;
+	if (item) {
+		const chosen = itemTurnText(item.row, item.row.text, null);
+		if (chosen.fresh) return chosen;
+		return { text: `Your earlier conversation of this step is gone, and so is any work that was not saved in the workspace. Check what the workspace holds now, then do the step from the start:\n\n${itemPrompt(item.row)}`, untrusted: item.row.untrusted, unsandboxed: item.row.unsandboxed };
+	}
+	await serial(c, () => writeItems(c)).catch(() => undefined);
+	const rows = await c.db.execute<{ item: string }>(
+		"SELECT item FROM timeline WHERE turn <= ? AND (kind IN ('user', 'turn.ended') OR (kind = 'windlass' AND json_extract(item, '$.event.type') IN ('text.ended', 'workspace.changes')) OR (kind = 'acp' AND json_extract(item, '$.update.sessionUpdate') = 'agent_message_chunk')) ORDER BY seq",
+		turn,
+	);
+	const timeline = rows.map((row) => JSON.parse(row.item) as TimelineItem);
+	return sessionWholeTask(timeline, turn, active.resume?.held ?? []);
+}
+
+/**
+ * Runs a paused turn again, as a new segment of the same turn, once the place can be had: on wake, on its scheduled
+ * wake, when its machine is back, or with the turn slot granted again (`granted`) to an item's turn that gave its slot
+ * back. True when it was resumed (a granted slot is then its). Never throws.
+ */
+async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = null): Promise<boolean> {
+	const run = meta.run;
+	if (!run?.paused || meta.status !== "paused" || c.vars.turn || c.vars.accepting || c.vars.resuming || c.vars.stopping || c.vars.destroying || c.vars.publishing) return false;
+	// A graceful pause resumes WLP_TURN_RESUME_DELAY_MS after it at the earliest (whichever server is up then): its wake comes then.
+	if (run.paused.reason === "restart" && Date.now() < run.paused.at + config.turnResume.delayMs) {
+		await c.schedule.at(run.paused.at + config.turnResume.delayMs, "internalResumeTurn").catch(() => undefined);
+		return false;
+	}
+	c.vars.resuming = true;
+	let release: (() => void) | null = takeSandbox(c);
+	try {
+		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		const row = await rowOfTurn(c.db, run.turn);
+		if (meta.place.kind === "machine") {
+			const facts = await runnerLink(c, meta.place.machineId).facts().catch(() => null);
+			if (meta.run !== run || !run.paused) return false;
+			if (facts?.status === "removed") {
+				await endPausedTurn(c, meta, "stopped", "This agent's machine was removed while the turn was paused, so the turn ended. Its files were there.");
+				return false;
+			}
+			if (facts?.status !== "online") {
+				// A turn paused for a restart whose machine is away meanwhile waits for the machine.
+				if (run.paused.reason === "restart") {
+					run.paused.reason = "machine";
+					note(c, run.turn, "info", pausedLine("machine", meta.machineName), { code: "turn_paused" });
+					publish(c);
+				}
+				await machinePaused(c, meta, run);
+				await persist(c);
+				return false;
+			}
+		}
+		let slot = row?.slot ?? null;
+		if (row && run.paused.slotFreed) {
+			// Asked for again, ahead of the turns that came since: the grant comes back here (`takeDelivered`).
+			if (granted === null) {
+				const answer = await requestTurn(c, meta.uid, row, null, meta.turnStartedAt ?? run.paused.at);
+				if (!answer.granted) return false;
+				granted = answer.slot;
+			}
+			slot = granted;
+		}
+		if (hostedLimitsApply(meta.place)) await holdSandbox(c, meta, true);
+		// Nothing awaited from here: the turn is taken up again in this step.
+		const paused = run.paused;
+		if (meta.run !== run || !paused || meta.status !== "paused" || c.vars.turn || c.vars.destroying) return false;
+		const now = Date.now();
+		const pausedMs = Math.max(0, now - paused.at);
+		const held = run.held ?? [];
+		run.resumes += 1;
+		run.fromSeq = c.vars.nextSeq;
+		run.segmentAt = now;
+		run.paused = null;
+		run.held = [];
+		meta.status = "starting";
+		meta.updatedAt = now;
+		note(c, run.turn, "info", resumedLine(paused.reason, pausedMs, duration), { code: "turn_resumed" });
+		const key = row ? Number(row.key.split(":")[1]) : null;
+		const active: ActiveTurn = {
+			number: run.turn, effort: run.effort, ...(run.planMode && { planMode: true }), controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(),
+			resume: { reason: paused.reason, pausedMs, held },
+			...(row && { item: { row: { ...row, slot: slot ?? "" }, report: meta.report && meta.report.run === key ? meta.report : null, full: null, started: true, pushedAtStart: meta.pushedHead ?? null } }),
+		};
+		c.vars.turn = active;
+		publish(c);
+		if (row && slot !== row.slot) await serial(c, () => c.db.execute("UPDATE inbox SET slot = ? WHERE key = ? AND state = 'started'", slot, row.key));
+		if (row && paused.told) await serial(c, () => queueMessage(c.db, { to: "item", itemId: row.itemId, fact: { kind: "turn_resumed", at: now, key: row.key, offlineMs: pausedMs } }));
+		// The wake after a crash, before anything of the segment runs: one that crashes at once is found again too (the loop guard counts it).
+		await c.schedule.at(now + config.turnResume.heartbeatMs, "internalResumeTurn").catch(() => undefined);
+		await persist(c);
+		// Said once what was resumed is stored: a crash before this leaves the turn paused, as it was.
+		console.log(`[wlp] turn.resumed session=${meta.sessionId} turn=${run.turn} reason=${paused.reason} paused_ms=${pausedMs} resumes=${run.resumes} prompted=${run.prompted === true}`);
+		if (row && paused.told) await flushOutbox(c, meta.uid);
+		if (paused.reason === "machine" && meta.place.kind === "machine") void machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, false).catch(() => undefined);
+		const text = await resumeText(c, meta, run, row, paused.reason, held);
+		active.done = c.keepAwake(runTurn(c, meta, active, text, release));
+		release = null;
+		return true;
+	} catch (error) {
+		c.log.warn({ msg: "could not resume the paused turn", session: meta.sessionId, error: describeError(error) });
+		if (error instanceof UserError && ["allowance_used", "too_many_sandboxes"].includes(String(error.code))) {
+			await endPausedTurn(c, meta, "interrupted", `This turn could not resume: ${error.message}`);
+		} else if (!c.vars.stopping && !c.vars.destroying && meta.run?.paused && (meta.run.paused.lookAt ?? 0) <= Date.now()) {
+			meta.run.paused.lookAt = Date.now() + RESUME_RETRY_MS;
+			await c.schedule.at(meta.run.paused.lookAt, "internalResumeTurn").catch(() => undefined);
+		}
+		return false;
+	} finally {
+		c.vars.resuming = false;
+		release?.();
+	}
+}
+
+/**
+ * Ends a turn that is paused, with nothing running: its person stopped it, its item withdrew it, its machine was removed,
+ * or it could not be resumed. The turn ends as any does: a `turn.ended`, and the item's fact.
+ */
+async function endPausedTurn(c: Ctx, meta: SessionMeta, outcome: "stopped" | "interrupted", message: string | null): Promise<void> {
+	const run = meta.run;
+	const turn = run?.turn ?? meta.turns;
+	const now = Date.now();
+	const usage = run?.usage ?? null;
+	const machine = run?.paused?.reason === "machine";
+	heartbeat(c, false);
+	if (message) note(c, turn, outcome === "stopped" ? "info" : "warn", message);
+	append(c, { turn, kind: "turn.ended", outcome, exitCode: null, steps: null, durationMs: run?.activeMs ?? 0, usage, cachedShare: null, message: null, verified: meta.verified ?? null });
+	meta.status = "idle";
+	meta.lastOutcome = outcome;
+	meta.updatedAt = now;
+	meta.lastUsedAt = now;
+	meta.turnStartedAt = null;
+	meta.run = null;
+	publish(c);
+	console.log(`[wlp] turn.paused_ended session=${meta.sessionId} turn=${turn} outcome=${outcome}`);
+	const row = await rowOfTurn(c.db, turn);
+	if (row) await finishItemTurn(c, meta, row, meta.origin?.role === "reviewer" ? reviewEndedFactOf(row.key, outcome, meta.review, null, null, usage) : endedFactOf(row.key, now, outcome, meta.verified ?? null, [], true, null, usage));
+	else await persist(c);
+	if (machine && meta.place.kind === "machine") void machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, false).catch(() => undefined);
+	await armIdle(c, meta);
+}
+
+/**
+ * On wake, a turn whose server crashed under it (no `onSleep` ran): it is paused as one that was stopped would have
+ * been, from what the timeline kept of it. False instead when the loop guard trips: the server stopped more than
+ * CRASHES_ALLOWED times in a row while resuming it, with nothing done in between; the caller then cuts it short, and
+ * that counts as one of the item's cut-offs.
+ */
+async function crashPause(c: Ctx, meta: SessionMeta): Promise<boolean> {
+	const run = meta.run!;
+	const turn = run.turn;
+	const rows = await c.db.execute<{ kind: string; at: number; item: string }>("SELECT kind, at, item FROM timeline WHERE turn = ? AND seq >= ? ORDER BY seq", turn, run.fromSeq);
+	const events: WindlassEvent[] = [];
+	let progressed = false;
+	for (const row of rows) {
+		if (row.kind === "acp") progressed = true;
+		if (row.kind !== "windlass") continue;
+		const item = JSON.parse(row.item) as TimelineItem;
+		if (item.kind !== "windlass") continue;
+		events.push(item.event);
+		if (item.event.type === "text.ended" || reportedModelUsage(item.event) !== null) progressed = true;
+	}
+	const lastAt = rows.length ? rows[rows.length - 1].at : run.segmentAt;
+	run.activeMs += Math.max(0, lastAt - run.segmentAt);
+	run.usage = addUsage(run.usage, cutTurnUsage(events));
+	run.crashes = crashCount(run.crashes, progressed);
+	console.log(`[wlp] turn.crashed session=${meta.sessionId} turn=${turn} crashes=${run.crashes} progressed=${progressed}`);
+	if (run.crashes > CRASHES_ALLOWED) return false;
+	run.paused = { reason: "restart", at: Math.max(lastAt, run.segmentAt) };
+	if (meta.backup) meta.memoryTurn = turn;
+	note(c, turn, "info", "The server stopped while this turn was running; it will resume by itself.", { code: "turn_paused" });
+	meta.status = "paused";
+	meta.updatedAt = Date.now();
+	return true;
+}
+
+/** A message for a paused turn: kept with the turn, shown as held, and given to the agent when the turn resumes. */
+async function holdMessage(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
+	const redactor = await sessionRedactor(c, meta).catch(() => NO_REDACTION);
+	const run = meta.run;
+	// It resumed, or ended, while the secrets were read: the message goes as it would have then.
+	if (meta.status !== "paused" || !run?.paused || c.vars.turn) return takePrompt(c, meta, input, text, submission);
+	if ((run.held?.length ?? 0) >= MAX_HELD) throw new UserError(`${MAX_HELD} messages are held for this turn already; it takes more once it has resumed.`, { code: "steer_unavailable" });
+	const shown = redactor.text(text);
+	run.held = [...(run.held ?? []), shown];
+	append(c, { turn: run.turn, kind: "user", text: shown, model: meta.model, effort: run.effort, steer: true, held: true });
+	meta.updatedAt = Date.now();
+	publish(c);
+	const answer = remember(meta, submission, { turn: run.turn, steered: true });
+	await persist(c);
+	return answer;
 }
 
 /** Stops the turn in progress, if any, and waits (a bounded time) until it has closed itself. */
@@ -4272,6 +5252,8 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
  * end, or the prompt is refused and nothing of it is kept.
  */
 async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
+	// A paused turn takes no new turn: the message is held, and given to the agent when the turn resumes.
+	if (meta.status === "paused" && meta.run?.paused && !c.vars.turn) return holdMessage(c, meta, input, text, submission);
 	// A turn in progress takes the message itself; `model` and `effort` are for a turn that starts.
 	if (input.planMode !== undefined && (!capabilitiesOf(meta.harness).planMode || typeof input.planMode !== "boolean")) throw new UserError(`${harnessName(meta.harness)} has no plan mode.`, {code:"bad_input"});
 	if ((c.vars.turn || c.vars.accepting) && capabilitiesOf(meta.harness).events === "acp" && (input.model || input.effort || input.planMode)) throw new UserError("Choose the model and effort when starting a turn.", { code: "bad_input" });
@@ -4328,7 +5310,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, {code:"bad_input"});
 			if (offered.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
-		} else if (!meta.demo && Date.now() >= c.vars.signedInUntil) {
+		} else if (!meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
 				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
@@ -4350,7 +5332,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
 			if (claim.dailyTokenWait) throw new UserError(claim.dailyTokenWait, { code: "daily_token_cap" });
-			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working, which is your limit. Wait for one to finish, or stop one.`, { code: "too_many_running" });
+			throw new UserError(`You already have ${claim.running === 1 ? "1 agent" : `${claim.running} agents`} working on this platform, the most it runs for you at once. Agents on your machines don't count. Wait for one to finish, or stop one.`, { code: "too_many_running" });
 		}
 		claimed = true;
 		claimName = claim.claim;
@@ -4362,12 +5344,16 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		// Accepted. From here to the return nothing is awaited.
 		const turn = meta.turns + 1;
 		const now = Date.now();
+		if (meta.secretRequest) (meta.declinedSecrets ??= []).push(meta.secretRequest.name);
+		delete meta.secretRequest;
 		meta.turns = turn;
 		meta.model = model;
 		meta.status = "starting";
+		delete meta.pauseNow;
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
 		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
+		meta.run = newRun(meta, turn, effort, capabilitiesOf(meta.harness).planMode && input.planMode === true, now, c.vars.nextSeq);
 		append(c, { turn, kind: "user", text: shown, model, effort });
 		publish(c);
 
@@ -4437,6 +5423,11 @@ async function giveBack(c: Ctx, meta: SessionMeta, key: string, slot: string): P
 async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: string): Promise<void> {
 	const row = await inboxRow(c.db, key);
 	if (row?.state === "started" && row.slot === slot) return;
+	// A turn paused while its machine was away, whose slot was given back: this grant is its slot again.
+	if (row?.state === "started" && meta.run?.paused?.slotFreed && row.turn === meta.run.turn) {
+		if (!(await resumePaused(c, meta, slot))) await giveBack(c, meta, key, slot);
+		return;
+	}
 	// The same delivery sent again (a call that failed is sent again) while this session takes or runs it: the slot is that turn's, and stays.
 	if (c.vars.delivering === key || c.vars.turn?.item?.row.key === key) return;
 	if (row?.state !== "waiting" || c.vars.turn || c.vars.accepting || c.vars.publishing || c.vars.destroying) {
@@ -4479,10 +5470,13 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		}
 		// Accepted. From here to the transaction nothing is awaited.
 		const now = Date.now();
+		delete meta.secretRequest;
 		meta.turns = turn;
 		meta.status = "starting";
+		delete meta.pauseNow;
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
+		meta.run = newRun(meta, turn, effort, false, now, c.vars.nextSeq);
 		const first = append(c, { turn, kind: "user", text: itemPrompt(row), model: meta.model, effort });
 		publish(c);
 		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, secrets: null, checks: new VerificationLog(), publishes: new Set(), item: { row: { ...row, state: "started", turn, slot }, report: null, full: null, started: false, pushedAtStart: meta.pushedHead ?? null } };
@@ -4593,7 +5587,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
  * used), and its slot is given back, both in one transaction with the meta. A turn whose sandbox could
  * not be had because the deployment's are all in use waits for a slot again instead.
  */
-async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
+async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; stepLimit?: number; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
 	const { row } = item;
 	if ((item.full !== null || item.machineAway) && !item.started) {
 		await serial(c, () =>
@@ -4617,9 +5611,12 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
+	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
+	if (item.sandboxFailed) fact.sandboxFailed = item.sandboxFailed;
+	if (item.outOfMemory) fact.outOfMemory = item.outOfMemory;
 	if (attachmentStore()) {
 		// If the server stops after the ledger commits but before the outbox commits, retry the same keep list.
 		await serial(c, () => c.db.execute("INSERT OR REPLACE INTO attachment_filing VALUES (?,?)", row.key, JSON.stringify(fact)));
@@ -4654,9 +5651,19 @@ async function finishItemTurn(c: Ctx, meta: SessionMeta, row: InboxRow, fallback
 }
 
 /** Recover a completed filing across the ledger/outbox boundary, or report a cut-off turn. */
-async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow): Promise<Fact> {
-	if (meta.origin?.role === "reviewer") return finishItemTurn(c, meta, row, reviewEndedFactOf(row.key, "interrupted", meta.review, null, null, null));
-	return finishItemTurn(c, meta, row, endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, null));
+/** The Windlass events the timeline holds of one turn, in order. */
+async function windlassEventsOf(c: Ctx, turn: number): Promise<WindlassEvent[]> {
+	const events: WindlassEvent[] = [];
+	for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
+		const item = JSON.parse(row.item) as TimelineItem;
+		if (item.kind === "windlass") events.push(item.event);
+	}
+	return events;
+}
+
+async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow, usage: TurnUsage | null): Promise<Fact> {
+	if (meta.origin?.role === "reviewer") return finishItemTurn(c, meta, row, reviewEndedFactOf(row.key, "interrupted", meta.review, null, null, usage));
+	return finishItemTurn(c, meta, row, endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, usage));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4698,7 +5705,10 @@ export const agentSession = actor({
 			// Rows from before the marker carry no sources: their turns go as they did.
 			if (!inboxColumns.some(col => col.name === "untrusted")) await db.execute("ALTER TABLE inbox ADD COLUMN untrusted TEXT NOT NULL DEFAULT '[]'");
 			if (!inboxColumns.some(col => col.name === "unsandboxed")) await db.execute("ALTER TABLE inbox ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0");
+			// Rows from before it have no whole-task prompt: their turns go as they did.
+			if (!inboxColumns.some(col => col.name === "fresh")) await db.execute("ALTER TABLE inbox ADD COLUMN fresh TEXT");
 			await db.execute("CREATE TABLE IF NOT EXISTS attachment_filing (key TEXT PRIMARY KEY, data TEXT NOT NULL)");
+			await migrateJournal(db);
 		},
 	}),
 
@@ -4717,6 +5727,7 @@ export const agentSession = actor({
 				place: input.place,
 				machineName: typeof input.machineName === "string" ? input.machineName : null,
 				...(input.size && { size: input.size }),
+				...(input.place.kind === "hosted" && isHostedSize(input.hostedSize) && { hostedSize: input.hostedSize }),
 				harness: input.harness,
 				profile: input.profile,
 				...initialSessionModes(input.profile, input.harness, !!input.origin, input.codexModes ?? input.harnessOptions?.modes),
@@ -4738,7 +5749,9 @@ export const agentSession = actor({
 				cloned: false,
 				windlassSessionId: null,
 				turnStartedAt: null,
-				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin } : {}),
+				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin, ...(input.origin.childBranch && { publishBranch: input.origin.childBranch.name }) } : {}),
+				...(!input.origin && typeof input.environmentBuild?.project === "string" && typeof input.environmentBuild.place === "string"
+					? { environmentBuild: { project: input.environmentBuild.project, place: input.environmentBuild.place, screenshots: input.environmentBuild.screenshots === true } } : {}),
 			};
 			await c.db.execute("INSERT OR REPLACE INTO meta (id, data) VALUES (1, ?)", JSON.stringify(meta));
 		} catch (error) {
@@ -4783,6 +5796,11 @@ export const agentSession = actor({
 			sandboxGen: 0,
 			carried: null,
 			runner: null,
+			journal: null,
+			restored: null,
+			takeUpArmedAt: 0,
+			resuming: false,
+			heartbeat: null,
 			setupReap: null,
 			startClock: null,
 			hostsAllowed: new Map(),
@@ -4807,7 +5825,12 @@ export const agentSession = actor({
 				// error, which ends the whole server and every other session on it. A turn still
 				// running then is stopped by `onSleep`.
 				try {
-					if (c.vars.turn) abortTurn(c, meta, c.vars.turn);
+					// A turn the runner keeps through the restart is not stopped: `onSleep` lets go of it (`keepsTurn`).
+					// One that can be resumed pauses instead of ending (`markPausing`).
+					if (c.vars.turn && !keepsTurn(c)) {
+						markPausing(c, meta);
+						abortTurn(c, meta, c.vars.turn);
+					}
 				} catch (error) {
 					console.warn(`[wlp] session=${meta.sessionId}: the actor was already stopping when its abort signal fired (${describeError(error)})`);
 				}
@@ -4815,20 +5838,34 @@ export const agentSession = actor({
 			{ once: true },
 		);
 
-		if (meta.status !== "idle") {
+		// A turn running when the server went away: taken up where its process kept running (a machine's, M1), paused to
+		// resume where it can be (WLP_TURN_RESUME), or cut short. One already paused resumes below.
+		let cut = meta.status !== "idle" && meta.status !== "paused";
+		let cutWords = "The server stopped while this turn was running, so the turn was cut short.";
+		if (cut && (await takeUpTurn(c, meta))) {
+			// The turn goes on: its process kept running on the machine, and the runner resumes the conversation.
+			cut = false;
+		} else if (cut && meta.status !== "stopping" && resumesTurns(meta) && meta.run?.turn === meta.turns) {
+			if (await crashPause(c, meta)) cut = false;
+			else cutWords = `The server stopped ${CRASHES_ALLOWED} times in a row while resuming this turn, with nothing done in between, so the turn was ended.`;
+		}
+		// A pause with no record of it (from a server without resume) is a turn cut short.
+		if (meta.status === "paused" && !meta.run?.paused) cut = true;
+		if (cut) {
 			// The process that ran this turn is gone, and the turn with it; so is a question it was waiting on.
 			const turn = meta.turns;
-			note(c, turn, "warn", "The server stopped while this turn was running, so the turn was cut short.");
+			note(c, turn, "warn", cutWords);
+			const events = await windlassEventsOf(c, turn);
 			// What the turn recorded before it was cut off says whether it changed the workspace after the checks last ran.
 			if (capabilitiesOf(meta.harness).checks === "none") meta.verified = null;
 			else {
 				const cut = new VerificationLog();
-				for (const row of await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'windlass' ORDER BY seq", turn)) {
-					const item = JSON.parse(row.item) as TimelineItem;
-					if (item.kind === "windlass") cut.note(item.event);
-				}
+				for (const event of events) cut.note(event);
 				meta.verified = cut.cutOff(turn, meta.verified ?? null);
 			}
+			// The tokens its finished model requests reported: the turn row and an item's spend count them, as the account's ledger already did.
+			const usage = cutTurnUsage(events);
+			note(c, turn, "info", cutTurnUsageNote(usage));
 			append(c, {
 				turn,
 				kind: "turn.ended",
@@ -4836,7 +5873,7 @@ export const agentSession = actor({
 				exitCode: null,
 				steps: null,
 				durationMs: meta.turnStartedAt ? Math.max(0, Date.now() - meta.turnStartedAt) : 0,
-				usage: null,
+				usage,
 				cachedShare: null,
 				message: null,
 				verified: meta.verified,
@@ -4846,8 +5883,11 @@ export const agentSession = actor({
 			meta.updatedAt = Date.now();
 			meta.lastUsedAt = meta.updatedAt;
 			meta.turnStartedAt = null;
+			meta.run = null;
 			// What that turn wrote to Windlass's session was not copied out of the sandbox: the copy is behind it.
 			if (meta.backup) meta.memoryTurn = turn;
+		}
+		if (cut || meta.status === "paused") {
 			// A setup run that was going then has no ending item, and is not run again: the agent is told.
 			if (meta.setupRunning) {
 				meta.setupUnfinished = { command: meta.setupRunning.command, state: "interrupted", exitCode: null, limitMs: meta.setupRunning.limitMs, output: "" };
@@ -4858,8 +5898,13 @@ export const agentSession = actor({
 					(error: unknown) => c.log.warn({ msg: "could not stop a setup cut off with the server; the next turn stops it", sandbox: sandboxId, error: describeError(error) }),
 				));
 			}
+		}
+		if (cut) {
+			const turn = meta.turns;
 			const taken = await rowOfTurn(c.db, turn);
-			if (taken) await closeCutTurn(c, meta, taken);
+			if (taken) await closeCutTurn(c, meta, taken, cutTurnUsage(await windlassEventsOf(c, turn)));
+		}
+		if (cut || meta.status === "paused") {
 			await persist(c);
 			publish(c);
 		}
@@ -4879,20 +5924,32 @@ export const agentSession = actor({
 		void c.keepAwake(
 			refreshSandbox(c, meta)
 				.then(() => wakeMeter(c, meta, use))
-				.then(() => armIdle(c, meta)),
+				.then(() => armIdle(c, meta))
+				// A paused turn resumes once the sandbox's state is known.
+				.then(() => resumePaused(c, meta)),
 		);
 	},
 
 	onSleep: async (c) => {
 		c.vars.stopping = true;
+		// The wake after a crash is not needed by a turn that pauses here, or by one the runner keeps (M1's own wake).
+		heartbeat(c, false);
 		// The runner lets go of what it ran for this instance however the rest ends, a throw included.
 		try {
 			const meta = c.vars.meta;
 			if (!meta) return;
+			// A machine turn the runner keeps through the restart: stored where it is, and taken up on the next wake.
+			if (await keepTurn(c)) return;
 			// The order and the waits are what fits in the shutdown grace period (SHUTDOWN_GRACE_MS above).
+			// A turn that can be resumed pauses instead of ending (`pauseTurn`), and a wake is scheduled for it.
+			markPausing(c, meta);
 			await stopTurn(c);
 			await persist(c);
-			if (meta.sandboxId && meta.sandbox === "running" && meta.place.kind === "machine") {
+			if (meta.sandboxId && meta.sandbox === "running" && meta.status === "paused") {
+				// Kept running for the turn that resumes in a moment: an E2B sandbox's own timeout (its turn lease, three minutes)
+				// pauses it should no server take the turn up, and a warm one resumes without a pause and resume of its own.
+				console.log(`[wlp] sandbox.kept_for_resume id=${meta.sandboxId} session=${meta.sessionId}`);
+			} else if (meta.sandboxId && meta.sandbox === "running" && meta.place.kind === "machine") {
 				// Asking would have the runner attach to this instance, whose sockets are refused from here
 				// (`onWebSocket`); its runner stops the sandbox itself once no session is connected to it for its idle time.
 				console.log(`[wlp] sandbox.suspend_skipped id=${meta.sandboxId} session=${meta.sessionId}: the machine's runner stops it after its idle time`);
@@ -4932,6 +5989,7 @@ export const agentSession = actor({
 		const alreadyDeleting = c.vars.destroying;
 		c.vars.stopping = true;
 		c.vars.destroying = true;
+		heartbeat(c, false);
 		try {
 			const meta = c.vars.meta;
 			if (!meta) return;
@@ -4949,6 +6007,7 @@ export const agentSession = actor({
 	},
 
 	events: {
+		networkBlocked: event<NetworkBlockedItem>({ canSubscribe: (c) => maySubscribe(c) }),
 		item: event<TimelineItem>({ canSubscribe: (c) => maySubscribe(c) }),
 		delta: event<LiveDelta>({ canSubscribe: (c) => maySubscribe(c) }),
 		summary: event<SessionSummary>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -5007,6 +6066,7 @@ export const agentSession = actor({
 						timeline,
 						pending: [...c.vars.pending],
 						question: c.vars.turn?.question?.pending ?? null,
+						...(!meta.origin && meta.secretRequest && { secretRequest: meta.secretRequest }),
 						...(meta.place.kind === "machine" ? { machine: c.vars.runner?.reach() ?? null } : {}),
 					};
 				});
@@ -5036,10 +6096,48 @@ export const agentSession = actor({
 			return summaryOf(meta);
 		},
 
+		setRequestedSecret: async (c, input: SetRequestedSecretInput): Promise<void> => {
+			await requireSessionUser(c);
+			const meta = liveMeta(c);
+			const request = meta.secretRequest;
+			if (!request || !validRequestedSecretName(input?.name) || input.name !== request.name || (!meta.origin && input.requestId !== request.id))
+				throw new UserError("That secret request is no longer open.", { code: "no_question" });
+			if (c.vars.savingSecret || c.vars.accepting || c.vars.nextPrompt || meta.status === "paused")
+				throw new UserError("The session is busy. Try again when the turn has ended.", { code: "turn_running" });
+			const project = setupProjectOf(meta)?.key ?? ACCOUNT_SECRET_PROJECT;
+			let sealed: string;
+			try {
+				sealed = sealSecret(serverSealer(), meta.uid, project, request.name, cleanSecretValue(input.value));
+			} catch (error) {
+				if (error instanceof SecretProblem) throw new UserError(error.message, { code: "bad_secret" });
+				throw error;
+			}
+			const save = { project, sealed, name: request.name, requestId: input.requestId };
+			c.vars.savingSecret = true;
+			try {
+				if (meta.origin) {
+					await itemActor(c, meta.uid, meta.origin.itemId).internalSetRequestedSecret(save);
+				} else {
+					if (c.vars.turn) await c.vars.turn.done;
+					if (meta.secretRequest !== request || c.vars.accepting || meta.run?.paused)
+						throw new UserError("That secret request is no longer open.", { code: "no_question" });
+					await secretsActor(c, meta.uid, meta.sessionId).internalSaveRequestedSecret(meta.sessionId, save);
+					delete meta.secretRequest;
+					await persist(c);
+					const text = `${request.name} is now set in your environment.`;
+					await takePrompt(c, meta, { text }, text, null);
+				}
+			} finally {
+				delete c.vars.savingSecret;
+			}
+		},
+
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
+			if (c.vars.savingSecret) throw new UserError("The requested secret is being saved.", { code: "turn_running" });
 			if (meta.origin) throw new UserError("This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.", { code: "item_session" });
+			if (meta.environmentBuild) throw new UserError("This session only builds the repository's prepared environment.", { code: "item_session" });
 			if (typeof input !== "object" || input === null || typeof input.text !== "string" || input.text.trim() === "") {
 				throw new UserError("Write what the agent should do.", { code: "empty_prompt" });
 			}
@@ -5068,7 +6166,11 @@ export const agentSession = actor({
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
 			const turn = c.vars.turn;
-			if (!turn) return;
+			if (!turn) {
+				// A paused turn has nothing running to stop: it ends now, and does not resume.
+				if (meta.status === "paused" && meta.run?.paused) await endPausedTurn(c, meta, "stopped", "You stopped the paused turn, so it will not resume.");
+				return;
+			}
 			turn.stopping = true;
 			// A question the turn waits on is withdrawn with it: from here an answer finds nothing to answer.
 			const withdrawn = takeQuestion(c, meta, turn);
@@ -5337,6 +6439,7 @@ export const agentSession = actor({
 			const { sandboxes } = await layerOf(c, meta);
 			// In `none` the list applies nowhere: saying it was allowed would promise a host nothing reaches.
 			if (sandboxes.egress?.() === "none") throw new UserError(`This deployment gives hosted sandboxes no network but the model API (WLP_E2B_NETWORK=none), so a host allowed for ${project.label} would be reached by nothing here.`, { code: "bad_network" });
+			if (sandboxes.egress?.() !== "restricted" || !sandboxes.setNetwork) throw new UserError("Repository network settings apply to restricted hosted sandboxes.", { code: "bad_network" });
 			const answer = await userActor(c, meta.uid).internalAllowHost({ sessionId: meta.sessionId, host, by });
 			if (!answer.allowed) {
 				note(c, meta.turns, "info", `${host} was asked for: whoever changes the settings of ${project.label} can allow it there.`);
@@ -5362,6 +6465,45 @@ export const agentSession = actor({
 		},
 
 		// --- called by the actor's own schedule only ------------------------------------------------
+
+		/**
+		 * Scheduled while a turn runs (`heartbeat`), after a graceful pause, and while a turn waits for its machine: a paused
+		 * turn resumes if its place can be had. The wake itself pauses a turn a crash cut off (`crashPause`).
+		 */
+		internalResumeTurn: async (c): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const meta = c.vars.meta;
+			if (meta && !c.vars.destroying) await resumePaused(c, meta);
+		},
+
+		/** Scheduled when an item's turn paused for its machine: if it still waits, the item asks its person once (`machine_away`). */
+		internalMachineAsk: async (c): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			const meta = c.vars.meta;
+			const run = meta?.run;
+			const paused = run?.paused;
+			if (!meta || !run || !paused || paused.reason !== "machine" || paused.asked || Date.now() < paused.at + config.turnResume.machineAskMs - 1_000) return;
+			const row = await rowOfTurn(c.db, run.turn);
+			if (!row) return;
+			paused.asked = true;
+			await serial(c, () => c.db.transaction(async (tx) => {
+				await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "machine_away", at: Date.now(), key: row.key, since: paused.at, machine: meta.machineName } });
+				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
+			}, { name: "inbox.machine_away" }));
+			await flushOutbox(c, meta.uid);
+		},
+
+		/** The session's machine is back (its runner said hello): a turn paused for it resumes. */
+		internalMachineBack: async (c): Promise<void> => {
+			requireService(c);
+			const meta = c.vars.meta;
+			if (meta && !c.vars.destroying) void c.keepAwake(resumePaused(c, meta));
+		},
+
+		/** Scheduled while a machine turn can be taken up after a crash (`armTakeUp`): the wake itself does the work (`takeUpTurn`). */
+		internalTakeUp: async (c): Promise<void> => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+		},
 
 		internalIdle: async (c): Promise<void> => {
 			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.
@@ -5429,21 +6571,29 @@ export const agentSession = actor({
 			if (active?.item?.row.key === key) {
 				active.item.withdrawn = true;
 				abortTurn(c, meta, active);
+				return;
 			}
+			// The paused turn of that delivery ends where it is: the item does not want it any more.
+			if (meta.status === "paused" && meta.run?.paused && (await rowOfTurn(c.db, meta.run.turn))?.key === key) await endPausedTurn(c, meta, "stopped", null);
 		},
 
 		internalCheckTurn: async (c, input: { turn: string; check: string }): Promise<Fact | null> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			const row = await inboxRow(c.db, String(input?.turn));
+			// Polling for the turn end follows the same order as the outbox. A publish that follows
+			// this answer must already have the session's final network receipt.
+			if (meta.blocked && (await c.db.execute("SELECT 1 FROM outbox WHERE json_extract(message, '$.to') = 'network' LIMIT 1")).length) return null;
 			if (row?.state === "ended") return await endedFact(c.db, row.key);
 			if (row?.state !== "started") return null;
 			if (c.vars.turn?.item?.row.key === row.key || c.vars.closingItem === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			// Paused, or being resumed: the turn is not over, and resumes by itself.
+			if ((meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn) || c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
-			return await closeCutTurn(c, meta, row);
+			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
 		},
 
-		internalPublish: async (c, input: { key: string; title: string; body: string; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {
+		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
@@ -5459,7 +6609,7 @@ export const agentSession = actor({
 			try {
 				const report = meta.report?.run === Number(input.key.split(":")[1]) ? meta.report : null;
 				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
-				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly));
+				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly, input.blockedNetwork, input.updateFromBase));
 				const pull = result.state.pullRequest;
 				if (!input.branchOnly && !pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
 				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.
@@ -5468,6 +6618,7 @@ export const agentSession = actor({
 				return answer;
 			} catch (error) {
 				// GitHub out of reach, or a push that took too long, is tried again by the item; any other refusal is its person's to decide.
+				if (error instanceof BaseMergeConflict) return { kind: "base_conflict" };
 				if (error instanceof UserError) return { kind: "publish_failed", said: error.message, transient: error instanceof PublishRefused && error.transient };
 				return { kind: "publish_failed", said: describeError(error), transient: true };
 			} finally {
@@ -5492,6 +6643,15 @@ export const agentSession = actor({
 			return summaryOf(liveMeta(c));
 		},
 
+		internalBuildEnvironment: async (c): Promise<void> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			if (!meta.environmentBuild) throw new UserError("This session builds no environment.", { code: "bad_input" });
+			// Its one turn: a second call (a retried request) finds it taken.
+			if (meta.turns > 0 || c.vars.turn || c.vars.accepting) return;
+			await startPrompt(c, meta, { text: "Build the prepared environment." }, "Build the prepared environment.", null);
+		},
+
 		internalRename: async (c, title: string): Promise<SessionSummary> => {
 			requireService(c);
 			const meta = liveMeta(c);
@@ -5508,11 +6668,15 @@ export const agentSession = actor({
 		 * that was not used for long is, the timeline says who did it and what became of the agent's
 		 * memory, and the next prompt starts a new sandbox. Refused while the session works.
 		 */
-		internalFreeSandbox: async (c, throughReviewRun?: number): Promise<{ freed: boolean }> => {
+		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
+			// A stored OOM choice can outlive Pro. Check again before touching the old sandbox.
+			if (meta.place.kind === "hosted" && hostedSize && billing() && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
+				return { freed: false, sizeUnavailable: hostedSize };
+			}
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });
 			if (busy(c)) throw new UserError(`The platform is busy with the sandbox of ${meta.title}. Try again in a moment.`, { code: "sandbox_busy" });
 			const id = meta.sandboxId;
@@ -5530,6 +6694,8 @@ export const agentSession = actor({
 				// its place is given back here too: `removeSandbox` did not run.
 				await sweepSandboxes(c, meta, layer);
 				if (!id) await releasePlace(c, meta);
+				// A larger size for the next sandbox (a work item whose sandbox ran out of memory): only a new sandbox has another size.
+				if (meta.place.kind === "hosted" && isHostedSize(hostedSize)) meta.hostedSize = hostedSize;
 				publish(c);
 				await persist(c);
 			})();

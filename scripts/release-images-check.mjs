@@ -35,10 +35,13 @@ test("release permissions and immutable action references", t => {
 });
 test("release scan rejects embedded material and source maps", t => {
 	const file = join(scratch(t), "runner.cjs");
-	for (const marker of ["/home/", "@gmail", "-----BEGIN", "WLP_SECRET", "onrivet", "sourceMappingURL="]) {
+	for (const marker of ["/home/", "@gmail", "-----BEGIN PRIVATE KEY-----\n" + "A".repeat(64), "WLP_SECRET", "onrivet", "sourceMappingURL="]) {
 		writeFileSync(file, "/* " + marker + " */");
 		assert.throws(() => node("scripts/release-check.ts","scan",file), /bundle contains/);
 	}
+	// A bare header, as code that recognises PEM input checks for, is no key (release-check.ts).
+	writeFileSync(file, '/* if (text.startsWith("-----BEGIN")) */');
+	node("scripts/release-check.ts","scan",file);
 	writeFileSync(file, ""); writeFileSync(file+".map", "{}");
 	assert.throws(() => node("scripts/release-check.ts","scan",file), /has a source map/);
 });
@@ -50,7 +53,7 @@ test("context-only and registry-pin builds do not resolve mutable local tags", t
 		const context = join(dir,variant);
 		execFileSync(join(root,"sandbox/build.sh"),["--context",context],{env:{...env,WLP_SANDBOX_VARIANT:variant}});
 		assert.deepEqual(readFileSync(join(context, "Dockerfile")), readFileSync(join(root, "sandbox/Dockerfile")));
-		assert.deepEqual(readdirSync(context).sort(), ["Dockerfile","windlass","wlp-run",...(variant === "shots" ? ["wlp-shot"] : [])]);
+		assert.deepEqual(readdirSync(context).sort(), ["Dockerfile","windlass","wlp-pnpm","wlp-run",...(variant === "shots" ? ["wlp-shot"] : [])]);
 	}
 	assert.throws(() => readFileSync(trace), {code:"ENOENT"});
 	const refuse = spawnSync(join(root,"scripts/runner-build.sh"),[pin],{encoding:"utf8",env:{...env,WLP_RUNNER_PUSH:"ghcr.io/windlassai/windlass-runner:fixture"}});

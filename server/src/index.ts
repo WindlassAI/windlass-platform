@@ -11,14 +11,18 @@
  * See config.ts for the variables.
  */
 
+import { debuglog } from "node:util";
 import { createClient, type Registry } from "./client.js";
 import { serviceParams } from "./auth.js";
-import { isActorGone } from "./actors/internal.js";
+import { isActorGone, isSessionGone } from "./actor-errors.js";
 import { RETENTION_PATH } from "./runner/frame-auth.js";
 
 import { runnerResponse } from "./runner-routes.js";
+import { INSTALL_SCRIPT_PATH, installScriptResponse } from "./install-script.js";
 import { modelRelayRoute } from "./model-relay-route.js";
 import { apiRoute } from "./api-routes.js";
+import { BILLING_WEBHOOK_PATH, billingWebhookRoute } from "./billing/route.js";
+import { billing } from "./billing/config.js";
 import { RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH } from "./runner/control.js";
 import { config, githubConfig, ownEngineEndpoint, snapshotsFor } from "./config.js";
 import { DEFAULT_ENDPOINT, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "./contract.js";
@@ -33,7 +37,12 @@ import type { SandboxLayer } from "./sandbox/api.js";
 import { getSignIns } from "./signin/index.js";
 import { reportWebhook, startupProblem, warnAboutConnectionTokens } from "./startup.js";
 
+const debug = debuglog("wlp");
 process.on("unhandledRejection", (reason) => {
+	if (isSessionGone(reason)) {
+		debug("A call outlived its actor.");
+		return;
+	}
 	console.error("[wlp] unhandled promise rejection:", reason);
 });
 
@@ -83,6 +92,21 @@ if (layer.sandboxes.sweepDataVolumes) {
 	void sweep();
 	setInterval(sweep, 30 * 60_000).unref();
 }
+if (layer.sandboxes.owners) {
+	// Hosted sandboxes whose session is gone (deleted, or lost with an older deployment): each owner's actor removes its own.
+	let client: ReturnType<typeof createClient<Registry>> | undefined;
+	const sweep = async () => {
+		const owners = await layer.sandboxes.owners!();
+		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
+		for (const uid of owners) {
+			await client.user.get([uid], { params: serviceParams() }).internalSweepSandboxes()
+				.catch((error: unknown) => { if (!isActorGone(error)) console.warn(`[wlp] sandbox.orphan_sweep uid=${uid}: deferred`); });
+		}
+	};
+	const run = () => void sweep().catch(() => console.warn("[wlp] sandbox.orphan_sweep deferred"));
+	setTimeout(run, 60_000).unref();
+	setInterval(run, 30 * 60_000).unref();
+}
 const signIns = await getSignIns();
 console.log(`[wlp] sign-in commands run in ${signIns.describe}`);
 const windlassProblem = (await layer.windlass.problem()) ?? (await signIns.check());
@@ -114,6 +138,15 @@ try {
 	process.exit(1);
 }
 
+// Billing (docs/billing.md): read once, so that a setting that is missing stops the server here, with its name.
+try {
+	const settings = billing();
+	console.log(settings ? `[wlp] billing: ${settings.provider.name}; webhooks to ${BILLING_WEBHOOK_PATH}` : "[wlp] billing: off (WLP_BILLING_PROVIDER is not set); the deployment's limits apply");
+} catch (error) {
+	console.error(`[wlp] billing's configuration is not usable: ${error instanceof Error ? error.message : "unknown error"}`);
+	process.exit(1);
+}
+
 // The web app, where this server serves it too (WLP_WEB_DIR): its files, and its page for every address of the app.
 const web = config.webDir ? webFiles(config.webDir, {
 	endpoint: config.browsers.endpoint ?? (config.engine.remote ? null : DEFAULT_ENDPOINT),
@@ -128,12 +161,15 @@ async function route(request: Request): Promise<Response> {
 	if (relayRoute) return relayRoute;
 	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
+	if (pathname === INSTALL_SCRIPT_PATH) return installScriptResponse(request);
 	const api = await apiRoute(request);
 	if (api) return api;
 	if (pathname === PLATFORM_CONNECTION_PATH) return platformConnectionResponse(request);
 	// Where GitHub sends a user's browser back to when they connect: the GitHub App's callback URL.
 	if (pathname === GITHUB_CALLBACK_PATH) return githubCallbackResponse(request);
 	if (pathname === "/github/webhook") return (await webhookRoute(request))!;
+	// The payment provider's webhooks (docs/billing.md); not found where billing is off.
+	if (pathname === BILLING_WEBHOOK_PATH) return billingWebhookRoute(request);
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.
 	if (pathname === "/health") return registry.routes.health();
 	const page = web ? await web(request) : null;

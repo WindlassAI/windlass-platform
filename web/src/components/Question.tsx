@@ -114,6 +114,10 @@ export interface Interactive {
 	allowHost?: ((host: string) => Promise<HostAllowed>) | null;
 	/** The session's repository of the GitHub connection, for a link to its settings; null without one. */
 	repositoryId?: GithubId | null;
+	/** The id of the agent's open request for a secret (`SessionSnapshot.secretRequest`), answered above the field; null when none is open. */
+	secretRequestId?: string | null;
+	/** A work item's builder: its requests are answered on the item's page. */
+	itemId?: string | null;
 }
 
 const InteractiveContext = createContext<Interactive | null>(null);

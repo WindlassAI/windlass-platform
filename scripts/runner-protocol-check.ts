@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { parseRunnerFrame } from "../server/src/runner/control.js";
 import { mock } from "node:test";
-import { ConversationLost, RunnerChannel, ServerChannel, type ChannelSocket } from "../server/src/runner/channel.js";
+import { ConversationLost, RunnerChannel, ServerChannel, type ChannelSocket, type ConversationRecord } from "../server/src/runner/channel.js";
 import { ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, RUNNER_GRACE_MS, WINDOW_BYTES, parseFrame, validArgs, type Operation } from "../server/src/runner/protocol.js";
 
 let failures = 0;
@@ -498,10 +498,133 @@ async function strangers(): Promise<void> {
 	s.close(); r.close();
 }
 
+/** What a session actor's storage holds of a durable conversation (runner/journal.ts), kept in memory for the check. */
+class Storage {
+	record: ConversationRecord | null = null;
+	/** The outgoing writer: what `unsaved` says, stored, then let out. */
+	save(ch: ServerChannel): void {
+		const u = ch.unsaved();
+		if (!u) return;
+		if (u.conversation === null) this.record = null;
+		else {
+			if (u.fresh || !this.record) this.record = { conversation: u.conversation, sent: 0, acked: 0, received: 0, frames: [] };
+			const r = this.record;
+			r.frames = [...r.frames.filter(([seq]) => seq > u.acked), ...u.frames.filter(([seq]) => seq > u.acked)];
+			r.sent = Math.max(r.sent, u.sent);
+			r.acked = Math.max(r.acked, u.acked);
+		}
+		ch.saved(u);
+	}
+	/** The timeline's writer: what was received, committed with what it produced, then acknowledged. */
+	commit(ch: ServerChannel): void {
+		const n = ch.receivedCount;
+		if (this.record && this.record.conversation === ch.conversationId) {
+			this.record.received = Math.max(this.record.received, n);
+			ch.committed(ch.conversationId, n);
+		}
+	}
+	/** A copy, as a restarted server reads it. */
+	read(): ConversationRecord | null {
+		return this.record && structuredClone(this.record);
+	}
+}
+
+/** A durable server end whose storage is `store`, saved by hand as the actor's writers would. */
+function durable(store: Storage, from: ConversationRecord | null = null) {
+	const { ch, resets } = server();
+	ch.keepIn(() => undefined, from);
+	return { ch, resets };
+}
+
+async function durableRestart(): Promise<void> {
+	const store = new Storage();
+	const { ch: s1 } = durable(store);
+	const { ch: r, log } = runner();
+	const a = join(s1, r);
+	store.save(s1);
+	const out1: string[] = [];
+	const proc = s1.start({ ...box, tag: "t9", argv: ["windlass", "acp"] }, (_, data) => out1.push(data));
+	a.flush();
+	expect("durable: a frame goes out only once it is stored (written ahead)", log.ops.length === 0);
+	store.save(s1);
+	a.flush();
+	const [start] = log.held;
+	expect("durable: once stored it goes", start?.name === "start");
+	r.respond(start, null);
+	r.output(start.id, 1, "one");
+	a.flush();
+	store.commit(s1);
+	r.output(start.id, 1, "two");
+	a.flush();
+	mock.timers.tick(ACK_MS);
+	a.flush();
+	expect("durable: only what is committed is acknowledged", out1.join() === "one,two" && r.buffered.frames === 1, `runner holds ${r.buffered.frames}`);
+	// Written while the link is about to break: stored, never delivered.
+	s1.write(proc.id, "steer");
+	void outcome(s1.request("writeSecretFile", { ...box, path: "/dev/shm/access-token-box.json", content: "SECRET-TOKEN-VALUE" }));
+	void outcome(s1.request("modelRelayToken", { ...box, lease: "a".repeat(32), accessToken: "RELAY-TOKEN-VALUE-0123", expiresAt: 1 }));
+	store.save(s1);
+	const stored = JSON.stringify(store.read());
+	expect("durable: no frame that carries a token is stored", !stored.includes("SECRET-TOKEN-VALUE") && !stored.includes("RELAY-TOKEN-VALUE"));
+	a.cut();
+	// The server is gone; the runner keeps its process, which goes on printing.
+	s1.abandon();
+	r.output(start.id, 1, "three");
+	const out2: string[] = [];
+	const { ch: s2, resets } = durable(store, store.read());
+	const taken = s2.adoptProcess(start.id, (_, data) => out2.push(data));
+	const b = join(s2, r);
+	b.flush();
+	mock.timers.tick(ACK_MS);
+	b.flush();
+	expect("durable: the restarted server resumes the same conversation; the runner resets nothing", log.resets.length === 0 && resets.length === 0 && s2.connected);
+	expect("durable: output received but not committed, and output made during the gap, arrive once", out2.join() === "two,three", out2.join());
+	expect("durable: frames the runner had not received are sent again, once", log.input.join() === "steer");
+	expect("durable: a token's frame goes again as a cancel the runner ignores", !log.ops.includes("writeSecretFile") && !log.ops.includes("modelRelayToken") && log.cancels.length === 0, log.ops.join());
+	r.end(start.id, done);
+	b.flush();
+	expect("durable: the process taken up ends as it ends", (await taken!.ended).code === 0);
+	store.commit(s2);
+	mock.timers.tick(ACK_MS);
+	b.flush();
+	store.save(s2);
+	expect("durable: once all is committed and acknowledged, nothing is held", r.buffered.frames === 0 && s2.buffered.frames === 0 && (store.read()?.frames.length ?? -1) === 0);
+}
+
+async function durablePastGrace(): Promise<void> {
+	const store = new Storage();
+	const { ch: s1 } = durable(store);
+	const { ch: r, log } = runner();
+	const a = join(s1, r);
+	s1.start({ ...box, tag: "t10", argv: ["windlass", "acp"] }, () => {});
+	store.save(s1);
+	a.flush();
+	r.respond(log.held[0], null);
+	a.flush();
+	store.commit(s1);
+	a.cut();
+	s1.abandon();
+	// The runner waited out its grace: the conversation and its processes are let go (the orphan rule).
+	mock.timers.tick(RUNNER_GRACE_MS);
+	const { ch: s2, resets } = durable(store, store.read());
+	const taken = s2.adoptProcess(log.held[0].id, () => {});
+	const b = join(s2, r);
+	b.flush();
+	const end = await taken!.ended;
+	expect("durable: past the runner's grace the restarted server starts a new conversation, and the process it held ends as lost", log.resets.length === 1 && resets.length === 1 && end.error instanceof ConversationLost);
+	const next = s2.request("state", box);
+	store.save(s2);
+	b.flush();
+	r.respond(log.held[1], "running");
+	b.flush();
+	expect("durable: and the new conversation serves", await next === "running");
+	expect("durable: storage then holds the new conversation", store.read()?.conversation === s2.conversationId);
+}
+
 async function main(): Promise<void> {
 	mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_000_000 });
 	try {
-		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, harnessCreate, mismatch, liveness, order, expiry, closing, strangers]) await check();
+		for (const check of [dropAndResume, actorWakes, runnerRestarts, grace, stream, large, untrusted, harnessCreate, mismatch, liveness, order, expiry, closing, strangers, durableRestart, durablePastGrace]) await check();
 	} finally { mock.timers.reset(); }
 	timers();
 	console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

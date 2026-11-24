@@ -47,9 +47,10 @@ export function sessionModelWords(summary: Pick<SessionSummary, "harness" | "har
 /** A harness a machine's runner reported, as `MachineSummary.harnesses` lists it. */
 export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 
-/** Its sign-in in a few words: "signed in", "sign in needed", "unknown". */
+// The same words on every page. "unknown" is a runner that could not check: the agent may well run, so it is never said to be unable to.
+/** Its sign-in in a few words: "signed in", "sign in needed", "couldn't check the sign-in". */
 export function signInWords(harness: ReportedHarness): string {
-	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "unknown";
+	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "couldn't check the sign-in";
 }
 
 /** The command that signs a harness in on its machine, run inside the runner's container. */

@@ -34,6 +34,7 @@ import { GithubStandin } from "./github-standin.js";
 import { sessionCapabilities } from "../server/src/sandbox/harnesses.js";
 import {
 	type AuthResult,
+	type RepositoryEnvironment,
 	type WindlassDelta,
 	MAX_PROMPT_CHARS,
 	type GithubId,
@@ -67,13 +68,16 @@ if (githubOnly && (!OWN_SERVER || !FAKE || identityOnly)) throw new Error("--git
 if (identityOnly && (!OWN_SERVER || !FAKE)) throw new Error("--identity-only requires a local fake server");
 const idleOnly = args.includes("--idle-only");
 if (idleOnly && !OWN_SERVER) throw new Error("--idle-only requires a server of its own");
+/** Only the checks of a turn that pauses and resumes across a restart (WLP_TURN_RESUME). */
+const resumeOnly = args.includes("--resume-only");
+if (resumeOnly && !OWN_SERVER) throw new Error("--resume-only requires a server of its own");
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
 /** How long the server this script starts lets a question wait before it declines it: short, so the wait can be watched. */
 const QUESTION_MS = FAKE ? 8_000 : 20_000;
 
-/** The ceiling on a person's agents working at once that this script's cases assume: its servers are started with it (WLP_FACTORY_RUNNING_TURNS). */
+/** The ceiling on a person's hosted agents working at once that this script's cases assume: its servers are started with it (WLP_FACTORY_HOSTED_RUNNING). */
 const RUNNING_CEILING = 3;
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
@@ -207,7 +211,7 @@ class Server {
 			WLP_DAILY_SANDBOX_SECONDS: "unlimited",
 			WLP_MAX_KEPT_SANDBOXES: "unlimited",
 			// A person's ceiling on agents working at once, set to what the checks of that limit count to.
-			WLP_FACTORY_RUNNING_TURNS: String(RUNNING_CEILING),
+			WLP_FACTORY_HOSTED_RUNNING: String(RUNNING_CEILING),
 			...extraEnv,
 		};
 		// The local engine asks browsers for no token. An admin token in the shell this is run from is some
@@ -222,16 +226,16 @@ class Server {
 		};
 		child.stdout?.on("data", keep);
 		child.stderr?.on("data", keep);
-		child.on("exit", (code, signal) => {
+		child.on("close", (code, signal) => {
 			if (this.child === child) this.child = null;
-			log.write(`\n[e2e] server exited: code ${code} signal ${signal}\n`);
+			log.end(`\n[e2e] server exited: code ${code} signal ${signal}\n`);
 		});
 
 		// The HTTP routes come up once the node has registered with the engine.
 		await waitFor(
 			"the server to answer",
 			async () => {
-				if (!this.child) throw new Error(`the server exited while starting; see ${this.logFile}\n${this.output.slice(-1500)}`);
+				if (!this.child) throw new Error(`the server exited while starting (code ${child.exitCode}, signal ${child.signalCode})`);
 				try {
 					return (await fetch(`${API}/platform/info`)).ok;
 				} catch {
@@ -240,7 +244,9 @@ class Server {
 			},
 			120_000,
 			400,
-		);
+		).catch(error => {
+			throw new Error(`${error.message}\nLast lines of ${this.logFile}:\n${this.output.trimEnd().split("\n").slice(-80).join("\n")}`, { cause: error });
+		});
 	}
 
 	/** Stops the server as Ctrl-C would. */
@@ -373,6 +379,7 @@ async function serviceUser(server: Server, uid: string) {
 		internalSessionChanged(summary: SessionSummary): Promise<void>;
 		internalAcquireRun(sessionId: string): Promise<{ ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 		internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
+		internalSweepSandboxes(): Promise<void>;
 	};
 }
 
@@ -582,14 +589,15 @@ async function identityChecks(client: Client, server: Server) {
 			sessionSocket.onError(() => {});
 			userSocket.on("sessions", () => {});
 			sessionSocket.on("summary", () => {});
-			await Promise.all([userSocket.me(), sessionSocket.snapshot()]);
-			let userClosed = false, sessionClosed = false;
-			userSocket.onStatusChange(status => { if (status === "disconnected") userClosed = true; });
-			sessionSocket.onStatusChange(status => { if (status === "disconnected") sessionClosed = true; });
-			await userOf(second).signOutEverywhere();
-			await waitFor("both subscriptions to disconnect", () => userClosed && sessionClosed, 8_000, 40);
-		} finally {
-			await Promise.all([userSocket.dispose(), sessionSocket.dispose()]);
+			await withTimeout("open the user and session subscriptions", Promise.all([userSocket.me(), sessionSocket.snapshot()]), 10_000);
+			// Stop each subscription on its first server disconnect, before the client reconnects with the revoked token.
+			const closed = [userSocket, sessionSocket].map(socket => new Promise<void>((resolve, reject) => {
+				socket.onClose(() => socket.dispose().then(resolve, reject));
+			}));
+			await withTimeout("sign out and close both subscriptions", Promise.all([userOf(second).signOutEverywhere(), ...closed]), 15_000);
+		} catch (error) {
+			await withTimeout("dispose the user and session subscriptions", Promise.all([userSocket.dispose(), sessionSocket.dispose()]), 10_000);
+			throw error;
 		}
 		await refused(() => userOf(first).me(), "invalid_token");
 		await refused(() => userOf(second).me(), "invalid_token");
@@ -834,6 +842,11 @@ async function main(server: Server | null): Promise<void> {
 
 	if (idleOnly && server) {
 		await idleChecks(server, client, uid, token, availableProfile, ASK, LONG);
+		await client.dispose().catch(() => undefined);
+		return;
+	}
+	if (resumeOnly && server) {
+		await resumeChecks(server, client, uid, token, availableProfile, LONG);
 		await client.dispose().catch(() => undefined);
 		return;
 	}
@@ -1675,26 +1688,25 @@ async function main(server: Server | null): Promise<void> {
 	});
 
 	if (OWN_SERVER) {
-		await check("a question nobody answers is declined by the platform when its time is up", async () => {
+		await check("a question nobody answers in a hosted sandbox ends the turn when its time is up, and the sandbox pauses at once", async () => {
 			const asked = await ask();
-			const from = askWatch.summaries.length - 1;
-			await waitFor("the platform to decline the question", () => askWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
+			await waitFor("the platform to settle the question", () => askWatch.questions.at(-1) === null, QUESTION_MS + 20_000);
 			const waited = Date.now() - asked.askedAt;
+			// WLP_HOSTED_QUESTION_TIMEOUT_MS is at most WLP_QUESTION_TIMEOUT_MS: the short time this server was started with.
 			assert(waited >= QUESTION_MS - 200 && waited < QUESTION_MS + 10_000, `the question was settled after ${waited} ms; its time was ${QUESTION_MS} ms`);
 			const ended = await askWatch.untilEnded(asked.turn);
-			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
+			assert(ended.outcome !== "succeeded", `outcome is ${ended.outcome}: the turn went on without an answer`);
 			const said = askWatch.items.find((item) => item.kind === "platform" && item.turn === asked.turn && item.text.includes("Nobody answered"));
-			assert(said?.kind === "platform" && said.level === "warn", "no platform item says that nobody answered");
-			const [answered] = answeredOf(asked);
-			assert(answered && answered.event.data?.choice === "deny" && answered.event.data.approve === false && String(answered.event.data.note).includes("Nobody answered"), `approval.answered is ${plain(answered?.event.data)}`);
-			assert(answered.seq > said.seq, "the platform's item does not come before the answer it explains");
+			assert(said?.kind === "platform" && said.level === "warn" && /so the turn was ended and its sandbox paused\. Send a prompt to go on\.$/.test(said.text), `no platform item says that nobody answered: ${plain(said)}`);
 			assert(askWatch.ofCall(asked.turn, "tool.started", asked).length === 0, "the call was started although nobody allowed it");
-			assert(askWatch.statusesFrom(from) === "waiting > running > idle", `statuses from the question on were ${askWatch.statusesFrom(from)}`);
+			await waitFor("the sandbox to pause", () => askWatch.summaries.at(-1)?.sandbox === "paused", 20_000);
+			const paused = askWatch.items.find((item) => item.kind === "platform" && item.text.startsWith("Paused the sandbox: its turn ended on a question nobody answered."));
+			assert(paused, "no line says the sandbox was paused for it");
 			await refused(() => askWatch.conn.answer({ questionId: asked.id, choice: "once" }), "no_question");
-			return `declined after ${waited} ms: "${said.text}"; the model was told: "${String(answered.event.data.note)}"`;
+			return `ended after ${waited} ms (${ended.outcome}): "${said.text}"; then "${paused.kind === "platform" ? paused.text : ""}"`;
 		});
 	} else {
-		skip("a question nobody answers is declined by the platform when its time is up", "needs its own server, started with a short time for questions");
+		skip("a question nobody answers in a hosted sandbox ends the turn when its time is up, and the sandbox pauses at once", "needs its own server, started with a short time for questions");
 	}
 
 	await check("stop() during a question withdraws it and ends the turn as interrupted", async () => {
@@ -2527,13 +2539,15 @@ async function main(server: Server | null): Promise<void> {
 		"a sandbox found gone is replaced only with a place of its own: at the cap the replacement is refused",
 		"a free with a prompt sent at the same moment: the prompt's sandbox and its place survive",
 		"a prompt refused for a place gives its running slot back at once, and a late release leaves a newer claim",
+		"a sandbox that outlived its session's delete holds no place, and the sweep removes it",
 	];
 	if (server && FAKE) {
 		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
 		const PROVIDER_MS = 1_500;
+		const holdRemovals = join(server.storage, "hold-sandbox-removals");
 		await server.stop();
 		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
-		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_MAX_KEPT_SANDBOXES: "1", WLP_FAKE_CREATE_FAILS: "1", WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
+		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_MAX_KEPT_SANDBOXES: "1", WLP_FAKE_HOLD_REMOVALS: holdRemovals, WLP_FAKE_CREATE_FAILS: "1", WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
 		const someone = await demoSignIn();
 		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
 		const turnOf = async (id: string, text: string) => {
@@ -2571,7 +2585,7 @@ async function main(server: Server | null): Promise<void> {
 				assert((await turnOf(other.id, "Write a short program")).outcome === "succeeded", "the other session's turn failed");
 				const before = madeFor(gone.id).length;
 				const replaced = await turnOf(gone.id, "Write a short program");
-				assert(replaced.outcome === "error" && /^You keep 1 sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
+				assert(replaced.outcome === "error" && /^You keep 1 hosted sandbox, the most an account may have/.test(replaced.message ?? ""), `the replacement ended ${replaced.outcome}: ${replaced.message}`);
 				assert(madeFor(gone.id).length === before, "a sandbox was made for it past the cap");
 				const usage = await theirs.usage();
 				assert(usage.sandboxes.kept === 1 && usage.kept[0]?.sessionId === other.id, `kept: ${usage.sandboxes.kept}, ${plain(usage.kept.map((k) => k.sessionId))}`);
@@ -2667,6 +2681,32 @@ async function main(server: Server | null): Promise<void> {
 			} finally {
 				await theirs.deleteSession(holder.id).catch(() => undefined);
 				await theirs.deleteSession(refusedOne.id).catch(() => undefined);
+			}
+		});
+
+		await check(OWNER_CHECKS[4], async () => {
+			// Keep the marked sandbox through every removal attempt made while deleting its session.
+			const orphaned = await theirs.createSession({ profile: availableProfile as never, title: "Outlives its delete" });
+			assert((await turnOf(orphaned.id, "Write a short program (outlive-delete)")).outcome === "succeeded", "the turn failed");
+			writeFileSync(holdRemovals, "");
+			await theirs.deleteSession(orphaned.id);
+			await waitFor("the provider to refuse the removal", () => server.output.includes("fake sandbox removal held id="), 5_000);
+			// With the cap at 1, the orphan would hold the one place: another agent starts all the same.
+			const next = await theirs.createSession({ profile: availableProfile as never, title: "After the orphan" });
+			try {
+				const ended = await turnOf(next.id, "Write a short program");
+				assert(ended.outcome === "succeeded", `the next agent's turn ended ${ended.outcome}: ${ended.message}`);
+				rmSync(holdRemovals);
+				await (await serviceUser(server, someone.profile.uid)).internalSweepSandboxes();
+				const removals = () => lines(`\\[wlp\\] sandbox\\.orphan_removed uid=\\S+ id=\\S+ session=${orphaned.id}`);
+				await waitFor("the orphan removal to be logged", () => removals().length > 0, 5_000);
+				const removed = removals();
+				assert(removed.length === 1, `${removed.length} orphan removals logged`);
+				const usage = await theirs.usage();
+				assert(usage.sandboxes.kept === 1 && usage.kept.every((kept) => kept.sessionId !== orphaned.id), `kept: ${plain(usage.kept.map((k) => k.sessionId))}`);
+				return removed[0]!.replace(/^.*sandbox\.orphan_removed /, "");
+			} finally {
+				await theirs.deleteSession(next.id).catch(() => undefined);
 			}
 		});
 	} else {
@@ -2818,6 +2858,14 @@ async function main(server: Server | null): Promise<void> {
 		await idleChecks(server, client, uid, token, availableProfile, ASK, LONG);
 	} else {
 		for (const name of IDLE_CHECKS) skip(name, "needs its own server, restarted with short idle times");
+	}
+
+	// --- a turn that pauses and resumes across a restart (WLP_TURN_RESUME) -------------------------
+
+	if (server) {
+		await resumeChecks(server, client, uid, token, availableProfile, LONG);
+	} else {
+		for (const name of RESUME_CHECKS) skip(name, "needs its own server, restarted with WLP_TURN_RESUME");
 	}
 
 	// --- the agent's memory outlives its sandbox: a server whose sandboxes hold Windlass's sessions, and a bucket ---
@@ -3273,6 +3321,246 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 }
 
 // ---------------------------------------------------------------------------------------------
+// A turn that pauses and resumes across a restart (WLP_TURN_RESUME, server/src/actors/turn-resume.ts)
+// ---------------------------------------------------------------------------------------------
+
+const RESUME_CHECKS = [
+	"a turn running when the server stops (SIGTERM) pauses, and resumes as the same turn on the next server",
+	"a turn cut off by a crash (SIGKILL) is woken by its heartbeat on the next server, and resumes",
+	"a message sent to a paused turn is held, shown, and given to the agent when it resumes; Stop ends a paused turn at once",
+	"a resumed turn gets what is left of its limit, at least the floor: the paused time does not count",
+	"an agent whose memory went with its sandbox is given the whole task, rebuilt from the timeline",
+	"crashes in a row while resuming, with nothing done in between, end the turn as interrupted",
+];
+
+/**
+ * Turns that outlive their server: each server here is started with WLP_TURN_RESUME, a heartbeat of a few seconds, and,
+ * on the fake layer, events slow enough that a turn is still running when the server goes. The fake layer's sandboxes
+ * live in the server's memory, so after a restart a turn resumes in a new one: with Windlass's sessions kept per user
+ * (as on Docker) its memory is kept, and with WLP_FAKE_BACKUP_DIR (as on E2B) it goes with the old sandbox.
+ */
+async function resumeChecks(server: Server, client: Client, uid: string, token: string, profile: string, LONG: string): Promise<void> {
+	type Ended = Extract<TimelineItem, { kind: "turn.ended" }>;
+	type Platform = Extract<TimelineItem, { kind: "platform" }>;
+	const userHandle = client.user.getOrCreate([uid], { params: { token } });
+	const plainEnv: Record<string, string> = { WLP_LOGIN_TTL_MS: String(loginTtlMs) };
+	const base: Record<string, string> = { WLP_TURN_RESUME: "1", WLP_TURN_HEARTBEAT_MS: "4000", WLP_LOGIN_TTL_MS: String(loginTtlMs), ...(FAKE && { WLP_FAKE_DELAY_MS: "60" }) };
+	let env = base;
+	const restart = async (how: "stop" | "crash", extra: Record<string, string> = {}) => {
+		if (how === "stop") await server.stop();
+		else await server.crash();
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
+		env = { ...base, ...extra };
+		await server.start(env);
+	};
+	const handleOf = (id: string) => client.agentSession.get([uid, id], { params: { token } });
+	/** The sessions made here, deleted at the end: their sandboxes go with them. */
+	const made: string[] = [];
+	const make = async (title: string, selectedProfile = profile) => {
+		const id = (await userHandle.createSession({ profile: selectedProfile as never, title })).id;
+		made.push(id);
+		return id;
+	};
+	try {
+	/** Starts a turn and waits until it streams and its first events are stored: the agent has its prompt. */
+	const startLong = async (id: string, text = LONG) => {
+		const watch = new Watch(client, uid, id, token);
+		try {
+			const { turn } = await watch.conn.prompt({ text });
+			await waitFor(`turn ${turn} to stream`, () => watch.deltas.some((delta) => delta.turn === turn) || watch.items.some((item) => item.kind === "windlass" && item.turn === turn), TURN_MS);
+			await sleep(1_500);
+			return turn;
+		} finally {
+			await watch.conn.dispose().catch(() => undefined);
+		}
+	};
+	/** Snapshots until turn `turn` has ended and the session is idle. */
+	const endedOf = (id: string, turn: number, timeoutMs = 3 * TURN_MS) => waitFor(`turn ${turn} of ${id} to end`, async () => {
+		const snap = await handleOf(id).snapshot();
+		const ended = snap.timeline.find((item): item is Ended => item.kind === "turn.ended" && item.turn === turn);
+		return ended && snap.summary.status === "idle" ? { snap, ended } : undefined;
+	}, timeoutMs, 500);
+	/** What a resumed turn's timeline must say: one pause, one resume, one end, and nothing cut short. */
+	const resumedOnce = (timeline: TimelineItem[], turn: number) => {
+		const notes = timeline.filter((item): item is Platform => item.kind === "platform" && item.turn === turn);
+		const paused = notes.filter((item) => item.code === "turn_paused");
+		const resumed = notes.filter((item) => item.code === "turn_resumed");
+		const ends = timeline.filter((item) => item.kind === "turn.ended" && item.turn === turn);
+		assert(ends.length === 1, `turn ${turn} has ${ends.length} turn.ended items`);
+		assert(paused.length >= 1 && resumed.length >= 1, `turn ${turn} paused ${paused.length} times and resumed ${resumed.length} times`);
+		assert(!notes.some((item) => /cut short/.test(item.text)), "a line says the turn was cut short");
+		dense(timeline);
+		return { paused, resumed };
+	};
+	/** The prompts the agent was given in the turn after its resume, as the engine echoed them. */
+	const promptsAfter = (timeline: TimelineItem[], turn: number, seq: number) =>
+		timeline.filter((item) => item.kind === "windlass" && item.turn === turn && item.seq > seq && item.event.type === "inbox.enqueued").map((item) => JSON.stringify(item.kind === "windlass" ? item.event.data : null));
+	let ok = true;
+	const step = async (name: string, body: () => Promise<string | undefined>) => {
+		if (!ok) {
+			skip(name, "an earlier check of resuming failed");
+			return;
+		}
+		ok = await check(name, body);
+	};
+
+	await restart("stop");
+
+	await step(RESUME_CHECKS[0], async () => {
+		const id = await make("Paused by a deploy");
+		const turn = await startLong(id);
+		const from = server.output.length;
+		await restart("stop");
+		const log = server.output.slice(from);
+		assert(log.includes(`[wlp] turn.paused session=${id} turn=${turn} reason=restart`), "the server did not log the pause");
+		assert(log.includes(`[wlp] sandbox.kept_for_resume`) && log.includes(`session=${id}`), "the sandbox of the paused turn was not kept running for it");
+		const { snap, ended } = await endedOf(id, turn);
+		const { paused, resumed } = resumedOnce(snap.timeline, turn);
+		assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+		assert(paused[0]!.text === "The server is restarting; this turn will resume by itself.", `the pause says: ${paused[0]!.text}`);
+		assert(resumed[0]!.text.startsWith("Resumed after a server restart (the turn was paused "), `the resume says: ${resumed[0]!.text}`);
+		assert(snap.summary.turns === turn && snap.summary.lastOutcome === "succeeded", `summary: ${plain(snap.summary)}`);
+		if (FAKE) {
+			const given = promptsAfter(snap.timeline, turn, resumed[0]!.seq);
+			assert(given.some((text) => text.includes("The platform restarted while you were working on this turn")), `the agent was given: ${given.join(" | ").slice(0, 300)}`);
+		}
+		return `turn ${turn}: ${resumed[0]!.text}, then ${ended.outcome}`;
+	});
+
+	await step(RESUME_CHECKS[1], async () => {
+		const id = await make("Cut off by a crash");
+		const turn = await startLong(id);
+		const from = server.output.length;
+		await restart("crash");
+		// Nothing asks the session anything: the wake its heartbeat kept scheduled brings it back.
+		await waitFor("the heartbeat's wake to pause the turn", () => server.output.slice(from).includes(`[wlp] turn.crashed session=${id} turn=${turn} crashes=1`), 60_000, 250);
+		const { snap, ended } = await endedOf(id, turn);
+		const { paused, resumed } = resumedOnce(snap.timeline, turn);
+		assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+		assert(paused[0]!.text === "The server stopped while this turn was running; it will resume by itself.", `the pause says: ${paused[0]!.text}`);
+		assert(resumed[0]!.text.startsWith("Resumed after a server restart"), `the resume says: ${resumed[0]!.text}`);
+		return `woken by its heartbeat; ${resumed[0]!.text}`;
+	});
+
+	if (!FAKE) {
+		for (const name of RESUME_CHECKS.slice(2)) skip(name, "times its turns by the fake layer's events");
+		return;
+	}
+
+	// A server that waits before it resumes, so the pause can be looked at; a short limit, with a floor.
+	const LIMIT_MS = 16_000;
+	const FLOOR_MS = 7_000;
+	const DELAY_MS = 75_000;
+	const limits = { WLP_TURN_TIMEOUT_MS: String(LIMIT_MS), WLP_TURN_RESUME_FLOOR_MS: String(FLOOR_MS), WLP_TURN_RESUME_DELAY_MS: String(DELAY_MS) };
+	const held = { id: "", turn: 0, stopped: "", stoppedTurn: 0, startedAt: 0, problem: "the check did not get that far" as string | null };
+	await step(RESUME_CHECKS[2], async () => {
+		await restart("stop", limits);
+		held.id = await make("Held while paused");
+		held.stopped = await make("Stopped while paused");
+		held.startedAt = Date.now();
+		[held.turn, held.stoppedTurn] = await Promise.all([startLong(held.id), startLong(held.stopped)]);
+		// Most of its limit: what is left after the pause is less than the floor.
+		await sleep(Math.max(0, held.startedAt + LIMIT_MS - 6_000 - Date.now()));
+		await restart("stop", limits);
+		const watch = new Watch(client, uid, held.id, token);
+		try {
+			const answer = await watch.conn.prompt({ text: "Also keep the long build log (slow)." });
+			assert(answer.turn === held.turn && answer.steered === true, `the message was answered ${plain(answer)}`);
+			const snap = await watch.conn.snapshot();
+			assert(snap.summary.status === "paused" && snap.summary.paused?.reason === "restart" && snap.summary.paused.held === 1, `summary: ${plain(snap.summary)}`);
+			const row = snap.timeline.at(-1);
+			assert(row?.kind === "user" && row.held === true && row.steer === true && row.turn === held.turn, `the last item is ${plain(row).slice(0, 200)}`);
+		} finally {
+			await watch.conn.dispose().catch(() => undefined);
+		}
+		const stoppedHandle = handleOf(held.stopped);
+		await stoppedHandle.stop();
+		const after = await stoppedHandle.snapshot();
+		const end = after.timeline.find((item): item is Ended => item.kind === "turn.ended" && item.turn === held.stoppedTurn);
+		assert(end?.outcome === "stopped" && after.summary.status === "idle", `after Stop: ${plain(after.summary)}, ${plain(end)}`);
+		const { snap } = await endedOf(held.id, held.turn, DELAY_MS + 3 * TURN_MS);
+		const { resumed } = resumedOnce(snap.timeline, held.turn);
+		const given = promptsAfter(snap.timeline, held.turn, resumed[0]!.seq);
+		assert(given.some((text) => text.includes("Also keep the long build log (slow).") && text.includes("While the turn was paused, the person sent")), `the agent was given: ${given.join(" | ").slice(0, 300)}`);
+		assert(!server.output.includes(`[wlp] turn.resumed session=${held.stopped}`), "the stopped turn resumed");
+		held.problem = null;
+		return `held 1 message, given on resume; the other turn ended ${end.outcome} at once and did not resume`;
+	});
+
+	await step(RESUME_CHECKS[3], async () => {
+		assert(held.problem === null, held.problem ?? "");
+		const { snap, ended } = await endedOf(held.id, held.turn, 1_000);
+		const resumed = snap.timeline.find((item): item is Platform => item.kind === "platform" && item.turn === held.turn && item.code === "turn_resumed")!;
+		const limit = snap.timeline.find((item): item is Platform => item.kind === "platform" && item.turn === held.turn && item.text.includes("not counting the time it was paused"));
+		assert(limit, `no line says the limit stopped it; the turn ended ${ended.outcome}: ${snap.timeline.filter((item) => item.kind === "platform" && item.turn === held.turn).map((item) => item.kind === "platform" ? item.text : "").join(" | ")}`);
+		const segment = limit.at - resumed.at;
+		assert(segment >= FLOOR_MS - 1_000 && segment < FLOOR_MS + 8_000, `the resumed turn was stopped ${segment} ms after it resumed; its floor is ${FLOOR_MS} ms`);
+		assert(limit.at - held.startedAt > LIMIT_MS + 10_000, `the turn was stopped ${limit.at - held.startedAt} ms after it started: the pause was counted`);
+		return `"${limit.text}" ${segment} ms after the resume, ${limit.at - held.startedAt} ms after the start`;
+	});
+
+	await step(RESUME_CHECKS[4], async () => {
+		const bucket = join(server.storage, "resume-bucket");
+		const memory = { WLP_FAKE_BACKUP_DIR: bucket };
+		await restart("stop", memory);
+		const id = await make("Memory lost while paused", FAKE ? "docker-windlass-sandbox" : profile);
+		const first = new Watch(client, uid, id, token);
+		try {
+			const { turn } = await first.conn.prompt({ text: "Write a short program that prints the date." });
+			const ended = await first.untilEnded(turn);
+			assert(ended.outcome === "succeeded", `turn ${turn} ended ${ended.outcome}`);
+		} finally {
+			await first.conn.dispose().catch(() => undefined);
+		}
+		const turn = await startLong(id, `Now add a flag for the time zone. ${LONG}${FAKE ? " (secret)" : ""}`);
+		// The copy of its memory goes too: the new sandbox has none to restore.
+		rmSync(join(bucket, "sessions", uid, `${id}.tgz`), { force: true });
+		await restart("stop", memory);
+		const { snap, ended } = await endedOf(id, turn);
+		const { resumed } = resumedOnce(snap.timeline, turn);
+		assert(ended.outcome === "succeeded", `the turn ended ${ended.outcome}: ${ended.message ?? ""}`);
+		assert(snap.timeline.some((item) => item.kind === "platform" && item.turn === turn && item.text === "The agent no longer has its earlier conversation of this turn, so it was given the whole task again."), "no line says the agent was given the whole task");
+		const given = promptsAfter(snap.timeline, turn, resumed[0]!.seq).join(" | ");
+		for (const part of ["Your earlier conversation is gone", "Now add a flag for the time zone.", "The session's first prompt was", "Write a short program that prints the date.", "reconstructed by the platform from the session's timeline"]) {
+			assert(given.includes(part), `the agent's whole task lacks "${part}": ${given.slice(0, 400)}`);
+		}
+		if (FAKE) {
+			const events = snap.timeline.filter(item => item.turn === turn && item.seq > resumed[0]!.seq && item.kind === "windlass");
+			const source = (await import("../server/src/factory/untrusted.js")).untrustedWords.conversation;
+			assert(events.some(item => item.kind === "windlass" && item.event.type === "fake.prompt_untrusted" && item.event.data?.source === source), "rebuilt prompt missing its earlier-agent source");
+			assert(!snap.secretRequest && events.some(item => item.kind === "windlass" && item.event.type === "tool.settled" &&
+				item.event.data?.output === "A request coming from third-party text was not shown as a secret prompt."), "rebuilt conversation did not block the secret request");
+		}
+		return "this turn's message, the first prompt and a reconstruction of the earlier turn";
+	});
+
+	await step(RESUME_CHECKS[5], async () => {
+		await restart("stop");
+		const id = await make("Crashes while resuming");
+		const turn = await startLong(id);
+		// Resumed segments that get nowhere before the next crash: the fake layer's events come seconds apart.
+		const slow = { WLP_FAKE_DELAY_MS: "3000" };
+		for (let crash = 1; crash <= 4; crash++) {
+			const from = server.output.length;
+			await restart("crash", slow);
+			await waitFor(`the wake after crash ${crash}`, () => server.output.slice(from).includes(`[wlp] turn.crashed session=${id} turn=${turn} crashes=${crash}`), 60_000, 100);
+			if (crash < 4) await waitFor(`resume ${crash}`, () => server.output.slice(from).includes(`[wlp] turn.resumed session=${id} turn=${turn}`), 30_000, 50);
+		}
+		const { snap, ended } = await endedOf(id, turn);
+		assert(ended.outcome === "interrupted", `the turn ended ${ended.outcome}`);
+		assert(snap.timeline.some((item) => item.kind === "platform" && item.turn === turn && item.text === "The server stopped 3 times in a row while resuming this turn, with nothing done in between, so the turn was ended."), "no line says why it ended");
+		return `ended ${ended.outcome} after 3 resumes that each crashed`;
+	});
+	} finally {
+		for (const id of made) await userHandle.deleteSession(id).catch(() => undefined);
+		// Back to a server without resume for the checks that follow.
+		await server.stop();
+		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
+		await server.start(plainEnv);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
 // The copy of Windlass's session in the bucket (server/src/sandbox/backup.ts)
 // ---------------------------------------------------------------------------------------------
 
@@ -3675,7 +3963,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const offered = (await user.models()).models.map((candidate) => candidate.id);
 			const [model, other] = [offered[0], offered[1] ?? offered[0]];
 			const unavailable = info.profiles.find((candidate) => !candidate.available);
-			const NONE = { screenshots: false, profile: null, model: null, updatedAt: null };
+			const NONE = { screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null };
 
 			// Nothing is kept until something is saved: the page is there all the same, named after the agent on it.
 			const empty = await user.repository(harbor.id);
@@ -4484,6 +4772,18 @@ async function preparedSessions(server: Server) {
 		if (snapshotBenchmark) return await snapshotTimings(server, client, github, repo, uid, auth.token);
 		const command = 'test -f quick || sleep 31; mkdir -p node_modules; cp base.txt node_modules/built-at; if [ -n "${CHECK_TOKEN:-}" ]; then echo "$CHECK_TOKEN" > node_modules/secret; fi';
 		await user.saveRepositorySetup({repositoryId:repo.id, command});
+		// Only a prepared environment's build saves an image (environments.ts): ask for one and wait for how it ends.
+		async function build(): Promise<RepositoryEnvironment> {
+			const asked = Date.now();
+			await user.rebuildEnvironment({ repositoryId: repo.id, place: "hosted" });
+			return await waitFor("the environment build", async () => {
+				const env = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
+				// A build that could not start says why in its note; it would only be tried again half an hour later.
+				if (env && !env.attempt && env.note && env.note !== "Not built yet.") throw new Error("The build did not start: " + env.note);
+				if (env?.attempt) return env.attempt.finishedAt !== null && env.attempt.startedAt >= asked ? env : undefined;
+				return env?.ready && env.ready.startedAt >= asked ? env : undefined;
+			}, 10 * 60_000, 2000);
+		}
 		async function turn(hit: boolean, secret = false, branch = "main") {
 			const session = await user.createSession({profile:"docker-hardened", repository:{id:repo.id, branch}});
 			try {
@@ -4498,7 +4798,7 @@ async function preparedSessions(server: Server) {
 					assert(snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("CHECK_TOKEN")), "Expected setup to receive the fixture secret");
 					assert(!snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Saving a prepared sandbox")), "Secret-bearing setup attempted a commit");
 				}
-				const notice = snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Started from a prepared sandbox") && t.text.includes(base));
+				const notice = snapshot.timeline.some(t => t.kind === "platform" && t.text.includes("Started from a validated environment") && t.text.includes(base.slice(0, 12)));
 				assert(!!setup === !hit && notice === hit, "Unexpected setup or snapshot notice: " + plain(snapshot.timeline.filter(t => t.kind === "platform" || t.kind === "setup")).slice(-1800));
 				if (hit) {
 					const name = execFileSync("docker", ["ps", "-q", "--filter", "label=dev.windlass-platform.uid="+uid, "--filter", "label=dev.windlass-platform.session="+session.id], {encoding:"utf8"}).trim();
@@ -4524,6 +4824,20 @@ async function preparedSessions(server: Server) {
 			const warm = github.gitResponseBytes - beforeWarm;
 			assert(warm > 0 && warm < seeded, "A fresh session downloaded the full repository again");
 			pass("Two hosted sessions on the same private repository reuse Git objects", `${seeded} then ${warm} Git HTTP response bytes`);
+			const unbuilt = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
+			assert(!unbuilt, "An ordinary session saved a prepared image");
+			// The build uses the repository's default sandbox; a check validates what setup made.
+			await user.saveRepositoryDefaults({ repositoryId: repo.id, profile: "docker-hardened" });
+			// Once main's base.txt says "broken", the check calls a tool the sandbox does not have (exit 127): the
+			// sandbox's problem, which keeps a build from being promoted. A failure of the code alone would not.
+			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "built", command: "test -f node_modules/built-at && if grep -q broken base.txt; then wlp-no-such-tool; fi" }] });
+			const ready = await build();
+			assert(ready.state === "ready" && ready.ready?.snapshot === true && ready.ready.commit === base && ready.ready.checks.every(c => c.status === "passed"), "The environment was not promoted: " + plain(ready));
+			pass("A build runs setup and the saved checks, and is promoted when they pass");
+			github.commit(repo, "main", { "base.txt": "broken" }, "Break the check");
+			const failed = await build();
+			assert(failed.state === "failed" && failed.attempt?.failure?.kind === "not_found" && failed.attempt.failure.check === "built" && failed.ready?.commit === base && failed.ready.snapshot, "A failed build was not recorded as one, or replaced the ready one: " + plain(failed));
+			pass("A failed build is reported with its check and keeps the last ready image");
 			github.commit(repo,"main",{"base.txt":"next", "quick":""},"Source-only change");
 			github.commit(repo, "feature", {"feature.txt": "from feature"}, "Feature source", "main");
 			await turn(true, false, "feature");
@@ -4535,6 +4849,12 @@ async function preparedSessions(server: Server) {
 			github.commit(repo,"main",{"package-lock.json":"{ }"},"Changed lockfile");
 			await turn(false);
 			pass("A real session skips setup only for matching inputs, checks out current source, and gives the base commit to Windlass");
+			const stale = await waitFor("the environment marked stale", async () => {
+				const env = (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted");
+				return env?.state === "stale" ? env : undefined;
+			}, 20_000, 500).catch(async () => (await user.repositoryEnvironments(repo.id)).environments.find(e => e.place === "hosted"));
+			assert(stale?.state === "stale", "A session that missed the ready image did not mark it stale: " + plain(stale));
+			pass("A session whose ready image no longer matches marks the environment stale");
 			await user.saveRepositorySetup({ repositoryId: repo.id, command: "true" });
 			const remaining = execFileSync("docker", ["image", "ls", "-q", "--filter", "label=dev.windlass-platform.snapshot.uid="+uid], {encoding:"utf8"}).trim();
 			assert(!remaining, "Editing the setup command retained the old snapshot image");
@@ -4556,7 +4876,7 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
-		if (FAKE && !idleOnly && !githubOnly) {
+		if (FAKE && !idleOnly && !githubOnly && !resumeOnly) {
 			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {

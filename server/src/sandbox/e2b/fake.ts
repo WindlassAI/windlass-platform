@@ -17,7 +17,7 @@
  */
 
 import type { E2bNetworkConfig } from "./network.js";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo, type E2bState } from "./client.js";
+import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnectOptions, type E2bConnection, type E2bCreateInput, E2bLimitError, type E2bMetric, type E2bSandboxInfo, E2bSnapshotModeError, type E2bSnapshotInfo, type E2bState } from "./client.js";
 
 /** What runs a fake sandbox's commands. */
 export interface FakeMachine {
@@ -27,6 +27,8 @@ export interface FakeMachine {
 	/** The sandbox was paused: nothing in it runs until `resumed`. */
 	paused?(): Promise<void>;
 	resumed?(): Promise<void>;
+	/** The sandbox was started from its disk (`connect` with `reboot`): what ran in it before is gone. Default `resumed`. */
+	rebooted?(): Promise<void>;
 	/** The sandbox is gone. */
 	killed?(): Promise<void>;
 	/** What E2B now lets out of the sandbox: at create, and at every `updateNetwork`. Null: E2B's default. */
@@ -124,6 +126,8 @@ export interface FakeE2bOptions {
 	/** What every sandbox is made with, as a template's build decides. */
 	cpuCount?: number;
 	memoryMB?: number;
+	/** The size of the sandboxes of each template, where it is not `cpuCount` and `memoryMB`. */
+	templateSizes?: Record<string, { cpuCount: number; memoryMB: number }>;
 }
 
 export class FakeE2b implements E2bClient {
@@ -140,6 +144,8 @@ export class FakeE2b implements E2bClient {
 	filesystemSnapshots = true;
 	/** The build each template's default tag points at; a template not here is unknown. */
 	readonly builds = new Map<string, string>([["windlass-platform-sandbox", "build-1"], ["windlass-platform-sandbox-shots", "shots-1"]]);
+	/** What `metrics` answers for a sandbox, by id: its samples. None: no samples. */
+	readonly samples = new Map<string, E2bMetric[]>();
 	private next = 1;
 	private readonly now: () => number;
 
@@ -212,8 +218,8 @@ export class FakeE2b implements E2bClient {
 		return this.connection(id);
 	}
 
-	async connect(sandboxId: string, timeoutMs: number): Promise<E2bConnection | undefined> {
-		this.calls.push(`connect ${sandboxId} ${timeoutMs}`);
+	async connect(sandboxId: string, timeoutMs: number, options: E2bConnectOptions = {}): Promise<E2bConnection | undefined> {
+		this.calls.push(`connect ${sandboxId} ${timeoutMs}${options.reboot ? " reboot" : ""}`);
 		await this.settle();
 		const sandbox = this.sandboxes.get(sandboxId);
 		if (sandbox === undefined) return undefined;
@@ -226,7 +232,8 @@ export class FakeE2b implements E2bClient {
 			// A resume starts the sandbox's running time again.
 			sandbox.startedAt = now;
 			sandbox.endAt = now + timeoutMs;
-			await sandbox.machine.resumed?.();
+			if (options.reboot && sandbox.machine.rebooted) await sandbox.machine.rebooted();
+			else await sandbox.machine.resumed?.();
 		} else {
 			// "Sandbox.connect() only ever extends the sandbox's lifetime."
 			sandbox.endAt = Math.max(sandbox.endAt, now + timeoutMs);
@@ -310,6 +317,11 @@ export class FakeE2b implements E2bClient {
 		return this.snapshots.delete(snapshotId);
 	}
 
+	async metrics(sandboxId: string, sinceMs: number): Promise<E2bMetric[]> {
+		this.calls.push(`metrics ${sandboxId}`);
+		return (this.samples.get(sandboxId) ?? []).filter((one) => one.at >= sinceMs);
+	}
+
 	async templateBuild(template: string): Promise<string | null> {
 		this.calls.push(`templateBuild ${template}`);
 		return this.builds.get(template) ?? null;
@@ -350,8 +362,8 @@ export class FakeE2b implements E2bClient {
 			metadata: { ...sandbox.metadata },
 			startedAt: sandbox.startedAt,
 			endAt: sandbox.endAt,
-			cpuCount: this.options.cpuCount ?? 1,
-			memoryMB: this.options.memoryMB ?? 1024,
+			cpuCount: this.options.templateSizes?.[sandbox.template]?.cpuCount ?? this.options.cpuCount ?? 1,
+			memoryMB: this.options.templateSizes?.[sandbox.template]?.memoryMB ?? this.options.memoryMB ?? 1024,
 		};
 	}
 

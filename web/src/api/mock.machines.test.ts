@@ -127,10 +127,10 @@ describe("the mock's machines", () => {
 			};
 			// Hosted agents fill the deployment's ceiling, beside the seeds' that are at work.
 			const hosted = async () => (await settle(user.createSession({ profile: "docker-windlass-sandbox" }))).id;
-			// A work item's turn counts wherever it runs (server/src/actors/user.ts, `internalAcquireRun`).
+			// Only what runs on the platform's sandboxes counts (server/src/actors/user.ts, `internalAcquireRun`).
 			const working = workingCounts(await settle(user.listSessions())).ceilinged;
-			const { runningTurns } = await settle(user.factoryLimits());
-			for (let filled = working; filled < runningTurns; filled++) await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
+			const { hostedRunning } = await settle(user.factoryLimits());
+			for (let filled = working; filled < hostedRunning; filled++) await settle(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." }));
 			const refused = expect(mock.session(auth, await hosted()).prompt({ text: "Run the full build and the tests." })).rejects.toMatchObject({ reason: "too_many_running" });
 			await vi.advanceTimersByTimeAsync(400);
 			await refused;
@@ -264,7 +264,10 @@ describe("the start composer's agent picker", () => {
 		};
 		act(() => root.render(createElement(AppProvider, { client, children: createElement(NewAgent) })));
 		await settle();
-		chip("repo");
+		// The repository is the where menu's last row: it opens the repository's picker.
+		chip("where");
+		act(() => (pop()?.querySelector('[data-value="repo"]') as HTMLElement).click());
+		await settle();
 		press("No repository");
 		await settle();
 	}
@@ -278,15 +281,15 @@ describe("the start composer's agent picker", () => {
 
 	/** The page's text, with what is open in a picker (drawn at the end of the page). */
 	const text = () => document.body.textContent ?? "";
-	/** The pill of a picker, by the name its old chip had: where it runs and its sandbox are one pill. */
-	const PICKERS: Record<string, string> = { repo: "repo", on: "where", sandbox: "where", agent: "agent", mode: "mode" };
+	/** The control of a picker, by the name its old chip had: where it runs, its sandbox and the repository are one pill, and the mode is in the options. */
+	const PICKERS: Record<string, string> = { repo: "where", on: "where", sandbox: "where", agent: "agent", mode: "options" };
 	const button = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement;
 	/** Opens a pill's picker, by its label, unless it is open; `toggle` closes an open one. */
 	const chip = (label: string, toggle = false) => {
 		if (toggle || button(label).getAttribute("aria-expanded") !== "true") act(() => button(label).click());
 	};
 	const value = (label: string) => (label === "sandbox" ? button(label)?.dataset.sandbox : button(label)?.dataset.value) ?? null;
-	const pop = () => document.querySelector(".ui-pop") as HTMLElement | null;
+	const pop = () => ([...document.querySelectorAll(".ui-pop")].at(-1) ?? null) as HTMLElement | null;
 	const press = (words: string) => act(() => ([...(pop()?.querySelectorAll("button") ?? [])].find((button) => button.textContent === words) as HTMLButtonElement).click());
 	/** Chooses where it runs. */
 	const place = (machineId: string) => {
@@ -296,7 +299,8 @@ describe("the start composer's agent picker", () => {
 	/** Opens the agent's picker and says which agents it offers here: the groups with a row that can be chosen. */
 	const agents = () => {
 		chip("agent");
-		return [...(pop()?.querySelectorAll(".ui-menu-group") ?? [])].filter((group) => group.querySelector('[role="menuitemradio"]:not([aria-disabled="true"])')).map((group) => group.querySelector(".ui-menu-group-label b")?.textContent);
+		// The effort, the menu's last group, is not an agent.
+		return [...(pop()?.querySelectorAll(".ui-menu-group") ?? [])].filter((group) => group.querySelector('[role="menuitemradio"]:not([aria-disabled="true"])')).map((group) => group.querySelector(".ui-menu-group-label b")?.textContent).filter((label) => label !== "Effort");
 	};
 	/** Chooses an agent in its open picker: Claude Code on its reported default, Windlass on its default model. */
 	const agent = (id: string) => {
@@ -304,8 +308,12 @@ describe("the start composer's agent picker", () => {
 		const row = rows.find((candidate) => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ?? rows[0];
 		act(() => (row as HTMLElement).click());
 	};
-	/** The mode's menu, while it is open. */
-	const modeRows = () => [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])] as HTMLElement[];
+	/** The approval choices in the open options menu's Mode group. */
+	const modeRows = () => {
+		const groups = pop()?.querySelectorAll('[role="group"][aria-labelledby]') ?? [];
+		const group = [...groups].find((candidate) => document.getElementById(candidate.getAttribute("aria-labelledby") ?? "")?.textContent === "Mode");
+		return [...(group?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])];
+	};
 	/** The modes offered, by name, each with what it does, and the one chosen. Its menu is the only one open. */
 	const modes = () => {
 		chip("mode");
@@ -318,7 +326,7 @@ describe("the start composer's agent picker", () => {
 		chip("mode");
 		act(() => (modeRows().find((option) => option.querySelector(".ui-item-label")?.textContent === name) as HTMLElement).click());
 	};
-	/** The line under the task: the chosen sandbox's facts, each with the sentence it stands for. */
+	/** The lock in the tray: the chosen sandbox's facts, each with the sentence it stands for. */
 	const sandboxLine = () => host.querySelector(".start-sandbox")?.textContent ?? "";
 	/** Creates the agent from the launch button's menu. */
 	const createWithout = async () => {
@@ -450,7 +458,7 @@ describe("the start composer's agent picker", () => {
 			["Ask", false],
 			["Full", true],
 		]);
-		expect(button("mode")?.classList.contains("ui-pill-warn")).toBe(true);
+		expect(button("mode")?.querySelector(".tray-icon-dot-warn")).not.toBeNull();
 		write("Run the tests");
 		await launchIt();
 		expect(created[0]).toMatchObject({ profile: "docker-hardened", mode: "full" });
@@ -567,12 +575,19 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		act(() => checkbox("Enable Codex").click());
 		expect(command()).toContain("docker run -it --rm --log-driver none");
 		expect(command()).toContain("--harness codex");
-		const background = () => host.querySelector('pre[aria-label="The install command"]')?.textContent;
+		const background = () => host.querySelector('pre[aria-label="The background command"]')?.textContent;
 		expect(background()).toContain("--harness claude --harness opencode");
 		expect(command()).toContain("--harness opencode");
 		expect(command()).not.toContain("/import/opencode");
 		act(() => checkbox("Import existing OpenCode API keys").click());
 		expect(command()).toContain('--mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly"');
 		expect(background()).not.toContain('/import/opencode');
+		// Windlass's command sandbox is allowed unless the person turns it off, in both commands.
+		expect(command()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
+		expect(background()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
+		act(() => checkbox("Allow Windlass's command sandbox").click());
+		// Turned off, both say so: the setup wizard then starts with the sandbox off as well.
+		expect(command()).toMatch(/ --allow-profile docker-hardened$/);
+		expect(background()).toMatch(/ --allow-profile docker-hardened$/);
 	} finally { act(() => root.unmount());host.remove();client.dispose();saveAuth("mock",null); }
 });

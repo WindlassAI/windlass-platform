@@ -3,7 +3,7 @@ import { contentDigest, readIssue, subjectRead } from "../github/issues.js";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { serviceParams } from "../auth.js";
-import { effectiveUserLimits } from "../user-limits.js";
+import { accountLimits } from "../user-limits.js";
 import { config } from "../config.js";
 import type { ItemSummary, UserProfile } from "../contract.js";
 import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
@@ -39,27 +39,16 @@ async function existingItem(c: ItemsCtx, uid: string, id: string) {
 	catch (error) { if (!isActorGone(error) && (error as { code?: string })?.code !== "item_not_found") throw error; }
 }
 
-async function quotaRefusal(c: ItemsCtx, draft: boolean, resuming?: string) {
+/** The one cap on items filed from GitHub: how many a day, drafts among them. A flood of labelled issues stops here. */
+async function quotaRefusal(c: ItemsCtx, resuming?: string) {
 	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github" && !i.parent);
 	const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
-	const { githubItemsPerDay, githubDrafts } = effectiveUserLimits(c.vars.items.limits.overrides).factory;
+	const { githubItemsPerDay } = accountLimits(c.vars.items.limits).factory;
 	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";
 	const [pending] = await c.db.execute<{ count: number; reserved: number }>(
 		`SELECT count(*) AS count, count(CASE WHEN id=? THEN 1 END) AS reserved ${unindexed} AND created_at >= ? AND created_at < ?`,
 		resuming ?? null, midnight, midnight + 86_400_000);
 	if (!pending.reserved && filed.filter(i => i.createdAt >= midnight && i.createdAt < midnight + 86_400_000).length + pending.count >= githubItemsPerDay) return refusals.daily(githubItemsPerDay);
-	if (draft) {
-		let drafts = filed.filter(i => i.state === "draft").length;
-		if (drafts >= githubDrafts) return refusals.drafts(githubDrafts);
-		// A session may have been made without its item, or the item without its index entry.
-		const candidates = await c.db.execute<{ id: string }>(`SELECT id ${unindexed} AND draft=1`);
-		if (drafts + candidates.length >= githubDrafts) {
-			for (const { id } of candidates) {
-				if ((await existingItem(c, c.key[0]!, id))?.state === "draft") drafts++;
-				if (drafts >= githubDrafts) return refusals.drafts(githubDrafts);
-			}
-		}
-	}
 	return null;
 }
 
@@ -89,7 +78,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 		const pending: IssueDecision = await directory.internalDecideIssue({ issue: t.issue, installation: t.installationId, uid,
 			subject: claim.subject, previous: claim.generation, decision: { kind: "ignore" } });
 		if (pending.kind !== "file" || pending.filing.binding.issueId !== issue.id) return;
-		if (!c.vars.items.items.has(claim.itemId) && !await existingItem(c, uid, claim.itemId) && await quotaRefusal(c, !pending.filing.input.start, claim.itemId)) return;
+		if (!c.vars.items.items.has(claim.itemId) && !await existingItem(c, uid, claim.itemId) && await quotaRefusal(c, claim.itemId)) return;
 		if (!connected()) return;
 		await file(profile, pending.filing);
 		await directory.internalFinishIssue(t.issue, claim.subject);
@@ -109,7 +98,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 	if (!reason && create) {
 		const { task, trusted } = taskOfIssue({ ...issue, sender: subject.author, note: subject.note });
 		const { mode, reason: modeReason, refusal } = issueMode(subject.note, issue.labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0");
-		reason = refusal ?? await quotaRefusal(c, !trusted);
+		reason = refusal ?? await quotaRefusal(c);
 		if (!reason) {
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
 			const defaults = await readDefaults(c.db, "github:" + repo.id);

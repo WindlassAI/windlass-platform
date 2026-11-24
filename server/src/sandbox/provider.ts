@@ -95,6 +95,11 @@ export interface SandboxProcess {
 	signal(sig: "INT" | "TERM" | "KILL", who: "leader" | "all"): Promise<void>;
 	/** Ends the client. It does not stop anything inside the sandbox. */
 	killClient(): void;
+	/**
+	 * On a machine whose conversation is kept durably: the id the runner knows the process by, once the
+	 * runner has it, so that a restarted server can take it up again (`TurnSandbox.adopt`). Absent elsewhere.
+	 */
+	readonly runnerProcess?: string | null;
 }
 
 /** What a short program said: its exit code (null when it was killed), and what it printed. */
@@ -117,6 +122,12 @@ export interface TurnSandbox extends SandboxHandle {
 	readonly approval: "auto" | "full";
 	/** Starts argv (no shell) under wlp-run and leaves its standard input open. Never throws: a program that could not be started is one that has `ended` with an error. */
 	start(argv: string[], options?: StartOptions): SandboxProcess;
+	/**
+	 * Takes up a process a turn of a server that has since restarted started (`SandboxProcess.runnerProcess`),
+	 * which the machine's runner kept running through the gap: its output from where the server's
+	 * storage ends goes to `onStdout`/`onStderr`. Null when it cannot be had; absent where no provider can.
+	 */
+	adopt?(process: string, tag: string, output: Pick<StartOptions, "onStdout" | "onStderr">): SandboxProcess | null;
 	/**
 	 * Runs a short program (no shell, no standard input, not under wlp-run) to its end and returns what it
 	 * said; null when it could not be run at all (the sandbox is not running). `env` may be written into
@@ -157,6 +168,8 @@ export interface TurnSandbox extends SandboxHandle {
 	 * written into the sandbox.
 	 */
 	modelRelay?(): Promise<TurnModelRelay>;
+	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
+	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
 }
 
 /** One turn's lease of the model relay. */
@@ -169,6 +182,8 @@ export interface TurnModelRelay {
 	hand(token: AccessToken): Promise<void>;
 	/** Ends the lease: the relay forgets the turn's token and refuses its placeholder. Never rejects. */
 	close(): Promise<void>;
+	/** The lease's name where a restarted server can take it up again (`TurnSandbox.resumeRelay`): no credential. */
+	readonly lease?: string;
 }
 
 /** Sets the mark `isTurnSandbox` looks for. Called by a provider's handle in its constructor. */

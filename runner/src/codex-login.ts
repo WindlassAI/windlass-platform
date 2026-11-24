@@ -169,11 +169,8 @@ export async function changeCodexLogin(m: MachineDocker, signIn: boolean, signal
 		if (!pin) throw new RunnerError("This runner was built without the Codex image.");
 		if (!process.stdin.isTTY || !process.stdout.isTTY) throw new RunnerError("Attach a terminal to sign in to Codex.");
 		const choice = await terminalQuestion("1) ChatGPT (device code)\n2) OpenAI API key\nChoose a method: ", signal);
-		if (choice === "1") {
-			if (process.env.WLP_CODEX_DEVICE_LOGIN !== "1")
-				throw new RunnerError("ChatGPT device login is pending owner verification. Use an OpenAI API key.");
-			credential = await deviceCredential(m, pin, signal);
-		} else if (choice === "2") credential = { provider: "openai", key: await pastedToken(signal, "OpenAI") };
+		if (choice === "1") credential = await deviceCredential(m, pin, signal);
+		else if (choice === "2") credential = { provider: "openai", key: await pastedToken(signal, "OpenAI") };
 		else throw new RunnerError("Choose 1 or 2.");
 	}
 	await storeCodexLogin(m, credential, signal, attempt);

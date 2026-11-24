@@ -72,6 +72,31 @@
 	justify-self: stretch;
 	max-width: 68ch;
 }
+/* The agent menu's first row: a logo button for each agent the place offers, one press to switch. */
+.agent-switch {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 2px 0 8px;
+}
+.agent-switch-button {
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--r-control);
+	background: none;
+	color: var(--ink);
+	transition: background-color var(--dur-hover) var(--ease), border-color var(--dur-hover) var(--ease);
+}
+.agent-switch-button:hover {
+	background: var(--bg-hover);
+}
+.agent-switch-chosen {
+	border-color: var(--ink-dim);
+	background: var(--bg-active);
+}
 .agent-commands summary {
 	cursor: pointer;
 }
@@ -332,130 +357,190 @@
 .start-box:has(.start-text:focus) .start-keys {
 	opacity: 1;
 }
+/*
+ * The tray: one line that never wraps. Its controls keep their glyphs; what gives way first is the
+ * branch, then the place's and the model's words, then the names end in an ellipsis.
+ */
 .start-tools {
 	display: flex;
+	flex-wrap: nowrap;
 	align-items: center;
-	gap: 4px;
+	gap: 2px;
 	min-width: 0;
 	padding: 8px;
 	container-type: inline-size;
 }
-.start-tools > .ui-pill,
-.start-tools .ui-tooltip-anchor + .ui-pill {
+.tray-pill {
 	flex: 0 1 auto;
+	gap: 7px;
+	min-width: 0;
+	overflow: hidden;
+	border-color: transparent;
+	background: none;
+	box-shadow: none;
 }
-/* A pill's value stays whole (long names end in an ellipsis at their own cap); its quieter part gives way first. */
-.start-tools .ui-pill-value {
-	flex: none;
+.tray-pill:hover,
+.tray-pill[data-state="open"] {
+	background: var(--bg-active);
+}
+.tray-pill .ui-pill-value,
+.tray-pill .ui-pill-secondary {
+	overflow: hidden;
+	min-width: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tray-pill .ui-pill-value {
+	flex: 0 0 auto;
 	max-width: 22ch;
 }
-.start-tools .ui-pill-secondary {
+.tray-pill .ui-pill-secondary {
 	flex: 0 1 auto;
 	max-width: 18ch;
 }
-/* The branch is short and says what is used: whole. */
-.start-tools [data-picker="repo"] .ui-pill-secondary {
+.tray-where .tray-repo {
+	flex: 0 1 auto;
+	max-width: 24ch;
+}
+/* No repository: quiet where none is fine, in the pill's ink where one is needed (its dot says so too). */
+.tray-where .tray-repo-none {
+	flex: 0 1 auto;
+	overflow: hidden;
+	min-width: 0;
+	color: var(--ink-faint);
+	font-weight: var(--weight-regular);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tray-where .tray-repo-required {
+	color: var(--ink-dim);
+	font-weight: 450;
+}
+.tray-only-phone {
+	display: none;
+}
+.start-phone .tray-only-phone {
+	display: inline;
+}
+/* While the repository it starts on is read: a quiet bar in its place. */
+.tray-repo-reading {
+	flex: none;
+	width: 9ch;
+	height: 8px;
+	border-radius: 4px;
+	background: var(--bg-active);
+	animation: tray-reading 1.4s var(--ease) infinite alternate;
+}
+@keyframes tray-reading {
+	to {
+		opacity: 0.45;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.tray-repo-reading {
+		animation: none;
+	}
+}
+.tray-sep {
+	flex: none;
+	color: var(--ink-faint);
+	font-weight: var(--weight-regular);
+}
+.tray-pill .effort-bars {
+	flex: none;
+	margin-left: -1px;
+}
+.tray-pill .ui-pill-chevron {
 	flex: none;
 }
-/* A tight row drops the sandbox's name from "where" (its picker and the line under the box say it) before anything is cut. */
-@container (max-width: 960px) {
-	.start-tools [data-picker="where"] .ui-pill-secondary {
+.tray-where-anchor {
+	display: flex;
+	flex: 0 1 auto;
+	min-width: 0;
+}
+.tray-where-anchor > .tray-pill {
+	width: 100%;
+}
+@container (max-width: 760px) {
+	.tray-where .tray-branch,
+	.tray-where .tray-branch + .tray-sep,
+	.tray-where .tray-sep:has(+ .tray-branch) {
 		display: none;
 	}
 }
-@container (max-width: 680px) {
-	.start-tools [data-picker="agent"] .ui-pill-secondary {
+@container (max-width: 640px) {
+	.tray-agent .ui-pill-secondary,
+	.tray-where .tray-place,
+	.tray-where .tray-place + .tray-sep {
 		display: none;
 	}
 }
+.tray-end,
 .start-tools-end {
 	display: flex;
 	flex: none;
 	align-items: center;
-	gap: 6px;
+	gap: 4px;
 	margin-left: auto;
 	padding-left: 6px;
 }
-.start-plus {
+.tray-icon {
+	position: relative;
 	flex: none;
 	display: grid;
 	place-items: center;
 	width: 30px;
 	height: 30px;
-	margin-right: 2px;
-	border: 1px solid var(--line-strong);
+	border: 0;
 	border-radius: var(--r-control);
 	background: none;
 	color: var(--ink-dim);
 	transition: background-color var(--dur-hover) var(--ease);
 }
-.start-plus:hover,
-.start-plus[aria-expanded="true"] {
-	background: var(--bg-hover);
+.tray-icon:hover,
+.tray-icon[aria-expanded="true"],
+.tray-icon[data-state="open"] {
+	background: var(--bg-active);
 	color: var(--ink);
 }
-.start-branch {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	color: var(--ink-faint);
+.tray-icon-dot {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent);
+	box-shadow: 0 0 0 2px var(--bg-raised);
 }
-.start-branch-slash {
+.tray-icon-dot-warn {
+	background: var(--warn);
+}
+.tray-lock-open {
+	color: var(--warn);
+}
+.start-plus {
 	margin-right: 2px;
-	opacity: 0.6;
+}
+/* The sentence on the sandbox, at the foot of the options. */
+.tray-safety {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+}
+.tray-safety > svg {
+	flex: none;
+	margin-top: 2px;
 }
 .start-launch .ui-split-main {
 	min-width: 92px;
 }
 
-/* Agent or work item. */
-.start-kind {
-	flex: none;
-	margin-right: 4px;
-}
-.start .segment {
-	padding: 1px 10px;
-}
-.start-kinds {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px;
-	margin-bottom: 8px;
-}
-/* On a phone the cost of the chosen mode sits between the picker and the box: a quiet line, spaced from both. */
-.start-kinds + .item-mode-cost {
-	margin: -2px 0 10px;
-}
-
-/* The line under the box: what the sandbox lets its commands do, and where it runs. */
-.start-sandbox {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 2px 8px;
-	margin: 10px 4px 0;
-	font-family: var(--font-mono);
-	font-size: var(--text-12);
-	color: var(--ink-faint);
-}
-.start-sandbox > svg {
-	flex: none;
-	color: var(--ink-faint);
-}
-.start-sandbox-open > svg {
-	color: var(--warn);
-}
-.start-sandbox > span + span::before {
-	content: "·";
-	margin-right: 8px;
-	opacity: 0.6;
-	color: var(--ink-faint);
-}
 .start-fact-open {
 	color: var(--warn);
 }
 
-.start-line {
+.start-line-note {
 	margin: 6px 4px 0;
 	font-size: var(--text-13);
 }
@@ -553,7 +638,7 @@
 	background: var(--accent-text);
 }
 
-/* The phone: the task, one summary row of every setting, and send. */
+/* The phone: the task, then the same line with glyphs and the repository's name only. */
 .start-phone .start-text {
 	min-height: 46px;
 	padding: 13px 14px 6px;
@@ -563,56 +648,95 @@
 	display: none;
 }
 .start-phone .start-tools {
-	gap: 6px;
 	padding: 6px;
 }
-.start-summary {
-	flex: 1;
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-	height: 36px;
-	padding: 0 10px;
-	border: 0;
-	border-radius: 10px;
-	background: var(--bg-active);
-	color: var(--ink-dim);
-	font-size: var(--text-13);
-	text-align: left;
+.start-phone .tray-hide-phone {
+	display: none;
 }
-.start-summary > svg {
+.start-phone .tray-pill {
+	gap: 5px;
+	padding-inline: 6px;
+}
+.start-phone .tray-where .tray-repo {
+	max-width: 14ch;
+}
+.start-phone .start-launch .ui-split-main {
+	min-width: 0;
+	width: 40px;
+	padding-inline: 0;
+}
+
+/* A work item's done-when criteria: one line under the text until used. */
+.start-criteria-add {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0 0 0 12px;
+	padding: 3px 6px;
+	border: 0;
+	border-radius: var(--r-item);
+	background: none;
+	color: var(--accent-text);
+	font-size: var(--text-13);
+}
+.start-criteria-add:hover {
+	background: var(--bg-hover);
+}
+.start-criteria-inline {
+	display: grid;
+	gap: 6px;
+	margin: 2px 18px 4px;
+}
+.start-criteria-inline .item-criteria {
+	min-height: 72px;
+}
+.start-criteria-done {
+	justify-self: end;
+}
+.start-criteria-list {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: 4px 12px;
+	margin: 0 18px 2px;
+}
+.start-criteria-list ul {
+	flex: 1;
+	display: grid;
+	gap: 3px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.start-criteria-list li {
+	display: flex;
+	align-items: baseline;
+	gap: 7px;
+	min-width: 0;
+}
+.start-criteria-list li > svg {
 	flex: none;
 	color: var(--ink-faint);
+	transform: translateY(1px);
 }
-.start-summary-text {
-	flex: 1;
-	min-width: 0;
+.start-criteria-list li > span {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
-.start-summary-text b {
-	color: var(--ink);
-	font-weight: var(--weight-medium);
-}
-.start-send {
-	flex: none;
-	display: grid;
-	place-items: center;
-	width: 38px;
-	height: 38px;
-	border: 0;
-	border-radius: 11px;
-	background: var(--accent-fill);
-	color: var(--accent-ink);
-	box-shadow: var(--shadow-button);
-}
-.start-send:disabled {
-	background: var(--bg-active);
+.start-criteria-more {
 	color: var(--ink-faint);
-	box-shadow: none;
 }
+.start-criteria-edit {
+	font-size: var(--text-13);
+}
+.start-phone .start-criteria-add {
+	margin-left: 8px;
+}
+
 .start-secondary {
 	justify-content: center;
 }

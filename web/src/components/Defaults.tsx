@@ -12,9 +12,10 @@
  * user's, is shown as it was saved and said to be ignored. The models are the user's own
  * (`useModels`), and a line under the field says whose list it is.
  */
-import type { AccountDefaults, SandboxProfileId } from "@contract";
+import type { AccountDefaults, HostedSize, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { modelIds, modelsNote } from "../lib/models";
+import { sizeLabel, sizeName, startingSize } from "../lib/sizes";
 import { type StartingChoices, startingChoices } from "../lib/repositories";
 import { useApp } from "../state/app";
 import type { ModelsState } from "../state/hooks";
@@ -35,21 +36,21 @@ export function DefaultsSection({
 	/** What these defaults are for, in a sentence. */
 	lede: string;
 	/** A sandbox and a model: a repository's defaults carry more (`screenshots`), which this section neither shows nor saves. */
-	defaults: AccountDefaults;
+	defaults: AccountDefaults & { hostedSize?: HostedSize | null };
 	whose: "repository" | "account";
 	/** The defaults of the level below that can be used: the account's, on a repository's page. Null on the account's own page. */
 	under: Pick<StartingChoices, "profile" | "model"> | null;
 	/** The models the user may choose, as the page read them. */
 	models: ModelsState;
 	/** Saves the fields the change names and answers with what is saved then. */
-	save(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
-	onSaved(next: AccountDefaults): void;
+	save(change: { profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<AccountDefaults & { hostedSize?: HostedSize | null }>;
+	onSaved(next: AccountDefaults & { hostedSize?: HostedSize | null }): void;
 	/** More of the section, under the fields: on the account's page, where the last agent started. */
 	children?: ReactNode;
 }) {
 	const { platform, explain } = useApp();
-	const ids = { profile: useId(), model: useId(), profileNote: useId(), modelNote: useId() };
-	const [saving, setSaving] = useState<"profile" | "model" | null>(null);
+	const ids = { profile: useId(), model: useId(), size: useId(), profileNote: useId(), modelNote: useId(), sizeNote: useId() };
+	const [saving, setSaving] = useState<"profile" | "model" | "hostedSize" | null>(null);
 	const [said, setSaid] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
 	const info = platform.info;
 	const choices = startingChoices(defaults, info, models.list, whose);
@@ -62,12 +63,16 @@ export function DefaultsSection({
 	const underModel = under?.model != null && offered.includes(under.model) ? under.model : null;
 	const elseModel = underModel ? `${underModel}, your account's default` : (models.list?.defaultModel ?? null);
 
-	const change = async (field: "profile" | "model", value: string) => {
+	// Hosted sizes, where the deployment offers more than one: saved for a repository only (its agents and its work items).
+	const sizes = whose === "repository" ? (info?.hostedSizes ?? []) : [];
+	const savedSize = defaults.hostedSize ?? null;
+
+	const change = async (field: "profile" | "model" | "hostedSize", value: string) => {
 		if (saving !== null) return;
 		setSaving(field);
 		setSaid(null);
 		try {
-			onSaved(await save(field === "profile" ? { profile: value === "" ? null : (value as SandboxProfileId) } : { model: value === "" ? null : value }));
+			onSaved(await save(field === "profile" ? { profile: value === "" ? null : (value as SandboxProfileId) } : field === "hostedSize" ? { hostedSize: value === "" ? null : (value as HostedSize) } : { model: value === "" ? null : value }));
 			setSaid({ tone: "good", text: "Saved." });
 		} catch (failure) {
 			setSaid({ tone: "bad", text: explain(failure) });
@@ -140,6 +145,24 @@ export function DefaultsSection({
 							{models.list ? modelsNote(models.list) : models.reading ? "Reading your models…" : (models.error ?? "Your models could not be read.")}
 						</p>
 					</div>
+					{sizes.length > 1 ? (
+						<div className="field">
+							<label className="label" htmlFor={ids.size}>
+								Hosted size
+							</label>
+							<select id={ids.size} className="select" value={savedSize ?? ""} onChange={(event) => void change("hostedSize", event.target.value)} disabled={saving !== null} aria-describedby={ids.sizeNote}>
+								<option value="">No default</option>
+								{sizes.map((size) => (
+									<option key={size.id} value={size.id}>
+										{sizeLabel(size)}
+									</option>
+								))}
+							</select>
+							<p className="field-note" id={ids.sizeNote}>
+								{`The CPUs and memory of a hosted sandbox, for this repository's agents and work items. A larger one costs more an hour; the daily sandbox time counts the same.${savedSize === null ? ` Without a default: ${sizeName(startingSize(sizes, null, false))} for agents, ${sizeName(startingSize(sizes, null, true))} for work items.` : ""}`}
+							</p>
+						</div>
+					) : null}
 					{children}
 				</div>
 			)}

@@ -13,7 +13,9 @@
  * which say what each item has spent in all against its budget. Which sessions are items' is read from
  * the summaries the page's own live feed sends.
  */
-import { USAGE_HISTORY_DAYS, type KeptSandbox, type SessionSummary, type UsageView } from "@contract";
+import { HostedNotice, MonthFigure } from "../components/Plan";
+import { monthName, monthReset } from "../lib/hosted";
+import { USAGE_HISTORY_DAYS, type HostedSize, type KeptSandbox, type SessionSummary, type UsageView } from "@contract";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { FactoryUsage } from "../components/FactoryUsage";
@@ -22,6 +24,7 @@ import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
 import { SandboxState } from "../components/Status";
 import { absoluteTime, count, localTime, plural, relativeTime, sandboxClock, sandboxTime as spelledTime, usd, utcDay } from "../lib/format";
 import { linkProps } from "../lib/router";
+import { perHour, sizeName, sizeSpec } from "../lib/sizes";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 
@@ -191,6 +194,7 @@ function Meter({ view }: { view: UsageView }) {
 }
 
 export function Usage() {
+	const { platform } = useApp();
 	const { view, error, items, reload, replace } = useUsage();
 	const now = useNow(15_000);
 	const [freeing, setFreeing] = useState<KeptSandbox | null>(null);
@@ -229,6 +233,14 @@ export function Usage() {
 	const spent = view.usedSeconds + view.heldSeconds;
 	const left = view.leftSeconds;
 	const price = view.price;
+	// Where there are hosted sizes, each agent's time is priced at its own size's rate; the allowance counts seconds alike.
+	const sizes = view.hostedSizes && view.hostedSizes.length > 1 ? view.hostedSizes : null;
+	const rate = (size?: HostedSize) => {
+		const hourly = size && sizes?.find((one) => one.id === size)?.usdPerHour;
+		return typeof hourly === "number" ? hourly / 3600 : (price?.usdPerSecond ?? 0);
+	};
+	const costAt = (seconds: number, size?: HostedSize) => (price === null ? null : usd(seconds * rate(size)));
+	const todayUsd = sizes ? view.today.reduce((sum, row) => sum + row.seconds * rate(row.hostedSize), 0) : null;
 	const cost = (seconds: number) => (price === null ? null : usd(seconds * price.usdPerSecond));
 	const running = view.today.filter((row) => row.heldSeconds > 0).length;
 	const unreported = view.today.reduce((sum, row) => sum + row.unreportedSeconds, 0);
@@ -261,6 +273,31 @@ export function Usage() {
 				</p>
 			) : null}
 
+			{view.hosted ? (
+				<section className="usage-section" aria-labelledby="usage-month">
+					<h2 className="usage-title" id="usage-month">
+						Hosted minutes{view.hosted.plan === "pro" ? "" : " this month"}
+						<span className="usage-count">{monthName(view.hosted)}</span>
+					</h2>
+					<p className="usage-lede">One hosted minute is a minute of a standard sandbox; a small one counts half, a large one twice. Agents on your own machines are never counted. The allowance resets on {monthReset(view.hosted)} at {new Date(view.hosted.resetsAt).toISOString().slice(11, 16)} UTC.</p>
+					<HostedNotice numbers={view} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
+					<div className="usage-card billing-card">
+						<div className="billing-month">
+							<MonthFigure month={view.hosted} />
+						</div>
+					</div>
+					{platform.info?.billing ? (
+						<p className="usage-note">
+							Manage your plan in{" "}
+							<a className="link" {...linkProps({ name: "settings" })}>
+								Settings
+							</a>
+							.
+						</p>
+					) : null}
+				</section>
+			) : null}
+
 			<section className="usage-section" aria-labelledby="usage-tokens">
 				<h2 className="usage-title" id="usage-tokens">Model tokens today</h2>
 				<p className="usage-figure"><strong>{count(view.usedModelTokens)}</strong> {view.factoryLimits.dailyTokens === null ? "used · no daily cap" : `of ${count(view.factoryLimits.dailyTokens)} used`}</p>
@@ -273,7 +310,7 @@ export function Usage() {
 				<div className="usage-card usage-today">
 				<p className="usage-figure">
 					<strong>{sandboxTime(spent)}</strong>
-					{allowance === null ? <span> used. This deployment sets no daily limit.</span> : <span> of {sandboxTime(allowance)} used</span>}
+					{allowance === null ? <span> used. {view.hosted ? "Hosted time is counted by the month, above; there is no daily limit." : "This deployment sets no daily limit."}</span> : <span> of {sandboxTime(allowance)} used</span>}
 					{left !== null ? <span className={`usage-figure-left${left < view.startSeconds ? " tone-warn" : ""}`}>{left < view.startSeconds ? (left === 0 ? "none left" : `${sandboxTime(left)} left, too little for a turn`) : `${sandboxTime(left)} left`}</span> : null}
 				</p>
 				<Meter view={view} />
@@ -318,14 +355,32 @@ export function Usage() {
 					) : null}
 					<div>
 						<dt>Cost</dt>
-						<dd className="usage-number">{cost(view.usedSeconds) ?? "–"}</dd>
+						<dd className="usage-number">{todayUsd !== null ? usd(todayUsd) : (cost(view.usedSeconds) ?? "–")}</dd>
 						<dd className="usage-gloss">
 							{price === null
 								? "nothing is estimated: this deployment's sandboxes run on its own machine and are not billed by the second"
-								: `an estimate: ${count(view.usedSeconds)} s counted, at $${price.usdPerSecond.toFixed(7)} a second for ${price.basis}. The provider's bill is what counts`}
+								: sizes
+									? `an estimate: ${count(view.usedSeconds)} s counted, each agent's at its sandbox size's price (below). The provider's bill is what counts`
+									: `an estimate: ${count(view.usedSeconds)} s counted, at $${price.usdPerSecond.toFixed(7)} a second for ${price.basis}. The provider's bill is what counts`}
 						</dd>
 					</div>
 				</dl>
+				{sizes ? (
+					<div className="usage-sizes">
+						<p className="usage-lede">
+							Hosted sandboxes come in sizes. A larger one costs more an hour; the daily allowance counts its time the same, second for second. Estimates at E2B's published prices.
+						</p>
+						<ul className="usage-size-list">
+							{sizes.map((size) => (
+								<li key={size.id}>
+									<span className="usage-size-name">{sizeName(size.id)}</span>
+									<span className="tone-dim">{sizeSpec(size.id)}</span>
+									<span className="usage-number">{perHour(size.usdPerHour) ?? "–"}</span>
+								</li>
+							))}
+						</ul>
+					</div>
+				) : null}
 				</div>
 			</section>
 
@@ -364,6 +419,7 @@ export function Usage() {
 												{row.title}
 											</a>
 										)}
+										{sizes && row.hostedSize ? <span className="usage-size-tag">{sizeName(row.hostedSize)}</span> : null}
 										{row.unreportedSeconds > 0 ? (
 											<span className="usage-mark" title="Counted in full: see the note below">
 												{" "}
@@ -373,7 +429,7 @@ export function Usage() {
 									</th>
 									<td className="usage-number">{sandboxClock(row.seconds)}</td>
 									<td className="usage-number usage-wide">{row.heldSeconds > 0 ? sandboxClock(row.heldSeconds) : <span className="tone-faint">–</span>}</td>
-									{price === null ? null : <td className="usage-number">{cost(row.seconds)}</td>}
+									{price === null ? null : <td className="usage-number">{costAt(row.seconds, row.hostedSize)}</td>}
 								</tr>
 							))}
 							{itemRows.length > 0 ? (
@@ -391,7 +447,7 @@ export function Usage() {
 									</th>
 									<td className="usage-number">{sandboxClock(itemTotal.seconds)}</td>
 									<td className="usage-number usage-wide">{itemTotal.held > 0 ? sandboxClock(itemTotal.held) : <span className="tone-faint">–</span>}</td>
-									{price === null ? null : <td className="usage-number">{cost(itemTotal.seconds)}</td>}
+									{price === null ? null : <td className="usage-number">{sizes ? usd(itemRows.reduce((sum, row) => sum + row.seconds * rate(row.hostedSize), 0)) : cost(itemTotal.seconds)}</td>}
 								</tr>
 							) : null}
 						</tbody>
@@ -400,7 +456,7 @@ export function Usage() {
 								<th scope="row">Today</th>
 								<td className="usage-number">{sandboxClock(view.usedSeconds)}</td>
 								<td className="usage-number usage-wide">{view.heldSeconds > 0 ? sandboxClock(view.heldSeconds) : <span className="tone-faint">–</span>}</td>
-								{price === null ? null : <td className="usage-number">{cost(view.usedSeconds)}</td>}
+								{price === null ? null : <td className="usage-number">{todayUsd !== null ? usd(todayUsd) : cost(view.usedSeconds)}</td>}
 							</tr>
 						</tfoot>
 					</table>
@@ -415,11 +471,11 @@ export function Usage() {
 
 			<section className="usage-section" aria-labelledby="usage-kept">
 				<h2 className="usage-title" id="usage-kept">
-					Sandboxes you keep
+					Hosted sandboxes you keep
 					<span className="usage-count">{limit === null ? count(kept) : `${count(kept)} of ${count(limit)}`}</span>
 				</h2>
 				<p className="usage-lede">
-					Each agent that has worked has a sandbox with its files, running or paused.{" "}
+					Each agent that has worked on the platform's own sandboxes has one with its files, running or paused. Those on your own machines are not counted here.{" "}
 					{limit === null
 						? "This deployment sets no limit on how many you keep."
 						: kept >= limit
@@ -443,6 +499,7 @@ export function Usage() {
 									)}
 									<p className="agent-meta">
 										{items?.has(sandbox.sessionId) ? <span>work item</span> : null}
+										{sizes && sandbox.hostedSize ? <span>{`${sizeName(sandbox.hostedSize)}, ${perHour(sizes.find((one) => one.id === sandbox.hostedSize)?.usdPerHour) ?? ""}`.replace(/, $/, "")} while running</span> : null}
 										{sandbox.repository ? <span className="agent-repo">{sandbox.repository}</span> : <span>no repository at GitHub</span>}
 										{sandbox.repository ? <span>{sandbox.pushed ? "work pushed" : "nothing pushed"}</span> : null}
 										{sandbox.usedAt !== null ? <span title={absoluteTime(sandbox.usedAt)}>used {relativeTime(sandbox.usedAt, now)}</span> : null}
@@ -466,7 +523,7 @@ export function Usage() {
 				<h2 className="usage-title" id="usage-history">
 					The last {USAGE_HISTORY_DAYS} days
 				</h2>
-				<p className="usage-lede">A day here is a UTC day{abroad ? `: it ends at ${resets} your time` : ""}.{allowance === null ? "" : ` Each bar is drawn against the daily allowance of ${sandboxTime(allowance)}.`}</p>
+				<p className="usage-lede">A day here is a UTC day{abroad ? `: it ends at ${resets} your time` : ""}.{allowance === null ? "" : ` Each bar is drawn against the daily allowance of ${sandboxTime(allowance)}.`}{sizes && price !== null ? " Earlier days' costs are at the small size's price: what ran larger cost more." : ""}</p>
 				<table className="usage-table usage-history">
 					<thead>
 						<tr>

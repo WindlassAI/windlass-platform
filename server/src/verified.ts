@@ -249,7 +249,7 @@ export class VerificationLog {
 			{
 				turn,
 				...(why === undefined ? { state } : { state: "not_needed" as const, unneeded: { reason: why, on } }),
-				...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode" || reason === "not_started") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
+				...(state === "unresolved" && (reason === "acknowledged" || reason === "max_rounds" || reason === "report_mode" || reason === "not_started" || reason === "environment") ? { unresolved: { reason, said: reason === "acknowledged" && acknowledgement !== "" ? acknowledgement.slice(0, 400) : null } } : {}),
 				...(putBack.length === 0 ? {} : { putBack }),
 				run,
 				unrun: saved.filter((kept) => ![...(run?.checks ?? []), ...putBack].some((check) => check.whose === "user" && check.name === kept.name && check.command === kept.command)).map(({ name, command }) => ({ name, command })),
@@ -565,7 +565,9 @@ export function verifiedHeadline(verified: Verified): string {
 					? `the agent reported that it could not make ${failing.length === 1 ? "it" : "them"} pass${verified.unresolved.said ? ` ("${verified.unresolved.said}")` : ""}`
 					: verified.unresolved?.reason === "report_mode"
 						? `${file} sets verification to report only, so the agent was not sent back`
-						: "the agent had been sent back as often as a turn allows";
+						: verified.unresolved?.reason === "environment"
+							? `the sandbox could not run ${failing.length === 1 ? "its command" : "their commands"}, which says nothing about the code, so the agent was not sent back`
+							: "the agent had been sent back as often as a turn allows";
 			const besides = unstarted.length === 0 ? "" : ` ${one ? "Another check was" : `${unstarted.length} other checks were`} not started, which says nothing about the code: the agent was not asked to change anything for ${one ? "it" : "them"}, and what there is to fix is the reason given with ${one ? "it" : "each"} below.`;
 			return `The agent's ${turn} ended with ${failing.length === 1 ? "a check" : `${failing.length} checks`} still failing: ${why}.${besides}`;
 		}

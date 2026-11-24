@@ -26,9 +26,23 @@
  *   WLP_FAKE_DELAY_MS          fake layer only: delay between replayed events (default 15)
  *   WLP_LOGIN_TTL_MS           how long a sign-in attempt is accepted (default 600000, ten minutes);
  *                              shortened by tests
- *   WLP_QUESTION_TIMEOUT_MS    how long a turn's question waits for an answer before the platform
- *                              declines it (default QUESTION_TIMEOUT_MS, ten minutes); shortened by tests
+ *   WLP_QUESTION_TIMEOUT_MS    how long a question in an interactive turn waits for an answer before
+ *                              the platform declines it (default ten minutes; work items never use it)
+ *   WLP_HOSTED_QUESTION_TIMEOUT_MS  in a hosted sandbox, how long an approval waits before the platform
+ *                              ends the turn so the sandbox can pause (default 5 minutes, at most
+ *                              WLP_QUESTION_TIMEOUT_MS)
  *   WLP_TURN_TIMEOUT_MS        how long one turn may run (default 45 minutes)
+ *   WLP_TURN_RESUME=1          a turn running when its server stops, or whose machine goes away, is
+ *                              paused and resumes by itself (the agent's saved session and a short
+ *                              resume prompt) instead of being cut short. Default off
+ *   WLP_TURN_RESUME_FLOOR_MS   the least time a resumed turn gets, whatever it ran before (default 5
+ *                              minutes; at most WLP_TURN_TIMEOUT_MS). For tests
+ *   WLP_TURN_RESUME_DELAY_MS   how long after a graceful pause the turn resumes at the earliest (default
+ *                              three seconds). For tests
+ *   WLP_TURN_HEARTBEAT_MS      how far ahead a running turn keeps the wake that resumes it after a
+ *                              crash (default one minute). For tests
+ *   WLP_MACHINE_AWAY_ASK_MS    how long an item's turn waits for its machine before the item asks its
+ *                              person once (default three days). For tests
  *   WLP_SETUP_TIMEOUT_MS       how long a repository's setup command may run in a new sandbox before the
  *                              platform stops it (default 600000, ten minutes; at most the time a turn
  *                              may take, since it runs inside one). The same on every server
@@ -54,25 +68,23 @@
  *                              turning it off and on again loses nothing; while it is off, nobody can
  *                              file, read or act on an item
  *   WLP_DAILY_TOKENS           model tokens per user per UTC day (default unlimited)
- *   WLP_FACTORY_FEATURE_MULTIPLIER   starting feature budget as a multiple of one item (default 3)
  *   WLP_FACTORY_CROSS_REPO=1   let a Plan-first feature be filed over two repositories (default off):
  *                              its children build in either, each repository gets its own draft PR,
  *                              and the repositories are tested together before the feature is handed
  *                              over (docs/factory, "Cross-repo features"). Off, a filing that names a
  *                              second repository is refused; a feature filed while it was on goes on
- *   WLP_FACTORY_RUNNING_TURNS  the software factory's limits for every user (factory/budget.ts; the
- *   WLP_FACTORY_TURNS          defaults are FACTORY_DEFAULTS there): turns of a user running at once,
- *   WLP_FACTORY_HOSTED_RUNNING the factory's and the user's own (default 6, also the ceiling of a
- *   WLP_FACTORY_REVIEW_CAP     user's own prompts); of those, the factory's (default 5, so one is always
- *                              free for the person); the user's hosted sandboxes running at once that
- *                              a factory turn may start beside (default 3); and how many of a user's
- *                              items may be in review before new ones wait (default 6). A limit that
- *                              is reached makes work wait, with a sentence, and never refuses it
- *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_TURNS, WLP_FACTORY_ITEM_ACTIVE_SECONDS,
- *   WLP_FACTORY_ITEM_HOSTED_SECONDS
- *                              a new work item's budget (default 6,000,000 tokens, 14 turns, 4 hours
- *                              working, 2 hours of hosted sandbox); a person raises one item's when
- *                              it stops on it. The same on every server, like all of these
+ *   WLP_FACTORY_HOSTED_RUNNING a user's hosted sandboxes running at once, factory turns and their own
+ *                              hosted agents together (default 3; factory/budget.ts FACTORY_DEFAULTS).
+ *                              Sandboxes on the user's machines never count: their runners' slots
+ *                              bound them. A factory turn past it waits, with a sentence; a prompt of
+ *                              the person's own is refused with one
+ *   WLP_FACTORY_GITHUB_ITEMS_PER_DAY
+ *                              items a user may file from GitHub issues a UTC day, drafts among them
+ *                              (default 20)
+ *   WLP_FACTORY_ITEM_TOKENS, WLP_FACTORY_ITEM_HOSTED_SECONDS
+ *                              a new work item's budget (default 2,000,000 cost-weighted tokens, cached
+ *                              input at a tenth, and 2 hours of hosted sandbox); used up, the item asks
+ *                              its person for more. The same on every server, like all of these
  *   WLP_HTTP_PORT, PORT        where the platform's HTTP routes listen (`/platform/info`, `/health`);
  *                              WLP_HTTP_PORT first, then PORT, which Rivet Cloud sets on its nodes
  *                              (default 6440)
@@ -111,6 +123,10 @@
  *                              which sandbox/e2b/build.sh builds). A sandbox has its template's size:
  *                              1 vCPU and 1024 MiB unless the template was built otherwise
  *   WLP_E2B_SHOTS_TEMPLATE     the template for opted-in work items (default windlass-platform-sandbox-shots)
+ *   WLP_E2B_SIZES              the hosted sizes whose templates are built: small, standard, large (default
+ *                              small). Each is a template of its own (e2b/config.ts); work items default to standard
+ *   WLP_E2B_TEMPLATE_STANDARD, WLP_E2B_TEMPLATE_LARGE, WLP_E2B_SHOTS_TEMPLATE_STANDARD, WLP_E2B_SHOTS_TEMPLATE_LARGE
+ *                              the other sizes' templates (default windlass-platform-sandbox-standard, -large, and -shots)
  *   WLP_E2B_DEPLOYMENT         marks every sandbox of this deployment in its metadata, so they are
  *                              counted, listed and removed together (default "default"). The same on
  *                              every server of a deployment; different for another deployment that
@@ -214,6 +230,11 @@
  *                              points reads `config.machines` once, and nothing else does. The `machine`
  *                              actors and the tables are there either way, so turning it off and on
  *                              again loses nothing
+ *   WLP_RUNNER_DURABLE_TURNS=1 keep each machine session's runner conversation and its running turn's
+ *                              protocol state in the session's storage, so a server that restarts within
+ *                              the runner's grace (ten minutes) takes the same agent process up again
+ *                              (runner/journal.ts, docs/machines.md). Default off. A graceful stop keeps
+ *                              the turn running only with a runner that reports `resumable-conversation`
  *   WLP_RUNNER_IMAGE           the runner image the Machines page tells users to install, pinned by
  *                              digest: <name>@sha256:<64 hex>. Unset: none is published yet, and the
  *                              page says so
@@ -293,6 +314,8 @@ export interface MachinesConfig {
 	runnerImage: string | null;
 	/** WLP_PUBLIC_URL as an origin, without a trailing slash. */
 	publicUrl: string;
+	/** WLP_RUNNER_DURABLE_TURNS=1: a machine turn can outlive its server (runner/journal.ts). */
+	durableTurns?: boolean;
 }
 
 export interface Config {
@@ -322,6 +345,8 @@ export interface Config {
 	storagePath: string;
 	loginTtlMs: number;
 	questionTimeoutMs: number;
+	/** In a hosted sandbox: how long an approval waits before the turn is ended and the sandbox paused (never longer than `questionTimeoutMs`). */
+	hostedQuestionTimeoutMs: number;
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
 	/** Windlass's model relay (docs/model-relay.md): WLP_MODEL_RELAY, the hosted relay's ceiling, and WLP_MODEL_RELAY_URL (null when unset). */
@@ -341,6 +366,8 @@ export interface Config {
 	setupTimeoutMs: number;
 	/** How long one turn may run before the platform stops it (WLP_TURN_TIMEOUT_MS). */
 	turnTimeoutMs: number;
+	/** WLP_TURN_RESUME=1, with its test overrides: a turn pauses and resumes across a restart or a machine away. */
+	turnResume: { enabled: boolean; floorMs: number; delayMs: number; heartbeatMs: number; machineAskMs: number };
 	/** A user's daily allowance of sandbox time, the cap on the sandboxes they keep, and the size of a hold (usage.ts). */
 	usage: UsageLimits;
 	/** The software factory's deployment defaults for user limits (WLP_FACTORY_*). */
@@ -698,14 +725,9 @@ function readScreenshots(): boolean {
 function readFactory(): FactoryLimits & { reviewer: boolean; screenshots: boolean } {
 	const d = FACTORY_DEFAULTS;
 	const count = (name: string, fallback: number, max: number) => readCount(name, fallback, 1, max, false) ?? fallback;
-	const runningTurns = count("WLP_FACTORY_RUNNING_TURNS", d.runningTurns, 100);
-	// Keep the configured share. The effective per-user limit reserves one turn for the person.
-	const factoryTurns = count("WLP_FACTORY_TURNS", d.factoryTurns, 100);
 	return {
 		dailyTokens: readCount("WLP_DAILY_TOKENS", d.dailyTokens, 1, Number.MAX_SAFE_INTEGER, true),
-		featureMultiplier: count("WLP_FACTORY_FEATURE_MULTIPLIER", d.featureMultiplier, 100),
 		githubItemsPerDay: count("WLP_FACTORY_GITHUB_ITEMS_PER_DAY", d.githubItemsPerDay, 1_000_000),
-		githubDrafts: count("WLP_FACTORY_GITHUB_DRAFTS", d.githubDrafts, 1_000_000),
 		reviewer: process.env.WLP_FACTORY_REVIEWER === "on",
 		screenshots: readScreenshots(),
 		attachments: {
@@ -714,14 +736,9 @@ function readFactory(): FactoryLimits & { reviewer: boolean; screenshots: boolea
 			accountBytes: count("WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES", d.attachments.accountBytes, Number.MAX_SAFE_INTEGER),
 			days: count("WLP_FACTORY_ATTACHMENT_DAYS", d.attachments.days, 36500),
 		},
-		runningTurns,
-		factoryTurns,
 		hostedRunning: count("WLP_FACTORY_HOSTED_RUNNING", d.hostedRunning, 100),
-		reviewCap: count("WLP_FACTORY_REVIEW_CAP", d.reviewCap, 1_000),
 		item: {
 			tokens: count("WLP_FACTORY_ITEM_TOKENS", d.item.tokens, 1_000_000_000),
-			turns: count("WLP_FACTORY_ITEM_TURNS", d.item.turns, 1_000),
-			activeSeconds: count("WLP_FACTORY_ITEM_ACTIVE_SECONDS", d.item.activeSeconds, 7 * 86_400),
 			hostedSeconds: count("WLP_FACTORY_ITEM_HOSTED_SECONDS", d.item.hostedSeconds, 7 * 86_400),
 		},
 	};
@@ -772,7 +789,7 @@ function readMachines(httpPort: number): MachinesConfig | null {
 		if (fit) publicUrl = url!.origin;
 		else unusable.push("WLP_PUBLIC_URL must be an https:// origin (or http:// on a loopback address), with no path, query or credentials");
 	}
-	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl };
+	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl, durableTurns: process.env.WLP_RUNNER_DURABLE_TURNS === "1" };
 }
 
 function readAccountEmails(): ReadonlyMap<string, string> {
@@ -815,6 +832,7 @@ export const config: Config = {
 	storagePath: readStoragePath(),
 	loginTtlMs: readLoginTtl(),
 	questionTimeoutMs: readQuestionTimeout(),
+hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTED_QUESTION_TIMEOUT_MS", 5 * 60 * 1000, 100)),
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
@@ -824,6 +842,13 @@ export const config: Config = {
 	storeLimits: readStoreLimits(),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
 	turnTimeoutMs: readDuration("WLP_TURN_TIMEOUT_MS", 45 * 60 * 1000, 1_000),
+	turnResume: {
+		enabled: process.env.WLP_TURN_RESUME === "1",
+		floorMs: readDuration("WLP_TURN_RESUME_FLOOR_MS", 5 * 60 * 1000, 1_000),
+		delayMs: readDuration("WLP_TURN_RESUME_DELAY_MS", 3_000, 0),
+		heartbeatMs: readDuration("WLP_TURN_HEARTBEAT_MS", 60 * 1000, 2_000),
+		machineAskMs: readDuration("WLP_MACHINE_AWAY_ASK_MS", 3 * 24 * 60 * 60 * 1000, 1_000),
+	},
 	usage: {
 		dailySeconds: readCount("WLP_DAILY_SANDBOX_SECONDS", DEFAULT_DAILY_SECONDS, 60, 86_400, true),
 		maxKept: readCount("WLP_MAX_KEPT_SANDBOXES", DEFAULT_MAX_KEPT, 1, 1_000, true),

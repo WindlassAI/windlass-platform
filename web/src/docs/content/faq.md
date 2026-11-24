@@ -66,7 +66,7 @@ A sandbox is paused 10 minutes after its last turn, so it uses no sandbox time. 
 
 ## Is my own machine counted against my sandbox time?
 
-No. Agents on your machines take no sandbox time, no place among your kept sandboxes and no place among your agents working at once. Only the limits you set with the runner apply.
+No. Agents on your machines take no sandbox time, no place among your kept sandboxes and none of the sandboxes running at once on this platform, work items included. Only the limits you set with the runner apply.
 
 ## What does the platform see on my machine?
 

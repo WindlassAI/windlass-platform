@@ -21,7 +21,9 @@ import { evidenceSection } from "../server/src/github/publish.js";
 import { CHECKS_TABLE, type ChecksDb, ChecksProblem, cleanChecks, readChecks, saveChecks, windlassChecks } from "../server/src/repository-checks.js";
 import type { TurnChecks } from "../server/src/sandbox/api.js";
 import { VerificationLog, type WorkDiff, checkScripts, isTestPath, outputTail, verifiedSection, verifiedWords, withOutputs, withVerifiedSection, workFlags } from "../server/src/verified.js";
-import { PLATFORM_WAKE, platformConfig, projectChecks } from "../server/src/windlass-config.js";
+import { PLATFORM_WAKE, TURN_TIME_HOOK, platformConfig, projectChecks } from "../server/src/windlass-config.js";
+/** The platform's own hooks, which every configuration it writes has (windlass-config.ts `TURN_TIME_HOOK`). */
+const HOOKS = { beforeTool: [TURN_TIME_HOOK] };
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -79,10 +81,10 @@ const written = platformConfig(had, null, []);
 const config = JSON.parse(written?.config ?? "{}") as Record<string, unknown>;
 expect("whatever else the file holds is kept", config.model === "gpt-6-luna" && plain(config.mcp) === plain({ servers: { mine: { command: "x" } } }));
 const withdrawn = platformConfig(written?.config ?? null, written?.written ?? null, []);
-expect("with none to hand over, the file has no checks, and a file that held nothing else keeps only the platform's wake-ups off", !("checks" in JSON.parse(withdrawn?.config ?? "{}")) && platformConfig(JSON.stringify({ checks: [{ name: "a", command: "b" }] }), null, [])?.config === `${JSON.stringify({ wake: PLATFORM_WAKE }, null, 2)}\n`);
+expect("with none to hand over, the file has no checks, and a file that held nothing else keeps only the platform's wake-ups off", !("checks" in JSON.parse(withdrawn?.config ?? "{}")) && platformConfig(JSON.stringify({ checks: [{ name: "a", command: "b" }] }), null, [])?.config === `${JSON.stringify({ hooks: HOOKS, wake: PLATFORM_WAKE }, null, 2)}\n`);
 expect("a file that is not Windlass's is left alone", platformConfig("not json", null, []) === null);
 const strays = platformConfig(JSON.stringify({ model: "gpt-6-luna", checks: [{ name: "left", command: "true" }], requiredChecks: [{ name: "planted", command: "true" }], verify: { maxRounds: 1 } }), null, []);
-expect("where the checks are named when the session is opened the file gets none, and required checks or a verify setting a command left there go too", strays?.config === `${JSON.stringify({ model: "gpt-6-luna", wake: PLATFORM_WAKE }, null, 2)}\n` && strays.changed);
+expect("where the checks are named when the session is opened the file gets none, and required checks or a verify setting a command left there go too", strays?.config === `${JSON.stringify({ model: "gpt-6-luna", hooks: HOOKS, wake: PLATFORM_WAKE }, null, 2)}\n` && strays.changed);
 expect(
 	"what a repository's own file says about checks is read, and nothing else of it",
 	plain(projectChecks(JSON.stringify({ checks: [{ name: "smoke", command: "true" }], mcp: {} }))) === plain({ checks: 1, verify: null }) &&
@@ -290,6 +292,16 @@ expect(
 	"beside a check that passed, it is not said that nothing was verified",
 	someStarted.run?.checks[0]?.sentBack === 0 && verifiedSection({ verified: someStarted, flags: [], during: null, login: "ada" }).includes("The agent's turn 1 ended with a check that was not started. That says nothing about the code") && verifiedWords(someStarted, [], null) === "1 of 2 checks not started",
 	plain(someStarted),
+);
+
+// A check that ran and failed because the sandbox could not run its command (the platform's checks end the turn with `environment`).
+const envRun = resting(evidence(["test", "npm test", "failed", { ...mineRequired, exitCode: 127, outputTail: { text: "sh: 1: npm: not found" } }]), AT_START);
+const environment = log([...ran("w1", envRun), succeeded({ status: "unresolved", reason: "environment", failing: ["test"], acknowledgement: null, evidence: envRun })]).verified(1, [TEST], REQUIRED, null);
+expect(
+	"a check the sandbox could not run: the ending's reason is kept, the agent was not sent back, and the sentence says it is not the code",
+	environment.state === "unresolved" && plain(environment.unresolved) === plain({ reason: "environment", said: null }) && environment.run?.checks[0]?.sentBack === 0 &&
+		verifiedSection({ verified: environment, flags: [], during: null, login: "ada" }).includes("The agent's turn 1 ended with a check still failing: the sandbox could not run its command, which says nothing about the code, so the agent was not sent back."),
+	verifiedSection({ verified: environment, flags: [], during: null, login: "ada" }),
 );
 
 // Keys this code does not know, in the evidence, in a check, in the end of an output and in an ending, change nothing.

@@ -53,7 +53,7 @@ import { type OpenedSecret, SecretRedactor, openSecret, sealSecret, secretReach,
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { personalServerReach, serverQuestionWords } from "../server/src/server-question.js";
 import { createSealer } from "../server/src/signin/seal.js";
-import { PLATFORM_WAKE, platformConfig } from "../server/src/windlass-config.js";
+import { PLATFORM_WAKE, TURN_TIME_HOOK, platformConfig } from "../server/src/windlass-config.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -474,8 +474,9 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	const publish = { name: PUBLISH_SERVER, definition: { command: "python3" } };
 	const tracker = { name: "tracker", definition: { command: "tracker-mcp" } };
 	const docs = { name: "docs", definition: { url: "https://docs.example.com/mcp" } };
-	/** What the file holds when the platform has nothing in it but its own setting: wake-ups off. */
-	const wakeOnly = `${JSON.stringify({ wake: PLATFORM_WAKE }, null, 2)}\n`;
+	/** What the file holds when the platform has nothing in it but its own settings: its turn-time hook, and wake-ups off. */
+	const platformHooks = { beforeTool: [TURN_TIME_HOOK] };
+	const wakeOnly = `${JSON.stringify({ hooks: platformHooks, wake: PLATFORM_WAKE }, null, 2)}\n`;
 
 	const first = platformConfig(null, null, [tracker, docs, publish]);
 	expect("the user's servers and the platform's own go into a file that is not there", first !== null && plain(Object.keys(servers(first.config))) === plain(["tracker", "docs", PUBLISH_SERVER]) && first.changed && first.written !== null);
@@ -492,9 +493,16 @@ const value = () => `v_${randomBytes(18).toString("base64url")}`;
 	const beside = platformConfig(theirs, null, [tracker, publish]);
 	expect("what the file holds besides is kept, and a server of the same name gives way to the account's for the turn", beside !== null && plain(Object.entries(servers(beside.config)).map(([name, definition]) => [name, definition.command])) === plain([["local", "local-mcp"], ["tracker", "tracker-mcp"], [PUBLISH_SERVER, "python3"]]) && (JSON.parse(beside.config as string) as { approval: unknown }).approval !== undefined);
 	const after = platformConfig(beside?.config ?? null, beside?.written ?? null, []);
-	expect("taken out again, the file is what it was, with the server that gave way back in its place, and wake-ups off", after !== null && plain(JSON.parse(after.config as string)) === plain({ ...JSON.parse(theirs), wake: PLATFORM_WAKE }) && after.written === null);
+	expect("taken out again, the file is what it was, with the server that gave way back in its place, and wake-ups off", after !== null && plain(JSON.parse(after.config as string)) === plain({ ...JSON.parse(theirs), hooks: platformHooks, wake: PLATFORM_WAKE }) && after.written === null);
 	expect("a file the platform has nothing in, and nothing to add to, is not written again", platformConfig(after?.config ?? null, null, [])?.changed === false);
 	expect("whatever a command left under wake, the file turns wake-ups off", JSON.parse(platformConfig(JSON.stringify({ wake: { enabled: true, maxActive: 10 } }), null, [])?.config ?? "{}").wake?.enabled === false);
+
+	// The platform's hook holds a shell call's timeout to what is left of the turn; the file's own hooks stay after it.
+	const own = { name: "no-push", tools: ["shell"], command: "exit 0" };
+	const hooked = JSON.parse(platformConfig(JSON.stringify({ hooks: { beforeTool: [{ ...TURN_TIME_HOOK, command: "exit 2" }, own], stop: [{ command: "true" }] } }), null, [])?.config ?? "{}");
+	expect("the platform's turn-time hook goes first, replaces one planted under its name, and the file's own hooks stay", plain(hooked.hooks) === plain({ beforeTool: [TURN_TIME_HOOK, own], stop: [{ command: "true" }] }));
+	expect("the turn-time hook lets a call through when it cannot answer, and looks at shell calls only", TURN_TIME_HOOK.onError === "allow" && plain(TURN_TIME_HOOK.tools) === plain(["shell"]));
+	expect("a file whose hooks are not Windlass's shape is left alone", [JSON.stringify({ hooks: [] }), JSON.stringify({ hooks: { beforeTool: {} } })].every((text) => platformConfig(text, null, []) === null));
 
 	// A user's server cannot take the platform's name, by any way.
 	const impostor = { name: PUBLISH_SERVER, definition: { command: "impostor" } };

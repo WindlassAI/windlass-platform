@@ -34,6 +34,8 @@
  *   "(invalid-effort)" the Responses API rejects the reasoning effort with HTTP 400
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
  *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
+ *   "(outlive-delete)" loses the sandbox's first removal, or refuses every removal while the file
+ *                     named by WLP_FAKE_HOLD_REMOVALS exists, so it can outlive a retried delete
  *   "(big-memory)"    Windlass's session grows by two mebibytes in this turn, for a copy that is over
  *                     the limit (with WLP_FAKE_BACKUP_DIR, below)
  *
@@ -110,7 +112,7 @@ import { hostToolsMeta, sessionOpenParams, turnAgentMeta, turnHostTools } from "
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { untrustedSource } from "./factory/untrusted.js";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeBucket, type StandInObjectStore } from "./bucket/stand-in.js";
 import type { ListedModels } from "./account-models.js";
@@ -199,6 +201,8 @@ const PROFILES: SandboxProfile[] = [
 
 interface FakeSandbox {
 	reviewCloneFailed?: boolean;
+	/** "(outlive-delete)": the fake provider drops or refuses removal of this sandbox. */
+	outlives?: boolean;
 	privateData: boolean;
 	screenshots: boolean;
 	id: string;
@@ -218,6 +222,8 @@ interface FakeSandbox {
 
 /** What the fake Windlass keeps of a session: enough to continue it, and to notice when it is gone. */
 interface FakeSession {
+	/** The model sees the host tool names from its first baseline, even when a resume declares different tools. */
+	hostToolNames?: string[];
 	/** Windlass retains the selected agent when resume omits it. */
 	agent?: string;
 	/** The last `seq` written, so a continued session keeps counting. */
@@ -486,6 +492,10 @@ class FakeSandboxes implements Sandboxes {
 		return [...this.all.values()].filter((sandbox) => sandbox.uid === uid).map((sandbox) => ({ id: sandbox.id, sessionId: sandbox.sessionId, state: sandbox.state }));
 	}
 
+	async owners(): Promise<string[]> {
+		return [...new Set([...this.all.values()].map((sandbox) => sandbox.uid))];
+	}
+
 	async suspend(id: string): Promise<void> {
 		const sandbox = this.all.get(id);
 		if (sandbox) sandbox.state = "paused";
@@ -495,6 +505,16 @@ class FakeSandboxes implements Sandboxes {
 		if (this.settings.delayMs > 0) {
 			console.log(`[wlp] fake sandbox removal started id=${id}`);
 			await delay(this.settings.delayMs);
+		}
+		const sandbox = this.all.get(id);
+		if (sandbox?.outlives) {
+			const hold = process.env.WLP_FAKE_HOLD_REMOVALS;
+			if (hold && existsSync(hold)) throw new Error(`fake sandbox removal held id=${id}`);
+			sandbox.outlives = false;
+			if (!hold) {
+				console.log(`[wlp] fake sandbox removal lost id=${id}`);
+				return;
+			}
 		}
 		this.all.delete(id);
 	}
@@ -679,6 +699,11 @@ class FakeWindlass implements Windlass {
 	}
 
 	async runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
+		// A turn that resumes, whose session this sandbox does not hold (Windlass's store was lost): a new session, given the whole task, as the real layer does.
+		if (input.fresh && input.windlassSessionId !== undefined && this.sandboxes.sessionsLiveInSandbox && this.sandboxes.all.has(sandbox.id) && !this.sandboxes.windlassOf(sandbox.id).has(input.windlassSessionId)) {
+			const result = await this.runTurn(sandbox, { ...input, prompt: input.fresh.prompt, untrusted: input.fresh.untrusted, windlassSessionId: undefined, fresh: undefined });
+			return { ...result, resumed: false };
+		}
 		const text = input.prompt.toLowerCase();
 		if (text.includes("(throw)")) throw new Error("fake layer: docker exec failed: container is not running");
 		if (!this.sandboxes.all.has(sandbox.id)) throw new Error(`fake sandbox ${sandbox.id} does not exist`);
@@ -728,6 +753,9 @@ class FakeWindlass implements Windlass {
 			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `there is no session ${sessionId}` } };
 		}
 		const session: FakeSession = sessions.get(sessionId) ?? { seq: 0, turns: 0, padding: 0 };
+		const offered = turnHostTools(input);
+		const declarations = hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan);
+		const visibleTools = session.hostToolNames ??= declarations.hostTools.map(tool => tool.name);
 		const agentMeta = turnAgentMeta(input.planner ? "planner" : input.onReview ? "reviewer" : null, input.clearPlanner);
 		if (agentMeta.agent !== undefined) session.agent = agentMeta.agent;
 		sessions.set(sessionId, session);
@@ -1106,8 +1134,10 @@ class FakeWindlass implements Windlass {
 				// The platform's own tools the prompt names, called once before the turn ends, as a model calls a host tool: the call is the platform's to answer.
 				if (TERMINAL.has(recorded.type) && !invalidEffort && !usageLimit && !platformCalled) {
 					platformCalled = true;
-					const offered = turnHostTools(input);
-					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan) });
+					if (input.prompt.includes("SERVICE_TOKEN is now set in your environment.") && process.env.WLP_FAKE_REQUEST_VALUE) {
+						emit({ type: "fake.secret_checked", data: { matches: input.secrets?.env.SERVICE_TOKEN === process.env.WLP_FAKE_REQUEST_VALUE }, seq: 0 });
+					}
+					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...declarations });
 					if (input.onPlan) {
 						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
 						const single = text.includes("(suggest-single)");
@@ -1122,7 +1152,7 @@ class FakeWindlass implements Windlass {
 								questions: [], singleSuggested: null, repos: JSON.parse(repos),
 								subtasks: [[sibling, "index", []], [primary, "search", ["index"]]].map(([repo, key, dependsOn]) => ({
 									key, repo, title: key, brief: "Implement " + key + ". (report)", acceptance: ["Run pnpm test"], owns: ["src/**"], dependsOn,
-									budget: { tokens: 600000, turns: 3, activeSeconds: 1440, hostedSeconds: 1200 },
+									budget: { tokens: 600000 },
 								})),
 								mergeOrder: [
 									{ repo: sibling, prerequisite: [], intermediate: "The released consumer ignores it", evidence: "The old reader passes", fallback: "Leave it unused" },
@@ -1137,7 +1167,7 @@ class FakeWindlass implements Windlass {
 							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
 							questions: [], singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
 								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
-								budget:{tokens:600000,turns:3,activeSeconds:1440,hostedSeconds:1200},
+								budget:{tokens:600000},
 							})),
 						} }, signal ?? new AbortController().signal);
 						emit({type:"fake.plan_reply",data:{reply},seq:0});
@@ -1182,17 +1212,20 @@ class FakeWindlass implements Windlass {
 							emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
 						}
 					}
-					for (const [word, name, run] of [
-						["(fetch)", "fetch_base", input.onFetchBase],
-						["(push)", "push", input.onPush],
-						["(report)", "report", input.onReport],
-						["(ask)", "ask_person", input.onAsk],
+					for (const [word, name] of [
+						["(fetch)", "fetch_base"],
+						["(push)", "push"],
+						["(report)", "report"],
+						["(ask)", "ask_person"],
+						["(secret)", "request_secret"],
 					] as const) {
-						if (!(text.includes(word) || name === "report" && input.planner) || run === undefined || signal?.aborted) continue;
+						const run = offered.get(name);
+						const retrySkipped = name === "request_secret" && text.includes("continue without service_token.");
+						if (!(text.includes(word) || retrySkipped || name === "report" && input.planner) || !visibleTools.includes(name) || run === undefined || signal?.aborted) continue;
 						const fixture = process.env.WLP_FAKE_ATTACHMENT_PNG;
 						const pictured = name === "report" && text.includes("(screenshot)");
 						if (pictured && fixture) this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));
-						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "ask_person" ? { question: "Which store should the readings go in?\u202e Reply in one word.", options: ["SQLite", "Postgres"] } : name === "report" ? { ...(pictured ? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] } : {}), title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
+						const call = { messageId: currentStep ?? "msg_fake", callId: `call_${name}`, arguments: name === "request_secret" ? { name: (text.match(/\(secret-name ([a-z0-9_]+)\)/)?.[1] ?? "SERVICE_TOKEN").toUpperCase(), why: "Run the service test." } : name === "ask_person" ? { question: "Which store should the readings go in?\u202e Reply in one word.", options: ["SQLite", "Postgres"] } : name === "report" ? { ...(pictured ? { screenshots: [{ file: ".wlp-shots/home.png", caption: "Home page", shows: "after" }] } : {}), title: `Report of turn ${turn}`, description: "What the fake agent did.", look_at: `notes/turn-${turn}.md` } : name === "push" ? { message: `Push of turn ${turn}` } : {} };
 						// `input` as Windlass writes it for every call, a host tool's too: the model's arguments as JSON text (its event/durable.ts, `tool.called`).
 						emit({ type: "tool.called", v: 1, data: { messageId: call.messageId, callId: call.callId, name, input: JSON.stringify(call.arguments) }, seq: 0, time: 0 });
 						const output = await Promise.resolve(run(call, signal ?? new AbortController().signal)).catch(() => "The platform could not handle this call.");
@@ -1245,6 +1278,7 @@ class FakeWindlass implements Windlass {
 			if (text.includes("(change-setup-fixture)")) files?.set("index/setup.sh", "echo child-setup\n");
 			if (text.includes("(consume-setup-fixture)")) files?.set("search/result.txt", "second subtask\n");
 			if (text.includes("(lose-sandbox)")) this.sandboxes.all.delete(sandbox.id);
+if (text.includes("(outlive-delete)")) { const kept = this.sandboxes.all.get(sandbox.id); if (kept) kept.outlives = true; }
 
 			let failure: RunTurnResult["failure"] = null;
 			if (text.includes("(auth-fail)")) failure = { reason: "auth_required", message: "Signed out: sign in again to continue." };

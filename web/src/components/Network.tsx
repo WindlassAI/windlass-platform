@@ -14,6 +14,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { absoluteTime, plural } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { WarnIcon } from "./Icons";
+import { Check } from "./ui/Check";
 
 /** What the deployment's hosted sandboxes do with the list, in a sentence. */
 function appliesHere(network: RepositoryNetwork, name: string): string {
@@ -175,18 +176,24 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 						const on = has(preset.id);
 						const everywhere = preset.hosts.every((presetHost) => always.has(presetHost));
 						return (
-							<label key={preset.id} className={`check${on || everywhere ? " check-on" : ""}`}>
-								<input className="check-input" type="checkbox" checked={on || everywhere} disabled={busy !== null || everywhere} onChange={(event) => toggle(preset.id, event.target.checked)} />
-								<span className="check-box" aria-hidden="true" />
-								<span className="check-text">
-									<span className="check-name">
-										{preset.name} <code className="repo-network-id">{preset.id}</code>
-									</span>
-									<span className="check-means">
-										{everywhere ? "Allowed for every sandbox of this deployment." : `${preset.about}: ${preset.hosts.join(", ")}`}
-									</span>
+							<Check key={preset.id} checked={on || everywhere} disabled={busy !== null || everywhere} onChange={(on) => toggle(preset.id, on)}>
+								<span className="check-name">
+									{preset.name} <code className="repo-network-id">{preset.id}</code>
 								</span>
-							</label>
+								<span className="check-means">
+									{everywhere ? "Allowed for every sandbox of this deployment." : (
+										<>
+											{preset.about}:{" "}
+											{preset.hosts.map((presetHost, index) => (
+												<span key={presetHost}>
+													{index > 0 ? ", " : null}
+													<HostName host={presetHost} />
+												</span>
+											))}
+										</>
+									)}
+								</span>
+							</Check>
 						);
 					})}
 				</fieldset>
@@ -306,5 +313,24 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 
 			{always.size > 0 ? <p className="usage-note">Always reachable here: {[...always].join(", ")}.</p> : null}
 		</>
+	);
+}
+
+/** A host name that wraps only after its dots, never inside a label ("playwright.download.prss.microsoft.com"). */
+function HostName({ host }: { host: string }) {
+	const labels = host.split(".");
+	return (
+		<span>
+			{labels.map((label, index) => (
+				<span key={index}>
+					{label}
+					{index < labels.length - 1 ? (
+						<>
+							.<wbr />
+						</>
+					) : null}
+				</span>
+			))}
+		</span>
 	);
 }

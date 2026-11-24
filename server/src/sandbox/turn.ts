@@ -112,8 +112,8 @@ import type { TurnUsage, WindlassEvent } from "../contract.js";
 import { isReservedServerName } from "../personal-servers.js";
 import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
-import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
-import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, StartMark, TurnAnswer, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
+import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, TURN_DEADLINE_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
+import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, StartMark, TurnAnswer, TurnCheckpoint, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, handedInProblem, relayRefused, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -352,6 +352,15 @@ class Tally {
 		}
 	}
 
+	/** What a turn checkpoint keeps of it (`Turn.checkpoint`). */
+	save(): Record<string, unknown> {
+		return { startedAt: this.startedAt, steps: this.steps, summaryCalls: this.summaryCalls, usage: this.usage, running: this.running, last: this.last };
+	}
+
+	load(saved: Record<string, unknown>): void {
+		Object.assign(this, saved);
+	}
+
 	/** The summary event, with `outcome` in place of the event's own when the prompt's answer gave one. */
 	summary(outcome: Outcome | null): WindlassEvent | null {
 		const last = this.last;
@@ -379,12 +388,20 @@ class Turn {
 	private readonly reviewerAgent: string | null;
 	private process: SandboxProcess | null = null;
 	private readonly peer: AcpConnection;
+	/** The engine's standard output, a line at a time. */
+	private readonly lines: LineSplitter;
+	/** The id `session/prompt` went with. */
+	private promptId: number | null = null;
+	/** A turn a restarted server takes up (`RunTurnInput.reattach`) has its process again. */
+	private takenUp = false;
 	private processEnd: ProcessEnd | null = null;
 	private stderr = "";
 	private readonly notes: string[] = [];
 
 	/** The session this turn works in, once it is known: events of any other are not this turn's. */
 	private session: string | null = null;
+	/** The session to resume was gone, and a new one was opened for `RunTurnInput.fresh` (`open`). */
+	private freshened = false;
 	/** Events that arrived before `session/new` named the session. */
 	private early: Array<{ sessionId: string; event: WindlassEvent }> = [];
 	private sessionSeen: string | null = null;
@@ -398,7 +415,7 @@ class Turn {
 	/** The prompt was answered, with a result or an error. */
 	private promptSettled = false;
 	/** How the prompt's answer says its execution ended. */
-	private promptEnding: { executionId: string | null; outcome: Outcome | null } | null = null;
+	private promptEnding: { executionId: string | null; outcome: Outcome | null; stepLimit: boolean } | null = null;
 	/** The `_meta` keys the engine takes on `session/prompt` (`promptMeta` in its answer to `initialize`). */
 	private promptKeys: string[] = [];
 	private steersInFlight = 0;
@@ -485,7 +502,8 @@ class Turn {
 		if (mode !== "ask" && mode !== sandbox.approval) throw new Error("This sandbox profile does not offer that approval mode.");
 		this.approval = mode;
 		// A project definition takes precedence over a named user agent. Choose the name after checkout, on every open.
-		this.reviewerAgent = (input.onReview || input.planner) ? `wlp-review-${randomId(16)}` : null;
+		const saved = input.reattach?.harness === "windlass" ? input.reattach.state : null;
+		this.reviewerAgent = saved ? (saved.reviewerAgent as string | null) : (input.onReview || input.planner) ? `wlp-review-${randomId(16)}` : null;
 		this.redactor = input.secrets?.redactor ?? NO_REDACTION;
 		this.peer = new AcpConnection(
 			(line) => this.process?.write(`${line}\n`) ?? false,
@@ -493,6 +511,16 @@ class Turn {
 			NS,
 			(value) => this.redactor.deep(value),
 		);
+		const tokenFile = this.tokenFile;
+		// A token a command printed is taken out before the message is read: it reaches no event.
+		this.lines = new LineSplitter((line) => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
+		if (input.onCheckpoint !== undefined) {
+			try {
+				input.onCheckpoint(() => this.checkpoint());
+			} catch {
+				// A listener's failure must not stop the turn.
+			}
+		}
 	}
 
 	/** Tells a point of the turn's start (RunTurnInput.onStartMark). */
@@ -506,7 +534,8 @@ class Turn {
 
 	async run(): Promise<RunTurnResult> {
 		const { sandbox, input } = this;
-		const scriptPath = input.script === undefined ? null : `/tmp/.wlp-script-${randomId(6)}.json`;
+		const saved = input.reattach?.harness === "windlass" ? input.reattach.state : null;
+		const scriptPath = saved ? (saved.scriptPath as string | null) : input.script === undefined ? null : `/tmp/.wlp-script-${randomId(6)}.json`;
 		const tokenFile = this.tokenFile;
 		const configHome = this.reviewerAgent && `/tmp/${this.reviewerAgent}`;
 		const agentFile = configHome && `${configHome}/windlass/agents/${this.reviewerAgent}.md`;
@@ -524,9 +553,13 @@ class Turn {
 				this.failure = { reason: "engine", message: `the sandbox could not be kept running for the turn: ${error instanceof Error ? error.message : String(error)}` };
 				return null;
 			});
-			if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
-				// A token a command printed is taken out before the message is read: it reaches no event.
-				const lines = new LineSplitter((line) => this.peer.receive(tokenFile === null ? line : tokenFile.scrub(line)));
+			if (release !== null && input.reattach !== undefined) {
+				if (await this.takeUp(input.reattach)) {
+					await this.whenOver;
+					await this.end();
+				}
+			} else if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
+				const lines = this.lines;
 				const env = {
 					// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
 					WINDLASS_WAKE: "off",
@@ -553,13 +586,7 @@ class Turn {
 				this.process = run;
 				this.engineEnv = { ...env, WLP_RUN_TAG: run.tag };
 				this.engineSecrets = new Set(Object.keys(secretEnv));
-				void run.ended.then((end) => {
-					lines.flush();
-					this.processEnd = end;
-					this.peer.end(end.error !== null ? end.error.message : `the engine process ${describeEnd(end)}`);
-					this.resolveInterrupted();
-					this.finish();
-				});
+				this.follow(run);
 
 				await this.converse();
 				await this.end();
@@ -580,8 +607,9 @@ class Turn {
 			} else {
 				await sandbox.removeFiles(files);
 			}
-			// With the engine gone: the servers it was handed for this turn are not left for the next.
+			// With the engine gone: the servers it was handed for this turn are not left for the next, nor its deadline.
 			await this.withdrawServers();
+			if (this.input.endsAt !== undefined) await sandbox.removeFiles([TURN_DEADLINE_FILE]).catch(() => undefined);
 			await release?.().catch(() => undefined);
 		}
 
@@ -600,6 +628,7 @@ class Turn {
 			aborted,
 			timedOut: false,
 			windlassSessionId: this.sessionSeen,
+			...(this.freshened && { resumed: false }),
 			summary: this.summary,
 			stderrTail: scrub(stderrTail).slice(-STDERR_TAIL),
 			failure: failure === null ? failure : { reason: failure.reason, message: scrub(failure.message) },
@@ -727,6 +756,7 @@ class Turn {
 		}
 
 		// Before a session is opened: the engine reads its configuration then, and starts what its user's own file names.
+		if ((await this.unlessAborted(this.writeDeadline())) === "aborted" || this.abortRequested) return;
 		if ((await this.unlessAborted(this.writeServers())) === "aborted" || this.abortRequested) return;
 
 		try {
@@ -743,19 +773,165 @@ class Turn {
 
 		this.promptSent = true;
 		this.mark("prompted");
-		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: input.prompt }], ...promptMeta(input, this.promptKeys) };
-		if (untrustedSource(input.untrusted) !== null && !this.promptKeys.includes(UNTRUSTED_KEY)) {
+		// The whole task, with its own sources, when the session this turn resumes was gone (`open`).
+		const given = this.freshened && input.fresh ? { ...input, prompt: input.fresh.prompt, untrusted: input.fresh.untrusted } : input;
+		const prompt = { sessionId: this.session, prompt: [{ type: "text", text: given.prompt }], ...promptMeta(given, this.promptKeys) };
+		if (untrustedSource(given.untrusted) !== null && !this.promptKeys.includes(UNTRUSTED_KEY)) {
 			try {
 				input.onUntrustedUnmarked?.();
 			} catch {
 				// A listener's failure must not stop the turn.
 			}
 		}
-		void peer.request<{ stopReason?: unknown; _meta?: Record<string, unknown> }>("session/prompt", prompt).then(
+		this.answered(peer.request<PromptResult>("session/prompt", prompt));
+		this.promptId = peer.lastId;
+		this.controlled();
+		await this.whenOver;
+	}
+
+	/** Until the process ends: its end ends the connection and the turn. */
+	private follow(run: SandboxProcess): void {
+		void run.ended.then((end) => {
+			this.lines.flush();
+			this.processEnd = end;
+			this.peer.end(end.error !== null ? end.error.message : `the engine process ${describeEnd(end)}`);
+			this.resolveInterrupted();
+			this.finish();
+		});
+	}
+
+	/** The turn's handle, for whoever steers it. */
+	private controlled(): void {
+		if (this.input.onControl === undefined) return;
+		try {
+			this.input.onControl(this.control());
+		} catch {
+			// A listener's failure must not stop the turn.
+		}
+	}
+
+	/**
+	 * What this turn needs to be taken up again by a server that restarted (`TurnCheckpoint`), or null
+	 * when it cannot be from here: before the prompt went, once it was answered or stopped, or where the
+	 * provider cannot keep the process across a restart. Read synchronously with the timeline it goes
+	 * with, so the two say the same moment. No secret: values the redactor holds back are kept only
+	 * once complete values were taken out, and no longer than the longest value could begin.
+	 */
+	private checkpoint(): TurnCheckpoint | null {
+		// Until the process is taken up, what was stored stands: the output kept for it is not in the timeline yet.
+		if (this.input.reattach !== undefined && !this.takenUp) return this.input.reattach;
+		const run = this.process;
+		const process = run?.runnerProcess;
+		if (!run || !process || !this.promptSent || this.promptSettled || this.promptId === null || this.over || this.abortRequested || this.cancelSent || this.session === null) return null;
+		const relay = this.tokenFile?.lease ?? null;
+		if (this.tokenFile?.relayed && relay === null) return null;
+		return {
+			harness: "windlass",
+			process,
+			tag: run.tag,
+			state: {
+				v: 1,
+				acp: this.peer.state(),
+				prompt: this.promptId,
+				rest: this.lines.pending,
+				session: this.session,
+				sessionSeen: this.sessionSeen,
+				promptKeys: this.promptKeys,
+				undelivered: [...this.undelivered],
+				delivered: [...this.delivered],
+				tally: this.tally.save(),
+				servers: this.servers,
+				serversAsked: [...this.serversAsked],
+				personal: [...this.personal],
+				unasked: [...this.unasked],
+				taintSeen: this.taintSeen,
+				unaskedCalls: [...this.unaskedCalls],
+				heldBack: [...this.heldBack],
+				configWritten: this.configWritten,
+				checks: this.checks,
+				engineEnv: this.engineEnv,
+				engineSecrets: [...this.engineSecrets],
+				outputSeen: this.outputSeen,
+				notes: this.notes,
+				reviewerAgent: this.reviewerAgent,
+				scriptPath: (this.engineEnv.WINDLASS_ACP_SCRIPT as string | undefined) ?? null,
+				relay,
+			},
+		};
+	}
+
+	/**
+	 * Takes up the process a checkpoint names, which the machine's runner kept running while this server
+	 * restarted: the connection goes on with the same ids, the prompt's answer is waited for again, and a
+	 * request of the engine's left unanswered is answered now. The token goes again (it is never stored).
+	 * False, with `failure` set, when it cannot be had: the caller ends the turn as one cut off.
+	 */
+	private async takeUp(checkpoint: TurnCheckpoint): Promise<boolean> {
+		const saved = checkpoint.state;
+		if (checkpoint.harness !== "windlass" || saved.v !== 1 || this.sandbox.adopt === undefined) {
+			this.failure = { reason: "engine", message: TAKE_UP_FAILED };
+			return false;
+		}
+		// Everything the connection had before its output flows again: what the runner kept may hold the prompt's answer.
+		this.lines.resume(String(saved.rest ?? ""));
+		this.session = saved.session as string;
+		this.sessionSeen = (saved.sessionSeen as string | null) ?? null;
+		this.promptKeys = saved.promptKeys as string[];
+		for (const id of saved.undelivered as string[]) this.undelivered.add(id);
+		for (const id of saved.delivered as string[]) this.delivered.add(id);
+		this.tally.load(saved.tally as Record<string, unknown>);
+		this.servers = saved.servers as ServerState[];
+		for (const key of saved.serversAsked as string[]) this.serversAsked.add(key);
+		for (const name of saved.personal as string[]) this.personal.add(name);
+		for (const name of saved.unasked as string[]) this.unasked.add(name);
+		this.taintSeen = saved.taintSeen === true;
+		for (const [key, call] of saved.unaskedCalls as Array<[string, TurnUnaskedCall]>) this.unaskedCalls.set(key, call);
+		for (const [key, held] of saved.heldBack as Array<[string, string]>) this.heldBack.set(key, held);
+		this.configWritten = saved.configWritten === true;
+		this.checks = (saved.checks as TurnChecks | null) ?? null;
+		this.engineEnv = saved.engineEnv as Record<string, string>;
+		this.engineSecrets = new Set(saved.engineSecrets as string[]);
+		this.outputSeen = saved.outputSeen === true;
+		this.notes.push(...(saved.notes as string[]));
+		this.hostTools = turnHostTools(this.input);
+		const acp = saved.acp as ReturnType<AcpConnection["state"]>;
+		this.peer.restore(acp.nextId);
+		this.promptSent = true;
+		this.promptId = saved.prompt as number;
+		this.answered(this.peer.expect<PromptResult>(this.promptId, "session/prompt"));
+		const run = this.sandbox.adopt(checkpoint.process, checkpoint.tag, {
+			onStdout: (chunk) => this.lines.push(chunk),
+			onStderr: (chunk) => (this.stderr = (this.stderr + chunk).slice(-STDERR_KEPT)),
+		});
+		if (!run) {
+			this.failure = { reason: "engine", message: TAKE_UP_FAILED };
+			this.peer.end(TAKE_UP_FAILED);
+			return false;
+		}
+		this.process = run;
+		this.takenUp = true;
+		this.follow(run);
+		if (this.tokenFile !== null) {
+			try {
+				await this.tokenFile.resume((saved.relay as { lease: string; placeholder: string; env: Record<string, string> } | null) ?? null);
+			} catch (error) {
+				this.failure = error instanceof TokenFileError ? { reason: "engine", message: `the engine could not be handed its token again: ${error.message}` } : tokenSourceFailure(error);
+				this.abort();
+				return true;
+			}
+		}
+		for (const [id, method, params] of acp.incoming) this.peer.answerAgain(id, method, params);
+		this.controlled();
+		return true;
+	}
+
+	/** How the prompt's answer says the turn ended. */
+	private answered(request: Promise<PromptResult>): void {
+		void request.then(
 			(result) => {
 				const turn = result?._meta?.[NS] as { executionId?: unknown; outcome?: unknown } | undefined;
 				const outcome = typeof turn?.outcome === "string" && ["succeeded", "unresolved", "failed", "interrupted"].includes(turn.outcome) ? (turn.outcome as Outcome) : result?.stopReason === "cancelled" ? "interrupted" : null;
-				this.promptEnding = { executionId: typeof turn?.executionId === "string" ? turn.executionId : null, outcome };
+				this.promptEnding = { executionId: typeof turn?.executionId === "string" ? turn.executionId : null, outcome, stepLimit: result?.stopReason === "max_turn_requests" };
 				this.promptSettled = true;
 				this.check();
 			},
@@ -766,14 +942,6 @@ class Turn {
 				this.check();
 			},
 		);
-		if (input.onControl !== undefined) {
-			try {
-				input.onControl(this.control());
-			} catch {
-				// A listener's failure must not stop the turn.
-			}
-		}
-		await this.whenOver;
 	}
 
 	/** `session/new`, or the session to continue: named with `_windlass/resolve`, opened with `session/resume`. */
@@ -800,7 +968,19 @@ class Turn {
 			this.adopt(made.sessionId);
 			return;
 		}
-		const named = await peer.request<{ sessionId?: unknown; cwd?: unknown }>(EXT.resolve, { cwd: this.sandbox.cwd, session: input.windlassSessionId }, { timeoutMs: OPEN_TIMEOUT_MS });
+		let named: { sessionId?: unknown; cwd?: unknown } | undefined;
+		try {
+			named = await peer.request<{ sessionId?: unknown; cwd?: unknown }>(EXT.resolve, { cwd: this.sandbox.cwd, session: input.windlassSessionId }, { timeoutMs: OPEN_TIMEOUT_MS });
+		} catch (error) {
+			// A turn that resumes, whose session the engine no longer has (its store was lost): a new session, given the whole task.
+			if (input.fresh === undefined || !(error instanceof AcpError) || this.failureOf(error).reason !== "session_not_found") throw error;
+			const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
+			if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
+			this.freshened = true;
+			this.notes.push("[platform] the engine no longer had the session this turn resumes; a new one was opened with the whole task");
+			this.adopt(made.sessionId);
+			return;
+		}
 		const sessionId = typeof named?.sessionId === "string" ? named.sessionId : input.windlassSessionId;
 		const cwd = typeof named?.cwd === "string" ? named.cwd : this.sandbox.cwd;
 		// Before the answer: what the open itself appends (a crashed turn's recovery) arrives ahead of it.
@@ -959,6 +1139,20 @@ class Turn {
 		if (next.written !== null) await this.sandbox.writeTextFile(PLATFORM_SERVERS_FILE, next.written);
 		if (next.changed) await this.sandbox.writeTextFile(WINDLASS_CONFIG_FILE, next.config);
 		if (next.written === null && had.written !== null) await this.sandbox.removeFiles([PLATFORM_SERVERS_FILE]);
+	}
+
+	/**
+	 * When the turn ends, by the sandbox's own clock (its seconds since the epoch, plus what is left by this
+	 * server's), for the platform's hook (windlass-config.ts `TURN_TIME_HOOK`). One that cannot be written is removed:
+	 * the hook then refuses nothing. Never throws.
+	 */
+	private async writeDeadline(): Promise<void> {
+		const endsAt = this.input.endsAt;
+		if (endsAt === undefined) return;
+		const left = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
+		const script = 'mkdir -p "$(dirname "$2")" && echo $(( $(date +%s) + $1 )) > "$2.tmp" && mv -f "$2.tmp" "$2"';
+		const said = await this.sandbox.ask(["sh", "-c", script, "sh", String(left), TURN_DEADLINE_FILE], { timeoutMs: DEFINITION_TIMEOUT_MS }).catch(() => null);
+		if (said === null || said.code !== 0) await this.sandbox.removeFiles([TURN_DEADLINE_FILE]).catch(() => undefined);
 	}
 
 	/** Writes the user's MCP servers and reads the project's check settings before opening the session. */
@@ -1398,9 +1592,10 @@ class Turn {
 		// With an execution still at work the turn was cut off before Windlass said how it ended: no summary then.
 		if (last !== null && this.tally.running === null) {
 			// How the prompt's answer says its execution ended; an execution a late message started has only its own event.
-			const answered = this.promptEnding !== null && (this.promptEnding.executionId === null || this.promptEnding.executionId === last.executionId) ? this.promptEnding.outcome : null;
-			const summary = this.tally.summary(answered);
+			const answered = this.promptEnding !== null && (this.promptEnding.executionId === null || this.promptEnding.executionId === last.executionId) ? this.promptEnding : null;
+			const summary = this.tally.summary(answered?.outcome ?? null);
 			if (summary !== null) {
+				if (answered?.stepLimit && this.input.maxSteps !== undefined) summary.stepLimit = this.input.maxSteps;
 				this.summary = summary;
 				try {
 					this.input.onEvent?.(summary);
@@ -1492,6 +1687,8 @@ class Turn {
 }
 
 type Initialized = { agentCapabilities?: { _meta?: Record<string, unknown> } };
+const TAKE_UP_FAILED = "the engine process of this turn could not be taken up again after the server restarted";
+type PromptResult = { stopReason?: unknown; _meta?: Record<string, unknown> };
 
 /** The prompt's marker of outside text (Windlass 0.6.0, its docs/acp.md). */
 const UNTRUSTED_KEY = "windlass/untrusted";

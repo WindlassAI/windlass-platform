@@ -37,8 +37,8 @@
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
-import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
-import type { CommandSandbox, Redactor } from "./repo-secrets.js";
+import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type SecretRequest, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
+import { unavailableSecretName, validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
 
 /**
  * A name no MCP server of a user's may have (personal-servers.ts), and that the platform takes out of
@@ -71,6 +71,7 @@ export const FETCH_BASE_TOOL = "fetch_base";
  * is the next turn's message. Offered with `report`, and only to a builder (never the planner, the
  * summary or the reviewer).
  */
+export const SECRET_TOOL = "request_secret";
 export const ASK_TOOL = "ask_person";
 
 /** The longest commit message a request may carry. */
@@ -116,7 +117,7 @@ const fetchBaseDescription = (fetches?: number) => [
 ].join(" ");
 
 /** What a question of the agent's may hold. */
-export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120, perRun: 3 } as const;
+export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120 } as const;
 
 const ASK_DESCRIPTION = [
 	"Ask the person who owns this work item a question you cannot go on without, then end your turn: their answer comes as your next message.",
@@ -124,7 +125,7 @@ const ASK_DESCRIPTION = [
 	"Do not ask for permission, for anything you can find out yourself, or to have your work checked: decide, and say in your report's concerns what you decided.",
 	"Write the question plainly, say what you will do with each answer, and give up to 4 short options when the answer is one of a few.",
 	"The call is answered at once. The question waits on the item's page for as long as the person takes, which can be days; your work stays as it is meanwhile. End your turn right after asking.",
-	`At most one question per turn and ${ASK_LIMITS.perRun} per run.`,
+	"At most one question per turn.",
 ].join(" ");
 
 const ASK_SCHEMA = {
@@ -192,6 +193,7 @@ export interface PlatformToolOffer {
 	screenshots?: boolean;
 	/** `ask_person`: a work item's builder only. */
 	ask?: boolean;
+	secret?: boolean;
 	/** A cross-repo feature's planning turn: `file_plan` also takes the plan's repositories, merge order and combined run. */
 	crossRepo?: boolean;
 	/** Served over MCP: how many pushes and fetches a turn may make there (platform-tools.ts, `MCP_LIMITS`), which the tools say. */
@@ -241,7 +243,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
 	if (offer.plan) return [tool("file_plan",
-		`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?}], and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens,turns,activeSeconds,hostedSeconds}}]. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.`
+		`Propose a feature plan for the owner. Include spec {goal, requirements[], outOfScope[], acceptance[]}, questions [{id,text,options?,why?}] (each question's text one short sentence of at most 140 characters ending in a question mark, each option at most 80 characters, and why, optional, at most 400 characters of background the owner can open), and two to six subtasks [{key,title,brief,acceptance[],dependsOn[],owns[],budget:{tokens}}]. Independent subtasks run in parallel. Split work by file, list accurate paths in owns, and use dependsOn only for real prerequisites. A subtask's budget is one figure: cost-weighted tokens, where cached input counts at a tenth, between the least and most a subtask may have (the prompt's Budget lines give the figures). The feature's budget is its subtasks' together, and its own allowance for planning, summary and review on top; when a subtask uses its budget, it asks the owner for more instead of stopping work. For each subtask propose place {prefer: an owner machine name or hosted, reason: up to 200 characters, allow?: alternative names} and needs {tags?, screenshots?, egress?: open or restricted, profile?, cpus?, memoryGiB?}; on hosted, cpus and memoryGiB pick the least sandbox size that has them (standard, 2 vCPU and 4 GiB, by default; large, 4 vCPU and 8 GiB, at most), so name them only for a subtask that needs more. Use the read-only owner descriptions, tags and sandbox capacity. A subtask runs Windlass on the feature's model unless you propose agent {harness: ${anyOf(["windlass", ...SUBTASK_AGENTS.map(h => h.id)])}, model?, effort?}, with a model and effort its place lists in agentModels (windlassModels for Windlass). ${SUBTASK_AGENTS.map(h => h.name).join(" and ")} run only on a machine signed into them, and work without asking: the owner confirms each one before it runs, so propose one only where the subtask needs it. Overflow defaults to false and waits for the preferred place. Only approved alternatives may be used when overflow is true. To suggest single mode, give singleSuggested and an empty subtask list.`
 			+ (offer.crossRepo ? " For a feature over two repositories (the prompt names them), also give repos[], each subtask's repo alias, mergeOrder [{repo, prerequisite[], intermediate, evidence, fallback}], releaseGate request and finalIntegration {runFrom, command, inputs[], profile: actions, timeoutSeconds, requiredCases[], artifactOutputs[]}." : ""),
 		{ type: "object", required: ["spec", "questions", "subtasks"], properties: {
 			overflow: { type: "boolean" }, spec: { type: "object" }, questions: { type: "array", items: { type: "object" } },
@@ -277,6 +279,10 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
 		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false, offer.push), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
 		...(offer.report && offer.ask ? [tool(ASK_TOOL, ASK_DESCRIPTION, ASK_SCHEMA, 30)] : []),
+		...(offer.secret ? [tool(SECRET_TOOL, "Ask your person to set a missing environment variable. Give its name and a short reason. Never include a value. Stop after the request is recorded.",
+			{ type: "object", required: ["name", "why"], additionalProperties: false, properties: {
+				name: { type: "string", minLength: 2, maxLength: 64 }, why: { type: "string", minLength: 1, maxLength: 240 },
+			} }, 30)] : []),
 		...(offer.push ? [tool(PUSH_TOOL, pushDescription(offer.mcp?.pushes), PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, fetchBaseDescription(offer.mcp?.fetches), { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];
 }
@@ -327,8 +333,8 @@ export interface AgentAsk {
 export const ASK_TAKEN = "Recorded as a question to the person. End your turn now; their answer will come as your next message.";
 /** A second question in one turn. */
 export const ASK_AGAIN = "You already asked in this turn. End your turn; the answer comes as your next message.";
-/** No question left in the run. */
-export const ASK_NONE_LEFT = `You have used this run's ${ASK_LIMITS.perRun} questions. Decide yourself, say what you decided in your report's concerns, and go on.`;
+/** No question offered to this turn. */
+export const ASK_NONE_LEFT = "This turn may not ask the person. Decide yourself, say what you decided in your report's concerns, and go on.";
 
 /** What a call of `ask_person` comes to: the question to record (null when none is), what the agent is told, and the timeline's line. */
 export interface AskTaken {
@@ -342,12 +348,12 @@ export interface AskTaken {
  * agent read (the repository, an issue): saved secrets are taken out, control and invisible characters
  * go (a direction override could make the question read as something it is not), and what is past the
  * limits is refused with the limit, so that the agent can ask again. `already`: this turn has asked;
- * `left`: what the run has left. Neither of those records anything.
+ * `left`: the questions the turn was offered (one). Neither of those records anything.
  */
 export function askPerson(given: Record<string, unknown>, state: { already: boolean; left: number }, redactor: Redactor): AskTaken {
 	const refuse = (told: string, said: string): AskTaken => ({ asked: null, told, said });
 	if (state.already) return refuse(ASK_AGAIN, "The agent asked a second question in one turn, and was told to end its turn.");
-	if (state.left <= 0) return refuse(ASK_NONE_LEFT, `The agent asked a question with none of this run's ${ASK_LIMITS.perRun} left, and was told to decide itself.`);
+	if (state.left <= 0) return refuse(ASK_NONE_LEFT, "The agent asked a question in a turn that may not ask, and was told to decide itself.");
 	// Invisible characters go before secrets are taken out, so a secret split by one cannot slip past and be rejoined.
 	const clean = (value: string) => redactor.text(value.replace(/\r\n?/g, "\n").replace(CONTROL, "").replace(INVISIBLE, "").replace(HIDDEN, ""));
 	if (typeof given.question !== "string") return refuse(`Not recorded. The question has to be text. Call ${ASK_TOOL} again.`, "The agent asked a question that is not text, so it was not recorded.");
@@ -372,6 +378,25 @@ export function askPerson(given: Record<string, unknown>, state: { already: bool
 	if (options.length > ASK_LIMITS.options) return refuse(`Not recorded. Give at most ${ASK_LIMITS.options} options. Call ${ASK_TOOL} again.`, `The agent asked with ${options.length} options, and the limit is ${ASK_LIMITS.options}, so the question was not recorded.`);
 	// The line is the platform's, which the session's timeline labels so and turns addresses into links: the agent's words are not in it. Its call, beside it, has them as the agent's.
 	return { asked: { text, options }, told: ASK_TAKEN, said: "The agent asked you a question. It waits under Needs you, on the item's page, until you answer." };
+}
+
+export function secretRequestNotice(sandbox: boolean, account: boolean): string {
+	const source = sandbox ? "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it." : "This request came through the agent's host tool connection.";
+	const scope = account ? "If supplied, this will be saved for your account: every agent of yours will have it." : "If supplied, this will be saved for this repository with agent scope.";
+	return source + "\n" + scope;
+}
+
+export function requestSecret(given: Record<string, unknown>, already: boolean, untrusted: boolean, redactor: Redactor): { request?: SecretRequest; told: string } {
+	if (untrusted) return { told: "A request coming from third-party text was not shown as a secret prompt." };
+	if (already) return { told: ASK_AGAIN };
+	const { name, why } = given;
+	if (!validRequestedSecretName(name) || redactor.text(name) !== name) return {
+		told: unavailableSecretName(typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && redactor.text(name) === name ? name : "That name"),
+	};
+	if (typeof why !== "string" || Object.keys(given).some(key => key !== "name" && key !== "why")) return { told: "Supply only a name and a short reason." };
+	const reason = redactor.text(why.replace(CONTROL, "").replace(HIDDEN, "").replace(/\s+/g, " ").trim());
+	if (!reason || reason.length > 240) return { told: "Give a reason of 1 to 240 characters." };
+	return { request: { name, why: reason }, told: `Asked your person for ${name}; stop here and say what you will do once it is set.` };
 }
 
 export type PublishRequest =

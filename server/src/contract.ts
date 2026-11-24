@@ -48,12 +48,19 @@ export interface SandboxProfile {
 	/** Runner-confirmed credential isolation for Claude sessions using this profile. */
 	claudeRelay?: true;
 	/**
-	 * Whether commands the agent runs can read the session's access token: the short-lived token of the
-	 * user's ChatGPT sign-in that each turn is handed. It lasts about an hour, and whoever reads it
-	 * cannot renew it. The sign-in itself, which is what renews tokens, is never in a sandbox: no
-	 * command can read it in any profile.
+	 * Whether commands the agent runs can read the turn's token file: the short-lived access token of the
+	 * user's ChatGPT sign-in that each turn is handed, or with the model relay (`modelRelay`) only a
+	 * placeholder for the turn, which still makes model requests through the relay while the turn runs. It
+	 * lasts about an hour, and whoever reads it cannot renew it. The sign-in itself, which is what renews
+	 * tokens, is never in a sandbox: no command can read it in any profile. Rules about what a command can do
+	 * in the agent's name read this; whether the access token itself is readable is `accessTokenReadable`.
 	 */
 	commandsCanReadAccessToken: boolean;
+	/**
+	 * Whether commands can read the access token itself: false with the model relay, where the token file
+	 * holds only a placeholder and the token never enters the sandbox. Absent: as `commandsCanReadAccessToken`.
+	 */
+	accessTokenReadable?: boolean;
 	/**
 	 * Windlass's turns in this sandbox send their model requests through the platform's model relay
 	 * (docs/model-relay.md): the token file holds a placeholder for the turn, and the access token never
@@ -82,6 +89,11 @@ export interface PlatformInfo {
 	 */
 	hostedEgress?: "restricted" | "none";
 	/**
+	 * The hosted sandbox sizes this deployment offers (E2B, `WLP_E2B_SIZES`), smallest first. Absent where
+	 * hosted sandboxes have one size (Docker): nothing of sizes is shown then.
+	 */
+	hostedSizes?: HostedSizeOption[];
+	/**
 	 * Set when this deployment has a GitHub App: users can connect GitHub, launch agents on their own
 	 * repositories and open pull requests. Absent or null when it has none: the web app then shows
 	 * nothing of it.
@@ -101,6 +113,8 @@ export interface PlatformInfo {
 	 * repository's setting says.
 	 */
 	items?: { reviewer: boolean; orchestrate?: boolean; screenshots?: boolean };
+	/** Set when the deployment takes payment for plans (WLP_BILLING_PROVIDER). Absent: no plans, the deployment's own limits, and nothing of billing shown. */
+	billing?: { plans: PlanInfo[] };
 }
 
 /**
@@ -262,7 +276,12 @@ export type SessionStatus =
 	/** A turn is running and Windlass waits for the user's answer to a question (`SessionSnapshot.question`). */
 	| "waiting"
 	/** A stop was asked for and Windlass is winding down. */
-	| "stopping";
+	| "stopping"
+	/**
+	 * The turn is not over but nothing runs it: its server restarted, or its machine went away
+	 * (`SessionSummary.paused` says which). It resumes by itself; a message sent meanwhile is held for it.
+	 */
+	| "paused";
 
 /** How a turn ended. The first five are Windlass's own outcomes (`cli.summary.outcome`). */
 export type TurnOutcome =
@@ -277,7 +296,7 @@ export type TurnOutcome =
 export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
-export type PlatformToolName = "publish" | "report" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan";
+export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan";
 
 /**
  * What a session's agent can do, as the screens need it: a read-only part of its agent's capability record
@@ -352,6 +371,7 @@ export interface StartTimes {
 	sandbox?: number;
 	/** The part of `sandbox` the runner spent creating the container itself. */
 	runnerCreate?: number;
+	spare?: true;
 	/** Cloning, the repository's setup command, a restored memory or prepared image. */
 	setup?: number;
 	/** The platform's own work between the sandbox being ready and the agent's process starting: leftover processes, the token file. */
@@ -381,6 +401,8 @@ export interface SessionSummary {
 	title: string;
 	place: SandboxPlace;
 	profile: SandboxProfileId;
+	/** Hosted, where the deployment offers sizes: the size of its sandboxes. */
+	hostedSize?: HostedSize;
 	model: string;
 	/** A git repository cloned into the workspace when the sandbox was created, if any. */
 	repoUrl: string | null;
@@ -407,6 +429,11 @@ export interface SessionSummary {
 	/** Last prompt or turn end. */
 	updatedAt: number;
 	status: SessionStatus;
+	/**
+	 * With status "paused": why, since when, and how many messages are held for the resumed turn.
+	 * `machine`: the machine went offline (or its runner restarted) mid-turn, and the turn resumes when it is back.
+	 */
+	paused?: { reason: "restart" | "machine"; since: number; held: number };
 	turns: number;
 	lastOutcome: TurnOutcome | null;
 	/** The last few turns' start times, oldest first (StartTimes). */
@@ -425,12 +452,16 @@ export interface SessionSummary {
 	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Codex).
 	 */
 	item?: { id: string; role?: "builder" | "reviewer"; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" };
+	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
+	environmentBuild?: true;
+	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
+	environment?: { commit: string; validatedAt: number; checks: number };
 }
 
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
-	return sessions.filter(s => s.item?.role !== "reviewer").map(session => {
+	return sessions.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild).map(session => {
 		const reviewer = session.item && reviewers.get(session.item.id);
 		return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
 	});
@@ -439,6 +470,8 @@ export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 export interface CreateSessionInput {
 	/** Machine sandbox size in slots. A personal session defaults to one. */
 	size?: 1 | 2 | 4;
+	/** Hosted only, where `PlatformInfo.hostedSizes` offers it: the sandbox's size. Left out: the repository's saved size, else small. */
+	hostedSize?: HostedSize;
 	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
 	mode?: string;
 	harness?: HarnessId;
@@ -667,6 +700,86 @@ export interface RepositoryChecks {
 	updatedAt: number | null;
 }
 
+// --- A repository's prepared environments (environments.ts) ---------------------------------
+
+/** Where an environment is kept: "hosted", or the id of one of the user's machines. */
+export type EnvironmentPlace = string;
+export type EnvironmentState = "building" | "ready" | "failed" | "stale";
+/** What started a build. "first_use": a session started cold where the repository has none. */
+export type EnvironmentTrigger = "schedule" | "push" | "rebuild" | "change" | "first_use" | "image";
+/** Why the sandbox could not run a check (factory/check-environment.ts); "code": it ran and failed on the base's code. */
+export type EnvironmentFailureKind = "package_manager" | "network" | "not_found" | "code" | "setup" | "clone" | "save";
+
+/** One saved check as a build ran it. */
+export interface EnvironmentCheckResult {
+	name: string;
+	status: CheckStatus;
+	exitCode: number | null;
+	durationMs: number;
+	/** The check-environment.ts kind of a failure the sandbox caused; null for a pass or a failure of the code. */
+	environment: "package_manager" | "network" | "not_found" | null;
+}
+
+/** One build of an environment, as the record keeps it. */
+export interface EnvironmentBuild {
+	trigger: EnvironmentTrigger;
+	startedAt: number;
+	/** When setup and the checks finished; null while it runs. For the ready part, when it was validated. */
+	finishedAt: number | null;
+	/** The base commit setup ran at; "" until the clone. */
+	commit: string;
+	/** The image the sandbox was made from, as the place says it; "" where it does not (an older runner). */
+	image: string;
+	/** Digests of the setup command and of the checks as they were when the build started. */
+	setupHash: string;
+	checksHash: string;
+	profile: string;
+	/** Hosted, where the deployment offers sizes: the size it was built in. Its image starts only sandboxes of this size. */
+	hostedSize?: HostedSize;
+	checks: EnvironmentCheckResult[];
+	/** Why it did not pass; null when it did or while it runs. */
+	failure: { kind: EnvironmentFailureKind; check: string | null; line: string; excerpt: string } | null;
+	/** A prepared image was saved. A passing setup under the minimum time keeps none: sessions then start cold, quickly. */
+	snapshot: boolean;
+	/**
+	 * Checks that ran and failed on the base commit's code (main is red), not for the sandbox: they do not keep the
+	 * environment from being promoted, and are shown with it. Absent or empty when none did.
+	 */
+	codeFailures?: string[];
+}
+
+/** One place's environment of a repository. */
+export interface RepositoryEnvironment {
+	place: EnvironmentPlace;
+	/** "This platform", or the machine's name. */
+	placeName: string;
+	state: EnvironmentState;
+	/** The last build that passed: the one sessions start from while it is current. */
+	ready: EnvironmentBuild | null;
+	/** The latest build, when it is newer than `ready`. */
+	attempt: EnvironmentBuild | null;
+	/** Why it is stale, or why a build is waiting ("daily sandbox time is used up"); null otherwise. */
+	note: string | null;
+	/** When the next build is due, ms since the epoch; null when none is. */
+	nextAt: number | null;
+}
+
+/** How often a repository's environments are rebuilt on a schedule: 0 is off, 24 nightly. */
+export type EnvironmentSchedule = 0 | 6 | 12 | 24;
+export const ENVIRONMENT_SCHEDULES: readonly EnvironmentSchedule[] = [24, 12, 6, 0];
+
+export interface RepositoryEnvironments {
+	/** Whether the deployment keeps prepared sandboxes at all, and why not when it does not. */
+	available: boolean;
+	unavailableReason: string | null;
+	schedule: EnvironmentSchedule;
+	/** Whether `schedule` was chosen, or is the default (nightly with a setup command, off without). */
+	scheduleChosen: boolean;
+	environments: RepositoryEnvironment[];
+	/** Places a Rebuild may name that have no environment yet. */
+	places: { place: EnvironmentPlace; placeName: string }[];
+}
+
 // --- A repository's network list -------------------------------------------------------------
 
 /**
@@ -851,9 +964,10 @@ export type Verified = ({
 	/**
 	 * For "unresolved": why the turn was let end, and for "acknowledged" what the agent gave as its
 	 * reason. "not_started": no check that did not pass was started (`VerifiedCheck.startError`), so
-	 * the turn ended at once and the agent was not sent back.
+	 * the turn ended at once and the agent was not sent back. "environment": every check that failed did so because the
+	 * sandbox could not run it (factory/check-environment.ts), so the agent was not sent back either.
 	 */
-	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started"; said: string | null };
+	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started" | "environment"; said: string | null };
 
 	/**
 	 * The checks that did not pass in a run of `turn` whose result does not stand: the agent then put
@@ -960,6 +1074,8 @@ export interface RepositoryDefaults {
 	profile: SandboxProfileId | null;
 	/** The model; null when none is saved. */
 	model: string | null;
+	/** The hosted sandbox size of the repository's agents and work items; null when none is saved (agents small, work items standard). */
+	hostedSize?: HostedSize | null;
 	/** When either was last saved, ms since the epoch; null when neither is. */
 	updatedAt: number | null;
 }
@@ -1013,7 +1129,7 @@ export interface SavedRepository {
  * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
  * it says so.
  */
-export type AccountDefaults = Omit<RepositoryDefaults, "screenshots">;
+export type AccountDefaults = Omit<RepositoryDefaults, "screenshots" | "hostedSize">;
 
 /**
  * Where the user's newest agent was started, with which agent and in which mode, as the server
@@ -1150,7 +1266,82 @@ export interface UsageNumbers {
 	startSeconds: number;
 	/** How many sandboxes the user keeps, running or paused, and the most they may keep; `limit` is null without one. */
 	sandboxes: { kept: number; limit: number | null };
+	/** The calendar month's hosted minutes, where the account has a monthly allowance (a plan, or the operator's `hostedMinutes`). Absent: only the day counts. */
+	hosted?: HostedMonth;
 }
+
+/**
+ * A UTC calendar month of hosted minutes. A hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB): a small
+ * one counts half, a large one twice (billing/meter.ts). Runs on the user's own machines are never in it. All in
+ * weighted seconds, so that nothing is rounded before it is shown.
+ */
+export interface HostedMonth {
+	/** "2026-11". */
+	month: string;
+	/** End of the hosted allowance period, ms since the epoch. */
+	resetsAt: number;
+	/** What the plan includes. */
+	includedSeconds: number;
+	/** The most that may be used: the included minutes, and on a plan with overage the minutes the spend cap pays for. */
+	limitSeconds: number;
+	/** Counted this month, weighted. */
+	usedSeconds: number;
+	/** Held by sandboxes that run now, weighted. */
+	heldSeconds: number;
+	/** What is left of `limitSeconds`, never below 0. */
+	leftSeconds: number;
+	/** Subscription cadence for Pro. */
+	period?: BillingPeriod;
+	/** The plan these are of, where the deployment has billing; absent where the operator set the allowance. */
+	plan?: PlanId;
+}
+
+/** A plan of the deployment's billing (billing/plans.ts). Team and Enterprise are planned, not offered. */
+export type PlanId = "free" | "pro";
+export type BillingPeriod = "month" | "year";
+
+/** What a plan gives, as the upgrade page compares them. Prices in US cents. */
+export interface PlanInfo {
+	id: PlanId;
+	name: string;
+	/** Per month, billed monthly; and per year, billed yearly (null where the plan has no yearly price). */
+	monthlyCents: number;
+	yearlyCents: number | null;
+	machines: number;
+	hostedMinutes: number;
+	hostedRunning: number;
+	keptSandboxes: number;
+	sizes: Array<"small" | "standard" | "large">;
+	crossRepo: boolean;
+	githubItemsPerDay: number;
+	/** US cents per 1,000 hosted minutes past the included ones; null: a hard stop at the included minutes. */
+	overageCentsPer1000: number | null;
+}
+
+/** The Plan section of Settings and the upgrade page. `enabled` false: the deployment has no billing, and nothing of it is shown. */
+export type BillingView = { enabled: false } | {
+	enabled: true;
+	/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
+	plan: PlanId;
+	/** The subscription's state: "none" without one; "past_due" after a failed payment, until `graceUntil`; "ended" after it ended. */
+	status: "none" | "active" | "past_due" | "paused" | "ended";
+	period: BillingPeriod | null;
+	/** When the subscription renews, or ends where `cancelAtPeriodEnd`. */
+	periodEnd: number | null;
+	cancelAtPeriodEnd: boolean;
+	/** After a failed payment: when the account falls back to Free unless a payment succeeds. Nothing is deleted then. */
+	graceUntil: number | null;
+	/** The most overage may cost in a month, in US cents; `maxCapCents` is the highest it may be set to. */
+	capCents: number;
+	maxCapCents: number;
+	/** Overage minutes counted this month, and what the provider has been told of them. */
+	overageMinutes: number;
+	reportedMinutes: number;
+	/** Whether a customer portal can be opened: there is a customer at the provider. */
+	portal: boolean;
+	plans: PlanInfo[];
+	month: HostedMonth | null;
+};
 
 /** One agent's sandbox time today. */
 export interface UsageSession {
@@ -1166,6 +1357,8 @@ export interface UsageSession {
 	unreportedSeconds: number;
 	/** Seconds its sandbox holds now; 0 when it does not run. */
 	heldSeconds: number;
+	/** The size of its sandbox, where the deployment offers sizes: what its seconds are priced at. */
+	hostedSize?: HostedSize;
 }
 
 /** One UTC day of the history. */
@@ -1179,8 +1372,12 @@ export interface UsageDay {
 export interface KeptSandbox {
 	/** The agent it was made for: what `freeSandbox` takes. */
 	sessionId: string;
-	/** Null when that agent no longer exists and its sandbox was left behind. */
+	/** Null when that agent no longer exists and its sandbox was left behind. A work item's reviewer reads "Reviewer of “title”". */
 	title: string | null;
+	/** The work item whose builder or reviewer it is. */
+	item?: { id: string; role: "builder" | "reviewer" };
+	/** A reviewer's sandbox, which shares its item builder's place: it takes none of the cap of its own. */
+	sharesPlace?: true;
 	/** "starting": the agent was given the place and its sandbox is being made. */
 	state: "running" | "paused" | "starting";
 	/** When the agent was last prompted or its last turn ended, ms since the epoch; null without the agent. */
@@ -1191,6 +1388,8 @@ export interface KeptSandbox {
 	repository: string | null;
 	/** Whether the platform has pushed work of this agent to GitHub: that much is cloned again into a new sandbox. */
 	pushed: boolean;
+	/** Its size, where the deployment offers sizes. */
+	hostedSize?: HostedSize;
 }
 
 /** What a second of a running sandbox is estimated to cost. */
@@ -1212,8 +1411,10 @@ export interface UsageView extends UsageNumbers {
 	days: UsageDay[];
 	/** The sandboxes the user keeps, as the provider lists them, the most recently used first. */
 	kept: KeptSandbox[];
-	/** Null where running a sandbox is not billed by the second (local Docker): no cost is estimated then. */
+	/** Null where running a sandbox is not billed by the second (local Docker): no cost is estimated then. The smallest size's, where there are sizes. */
 	price: UsagePrice | null;
+	/** The hosted sizes and what an hour of each costs, as `PlatformInfo.hostedSizes`. The allowance is in seconds whatever the size. */
+	hostedSizes?: HostedSizeOption[];
 	/**
 	 * What becomes of an agent's memory of its conversation when its sandbox is freed. "kept": it is
 	 * stored outside the sandbox. "copied": a copy is saved after every turn and put into the next
@@ -1287,6 +1488,69 @@ export interface MachineSlotCapacity {
 	reserve: { cpus: number; memoryBytes: number };
 }
 
+// --- Hosted sandbox sizes ------------------------------------------------------------------------
+
+/**
+ * The size of a hosted sandbox (E2B). E2B fixes a sandbox's CPUs and memory when its template is built,
+ * so each size is a template of its own (sandbox/e2b/build.sh, `WLP_E2B_SIZE`), and a sandbox keeps its size
+ * for life: another size is a new sandbox. Machines have no sizes of this kind: a machine's slot is
+ * set by its runner (`--slot-memory`).
+ */
+export type HostedSize = "small" | "standard" | "large";
+export const HOSTED_SIZES: readonly HostedSize[] = ["small", "standard", "large"];
+export const HOSTED_SIZE_SPECS: Readonly<Record<HostedSize, { cpus: number; memoryMiB: number }>> = {
+	small: { cpus: 1, memoryMiB: 1024 },
+	standard: { cpus: 2, memoryMiB: 4096 },
+	large: { cpus: 4, memoryMiB: 8192 },
+};
+/** A work item's sandbox, where nothing else is chosen. */
+export const ITEM_HOSTED_SIZE: HostedSize = "standard";
+/** A person's own agent, where neither the launch form nor the repository says. */
+export const SESSION_HOSTED_SIZE: HostedSize = "small";
+
+export function isHostedSize(value: unknown): value is HostedSize {
+	return typeof value === "string" && (HOSTED_SIZES as readonly string[]).includes(value);
+}
+
+/** "Standard · 2 vCPU, 4 GiB". */
+export function hostedSizeWords(size: HostedSize): string {
+	const spec = HOSTED_SIZE_SPECS[size];
+	return `${size.charAt(0).toUpperCase()}${size.slice(1)} · ${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB`;
+}
+
+/** The least size that has a plan's `cpus` and `memoryGiB`; null when even the largest has not. */
+export function hostedSizeFor(needs: { cpus?: number; memoryGiB?: number }): HostedSize | null {
+	if (needs.cpus === undefined && needs.memoryGiB === undefined) return null;
+	return HOSTED_SIZES.find((size) => (needs.cpus ?? 0) <= HOSTED_SIZE_SPECS[size].cpus && (needs.memoryGiB ?? 0) * 1024 <= HOSTED_SIZE_SPECS[size].memoryMiB) ?? null;
+}
+
+/** The next size up, or null for the largest. */
+export function largerHostedSize(size: HostedSize, offered: readonly HostedSize[] = HOSTED_SIZES): HostedSize | null {
+	return HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(size) + 1).find(next => offered.includes(next)) ?? null;
+}
+
+/**
+ * "The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB." What the
+ * turn's row and a work item's question say. `offered`: the deployment's sizes, so that only one it has is named.
+ */
+export function outOfMemoryWords(memory: { usedMiB: number; totalMiB: number; size?: HostedSize }, offered: readonly HostedSize[] = HOSTED_SIZES, place: SandboxPlace["kind"] = "hosted"): string {
+	if (place === "machine") return `The machine slot ran out of memory (limit ${memory.totalMiB.toLocaleString("en-US")} MiB). The machine’s owner can give slots more memory with --slot-memory or configure fewer slots to share the available memory.`;
+	const said = `The sandbox ran out of memory (${memory.usedMiB.toLocaleString("en-US")} of ${memory.totalMiB.toLocaleString("en-US")} MiB).`;
+	const from = memory.size ?? HOSTED_SIZES.find((size) => HOSTED_SIZE_SPECS[size].memoryMiB >= memory.totalMiB) ?? "large";
+	const larger = largerHostedSize(from, offered);
+	if (larger) return `${said} A larger size has more room: ${hostedSizeWords(larger)}.`;
+	return `${said} ${memory.size ? "This is the largest size this deployment has" : "No larger size is offered here"}: have the agent's commands use less memory at once (fewer tests or workers in parallel).`;
+}
+
+/** A size this deployment's hosted layer offers, with its estimated price. */
+export interface HostedSizeOption {
+	id: HostedSize;
+	cpus: number;
+	memoryMiB: number;
+	/** Estimated US dollars per hour of running, at the provider's published prices; null when not billed by time. */
+	usdPerHour: number | null;
+}
+
 /** Large sandboxes use two or four slots, limited by the machine's configured capacity. */
 export function sandboxSlots(requested: number, max: number) {
 	return Math.min(max, requested > 2 ? 4 : requested > 1 ? 2 : 1);
@@ -1307,7 +1571,8 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	/** `signInReason`: with `signIn` "unknown", why the runner could not check the sign-in (runner 0.3.4 and later). */
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -1331,6 +1596,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	 * running at once (`--max-running`) and kept at once (`--max-sandboxes`). Absent where none is set, and
 	 * before its runner first reported. The platform's own limits do not apply to a machine.
 	 */
+	readySandboxes?: number;
 	maxRunning?: number;
 	maxSandboxes?: number;
 	/**
@@ -1424,6 +1690,11 @@ export interface ItemFeed {
 		/** One row for each repository and way of filing that has items. */
 		byRepository: ItemCount[];
 	};
+	/**
+	 * Every open subtask of a feature, asking or not, under its own title: what a feature's page, a
+	 * subtask's page and the lists read to stay current while subtasks run. Absent from servers before it.
+	 */
+	children?: ItemSummary[];
 }
 //
 // A work item is a task on one repository that the platform carries through a fixed sequence of
@@ -1439,10 +1710,10 @@ export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | 
 
 /**
  * What a waiting item waits for. "person" and "budget": a question to the person (`ItemSummary.question`);
- * the others end by themselves: "capacity" a free turn or sandbox, or the day's allowance; "machine" the
- * user's machine; "review_cap" fewer of the user's items in review; "ci" CI on the pushed commit.
+ * the others end by themselves: "capacity" a free hosted sandbox, or the day's allowance; "machine" the
+ * user's machine; "ci" CI on the pushed commit.
  */
-export type WaitReason = "provider" | "children" | "capacity" | "machine" | "review_cap" | "ci" | "person" | "budget" | "integration";
+export type WaitReason = "provider" | "children" | "capacity" | "machine" | "ci" | "person" | "budget" | "integration" | "sandboxes";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
 export interface Wait {
@@ -1465,7 +1736,7 @@ export interface Waiting extends Wait {
  * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
+export type StepKind = "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1481,8 +1752,14 @@ export interface ItemStep {
 	checks: number;
 	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
 	interruptions: number;
+	/** Turns of this step whose sandbox could not be prepared (`sandboxFailed`) since the last that could. */
+	sandboxFailures?: number;
 	/** Consecutive automatic retries after a provider refusal on this step. */
 	providerRetries?: number;
+	/** The person was asked in this step about the hosted cap on kept sandboxes (question "sandboxes"): not asked again. */
+	capAsked?: true;
+	/** The person was asked in this step whether to go on waiting for a machine that stayed away (question "machine_away"): not asked again. */
+	awayAsked?: true;
 }
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
@@ -1493,7 +1770,12 @@ export interface ItemRun {
 	/** Why it ended other than by handing over: "cancelled", "retried", or the cause of the question given up on. */
 	stopReason: string | null;
 	step: ItemStep;
-	/** The rounds of each kind used in this run: fixing after the checks, after CI, merging the base, after the second review; `plan` counts planning turns. `review` is absent on runs stored before it was counted. */
+	/**
+	 * The rounds of each kind used in this run, shown on the item's page and never capped: fixing after the checks, after
+	 * CI, merging the base, after the second review; `plan` counts planning turns. A run stops when the same failure comes
+	 * back (the stuck detector), when its budget is used, or at the backstop on an item's turns. `review` is absent on runs
+	 * stored before it was counted.
+	 */
 	rounds: { plan: number; gate: number; ci: number; conflict: number; review?: number };
 }
 
@@ -1506,64 +1788,101 @@ export interface ItemTask {
 	base: string;
 }
 
-/** An item's budget, and what it has spent, in the same units. Hosted seconds count only where the item's sandbox is hosted. */
+/**
+ * An item's budget: what stops it and asks its person when used up. `tokens` are cost-weighted
+ * (factory/budget.ts `weightedTokens`: cached input counts at `CACHED_INPUT_WEIGHT`); hosted seconds are a
+ * limit only where the item's sandbox is hosted.
+ */
 export interface ItemBudget {
 	tokens: number;
-	turns: number;
-	/** Seconds spent working. Time waiting for a machine, capacity, CI or a person is excluded. */
-	activeSeconds: number;
 	hostedSeconds: number;
 }
+
+/**
+ * What an item has spent: its budget's figures, and what is shown beside them. `rawTokens`: every token as
+ * the agent reported it, cached input at full count (absent on items stored before it was kept: `tokens`).
+ * `turns` and `activeSeconds` bound nothing a person sets: the turns are held to an internal backstop
+ * (blueprint.ts `RULES.turnBackstop`), and active time excludes waiting for a machine, capacity, CI or a person.
+ */
+export interface ItemSpend extends ItemBudget {
+	rawTokens?: number;
+	turns: number;
+	activeSeconds: number;
+}
+
+/** A subtask's budget in a feature's plan: one token figure. At dispatch its token share also determines its share of hosted time. */
+export type SubtaskBudget = Pick<ItemBudget, "tokens">;
 
 /** Effective account limits after applying the operator’s overrides to the deployment defaults. */
 export interface FactoryLimits {
 	dailyTokens: number | null;
-	featureMultiplier: number;
+	/** Items filed from GitHub issues a day, drafts among them: one guard against a flood of filings. */
 	githubItemsPerDay: number;
-	githubDrafts: number;
 	attachments: { bytes: number; perItem: number; accountBytes: number; days: number };
-	/** All factory turns and the person's own hosted turns count toward this ceiling. */
-	runningTurns: number;
-	/** Of those, the factory's: the rest are always free for the person's own prompts. */
-	factoryTurns: number;
-	/** The user's hosted sandboxes running at once. */
+	/** The user's hosted sandboxes running at once: factory turns and the person's own hosted agents together. Machines never count. */
 	hostedRunning: number;
-	/** New items wait while this many of the user's items are in review. */
-	reviewCap: number;
 	/** A new item's budget. */
 	item: ItemBudget;
 }
 
-/** "turn_refused": the session or provider refused the turn, in its words. */
-export type QuestionKind = "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask";
+/** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /**
  *   approve     the plan is approved: implement it
  *   revise      plan again, with the person's note
  *   raise       "Raise the limit and go on": the round counter that stopped is reset, or the budget raised
  *   retry       "Retry from scratch": a new run
- *   again       try the same thing again (a turn that changed nothing, a refused push)
+ *   again       try the same thing again (a turn that changed nothing, a refused push, a check the environment could not run)
  *   wait        keep waiting for CI
  *   hand_over   hand the pull request to the person as it is, with its verdict
  *   give_up     the item fails
  *   reply       "Answer the agent" (an `agent_ask` question): the note is the answer, and is needed
+ *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
+ *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base";
+
+/** Render the reason as quoted plain text, separately from the platform's own notice. */
+export interface SecretRequest {
+	name: string;
+	why: string;
+	/** Platform-authored provenance and save destination, one line each. Absent on older requests. */
+	notice?: string;
+}
+
+export interface SetRequestedSecretInput {
+	/** The open item question's id or SessionSnapshot.secretRequest.id, on the requesting session. */
+	requestId: string;
+	name: string;
+	value: string;
+}
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
 	/** Unique within the item: what `ItemAction` "answer" names. */
 	id: string;
 	kind: QuestionKind;
+	/** Current repository requirement blocking approval of this plan. */
+	approvalBlock?: string;
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
 	askedAt: number;
+	secret?: SecretRequest;
 	/**
 	 * An `agent_ask` question's own words, as the builder wrote them (`ask_person`): untrusted text, which
 	 * the agent may have been steered to write by what it read. Shown quoted, as the agent's, in plain
 	 * text; never Markdown, never in `text`, never posted anywhere. `options`: answers it suggests.
 	 */
 	asked?: { text: string; options: string[] };
+	/**
+	 * A `check_environment` question's check: one of the user's that failed because the sandbox could not run it
+	 * (factory/check-environment.ts), with the first line that shows why and the end of what it printed. The
+	 * output is the command's, shown as output, in plain text.
+	 */
+	check?: { name: string; command: string; exitCode: number | null; kind: "package_manager" | "network" | "not_found"; line: string; excerpt: string };
+	/** An `out_of_memory` question's next hosted size: what "Go on in a larger sandbox" makes. */
+	largerSize?: HostedSize;
 }
 
 /** An entry of an item's log, oldest first: every change of the item, and what caused it. */
@@ -1576,10 +1895,17 @@ export interface ItemEvent {
 	/** The step it happened in; null outside a run. */
 	step: { run: number; n: number; kind: StepKind; attempt: number } | null;
 	said: string;
+	/**
+	 * On the entry of an `agent_ask` question: the agent's own words (`Question.asked.text`), kept after the
+	 * question is answered. Untrusted, as there: shown quoted, as the agent's, in plain text; never in `said`.
+	 */
+	asked?: string;
 }
 
 /** A check run or commit status of CI, as the verdict lists it. */
 export interface VerdictRun {
+	/** A cancellation without evidence of runner starvation or timeout. */
+	stopped?: true;
 	name: string;
 	/** The app that reported it ("github-actions"), or "status" for a commit status. */
 	app: string;
@@ -1617,10 +1943,9 @@ export interface Verdict {
 	 * "timed_out": still running when the work was handed over; "unread": the platform could not read it
 	 * (GitHub did not answer while it waited), or not all of it (more checks than it reads: `said`
 	 * says so), so nothing is claimed of what was not read. "none" only when GitHub was read and
-	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped,
-	 * cancelled or neutral).
+	 * listed no CI at all; "skipped": CI ran and finished, and none of its checks passed (all skipped or neutral). "cancelled" includes stale checks.
 	 */
-	ci: { state: "passed" | "failed" | "none" | "skipped" | "not_run" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
+	ci: { state: "passed" | "failed" | "none" | "skipped" | "cancelled" | "not_run" | "timed_out" | "not_permitted" | "unread"; runs: VerdictRun[]; said: string | null };
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;
@@ -1792,16 +2117,6 @@ export const REVIEW_LIMITS = {
 	lookAtChars: 1_000,
 } as const;
 
-/** The rounds of each kind a run allows (`ItemRun.rounds` counts them): after a stop on one, a person can let it go on. */
-export interface RoundCaps {
-	plan: number;
-	gate: number;
-	ci: number;
-	conflict: number;
-	/** Absent when the item has no second reviewer that can send its builder back: off, on a machine, a feature or a subtask. */
-	review?: number;
-}
-
 /** An item as the user's index lists it. */
 /** Which agent an item's builder runs, on which model, and what that agent said it used. */
 export interface ItemAgent {
@@ -1860,7 +2175,7 @@ export interface ItemSummary {
 	/** The second review for this run, or null before one is due. */
 	review: { state: "waiting" | "running" | "filed" | "none" | "off"; recommendation: ReviewRecommendation | null } | null;
 	budget: ItemBudget;
-	spent: ItemBudget;
+	spent: ItemSpend;
 	/** The item's agent session, among the user's sessions. */
 	sessionId: string;
 	createdAt: number;
@@ -1870,6 +2185,16 @@ export interface ItemSummary {
 	endedAt?: number;
 	/** Increased by every change: a client that holds an `ItemView` of a lower revision asks for it again. */
 	revision: number;
+	/** The step its run is at, while the run goes on: what a list row says it is doing without reading the page. */
+	step?: ItemSummaryStep;
+}
+
+/** The step of `ItemSummary.step`: its kind, since when, its turn, and the rounds of fixing used. */
+export interface ItemSummaryStep {
+	kind: StepKind;
+	startedAt: number;
+	turn: ItemStep["turn"];
+	rounds: ItemRun["rounds"];
 }
 
 /** An item's page. */
@@ -1897,7 +2222,32 @@ export interface FeedbackBatch {
 	plan: number | null;
 }
 
+/** A refused destination. DNS observations have no port and count the first lookup seen by the hosted stub.
+ * An unparseable proxy destination has no host. Times are Unix milliseconds. For repeated destinations
+ * the strongest refusal wins (private, provider, malformed, machine_policy, unlisted). Only "repository" offers allowHost.
+ * With "machine", direct the owner to --egress-domains on the named machine. "never" is blocked by design.
+ */
+export interface BlockedHost {
+	host: string | null;
+	port: number | null;
+	reason: "machine_policy" | "unlisted" | "private" | "provider" | "malformed";
+	/** Paired machine display names, including both when an item combines matching destinations. */
+	machineNames?: string[];
+	allow: "repository" | "machine" | "deployment" | "never";
+	firstAt: number;
+	lastAt: number;
+	count: number;
+}
+
+export interface BlockedNetwork {
+	hosts: BlockedHost[];
+	/** Number of requests to destinations beyond the session's first 50, including their retries. */
+	overflow: number;
+}
+
 export interface ItemView extends ItemSummary {
+	/** Union by host and port across all turns of the builder and reviewer. Absent on older servers. */
+	blockedNetwork?: BlockedNetwork;
 	feedback: { batches: FeedbackBatch[]; notTaken: number };
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
@@ -1910,6 +2260,8 @@ export interface ItemView extends ItemSummary {
 	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
 	completedSubtasks?: string[];
 	children?: ItemSummary[];
+	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
+	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
@@ -1920,7 +2272,7 @@ export interface ItemView extends ItemSummary {
 	reviewNone: string | null;
 	task: ItemTask;
 	/** The run it is in, or ended last, with the rounds a run allows; null before it was started. */
-	run: (ItemRun & { caps: RoundCaps; failureFingerprint?: string | null }) | null;
+	run: (ItemRun & { failureFingerprint?: string | null }) | null;
 	/** The commit pushed last. */
 	head: string | null;
 	/** Its log, oldest first: the runs and steps before the current one are read from it. */
@@ -1964,6 +2316,8 @@ export interface ChildPlacement {
 	profile?: SandboxProfileId;
 	/** A machine harness the subtask asked for (`needs.harness`); absent: Windlass. */
 	harness?: HarnessId;
+	/** Hosted: the size its `cpus` and `memoryGiB` chose (`hostedSizeFor`). Absent: the feature's size. */
+	hostedSize?: HostedSize;
 }
 
 export interface PlanSubtask {
@@ -1980,7 +2334,7 @@ export interface PlanSubtask {
 	acceptance: string[];
 	dependsOn: string[];
 	owns: string[];
-	budget: ItemBudget;
+	budget: SubtaskBudget;
 }
 
 /**
@@ -2029,7 +2383,11 @@ export interface FeaturePlanEdit {
 	earlyChecks?: EarlyCheck[];
 	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
-	questions: { id: string; text: string; options?: string[]; answer?: string }[];
+	/**
+	 * The plan's questions to the owner: `text` one short sentence, `options` short answers to choose from,
+	 * `why` the background in a few sentences (shown folded under the question). Older plans have no `why`.
+	 */
+	questions: { id: string; text: string; options?: string[]; why?: string; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
 	singleSuggested: string | null;
@@ -2123,6 +2481,8 @@ export interface CreateItemInput {
 	harness?: HarnessId;
 	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
 	place?: SandboxPlace;
+	/** Hosted only: the size of the item's sandboxes. Left out: the repository's saved size, else standard. A Plan-first subtask whose plan names `cpus` or `memoryGiB` gets the least size that has them, if larger. */
+	hostedSize?: HostedSize;
 	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */
 	start?: boolean;
 	/** As `CreateSessionInput.idempotencyKey`: the same key again answers with the item the first attempt made. */
@@ -2217,6 +2577,9 @@ export interface UserActions {
 	 * Throws a UserError with code `bad_checks` for a list that cannot be saved, with what is wrong.
 	 */
 	saveRepositoryChecks(input: { repositoryId: GithubId; checks: RepositoryCheck[] }): Promise<RepositoryChecks>;
+	repositoryEnvironments(repositoryId: GithubId): Promise<RepositoryEnvironments>;
+	rebuildEnvironment(input: { repositoryId: GithubId; place?: EnvironmentPlace }): Promise<RepositoryEnvironments>;
+	saveEnvironmentSchedule(input: { repositoryId: GithubId; schedule: EnvironmentSchedule }): Promise<RepositoryEnvironments>;
 	/** The repository's network list, with the requests its sessions filed and what the deployment allows anyway. Asks GitHub nothing. */
 	repositoryNetwork(repositoryId: GithubId): Promise<RepositoryNetwork>;
 	/**
@@ -2267,7 +2630,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.
@@ -2328,6 +2691,17 @@ export interface UserActions {
 	 * against the provider's own list of the user's sandboxes, so what is shown is what exists.
 	 */
 	usage(): Promise<UsageView>;
+	/** The account's plan, its subscription and this month's hosted minutes; `{ enabled: false }` where the deployment has no billing. */
+	billing(): Promise<BillingView>;
+	/**
+	 * A checkout for Pro at the provider: the address to send the browser to. `origin` is the web app's own (WLP_ORIGINS);
+	 * the provider sends the browser back to its Settings. Throws `billing_off`, `already_subscribed` or `origin_not_allowed`.
+	 */
+	billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }>;
+	/** The provider's customer portal, to change the card or cancel. Throws `billing_off` or `no_customer`. */
+	billingPortal(input: { origin: string }): Promise<{ url: string }>;
+	/** Sets the overage spend cap, US cents from 0 to `maxCapCents`: the server stops hosted sandboxes at it. Throws `bad_input` or `billing_off`. */
+	setOverageCap(input: { cents: number }): Promise<BillingView>;
 	/**
 	 * Removes the sandbox of one of the user's agents, to make room for another: the files in its
 	 * workspace go with it, and the agent and its conversation stay (`UsageView.memory` says what
@@ -2494,7 +2868,11 @@ export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolea
  * An entry of a session's timeline. `seq` is the platform's own numbering, dense and increasing
  * within a session, and has nothing to do with a Windlass event's `seq`.
  */
+export type NetworkBlockedItem = { seq: number; at: number; turn: number; kind: "network.blocked"; revision: number } & BlockedNetwork;
+
 export type TimelineItem =
+	/** One row per turn. Its first snapshot arrives on item, replacements on networkBlocked with the same seq. */
+	| NetworkBlockedItem
 	| {
 			seq: number;
 			at: number;
@@ -2508,6 +2886,8 @@ export type TimelineItem =
 			 * model reads it at its next step. Absent or false for the prompt that started the turn.
 			 */
 			steer?: boolean;
+			/** A message sent while the turn was paused: held, and given to the agent when the turn resumes. */
+			held?: boolean;
 	  }
 	/** Something the platform did around a turn: "Creating sandbox", "Cloning repository". */
 	| {
@@ -2515,6 +2895,8 @@ export type TimelineItem =
 			at: number;
 			turn: number;
 			kind: "platform";
+			/** The agent’s request, with its reason as quoted plain text. */
+			secretRequest?: SecretRequest & { id: string };
 			level: "info" | "warn" | "error";
 			text: string;
 			/**
@@ -2526,7 +2908,7 @@ export type TimelineItem =
 			 * about a tool of one of the user's own MCP servers whose tools run without asking
 			 * (`PersonalServer.unasked`). The `approval.answered` that follows has choice "once", and nobody was asked.
 			 */
-			code?: "question_expired" | "question_allowed" | "host_blocked";
+			code?: "question_expired" | "question_allowed" | "host_blocked" | "turn_paused" | "turn_resumed";
 			call?: { messageId: string; callId: string };
 			/**
 			 * With `code` "host_blocked": the host a command in the session's sandbox asked for and could
@@ -2587,6 +2969,8 @@ export type TimelineItem =
 			/** What the session's work rests on after this turn. */
 			verified: Verified | null;
 			context?: AcpContext | null;
+			/** Another agent's own session id, which it names only once a turn has opened it (ACP `session/new`); the panel shows it at once. */
+			sessionId?: string;
 	  };
 
 /**
@@ -2772,6 +3156,8 @@ export interface SessionServers {
 }
 
 export interface SessionSnapshot {
+	/** The open request in a person’s session. Item requests live on the item question. */
+	secretRequest?: SecretRequest & { id: string };
 	summary: SessionSummary;
 	profile: SandboxProfile;
 	/** The harness's conversation id, once the first turn created it. */
@@ -2825,6 +3211,9 @@ export interface AgentSessionActions {
 	/** Select the mode for the next prompt. An unavailable choice or item session returns bad_input. */
 	setMode(input: { mode: string }): Promise<SessionSummary>;
 	snapshot(): Promise<SessionSnapshot>;
+	/** Create the missing secret at agent scope and continue. A name saved since the request returns secret_exists.
+	 * A failed item save reopens the question with its error and a new id. */
+	setRequestedSecret(input: SetRequestedSecretInput): Promise<void>;
 	/**
 	 * Starts a turn and returns as soon as it is accepted; the work arrives as events. While a turn is
 	 * running it steers that turn instead: the message is stored as a `user` item with `steer: true`,
@@ -2904,13 +3293,15 @@ export interface AgentSessionActions {
 	 * that is the only person who can call it at all (a session's actions are its user's), so the other
 	 * branch, which files a request (`NetworkRequest`) and answers `applied: false`, cannot run yet.
 	 * Throws a UserError with code `bad_network` for a host that is not an exact DNS name, a session with
-	 * no repository of the GitHub connection, a list that is full, or a deployment in
-	 * WLP_E2B_NETWORK=none, where no host but the model API is reached whatever the list says.
+	 * no repository of the GitHub connection, a full list, or a sandbox outside restricted hosted egress.
+	 * For blocked destinations only offer this action when BlockedHost.allow is "repository".
 	 */
 	allowHost(input: { host: string }): Promise<HostAllowed>;
 }
 
 export interface AgentSessionEvents {
+	/** Replace the network.blocked row with this seq if revision is newer. Counts are cumulative for its turn. */
+	networkBlocked: NetworkBlockedItem;
 	/** A stored timeline entry, in `seq` order. */
 	item: TimelineItem;
 	/** Streaming output of the turn in progress. */
@@ -2984,7 +3375,11 @@ export const MAX_SERVER_DEFINITION_BYTES = 8_192;
 export const MAX_SERVER_NAME_CHARS = 64;
 /** How many secrets one account may keep for its MCP servers. */
 export const MAX_ACCOUNT_SECRETS = 50;
-/** How long a question waits for an answer before the platform declines it. */
+/**
+ * How long a question in a running interactive turn waits for an answer before the platform declines it: the
+ * turn holds its sandbox meanwhile, and turns are 45 minutes at most. A work item never asks this way: its
+ * questions end the turn and wait for days if need be.
+ */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** How many machines a user may have paired at once. */
 export const MAX_MACHINES = 3;

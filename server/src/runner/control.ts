@@ -160,8 +160,17 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    it, or from a runner that says neither, a turn's token goes into the sandbox
  *   start-times      the first connect's `startTimes` after a create (docs/architecture.md, "Start times")
  *   store-limits     the report's `storeLimits`: the snapshot and Git mirror limits in force (docs/machines.md)
+ *   memory-events    a connect's `memoryEvents`: the session can read its container's memory limit and OOM kills
+ *   blocked-network  restricted proxy observation on the session socket (report and connect flags)
+ *   sign-in-reason   a harness entry's `signInReason`: why its sign-in could not be checked ("unknown")
+ *   environment-image  a connect's `image`: the Docker image id the sandbox was made from, which a prepared
+ *                    environment records (docs/github-and-repositories.md, "A repository's prepared environment")
+ *   resumable-conversation  the report's `resumableConversation`: the runner keeps a session's processes,
+ *                    their output and their relay leases through the grace for a conversation a
+ *                    restarted server resumes, so a graceful stop need not end a machine turn
+ *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits"] as const;
+export const SERVER_CAPABILITIES = ["warm-spares", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -264,7 +273,7 @@ const harnessId = oneOf("claude", "opencode", "codex");
 const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const catalogShape = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
 const catalog = is<Of<typeof catalogShape>>(v => catalogShape(v) && (v.id !== "codex" || boundedCodexOptions(v.options)));
-const harnessEntry = object({ id: harnessId, loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), method: optional(oneOf("api-key", "chatgpt")), modes: optional(list(line(64), 16)), modeReason: optional(line(500)), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), options: optional(validHarnessOptions) });
+const harnessEntry = object({ id: harnessId, loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), method: optional(oneOf("api-key", "chatgpt")), modes: optional(list(line(64), 16)), modeReason: optional(line(500)), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), signInReason: optional(line(300)), options: optional(validHarnessOptions) });
 const harnesses = list(is<Of<typeof harnessEntry>>(v => harnessEntry(v) && (v.id === "codex" ? !v.options || boundedCodexOptions(v.options) : v.method === undefined && v.modes === undefined && v.modeReason === undefined)), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
@@ -292,11 +301,15 @@ const report = object({
 	commandSandbox: probe,
 	/** The runner was started with --screenshots and has a pinned screenshots image. */
 	screenshots: optional(boolean),
+	warmSpares: optional(object({ ready: is<number>(v => count(v) && v <= 2) })),
 	gitMirrors: optional(boolean),
 	/** A Windlass session in a new hardened sandbox gets a data volume of its own (SESSION_VOLUME_PROFILES). */
 	sessionVolumes: optional(boolean),
+	blockedNetwork: optional(boolean),
 	/** Windlass's turns can send their model requests through the machine's model relay (docs/model-relay.md). */
 	modelRelay: optional(boolean),
+	/** A resumed conversation keeps its processes, output and relay leases through the grace (`resumable-conversation`). */
+	resumableConversation: optional(boolean),
 	freeDiskBytes: nullable(count),
 	/** `usedAt` by the runner's clock: the actor corrects it by the offset from the hello. */
 	sandboxes: list(object({ resizePending: optional(oneOf(true)), id: sandboxId, sessionId: name, state: oneOf("running", "paused"), usedAt: count }), MAX_REPORTED_SANDBOXES),
@@ -316,10 +329,12 @@ export type Report = Of<typeof report>;
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
 	// `start-times` has no field in the report: only a connect says it.
-	const fields: Partial<Record<Capability, keyof Report>> = { "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay", "store-limits": "storeLimits" };
+	const fields: Partial<Record<Capability, keyof Report>> = { "warm-spares": "warmSpares", "blocked-network": "blockedNetwork", "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay", "store-limits": "storeLimits", "resumable-conversation": "resumableConversation" };
 	const kept: Report = { ...report };
 	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
 		if (!named?.includes(capability)) delete kept[field];
+	// A field inside each harness entry: taken out of every entry for a server that does not read it.
+	if (!named?.includes("sign-in-reason") && kept.harnesses) kept.harnesses = kept.harnesses.map(({ signInReason: _, ...entry }) => entry);
 	return kept as R;
 }
 export type RunnerFrame = Of<typeof runnerFrame>;

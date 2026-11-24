@@ -11,6 +11,8 @@
  * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
+import { spareRecipe, spareSetup } from "./spare-recipe.js";
+import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
 import type { SandboxProfileId } from "../contract.js";
@@ -65,8 +67,15 @@ const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), en
 const fingerprint = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const snapshotKey = { attempt: is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v)), generation: fingerprint, repo: is<string>(v => typeof v === "string" && /^[1-9]\d{0,19}$/.test(v)), inputs: fingerprint };
 const snapshotSource = object({ ...snapshotKey, commit: is<string>(v => typeof v === "string" && /^[a-f0-9]{40}$/.test(v)), created: count });
+// Only a canonical DNS name or an IP may cross the session socket, even from a faulty helper.
+const destination = nullable(is<string>(v => typeof v === "string" && v.length <= 253 && !v.includes("%") && (!!isIP(v) || v.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))));
+const endpoint = { host: destination, port: nullable(is<number>(v => count(v) && v <= 65535)) };
+const refusalEntry = object({ ...endpoint, reason: oneOf("machine_policy", "private", "provider", "malformed"), firstAt: count, lastAt: count, count: positiveLimit });
 const operations = {
-	create: [object({ profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
+	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
+	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
+	create: [object({ spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
 	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
 	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
@@ -74,8 +83,13 @@ const operations = {
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean), ownData: optional(oneOf(true)),
 		/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
 		modelRelay: optional(oneOf(true)),
+		blockedNetwork: optional(oneOf(true)),
+		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })) }))],
+		readyKey: optional(fingerprint), readySetup: optional(spareSetup),
+		startTimes: optional(object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count })),
+		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
+		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],
 	suspend: [object(sandbox), nil],
 	destroy: [object(sandbox), nil],

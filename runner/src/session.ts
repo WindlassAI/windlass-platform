@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
 import { cleanClaudeOutput, claudeStream } from "./claude-output.js";
+import { readMemoryEvents } from "./memory-events.js";
 import { shotsImage } from "./policy.js";
 import { Refusal } from "./state.js";
 
@@ -24,7 +25,7 @@ class Handle extends DockerSandboxHandle {
 		// the channel frames (and retains for replay) a single byte of streamed output.
 		const stdout = this.box.harness && options?.onStdout ? claudeStream(options.onStdout) : undefined;
 		const stderr = this.box.harness && options?.onStderr ? claudeStream(options.onStderr) : undefined;
-		const p = super.start(argv, { ...options, onStdout: stdout?.write ?? options?.onStdout,
+		const p = super.start(argv, { ...options, ...(this.box.claim?.relayEnv && { secretEnv: { ...this.box.claim.relayEnv, ...options?.secretEnv } }), onStdout: stdout?.write ?? options?.onStdout,
 			onStderr: stderr?.write ?? options?.onStderr }, tag);
 		void p.ended.then(() => { stdout?.end(); stderr?.end(); });
 		this.track(p);
@@ -89,10 +90,10 @@ class Conversation {
 				return o.serial(async () => {
 					this.requireActive();
 					const creating = Date.now();
-					const made = await o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo);
+					const made = await o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo, this.channel.authenticated ? op.args.spare : undefined);
 					const box = o.boxes.get(made);
 					// Only a sandbox this create made: `existing` hands back one an earlier create made.
-					if (box && box.usedAt >= creating) box.startTimes = { image: imaged - began, ...(pulled && { pulled: true as const }), create: Date.now() - creating };
+					if (box && box.usedAt >= creating) box.startTimes = { ...(box.claim && { spare: true as const }), image: imaged - began, ...(pulled && { pulled: true as const }), create: Date.now() - creating };
 					return made;
 				});
 			}
@@ -140,6 +141,7 @@ class Conversation {
 					void p.ended.then(end => {
 						box.busy--; box.usedAt = Date.now();
 						this.processes.delete(op.id);
+						if (acp) o.turnEnded(box);
 						if (this.active) this.channel.end(op.id, box.harness && end.error
 							? { ...end, error: new Error(cleanClaudeOutput(end.error.message)) } : end);
 					});
@@ -153,6 +155,10 @@ class Conversation {
 					const answer = await h.ask(op.args.argv, op.args.options);
 					return box.harness && answer ? { ...answer, stdout: cleanClaudeOutput(answer.stdout), stderr: cleanClaudeOutput(answer.stderr) } : answer;
 				}
+				case "memoryEvents": return o.memoryEvents ? await readMemoryEvents(h) : null;
+				case "blockedNetwork":
+					if (!o.blockedNetwork || box.egress !== "restricted") throw new Refusal("This sandbox does not report blocked network requests.");
+					return await o.network.blocked(box.raw, op.args.turn, op.args.retained);
 				case "readTextFile": {
 					const text = await h.readTextFile(op.args.path);
 					return box.harness ? cleanClaudeOutput(text) : text;
