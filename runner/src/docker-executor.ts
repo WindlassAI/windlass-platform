@@ -18,7 +18,7 @@ import { probeHarnessOptions } from "./harness-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
 import { PROFILE_DENIED, type Operation } from "../../server/src/runner/protocol.js";
-import { SandboxUserError } from "../../server/src/sandbox/api.js";
+import { ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
 import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
@@ -212,18 +212,26 @@ export class Executor extends MachineDocker {
 
 		const unit = this.slots.unit.memoryBytes;
 		const budget = Math.floor(((this.limits.sandboxMemory ?? Infinity) / unit - runningUnits) / size);
-		// Running boxes are already reflected in available memory. Leave room for foreground
-		// slots without a container and for the OS on explicitly sized small hosts.
-		const reserved = Math.max(0, max - runningUnits) * unit;
+		// Existing containers already count against available memory. Each new spare fills
+		// a foreground slot, so the same memory covers both reservations.
+		const pooled = this.spares.raws.length;
+		const uncovered = Math.max(0, max - runningUnits - this.spares.units) * unit;
 		const available = this.availableMemory() - this.spareMemoryMargin;
-		const buildRoom = this.spares.raws.length + Math.floor((available - reserved) / (size * unit));
-		// A ready container can itself serve an unfilled slot. Reserve extra memory only for
-		// uncovered slots. This credit can retain a spare, never admit a new one.
-		const ready = this.spares.ready;
-		const uncovered = Math.max(0, max - runningUnits - ready * size) * unit;
-		const memoryRoom = Math.max(buildRoom, available >= uncovered ? ready : 0);
+		const memoryRoom = available >= uncovered ? pooled + Math.floor(available / (size * unit)) : 0;
 		const limit = Math.min(capacity, turnRoom, budget, memoryRoom);
 		return limit > 0 ? limit : "memory";
+	}
+	// A background build needs a slot alongside every kept running box and spare.
+	private environmentFits(size: number) {
+		const running = [...this.boxes.values()].filter(box => box.state === "running");
+		const units = running.reduce((sum, box) => sum + (box.size ?? 1), size) + this.spares.units;
+		const pooled = this.spares.raws.length;
+		const uncovered = Math.max(0, (this.maxTurns ?? 1) - units);
+		return units <= (this.maxTurns ?? 1)
+			&& running.length + pooled < (this.limits.maxRunning ?? Infinity)
+			&& this.boxes.size + pooled < (this.limits.maxSandboxes ?? Infinity)
+			&& (!this.slots || (units * this.slots.unit.memoryBytes <= (this.limits.sandboxMemory ?? Infinity)
+				&& this.availableMemory() >= (size + uncovered) * this.slots.unit.memoryBytes + this.spareMemoryMargin));
 	}
 	private skipSpare(reason: string) {
 		if (this.lastSpareSkip !== reason) console.info(`spare.skip reason=${reason}`);
@@ -769,7 +777,7 @@ private signInRetries = 0;
 			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", ...(this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && { warmSpares: { ready: this.spares.ready } }), blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", environmentBuild: true, ...(this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && { warmSpares: { ready: this.spares.ready } }), blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
@@ -822,15 +830,16 @@ private signInRetries = 0;
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string, spare?: SpareRecipe): Promise<string> {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string, spare?: SpareRecipe, environmentBuild = false): Promise<string> {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
 		if (existing) return existing;
+		if (environmentBuild && this.spares.raws.length && !this.environmentFits(size)) throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
 		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
 			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
 		this.room();
-		const candidate = spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
+		const candidate = !environmentBuild && spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
 		const spec = this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate) ? candidate : undefined;
 		const readyBefore = this.spares.ready;
 		const taken = spec && await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec));
@@ -844,7 +853,7 @@ private signInRetries = 0;
 			catch { console.info(`spare.skip id=${claimed} reason=bind`); await this.removeUnbound(claimed); claimed = undefined; }
 		}
 		if (!claimed) {
-			const retiring = this.spares.trim();
+			const retiring = environmentBuild ? undefined : this.spares.trim();
 			await this.network.prepare();
 			this.freeDiskBytes = await this.disk();
 			if (this.waitForSpareRemoval(size)) await retiring;
@@ -881,9 +890,11 @@ private signInRetries = 0;
 			else if (this.limits.spares === 0) reason = "disabled";
 			console.info(`spare.skip id=${raw} reason=${reason}`);
 		}
-		this.needsSpareSeed = false;
-		this.spares.used(spec);
-		this.waitForTurn = spec ? id : undefined;
+		if (!environmentBuild) {
+			this.needsSpareSeed = false;
+			this.spares.used(spec);
+			this.waitForTurn = spec ? id : undefined;
+		}
 		this.publishReport?.();
 		return id;
 	}

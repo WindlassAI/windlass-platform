@@ -60,6 +60,8 @@ export interface SessionCreateInput {
 /** What a build session reports: its build, without what the user actor set when it started it. */
 export type EnvironmentBuildResult = Omit<EnvironmentBuild, "trigger" | "startedAt" | "setupHash" | "checksHash" | "profile">;
 
+export type EnvironmentBuildReport = EnvironmentBuildResult | { waiting: string };
+
 /** What a build session builds: `screenshots`, the image variant item sessions there use. */
 export interface EnvironmentBuildOrigin { project: string; place: string; screenshots: boolean }
 
@@ -67,7 +69,7 @@ export interface EnvironmentBuildOrigin { project: string; place: string; screen
 export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots) || session.environmentBuild?.screenshots === true };
+	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots) || session.environmentBuild?.screenshots === true };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -130,7 +132,7 @@ export interface UserInternal {
 	/** The places ("hosted", machine ids) that saved a snapshot of the repository for this user under its current setup and GitHub connection, in the last 14 days. A hint: the place may have evicted it since. */
 	internalSnapshotPlaces(repositoryId: GithubId): Promise<string[]>;
 	/** A build session's result (user-environments.ts `buildResult`); the session is deleted after it. */
-	internalEnvironmentResult(sessionId: string, result: EnvironmentBuildResult): Promise<void>;
+	internalEnvironmentResult(sessionId: string, result: EnvironmentBuildReport): Promise<void>;
 	/** A session found its place's ready image missing (`missed`), or started cold where the repository has no environment (`cold`). */
 	internalEnvironmentNudge(sessionId: string, kind: "missed" | "cold"): Promise<void>;
 	/** A push to a repository's default branch (github-inbox.ts). */
