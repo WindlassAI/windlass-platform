@@ -50,6 +50,8 @@ export const CI_POLLING = {
 	noneAfterMs: 10 * 60_000,
 	/** Ask about a workflow GitHub reports as in progress for longer than this. */
 	inProgressLimitMs: 6 * 60 * 60_000,
+	/** Ask when CI could not be read at all (GitHub or the connection out of reach) for this long. */
+	unreachableMs: 90 * 60_000,
 	/** While an item is in review: is its pull request merged or closed. */
 	prEveryMs: 10 * 60_000,
 	webhookEveryMs: 5 * 60_000,
