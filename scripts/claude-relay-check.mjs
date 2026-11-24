@@ -1,6 +1,7 @@
 // Offline protocol checks. The Docker check also exercises the pinned adapter and the real TLS transport.
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { once } from 'node:events';
 import { connect } from 'node:net';
 import { request } from 'node:http';
 import { PassThrough } from 'node:stream';
@@ -193,7 +194,17 @@ async function cappedRelay(limits) {
 		input.destroy = () => input;
 		return input;
 	} });
+	const sockets = new Set();
+	relay.on('connection', socket => {
+		sockets.add(socket);
+		socket.once('close', () => sockets.delete(socket));
+	});
 	await new Promise(done => relay.listen(0, '127.0.0.1', done));
+	const close = () => {
+		const closed = new Promise(done => relay.close(done));
+		for (const socket of sockets) socket.destroy();
+		return closed;
+	};
 	const at = relay.address().port;
 	const send = (session, id) => {
 		const req = request({ createConnection() {
@@ -225,7 +236,7 @@ async function cappedRelay(limits) {
 	};
 	// Nothing more reaches the upstream within a while.
 	const stays = async count => { await new Promise(done => setTimeout(done, 150)); assert.equal(pending.length, count); };
-	return { relay, pending, send, answer, until, stays };
+	return { relay, close, pending, send, answer, until, stays };
 }
 async function refusal(reply) {
 	const res = await reply;
@@ -236,7 +247,7 @@ const drained = async reply => { for await (const _ of await reply) { /* drain *
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 
 test('a ninth request from one session waits at the relay and goes upstream, in order, once a slot frees', async () => {
-	const { relay, pending, send, answer, until, stays } = await cappedRelay();
+	const { close, pending, send, answer, until, stays } = await cappedRelay();
 	try {
 		const session = randomBytes(16).toString('hex');
 		const first = Array.from({ length: 8 }, (_, i) => send(session, 'a' + i));
@@ -251,11 +262,11 @@ test('a ninth request from one session waits at the relay and goes upstream, in 
 		assert.ok(pending.some(p => p.id === 'tenth'));
 		for (const stream of Array.from({ length: pending.length }, () => answer())) stream.end('done\n');
 		for (const { reply } of [...first, ninth, tenth]) await drained(reply);
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('a waiting request that gets no slot in time is refused with a 503 and retry-after, and never reaches upstream', async () => {
-	const { relay, send, until, stays } = await cappedRelay({ waitMs: 200 });
+	const { close, send, until, stays } = await cappedRelay({ waitMs: 200 });
 	try {
 		const session = randomBytes(16).toString('hex');
 		const held = Array.from({ length: 8 }, () => send(session));
@@ -265,11 +276,11 @@ test('a waiting request that gets no slot in time is refused with a 503 and retr
 		assert.ok(Date.now() - started >= 190);
 		await stays(8);
 		for (const { req } of held) req.destroy();
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('the wait list is bounded per session and per machine; past it the refusal is immediate', async () => {
-	const { relay, send, until, stays } = await cappedRelay({ sessionRequests: 1, machineRequests: 2, sessionWaiting: 2, machineWaiting: 3 });
+	const { close, send, until, stays } = await cappedRelay({ sessionRequests: 1, machineRequests: 2, sessionWaiting: 2, machineWaiting: 3 });
 	try {
 		const [a, b, c] = Array.from({ length: 3 }, () => randomBytes(16).toString('hex'));
 		const sent = [send(a), send(b)];
@@ -282,11 +293,11 @@ test('the wait list is bounded per session and per machine; past it the refusal 
 		assert.deepEqual(await refusal(send(c).reply), { status: 503, retry: '2', message: 'Too many model requests waiting on this machine (3).' });
 		await stays(2);
 		for (const { req } of sent) req.destroy();
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('a session at its own ceiling does not hold up another session waiting for a machine slot', async () => {
-	const { relay, pending, send, answer, until, stays } = await cappedRelay({ sessionRequests: 2, machineRequests: 3 });
+	const { close, pending, send, answer, until, stays } = await cappedRelay({ sessionRequests: 2, machineRequests: 3 });
 	try {
 		const [a, b] = Array.from({ length: 2 }, () => randomBytes(16).toString('hex'));
 		const sent = [send(a, 'a1'), send(a, 'a2'), send(b, 'b1')];
@@ -304,11 +315,11 @@ test('a session at its own ceiling does not hold up another session waiting for 
 		assert.deepEqual(pending.map(p => p.id).sort(), ['a2', 'a3', 'b2']);
 		for (const stream of Array.from({ length: pending.length }, () => answer())) stream.end('done\n');
 		for (const { reply } of sent) await drained(reply);
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('counts are exact on every path: finished, aborted mid-stream, aborted upstream-pending, and aborted while waiting', async () => {
-	const { relay, pending, send, answer, until, stays } = await cappedRelay({ sessionWaiting: 4 });
+	const { close, pending, send, answer, until, stays } = await cappedRelay({ sessionWaiting: 4 });
 	try {
 		const session = randomBytes(16).toString('hex');
 		const first = Array.from({ length: 8 }, () => send(session));
@@ -341,11 +352,11 @@ test('counts are exact on every path: finished, aborted mid-stream, aborted upst
 		const ninth = send(session);
 		await stays(8);
 		for (const { req } of [...again, ninth]) req.destroy();
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('the 25th request in flight on the machine waits across sessions', async () => {
-	const { relay, pending, send, answer, until, stays } = await cappedRelay();
+	const { close, pending, send, answer, until, stays } = await cappedRelay();
 	try {
 		const sessions = Array.from({ length: 4 }, () => randomBytes(16).toString('hex'));
 		const sent = Array.from({ length: 24 }, (_, i) => send(sessions[i % 4]));
@@ -356,31 +367,32 @@ test('the 25th request in flight on the machine waits across sessions', async ()
 		await until(24);
 		assert.ok(pending.some(p => p.id === 'other'));
 		for (const { req } of [...sent, other]) req.destroy();
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 // Requests pipelined on one socket each pass admission (the response of a queued pipelined request has no socket yet).
 test('requests pipelined on one socket are counted, wait or are refused, and are released when the socket closes', async () => {
-	const { relay, pending, send, until, stays } = await cappedRelay({ sessionWaiting: 4 });
+	const { relay, close, pending, send, until, stays } = await cappedRelay({ sessionWaiting: 4 });
 	try {
 		const session = randomBytes(16).toString('hex');
 		const one = `POST /v1/messages?beta=true HTTP/1.1\r\nhost: 127.0.0.1:17892\r\nauthorization: Bearer ${credential(privateKey, session)}\r\ncontent-length: 2\r\n\r\n{}`;
+		const disconnected = once(relay, 'connection').then(([peer]) => once(peer, 'close'));
 		const socket = connect(relay.address().port, '127.0.0.1');
 		socket.on('error', () => {});
 		socket.write(session + one.repeat(20));
 		await until(8);
 		await stays(8);
 		socket.destroy();
-		await sleep(100);
+		await disconnected;
 		pending.splice(0);
 		const fresh = Array.from({ length: 8 }, () => send(session));
 		await until(8);
 		for (const { req } of fresh) req.destroy();
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('a session past 32 open connections gets a 503 on the extra ones, which are closed; idle sockets time out', { timeout: 15000 }, async () => {
-	const { relay, send, until } = await cappedRelay({ firstRequestMs: 1500 });
+	const { relay, close, send, until } = await cappedRelay({ firstRequestMs: 1500 });
 	try {
 		const session = randomBytes(16).toString('hex');
 		const opened = () => {
@@ -415,7 +427,7 @@ test('a session past 32 open connections gets a 503 on the extra ones, which are
 		const again = send(session);
 		await until(2);
 		again.req.destroy();
-	} finally { relay.close(); }
+	} finally { await close(); }
 });
 
 test('only allowlisted rate-limit headers pass, on success and on a limit refusal', async () => {

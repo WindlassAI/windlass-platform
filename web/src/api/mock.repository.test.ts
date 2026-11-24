@@ -208,9 +208,14 @@ describe("the mock's repository page", () => {
 		expect((await user.repositorySetup(7190)).command).toBe("");
 		expect((await user.repositorySecrets(7190, "docker-windlass-sandbox")).secrets).toEqual([]);
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7190)).toBe(false);
-		// The two independent agents stay when the repository settings are forgotten.
+		// Independent agents stay when the repository settings are forgotten.
+		const independentIds = async () => (await user.listSessions())
+			.filter((session) => session.repository?.id === 7101 && !session.item)
+			.map((session) => session.id).sort();
+		const before = await independentIds();
+		expect(before.length).toBeGreaterThan(0);
 		await user.forgetRepository(7101);
-		expect((await user.listSessions()).filter((session) => session.repository?.id === 7101 && !session.item)).toHaveLength(2);
+		expect(await independentIds()).toEqual(before);
 		expect(await make({ github: false }).user(ada).savedRepositories()).toEqual([]);
 		mock.dispose();
 	});

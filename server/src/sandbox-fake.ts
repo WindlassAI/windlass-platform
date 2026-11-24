@@ -34,7 +34,8 @@
  *   "(invalid-effort)" the Responses API rejects the reasoning effort with HTTP 400
  *   "(exec-fail)"     the model call fails for good: outcome `failed`, "execution_failed"
  *   "(lose-sandbox)"  the sandbox is gone when the turn ends, as if its container had been removed
- *   "(outlive-delete)" the sandbox's first removal is lost: it outlives its session's delete, an orphan
+ *   "(outlive-delete)" loses the sandbox's first removal, or refuses every removal while the file
+ *                     named by WLP_FAKE_HOLD_REMOVALS exists, so it can outlive a retried delete
  *   "(big-memory)"    Windlass's session grows by two mebibytes in this turn, for a copy that is over
  *                     the limit (with WLP_FAKE_BACKUP_DIR, below)
  *
@@ -111,7 +112,7 @@ import { hostToolsMeta, sessionOpenParams, turnAgentMeta, turnHostTools } from "
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { untrustedSource } from "./factory/untrusted.js";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeBucket, type StandInObjectStore } from "./bucket/stand-in.js";
 import type { ListedModels } from "./account-models.js";
@@ -200,7 +201,7 @@ const PROFILES: SandboxProfile[] = [
 
 interface FakeSandbox {
 	reviewCloneFailed?: boolean;
-	/** "(outlive-delete)": its next removal is lost, and it stays. */
+	/** "(outlive-delete)": the fake provider drops or refuses removal of this sandbox. */
 	outlives?: boolean;
 	privateData: boolean;
 	screenshots: boolean;
@@ -507,9 +508,13 @@ class FakeSandboxes implements Sandboxes {
 		}
 		const sandbox = this.all.get(id);
 		if (sandbox?.outlives) {
+			const hold = process.env.WLP_FAKE_HOLD_REMOVALS;
+			if (hold && existsSync(hold)) throw new Error(`fake sandbox removal held id=${id}`);
 			sandbox.outlives = false;
-			console.log(`[wlp] fake sandbox removal lost id=${id}`);
-			return;
+			if (!hold) {
+				console.log(`[wlp] fake sandbox removal lost id=${id}`);
+				return;
+			}
 		}
 		this.all.delete(id);
 	}

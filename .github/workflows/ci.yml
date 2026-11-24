@@ -1,6 +1,6 @@
 name: CI
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
 
   test:
     # Agents' wip/* branches get the same suites from ci-heavy.yml, chosen by path; running both doubled the queue.
-    if: ${{ !startsWith(github.ref, 'refs/heads/wip/') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || !startsWith(github.ref, 'refs/heads/wip/') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:

@@ -327,6 +327,8 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				drain();
 			};
 			const start = () => {
+				// Releasing a slot on socket close can drain a waiter on that same socket.
+				if (req.socket.destroyed || res.destroyed) return resolve(false);
 				add(inFlight, nonce, 1);
 				if (user !== undefined) add(userInFlight, user, 1);
 				machineInFlight++;
