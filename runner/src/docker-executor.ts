@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { SpareBuildError, WarmSpares, spareMismatches, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
+import { SpareBuildError, WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
 import { cloneCommand, cloneReadyBase, refreshReadyClone, WORKSPACE_HEAD_COMMAND } from "../../server/src/github/git.js";
 import { runSetupCommand } from "../../server/src/sandbox/setup.js";
 import { spareSetup, type SpareSetup, type SpareRecipe } from "../../server/src/runner/spare-recipe.js";
@@ -111,10 +111,8 @@ export class Executor extends MachineDocker {
 	private readonly unbound = new Set<string>();
 	private claimFile(raw: string) { return `claim-${this.identity.machineId}-${raw}.json`; }
 	private spareContext() {
-		return { uid: this.identity.uid, machineId: this.identity.machineId, version: VERSION, image, shotsImage,
-			claudePin: this.claudePin, codexPin: this.codexPin, opencodePin: this.opencodePin,
-			egress: digest([this.network.policy]), domains: digest([this.network.domains()]), slots: digest([this.slots]),
-			screenshotsEnabled: this.screenshots, allowedProfiles: digest([this.allowedProfiles]), sessionVolumes: this.sessionVolumes };
+		return digest([this.identity.uid, this.identity.machineId, VERSION, image, shotsImage, this.claudePin, this.codexPin, this.opencodePin, this.network.policy, this.network.domains(),
+			this.slots, this.screenshots, this.allowedProfiles, this.sessionVolumes]);
 	}
 	private async dropSpare(raw: string) {
 		const rows = await dockerOutput(["ps", "-aq", ...this.filters(), "--filter", "label=" + LABEL + ".session=" + SPARE_SESSION,
@@ -227,10 +225,10 @@ export class Executor extends MachineDocker {
 		const limit = Math.min(capacity, turnRoom, budget, memoryRoom);
 		return limit > 0 ? limit : "memory";
 	}
-	private skipSpare(reason: string, spec = this.spares.recipe) {
+	private skipSpare(reason: string) {
 		if (this.lastSpareSkip !== reason) console.info(`spare.skip reason=${reason}`);
 		this.lastSpareSkip = reason;
-		return this.spares.trim(0, spec, reason);
+		return this.spares.trim();
 	}
 	private waitForSpareRemoval(size: number) {
 		return this.freeDiskBytes === null || this.freeDiskBytes <= this.storeLimits().free ||
@@ -257,8 +255,7 @@ export class Executor extends MachineDocker {
 		if (this.limits.spares === 0) return this.skipSpare("disabled");
 		const spec = this.spares.recipe;
 		if (!spec) return this.skipSpare("no-recipe");
-		const current = { ...spec, context: this.spareContext() };
-		if (spareMismatches(current, spec).length) return this.skipSpare("context", current);
+		if (spec.context !== this.spareContext()) return this.skipSpare("context");
 		const limit = this.spareRoom(spec.args.size);
 		if (typeof limit !== "number") return this.skipSpare(limit);
 		if (this.waitForTurn && this.boxes.get(this.waitForTurn)?.state === "running") return this.spares.trim(limit, spec);
@@ -277,13 +274,13 @@ export class Executor extends MachineDocker {
 			this.spares.fill(room);
 		});
 	}
-	stopSpares() { void this.spares.trim(0, this.spares.recipe, "offline"); }
+	stopSpares() { void this.spares.trim(); }
 	turnStarted(box: Box) {
 		box.activeTurns = (box.activeTurns ?? 0) + 1;
 		if (!this.spares.raws.length) return;
 		const spec = this.spares.recipe;
 		const room = spec && this.spareRoom(spec.args.size);
-		const retiring = this.spares.trim(typeof room === "number" ? room : 0, spec, "turn");
+		const retiring = this.spares.trim(typeof room === "number" ? room : 0, spec);
 		if (this.waitForSpareRemoval(box.size ?? 1)) return retiring;
 	}
 	turnEnded(box: Box) {
@@ -835,8 +832,8 @@ private signInRetries = 0;
 		this.room();
 		const candidate = spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
 		const spec = this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate) ? candidate : undefined;
-		const { compared, mismatch } = this.spares.comparison(candidate);
-		const taken = spec && await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec), false);
+		const readyBefore = this.spares.ready;
+		const taken = spec && await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec));
 		let claimed = taken?.raw;
 		const claim: Claim | undefined = claimed && spec ? { session: sessionId, key: digest([spec.args.spare]), setup: taken?.setup, attempt: prepared?.attempt } : undefined;
 		if (claimed && claim) {
@@ -847,7 +844,7 @@ private signInRetries = 0;
 			catch { console.info(`spare.skip id=${claimed} reason=bind`); await this.removeUnbound(claimed); claimed = undefined; }
 		}
 		if (!claimed) {
-			const retiring = this.spares.trim(0, candidate, "create");
+			const retiring = this.spares.trim();
 			await this.network.prepare();
 			this.freeDiskBytes = await this.disk();
 			if (this.waitForSpareRemoval(size)) await retiring;
@@ -876,13 +873,13 @@ private signInRetries = 0;
 				throw error;
 			}
 		}
-		if (claimed) console.info(`spare.claim id=${claimed} reason=recipe-match mismatch=none`);
+		if (claimed) console.info(`spare.claim id=${claimed} reason=recipe-match`);
 		else {
 			let reason = spec ? "pool-empty" : spare ? "invalid-recipe" : "no-recipe";
-			if (spec && compared === "ready") reason = mismatch === "none" ? "claim-failed" : "recipe-mismatch";
+			if (spec && readyBefore) reason = "recipe-mismatch";
 			if (!this.warmSpares || !this.sessionVolumes) reason = "capability";
 			else if (this.limits.spares === 0) reason = "disabled";
-			console.info(`spare.skip id=${raw} reason=${reason} compared=${compared} mismatch=${mismatch}`);
+			console.info(`spare.skip id=${raw} reason=${reason}`);
 		}
 		this.needsSpareSeed = false;
 		this.spares.used(spec);
@@ -975,7 +972,7 @@ private signInRetries = 0;
 			}
 			if (box.state === "paused") {
 				this.room();
-				const retiring = this.spares.trim(0, this.spares.recipe, "resume");
+				const retiring = this.spares.trim();
 				if (this.waitForSpareRemoval(box.size ?? 1)) await retiring;
 			}
 			const handle = await this.provider.connect(box.raw, { ownData: this.sessionVolumes });
@@ -1074,7 +1071,7 @@ private signInRetries = 0;
 		if (failed) throw new RunnerError("Docker could not stop all kept sandboxes.");
 	}
 	async prune() {
-		await this.spares.trim(0, this.spares.recipe, "prune");
+		await this.spares.trim();
 		await this.discover();
 		await this.reapUnbound();
 		this.spares.used();

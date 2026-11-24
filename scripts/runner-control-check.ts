@@ -398,11 +398,11 @@ try {
 		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
 		pool.used(base);
 		const fill = async () => { await until(() => !pool.raws.length); pool.fill(1); await until(() => pool.ready === 1); return pool.raws[0]!; };
-		for (const other of [{ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" as const } }, { ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: { ...base.context, uid: "other" } }, { ...base, args: { ...base.args, size: 2 } },
+		for (const other of [{ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" as const } }, { ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "other" }, { ...base, args: { ...base.args, size: 2 } },
 			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
 			const raw = await fill();
 			assert.equal(await pool.take(other, async () => true), undefined);
-			await pool.trim(0, other, "create");
+			await pool.trim(0, other);
 			assert.ok(removed.has(raw));
 		}
 		const old = await fill();
@@ -869,7 +869,7 @@ try {
 	});
 
 	await checkControl("a ready spare in the second slot survives memory maintenance and serves the next work item", async () => {
-		const { spareKeyFields } = await import("../runner/src/warm-spares.js");
+		const { spareKey } = await import("../runner/src/warm-spares.js");
 		const { sizeMachine } = await import("../runner/src/sizing.js");
 		const GiB = 2 ** 30, slots = sizeMachine({ cores: 10, memoryBytes: 12 * GiB });
 		assert.deepEqual([slots.max, slots.unit.cpus, slots.unit.memoryBytes], [2, 2, 5 * GiB]);
@@ -878,21 +878,18 @@ try {
 		const recipe = { url: "https://example.org/r.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
 			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
 		let free = 12 * GiB, disk = 100e9, cold = 0, built = "";
-		let builtKey: ReturnType<typeof spareKeyFields> | undefined;
+		let builtKey: string | undefined;
 		const dropped: string[] = [];
 		const verify = runner["verifySpare"].bind(runner);
 		Object.assign(runner, { warmSpares: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true },
 			availableMemory: () => free, disk: async () => disk, dropSpare: async (raw: string) => { dropped.push(raw); },
 			buildSpare: async (raw: string, spec: import("../runner/src/warm-spares.js").SpareSpec) => {
 				built = raw;
-				builtKey = spareKeyFields(spec);
+				builtKey = spareKey(spec);
 				return { startedAt: 1000, durationMs: 25 };
 			},
 			verifySpare: (...args: Parameters<typeof verify>) => {
-				const requestedKey = spareKeyFields(args[2]);
-				// Only synthetic fixture values go to test output. Service logs report field names alone.
-				console.log("Fixture spare keys", JSON.stringify({ built: builtKey, requested: requestedKey }, (_key, value) => value ?? null));
-				assert.deepEqual(requestedKey, builtKey);
+				assert.equal(spareKey(args[2]), builtKey);
 				return verify(...args);
 			} });
 		runner.network.prepare = runner.network.attach = async () => {};
@@ -1080,7 +1077,7 @@ try {
 				assert.ok(validValue("connect", claimed) && claimed?.readyKey && claimed.readySetup && claimed.ownData);
 				assert.equal(runner.report().warmSpares?.ready, 0);
 				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.build id=${ready} reason=ready`));
-				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${ready} reason=recipe-match mismatch=none`));
+				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${ready} reason=recipe-match`));
 			}
 		} finally { probe.mock.restore(); log.mock.restore(); }
 	});
@@ -1195,8 +1192,8 @@ try {
 			assert.equal(owner.boxes.get(third)?.claim, undefined);
 			assert.deepEqual(removed, [built[1]]);
 			assert.deepEqual(log.mock.calls.map(call => call.arguments[0]), [
-				`spare.skip id=${built[1]} reason=capacity cause=create mismatch=connected.command`,
-				`spare.skip id=${owner.boxes.get(third)!.raw} reason=recipe-mismatch compared=ready mismatch=connected.command`,
+				`spare.skip id=${built[1]} reason=capacity`,
+				`spare.skip id=${owner.boxes.get(third)!.raw} reason=recipe-mismatch`,
 			]);
 		} finally { finish?.(); log.mock.restore(); }
 	});

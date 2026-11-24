@@ -4946,6 +4946,12 @@ async function keepTurn(c: Ctx): Promise<boolean> {
 const MACHINE_RECHECK_MS = 5 * 60_000;
 /** The item's check of a started delivery also repairs a long pause, independently of the session's wakes. */
 const STALE_PAUSE_MS = 15 * 60_000;
+const stalePause = (paused: NonNullable<TurnRun["paused"]>) => Date.now() - paused.at >= STALE_PAUSE_MS;
+
+/** A long pause on a machine that answers but cannot take the turn back ends it as interrupted. */
+async function staleOnline(c: Ctx, meta: SessionMeta, paused: NonNullable<TurnRun["paused"]>): Promise<boolean> {
+	return stalePause(paused) && meta.place.kind === "machine" && (await runnerLink(c, meta.place.machineId).facts()).status === "online";
+}
 /** How soon a resume that could not happen (the user's actor or the layer did not answer) is tried again. */
 const RESUME_RETRY_MS = 60_000;
 /** The most messages held for a paused turn. */
@@ -5132,8 +5138,7 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 			try {
 				await link.ready();
 			} catch (error) {
-				if (row && error instanceof MachineUnreachable && Date.now() - run.paused.at >= STALE_PAUSE_MS
-					&& (await link.facts()).status === "online" && meta.run === run && run.paused) {
+				if (row && error instanceof MachineUnreachable && await staleOnline(c, meta, run.paused) && meta.run === run && run.paused) {
 					await endPausedTurn(c, meta, "interrupted", "The machine is online but its runner could not reconnect this turn. The item was told to recover the interrupted step.");
 					return false;
 				}
@@ -5158,8 +5163,7 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 				const answer = await requestTurn(c, meta.uid, row, null, meta.turnStartedAt ?? run.paused.at);
 				if (!answer.granted) {
 					if (meta.run !== run || !run.paused) return false;
-					if (Date.now() - run.paused.at >= STALE_PAUSE_MS && meta.place.kind === "machine"
-						&& (await runnerLink(c, meta.place.machineId).facts()).status === "online") {
+					if (await staleOnline(c, meta, run.paused)) {
 						await userActor(c, meta.uid).internalWithdrawTurn({ sessionId: meta.sessionId, key: row.key });
 						if (meta.run === run && run.paused) await endPausedTurn(c, meta, "interrupted", "The machine is online but the paused turn could not reclaim its slot. The item was told to retry the step.");
 					} else if (run.paused) await armResumeCheck(c, run.paused, MACHINE_RECHECK_MS);
@@ -6754,15 +6758,13 @@ export const agentSession = actor({
 			if (row?.state === "ended") return await endedFact(c.db, row.key);
 			if (row?.state !== "started") return null;
 			if (c.vars.turn?.item?.row.key === row.key || c.vars.closingItem === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
-			if (meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn) {
-				const pausedMs = Date.now() - meta.run.paused.at;
-				if (pausedMs >= STALE_PAUSE_MS && !c.vars.resuming) {
-					console.log(`[wlp] turn.pause_check session=${meta.sessionId} turn=${row.turn} paused_ms=${pausedMs}`);
-					void c.keepAwake(resumePaused(c, meta));
-				}
-				return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			const paused = meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn ? meta.run.paused : null;
+			// The item's check also repairs a long pause, independently of the session's own wakes.
+			if (paused && stalePause(paused) && !c.vars.resuming) {
+				console.log(`[wlp] turn.pause_check session=${meta.sessionId} turn=${row.turn} paused_ms=${Date.now() - paused.at}`);
+				void c.keepAwake(resumePaused(c, meta));
 			}
-			if (c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			if (paused || c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
 			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
 		},
