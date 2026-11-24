@@ -17,7 +17,7 @@ import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
 import type { Answer } from "../server/src/sandbox/provider.js";
-import { validArgs, validValue, type Frame, type Body } from "../server/src/runner/protocol.js";
+import { validArgs, validValue, type Args, type Frame, type Body } from "../server/src/runner/protocol.js";
 import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
@@ -389,14 +389,15 @@ try {
 		const { WarmSpares, validSpec, SPARE_TTL } = await import("../runner/src/warm-spares.js");
 		const base = { context: "pairing, image and egress", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
 		assert.ok(validSpec(base));
-		for (const args of [{ harness: "claude", screenshots: true }, { profile: "docker-windlass-sandbox" }, { spare: { url: "https://secret@example.org/r" } },
+		assert.ok(validSpec({ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" } }));
+		for (const args of [{ harness: "claude", screenshots: true }, { profile: "docker-windlass-sandbox", harness: "claude" }, { spare: { url: "https://secret@example.org/r" } },
 			{ spare: { ...base.args.spare, prompt: "anything" } }]) assert.equal(validSpec({ ...base, args: { ...base.args, ...args } }), false);
 		let now = 0;
 		const removed = new Set<string>();
 		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
 		pool.used(base);
 		const fill = async () => { await until(() => !pool.raws.length); pool.fill(1); await until(() => pool.ready === 1); return pool.raws[0]!; };
-		for (const other of [{ ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
+		for (const other of [{ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" as const } }, { ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
 			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
 			const raw = await fill();
 			assert.equal(await pool.take(other, async () => true), undefined);
@@ -699,7 +700,7 @@ try {
 			Object.assign(owner, { disk: async () => 10_000_000_000 });
 			owner.network.prepare = async () => {};
 			owner.network.attach = async () => {};
-			const asked: { create?: boolean; connect?: boolean } = {};
+			const asked: { create?: boolean | "required"; connect?: boolean } = {};
 			owner.provider.create = async (input) => { asked.create = input.ownData; return "0123456789ab"; };
 			owner.provider.connect = async (_raw, options) => {
 				asked.connect = options?.ownData;
@@ -831,6 +832,156 @@ try {
 			await owner.refresh();
 			assert.equal(owner.report().docker.ok, false, "a genuine network policy failure still blocks admission");
 		} finally { warn.mock.restore(); }
+	});
+
+	await checkControl("a one-slot runner keeps item A and gives item B a fresh Windlass spare, including after a runner restart", async () => {
+		const { sizeMachine } = await import("../runner/src/sizing.js");
+		const { machineLayer } = await import("../server/src/sandbox/runner-layer.js");
+		const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
+		const GiB = 2 ** 30, hostMemory = 12 * GiB;
+		const slots = sizeMachine({ cores: 2, memoryBytes: hostMemory });
+		assert.deepEqual([slots.max, slots.unit.memoryBytes], [1, 4 * GiB]);
+		const uid = "u_fixture";
+		const recipe = { url: "https://example.org/r.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
+			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
+		const probe = mock.method(DockerSandboxHandle.prototype, "ask", async () => success);
+		const log = mock.method(console, "info", () => {});
+		try {
+			for (const restart of [false, true]) {
+				const kept = restart ? "222222222222" : "111111111111";
+				let cold = 0, setups = 0, free = hostMemory;
+				const built: string[] = [];
+				const attachments: [string, boolean | undefined][] = [];
+				const limits = { slots, maxRunning: 1, maxSandboxes: 2, sandboxMemory: hostMemory };
+				function executor() {
+					const runner = new LocalExecutor({ uid, machineId }, limits, false, false, [profile], { mode: "restricted", allow: [] });
+					Object.assign(runner, { warmSpares: true, spareReseed: true, spareSetupTimes: true, sessionVolumes: true,
+						inventoryStarted: true, dockerHealth: { ok: true }, hostMemory, availableMemory: () => free, disk: async () => 100e9 });
+					runner.network.prepare = async () => {};
+					runner.network.attach = async (raw, _name, relay) => { attachments.push([raw, relay]); };
+					runner.provider.create = async input => {
+						if (!input.reservedId) { cold++; return kept; }
+						assert.equal(input.ownData, "required");
+						assert.equal(input.sessionId, "@ready");
+						built.push(input.reservedId);
+						return input.reservedId;
+					};
+					runner.provider.connect = async raw => ({ uid, profile, ownData: raw !== kept, cwd: "/workspace", ask: async () => success,
+						run: async (command: string) => {
+							if (command === "exec 2>&1; make deps") setups++;
+							return { exitCode: 0, stdout: command.includes("wlp:dir") ? "wlp:dir ." : recipe.connected.commit, stderr: "" };
+						} }) as unknown as DockerSandboxHandle;
+					return runner;
+				}
+				let runner = executor();
+				const sandboxes = (sessionId: string) => machineLayer({
+					who: { uid, sessionId, machineId }, channel: { authenticated: true }, facts: async () => ({ report: runner.report() }),
+					again: async (_name: string, args: Args<"create"> | Args<"connect">) => "profile" in args
+						? runner.create(sessionId, args.profile, args.screenshots, args.harness, args.size, args.prepared, args.mirrorRepo, args.spare)
+						: runner.lifecycle("connect", args.id, sessionId),
+					request: async (name: string, args: Args<"seedSpare">) => {
+						assert.equal(name, "seedSpare");
+						return runner.seedSpare(sessionId, args.id, args.spare, args.screenshots);
+					},
+				} as never, {} as import("../server/src/sandbox/api.js").SandboxLayer).sandboxes;
+				const createItem = (sessionId: string) => sandboxes(sessionId).create({
+					...sessionSandboxInput({ uid, sessionId, profile, harness: "windlass", origin: { kind: "item", itemId: "i_fixture", role: "builder" } }),
+					mirrorRepo: "42", spareRecipe: async () => recipe,
+				});
+				const first = await createItem("s_first");
+				if (restart) {
+					const old = runner.boxes.get(first)!;
+					runner = executor();
+					runner.boxes.set(first, { ...old }); // Inventory rediscovers the running sandbox, with no recipe on disk.
+					const found = await runner.lifecycle("connect", first, "s_first");
+					assert.ok(validValue("connect", found) && found?.needsSpareSeed);
+					assert.throws(() => runner.seedSpare("s_second", first, recipe));
+					let authorize!: () => void;
+					const resumed = await sandboxes("s_first").connect(first, { spareSeed: async () => {
+						await new Promise<void>(resolve => { authorize = resolve; });
+						return recipe;
+					} });
+					assert.ok(resumed, "the real turn resumes while the server authorizes a fresh recipe");
+					authorize();
+					await until(() => !runner.canReseed);
+					assert.equal(runner.seedSpare("s_first", first, recipe), false);
+				}
+				const box = runner.boxes.get(first)!;
+				await runner.maintainSpares();
+				assert.equal(built.length, 0);
+				runner.turnEnded(box);
+				await runner.maintainSpares();
+				assert.equal(built.length, 0, "an idle container still counts against --max-running");
+				limits.maxRunning = 2;
+				limits.sandboxMemory = 6 * GiB;
+				await runner.maintainSpares();
+				assert.equal(built.length, 0, "the idle container still has its full memory limit");
+				limits.sandboxMemory = hostMemory;
+				free = GiB;
+				await runner.maintainSpares();
+				assert.equal(built.length, 0, "too little memory available for a second container");
+				free = hostMemory;
+				box.busy++;
+				await runner.maintainSpares();
+				assert.equal(built.length, 0, "an outstanding real operation owns the slot");
+				box.busy--;
+				await runner.maintainSpares();
+				await until(() => runner.report().warmSpares?.ready === 1);
+				assert.deepEqual(attachments.at(-1), [built[0], false]);
+				assert.equal(runner.report().sandboxes.length, 1);
+				assert.equal(box.state, "running");
+				const second = await createItem("s_second");
+				assert.notEqual(second, first);
+				assert.ok(second.endsWith(built[0]!));
+				assert.equal(cold, 1);
+				assert.equal(setups, 1);
+				assert.throws(() => runner.running(second, "s_first"));
+				assert.equal(runner.running(first, "s_first"), box);
+				const claimed = await runner.lifecycle("connect", second, "s_second");
+				assert.ok(validValue("connect", claimed) && claimed?.readyKey && claimed.readySetup && claimed.ownData);
+				assert.equal(runner.report().warmSpares?.ready, 0);
+				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.build id=${built[0]} reason=ready`));
+				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${built[0]} reason=recipe-match`));
+			}
+		} finally { probe.mock.restore(); log.mock.restore(); }
+	});
+
+	await checkControl("an unfinished spare yields a cold create without waiting for setup to exit", async () => {
+		const runner = new LocalExecutor({ uid: "u_fixture", machineId }, { maxTurns: 1 });
+		const recipe = { url: "https://example.org/repo.git" };
+		let finish!: () => void, signal: AbortSignal | undefined, dropped = false;
+		let cold = 0;
+		Object.assign(runner, { warmSpares: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true },
+			availableMemory: () => 12 * 2 ** 30, disk: async () => 100e9, dropSpare: async () => { dropped = true; },
+			buildSpare: async (_raw: string, _spec: unknown, abort: AbortSignal) => {
+				signal = abort;
+				await new Promise<void>(resolve => { finish = resolve; });
+			} });
+		runner.network.prepare = runner.network.attach = async () => {};
+		runner.provider.create = async () => (++cold).toString().padStart(12, "0");
+		const first = await runner.create("s_first", "docker-hardened", false, undefined, 1, undefined, undefined, recipe);
+		runner.boxes.get(first)!.state = "paused";
+		await runner.maintainSpares();
+		assert.ok(signal);
+		try {
+			const starting = runner.create("s_second", "docker-hardened", false, undefined, 1, undefined, undefined, recipe);
+			await until(() => cold === 2);
+			assert.ok(signal.aborted);
+			assert.equal(dropped, false);
+			assert.ok(runner.boxes.has(await starting));
+		} finally { finish(); }
+		await until(() => dropped);
+	});
+
+	await checkControl("the Windlass spare selects its own data volume before Docker can run setup", async () => {
+		const runner = new LocalExecutor({ uid: "u_fixture", machineId }, {});
+		const reached = new Error("volume selected");
+		const volumes: (string | undefined)[] = [];
+		runner.ownedVolume = async (_create, _name, sandbox) => { volumes.push(sandbox); throw reached; };
+		const input = { uid: "u_fixture", sessionId: "@ready", profile, reservedId: raw } as const;
+		await assert.rejects(runner.provider.create({ ...input, ownData: "required" }), error => error === reached);
+		await assert.rejects(runner.provider.create({ ...input, sessionId: session, ownData: true }), error => error === reached);
+		assert.deepEqual(volumes, [raw, undefined]);
 	});
 
 	await checkControl("the executor admits on free disk, claims once, binds the new session and falls back cold under pressure", async () => {

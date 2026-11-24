@@ -1,4 +1,4 @@
-import { spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
+import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
 import { refHead } from "../github/feature.js";
 /**
  * `agentSession`, key [uid, sessionId]: one agent, its sandbox, its timeline and its turns.
@@ -1541,9 +1541,9 @@ export function readySetupItems(turn: number, recipe: NonNullable<SpareRecipe["c
 
 /** Resolve the current permission and immutable base outside the machine. A mirror alone
  * cannot establish either. Only the ordinary base checkout can run setup in advance. */
-async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, plan: SnapshotPlan | null, seedOnly = false): Promise<SpareRecipe | undefined> {
-	if (!meta.repoUrl || (meta.profile !== "docker-hardened" && meta.harness !== "codex") || meta.environmentBuild ||
-		meta.windlassSessionId || meta.pushedHead || meta.origin?.role === "reviewer" || meta.origin?.owns !== undefined || plan?.writer) return;
+async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, plan: SnapshotPlan | null, purpose: "claim" | "seed" | "resume" = "claim"): Promise<SpareRecipe | undefined> {
+	if (!meta.repoUrl || !spareProfile(meta.profile, meta.harness) || meta.environmentBuild ||
+		(purpose !== "resume" && (meta.windlassSessionId || meta.pushedHead)) || meta.origin?.role === "reviewer" || meta.origin?.owns !== undefined || plan?.writer) return;
 	if (!meta.repo) return spareRecipe({ url: meta.repoUrl }) ? { url: meta.repoUrl } : undefined;
 	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
 	if (!project || !app || !secrets || secrets.opened.length || secrets.unopened.length || await childSetupSeed(c, meta)) return;
@@ -1552,7 +1552,7 @@ async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | nul
 	const saved = await userActor(c, meta.uid).internalSetupCommand(project.key);
 	const { installation, repository } = await sessionRepository(app, connection, repo, "read");
 	const key = digest([meta.uid, connection.connectedAt, installation.id, repo.id, repo.branch]);
-	const commit = plan?.commit || await spareHead(key, seedOnly, () => app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read" } },
+	const commit = plan?.commit || await spareHead(key, purpose === "seed", () => app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read" } },
 		token => refHead(app, token, repository.owner, repository.name, repo.branch), { revokeAfter: true }));
 	const recipe = { url: app.cloneUrl(repository.owner, repository.name), connected: { repo: String(repo.id), branch: repo.branch, commit,
 		command: saved.command?.trim() ?? "", timeoutMs: config.setupTimeoutMs, generation: snapshotGeneration(String(repo.id), saved.updatedAt, connection.connectedAt) } };
@@ -1573,7 +1573,13 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		meta.networkHosts = meta.place.kind === "hosted" && hosts.length > 0 ? hosts : undefined;
 	}
 	const connecting = Date.now();
-	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, connectOptions(meta)) : undefined;
+	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, {
+		...connectOptions(meta),
+		...(allowSnapshot && meta.place.kind === "machine" && meta.repoUrl && {
+			spareSeed: () => readyRecipe(c, meta, secrets, null, "resume"),
+			screenshots: sessionSandboxInput(meta, secrets?.screenshots).screenshots,
+		}),
+	}) : undefined;
 	if (handle) c.vars.startClock?.sandbox(Date.now() - connecting, false);
 	sandboxChanged(c);
 	// An actor stopped between a create and its first connect learns it here. Only a yes is taken: a
@@ -1622,7 +1628,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
 		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot,
 			...(allowSnapshot && meta.place.kind === "machine" && meta.repoUrl && { spareRecipe: async (ready: number) => {
-				const candidate = await readyRecipe(c, meta, secrets, plan, ready === 0);
+				const candidate = await readyRecipe(c, meta, secrets, plan, ready === 0 ? "seed" : "claim");
 				// A spare may finish after an empty report. Revalidate before accepting that claim.
 				if (ready > 0) recipe = candidate;
 				return candidate;

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
+import { SpareBuildError, WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
 import { cloneCommand, cloneReadyBase, refreshReadyClone, WORKSPACE_HEAD_COMMAND } from "../../server/src/github/git.js";
 import { runSetupCommand } from "../../server/src/sandbox/setup.js";
 import { spareSetup, type SpareSetup, type SpareRecipe } from "../../server/src/runner/spare-recipe.js";
@@ -40,7 +40,7 @@ import { EgressNetwork } from "./egress-network.js";
 import { forget, loadPair, read, Refusal, RunnerError, save, VERSION, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { size?: number; claim?: Claim; startTimes?: { spare?: true; image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box { turnIdle?: boolean; size?: number; claim?: Claim; startTimes?: { spare?: true; image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -98,8 +98,14 @@ export class Executor extends MachineDocker {
 	readonly boxes = new Map<string, Box>();
 	warmSpares = false;
 	spareSetupTimes = false;
+	spareReseed = false;
+	// A restart forgets all demand. Only a fresh signed recipe from a resumed session can restore it.
+	private needsSpareSeed = true;
 	private readonly spares = new WarmSpares((raw, spec, signal) => this.buildSpare(raw, spec, signal), raw => this.removeUnbound(raw), Date.now, () => this.publishReport?.());
 	private waitForTurn?: string;
+	private lastSpareSkip?: string;
+	private readonly hostMemory = totalmem();
+	private readonly availableMemory = process.availableMemory;
 	private nextSpareDisk = 0;
 	private spareDisk = 0;
 	private readonly unbound = new Set<string>();
@@ -119,45 +125,46 @@ export class Executor extends MachineDocker {
 	private async buildSpare(raw: string, spec: SpareSpec, signal: AbortSignal) {
 		const { spare, profile, harness, prepared, screenshots, size, mirrorRepo } = spec.args;
 		const { uid } = this.identity;
-		if (read(this.claimFile(raw)) !== undefined || await this.disk() <= Math.max(5e9, this.storeLimits().free)) throw new Error("Spare admission refused");
+		if (read(this.claimFile(raw)) !== undefined) throw new SpareBuildError("bound");
+		if (await this.disk() <= Math.max(5e9, this.storeLimits().free)) throw new SpareBuildError("disk");
 		signal.throwIfAborted();
 		if (harness) this.requireHarness(profile, harness);
 		this.requireProfile(profile);
 		const provider = this.providerFor(harness);
 		await provider.create({ reservedId: raw.slice(-12), uid, sessionId: SPARE_SESSION, profile, harness, screenshots, size, mirrorRepo,
 			deferredRelayNonce: harness ? randomBytes(16).toString("hex") : undefined,
-			fromSnapshot: prepared && { ...prepared, attempt: randomBytes(16).toString("hex") }, ownData: true });
+			fromSnapshot: prepared && { ...prepared, attempt: randomBytes(16).toString("hex") }, ownData: harness ? undefined : "required" });
 		signal.throwIfAborted();
 		await this.network.attach(raw, containerName(raw), false);
 		const box = await provider.connect(raw, { ownData: true });
-		if (!box || (!harness && !box.ownData)) throw new Error("Missing private workspace");
+		if (!box || (!harness && !box.ownData)) throw new SpareBuildError("private-data");
 		signal.throwIfAborted();
 		if (profile === bubblewrap) {
 			const probe = await checkBubblewrap(timeoutMs => box.ask(DOCKER_BWRAP_PROBE, { timeoutMs }), signal);
-			if (!probe.ok) throw new Refusal(probe.reason);
+			if (!probe.ok) throw new SpareBuildError("bubblewrap");
 		}
 		if (prepared) {
-			if (!box.snapshot || box.snapshot.inputs !== prepared.inputs || box.snapshot.generation !== prepared.generation) throw new Error("Prepared image missing");
+			if (!box.snapshot || box.snapshot.inputs !== prepared.inputs || box.snapshot.generation !== prepared.generation) throw new SpareBuildError("snapshot");
 			// The platform refreshes and validates this image through restorePrepared after claim.
 			return;
 		}
 		const c = spare.connected;
 		if (!c) {
 			const result = await box.run(cloneCommand(spare.url), { timeoutMs: 180_000, signal });
-			if (result.exitCode !== 0) throw new Error("Clone failed");
+			if (result.exitCode !== 0) throw new SpareBuildError("clone");
 		} else {
-			if (!await cloneReadyBase(box, spare.url, c.branch, c.commit, mirrorOwner(uid, c.repo), signal)) throw new Error("Unconfirmed base");
+			if (!await cloneReadyBase(box, spare.url, c.branch, c.commit, mirrorOwner(uid, c.repo), signal)) throw new SpareBuildError("base");
 			let setup: SpareSetup | undefined;
 			if (c.command) {
 				const startedAt = Date.now();
 				const result = await runSetupCommand(box, { command: c.command, cwd: box.cwd, timeoutMs: c.timeoutMs, signal });
-				if (result.state !== "succeeded") throw new Error("Setup failed");
+				if (result.state !== "succeeded") throw new SpareBuildError("setup");
 				setup = { startedAt, durationMs: result.durationMs };
 			}
 			// Check after setup, off the claim path. No process or socket can use a
 			// ready container between this check and its single claim.
 			const head = await box.run(WORKSPACE_HEAD_COMMAND, { timeoutMs: 30_000, signal });
-			if (head.exitCode !== 0 || head.stdout.trim() !== c.commit) throw new Error("Setup changed the base");
+			if (head.exitCode !== 0 || head.stdout.trim() !== c.commit) throw new SpareBuildError("changed-base");
 			return setup;
 		}
 	}
@@ -192,9 +199,34 @@ export class Executor extends MachineDocker {
 
 	private spareRoom(size = 1, incoming = 0) {
 		const running = [...this.boxes.values()].filter(b => b.state === "running");
-		const slots = this.maxTurns ?? 1;
-		return Math.max(0, Math.min(this.limits.spares ?? 1, Math.floor((slots - incoming * size - running.reduce((n, b) => n + (b.size ?? 1), 0)) / size),
-			(this.limits.maxRunning ?? Infinity) - running.length - incoming, (this.limits.maxSandboxes ?? Infinity) - this.boxes.size - incoming));
+		const max = this.maxTurns ?? 1;
+		const units = running.reduce((n, box) => n + (box.size ?? 1), incoming * size);
+		const idle = running.reduce((n, box) => n + (box.turnIdle && !box.busy && !box.savingSnapshot ? box.size ?? 1 : 0), 0);
+		// A completed turn releases its CPU slot. Its kept container still counts at its
+		// full memory limit and against both of the owner's container limits.
+		const memory = this.slots ? Math.floor(Math.min(this.limits.sandboxMemory ?? Infinity,
+			this.hostMemory - this.slots.reserve.memoryBytes) / this.slots.unit.memoryBytes) : max;
+		const capacity = Math.min(this.limits.spares ?? 1, (this.limits.maxRunning ?? Infinity) - running.length - incoming,
+			(this.limits.maxSandboxes ?? Infinity) - this.boxes.size - incoming);
+		if (capacity <= 0) return "container-limit";
+		if (max - units + idle < size) return "turn-slots";
+		if (memory - units < size) return "memory";
+		const ordinary = Math.max(0, Math.floor((max - units) / size));
+		const limit = Math.min(capacity, Math.floor((max - units + idle) / size), Math.floor((memory - units) / size));
+		if (limit <= ordinary || !this.slots) return limit;
+		// Borrow only with room for the new container now. An existing spare has already consumed memory.
+		const available = this.spares.raws.length + Math.floor(this.availableMemory() / (size * this.slots.unit.memoryBytes));
+		return Math.min(limit, Math.max(ordinary, available)) || "memory";
+	}
+	private skipSpare(reason: string) {
+		if (this.lastSpareSkip !== reason) console.info(`spare.skip reason=${reason}`);
+		this.lastSpareSkip = reason;
+		return this.spares.trim();
+	}
+	private waitForSpareRemoval(size: number) {
+		return this.freeDiskBytes === null || this.freeDiskBytes <= this.storeLimits().free ||
+			this.limits.maxRunning !== undefined || this.limits.maxSandboxes !== undefined || this.limits.sandboxMemory !== undefined ||
+			!!this.slots && this.availableMemory() < size * this.slots.unit.memoryBytes;
 	}
 	private async removeUnbound(raw: string) {
 		try {
@@ -210,28 +242,41 @@ export class Executor extends MachineDocker {
 	}
 	/** Preparation never owns the executor's serial queue. */
 	async maintainSpares(online = () => true) {
-		if (!this.inventoryStarted) return;
-		if (!this.warmSpares || !this.sessionVolumes || !this.dockerHealth.ok || this.egressError || this.limits.spares === 0) {
-			return this.spares.trim();
-		}
+		if (!this.inventoryStarted) return this.skipSpare("inventory");
+		if (!this.warmSpares || !this.sessionVolumes) return this.skipSpare("capability");
+		if (!this.dockerHealth.ok || this.egressError) return this.skipSpare("machine-health");
+		if (this.limits.spares === 0) return this.skipSpare("disabled");
 		const spec = this.spares.recipe;
-		if (!spec || spec.context !== this.spareContext()) return this.spares.trim();
+		if (!spec) return this.skipSpare("no-recipe");
+		if (spec.context !== this.spareContext()) return this.skipSpare("context");
 		const limit = this.spareRoom(spec.args.size);
-		if (!limit) return this.spares.trim();
+		if (typeof limit !== "number") return this.skipSpare(limit);
 		if (this.waitForTurn && this.boxes.get(this.waitForTurn)?.state === "running") return this.spares.trim(limit, spec);
 		if (Date.now() >= this.nextSpareDisk) {
 			this.nextSpareDisk = Date.now() + 30_000;
 			this.spareDisk = await this.disk().catch(() => 0);
 		}
-		if (this.spareDisk <= Math.max(this.storeLimits().free, 5e9)) return this.spares.trim();
+		if (this.spareDisk <= Math.max(this.storeLimits().free, 5e9)) return this.skipSpare("disk");
 		// A create or resume can have reserved capacity without having published its
 		// running box yet. Admit in its order, then build outside that order.
 		await this.serial(async () => {
-			if (online() && this.warmSpares && this.spares.recipe === spec) this.spares.fill(this.spareRoom(spec.args.size));
+			if (!online() || !this.warmSpares || this.spares.recipe !== spec) return;
+			const room = this.spareRoom(spec.args.size);
+			if (typeof room !== "number") return;
+			this.lastSpareSkip = undefined;
+			this.spares.fill(room);
 		});
 	}
 	stopSpares() { void this.spares.trim(); }
+	yieldSpareSlot(box: Box) {
+		const spec = this.spares.recipe;
+		if (!box.turnIdle || !spec || !this.spares.raws.length) return;
+		const room = this.spareRoom(spec.args.size);
+		// A resumed turn on a kept running container proceeds while speculative work is cancelled.
+		void this.spares.trim(typeof room === "number" ? room : 0, spec);
+	}
 	turnEnded(box: Box) {
+		box.turnIdle = true;
 		if (this.waitForTurn === externalId(this.identity.machineId, box.raw)) this.waitForTurn = undefined;
 	}
 
@@ -779,23 +824,29 @@ private signInRetries = 0;
 		this.room();
 		const candidate = spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
 		const spec = this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate) ? candidate : undefined;
-		await this.spares.foreground(spec);
+		const retiring = this.spares.foreground(spec);
 		await this.network.prepare();
 		this.freeDiskBytes = await this.disk();
 		if (this.freeDiskBytes <= this.storeLimits().free) await this.spares.trim();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 
-		const taken = spec && this.freeDiskBytes > this.storeLimits().free ? await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec)) : undefined;
+		// Cancel speculative work immediately. Wait for its removal only where starting
+		// another container would compete for scarce memory, disk or an owner's hard limit.
+		const waitForRemoval = this.waitForSpareRemoval(size);
+		if (waitForRemoval) await retiring;
+		const taken = spec && this.freeDiskBytes > this.storeLimits().free ? await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec), waitForRemoval) : undefined;
 		let claimed = taken?.raw;
 		// Give back the units needed for this turn. A second matching spare may still fit.
-		await this.spares.trim(spec ? this.spareRoom(size, 1) : 0, spec);
+		const remaining = spec && this.spareRoom(size, 1);
+		const trimming = this.spares.trim(typeof remaining === "number" ? remaining : 0, spec);
+		if (waitForRemoval) await trimming;
 		const claim: Claim | undefined = claimed && spec ? { session: sessionId, key: digest([spec.args.spare]), setup: taken?.setup, attempt: prepared?.attempt } : undefined;
 		if (claimed && claim) {
 			try {
 				if (harness) claim.relayEnv = await this.claimRelay(claimed, harness);
 				save(this.claimFile(claimed), claim);
 			}
-			catch { await this.removeUnbound(claimed); claimed = undefined; }
+			catch { console.info(`spare.skip id=${claimed} reason=bind`); await this.removeUnbound(claimed); claimed = undefined; }
 		}
 		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
 		const raw = claimed ?? (harness ? await withLoginVolume(this, () => this.providerFor(harness).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes }));
@@ -804,7 +855,10 @@ private signInRetries = 0;
 		try { await this.network.attach(raw, containerName(raw)); }
 		catch (error) {
 			await this.remove(id);
-			if (claimed) return this.create(sessionId, profile, screenshots, harness, size, prepared, mirrorRepo);
+			if (claimed) {
+				console.info(`spare.skip id=${claimed} reason=network`);
+				return this.create(sessionId, profile, screenshots, harness, size, prepared, mirrorRepo);
+			}
 			throw error;
 		}
 		if (profile === bubblewrap && !claimed) {
@@ -817,10 +871,32 @@ private signInRetries = 0;
 				throw error;
 			}
 		}
+		if (claimed) console.info(`spare.claim id=${claimed} reason=recipe-match`);
+		else {
+			let reason = spec ? "pool-empty" : spare ? "invalid-recipe" : "no-recipe";
+			if (!this.warmSpares || !this.sessionVolumes) reason = "capability";
+			else if (this.limits.spares === 0) reason = "disabled";
+			console.info(`spare.skip id=${raw} reason=${reason}`);
+		}
+		this.needsSpareSeed = false;
 		this.spares.used(spec);
 		this.waitForTurn = spec ? id : undefined;
 		this.publishReport?.();
 		return id;
+	}
+	get canReseed() {
+		return this.spareReseed && this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && this.needsSpareSeed;
+	}
+	seedSpare(session: string, id: string, spare: SpareRecipe, screenshots = false) {
+		const box = this.owned(id, session);
+		if (!box || !this.canReseed) return false;
+		const spec = { context: this.spareContext(), args: { profile: box.profile, harness: box.harness,
+			size: box.size ?? 1, screenshots: !box.harness && this.screenshots && screenshots, mirrorRepo: spare.connected?.repo, spare } };
+		if (!validSpec(spec)) return false;
+		this.spares.used(spec);
+		this.needsSpareSeed = false;
+		this.waitForTurn = box.state === "running" && !box.turnIdle ? id : undefined;
+		return true;
 	}
 	async saveMirror(session: string, id: string, stage: string, partial: boolean) {
 		const box = this.running(id, session);
@@ -891,7 +967,11 @@ private signInRetries = 0;
 					await ensureRelay(this, login);
 				});
 			}
-			if (box.state === "paused") { await this.spares.trim(); this.room(); }
+			if (box.state === "paused") {
+				this.room();
+				const retiring = this.spares.trim();
+				if (this.waitForSpareRemoval(box.size ?? 1)) await retiring;
+			}
 			const handle = await this.provider.connect(box.raw, { ownData: this.sessionVolumes });
 			if (!!box.resizePending !== !!handle?.resizePending) {
 				box.resizePending = handle?.resizePending || undefined;
@@ -906,6 +986,7 @@ private signInRetries = 0;
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
 			const answer = { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: { ...handle.snapshot, ...(box.claim?.attempt && { attempt: box.claim.attempt }) } }), ...(this.warmSpares && box.claim && { readyKey: box.claim.key, ...(this.spareSetupTimes && box.claim.setup && { readySetup: box.claim.setup }) }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
+				...(this.canReseed && { needsSpareSeed: true as const }),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				// Windlass's own sandboxes only, and only to a server that named `model-relay`.

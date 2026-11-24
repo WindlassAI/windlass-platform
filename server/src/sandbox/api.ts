@@ -174,6 +174,9 @@ export interface SandboxHandle {
 
 /** What a connect is told besides the sandbox's id. */
 export interface ConnectOptions {
+	/** On turn resume, a restarted runner may ask for a fresh recipe for the next new session. */
+	spareSeed?: () => Promise<import("../runner/spare-recipe.js").SpareRecipe | undefined>;
+	screenshots?: boolean;
 	/**
 	 * The hosts the session's repositories allow besides the deployment's (repository-network.ts): on E2B
 	 * with WLP_E2B_NETWORK=restricted, the sandbox's network is set to both at every connect. Ignored elsewhere.

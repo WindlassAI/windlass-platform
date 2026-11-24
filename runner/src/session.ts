@@ -97,6 +97,7 @@ class Conversation {
 					return made;
 				});
 			}
+			case "seedSpare": return this.channel.authenticated && o.seedSpare(this.session, op.args.id, op.args.spare, op.args.screenshots);
 			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
 			// Not serial: a save runs for minutes in its own helper container, outside the sandbox.
 			case "saveMirror": return o.saveMirror(this.session, op.args.id, op.args.stage, op.args.partial);
@@ -129,6 +130,7 @@ class Conversation {
 		});
 		const streams = { onStdout: (s: string) => this.output(op.id, 1, s), onStderr: (s: string) => this.output(op.id, 2, s) };
 		box.busy++;
+		if (box.turnIdle) o.yieldSpareSlot(box);
 		try {
 			switch (op.name) {
 				case "start": {

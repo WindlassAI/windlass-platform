@@ -283,6 +283,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						owner.blockedNetwork = named?.includes("blocked-network" satisfies Capability) === true;
 						owner.memoryEvents = named?.includes("memory-events" satisfies Capability) === true;
 						owner.warmSpares = !!trust && named?.includes("warm-spares" satisfies Capability) === true;
+						owner.spareReseed = owner.warmSpares && named?.includes("spare-reseed" satisfies Capability) === true;
 						owner.spareSetupTimes = named?.includes("spare-setup-times" satisfies Capability) === true;
 						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
 						owner.environmentImage = named?.includes("environment-image" satisfies Capability) === true;
