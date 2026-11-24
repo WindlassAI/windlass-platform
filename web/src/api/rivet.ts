@@ -83,7 +83,7 @@ const READS = new Set([
 	"me", "chatgpt", "models", "listSessions", "github", "githubRepositories", "githubBranches", "repositorySetup", "repositoryChecks",
 	"repositoryEnvironments", "repositoryNetwork", "repositorySecrets", "repository", "githubRepository", "savedRepositories", "account",
 	"accountSecrets", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
-	"apiTokens", "snapshot", "changes", "diff", "publishState", "servers",
+	"apiTokens", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
 ]);
 
 /** Whether an action may be sent twice: it reads, or it carries the key of its submission. */
@@ -431,6 +431,11 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			createItem: (input) => act("createItem", input),
 			actOnItem: (id, action) => act("actOnItem", { id, action }),
 			factoryLimits: () => act("factoryLimits"),
+			linear: () => act("linear"),
+			linearConnect: (input) => act("linearConnect", input),
+			linearTeams: () => act("linearTeams"),
+			saveLinearMapping: (input) => act("saveLinearMapping", input),
+			removeLinearMapping: (teamId) => act("removeLinearMapping", teamId),
 			apiTokens: () => act("apiTokens"),
 			createApiToken: (input) => act("createApiToken", input),
 			revokeApiToken: (id) => act("revokeApiToken", id),

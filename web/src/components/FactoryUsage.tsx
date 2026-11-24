@@ -56,8 +56,8 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					<dd className="factory-limit-text">Its subtasks' budgets, as you approve them in its plan, and one item's for its planning, summary and review</dd>
 				</div>
 				<div>
-					<dt>Items from GitHub</dt>
-					<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day, drafts among them</dd>
+					<dt>Items from GitHub and Linear</dt>
+					<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day, shared by GitHub and Linear, drafts among them</dd>
 				</div>
 				<div>
 					<dt>Screenshots</dt>

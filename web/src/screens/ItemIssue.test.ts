@@ -168,3 +168,28 @@ describe("an item from a GitHub issue", () => {
 		expect(host.querySelector("section[aria-labelledby='item-task'] .callout")).toBeNull();
 	});
 });
+
+describe("an item from a Linear issue", () => {
+	const fromLinear = () => items.find((item) => item.source === "linear") as ItemSummary;
+
+	it("links ENG-123 to its Linear URL, names the source, and warns of the outside author", async () => {
+		await render(itemPage(fromLinear));
+		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from Linear");
+		const line = host.querySelector(".item-origin") as HTMLElement;
+		expect(line.textContent).toBe("From ENG-123, written by Grace Hopper and filed by Ada Lovelace.");
+		const link = line.querySelector("a") as HTMLAnchorElement;
+		expect(link.textContent).toBe("ENG-123");
+		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");
+		expect(link.target).toBe("_blank");
+		const note = host.querySelector("section[aria-labelledby='item-task'] .callout") as HTMLElement;
+		expect(note.textContent).toBe("The text below was written by Grace Hopper on Linear, not by you. Starting the item gives the agent this text, as it is shown here.");
+		expect(buttons(host, "Start")).toHaveLength(1);
+	});
+
+	it("links its row in the work list to the issue", async () => {
+		await render(() => createElement(RepositoryPane, { page: useRepository(7101), view: "items", items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] }));
+		const link = [...host.querySelectorAll("li.item-row a")].find((one) => one.textContent === "ENG-123") as HTMLAnchorElement;
+		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");
+		expect(link.getAttribute("aria-label")).toBe("Issue ENG-123 on Linear");
+	});
+});
