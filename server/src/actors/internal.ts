@@ -239,11 +239,13 @@ export interface ItemInternal {
 	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;
+	internalFeatureTarget(): Promise<{ head: string; value: number; branch: string; available: boolean } | null>;
+	internalUpdateForChild(child: string, request: string, target: string): Promise<"pending" | "finished">;
 	internalClaimJoin(child: string, key: string): Promise<"busy" | "claimed" | import("../factory/types.js").JoinResult>;
 	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;
 	/** `repository`: a cross-repo feature's child's own repository and base; null for a one-repository feature. */
-	internalChildRequest(child: string): Promise<{ job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
+	internalChildRequest(child: string): Promise<{ paused?: boolean; job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
 	/** A cross-repo feature's planning turn of `key`: the other repositories it reads, and where in the workspace. */
 	internalPlanningInputs(key: string): Promise<{ directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;

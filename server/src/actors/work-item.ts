@@ -44,7 +44,7 @@ import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
-import { subtaskBranch, featureBranch, openFeature, commitsBehindBase, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
+import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
@@ -63,7 +63,7 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -117,7 +117,7 @@ interface Stored {
 }
 
 interface ItemVars {
-	pushCi?: { key: string; reading: Promise<boolean> };
+	featureCi?: Partial<Record<PreviewSlot, { key: string; reading: Promise<Preview> }>>;
 	savingSecret?: Promise<void>;
 	/** Null for an actor `user` did not create. */
 	stored: Stored | null;
@@ -235,6 +235,17 @@ async function viewOf(c: Ctx): Promise<ItemView> {
 			q.text += "\n" + block;
 			q.choices = q.choices.filter(choice => choice.id !== "approve");
 			if (fallback) q.choices.unshift(fallback);
+		}
+	}
+	if (item.mode === "orchestrate" || (item.parent && featureCiQuestion(item))) {
+		const target = await targetStatus(c, stored).catch(() => null);
+		if (target && !item.parent) {
+			view.featureTargetAhead = target.value;
+			view.canUpdateFeature = target.available && target.value > 0;
+		}
+		if (q && featureCiQuestion(item)) {
+			q.choices = q.choices.filter(choice => choice.id !== "update_feature");
+			if (target?.available && target.value > 0) q.choices.splice(-1, 0, featureUpdateChoice(target.branch));
 		}
 	}
 	return view;
@@ -825,27 +836,49 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 	if (problems.length) throw new PlanError("Approval needs every repository ready first. " + problems.join(" "));
 }
 
-/** One durable preview slot per feature, including lookups interrupted by an actor restart. */
-async function previewPushCi(c: Ctx, key: string, read: () => Promise<{ head: string; eligible: boolean }>): Promise<boolean> {
+type PreviewSlot = "push" | "target";
+type Preview = { head: string; value: number };
+export const FEATURE_CI_CACHE = "CREATE TABLE IF NOT EXISTS feature_ci_preview(slot TEXT PRIMARY KEY, inputs TEXT NOT NULL, expires INTEGER NOT NULL, head TEXT, value INTEGER)";
+
+/** One durable minute per observation, including concurrent views and interrupted lookups. */
+async function previewFeatureCi(c: Ctx, slot: PreviewSlot, key: string, read: () => Promise<Preview>): Promise<Preview> {
 	const unavailable = () => new PlanError("The platform could not verify this repository’s push CI. Refresh the item in a minute to check again.");
-	if (c.vars.pushCi) {
-		if (c.vars.pushCi.key !== key) throw unavailable();
-		return c.vars.pushCi.reading;
+	const cache = c.vars.featureCi ??= {};
+	const pending = cache[slot];
+	if (pending) {
+		if (pending.key !== key) throw unavailable();
+		return pending.reading;
 	}
 	const reading = (async () => {
 		const now = Date.now();
-		const reserved = await c.db.execute("INSERT INTO push_ci_preview(id, inputs, expires) VALUES(1, ?, ?) ON CONFLICT(id) DO UPDATE SET inputs=excluded.inputs, expires=excluded.expires, head=NULL, eligible=NULL WHERE expires <= ? RETURNING id", key, now + 60_000, now);
+		const reserved = await c.db.execute("INSERT INTO feature_ci_preview(slot, inputs, expires) VALUES(?, ?, ?) ON CONFLICT(slot) DO UPDATE SET inputs=excluded.inputs, expires=excluded.expires, head=NULL, value=NULL WHERE expires <= ? OR (slot='target' AND inputs <> excluded.inputs) RETURNING slot", slot, key, now + 60_000, now);
 		if (!reserved.length) {
-			const [cached] = await c.db.execute<{ inputs: string; eligible: number | null }>("SELECT inputs, eligible FROM push_ci_preview WHERE id=1");
-			if (cached?.inputs !== key || cached.eligible === null) throw unavailable();
-			return cached.eligible === 1;
+			const [cached] = await c.db.execute<{ inputs: string; head: string | null; value: number | null }>("SELECT inputs, head, value FROM feature_ci_preview WHERE slot=?", slot);
+			if (cached?.inputs !== key || !cached.head || cached.value === null) throw unavailable();
+			return { head: cached.head, value: cached.value };
 		}
 		const result = await read();
-		await c.db.execute("UPDATE push_ci_preview SET head=?, eligible=?, expires=? WHERE id=1", result.head, Number(result.eligible), Date.now() + 60_000);
-		return result.eligible;
+		await c.db.execute("UPDATE feature_ci_preview SET head=?, value=?, expires=? WHERE slot=? AND inputs=?", result.head, result.value, Date.now() + 60_000, slot, key);
+		return result;
 	})();
-	c.vars.pushCi = { key, reading };
-	try { return await reading; } finally { delete c.vars.pushCi; }
+	cache[slot] = { key, reading };
+	try { return await reading; } finally { delete cache[slot]; }
+}
+
+type TargetStatus = Preview & { branch: string; available: boolean };
+
+async function targetStatus(c: Ctx, stored: Stored): Promise<TargetStatus | null> {
+	const { item, meta } = stored;
+	if (item.parent) return itemActor(c, meta.uid, item.parent.itemId).internalFeatureTarget();
+	if (item.mode !== "orchestrate" || crossRepo(item) || !item.pr || !item.head || ENDED.has(item.state)) return null;
+	const branch = item.task.base;
+	const snapshot = await previewFeatureCi(c, "target", JSON.stringify([branch, item.head]), async () => {
+		const hub = await github(c, meta);
+		const comparison = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read" } },
+			token => compareBranches(hub.app, token, hub.owner, hub.name, branch, featureBranch(item.id)), { reuse: true });
+		return { head: comparison.base, value: comparison.behind };
+	}).catch(() => null);
+	return snapshot && { ...snapshot, branch, available: canUpdateFeature(item) && item.question?.kind !== "feature_update" };
 }
 
 async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<string, string>> = {}, preview = false) {
@@ -861,10 +894,10 @@ async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<str
 		const hub = await github(c, meta, "write");
 		return hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" } }, async token => {
 			const head = await refHead(hub.app, token, hub.owner, hub.name, ref);
-			return { head, eligible: await hasPushCiAt(hub.app, token, hub.owner, hub.name, head, branches) };
+			return { head, value: Number(await hasPushCiAt(hub.app, token, hub.owner, hub.name, head, branches)) };
 		}, { reuse: true });
 	};
-	const eligible = preview ? await previewPushCi(c, JSON.stringify([ref, branches]), read) : (await read()).eligible;
+	const { value: eligible } = preview ? await previewFeatureCi(c, "push", JSON.stringify([ref, branches]), read) : await read();
 	if (!eligible) throw new PlanError(`This repository’s CI does not report on pushes to the feature and child branches. ${item.replans ? "Add" : "Run as a single item or add"} windlass/** to the workflow’s push branches.`);
 }
 
@@ -1095,6 +1128,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
 export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
+	if (effect.kind === "merge_feature_target") return item.featureUpdate?.key === effect.key && item.joining?.child === item.id && item.joining.key === effect.key;
 	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "issue_comment") return true;
@@ -1108,7 +1142,9 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	const run = item.run;
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
+	if (item.featureUpdate && ["dispatch", "poll_ci"].includes(effect.kind)) return false;
 	switch (effect.kind) {
+		case "update_parent_feature": return effect.key === key && run.step.kind === "ci" && !!item.parent && !item.question;
 		case "sandbox_retry": return effect.key === key && item.wait?.reason === "capacity" && item.wait.retryAt === effect.at && !item.question && run.step.turn === null;
 		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
 		case "fresh_sandbox": return effect.key === key && !item.question && run.step.turn === null;
@@ -1406,6 +1442,33 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			}
 			return true;
 		}
+		case "update_parent_feature": {
+			const parent = itemActor(c, meta.uid, item.parent!.itemId);
+			if (await parent.internalUpdateForChild(item.id, effect.key, effect.target) === "pending") {
+				await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
+				return "deferred";
+			}
+			await take(c, { kind: "parent_update_finished", key: effect.key, at: Date.now() });
+			return true;
+		}
+		case "merge_feature_target": {
+			let result: Extract<Fact, { kind: "feature_updated" }>["result"];
+			try {
+				const hub = await github(c, meta, "write");
+				const head = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "write" } },
+					token => mergeIntoFeature(hub.app, token, hub.owner, hub.name, item.id, effect.target, "Update the feature from " + item.task.base));
+				result = { head };
+			} catch (error) {
+				if (error instanceof GithubError && error.status === 409) {
+					const details = error.conflictFiles.length ? ` in ${error.conflictFiles.join(", ")}` :
+						error.said && !/^merge conflict\.?$/i.test(error.said) ? ` (${error.said})` : "";
+					result = { problem: `${item.task.base} conflicts with the feature branch${details}. Resolve it on GitHub or give up.` };
+				} else if (lostAccess(error)) result = { problem: `GitHub refused the feature update. ${describeError(error)}` };
+				else throw error;
+			}
+			await take(c, { kind: "feature_updated", at: Date.now(), key: effect.key, result });
+			return true;
+		}
 		case "integrate": {
 			const parent = itemActor(c, meta.uid, item.parent!.itemId);
 			const claim = await parent.internalClaimJoin(item.id, effect.key);
@@ -1602,16 +1665,20 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const state = ciState(reading);
 				const elapsed = ci ? Date.now() - ci.since : 0;
 				const timedOut = ["retry", "pending", "not_run"].includes(state) && elapsed >= CI_POLLING.timeoutMs;
-				const noChildCi = item.parent && (state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs;
+				const noChildCi = item.parent && (state === "not_permitted" || state === "incomplete" ||
+					((state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs));
 				const compare = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && /^[0-9a-f]{40}$/.test(effect.head) &&
 					(!pull || pull.headSha === effect.head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
-				const baseAhead = compare ? await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read" } },
-					token => commitsBehindBase(hub.app, token, hub.owner, hub.name, item.task.base, effect.head), { reuse: true }).catch(() => 0) : 0;
-				return { reading, baseAhead, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+				const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read" } },
+					token => compareBranches(hub.app, token, hub.owner, hub.name, item.task.base, effect.head), { reuse: true }).catch(() => null) : null;
+				return { reading, baseAhead: comparison?.behind ?? 0, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
-			const { reading, baseAhead, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, baseAhead: 0, mergeable: null, prHead: null, baseSha: null }));
+			const { reading, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
+			const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
+				? await targetStatus(c, stored).catch(() => null) : null;
+			const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, baseAhead, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, baseAhead, baseTip, featureTarget, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 			return true;
 		}
 		case "poll_pr": {
@@ -1678,6 +1745,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 			return { kind: action.kind, version: action.version, by, at, ...agentsOf(action.agents), ...(bases ? { bases: bases as Record<string, string> } : {}) };
 		}
 		case "run_single": return { kind: action.kind, by, at };
+		case "update_feature":
 		case "start":
 		case "cancel":
 		case "retry":
@@ -1707,6 +1775,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 }
 
 const CONFLICT: Record<ItemAction["kind"], string> = {
+	update_feature: "The feature cannot be updated at this step.",
 	cancel_subtask: "This subtask is no longer running.",
 	edit_plan: "That plan has changed. Read the latest version.", approve_plan: "Review the latest plan and answer its questions first.", run_single: "This item cannot switch to single mode.",
 	start: "Only a draft can be started.",
@@ -1729,7 +1798,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT, issue_checked_at INTEGER NOT NULL DEFAULT 0)");
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
-			await db.execute("CREATE TABLE IF NOT EXISTS push_ci_preview(id INTEGER PRIMARY KEY CHECK(id=1), inputs TEXT NOT NULL, expires INTEGER NOT NULL, head TEXT, eligible INTEGER)");
+			await db.execute(FEATURE_CI_CACHE);
 			await db.execute(CHECKS_TABLE);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
@@ -1810,8 +1879,22 @@ export const workItem = actor({
 	actions: {
 		// --- called by `user` only ---------------------------------------------------------------
 
-		// The durable grant survives a restart between GitHub's ref update and its receipt. A replay
-		// either completes that same integration or reads its result before a sibling can claim it.
+		internalFeatureTarget: async (c): Promise<TargetStatus | null> => {
+			requireServiceFor(c, "call");
+			const stored = c.vars.stored;
+			return stored && !stored.item.parent ? targetStatus(c, stored) : null;
+		},
+		internalUpdateForChild: async (c, child: string, request: string, target: string): Promise<"pending" | "finished"> => {
+			requireServiceFor(c, "call");
+			await c.vars.writing;
+			const item = c.vars.stored!.item;
+			const job = item.jobs?.find(j => j.id === child);
+			if (!job || ENDED.has(item.state)) return "finished";
+			if (item.featureUpdate || item.question?.kind === "feature_update") return "pending";
+			if (job.featureUpdateReceipt === request) return "finished";
+			return await take(c, { kind: "update_feature", at: Date.now(), by: "person:" + c.key[0], child, request, target }) ? "pending" : "finished";
+		},
+		// The durable grant survives a restart between GitHub’s ref update and its receipt.
 		internalClaimJoin: async (c, child: string, key: string): Promise<"busy" | "claimed" | JoinResult> => {
 			requireServiceFor(c, "call");
 			await take(c, { kind: "claim_join", at: Date.now(), child, key });
@@ -1819,7 +1902,7 @@ export const workItem = actor({
 			const item = c.vars.stored!.item, job = item.jobs?.find(j => j.id === child);
 			if (job?.join?.key === key) return job.join;
 			if (item.joining?.child === child && item.joining.key === key) return "claimed";
-			if (job && activeJob(job) && !job.cancelRequested && item.joining) return "busy";
+			if (job && activeJob(job) && !job.cancelRequested && (item.joining || item.question?.kind === "feature_update")) return "busy";
 			return { key, reason: "The feature stopped before this subtask integrated.", conflict: false };
 		},
 		internalFinishJoin: async (c, child: string, result: JoinResult) => {
@@ -1862,13 +1945,13 @@ export const workItem = actor({
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.find(j => j.id === id);
-			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || s.item.question || ENDED.has(s.item.state)) return null;
+			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && s.item.question.kind !== "feature_update") || ENDED.has(s.item.state)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
 			// A cross-repo feature's child is made in its subtask's repository, from that repository's feature branch.
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
-			return { job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+			return { paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
 				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
@@ -1939,6 +2022,22 @@ export const workItem = actor({
 			const fact = factOf(input?.action, String(input?.by), Date.now());
 			let changed: boolean;
 			try {
+				if (fact.kind === "update_feature" || (fact.kind === "answer" && fact.choice === "update_feature")) {
+					let branch: string | undefined;
+					if (fact.kind === "update_feature" && canUpdateFeature(stored.item)) branch = stored.item.task.base;
+					else if (fact.kind === "answer" && stored.item.question?.id === fact.question) {
+						if (stored.item.question.kind === "feature_update") branch = stored.item.task.base;
+						else if (featureCiQuestion(stored.item)) {
+							const target = await targetStatus(c, stored);
+							if (target?.available && target.value > 0) branch = target.branch;
+						}
+					}
+					if (branch) {
+						const hub = await github(c, stored.meta);
+						fact.target = await hub.app.withToken(hub.installationId, { repositoryId: stored.meta.repository.id, permissions: { metadata: "read", contents: "read" } },
+							token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true });
+					}
+				}
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);

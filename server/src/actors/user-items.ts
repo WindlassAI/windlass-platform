@@ -926,7 +926,7 @@ export const itemActions = {
 			const parentActor = itemActor(c, uid, input.parent);
 			const request = await parentActor.internalChildRequest(input.child);
 			let existing = c.vars.items.items.get(input.child);
-			if (!request && !existing) return null;
+			if ((!request || request.paused) && !existing) return null;
 			if (!existing && request) {
 				if ((input.cancel || request.job.cancelRequested) && !c.vars.sessions.has(itemSessionId(input.child))) return null;
 				const session = c.vars.sessions.get(request.sessionId);
@@ -968,7 +968,7 @@ export const itemActions = {
 			const active = await parentActor.internalChildRequest(input.child);
 			if (input.cancel || !active || active.job.cancelRequested) {
 				if (!ended(view)) return actor.internalAct({ action: { kind: "cancel" }, by: "platform" });
-			} else if (view.state === "draft") return actor.internalAct({ action: { kind: "start" }, by: "platform" });
+			} else if (!active.paused && view.state === "draft") return actor.internalAct({ action: { kind: "start" }, by: "platform" });
 			return view;
 		});
 	},

@@ -180,7 +180,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const receipt = (fact.kind === "turn_ended" || fact.kind === "review_ended") && item.state === "cancelled"
 		&& (item.parent || item.mode === "orchestrate") && item.run?.step.turn && fact.key === currentKey(item);
 	if (item.claimedSecret && fact.kind !== "settle_secret") return unchanged;
-	if (FINAL.has(item.state) && fact.kind !== "child_notice" && fact.kind !== "finish_join" && !receipt) return unchanged;
+	if (FINAL.has(item.state) && fact.kind !== "child_notice" && fact.kind !== "finish_join" && fact.kind !== "feature_updated" && !receipt) return unchanged;
 	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
 	if (receipt) spendTurn(change, fact.spend);
 	else if (!apply(change, fact)) return unchanged;
@@ -278,6 +278,37 @@ function apply(c: Change, fact: Fact): boolean {
 			}
 			return true;
 		}
+		case "update_feature":
+			return requestFeatureUpdate(c, fact.target, fact.request, fact.child);
+		case "feature_updated": {
+			const update = item.featureUpdate;
+			if (!update || update.key !== fact.key || item.joining?.child !== item.id || item.joining.key !== fact.key) return false;
+			delete item.featureUpdate;
+			delete item.joining;
+			const job = update.child && item.jobs?.find(j => j.id === update.child);
+			if (job) job.featureUpdateReceipt = update.key;
+			if ("head" in fact.result) {
+				item.head = fact.result.head;
+				c.say(`Updated the feature from ${item.task.base} to ${shortSha(item.head)}.`);
+			}
+			if (FINAL.has(item.state) || item.state === "failed" || item.machineRemoved) return true;
+			if ("problem" in fact.result) {
+				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null);
+			} else if (c.run.step.kind === "ci") {
+				c.run.ci = ciProgress(fact.result.head, c.at, null, c.run.ci?.webhooks ?? false);
+				readUpdatedCi(c);
+				pendingCheck(c, fact.result.head, `Waiting for CI on ${shortSha(fact.result.head)}`);
+			} else {
+				c.state("waiting", { reason: "children", sentence: "Continuing subtasks on the updated feature branch.", retryAt: null });
+				for (const job of item.jobs?.filter(activeJob) ?? []) dispatchJob(c, job);
+				nextChild(c);
+			}
+			return true;
+		}
+		case "parent_update_finished":
+			if (!item.parent || fact.key !== c.key || c.run.step.kind !== "ci" || item.question || !c.run.ci) return false;
+			readUpdatedCi(c);
+			return true;
 		case "claim_join": {
 			const job = item.jobs?.find(j => j.id === fact.child);
 			if (item.joining || !job || job.join?.key === fact.key || !activeJob(job) || job.cancelRequested || item.question || item.state !== "waiting" || item.run?.step.kind !== "subtasks") return false;
@@ -290,6 +321,7 @@ function apply(c: Change, fact: Fact): boolean {
 			delete item.joining;
 			job.join = fact.result;
 			if ("head" in fact.result) integratedTip(item, job, fact.result.head);
+			if (item.featureUpdate) grantFeatureUpdate(c);
 			return true;
 		}
 		case "cancel_subtask": {
@@ -370,6 +402,7 @@ function apply(c: Change, fact: Fact): boolean {
 			return true;
 		case "machine_removed":
 			if (item.place.kind !== "machine" || item.machineRemoved) return false;
+			if (item.joining?.child !== item.id) delete item.featureUpdate;
 			// An in-flight ref write needs no machine. Let its receipt release the parent's durable grant.
 			if (item.parent && item.run?.step.kind === "subtasks" && !item.question) {
 				if (item.cancelAfterIntegration) return false;
@@ -415,6 +448,7 @@ function apply(c: Change, fact: Fact): boolean {
 				c.say("Cancellation requested while confirming the feature branch update.");
 				return true;
 			}
+			if (item.joining?.child !== item.id) delete item.featureUpdate;
 			cancel(c);
 			return true;
 		case "claim_secret": {
@@ -461,9 +495,9 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
-	if (run === null) return false;
+	if (run === null || c.item.featureUpdate) return false;
 	const step = run.step;
 	const key = c.key;
 	// A withdrawal can race a turn's receipt or a push already on its way to GitHub.
@@ -695,6 +729,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 		case "ci_read":
 			if ((step.kind !== "ci" && step.kind !== "handoff") || fact.key !== key || fact.head !== run.ci?.head) return false;
 			ciRead(c, fact);
+			if (fact.featureTarget && c.item.question && featureCiQuestion(c.item))
+				c.item.question.choices.splice(-1, 0, featureUpdateChoice(fact.featureTarget));
 			return true;
 		case "pr_read":
 			if (fact.key !== prPollKey(c.item)) return false;
@@ -1415,9 +1451,10 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return afterCi(c, ci);
 	}
 
+	ci.baseTip = fact.baseTip;
 	const baseAhead = fact.baseAhead ?? 0;
 	const canUpdate = baseAhead > 0 && isSha(ci.head) && ci.head === c.item.head && c.item.mode !== "orchestrate" &&
-		!failuresOf(run).includes(`conflict:${c.item.task.base}`);
+		(!failuresOf(run).includes(`conflict:${c.item.task.base}`) || newerPartBase(c.item, ci));
 	const question = (sentence: string, plan: TurnPlan | null = null) => {
 		const choices = plan ? [{ id: "again" as const, label: "Have the agent fix CI" }] : [choice("wait")];
 		if (canUpdate) sentence += ` The base branch ${c.item.task.base} is ${baseAhead} commit${baseAhead === 1 ? "" : "s"} ahead of this commit.`;
@@ -1450,15 +1487,17 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		}
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
+			if (canUpdate && c.item.parent) return question("CI could not be read on this subtask.");
 			return afterCi(c, ci);
 		case "incomplete":
 			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub cut its list of CI's checks short before any could be read." : "CI has more checks than the platform reads; none of those it read failed.");
+			if (canUpdate && c.item.parent) return question("CI could not be read in full on this subtask.");
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
 			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, reading), charge: "ci", fingerprint: ciFingerprint(reading), ...marked([untrustedWords.ci(ci.head)]) };
 			const sentence = ciSentence(verdictCi(ci));
-			if (canUpdate) return question(sentence, plan);
+			if (canUpdate || fact.featureTarget) return question(sentence, plan);
 			c.say(sentence);
 			return nextTurn(c, plan);
 		}
@@ -2005,6 +2044,49 @@ function stoppedChild(c: Change, job: FeatureJob) {
 	}
 }
 
+export function featureCiQuestion(item: FactoryItem): boolean {
+	return item.run?.step.kind === "ci" && (item.question?.kind === "ci_timeout" || item.question?.kind === "rounds");
+}
+
+export const featureUpdateChoice = (target: string) => ({ id: "update_feature" as const, label: `Update the feature from ${target}` });
+
+/** A single feature ref can move during part integration or before whole-feature CI is settled. */
+export function canUpdateFeature(item: FactoryItem): boolean {
+	if (item.mode !== "orchestrate" || crossRepo(item) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.machineRemoved) return false;
+	return (item.run?.step.kind === "subtasks" || item.run?.step.kind === "ci") &&
+		(!item.question || item.question.kind === "feature_update" || featureCiQuestion(item));
+}
+
+function grantFeatureUpdate(c: Change) {
+	const { key, target } = c.item.featureUpdate!;
+	c.item.joining = { child: c.item.id, key };
+	c.effects.push({ kind: "merge_feature_target", key, target });
+}
+
+function requestFeatureUpdate(c: Change, target?: string, request?: string, child?: string): boolean {
+	const { item } = c;
+	if (!target || !isSha(target) || !canUpdateFeature(item)) return false;
+	if (child && !item.jobs?.some(j => j.id === child && activeJob(j) && !j.cancelRequested)) return false;
+	item.question = null;
+	// A CI read already in flight must not replace a later merge-conflict question.
+	if (c.run.step.kind === "ci") c.run.step.attempt++;
+	item.featureUpdate = { key: request ?? `${item.id}:update:${item.revision + 1}`, target, child };
+	c.state("waiting", { reason: c.run.step.kind === "ci" ? "ci" : "children", sentence: `Updating the feature from ${item.task.base}.`, retryAt: null });
+	if (!item.joining) grantFeatureUpdate(c);
+	return true;
+}
+
+function newerPartBase(item: FactoryItem, ci: CiProgress) {
+	return !!(item.parent && item.run?.updatedBaseTip && ci.baseTip && ci.baseTip !== item.run.updatedBaseTip);
+}
+
+function readUpdatedCi(c: Change) {
+	const head = c.run.ci!.head;
+	c.enter("ci");
+	c.state("waiting", { reason: "ci", sentence: `Checking CI on ${shortSha(head)} after the feature update.`, retryAt: c.at });
+	c.effects.push({ kind: "poll_ci", key: c.key, head, at: c.at });
+}
+
 export const activeJob = (job: FeatureJob) => !["done", "failed", "cancelled"].includes(job.state);
 
 function integratedTip(item: FactoryItem, job: FeatureJob, head: string) {
@@ -2158,6 +2240,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	hand_over: "Hand it over as it is",
 	run_checks: "Run the checks again",
 	ci_alone: "Integrate on CI alone",
+	update_feature: "Update the feature",
 	update_from_base: "Update from the base branch and run CI again",
 	give_up: "Give up",
 	add_secret: "Add it and continue",
@@ -2261,7 +2344,8 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const question = item.question;
 	if (question === null || question.id !== fact.question) return false;
 	const picked = question.choices.find((option) => option.id === fact.choice)
-		?? (fact.choice === "run_single" ? singlePlanAlternative(item) : undefined);
+		?? (fact.choice === "run_single" ? singlePlanAlternative(item) : undefined)
+		?? (fact.choice === "update_feature" && fact.target && featureCiQuestion(item) ? featureUpdateChoice(item.childBase ?? item.task.base) : undefined);
 	if (picked === undefined) return false;
 	if (question.kind === "secret_needed" && fact.note !== undefined) return false;
 	const note = fact.note?.trim() || null;
@@ -2301,13 +2385,22 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			nextTurn(c, plan);
 			break;
 		}
+		case "update_feature":
+			if (!fact.target || !isSha(fact.target)) return false;
+			if (!item.parent) return requestFeatureUpdate(c, fact.target);
+			if (run.step.kind !== "ci" || !run.ci) return false;
+			c.enter("ci");
+			c.state("waiting", { reason: "ci", sentence: "Waiting for the feature branch to update.", retryAt: null });
+			c.effects.push({ kind: "update_parent_feature", key: c.key, target: fact.target });
+			break;
 		case "update_from_base": {
 			const head = run.ci?.head;
 			if (!head || !isSha(head) || head !== item.head || run.ci?.moved || item.mode === "orchestrate") return false;
 			const fingerprint = `conflict:${item.task.base}`;
 			const previous = failuresOf(run);
-			if (previous.includes(fingerprint)) return false;
-			run.failures = [...previous, fingerprint];
+			if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!)) return false;
+			run.updatedBaseTip = run.ci?.baseTip;
+			if (!previous.includes(fingerprint)) run.failures = [...previous, fingerprint];
 			run.lastFailure = fingerprint;
 			run.rounds.conflict++;
 			run.updateFromBase = { head, at: c.at };

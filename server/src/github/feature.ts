@@ -23,11 +23,16 @@ export async function refHead(app: GithubApp, token: string, owner: string, repo
 }
 /** Commits reachable from the base branch but absent from this item's exact pushed head. */
 export async function commitsBehindBase(app: GithubApp, token: string, owner: string, repo: string, base: string, head: string): Promise<number> {
-	const path = `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${sha(head)}`;
+	return (await compareBranches(app, token, owner, repo, base, sha(head))).behind;
+}
+
+/** Read both live refs in one comparison. The base SHA identifies which tip a part was offered. */
+export async function compareBranches(app: GithubApp, token: string, owner: string, repo: string, base: string, head: string) {
+	const path = `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
 	const { body } = await app.call({ path, query: { per_page: 1 }, auth: { bearer: token }, what: "compare the item with its base branch" });
 	const behind = obj(body).behind_by;
 	if (typeof behind !== "number" || !Number.isSafeInteger(behind) || behind < 0) throw new Error("GitHub did not report how far the base branch is ahead.");
-	return behind;
+	return { behind, base: sha(obj(obj(body).base_commit).sha) };
 }
 
 export async function advanceFeatureRef(app: GithubApp, token: string, owner: string, repo: string, id: string, base: string, head: string) {
@@ -42,8 +47,14 @@ export async function advanceFeatureRef(app: GithubApp, token: string, owner: st
 	} catch (error) {
 		if (!(error instanceof GithubError && [409, 422].includes(error.status) && /fast.forward/i.test(error.said))) throw error;
 	}
+	return mergeIntoFeature(app, token, owner, repo, id, head, "Integrate subtask " + head.slice(0, 10));
+}
+
+/** Both writers hold the feature actor’s join grant until this exact commit has a receipt. */
+export async function mergeIntoFeature(app: GithubApp, token: string, owner: string, repo: string, id: string, head: string, message: string) {
+	const branch = featureBranch(id), auth = { bearer: token };
 	const merged = await app.call({ method: "POST", path: "/repos/" + owner + "/" + repo + "/merges", auth,
-		body: { base: branch, head, commit_message: "Integrate subtask " + head.slice(0, 10) }, what: "merge the verified subtask" });
+		body: { base: branch, head: sha(head), commit_message: message }, what: "merge into the feature branch" });
 	// A retry after GitHub accepted the merge but the parent did not record its receipt.
 	return merged.status === 204 ? refHead(app, token, owner, repo, branch) : sha(obj(merged.body).sha);
 }

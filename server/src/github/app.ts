@@ -84,6 +84,7 @@ export class GithubError extends Error {
 		readonly said: string,
 		what: string,
 		readonly headers = new Headers(),
+		readonly conflictFiles: string[] = [],
 	) {
 		super(`${what}: ${status === 0 ? said : `GitHub answered ${status}${said ? ` (${said})` : ""}`}`);
 		this.name = "GithubError";
@@ -295,7 +296,14 @@ export class GithubApp {
 			const said = [text(fields.message) || text(fields.error_description) || text(fields.error), ...errors].filter((part) => part !== "").join(": ");
 			const known = [...(call.secrets ?? [])];
 			if (call.auth) known.push("bearer" in call.auth ? call.auth.bearer : call.auth.basic);
-			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers);
+			// The merges endpoint usually returns just a message. Some hosts also identify conflicting paths.
+			const conflicts = response.status === 409 && call.path.endsWith("/merges") ? [
+				...(Array.isArray(fields.conflicts) ? fields.conflicts : []),
+				...(Array.isArray(fields.errors) ? fields.errors.filter(entry => record(entry).path || record(entry).filename) : []),
+			] : [];
+			const files = conflicts.map(entry => text(record(entry).path) || text(record(entry).filename) || text(entry)).filter(Boolean)
+				.slice(0, 12).map(path => redact(path.replace(/\s+/g, " ").slice(0, 200), known));
+			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers, files);
 		}
 		return { status: response.status, body, link: response.headers.get("link") ?? "", next: /rel="next"/.test(response.headers.get("link") ?? "") };
 	}
