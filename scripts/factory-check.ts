@@ -1743,16 +1743,31 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	child.parent = { itemId: "i_feature", key: "fix", title: "Feature" };
 	child.task.base = "windlass/feature-i_feature";
 	const first = walk(child, pushedRun(H(1)).map(f => f.kind === "published" ? { ...f, pr: null } : f)).item;
-	const cancelled = { kind: "read" as const, head: H(1), logs: [], truncated: false,
-		runs: [{ name: "build", app: "ci", state: "cancelled" as const, conclusion: "cancelled", url: "", summary: "", jobId: null }] };
-	const poll = ciFact(cancelled, H(1), null);
-	const rerun = effect(walk(first, [poll]).last, "rerun_ci")!;
-	const retried = walk(first, [poll, { ...rerun, kind: "ci_rerun_started" }]).item;
+	const stoppedJob = { name: "build", app: "github-actions", state: "cancelled" as const, conclusion: "cancelled", url: "", summary: "", jobId: "101" };
+	const infraJob = { ...stoppedJob, retryRunId: "900" };
+	const cancelledPoll = (item: FactoryItem, job: typeof stoppedJob & { retryRunId?: string }, baseAhead: number) => ({
+		...ciFact({ kind: "read", head: H(1), logs: [], truncated: false, runs: [job] }, H(1), item.parent ? null : H(1)), baseAhead,
+	});
 	const choices = (item: FactoryItem) => item.question?.choices.map(option => option.id) ?? [];
-	const unchanged = walk(retried, [{ ...poll, baseAhead: 0 }]).item;
+	function rerunOnce(item: FactoryItem) {
+		const poll = cancelledPoll(item, infraJob, 1);
+		const initial = walk(item, [poll]);
+		const rerun = effect(initial.last, "rerun_ci");
+		assert.ok(rerun);
+		assert.deepEqual(rerun.jobs, [{ name: "build", jobId: "101", retryRunId: "900" }]);
+		const started = walk(initial.item, [{ ...rerun, kind: "ci_rerun_started" },
+			{ kind: "ci_rerun_result", head: H(1), accepted: ["101"], said: "Rerun requested." }]).item;
+		const waiting = walk(started, [poll]);
+		assert.ok(effect(waiting.last, "poll_ci"));
+		assert.equal(waiting.item.question, null);
+		return waiting.item;
+	}
+	const retried = rerunOnce(first);
+	const replacement = { ...infraJob, jobId: "102" };
+	const unchanged = walk(retried, [cancelledPoll(first, replacement, 0)]).item;
 	assert.deepEqual(choices(unchanged), ["wait", "give_up"]);
 	assert.equal(walk(unchanged, [{ kind: "answer", choice: "update_from_base" }]).item, unchanged);
-	const asked = walk(retried, [{ ...poll, baseAhead: 2 }]).item;
+	const asked = walk(retried, [cancelledPoll(first, replacement, 2)]).item;
 	assert.deepEqual(choices(asked), ["wait", "update_from_base", "give_up"]);
 	assert.match(asked.question!.text, /windlass\/feature-i_feature is 2 commits ahead/);
 	const update = walk(asked, [{ kind: "answer", choice: "update_from_base" }]);
@@ -1775,8 +1790,16 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		assert.match(q.question!.text, /main is 1 commit ahead/);
 		assert.ok(choices(q).includes("update_from_base") && choices(q).includes("hand_over"));
 	}
-	const cancelledSingle = walk(single, [poll, { ...rerun, kind: "ci_rerun_started" }, { ...poll, baseAhead: 1 }]);
-	assert.ok(choices(cancelledSingle.item).includes("update_from_base"));
+	for (const item of [first, single]) {
+		const stopped = walk(item, [cancelledPoll(item, stoppedJob, 1)]);
+		assert.deepEqual(stopped.last.effects.map(e => e.kind), ["ask"]);
+		assert.match(stopped.item.question!.text, /stopped while running/);
+		assert.deepEqual(choices(stopped.item), ["wait", "update_from_base", ...(item.parent ? [] : ["hand_over"]), "give_up"]);
+		const wait = walk(stopped.item, [{ kind: "answer", choice: "wait" }]);
+		assert.ok(effect(wait.last, "poll_ci"));
+	}
+	const cancelledSingle = walk(rerunOnce(single), [cancelledPoll(single, replacement, 1)]);
+	assert.deepEqual(choices(cancelledSingle.item), ["wait", "update_from_base", "hand_over", "give_up"]);
 	const updatedSingle = walk(cancelledSingle.item, [{ kind: "answer", choice: "update_from_base" },
 		{ kind: "published", head: H(2), pr: single.pr, openItems: 1, webhooks: false }, ciFact(passedCi, H(2))]);
 	assert.equal(effect(updatedSingle.last, "handoff")?.verdict.head, H(2));
@@ -2619,8 +2642,8 @@ try {
 		const denied = await rerunCancelled(app, target, retry.jobs);
 		const receipt = (result: typeof denied) => ({ kind: "ci_rerun_result", head: HEAD, ...result });
 		const refused = walk(claimed.item, [receipt(denied)]);
-		const unavailable = await poll(refused.item);
-		expect("read-only installation explains the skipped rerun and hands over cancelled checks", !denied.accepted.length && refused.last.events.some(e => e.said.includes("Actions: write")) && effect(unavailable.last, "handoff")?.verdict.ci.state === "cancelled");
+		const unavailable = walk(refused.item, [{ ...ciFact(await readCi(app, target), HEAD), baseAhead: 1 }]);
+		expect("read-only installation explains the skipped rerun and offers a base update", !denied.accepted.length && refused.last.events.some(e => e.said.includes("Actions: write")) && !!unavailable.item.question?.choices.some(choice => choice.id === "update_from_base") && !effect(unavailable.last, "rerun_ci"));
 
 		// The stand-in supplies the installation token and job records. Capture only the workflow POST.
 		const posts: string[] = [];
@@ -2663,9 +2686,11 @@ try {
 		ciData.runs = [linux, skip, ...cancelled, ...names.map((name, i) => checkRun(5500 + i, name, "cancelled"))];
 		names.forEach((_, i) => repo.jobs.set(String(5500 + i), details));
 		const twice = await poll(waiting);
-		const handoff = effect(twice.last, "handoff");
+		const handOverCancelled = async (item: FactoryItem) => poll(walk(item, [{ kind: "answer", choice: "hand_over" }]).item);
+		const handed = await handOverCancelled(twice.item);
+		const handoff = effect(handed.last, "handoff");
 		const sentence = `CI did not finish: 3 checks were cancelled (${names.join(", ")}); nothing failed.`;
-		expect("cancelled twice names the checks in the handoff and verification without another rerun or fix turn", handoff?.verdict.result === "unverified" && handoff.words.includes(sentence) && !handoff.words.includes("CI passed") && effect(twice.last, "verified_check")?.conclusion === "action_required" && !effect(twice.last, "rerun_ci") && !effect(twice.last, "deliver") && twice.item.run?.rounds.ci === 0);
+		expect("cancelled twice names the checks in the handoff and verification without another rerun or fix turn", twice.item.question?.text === sentence && handoff?.verdict.result === "unverified" && handoff.words.includes(sentence) && !handoff.words.includes("CI passed") && effect(handed.last, "verified_check")?.conclusion === "action_required" && !effect(twice.last, "rerun_ci") && !effect(twice.last, "deliver") && twice.item.run?.rounds.ci === 0);
 		ciData.runs = [linux, checkRun(5503, "macOS tests", "stale")];
 		expect("a stale check prevents a pass", ciState(await readCi(app, target)) === "cancelled");
 		const started = { ...details, runner_name: "runner", runner_id: 1, steps: [{ status: "completed" }], started_at: "2026-01-01T00:00:00Z" };
@@ -2689,8 +2714,9 @@ try {
 			expect("only a job reaching its configured timeout is eligible, including the exact boundary", effect(timed.last, "rerun_ci")?.jobs.map(j => j.name).join() === "timeout");
 			ciData.runs = ciData.runs.filter((_, i) => i !== 2);
 			const stopped = await poll(item);
-			const words = effect(stopped.last, "handoff")?.verdict.said.ci;
-			expect("mid-run, unknown timeout and stale cancellations hand over without requesting a rerun", !effect(stopped.last, "rerun_ci") && words === "CI did not finish: 3 checks were cancelled (manual, unknown timeout, stale); not rerun because they were stopped while running.");
+			const words = "CI did not finish: 3 checks were cancelled (manual, unknown timeout, stale); not rerun because they were stopped while running.";
+			const handed = await handOverCancelled(stopped.item);
+			expect("mid-run, unknown timeout and stale cancellations ask before handover", !effect(stopped.last, "rerun_ci") && stopped.item.question?.text === words && effect(handed.last, "handoff")?.verdict.said.ci === words);
 		} finally { globalThis.fetch = original; }
 	}
 
