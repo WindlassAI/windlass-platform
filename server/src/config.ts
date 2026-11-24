@@ -220,6 +220,22 @@
  *   WLP_GITHUB_URL             GitHub itself, where users authorize and git clones from (default
  *                              https://github.com)
  *
+ * Linear (read by `linearConfig` below). A Linear OAuth app of this deployment's own lets the owner connect
+ * a Linear workspace, map a team to a repository, and have an issue that gains the `windlass` label or
+ * is assigned to the app's user filed as a work item. One way only: nothing is written back to Linear.
+ * With none of the three first variables set the feature is off; with only some set it is off too, and
+ * the server says which are missing when it starts. They are the same on every server.
+ *
+ *   WLP_LINEAR_CLIENT_ID       the OAuth app's client id: names the app when the owner authorizes it
+ *   WLP_LINEAR_CLIENT_SECRET   its client secret. A secret: sent to Linear with an authorization code and
+ *                              with nothing else; never logged, never in an error or an answer
+ *   WLP_LINEAR_WEBHOOK_SECRET  the app's webhook signing secret (at least 32 characters, `lin_wh_...`).
+ *                              A secret: the key every delivery's `Linear-Signature` is checked with
+ *   WLP_LINEAR_REDIRECT_URL    the app's callback URL as registered at Linear (default
+ *                              <WLP_PUBLIC_URL, or http://localhost:<WLP_HTTP_PORT>>/linear/callback)
+ *   WLP_LINEAR_API_URL         Linear's API (default https://api.linear.app); the checks point it at a stand-in
+ *   WLP_LINEAR_URL             Linear itself, where the owner authorizes (default https://linear.app)
+ *
  * Machines of the users' own (Plans/2026-11-19 "bring your own computer"). A user pairs a Linux
  * machine with Docker, and the runner on it dials out to the platform and runs the sandboxes of the
  * sessions launched there. The same on every server.
@@ -560,6 +576,66 @@ export function githubPrivateKey(env: NodeJS.ProcessEnv = process.env): string |
 	if (raw.includes("-----BEGIN")) return `${raw.replace(/\\n/g, "\n").trim()}\n`;
 	const decoded = Buffer.from(raw, "base64").toString("utf8");
 	return decoded.includes("-----BEGIN") ? `${decoded.trim()}\n` : raw;
+}
+
+/** What `linearConfig` found: the Linear app's public settings when all of it is configured. */
+export interface LinearConfig {
+	/** Null when the feature is off. Holds no secret: the client secret is read where it is used. */
+	app: { clientId: string; apiUrl: string; webUrl: string; redirectUrl: string } | null;
+	/** The signing secret, never enumerable, so a dump or a JSON answer of this object holds none. Null when the feature is off. */
+	webhook: { secrets: string[] } | null;
+	/** The required variables that are not set while others are: the names, never a value. Empty when all or none are set. */
+	missing: string[];
+}
+
+const LINEAR_REQUIRED = ["WLP_LINEAR_CLIENT_ID", "WLP_LINEAR_CLIENT_SECRET", "WLP_LINEAR_WEBHOOK_SECRET"];
+
+/**
+ * The Linear app of this deployment, read when it is asked for. Missing configuration leaves the
+ * integration off (`app` null). Throws for a value that cannot be what it should be; the message names
+ * the variable and never repeats a secret.
+ */
+export function linearConfig(env: NodeJS.ProcessEnv = process.env): LinearConfig {
+	const read = (name: string) => (env[name] ?? "").trim();
+	const missing = LINEAR_REQUIRED.filter((name) => read(name) === "");
+	if (missing.length > 0) return { app: null, webhook: null, missing: missing.length === LINEAR_REQUIRED.length ? [] : missing };
+	const clientId = read("WLP_LINEAR_CLIENT_ID");
+	if (!/^[A-Za-z0-9._-]{1,100}$/.test(clientId)) throw new Error("WLP_LINEAR_CLIENT_ID is not a client id");
+	const secret = read("WLP_LINEAR_WEBHOOK_SECRET");
+	if ([...secret].length < 32) throw new Error("WLP_LINEAR_WEBHOOK_SECRET must be at least 32 characters long");
+	const address = (name: string, fallback: string, path = false) => {
+		const raw = read(name) || fallback;
+		let url: URL;
+		try {
+			url = new URL(raw);
+		} catch {
+			throw new Error(`${name} must be a URL`);
+		}
+		if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+			throw new Error(`${name} must be an http or https URL with no user name, query or fragment in it`);
+		}
+		return path ? url.toString() : url.toString().replace(/\/+$/, "");
+	};
+	const publicRaw = read("WLP_PUBLIC_URL");
+	const origin = publicRaw === "" ? `http://localhost:${config.httpPort}` : address("WLP_PUBLIC_URL", publicRaw);
+	const webhook = { secrets: [secret] };
+	Object.defineProperty(webhook, "secrets", { enumerable: false });
+	return {
+		app: {
+			clientId,
+			apiUrl: address("WLP_LINEAR_API_URL", "https://api.linear.app"),
+			webUrl: address("WLP_LINEAR_URL", "https://linear.app"),
+			redirectUrl: address("WLP_LINEAR_REDIRECT_URL", `${origin}/linear/callback`, true),
+		},
+		webhook,
+		missing: [],
+	};
+}
+
+/** The Linear app's client secret, or null. Like the GitHub one it is not part of any configuration object. */
+export function linearClientSecret(env: NodeJS.ProcessEnv = process.env): string | null {
+	const secret = (env.WLP_LINEAR_CLIENT_SECRET ?? "").trim();
+	return secret === "" ? null : secret;
 }
 
 /** A day: the longest a Rivet Cloud cluster issues a token for. */
