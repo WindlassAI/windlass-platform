@@ -431,6 +431,7 @@ export type Fact =
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
+	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
 	| { kind: "session_deleted"; at: number; key: string }
@@ -526,6 +527,7 @@ export type VerifiedCheckEffect = {
 
 export type Effect =
 	| VerifiedCheckEffect
+	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }

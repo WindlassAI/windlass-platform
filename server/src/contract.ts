@@ -1752,7 +1752,7 @@ export interface ItemStep {
 	checks: number;
 	/** How many times this step's turn was cut off, by a deploy or a restart (at most 3). */
 	interruptions: number;
-	/** Turns of this step whose sandbox could not be prepared (`sandboxFailed`) since the last that could: one is tried again, the next asks. */
+	/** Turns of this step whose sandbox could not be prepared (`sandboxFailed`) since the last that could. */
 	sandboxFailures?: number;
 	/** Consecutive automatic retries after a provider refusal on this step. */
 	providerRetries?: number;
@@ -1863,6 +1863,8 @@ export interface ItemQuestion {
 	/** Unique within the item: what `ItemAction` "answer" names. */
 	id: string;
 	kind: QuestionKind;
+	/** Current repository requirement blocking approval of this plan. */
+	approvalBlock?: string;
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
 	askedAt: number;
