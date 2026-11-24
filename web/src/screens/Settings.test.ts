@@ -149,11 +149,11 @@ describe("Linear in Settings", () => {
 		const client = createMockClient({ pace: 0 });
 		const first = await open(client);
 		expect(section(first.host).textContent).toContain("writes nothing back to Linear");
-		expect(section(first.host).textContent).toContain("Connect Linear");
+		expect(section(first.host).textContent).toContain("Connect Linear…");
 		// Connecting: the mock sends the browser back with #linear=connected.
 		const assign = vi.fn();
 		vi.stubGlobal("location", { assign, origin: "http://localhost", pathname: "/settings", search: "", hash: "" });
-		await press(section(first.host), "Connect Linear");
+		await press(section(first.host), "Connect Linear…");
 		await first.settle();
 		vi.unstubAllGlobals();
 		expect(assign).toHaveBeenCalledWith("http://localhost/settings#linear=connected");
@@ -164,19 +164,19 @@ describe("Linear in Settings", () => {
 		expect(section(second.host).querySelector("[data-testid='linear-workspace']")?.textContent).toContain("Connected to Acme as Ada Lovelace");
 		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");
 		const [team, repository] = Array.from(section(second.host).querySelectorAll("select"));
-		const save = Array.from(section(second.host).querySelectorAll("button")).find((one) => one.textContent === "Save mapping") as HTMLButtonElement;
+		const save = Array.from(section(second.host).querySelectorAll("button")).find((one) => one.textContent === "Map team") as HTMLButtonElement;
 		expect(save.disabled).toBe(true);
 		await choose(team as HTMLSelectElement, "team-eng");
 		await choose(repository as HTMLSelectElement, "7101");
-		await press(section(second.host), "Save mapping");
+		await press(section(second.host), "Map team");
 		await second.settle();
-		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("files to acme/harbor");
+		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("→ acme/harbor");
 		expect(section(second.host).querySelector("[data-testid='linear-team-DES']")?.textContent).toContain("not mapped");
 		second.close();
 
 		// A reload: a new client, the same account.
 		const third = await open(createMockClient({ pace: 0 }));
-		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("files to acme/harbor");
+		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("→ acme/harbor");
 		await press(section(third.host), "Remove the mapping of Engineering");
 		await third.settle();
 		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");
