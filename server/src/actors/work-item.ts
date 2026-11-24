@@ -1901,7 +1901,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await factsOf(c, meta);
 			const hub = await github(c, meta);
 			const pull = await hub.pull(effect.pr);
-			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
+			const ci = item.run?.ci;
+			const pushCi = ci && item.state === "review" && item.mode !== "orchestrate" && !item.machineRemoved &&
+				(pull.state === "open" || pull.state === "draft") && pull.headSha && pull.headSha !== ci.head &&
+				(pull.headSha !== ci.moved || (ci.reviewPush?.head === pull.headSha && !ci.reviewPush.asked))
+				? await readCi(hub.app, { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: pull.headSha })
+				: undefined;
+			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, pushCi, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
 			if ((pull.state === "open" || pull.state === "draft") && item.state === "review") await reconcileFeedback(c, meta, hub, effect.pr);
 			return true;
 		}

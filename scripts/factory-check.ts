@@ -1777,6 +1777,34 @@ const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
 {
+	const original = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
+	const poll = (prHead: string, pushCi?: CiReading) => ({ kind: "pr_read", prHead, state: "open", webhooks: false, pushCi });
+	const red = { ...ciRead([{ name: "web tests", state: "failed" }]), head: H(2) };
+	const refresh = ciFact(passedCi, H(1), H(2));
+	const moved = walk(original, [poll(H(2), red), refresh]);
+	const asked = moved.item.question!;
+	assert.equal(asked.text, "CI failed after your push to 2222222. Hand it back to fix?");
+	assert.deepEqual(asked.choices.map(c => c.id), ["send_back", "dismiss"]);
+	assert.equal(moved.item.run!.n, 1);
+	assert.equal(effect(moved.last, "handoff")?.verdict.head, H(1));
+	assert.equal(walk(moved.item, [poll(H(2), red)]).item.question?.id, asked.id);
+	const dismissed = walk(moved.item, [{ kind: "answer", choice: "dismiss" }, poll(H(2), red)]).item;
+	assert.equal(dismissed.state, "review");
+	assert.equal(dismissed.question, null);
+	const sent = walk(moved.item, [{ kind: "answer", choice: "send_back" }]);
+	assert.equal(sent.item.run!.n, 2);
+	assert.equal(sent.item.decisions?.at(-1)?.kind, "send_back");
+	assert.match(effect(sent.last, "deliver")!.text, /web tests/);
+	assert.equal(effect(sent.last, "verified_check")?.key, H(2));
+	const late = walk(original, [poll(H(2), { ...red, head: H(1) }), refresh]).item;
+	assert.equal(late.question, null);
+	assert.equal(walk(late, [poll(H(2), red)]).item.question?.kind, "push_ci");
+	assert.equal(walk(moved.item, [poll(H(3)), { kind: "answer", choice: "send_back", question: asked.id }]).item.run!.n, 1);
+	assert.equal(walk(moved.item, [{ ...poll(H(2)), state: "merged" }]).item.question, null);
+	expect("a failed newer review head offers one hand-back, preserves its CI note and retires stale questions", true);
+}
+
+{
 	const published = walk(reviewerOn(), pushedRun(reviewHead)).item;
 	const feature: FactoryItem = { ...published, mode: "orchestrate" };
 	drive("feature hands over when second reviews are off", { ...feature, reviewer: { off: "deployment" } },

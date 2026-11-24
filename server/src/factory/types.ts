@@ -66,6 +66,7 @@ export interface CiProgress {
 	 * other than the agent, and verified by nothing. Null while the pull request holds `head`, or GitHub did not say.
 	 */
 	moved: string | null;
+	reviewPush?: { head: string; failure?: string; asked?: true };
 	/** The id of the verdict handed over for `head`, made again when the pull request moves after it. */
 	handed: string | null;
 	/** Original handoff, restored if the PR returns to the reviewed head. */
@@ -565,7 +566,7 @@ export type Fact =
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
 	| { kind: "ci_read"; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
-	| { kind: "pr_read"; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
+	| { kind: "pr_read"; pushCi?: CiReading; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
 

@@ -48,7 +48,7 @@ import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
-import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
+import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
@@ -568,11 +568,7 @@ function apply(c: Change, fact: Fact): boolean {
 			else beginRun(c, firstPlan(item, null));
 			return true;
 		case "send_back":
-			if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
-			c.sayOfItem(`Sent back: ${fact.note}`);
-			beginRun(c, { ...IMPLEMENT, text: `The person sent your work back: ${fact.note}` });
-			decided(item, { kind: "send_back", run: c.run.n, text: fact.note });
-			return true;
+			return sendBack(c, fact.note);
 		case "cancel":
 			// The durable fast-forward may already be at GitHub. Settle it before reporting a terminal child state.
 			if (item.parent && item.run?.step.kind === "subtasks" && !item.question) {
@@ -968,6 +964,17 @@ function freshPlan(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> | nu
 }
 
 const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\nThe person adds: ${note}`);
+
+function sendBack(c: Change, note: string, push?: string): boolean {
+	const { item } = c;
+	if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
+	c.sayOfItem("Sent back: " + note);
+	const text = push ? "Use fetch_base to fetch the updated PR branch and start from " + push + ". " + note
+		: "The person sent your work back: " + note;
+	beginRun(c, { ...IMPLEMENT, text, ...(push && marked([untrustedWords.ci(push)])) });
+	decided(item, { kind: "send_back", run: c.run.n, text: note });
+	return true;
+}
 
 function beginRun(c: Change, plan: TurnPlan): void {
 	const { item } = c;
@@ -1657,7 +1664,12 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	}
 	if (reading.kind === "not_permitted") ci.last = { state: "not_permitted", runs: [], said: reading.said };
 
-	if (fact.prHead !== null) ci.moved = movedFrom(ci.head, fact.prHead);
+	if (fact.prHead !== null) {
+		const moved = movedFrom(ci.head, fact.prHead);
+		if (moved !== ci.moved && c.item.state === "review" && c.item.mode !== "orchestrate")
+			ci.reviewPush = moved ? { head: moved } : undefined;
+		ci.moved = moved;
+	}
 	if (c.item.featureCi && c.item.state !== "review") {
 		if (fact.prHead === ci.head && state === "failed" && reading.kind === "read") {
 			c.item.featureCi = { head: ci.head, since: ci.since };
@@ -2078,6 +2090,7 @@ function handoff(c: Change, review: HandoffReview, merging = false): void {
 	c.enter("merged");
 	c.effects.push(nextPrPoll(item, c.at));
 	takeHeld(c);
+	askPushCi(c);
 	if (item.run !== run) {
 		const handed = c.effects.find(e => e.kind === "handoff");
 		if (handed) handed.continuedIn = c.run.n;
@@ -2138,10 +2151,18 @@ export function nextPrPoll(item: FactoryItem, at: number): Extract<Effect, { kin
 	return { kind: "poll_pr", key, pr: item.pr.number, at: at + (item.run?.ci?.webhooks ? CI_POLLING.webhookPrEveryMs : CI_POLLING.prEveryMs) };
 }
 
+function askPushCi(c: Change) {
+	const push = c.run.ci?.reviewPush;
+	if (c.item.state !== "review" || c.item.question || !push?.failure || push.asked || push.head !== c.run.ci?.moved) return;
+	push.asked = true;
+	ask(c, "push_ci", "CI failed after your push to " + shortSha(push.head) + ". Hand it back to fix?",
+		[choice("send_back"), choice("dismiss")], null, null);
+}
+
 function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 	const { run } = c;
 	if (fact.state === "merged" || fact.state === "closed") {
-		if (c.item.feedback?.awaiting) c.item.question = null;
+		if (c.item.feedback?.awaiting || c.item.question?.kind === "push_ci") c.item.question = null;
 		if (run.step.kind === "review") {
 			if (run.step.turn) c.effects.push({ kind: "withdraw", key: c.key, to: "review" });
 			run.step.turn = null;
@@ -2169,11 +2190,22 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 	}
 	run.step.attempt += 1;
 	// After handover, a move replaces the public verdict.
+	if (c.item.question?.kind === "push_ci" && fact.prHead && fact.prHead !== ci?.moved) {
+		c.item.question = null;
+		c.state("review");
+	}
+	if (ci && fact.prHead && c.item.state === "review" && c.item.mode !== "orchestrate" && !c.item.machineRemoved) {
+		if (fact.prHead !== ci.moved) ci.reviewPush = movedFrom(ci.head, fact.prHead) ? { head: fact.prHead } : undefined;
+		const push = ci.reviewPush, reading = fact.pushCi;
+		if (push && !push.asked && reading?.kind === "read" && reading.head === push.head && ciState(reading) === "failed")
+			push.failure = ciFixText(push.head, reading).slice(0, MAX_NOTE_CHARS);
+	}
 	if (ci !== null && fact.prHead !== null && movedFrom(ci.head, fact.prHead) !== ci.moved) {
 		ci.moved = movedFrom(ci.head, fact.prHead);
 		c.say(ci.moved === null ? `The pull request is back at ${shortSha(ci.head)}, the commit this run pushed.` : `The pull request moved to ${shortSha(ci.moved)} after it was handed over.`);
 		return readForHandoff(c, ci);
 	}
+	askPushCi(c);
 	c.effects.push(nextPrPoll(c.item, c.at));
 }
 
@@ -2634,6 +2666,7 @@ function runSingle(c: Change) {
 }
 
 const CHOICES: Record<ChoiceId, string> = {
+	send_back: "Hand it back", dismiss: "Dismiss",
 	send: feedbackWords.send, leave: feedbackWords.leave,
 	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
@@ -2813,6 +2846,15 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	const resume = question.resume;
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
 	switch (fact.choice) {
+		case "send_back":
+		case "dismiss": {
+			const push = run.ci?.reviewPush;
+			if (question.kind !== "push_ci" || !push?.failure || push.head !== run.ci?.moved) return false;
+			c.state("review");
+			if (fact.choice === "send_back") return sendBack(c, push.failure, push.head);
+			takeHeld(c);
+			break;
+		}
 		case "run_checks": {
 			if (!item.parent || !run.ci) return false;
 			const plan = subtaskCheckPlan(run.ci, note);

@@ -1668,7 +1668,8 @@ async function memoryChecks(): Promise<void> {
 		Object.assign(app, {
 			pages: async ({ path }: { path: string }) => {
 				ciPaths.push(path);
-				return { items: [], truncated: false };
+				const items = path.endsWith("/commits/" + moved + "/status") ? [{ context: "owner-build", state: "failure" }] : [];
+				return { items, truncated: false };
 			},
 			pull: async () => ({ number: 1, url: "local", state: "open", mergeable: true, title: "T", body: "", head: "work", headSha: moved, base: "main", requestedReviewers: ["u"] }),
 		});
@@ -1683,8 +1684,9 @@ async function memoryChecks(): Promise<void> {
 		const stored = (actor.c.vars as { stored: { item: Item; meta: { verdict: { result: string } | null } } }).stored;
 		const verdicts = actor.raw.prepare("SELECT json_extract(data, '$.result') AS result, json_extract(data, '$.moved') AS moved FROM verdicts").all() as Array<{ result: string; moved: string | null }>;
 		assert(ciPaths.filter((path) => path.endsWith(`/commits/${HEAD}/check-runs`)).length === 1, "the replacement verdict did not read CI once for the pushed commit");
-		assert(stored.item.state === "review" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
-		return "the verdict became not verified when the pull request moved, in place of the pass";
+		assert(stored.item.question?.kind === "push_ci" && stored.item.run?.n === 1, "The failed push did not ask before rework");
+		assert(stored.item.state === "waiting" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
+		return "the original verdict became unverified and CI on the newer head offered a hand-back";
 	});
 
 	/** The user actor's turn queue over a database in memory, with sessions a, b and c of items, and one of the person's own. */

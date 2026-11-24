@@ -278,7 +278,7 @@ For a missing environment variable, the builder can request a secret by name and
 
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks. A retry starts a new run.
-- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
+- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. If CI fails on a newer push after handover, choose **Hand it back** to start a run with the failing checks, or **Dismiss** to keep it in review.
 - **Cancel…** an item.
 
 ### Feedback from GitHub
