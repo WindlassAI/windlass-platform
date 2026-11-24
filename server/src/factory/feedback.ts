@@ -19,12 +19,17 @@ export function fingerprint(entries: FeedbackEntry[]) {
 	return createHash("sha256").update(JSON.stringify(bodies)).digest("hex");
 }
 
-export function fits(entries: FeedbackEntry[]) {
+const MAX_BODY_CHARS = 8000;
+export const oversizedFeedback = (entry: FeedbackEntry) => entry.body.length > MAX_BODY_CHARS;
+
+/** Take new entries up to the space remaining in the pending batch. */
+export function fits(entries: FeedbackEntry[], pending: FeedbackEntry[] = []) {
 	const sorted = [...entries].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id, "en"));
-	let size = 0, count = 0;
+	let size = pending.reduce((sum, e) => sum + e.body.length, 0);
+	let count = 0;
 	for (const entry of sorted) {
 		size += entry.body.length;
-		if (count === 20 || size > 8000) break;
+		if (pending.length + count === 20 || size > MAX_BODY_CHARS) break;
 		count++;
 	}
 	return { taken: sorted.slice(0, count), rest: sorted.slice(count) };

@@ -828,7 +828,7 @@ async function run() {
 			pull.comments.push({ id, body, user: { ...author, type: "User" }, created_at: new Date().toISOString() });
 			return delivered("issue_comment", commentFields(pull.number, id, author));
 		};
-		await check("Session PR feedback queues comments and marks a collaborator’s review", async () => {
+		await check("Session PR feedback merges deliveries into one bounded turn and tolerates a failed acknowledgement", async () => {
 			const created = await g2User.createSession({ profile: "docker-windlass-sandbox", repository: { id: projectG2.id } });
 			const agent = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
 			try {
@@ -847,7 +847,8 @@ async function run() {
 				await prComment(pull, 66002, writer, "/windlass Handle empty input.\u2028Quote this line too.");
 				assert.ok(standin.reactions.has("issues:66002"));
 				assert.equal((await agent.snapshot()).summary.turns, 2);
-				await agent.stop();
+				await prComment(pull, 66004, writer, "/windlass " + "x".repeat(8001));
+				await prComment(pull, 66005, writer, "/windlass " + "y".repeat(8000));
 				const review = standin.submitReview(projectG2, pull, peer, "changes_requested", "Use a clearer name.", ["@windlass-fk4w Fix this line."]);
 				await delivered("pull_request_review", reviewFields(pr, review.review));
 				await delivered("pull_request_review_comment", { action: "created", sender: review.lines[0].user, pull_request: { number: pr }, comment: review.lines[0] });
@@ -856,19 +857,29 @@ async function run() {
 				assert.ok(standin.reactions.has("review:" + review.review.id));
 				assert.ok(standin.reactions.has("pulls:" + review.lines[0].id));
 				assert.ok(standin.reactions.has("issues:66003"));
-				const { timeline } = await until("three feedback turns", async () => {
+				const many = standin.submitReview(projectG2, pull, writer, "changes_requested", "Cover these cases.", Array.from({ length: 20 }, (_, i) => "Case " + i));
+				many.review.node_id = "";
+				const row = await delivered("pull_request_review", reviewFields(pr, many.review));
+				assert.equal(row.attempts, 1);
+				assert.ok(logs.includes("entry=review:" + many.review.id));
+				assert.ok(standin.reactions.has("pulls:" + many.lines[0].id));
+				await agent.stop();
+				const { timeline } = await until("merged feedback turn", async () => {
 					const view = await agent.snapshot();
-					return view.summary.status === "idle" && view.summary.turns >= 5 ? view : null;
+					return view.summary.status === "idle" && view.summary.turns >= 3 ? view : null;
 				});
 				const prompts = timeline.filter(e => e.kind === "user");
-				assert.equal(prompts.length, 5);
-				assert.match(prompts[2].text, /> Handle empty input\.\n> Quote this line too\./);
-				assert.match(prompts[3].text, /> Use a clearer name\./);
-				assert.match(prompts[3].text, /src\/main\.ts, line 1/);
-				assert.match(prompts[4].text, /> Document the change\./);
-				assert.ok(prompts.every(p => !p.text.includes("decoy") && !p.text.includes("do not take this")));
+				assert.equal(prompts.length, 3);
+				const batch = prompts[2].text;
+				assert.match(batch, /> Handle empty input\.\n> Quote this line too\./);
+				assert.match(batch, /> Use a clearer name\./);
+				assert.match(batch, /src\/main\.ts, line 1/);
+				assert.equal(batch.split("> Document the change.").length, 2);
+				assert.equal(batch.match(/^----- @/gm)?.length, 20);
+				assert.doesNotMatch(batch, /decoy|do not take this|x{100}|y{100}/);
+				assert.ok(timeline.some(e => e.kind === "platform" && e.text.includes("Longer than 8,000 characters")));
 				const marks = timeline.flatMap(e => e.kind === "windlass" && e.event.type === "fake.prompt_untrusted" ? [[e.turn, e.event.data?.source]] : []);
-				assert.deepEqual(marks, [[4, "GitHub feedback from @" + peer.login], [5, "GitHub feedback from @" + peer.login]]);
+				assert.deepEqual(marks, [[3, "GitHub feedback from @" + peer.login]]);
 			} finally { await g2User.deleteSession(created.id); }
 		});
 		await check("Session PR feedback explains an unlinked PR once", async () => {
@@ -876,11 +887,33 @@ async function run() {
 				state: "open", draft: false, merged: false, mergeable: true, requestedReviewers: [], comments: [] };
 			standin.pulls.push(pull);
 			const replies = () => pull.comments.filter(c => c.user.login === standin.slug + "[bot]");
+			const review = standin.submitReview(projectG2, pull, writer, "changes_requested", "Please fix this.", ["A line comment."]);
+			await delivered("pull_request_review", reviewFields(pull.number, review.review));
 			await prComment(pull, 66101, reader, "/windlass reader");
 			assert.equal(replies().length, 0);
+			review.review.body = "@windlass-fk4w please fix this.";
+			await delivered("pull_request_review", reviewFields(pull.number, review.review));
+			assert.equal(replies().length, 1);
 			await prComment(pull, 66102, writer, "/windlass first");
 			await prComment(pull, 66103, peer, "@windlass-fk4w second");
 			assert.deepEqual(replies().map(c => c.body), ["This pull request is not linked to a Windlass agent."]);
+
+			// A reply could be past the last page the App reads.
+			pull.comments = Array.from({ length: 1000 }, (_, i) => ({ id: 70000 + i, body: "Discussion", user: writer }));
+			const long = await prComment(pull, 66104, writer, "/windlass long thread");
+			assert.equal(long.attempts, 1);
+			assert.equal(replies().length, 0);
+
+			// The installation lost its last user after webhook admission but before the inbox handled it.
+			const orphan = standin.addInstallation("unlinked-org", "Organization");
+			orphan.repositories.add(projectG2.id);
+			const guid = randomUUID();
+			const delivery = edge("issue_comment", { installation: { id: orphan.id }, repository: { id: projectG2.id }, ...commentFields(pull.number, 66104) },
+				{ slug: standin.slug, guid, at: Date.now() })!;
+			pull.comments = pull.comments.slice(-1);
+			await inbox(orphan.id).internalReceive(delivery);
+			await until("unlinked installation skipped", async () => (await fixture(orphan.id).checkRow(guid))?.state === "ignored");
+			assert.equal(replies().length, 0);
 		});
 		await check("G4 owner review batches its lines, acknowledges once, reopens the check and requests review again", async () => {
 			standin.appPermissions.checks = "write";

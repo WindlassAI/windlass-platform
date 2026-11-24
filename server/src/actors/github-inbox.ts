@@ -166,7 +166,7 @@ export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + sub
  * `author_association` decides nothing: GitHub reckons it for the reader, and to an App a private
  * organisation member, the organisation's owner among them, can read as CONTRIBUTOR or NONE.
  */
-export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, pollingOwner?: GithubId): Promise<(FeedbackNotice & { repo?: Repository; reviewNodeId?: string }) | null> {
+export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, pollingOwner?: GithubId): Promise<(FeedbackNotice & { repo?: Repository; addressed?: boolean; reviewNodeId?: string }) | null> {
 	const { repositoryId, installationId, pr } = target;
 	const denied = { ...target, entries: [], denied: feedbackId(subject) };
 	const params = { params: serviceParams() };
@@ -197,7 +197,7 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 				const note = isAddressed(r.body, app.settings.slug);
 				if (note === null) return null;
 				const url = app.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + "#issuecomment-" + subject.id;
-				return { ...target, repo, entries: [entry("issue_comment", feedbackId(subject), note, r.at, url, r.author.login)] };
+				return { ...target, repo, addressed: true, entries: [entry("issue_comment", feedbackId(subject), note, r.at, url, r.author.login)] };
 			}
 			const review = subject.kind === "review";
 			const r = review ? await app.review(token, repo, pr, subject.id) : await app.reviewComment(token, repo, pr, subject.id);
@@ -205,14 +205,15 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 			if (review && r.state === "approved") return { ...target, entries: [], approval: { id: feedbackId(subject), author: r.author.login } };
 			const requested = review && r.state === "changes_requested";
 			if (review && !requested && r.state !== "commented") return null;
-			const body = requested ? r.body : isAddressed(r.body, app.settings.slug);
+			const address = isAddressed(r.body, app.settings.slug);
+			const body = requested ? r.body : address;
 			if (body === null) return null;
 			const entries = [{ ...entry(review ? requested ? "changes_requested" : "commented" : "review_comment", feedbackId(subject), body, r.at, r.url, r.author.login), commit: r.commit, path: r.path, line: r.line }];
 			if (review) for (const line of await app.reviewComments(token, repo, pr, r.id)) {
 				if (!valid(line)) continue;
 				entries.push({ ...entry("review_comment", "review_comment:" + line.id, line.body, line.at, line.url, line.author.login), commit: line.commit, path: line.path, line: line.line });
 			}
-			return { ...target, repo, entries, ...(review && { reviewNodeId: r.nodeId }) };
+			return { ...target, repo, entries, addressed: address !== null, ...(review && { reviewNodeId: r.nodeId }) };
 		});
 	} catch (e) {
 		if (e instanceof GithubError && [404, 410].includes(e.status)) return null;
@@ -221,9 +222,8 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 }
 
 /** Publish reports the session's repository and pull request together in the owner's session index. */
-async function sessionForPull(c: Ctx, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">) {
+async function sessionForPull(c: Ctx, users: string[], target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">) {
 	const params = { params: serviceParams() };
-	const users: string[] = await c.client().githubHooks.get(["app"], params).internalInstallationUsers(target.installationId);
 	for (const uid of users) {
 		try {
 			const user = c.client().user.get([uid], params);
@@ -251,18 +251,24 @@ async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 			if (notice) await c.client().workItem.get([uid, itemId], params).internalGithubFeedback(notice);
 		}
 		if (matches.length) return;
-		const session = await sessionForPull(c, target);
+		const users: string[] = await c.client().githubHooks.get(["app"], params).internalInstallationUsers(target.installationId);
+		if (!users.length) return "no item";
+		const session = await sessionForPull(c, users, target);
 		if (session && !session.sessionId) return "no item";
 		const notice = await readFeedback(c, session?.uid ?? null, target, subject);
 		if (!notice?.repo || !notice.entries.length) return "no item";
 		const { repo, entries } = notice;
 		const app = githubApp()!;
 		if (session && await c.client().agentSession.get([session.uid, session.sessionId], params).internalGithubFeedback({ ...target, entries })) {
-			for (const entry of entries) await app.acknowledgeFeedback(target.installationId, repo, entry.id, notice.reviewNodeId);
+			for (const entry of entries) await app.acknowledgeFeedback(target.installationId, repo, entry.id, notice.reviewNodeId).catch(() => {
+				console.warn(`github.feedback.ack_failed delivery=${d.guid} entry=${entry.id}`);
+			});
 			return;
 		}
+		if (!notice.addressed) return "no item";
 		await app.withToken(target.installationId, { repositoryId: repo.id, permissions: { metadata: "read", pull_requests: "write" } }, async token => {
-			const comments = await app.issueComments(token, repo.owner, repo.name, target.pr, true);
+			const { items: comments, truncated } = await app.issueCommentPages(token, repo.owner, repo.name, target.pr);
+			if (truncated) return;
 			if (!comments.some(comment => comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && comment.body === UNLINKED))
 				await app.createIssueComment(token, repo.owner, repo.name, target.pr, UNLINKED, "explain the unlinked pull request");
 		});

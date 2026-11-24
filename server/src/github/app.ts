@@ -898,14 +898,18 @@ export class GithubApp {
 		return id && author ? { id: "event:" + id, author, at: Date.parse(text(last.created_at)) } : null;
 	}
 
-	async issueComments(token: string, owner: string, name: string, number: number, requireComplete = false, since?: number) {
-		const { items, truncated } = await this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, query: since === undefined ? undefined : { since: new Date(since).toISOString() }, auth: { bearer: token }, what: "list the issue or pull request comments" }, body => {
+	async issueCommentPages(token: string, owner: string, name: string, number: number, since?: number) {
+		return this.pages({ path: `/repos/${owner}/${name}/issues/${number}/comments`, query: since === undefined ? undefined : { since: new Date(since).toISOString() }, auth: { bearer: token }, what: "list the issue or pull request comments" }, body => {
 			if (!Array.isArray(body)) throw new Error("GitHub returned no comment list");
 			return body.map(entry => {
 				const fields = record(entry);
 				return { id: decimalId(fields.id), body: text(fields.body), author: text(record(fields.user).login), person: githubPerson(fields.user), association: text(fields.author_association) };
 			});
 		});
+	}
+
+	async issueComments(token: string, owner: string, name: string, number: number, requireComplete = false, since?: number) {
+		const { items, truncated } = await this.issueCommentPages(token, owner, name, number, since);
 		if (requireComplete && truncated) throw new Error("GitHub returned more issue comments than could be checked for the marker");
 		return items;
 	}
