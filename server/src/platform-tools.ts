@@ -48,7 +48,7 @@
  * publish that came over MCP that any process in the sandbox may have made it (agent-publish.ts,
  * `MCP_CALL_WORDS`). This is the exposure Windlass already has where it does not sandbox commands
  * ("Docker, hardened"), whose commands can write on the engine's own connection (docs/known-limitations.md).
- * A reviewer may file once over MCP. Auto-merge requires owner-only inputs (factory/autonomy.ts).
+ * A reviewer may file once over MCP. Only a Windlass review filed over its own channel, from its command sandbox, can approve an auto-merge (factory/autonomy.ts).
  *
  * Why Windlass keeps host tools for these as well. Windlass 0.6.0 takes no MCP server from the client
  * (`session/new`'s `mcpServers` are ignored, its `mcpCapabilities` say neither http nor sse), and an MCP
