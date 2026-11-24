@@ -591,7 +591,11 @@ export class ServerChannel extends Channel {
 			if (this.pending.size >= MAX_OPS_IN_FLIGHT) return reject(new Error("Too many operations are waiting on the machine."));
 			const own = (args as { options?: { timeoutMs?: number } }).options?.timeoutMs;
 			const timer = setTimeout(() => this.settle(id, new ConversationLost("The machine did not answer in time.")), name === "blockedNetwork" || name === "memoryEvents" ? 5_000 : (own ?? OP_MS) + RUNNER_GRACE_MS);
-			const cancel = () => { if (this.pending.has(id)) this.send({ kind: "cancel", id }); };
+			const cancel = () => {
+				if (!this.pending.has(id)) return;
+				if (name === "modelRelay" || name === "openCodeDefault") this.settle(id, new Error("The turn was stopped."));
+				this.send({ kind: "cancel", id });
+			};
 			signal?.addEventListener("abort", cancel, { once: true });
 			this.pending.set(id, { name, resolve, reject, output: onOutput, timer, forget: () => signal?.removeEventListener("abort", cancel) });
 			try { this.send({ kind: "op", id, name, args: args as Record<string, unknown> }); }
@@ -771,7 +775,7 @@ export class RunnerChannel extends Channel {
 				if (this.processes.has(body.id)) this.options.onCloseIn(body.id);
 				return;
 			case "cancel":
-				if (this.serving.has(body.id)) this.options.onCancel(body.id);
+				this.options.onCancel(body.id);
 				return;
 			default:
 				return this.fail("The platform sent a message that only a runner sends.");

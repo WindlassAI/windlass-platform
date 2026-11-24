@@ -6,14 +6,14 @@ import { spareSetup, type SpareSetup, type SpareRecipe } from "../../server/src/
 import { dropPreviousSnapshots } from "./snapshot-retention.js";
 import { digest, type SnapshotSelection, type SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
-import type { HarnessOptions } from "../../server/src/contract.js";
+import { MODEL_PROVIDERS, type HarnessOptions, type ModelProvider } from "../../server/src/contract.js";
 import { innerModesReason, reportedCodexModes } from "../../server/src/sandbox/codex-modes.js";
 import { codexLogin } from "./codex-login.js";
 import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { tmpName } from "../../server/src/sandbox/docker.js";
 import { currentProvider, installedProvider } from "./opencode-login.js";
-import { ensureRelay, prepareRelay, removeRelay, stopLegacyClaude } from "./claude-relay.js";
+import { ensureRelay, prepareRelay, openCodeCredentials, localProviders, relaySocketVolume, keyRelayUrl, openHarnessKey, endHarnessLeases, removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { probeHarnessOptions } from "./harness-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
@@ -21,7 +21,7 @@ import { PROFILE_DENIED, type Operation } from "../../server/src/runner/protocol
 import { ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "../../server/src/sandbox/api.js";
 import { LABEL, LABEL_ARG, docker } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
-import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
+import { NAME, WORKSPACE, type ForwardedKeyLease } from "../../server/src/sandbox/provider.js";
 import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { mirrorOwner, saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
@@ -79,7 +79,7 @@ const INVENTORY_TTL_MS = 6 * 60 * 60_000;
 const SIGN_IN_RETRIES_MS = [10_000, 30_000, 60_000];
 const INVENTORY_RETRY_MS = 5 * 60_000;
 
-interface Claim { session: string; key: string; setup?: SpareSetup; attempt?: string; relayEnv?: Record<string, string> }
+interface Claim { session: string; key: string; setup?: SpareSetup; attempt?: string }
 
 // The Docker session label is immutable. The pairing's private state binds each claimed
 // id exactly once, before any session can receive it. Unbound spares never enter boxes.
@@ -87,7 +87,6 @@ function claimFor(value: unknown): Claim | undefined {
 	if (value && typeof value === "object" && "session" in value && typeof value.session === "string" && NAME.test(value.session) &&
 		"key" in value && typeof value.key === "string" && /^[a-f0-9]{64}$/.test(value.key) &&
 		(!("setup" in value) || spareSetup(value.setup)) &&
-		(!("relayEnv" in value) || value.relayEnv && typeof value.relayEnv === "object" && Object.values(value.relayEnv).every(v => typeof v === "string")) &&
 		(!("attempt" in value) || typeof value.attempt === "string" && /^[a-f0-9]{32}$/.test(value.attempt))) return value as Claim;
 }
 
@@ -182,18 +181,30 @@ export class Executor extends MachineDocker {
 	private providerFor(harness?: MachineHarness) {
 		return harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : harness === "claude" ? this.claudeProvider! : this.provider;
 	}
-	private async claimRelay(raw: string, harness: MachineHarness) {
+	private relayNonce(raw: string) {
+		return dockerOutput(["inspect", "-f", `{{index .Config.Labels "${LABEL}.relay-session"}}`, containerName(raw)]).then(value => value.trim());
+	}
+
+	private machineLogin(harness: MachineHarness) {
+		return harness === "codex" ? codexLogin(this) ?? undefined : harness === "opencode" ? currentProvider(this) ?? undefined : undefined;
+	}
+
+	openTurnKey(raw: string, harness: MachineHarness, forward: ForwardedKeyLease) {
 		return withLoginVolume(this, async () => {
-			const nonce = (await dockerOutput(["inspect", "-f", `{{index .Config.Labels "${LABEL}.relay-session"}}`, containerName(raw)])).trim();
-			const login = harness === "codex" ? codexLogin(this) : harness === "opencode" ? currentProvider(this) : undefined;
-			if (harness !== "claude" && !login) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
-			const relay = await prepareRelay(this, login ?? undefined, nonce);
-			const env: Record<string, string> = {};
-			for (const assignment of relay.env.filter(arg => arg !== "-e")) {
-				const split = assignment.indexOf("=");
-				env[assignment.slice(0, split)] = assignment.slice(split + 1);
-			}
-			return env;
+			return openHarnessKey(this, harness, await this.relayNonce(raw), forward);
+		});
+	}
+
+	turnCredentials(raw: string, harness: MachineHarness, keys: Partial<Record<ModelProvider, string>>) {
+		return withLoginVolume(this, async (): Promise<{ env: Record<string, string>; close?: () => Promise<void> }> => {
+			if (harness === "claude" && keys.anthropic) return { env: { ANTHROPIC_BASE_URL: keyRelayUrl, ANTHROPIC_API_KEY: keys.anthropic } };
+			if (harness === "codex" && keys.openai) return { env: { WLP_SESSION_BEARER: keys.openai } };
+			const login = this.machineLogin(harness);
+			if (!login && harness !== "claude" && !Object.keys(keys).length) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
+			const nonce = await this.relayNonce(raw);
+			if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
+			if (harness === "opencode") return openCodeCredentials(this, nonce, login, keys);
+			return prepareRelay(this, login, nonce);
 		});
 	}
 
@@ -341,6 +352,7 @@ private signInRetries = 0;
 	 * relay (docs/model-relay.md), and a connect says so. Set by the control connection on each welcome.
 	 */
 	modelRelays = false;
+	harnessKeyRelays = false;
 	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
 	blockedNetwork = false;
@@ -394,29 +406,25 @@ private signInRetries = 0;
 			this.codexPin = harnessImage("codex");
 			if (!this.codexPin) throw new Refusal("This runner was built without the Codex image.");
 			this.codexProvider = new DockerSandboxes({slots,network,machine:identity.machineId,image:this.codexPin,harness:"codex",storeLimits,
-				sessionRelay:async () => {
-					const login = codexLogin(this);
-					if (!login) throw new Refusal("Run windlass-runner login codex on this machine.");
-					return prepareRelay(this, login);
-				}});
+				sessionRelay: () => this.sessionSocket("codex")});
 		}
 		if (opencode) {
 			this.opencodePin = harnessImage("opencode");
 			if (!this.opencodePin) throw new Refusal("This runner was built without the OpenCode image.");
 			this.opencodeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.opencodePin, helperImage: image, storeLimits,
-				harness: "opencode", sessionRelay: async () => {
-					const login = currentProvider(this);
-					if (!login) throw new Refusal("Run windlass-runner login opencode on this machine.");
-					return prepareRelay(this, login);
-				} });
+				harness: "opencode", sessionRelay: () => this.sessionSocket("opencode") });
 		}
 		if (claude) {
 			this.claudePin = harnessImage("claude");
 			if (!this.claudePin) throw new Refusal("This runner was built without the Claude Code image.");
-			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, storeLimits, sessionRelay: () => this.prepareClaudeRelay() });
+			this.claudeProvider = new DockerSandboxes({ slots, network, machine: identity.machineId, image: this.claudePin, helperImage: image, storeLimits, sessionRelay: () => this.sessionSocket("claude") });
 		}
 	}
-	/** Caller holds the login lock while preparing the relay and issuing a session credential. */
+	/** Give the forwarder a socket volume and a nonce before the first turn chooses its credential. */
+	private async sessionSocket(harness: MachineHarness) {
+		await this.ownedVolume(true, relaySocketVolume(this, harness));
+		return { nonce: randomBytes(16).toString("hex"), env: [] };
+	}
 	prepareClaudeRelay() { return prepareRelay(this); }
 	requireHarness(profile: Profile, harness: MachineHarness = "claude") {
 		if (harness === "codex") {
@@ -524,6 +532,14 @@ private signInRetries = 0;
 			this.nextCodexProbe = Date.now() + INVENTORY_TTL_MS;
 		} else console.log("Could not read Codex model options.");
 	}
+	async openCodeDefault(keys: ModelProvider[]) {
+		if (!this.harnessKeyRelays || !this.opencodePin) throw new Refusal("This machine does not offer OpenCode Settings keys.");
+		const login = currentProvider(this);
+		const local = login?.providers ?? (login ? [login.provider] : []);
+		const providers = [...localProviders(local, keys), ...keys];
+		const options = await probeHarnessOptions(this, this.opencodePin, providers, undefined, true);
+		return options.defaultModel;
+	}
 	private async refreshOpenCodeOptions(force = false) {
 		const pin = this.opencodePin;
 		const login = this.opencodeLogin;
@@ -533,7 +549,9 @@ private signInRetries = 0;
 		this.nextOpenCodeProbe = Date.now() + INVENTORY_RETRY_MS;
 		try {
 			await this.ensureImage(pin);
-			const options = await probeHarnessOptions(this, pin, login?.providers ?? login?.provider ?? "free");
+			const local = login?.providers ?? (login ? [login.provider] : ["free"]);
+			const providers = [...new Set([...local, ...MODEL_PROVIDERS].map(p => p === "chatgpt" ? "openai" : p))];
+			const options = await probeHarnessOptions(this, pin, providers);
 			// The terminal can replace the credential while the offline probe is running.
 			await this.refreshLogin();
 			if ((this.opencodeLogin?.generation ?? "signed-out") === generation) {
@@ -738,11 +756,14 @@ private signInRetries = 0;
 	}
 
 	/** Ends every lease of sandbox `id` (its files in the relay, its forwarder, the conversations' entries), also one a process that died left. */
-	private async endRelays(id: string, raw: string): Promise<void> {
+	private async endRelays(id: string, raw: string, harness?: MachineHarness): Promise<void> {
 		const ends = [...(this.relayLeases.get(id) ?? [])];
 		this.relayLeases.delete(id);
 		await Promise.all(ends.map((end) => end().catch(() => {})));
-		await this.modelRelay.endSandbox(raw).catch(() => {});
+		if (harness) {
+			const nonce = await this.relayNonce(raw).catch(() => "");
+			if (nonce) await withLoginVolume(this, () => endHarnessLeases(this, harness, nonce));
+		} else await this.modelRelay.endSandbox(raw).catch(() => {});
 	}
 
 	/** At the first welcome: the pinned image's Windlass, and what a runner that died left of the relay. */
@@ -775,6 +796,7 @@ private signInRetries = 0;
 			id: "opencode", adapter: "OpenCode 1.19.6", image: this.opencodePin.split("@").at(-1)!,
 			signIn: !this.dockerHealth.ok ? "unknown" : this.opencodeLogin ? "token" : "none",
 			loginGeneration: this.opencodeLogin?.generation,
+			machineProviders: this.opencodeLogin?.providers ?? (this.opencodeLogin ? [this.opencodeLogin.provider] : []),
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
 		return { kind: "report", environmentBuild: true, ...(this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && { warmSpares: { ready: this.spares.ready } }), blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
@@ -783,7 +805,7 @@ private signInRetries = 0;
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin && { claudeRelay: true as const }),
 			...(this.network.policy.domains && { egressDomains: this.network.domains()!.length }),
-			...(harnesses.length ? { harnesses } : {}),
+			...(harnesses.length ? { harnesses: harnesses.map(h => ({ ...h, keyRelay: true as const })) } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes, storeLimits: this.reportedStoreLimits(),
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt, resizePending }]) => ({ id, sessionId, state, usedAt, resizePending })),
@@ -847,7 +869,7 @@ private signInRetries = 0;
 		const claim: Claim | undefined = claimed && spec ? { session: sessionId, key: digest([spec.args.spare]), setup: taken?.setup, attempt: prepared?.attempt } : undefined;
 		if (claimed && claim) {
 			try {
-				if (harness) claim.relayEnv = await this.claimRelay(claimed, harness);
+				if (harness) await this.ownedVolume(true, relaySocketVolume(this, harness));
 				save(this.claimFile(claimed), claim);
 			}
 			catch { console.info(`spare.skip id=${claimed} reason=bind`); await this.removeUnbound(claimed); claimed = undefined; }
@@ -974,12 +996,7 @@ private signInRetries = 0;
 			this.requireEgress(box);
 			if (box.harness) {
 				this.requireHarness(box.profile, box.harness);
-				if (box.harness === "claude") await this.ensureSignedInRelay();
-				else await withLoginVolume(this, async () => {
-					const login = box.harness === "codex" ? codexLogin(this) : currentProvider(this);
-					if (!login) throw new Refusal(`Run windlass-runner login ${box.harness} on this machine.`);
-					await ensureRelay(this, login);
-				});
+				await this.ownedVolume(true, relaySocketVolume(this, box.harness));
 			}
 			if (box.state === "paused") {
 				this.room();
@@ -1003,8 +1020,8 @@ private signInRetries = 0;
 				...(this.canReseed && { needsSpareSeed: true as const }),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
-				// Windlass's own sandboxes only, and only to a server that named `model-relay`.
-				...(this.modelRelays && this.modelRelayReady && !box.harness ? { modelRelay: true as const } : {}),
+				// A harness uses its credential relay for forwarded platform leases.
+				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady) ? { modelRelay: true as const } : {}),
 				// Only a reporting restricted proxy on a server that opted in.
 				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
 				...(this.memoryEvents && { memoryEvents: true as const }),
@@ -1023,7 +1040,7 @@ private signInRetries = 0;
 			await new DockerSandboxHandle(box.raw, box.profile, this.identity.uid).removeFiles([path, path + ".tmp"]);
 		}
 		// Its turns' leases end with it: the relay's files of them, their forwarders and the conversations' entries.
-		await this.endRelays(id, box.raw);
+		await this.endRelays(id, box.raw, box.harness);
 		if (op === "destroy") await this.remove(id);
 		else {
 			if (box.egress === "restricted" || box.harness) await this.network.detach(box.raw);
@@ -1049,10 +1066,7 @@ private signInRetries = 0;
 		this.boxes.delete(id);
 		if (claim) forget(this.claimFile(raw));
 		if (harness === "claude") await withLoginVolume(this, async () => {
-			if (await loginFileState(this).catch(() => "unknown") === "none") {
-				await removeRelay(this);
-				await dropDetachedLoginVolume(this);
-			}
+			if (await loginFileState(this) === "none") await dropDetachedLoginVolume(this);
 		});
 		this.publishReport?.();
 	}

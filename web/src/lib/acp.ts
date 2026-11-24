@@ -50,6 +50,7 @@ export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 // The same words on every page. "unknown" is a runner that could not check: the agent may well run, so it is never said to be unable to.
 /** Its sign-in in a few words: "signed in", "sign in needed", "couldn't check the sign-in". */
 export function signInWords(harness: ReportedHarness): string {
+	if (harness.platformKeys?.length) return "Settings key";
 	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "couldn't check the sign-in";
 }
 

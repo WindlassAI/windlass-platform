@@ -147,7 +147,7 @@ function RemoveDialog({ provider, onClose, onRemoved }: { provider: ModelProvide
 				</>
 			}
 		>
-			<p>New agents can no longer use {name} models through it. Agents already running keep the access they started with until their turn ends.</p>
+			<p>Removing the key blocks new requests. A request already running may finish.</p>
 			<Failure error={error} />
 		</Dialog>
 	);
@@ -209,7 +209,7 @@ export function ModelProviders() {
 				Model providers
 			</h2>
 			<p className="usage-lede">
-				One API key per provider. Soon every agent that can use a provider will use its key: Windlass, Claude Code for Anthropic, Codex for OpenAI, and OpenCode for any of them. For now, saved keys are only stored and checked. A key never enters a sandbox.
+				On paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for its selected provider. Without a matching key, the agent uses its machine login. Windlass still uses ChatGPT. A saved key stays on the platform.
 			</p>
 			{list === null ? (
 				state.error ? (

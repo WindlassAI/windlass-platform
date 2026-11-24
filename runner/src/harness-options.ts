@@ -31,20 +31,22 @@ async function openCodeEfforts(container: string) {
 }
 
 /** Offline probe using a dummy credential and a fresh container filesystem. */
-export async function probeHarnessOptions(machine: MachineDocker, pin: string, provider?: string | string[], codex?: {login?: ProviderLogin}) {
+export async function probeHarnessOptions(machine: MachineDocker, pin: string, provider?: string | string[], codex?: {login?: ProviderLogin}, defaultOnly = false) {
 	const name = tmpName();
 	const lease = codex?.login ? await withLoginVolume(machine, async () => {
 		const current = codexLogin(machine);
 		if (!current || current.generation !== codex.login?.generation) throw new Error("Codex login changed.");
 		return prepareRelay(machine,current);
 	}) : undefined;
-	const flags = lease ? [...lease.env, "--mount", `type=volume,src=${relaySocketVolume(machine, "codex")},dst=/run/wlp-relay,readonly,volume-nocopy`] : [];
+	const env = lease?.env ?? (provider ? projection(provider, "options-only") : {});
+	const flags = Object.entries(env).flatMap(([key, value]) => ["-e", key + "=" + value]);
+	if (lease) flags.push("--mount", `type=volume,src=${relaySocketVolume(machine, "codex")},dst=/run/wlp-relay,readonly,volume-nocopy`);
 	// A prompt-free probe has no user workspace. Its forwarder can share this disposable
 	// container. Signed-out inventory reads the native catalog with an offline gateway.
 	const forward = lease ? `node -e 'const net=require("net"); net.createServer(c=>{const u=net.connect("/run/wlp-relay/relay.sock");u.write("${lease.nonce}");c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u).pipe(c)}).listen(17892,"127.0.0.1")' &` : "";
 	const child = spawn("docker", ["run", "--rm", "-i", "--name", name, "--label", LABEL_ARG,
 		...machine.pairingLabelFlags, "--pull", "never", ...NO_LOGS, ...commonRunFlags(1, "none"),
-		...(codex ? flags : provider ? projection(provider, "options-only") : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=options-only"]), ...PROFILE_RUN_FLAGS["docker-hardened"]!,
+		...(codex || provider ? flags : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=options-only"]), ...PROFILE_RUN_FLAGS["docker-hardened"]!,
 		pin, ...(codex ? ["sh","-ec",forward + " exec wlp-codex-acp"] : [provider ? "wlp-opencode-acp" : "wlp-claude-acp"])], { stdio: ["pipe", "pipe", "ignore"] });
 	const rpc = new AcpConnection(line => child.stdin.write(line + "\n"), {
 		notification() {}, async request(method) { throw new MethodNotFound(method); },
@@ -71,7 +73,8 @@ export async function probeHarnessOptions(machine: MachineDocker, pin: string, p
 		const { model, list } = optionsOf(result.configOptions);
 		if (!model || !list) throw new Error("No models reported.");
 		if (codex && list.models.length > 32) throw new Error("Codex catalog exceeds the report limit.");
-		const catalog = provider ? await openCodeEfforts(name) : null;
+		if (defaultOnly) list.models = list.models.filter(m => m.id === list.defaultModel);
+		const catalog = provider && !defaultOnly ? await openCodeEfforts(name) : null;
 		for (const choice of list.models) {
 			if (choice.id === list.defaultModel) continue;
 			const efforts = catalog?.get(choice.id);

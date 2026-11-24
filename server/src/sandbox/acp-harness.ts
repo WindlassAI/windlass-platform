@@ -6,7 +6,7 @@ import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js"
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle, type StartMark } from "./api.js";
 import type { Harness } from "./harness.js";
 import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
-import { isTurnSandbox, type SandboxProcess } from "./provider.js";
+import { isTurnSandbox, type KeyTurnRelay, type SandboxProcess } from "./provider.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 import { PlatformChecks } from "./platform-checks.js";
 import { StepCounter } from "./platform-steps.js";
@@ -387,6 +387,9 @@ export class AcpHarness implements Harness {
 				cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
 			} else rpc.end("The turn was stopped.");
 		};
+		let lease: KeyTurnRelay | undefined;
+		const loginHint = () => input.machineKey
+			? "Check the provider key in Settings." : machineLoginMessage(profile, this.machine);
 		try {
 			if (!isTurnSandbox(handle) || !profile.profiles.includes(handle.profile)) throw new Error(`${profile.name} requires a supported machine sandbox.`);
 			if (input.unattended && !profile.items) throw new Error(itemHarnessProblem(profile.id) ?? `${profile.name} does not run work items.`);
@@ -396,8 +399,16 @@ export class AcpHarness implements Harness {
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			const lines = new LineSplitter(line => { lastHeard = Date.now(); rpc.receive(line); });
 			mark("process");
-			const secretEnv = input.secrets?.env;
-			run = handle.start(profile.command, { cwd: input.reviewDirectory ?? handle.cwd, env: turnEnv(profile, input), ...(secretEnv && Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
+			const secretEnv = { ...input.secrets?.env };
+			if (input.machineKey) {
+				input.signal?.throwIfAborted();
+				const { sessionId, key } = input.machineKey;
+				if (!handle.machineKeyRelay) throw new Error("This machine does not support Settings keys.");
+				lease = await handle.machineKeyRelay(sessionId, key, profile.id, input.signal);
+				secretEnv.WLP_TURN_KEY_LEASES = lease.placeholder;
+				input.signal?.throwIfAborted();
+			}
+			run = handle.start(profile.command, { cwd: input.reviewDirectory ?? handle.cwd, env: turnEnv(profile, input), ...(Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
 				rpc.end(end.error?.message || `${profile.name} exited before answering (exit ${end.code ?? end.signal}).`);
@@ -529,7 +540,7 @@ export class AcpHarness implements Harness {
 					const status = failedModel.status;
 					const reason = status === 429 ? "usage_limit" : status === 401 ? "harness_signed_out" : status !== undefined && status >= 400 && status < 500 ? "provider_rejected" : "provider_unavailable";
 					result.failure = { reason, message: reason === "usage_limit" ? "The provider's usage or rate limit was reached."
-						: reason === "harness_signed_out" ? `${said || `${profile.name}'s sign-in was refused.`} ${machineLoginMessage(profile, this.machine)}`
+						: reason === "harness_signed_out" ? `${said || `${profile.name}'s sign-in was refused.`} ${loginHint()}`
 						: `${profile.name}'s model requests failed${status ? ` (HTTP ${status})` : ""}, so it did nothing this turn.${said ? ` It said: ${said}` : ""}` };
 					break;
 				}
@@ -559,10 +570,11 @@ export class AcpHarness implements Harness {
 				// The relay's own refusal, passed on by the agent: the provider's, not the agent's or the platform's.
 				const relayed = promptError ? RELAY_SENTENCES[said.replace(/^Internal error: /, "")] : undefined;
 				const reason = signedOut ? "harness_signed_out" : invalid ? "invalid_request" : usageLimit ? "usage_limit" : limit?.reason ?? relayed ?? "engine";
-				result.failure = { ...limit, reason, message: limit ? "The provider's usage or rate limit was reached." : redactor.text(signedOut ? `${said} ${machineLoginMessage(profile, this.machine)}` : message) };
+				result.failure = { ...limit, reason, message: limit ? "The provider's usage or rate limit was reached." : redactor.text(signedOut ? `${said} ${loginHint()}` : message) };
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
 		} finally {
+			await lease?.close();
 			clearTimeout(cancelDeadline);
 			input.signal?.removeEventListener("abort", cancel);
 			phase = "ended";

@@ -1415,6 +1415,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 	assert.equal((await providerAccounts(db, at)).get(macId)?.[0].limitedUntil, reset * 1000);
 	await recordProviderUsage(db, location, generation, { kind: "refusal", at: at + 1, resetsAt: reset * 1000 });
 	await recordProviderUsage(db, location, generation, { kind: "event", event: { status: "allowed", window: { ...event.window, usedPct: 0, observedAt: at + 2 } } });
+	for (const table of (await import("../server/src/model-providers.js")).MODEL_PROVIDER_TABLES) raw.exec(table);
 	const [machine] = await listMachines({ db, vars: { sessions: new Map() } });
 	assert.equal(machine?.providerAccounts?.[0].limitedUntil, reset * 1000 + 60_000);
 	assert.doesNotMatch(JSON.stringify([machine, raw.prepare("SELECT * FROM provider_usage").all()]), /canary/);

@@ -1,3 +1,4 @@
+import { revokeMachineLeases } from "../sandbox/relay-leases.js";
 import { randomBytes } from "node:crypto";
 import { authFailure, FrameAuthError, machineStatement, platformWelcome, type FrameAuth } from "../runner/frame-auth.js";
 import { OLD_RUNNER } from "../runner/protocol.js";
@@ -167,6 +168,7 @@ async function revoke(c: Ctx, removeSandboxes: boolean, idle: boolean): Promise<
 			}
 			return;
 		}
+		revokeMachineLeases(c.key[0], c.key[1]);
 		const live = c.vars.live;
 		c.vars.live = null;
 		if (live) reject(live.ws, refuse("removed", { removeSandboxes }));
@@ -447,6 +449,10 @@ export const machine = actor({
 			const options: HarnessOptions = JSON.parse(row.options);
 			if (row.checkedAt !== null) options.checkedAt = row.checkedAt;
 			return options;
+		},
+		internalPaired: async (c): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			return (await c.db.execute("SELECT 1 FROM machine WHERE removed_at IS NULL")).length > 0;
 		},
 		internalFacts: async (c): Promise<MachineFacts> => {
 			requireServiceFor(c, "call");

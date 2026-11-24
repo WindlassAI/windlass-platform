@@ -309,7 +309,9 @@ if (process.argv[1] === "wlp-egress-broker") broker(JSON.parse(process.argv[2]),
 export function forward(port, path, nonce, signedOutOnDisconnect = false) {
 	const marker = path.replace(/[^/]+$/, "signed-out");
 	const server = net.createServer(client => {
-		const upstream = net.connect(path);
+		// The pinned Codex adapter uses one fixed port for both credentials.
+		const keySocket = signedOutOnDisconnect && existsSync("/run/wlp-relay/" + nonce + ".key");
+		const upstream = net.connect(keySocket ? "/run/wlp-relay/keys.sock" : path);
 		if (signedOutOnDisconnect) {
 			// The login volume and relay disappear at logout; the local endpoint survives. A relay that is
 			// replaced (update, re-pair, new login) also goes away for a moment: only a logout leaves the marker.
@@ -342,7 +344,10 @@ export function forward(port, path, nonce, signedOutOnDisconnect = false) {
 }
 if (process.argv[1] === "wlp-egress-forward") {
 	if (process.argv[2] === "restricted") forward(17891, socket);
-	if (process.argv[3]) forward(17892, "/run/wlp-relay/relay.sock", process.argv[3], process.argv[4] === "codex");
+	if (process.argv[3]) {
+		forward(17892, "/run/wlp-relay/relay.sock", process.argv[3], process.argv[4] === "codex");
+		if (process.argv[4] !== "codex") forward(17894, "/run/wlp-relay/keys.sock", process.argv[3]);
+	}
 }
 // Windlass's model relay (docs/model-relay.md): one forwarder per turn, in the session's network namespace,
 // with the turn's nonce. Only it and the relay mount the relay's socket volume. It says it is ready, in a

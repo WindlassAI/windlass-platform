@@ -1,3 +1,4 @@
+import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { resolveDefaultPlace, savedPlace } from "../../../server/src/factory/default-place";
 /**
  * The start of an agent: a composer, not a form. Typing the task and pressing Enter launches it with
@@ -43,7 +44,7 @@ import { resolveDefaultPlace, savedPlace } from "../../../server/src/factory/def
  */
 import { monthReset, monthState } from "../lib/hosted";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES, signInWords } from "../lib/acp";
@@ -165,7 +166,8 @@ export function useCatalog(machine: MachineSummary | null, id: "claude" | "openc
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const machineId = machine?.machineId;
-	const digest = machine?.harnesses?.find(entry => entry.id === id)?.optionsDigest;
+	const entry = machine?.harnesses?.find(h => h.id === id);
+	const digest = entry?.optionsDigest;
 	const [result, setResult] = useState<{ machineId: string; digest: string; options?: HarnessOptions; error?: string }>();
 	const [retry, setRetry] = useState(0);
 	useEffect(() => {
@@ -178,7 +180,8 @@ export function useCatalog(machine: MachineSummary | null, id: "claude" | "openc
 		return () => { current = false; };
 	}, [client, auth, machineId, id, digest, explain, retry]);
 	const match = result?.machineId === machineId && result?.digest === digest ? result : undefined;
-	return { options: match?.options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
+	const options = useMemo(() => availableCatalog(match?.options, entry), [match?.options, entry]);
+	return { options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
 }
 
 /** The pickers the composer opens: one at a time. "repo" is the address form, opened from the where menu. */

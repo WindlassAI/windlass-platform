@@ -1,6 +1,7 @@
+import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { monthState } from "../lib/hosted";
 import type { AccountSettings, ChatgptStatus, FactoryLimits, MachineSummary, ModelList, SessionSummary, UsageNumbers } from "@contract";
-import type { ReportedOptions } from "../lib/models";
+import type { HarnessOptions } from "@contract";
 import type { Catalogs } from "../lib/subtask-agents";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
@@ -240,7 +241,7 @@ export function allowanceState(numbers: UsageNumbers | null, lowShare: number): 
 export function useCatalogs(machines: readonly MachineSummary[] | null): Catalogs {
 	const { client } = useApp();
 	const auth = useAuth();
-	const [catalogs, setCatalogs] = useState<Record<string, ReportedOptions>>({});
+	const [catalogs, setCatalogs] = useState<Record<string, HarnessOptions>>({});
 	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest && entry.id !== "codex").map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode", digest: entry.optionsDigest! })));
 	const keys = wanted.map((one) => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
 	useEffect(() => {
@@ -257,7 +258,7 @@ export function useCatalogs(machines: readonly MachineSummary[] | null): Catalog
 	}, [client, auth, keys]);
 	const out: Catalogs = {};
 	for (const one of wanted) {
-		const options = catalogs[`${one.machineId}/${one.id}/${one.digest}`];
+		const options = availableCatalog(catalogs[`${one.machineId}/${one.id}/${one.digest}`], machines?.find(m => m.machineId === one.machineId)?.harnesses?.find(h => h.id === one.id));
 		if (options) (out[one.machineId] ??= {})[one.id] = options;
 	}
 	return out;

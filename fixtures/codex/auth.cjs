@@ -21,6 +21,12 @@ https
 					JSON.stringify({ access_token: fixture.rotated, refresh_token: fixture.next, expires_in: 3600 }),
 				);
 			}
+			if (req.headers.host === 'relay.fixture.test') {
+				if (!['/model-relay/v1/responses', '/model-relay/v1/models'].includes(req.url)
+					|| !req.headers.authorization?.startsWith('Bearer wlpm1.') || !req.headers['x-wlp-machine-proof']) return refuse();
+				console.log('settings', req.method, req.url);
+				return respond(req, res);
+			}
 			const subscription = req.headers.host === 'chatgpt.com';
 			if (subscription && req.headers['chatgpt-account-id'] !== 'fixture-account') return refuse();
 			if (req.headers.authorization !== 'Bearer ' + (subscription ? fixture.rotated : fixture.key)) return refuse();

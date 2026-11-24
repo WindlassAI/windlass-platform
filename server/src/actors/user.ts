@@ -155,7 +155,7 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { MODEL_PROVIDER_TABLES, modelProviderActions } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
@@ -860,6 +860,7 @@ export async function readUsage(db: RawAccess, limits: UsageLimits, sessions: Re
 	await db.execute("DELETE FROM usage_start WHERE day < ?", today - USAGE_KEPT_DAYS);
 	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
 	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
+	await db.execute("DELETE FROM model_key_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
 	// Reload the retained ledger, including both sides of a subscription renewal.
 	const since = today - (limits.plan ? USAGE_KEPT_DAYS : USAGE_HISTORY_DAYS);
 	const entries = await db.execute<UsageEntryRow>("SELECT e.*, s.started_at FROM usage_entry e LEFT JOIN usage_start s USING (hold) WHERE e.day > ? ORDER BY e.id", since);
@@ -1230,7 +1231,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
 		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
 		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
-		// Where the sign-in method decides how an item counts its tokens (Codex), it is kept with the item, and refused when it is not one items run with.
+		// Where the sign-in method decides how an item counts its tokens (Claude Code or Codex), it is kept with the item, and refused when it is not one items run with.
 		const itemSignIn = item && harness !== "windlass" && machineHarnesses[harness].itemTokens === "sign-in" ? offered?.method : undefined;
 		const methodProblem = item && harness !== "windlass" ? itemSignInMethodProblem(machineHarnesses[harness], machine?.name ?? "your machine", offered?.method) : null;
 		if (methodProblem) throw new UserError(methodProblem, { code: "bad_input" });
@@ -1244,8 +1245,9 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const options = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
-		if (offered?.optionsDigest && !options) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
+		const catalog = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
+		if (offered?.optionsDigest && !catalog) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
+		const options = availableCatalog(catalog ?? undefined, offered);
 		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
 			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
 		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, offered?.modes ?? []) : options?.modes);
@@ -1344,7 +1346,7 @@ export async function agentModels(c: CreateCtx & { key: string[] }): Promise<Age
 	const machines: NonNullable<AgentModels["machines"]> = {};
 	harnesses.forEach(({ m, h }, i) => {
 		const options = catalogs[i];
-		if (options !== null) (machines[m.machineId] ??= {})[h.id] = initialHarnessModels(options);
+		if (options !== null) (machines[m.machineId] ??= {})[h.id] = initialHarnessModels(availableCatalog(options, h));
 	});
 	return { windlass, machines };
 }
@@ -1834,6 +1836,7 @@ export const user = actor({
 			requireServiceFor(c, "call");
 			// The session can already be out of the index while its deletion settles its last receipt.
 			const inserted = await recordTurnTokens(c.db, input.sessionId, input.receipt);
+			if (input.receipt.key) return;
 			const { at } = input.receipt;
 			c.vars.usage.noteModelTokens(at, await tokensOn(c.db, at));
 			if (inserted) {
@@ -1877,6 +1880,8 @@ export const user = actor({
 			if (!inventoryChanged) return;
 			queueChanged(c);
 			const machine = c.vars.machines.get(id);
+			if (before?.harnesses?.some(h => h.loginGeneration !== machine?.harnesses?.find(e => e.id === h.id)?.loginGeneration))
+				await notifyProviderWaits(c, c.vars.items.items.values());
 			if (machine?.status === "online" && (before?.status !== "online" || (!hasRoom(before) && hasRoom(machine)))) {
 				for (const item of c.vars.items.items.values()) {
 					if (item.awaitingPlace && item.state === "waiting") await itemActor(c, c.key[0], item.id).internalMachineAvailable();
@@ -2926,9 +2931,21 @@ export const user = actor({
 		},
 
 		modelProviders: c => modelProviderActions.modelProviders(c),
-		saveModelProvider: (c, input: { provider: ModelProvider; key: string }) => modelProviderActions.saveModelProvider(c, input),
+		saveModelProvider: async (c, input: { provider: ModelProvider; key: string }) => {
+			const saved = await modelProviderActions.saveModelProvider(c, input);
+			await machinesChanged(c);
+			queueChanged(c);
+			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
+			return saved;
+		},
 		checkModelProvider: (c, provider: ModelProvider) => modelProviderActions.checkModelProvider(c, provider),
-		removeModelProvider: (c, provider: ModelProvider) => modelProviderActions.removeModelProvider(c, provider),
+		removeModelProvider: async (c, provider: ModelProvider) => {
+			await modelProviderActions.removeModelProvider(c, provider);
+			await machinesChanged(c);
+			queueChanged(c);
+			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
+		},
+		internalModelKeys: c => modelProviderActions.internalModelKeys(c),
 		internalModelKeyGeneration: (c, provider: ModelProvider) => modelProviderActions.internalModelKeyGeneration(c, provider),
 		internalModelKey: (c, provider: ModelProvider, nonce: string) => modelProviderActions.internalModelKey(c, provider, nonce),
 
@@ -3060,7 +3077,7 @@ export const user = actor({
 				await (await signIn(c)).adopt(sealed);
 				if (c.vars.machines.size) await machinesChanged(c);
 				queueChanged(c);
-				await notifyProviderWaits(c, c.vars.items.items.values(), true);
+				await notifyProviderWaits(c, c.vars.items.items.values(), "adopted");
 				// From here on the actor is a user's, and stays.
 				c.vars.reached = true;
 				console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);

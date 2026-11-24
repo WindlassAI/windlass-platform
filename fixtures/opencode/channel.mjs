@@ -5,10 +5,17 @@ import { Session } from '../../runner/src/session.ts';
 import { ServerChannel } from '../../server/src/runner/channel.ts';
 import { RunnerLink, machineLayer } from '../../server/src/sandbox/runner-layer.ts';
 import { AcpHarness } from '../../server/src/sandbox/acp-harness.ts';
+import { turnCredential } from '../../server/src/actors/agent-session.ts';
 import { OPENCODE, CODEX } from '../../server/src/sandbox/harnesses.ts';
 import { turnRefusal } from '../../server/src/provider-refusal.ts';
 
-export async function channelTurn(owner, session, id, model, expectedFailure, codex) {
+export async function channelTurn(owner, session, id, model, expectedFailure, codex, providers = []) {
+	if (providers.length) {
+		const { config } = await import('../../server/src/config.ts');
+		config.modelRelay.on = true;
+		config.modelRelay.url = { origin: 'https://relay.fixture.test', host: 'relay.fixture.test' };
+		owner.harnessKeyRelays = true;
+	}
 	const runner = new Session(session, owner, () => {});
 	const messages = [new EventEmitter(),new EventEmitter()];
 	const endpoint = side => ({
@@ -36,8 +43,14 @@ export async function channelTurn(owner, session, id, model, expectedFailure, co
 		let previous;
 		for (const mode of (codex ? ['agent-full-access'] : session === 'third' ? ['build', 'plan'] : ['plan'])) {
 			let reply = '', selected;
+			const ctx = {vars:{runner:link}, client:() => ({user:{get:() => ({
+				internalModelKeys:async () => providers.map(provider => ({provider, generation:'fixture'})),
+			})}})};
+			const credential = await turnCredential(ctx, {uid:owner.identity.uid, place:{kind:'machine', machineId:owner.identity.machineId}},
+				{id:harness.id, keyRelay:owner.harnessKeyRelays}, model);
 			const turn = await harness.runTurn(box, {
-				prompt: 'Say relay proof.', mode, model, windlassSessionId: previous,
+				prompt: 'Say relay proof.', mode, model:credential.model,
+				...(credential.key && { machineKey: { sessionId: session, key:credential.key } }), windlassSessionId: previous,
 				signal: AbortSignal.timeout(expectedFailure ? 150000 : 90000),
 				onAcpModes(current, choices) {
 					assert.deepEqual(choices.map(c => c.id), codex ? ['agent-full-access'] : ['build','plan']);

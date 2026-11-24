@@ -1,4 +1,5 @@
 // cd server && npx tsx ../scripts/harness-check.ts
+import "./check-secret.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -14,6 +15,37 @@ import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/s
 import { SecretRedactor } from "../server/src/repo-secrets.js";
 import { modeSelection, optionsOf } from "../server/src/sandbox/acp-options.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
+
+{
+	const { turnCredential } = await import("../server/src/actors/agent-session.js");
+	const machine = {kind:"machine", machineId:"desk"}, hosted = {kind:"hosted"};
+	const keys = [{provider:"openai",generation:"first"}, {provider:"google",generation:"second"}];
+	const calls: string[] = [];
+	const ctx = { client: () => ({user:{get:() => ({internalModelKeys:async () => { calls.push("keys"); return keys; }})}}),
+		vars:{runner:{request:async (op: string) => { calls.push(op); return "google/gemini"; }}} };
+	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
+		turnCredential(ctx as never, {place, uid:"owner", harnessModels:{defaultModel}} as never, {id:"opencode", keyRelay} as never, model);
+	assert.deepEqual(await resolve(hosted, "default", true), {model:"default"});
+	assert.deepEqual(await resolve(machine, "default"), {model:"default"});
+	assert.deepEqual(calls, []);
+	assert.deepEqual(await resolve(machine, "default", true), {model:"google/gemini",key:keys[1]});
+	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault"]);
+	assert.deepEqual(await resolve(machine, "default", true, "openai/gpt"), {model:"google/gemini",key:keys[1]});
+	assert.deepEqual(await resolve(machine, "openai/gpt", true), {model:"openai/gpt",key:keys[0]});
+	assert.deepEqual(await resolve(machine, "opencode/free", true), {model:"opencode/free",key:undefined});
+	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault","keys","keys"]);
+	assert.deepEqual(await resolve(machine, "default", true, "anthropic/removed"), {model:"google/gemini",key:keys[1]});
+	assert.deepEqual(calls, ["keys","openCodeDefault"]);
+	console.log("ok  selected and default provider generation, legacy runner and hosted placement");
+}
+if (process.argv.includes("--turn-provider")) process.exit(0);
+{
+	const { CLAUDE, itemSignInChanged } = await import("../server/src/sandbox/harnesses.js");
+	assert.match(itemSignInChanged(CLAUDE, "Bench", undefined, "api-key") ?? "", /Claude subscription/);
+	assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, "subscription"), null);
+	console.log("ok  historical Claude item sign-in");
+}
+if (process.argv.includes("--settings-keys")) process.exit(0);
 
 // Compile this consumer along with the server so changes to the wire contract cannot undo narrowing.
 function typedField(update: AcpUpdate): string | undefined {
@@ -100,7 +132,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	// What the screens are sent: the same flags, read-only, and nothing of the record that is not theirs.
 	const sent = sessionCapabilities("claude");
 	assert.deepEqual(Object.keys(sent).sort(), ["cancelCall", "checks", "envLists", "models", "planMode", "platformTools", "projectServerApproval", "reportScreenshots", "usage"]);
-	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
+	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "request_secret", "publish", "push", "fetch_base", "file_review"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
 	assert.deepEqual(sessionCapabilities(undefined), sessionCapabilities("windlass"));
 	assert.ok(sessionCapabilities("windlass").cancelCall && sessionCapabilities("windlass").usage === "tokens" && sessionCapabilities("codex").planMode);
 	assert.equal(harnessName("codex"), "Codex");
@@ -136,7 +168,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
 	// Codex takes them through its image's wlp-acp-mcp (sandbox/harness/codex/requirements.toml).
-	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "request_secret", "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "request_secret", "publish", "push", "fetch_base", "file_review"], `${acp} can be given the tools available over MCP`);
 	const { MCP_TOOLS } = await import("../server/src/platform-tools.js");
 	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools].sort(), [...MCP_TOOLS].sort(), `${acp}'s tools are exactly those that may be served over MCP`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
@@ -884,11 +916,12 @@ async function clientCheck(state: string) {
 		assert.equal(subtaskHarnessProblem("codex"), "Plan-first subtasks run Windlass, Claude Code or OpenCode for now. Codex runs Quick items only.");
 		assert.deepEqual([CODEX.items, CODEX.subtasks], [true, false]);
 		assert.deepEqual([itemTokensOf(CODEX, "chatgpt"), itemTokensOf(CODEX, "api-key"), itemTokensOf(CODEX, undefined), itemTokensOf(CLAUDE, "api-key"), itemTokensOf(OPENCODE, undefined)],
-			["subscription", "budget", "budget", "subscription", "budget"]);
+			["subscription", "budget", "budget", "budget", "budget"]);
 		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "chatgpt"), null);
-		assert.match(itemSignInMethodProblem(CODEX, "Bench", "api-key") ?? "", /^Codex on “Bench” signs in with an API key, and its work items run only with ChatGPT sign-in for now\./);
+		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "api-key"), null);
 		assert.match(itemSignInMethodProblem(CODEX, "Bench", undefined) ?? "", /signs in with a method it did not report/);
-		assert.equal(itemSignInMethodProblem(CLAUDE, "Bench", undefined), null);
+		assert.equal(itemSignInMethodProblem(CLAUDE, "Bench", "subscription"), null);
+		assert.equal(itemTokensOf(CLAUDE, "subscription"), "subscription");
 		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "chatgpt"), null);
 		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "api-key"), "Codex on “Bench” now signs in with an API key, not ChatGPT as when this item was filed. File the work again.");
 		assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, undefined), null);

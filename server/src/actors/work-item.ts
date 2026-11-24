@@ -2371,12 +2371,15 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			await queued(c, async () => {
 				const item = c.vars.stored?.item;
-				if (item?.revision !== revision || item.wait?.reason !== "provider" || item.question) return;
+				if (item?.revision !== revision || item.question) return;
+				const placement = item.run?.step.kind === "subtasks" && item.state === "waiting";
+				if (!placement && item.wait?.reason !== "provider") return;
 				// Admission waits belong to the user's queue. A refused turn or unplaced child has its own timer.
 				const key = currentKey(item);
 				const now = Date.now();
-				const rows = await c.db.execute("UPDATE effects SET due_at=? WHERE id IN (?,?) AND due_at>? RETURNING id",
-					now, "provider_retry:" + key, "dispatch:" + key, now);
+				const rows = placement
+					? await c.db.execute("UPDATE effects SET due_at=? WHERE id GLOB 'dispatch:*' AND due_at>? RETURNING id", now, now)
+					: await c.db.execute("UPDATE effects SET due_at=? WHERE id=? AND due_at>? RETURNING id", now, "provider_retry:" + key, now);
 				if (rows.length) await armDueInQueue(c);
 			});
 		},

@@ -140,10 +140,16 @@ export function cutTurnUsageNote(usage: TurnUsage | null): string {
 export const TOKEN_USAGE_TABLE = `CREATE TABLE IF NOT EXISTS token_usage (
 	day INTEGER NOT NULL, session TEXT NOT NULL, seq INTEGER NOT NULL, tokens INTEGER NOT NULL,
 	PRIMARY KEY (day, session, seq))`;
-export interface TokenReceipt { seq: number; at: number; tokens: number }
+export interface TokenReceipt { seq: number; at: number; tokens: number; key?: import("./sandbox/provider.js").ModelKeyLease }
 
 export async function recordTurnTokens(db: Pick<RawAccess, "execute">, session: string, receipt: TokenReceipt) {
 	if (![receipt.seq, receipt.tokens, receipt.at].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error("Invalid token receipt.");
+	if (receipt.key) {
+		const { provider, generation } = receipt.key;
+		const rows = await db.execute("INSERT INTO model_key_usage(day,session,seq,tokens,provider,generation) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
+			dayOf(receipt.at), session, receipt.seq, receipt.tokens, provider, generation);
+		return rows.length > 0;
+	}
 	const rows = await db.execute("INSERT INTO token_usage(day, session, seq, tokens) VALUES(?,?,?,?) ON CONFLICT DO NOTHING RETURNING seq",
 		dayOf(receipt.at), session, receipt.seq, receipt.tokens);
 	return rows.length > 0;

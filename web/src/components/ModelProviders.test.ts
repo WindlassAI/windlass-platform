@@ -62,6 +62,7 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		expect((await client.user(auth).modelProviders()).map((one) => one.last4)).toEqual(["9876"]);
 
 		await press(row("openai"), "Remove");
+		expect(document.querySelector("dialog")?.textContent).toMatch(/blocks new requests.*already running may finish/i);
 		await press(document.querySelector("dialog")!, "Keep it");
 		expect(row("openai").textContent).toContain("…9876");
 		await press(row("openai"), "Remove");

@@ -569,10 +569,10 @@ class RunnerHandle implements TurnSandbox {
 		if (found.blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
 		if (found.modelRelay && config.modelRelay.on) {
 			this.modelRelay = async () => this.relayOf(await link.request("modelRelay", { id }));
-			this.modelKeyRelay = (sessionId, key) => {
+			this.machineKeyRelay = (sessionId, key, harness, signal) => {
 				if (sessionId !== link.who.sessionId) throw new Error("This model relay belongs to another session.");
 				return forwardKeyLease(this.uid, sessionId, key, link.who.machineId, async forward =>
-					this.closeableRelay(await link.request("modelRelay", { id, forward })));
+					this.closeableRelay(await link.request("modelRelay", { id, forward }, { signal })), { harness, signal });
 			};
 			if (link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
 		}
@@ -582,7 +582,7 @@ class RunnerHandle implements TurnSandbox {
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
 	readonly blockedNetwork?: TurnSandbox["blockedNetwork"];
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
-	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
+	readonly machineKeyRelay?: TurnSandbox["machineKeyRelay"];
 
 	/** `TurnSandbox.resumeRelay`: the runner kept the lease with the conversation; the restarted turn hands it a token again at once. */
 	readonly resumeRelay?: TurnSandbox["resumeRelay"];

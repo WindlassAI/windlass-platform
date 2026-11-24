@@ -44,6 +44,21 @@ async function settle(steps = 14): Promise<void> {
 
 const button = (name: string) => [...document.body.querySelectorAll("button")].find((one) => one.textContent?.trim() === name) as HTMLButtonElement | undefined;
 
+it.each(["/machines", "/settings"])("shows the Settings key upgrade on %s for runner 0.3.8", async path => {
+	history.replaceState(null, "", path);
+	client = createMockClient({ pace:0, machine:"online" });
+	const user = client.user.bind(client);
+	const [machine] = await user(ada).machines();
+	vi.spyOn(client, "user").mockImplementation(auth => ({ ...user(auth), machines:async () => [
+		{ ...machine!, runnerVersion:"0.3.8", harnesses:machine!.harnesses?.map(({keyRelay: _, ...h}) => h) },
+	] }));
+	saveAuth("mock", ada);
+	root = createRoot(host);
+	act(() => root.render(createElement(AppProvider, { client, children:createElement(App) })));
+	await settle();
+	expect(host.textContent).toContain("Update the runner to use Settings keys on this machine");
+});
+
 describe("adding a machine", () => {
 	it("shows the machine key and connects only once the person says their terminal shows the same", async () => {
 		history.replaceState(null, "", "/machines");

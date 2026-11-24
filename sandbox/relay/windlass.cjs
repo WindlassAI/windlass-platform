@@ -20,12 +20,7 @@ const SOCKET = '/workspace/relay.sock';
 const HOST = '127.0.0.1:17893';
 const LEASE = /^wlp-model\.[a-f0-9]{32}$/;
 const NONCE = /^[a-f0-9]{32}$/;
-const { wires, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
-function methodFor(provider, path) {
-	const wire = wires[provider];
-	if (path === wire.models) return 'GET';
-	if (wire.posts.includes(path) || wire.postPattern?.test(path)) return 'POST';
-}
+const { wires, wireMethod: methodFor, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
 function anyMethod(path) {
 	for (const provider of Object.keys(wires)) {
 		const method = methodFor(provider, path);
@@ -58,6 +53,7 @@ function wireTarget(provider, path, incoming, credential) {
 		if (!values.every(value => wire.betas.includes(value))) return;
 		headers['anthropic-beta'] = values.join(',');
 	}
+	if (provider === 'openai' && method === 'POST' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
 	for (const [name, value] of Object.entries(incoming)) {
 		if ((name === 'accept' || name === 'user-agent' || (name === 'content-type' && method === 'POST') || wire.passed?.includes(name)) && typeof value === 'string') headers[name] = value;
 		else if (!wire.dropUnknown && !wire.drop?.includes(name) && name !== 'authorization' && !Object.hasOwn(headers, name) && !transport.has(name)

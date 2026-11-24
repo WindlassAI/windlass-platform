@@ -171,7 +171,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["environment-build", "warm-spares", "spare-reseed", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
+export const SERVER_CAPABILITIES = ["environment-build", "warm-spares", "spare-reseed", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "harness-key-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -274,7 +274,7 @@ const harnessId = oneOf("claude", "opencode", "codex");
 const digest = is<string>(v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v));
 const catalogShape = object({ kind: oneOf("catalog"), id: harnessId, options: validHarnessOptions });
 const catalog = is<Of<typeof catalogShape>>(v => catalogShape(v) && (v.id !== "codex" || boundedCodexOptions(v.options)));
-const harnessEntry = object({ id: harnessId, loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), method: optional(oneOf("api-key", "chatgpt")), modes: optional(list(line(64), 16)), modeReason: optional(line(500)), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), signInReason: optional(line(300)), options: optional(validHarnessOptions) });
+const harnessEntry = object({ id: harnessId, keyRelay: optional(oneOf(true)), machineProviders: optional(list(line(128), 512)), loginGeneration: optional(is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v))), method: optional(oneOf("api-key", "chatgpt")), modes: optional(list(line(64), 16)), modeReason: optional(line(500)), optionsDigest: optional(digest), optionsCheckedAt: optional(time), adapter: line(64), image: line(128), signIn: oneOf("token", "none", "unknown"), signInReason: optional(line(300)), options: optional(validHarnessOptions) });
 const harnesses = list(is<Of<typeof harnessEntry>>(v => harnessEntry(v) && (v.id === "codex" ? !v.options || boundedCodexOptions(v.options) : v.method === undefined && v.modes === undefined && v.modeReason === undefined)), 4);
 const profileList = list(machineProfile, MACHINE_PROFILES.length);
 export const validAllowedProfiles = is<MachineProfile[]>(v => profileList(v) && v.includes("docker-hardened") && new Set(v).size === v.length);
@@ -337,6 +337,8 @@ export function reportFor<R extends Report>(report: R, named: readonly string[] 
 		if (!named?.includes(capability)) delete kept[field];
 	// A field inside each harness entry: taken out of every entry for a server that does not read it.
 	if (!named?.includes("sign-in-reason") && kept.harnesses) kept.harnesses = kept.harnesses.map(({ signInReason: _, ...entry }) => entry);
+	if (!named?.includes("harness-key-relay") && kept.harnesses)
+		kept.harnesses = kept.harnesses.map(({ keyRelay: _, machineProviders: __, ...entry }) => entry);
 	return kept as R;
 }
 export type RunnerFrame = Of<typeof runnerFrame>;

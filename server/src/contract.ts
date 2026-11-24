@@ -449,9 +449,9 @@ export interface SessionSummary {
 	servers?: { count: number; changedAt: number };
 	/**
 	 * Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it.
-	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Codex).
+	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Claude Code and Codex).
 	 */
-	item?: { id: string; role?: "builder" | "reviewer"; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" };
+	item?: { id: string; role?: "builder" | "reviewer"; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" | "subscription" };
 	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
 	environmentBuild?: true;
 	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
@@ -1662,7 +1662,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
 	/** `signInReason`: with `signIn` "unknown", why the runner could not check the sign-in (runner 0.3.4 and later). */
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; method?: "api-key" | "chatgpt"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; keyRelay?: true; machineProviders?: string[]; platformKeys?: ModelProvider[]; method?: "api-key" | "chatgpt" | "subscription"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -2224,9 +2224,9 @@ export interface ItemAgent {
 	effort?: string | null;
 	/**
 	 * How the machine's agent was signed in when the item was filed, where that decides whether its tokens
-	 * count (Codex: "chatgpt", a subscription). Its turns run only while the machine reports the same. Absent elsewhere.
+	 * count against the item budget. Its turns run only while the machine reports the same. Absent elsewhere.
 	 */
-	signIn?: "api-key" | "chatgpt";
+	signIn?: "api-key" | "chatgpt" | "subscription";
 	/**
 	 * How the item's tokens are known.
 	 * - "counted": reported, and counted against `budget.tokens` (Windlass; an agent on an API key).
@@ -2982,6 +2982,7 @@ export interface UsageWindow {
 	source: "refusal" | "event" | "header";
 }
 export interface ProviderAccount {
+	provider?: ModelProvider;
 	key: string;
 	harness: HarnessId;
 	state: "ok" | "warning" | "limited";
@@ -3031,6 +3032,8 @@ export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolea
  */
 export type NetworkBlockedItem = { seq: number; at: number; turn: number; kind: "network.blocked"; revision: number } & BlockedNetwork;
 
+export interface ModelKeySpend { provider: ModelProvider; generation: string; tokens: number }
+
 export type TimelineItem =
 	/** One row per turn. Its first snapshot arrives on item, replacements on networkBlocked with the same seq. */
 	| NetworkBlockedItem
@@ -3058,6 +3061,7 @@ export type TimelineItem =
 			at: number;
 			turn: number;
 			kind: "platform";
+			modelKey?: ModelKeySpend;
 			/** The agent’s request, with its reason as quoted plain text. */
 			secretRequest?: SecretRequest & { id: string };
 			level: "info" | "warn" | "error";
@@ -3119,6 +3123,7 @@ export type TimelineItem =
 			at: number;
 			turn: number;
 			kind: "turn.ended";
+			modelKey?: ModelKeySpend;
 			outcome: TurnOutcome;
 			/** Windlass's exit code, null when it never ran or was killed. */
 			exitCode: number | null;

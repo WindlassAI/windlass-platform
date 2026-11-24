@@ -359,6 +359,10 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 	);
 }
 
+export function settingsKeyUpgrade(machine: MachineSummary) {
+	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the runner to use Settings keys on this machine." : null;
+}
+
 /**
  * A machine's agents as a status list: each one signed in or not, as its runner last said, with the
  * command that signs it in on the machine. Signing in is done in the machine's terminal only.
@@ -379,7 +383,7 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 							<span className="machine-agent-state">
 								{" "}
 								<CheckIcon size={13} />
-								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
+								{signInWords(harness)}{!harness.platformKeys?.length && harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
 						) : harness.signIn === "none" ? (
 							<span className="machine-agent-state">: {signInWords(harness)}</span>
@@ -501,6 +505,7 @@ function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged
 }
 
 function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: MachineSummary; info: MachinesInfo; now: number; onChanged(list: MachineSummary[]): void; onRemove(machine: MachineSummary): void }) {
+	const upgrade = settingsKeyUpgrade(machine);
 	const [open, setOpen] = useState(false);
 	const details = useId();
 	const reported = machine.commandSandbox !== null;
@@ -550,8 +555,9 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</p>
 				<MachineUse machine={machine} onChanged={onChanged} />
 				<MachineAgents harnesses={machine.harnesses ?? []} />
+				{upgrade && <p className="field-note">{upgrade}</p>}
 				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
-					<p className="field-note" key={a.key}>{HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
+					<p className="field-note" key={a.key}>{a.provider ? `${a.provider} Settings key` : HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 			</div>
 			<MachineState machine={machine} now={now} />
 			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>

@@ -8,6 +8,8 @@ import type { DefaultsDb } from "./repository-defaults.js";
 import { serverSealer } from "./signin/seal.js";
 
 export const MODEL_PROVIDER_TABLES = [
+	`CREATE TABLE IF NOT EXISTS model_key_usage (day INTEGER NOT NULL, session TEXT NOT NULL, seq INTEGER NOT NULL,
+		tokens INTEGER NOT NULL, provider TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(day,session,seq))`,
 	`CREATE TABLE IF NOT EXISTS model_provider (
 		provider TEXT PRIMARY KEY, sealed TEXT NOT NULL, generation TEXT NOT NULL, last4 TEXT NOT NULL,
 		added_at INTEGER NOT NULL, checked_at INTEGER, check_ok INTEGER NOT NULL DEFAULT 0, models TEXT
@@ -131,6 +133,10 @@ async function runCheck(db: DefaultsDb, provider: ModelProvider, key: string, ge
 	return { ...status(row), ...(models === null && { message: "Could not check the key with the provider. Verify the key and try again." }) };
 }
 
+export function savedModelKeys(db: DefaultsDb) {
+	return db.execute<{ provider: ModelProvider; generation: string }>("SELECT provider, generation FROM model_provider ORDER BY provider");
+}
+
 export const modelProviderActions = {
 	async modelProviders(c: Context): Promise<ModelProviderStatus[]> {
 		requireUser(c);
@@ -159,6 +165,11 @@ export const modelProviderActions = {
 	async removeModelProvider(c: Context, raw: ModelProvider): Promise<void> {
 		requireUser(c);
 		await c.db.execute("DELETE FROM model_provider WHERE provider = ?", providerOf(raw));
+	},
+	/** Pin all of a machine turn's available generations in one read, without opening any key. */
+	async internalModelKeys(c: Context) {
+		requireServiceFor(c, modelKeyCaller(c.key[0]!));
+		return savedModelKeys(c.db);
 	},
 	/** A turn can pin the saved generation without opening the key. */
 	async internalModelKeyGeneration(c: Context, raw: ModelProvider): Promise<string | null> {

@@ -6,7 +6,7 @@ import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
-import { harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
+import { selectedKey, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
@@ -169,11 +169,15 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const tokenWait = usesPlatformModel(place, harness) ? inventory.dailyTokenWait : null;
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	// Usage limits are an account's: only those of the subtask's own agent there hold it back.
-	const limited = inventory.limited?.find(a => limitApplies(a, placeKey(place)) && a.harness === harness);
+	const machine = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
+	const keys = machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? [];
+	const model = task.agent?.model ?? inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel;
+	const provider = selectedKey(harness, model, keys);
+	const limited = inventory.limited?.find(a => provider ? a.machineId === "settings/" + provider : limitApplies(a, placeKey(place)) && a.harness === harness);
 	const waiting = (limit: NonNullable<typeof limited>, name: string) => {
 		const dailyCap = !!tokenWait;
-		const wait = limit.limitedUntil === undefined ? `Waiting for the ${limit.harness} usage limit on ‘${name}’ to reset.`
-			: providerWait(limit.harness, name, placementRetryAt(at, limit.limitedUntil, dailyCap)).sentence;
+		const wait = limit.limitedUntil === undefined ? `Waiting for the ${harness} usage limit on ‘${name}’ to reset.`
+			: providerWait(harness, name, placementRetryAt(at, limit.limitedUntil, dailyCap)).sentence;
 		return { wait, providerUntil: limit.limitedUntil, accountKey: limit.accountKey, dailyCap };
 	};
 	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place!.prefer}’`;

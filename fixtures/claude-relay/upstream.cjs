@@ -4,7 +4,15 @@ const https = require('node:https');
 https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFileSync('/fixture/cert.pem') }, async (req, res) => {
 	const bytes = [];
 	for await (const chunk of req) bytes.push(chunk);
-	const match = req.headers.authorization === 'Bearer ' + fs.readFileSync('/fixture/expected', 'utf8');
+	const platform = req.url === '/model-relay/v1/messages' || req.url === '/model-relay/v1/messages/count_tokens';
+	if (platform) {
+		const valid = req.headers['x-api-key'] === 'wlpm1.fixture' && !req.headers.authorization && !!req.headers['x-wlp-machine-proof']
+			&& !req.headers['anthropic-beta']?.includes('oauth');
+		console.log('settings messages authorized=' + valid);
+		if (!valid) { res.writeHead(401); return res.end(); }
+		req.url = req.url.slice('/model-relay'.length);
+	}
+	const match = platform || req.headers.authorization === 'Bearer ' + fs.readFileSync('/fixture/expected', 'utf8');
 	const body = Buffer.concat(bytes).toString();
 	const tag = req.url.startsWith('/v1/messages/count_tokens') ? '-' : body.includes('Slow relay check.') ? 'slow' : body.includes('Queued relay check.') ? 'queued' : '-';
 	console.log(req.method, req.url, 'bearerMatch=' + match, 'beta=' + req.headers['anthropic-beta'], 'version=' + req.headers['anthropic-version'], 'tag=' + tag);

@@ -180,7 +180,7 @@ import {
 } from "../contract.js";
 import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../blocked-network.js";
 import { billing } from "../billing/config.js";
-import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
+import type { ModelKeySpend, BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, readOnlyReview, materializeInput, removeInputs } from "../github/git.js";
@@ -225,7 +225,7 @@ import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
 import { runBaseTests, type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
-import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildReport, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { itemActor, modelKeyActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildReport, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
@@ -233,7 +233,8 @@ import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
 import { planReviewOf, type PlanReview } from "../factory/autonomy.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
-import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
+import { accountKey, type AccountLocation } from "./provider-accounts.js";
+import { resetTime, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
 import type { FeedbackNotice } from "./github-inbox.js";
 import { batchText, feedbackWords, fits, oversizedFeedback } from "../factory/feedback.js";
@@ -248,7 +249,7 @@ import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -930,6 +931,14 @@ async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]
 	);
 }
 
+function turnReceipts(meta: SessionMeta | null, batch: TimelineItem[]) {
+	return batch.flatMap(item => {
+		const key = item.kind === "turn.ended" || item.kind === "platform" ? item.modelKey : undefined;
+		const tokens = key?.tokens ?? (meta && item.kind === "windlass" && usesPlatformModel(meta.place, meta.harness) ? turnTokens(reportedModelUsage(item.event)) : 0);
+		return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens, key }] : [];
+	});
+}
+
 /** Writes the waiting items, a batch per statement. Only ever called from inside the queue. */
 async function writeItems(c: Ctx): Promise<void> {
 	if (c.vars.runner?.durable) return writeDurably(c);
@@ -937,11 +946,7 @@ async function writeItems(c: Ctx): Promise<void> {
 	while (waiting.length > 0) {
 		const batch = waiting.slice(0, WRITE_BATCH);
 		const meta = c.vars.meta;
-		const receipts = meta && usesPlatformModel(meta.place, meta.harness) ? batch.flatMap(item => {
-			if (item.kind !== "windlass") return [];
-			const tokens = turnTokens(reportedModelUsage(item.event));
-			return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
-		}) : [];
+		const receipts = turnReceipts(meta, batch);
 		const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
 		if (receipts.length || network) {
 			// These are the model requests summed by the turn summary. Keep their original UTC day
@@ -983,11 +988,7 @@ async function writeDurably(c: Ctx): Promise<void> {
 	await c.db.transaction(async tx => {
 		for (let at = 0; at < items.length; at += WRITE_BATCH) {
 			const batch = items.slice(at, at + WRITE_BATCH);
-			const receipts = meta && usesPlatformModel(meta.place, meta.harness) ? batch.flatMap(item => {
-				if (item.kind !== "windlass") return [];
-				const tokens = turnTokens(reportedModelUsage(item.event));
-				return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens }] : [];
-			}) : [];
+			const receipts = turnReceipts(meta, batch);
 			const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
 			await insertItems(tx, batch);
 			for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
@@ -1087,7 +1088,7 @@ function note(
 	turn: number,
 	level: "info" | "warn" | "error",
 	text: string,
-	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | { code: "turn_paused" | "turn_resumed" } | null = null,
+	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | { code: "turn_paused" | "turn_resumed"; modelKey?: ModelKeySpend } | null = null,
 ): void {
 	append(c, { turn, kind: "platform", level, text, ...(mark ?? {}) });
 }
@@ -1781,20 +1782,26 @@ function megabytes(bytes: number): string {
 const FRESH_WORKSPACE =
 	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. A repository that was cloned has been cloned again, with whatever of your work had been pushed to its branch; anything else you created or changed earlier is not in it. Look at what is there before you rely on earlier work.]\n\n";
 
-/**
- * Why an item's turn on a machine harness cannot start: the machine's last report does not offer the
- * agent, does not say it is signed in (`signIn` "token", as filing requires), or names another sign-in
- * method than the item was filed with, which would count its tokens differently (`itemSignInChanged`).
- * Null where it can, and for Windlass. A machine that cannot be asked is left to the turn, which waits for it.
- */
-async function itemSignInRefusal(c: Ctx, meta: SessionMeta): Promise<string | null> {
+type MachineFacts = import("./machine.js").MachineFacts;
+type OfferedHarness = NonNullable<NonNullable<MachineFacts["report"]>["harnesses"]>[number];
+
+export async function turnCredential(c: Ctx, meta: SessionMeta, offered: OfferedHarness | undefined, model: string, signal?: AbortSignal) {
+	if (meta.place.kind !== "machine" || !offered?.keyRelay) return { model };
+	const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
+	const providers = keys.map(k => k.provider);
+	if (offered.id === "opencode" && model === "default" && keys.length) {
+		model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
+	}
+	const provider = selectedKey(offered.id, model, providers);
+	return { model, key: keys.find(k => k.provider === provider) };
+}
+
+function itemSignInRefusal(meta: SessionMeta, facts: MachineFacts, offered: OfferedHarness | undefined, provider?: import("../contract.js").ModelProvider) {
 	const machine = machineHarness(meta.harness);
-	if (!machine || meta.place.kind !== "machine") return null;
-	const facts = await runnerLink(c, meta.place.machineId).facts().catch(() => null);
-	if (!facts?.report) return null;
-	const offered = facts.report.harnesses?.find(entry => entry.id === machine.id);
+	if (!machine || !facts.report) return null;
 	if (!offered) return `This machine does not offer ${machine.name}.`;
-	return itemSignInMessage(machine, facts.name, offered.signIn) ?? itemSignInChanged(machine, facts.name, meta.origin?.signIn, offered.method);
+	const effective = withSettingsKeys(offered, provider ? [provider] : []);
+	return itemSignInMessage(machine, facts.name, effective.signIn) ?? itemSignInChanged(machine, facts.name, meta.origin?.signIn, effective.method);
 }
 
 /**
@@ -4043,7 +4050,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let result: RunTurnResult | null = null;
 	let problem: string | null = null;
 	let lastStepRefusal: ProviderRefusal | null = null;
-	const account = { place: meta.place.kind === "machine" ? meta.place.machineId : "hosted", harness: meta.harness ?? "windlass" as const };
+	const account: AccountLocation = { place: meta.place.kind === "machine" ? meta.place.machineId : "hosted", harness: meta.harness ?? "windlass" as const };
 	let generation: string | null = null;
 	const observe = async (observation: UsageObservation) => {
 		if (generation !== null) await userActor(c, meta.uid).internalObserveUsage(account, generation, observation)
@@ -4126,7 +4133,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 
 		layer = await layerOf(c, meta);
 		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
-		const signedOut = active.item ? await itemSignInRefusal(c, meta) : null;
+		const facts = meta.place.kind === "machine" && machineHarness(meta.harness) ? await runnerLink(c, meta.place.machineId).facts() : null;
+		const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
+		const { model, key } = await turnCredential(c, meta, offered, meta.model, signal);
+		const signedOut = active.item && facts ? itemSignInRefusal(meta, facts, offered, key?.provider) : null;
 		if (signedOut) {
 			active.item!.refused = signedOut;
 			active.item!.policyRefusal = true;
@@ -4161,7 +4171,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
 		}
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
-		generation = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
+		account.provider = key?.provider;
+		generation = key?.generation ?? await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
 			c.log.warn({ msg: "Provider login generation unavailable for this turn" });
 			return null;
 		});
@@ -4227,7 +4238,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			void persist(c);
 		}
 		const common: RunTurnInput = {
-			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
+			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
 			// A machine turn whose conversation is kept: what it would need to be taken up after a restart, read with each timeline write.
@@ -4445,6 +4456,7 @@ fi`, { signal, timeoutMs: 5000 });
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
 				...common,
+				...(key && { machineKey: { sessionId: meta.sessionId, key } }),
 				prompt: notes.text + text,
 				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 				...(item && { unattended: true }),
@@ -4658,9 +4670,11 @@ fi`, { signal, timeoutMs: 5000 });
 	// The sandbox's memory is read at the turn's end, not at a pause: a server going away, or a machine away, is no guest that
 	// stopped answering. The resumed segment compares with the same start (`TurnRun.memory`).
 	if (!pausing && used && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
+	const segmentUsage = usageOf(result?.summary?.usage) ?? result?.acp?.tokens ?? null;
+	const modelKey = account.provider && generation && segmentUsage ? { provider: account.provider, generation, tokens: turnTokens(segmentUsage) } : undefined;
 	if (pausing && active.pausing && run) {
 		try {
-			await pauseTurn(c, meta, active, active.pausing, usageOf(result?.summary?.usage) ?? result?.acp?.tokens ?? null, result);
+			await pauseTurn(c, meta, active, active.pausing, segmentUsage, modelKey, result);
 		} catch (error) {
 			c.log.error({ msg: "could not pause the turn", error: describeError(error) });
 		}
@@ -4673,7 +4687,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const caps = capabilitiesOf(meta.harness);
 		const summary = result?.summary ?? null;
 		// Windlass's summary event, or what an ACP agent answered its prompt with; with what the turn's earlier segments used.
-		const usage = addUsage(run?.usage ?? null, usageOf(summary?.usage) ?? result?.acp?.tokens ?? null);
+		const usage = addUsage(run?.usage ?? null, segmentUsage);
 		// Settle all reported requests before this turn's completion can admit more work.
 		if (usesPlatformModel(meta.place, meta.harness)) {
 			await serial(c, () => writeItems(c));
@@ -4764,7 +4778,7 @@ fi`, { signal, timeoutMs: 5000 });
 			message = refusalMessage(safe);
 			if (active.item) {
 				const { text, fetchBase } = active.item.row;
-				active.item.providerRefusal = { ...safe, accountKey: generation === null ? undefined : windlassAccountKey(generation), placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase, ...(active.item.row.untrusted.length && { untrusted: active.item.row.untrusted }) } };
+				active.item.providerRefusal = { ...safe, accountKey: generation === null ? undefined : accountKey(account, generation), placeName: meta.place.kind === "hosted" ? "hosted" : meta.machineName ?? undefined, retry: { text: redactor?.text(text) ?? text, fetchBase, ...(active.item.row.untrusted.length && { untrusted: active.item.row.untrusted }) } };
 			} else if (safe.kind === "invalid_request" || safe.kind.startsWith("model_")) {
 				message += " You can change the model or reasoning effort with your next prompt.";
 			}
@@ -4804,6 +4818,7 @@ fi`, { signal, timeoutMs: 5000 });
 			// A turn that was paused ran in segments: their running time, without the pauses.
 			durationMs: run && run.resumes > 0 ? run.activeMs + (Date.now() - run.segmentAt) : typeof summary?.durationMs === "number" ? summary.durationMs : Date.now() - startedAt,
 			usage,
+			...(modelKey && { modelKey }),
 			...(caps.usage === "context" ? { context: result?.acp?.usage ?? null } : {}),
 			...(caps.events === "acp" && meta.windlassSessionId ? { sessionId: meta.windlassSessionId } : {}),
 			cachedShare: typeof summary?.cachedShare === "number" ? summary.cachedShare : null,
@@ -5032,7 +5047,7 @@ function markPausing(c: Ctx, meta: SessionMeta): void {
  * that still runs). What it ran and used so far is kept with the turn's record, and a wake is scheduled: a server that is
  * up then resumes it. A machine's turn waits for the machine (`machinePaused`).
  */
-async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: PauseReason, usage: TurnUsage | null, result: RunTurnResult | null): Promise<void> {
+async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: PauseReason, usage: TurnUsage | null, modelKey: ModelKeySpend | undefined, result: RunTurnResult | null): Promise<void> {
 	const run = meta.run!;
 	const turn = active.number;
 	const now = Date.now();
@@ -5043,7 +5058,7 @@ async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: 
 	if (result?.windlassSessionId) meta.windlassSessionId = result.windlassSessionId;
 	// What the turn wrote to Windlass's session was not copied out of the sandbox: the copy is behind it.
 	if (meta.backup) meta.memoryTurn = turn;
-	note(c, turn, "info", pausedLine(reason, meta.machineName), { code: "turn_paused" });
+	note(c, turn, "info", pausedLine(reason, meta.machineName), { code: "turn_paused", modelKey });
 	c.vars.pending = [];
 	meta.status = "paused";
 	meta.lastUsedAt = now;
@@ -5513,17 +5528,21 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 		}
 
 		// The owner can change egress between session creation and its first prompt.
-		const facts = meta.place.kind === "machine" && (meta.repoUrl || caps.signIn === "machine")
+		const facts = meta.place.kind === "machine" && (meta.repoUrl || caps.signIn.includes("machine"))
 			? await runnerLink(c, meta.place.machineId).facts() : null;
 		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		// The operator can change WLP_E2B_NETWORK between a session's launch and its turn.
 		if (meta.repoUrl && meta.place.kind === "hosted" && (await layerOf(c, meta)).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
-		if (caps.signIn === "machine" && facts) {
+		if (caps.signIn.includes("machine") && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
 			if (!offered) throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, {code:"bad_input"});
-			if (offered.signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
+			if (offered.signIn === "none") {
+				const keys = offered.keyRelay ? await modelKeyActor(c, meta.uid).internalModelKeys() : [];
+				if (withSettingsKeys(offered, keys.map(k => k.provider), model).signIn === "none")
+					throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
+			}
 		} else if (!meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {

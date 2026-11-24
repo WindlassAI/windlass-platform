@@ -328,6 +328,7 @@ export function userActor(c: HasClient, uid: string): UserInternal {
 export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
 
 export function modelKeyActor(c: HasClient, uid: string): {
+	internalModelKeys(): Promise<import("../sandbox/provider.js").ModelKeyLease[]>;
 	internalModelKeyGeneration(provider: ModelProvider): Promise<string | null>;
 	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
 } {

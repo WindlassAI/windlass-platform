@@ -28,7 +28,7 @@ import { HARNESS_NAMES } from "../lib/acp";
 import { machineLabel } from "../lib/machines";
 import { modeName } from "../lib/modes";
 import { startingChoices } from "../lib/repositories";
-import { useMachines } from "./Machines";
+import { settingsKeyUpgrade, useMachines } from "./Machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels } from "../state/hooks";
@@ -40,9 +40,8 @@ import { AgentGlyph } from "../components/ui/Pill";
  * agent started, which the server remembers (`AccountSettings.lastStart`). Said in one line, with a
  * way to forget it; the next agent started is remembered again.
  */
-function LastStartLine({ lastStart, forget, onForgotten }: { lastStart: LastStart | null; forget(): Promise<AccountSettings>; onForgotten(next: AccountSettings): void }) {
-	const { platform, explain } = useApp();
-	const machines = useMachines(lastStart?.place.kind === "machine" && platform.info?.machines != null);
+function LastStartLine({ machines, lastStart, forget, onForgotten }: { machines: ReturnType<typeof useMachines>; lastStart: LastStart | null; forget(): Promise<AccountSettings>; onForgotten(next: AccountSettings): void }) {
+	const { explain } = useApp();
 	const [busy, setBusy] = useState(false);
 	const [failed, setFailed] = useState<string | null>(null);
 	const machine = lastStart?.place.kind === "machine" ? (machines.list?.find((candidate) => candidate.machineId === (lastStart.place as { machineId: string }).machineId) ?? null) : null;
@@ -112,6 +111,7 @@ export function Settings() {
 	const models = useModels();
 	const { settings } = account;
 	const info = platform.info;
+	const machines = useMachines(!!info?.machines);
 	const who = signedIn?.profile.demo ? "the demo account" : (signedIn?.profile.email ?? signedIn?.profile.uid ?? "your account");
 	// What a secret reaches depends on the sandbox: the list is said for the one a new agent starts in when nothing else is chosen.
 	const choices = startingChoices(settings?.defaults ?? null, info, models.list, "account");
@@ -167,7 +167,7 @@ export function Settings() {
 						save={(change) => client.user(auth).saveAccountDefaults(change)}
 						onSaved={(next) => account.replace({ ...settings, defaults: next })}
 					>
-						<LastStartLine lastStart={settings.lastStart} forget={() => client.user(auth).forgetLastStart()} onForgotten={account.replace} />
+						<LastStartLine machines={machines} lastStart={settings.lastStart} forget={() => client.user(auth).forgetLastStart()} onForgotten={account.replace} />
 					</DefaultsSection>
 
 					<PersonalServers settings={settings} onChanged={account.replace} />
@@ -195,6 +195,10 @@ export function Settings() {
 			)}
 
 			<ModelProviders />
+			{machines.list?.map(machine => {
+				const upgrade = settingsKeyUpgrade(machine);
+				return upgrade && <p className="field-note" key={machine.machineId}>{machineLabel(machine)}: {upgrade}</p>;
+			})}
 
 			{info?.machines ? (
 				<section className="usage-section" aria-labelledby="settings-machines">

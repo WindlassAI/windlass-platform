@@ -280,6 +280,7 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 						// Sandboxes of their own data only for a server that knows they are (Executor.sessionVolumes).
 						owner.sessionVolumes = named?.includes("session-volumes" satisfies Capability) === true;
 						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
+						owner.harnessKeyRelays = owner.modelRelays && named?.includes("harness-key-relay" satisfies Capability) === true;
 						owner.blockedNetwork = named?.includes("blocked-network" satisfies Capability) === true;
 						owner.memoryEvents = named?.includes("memory-events" satisfies Capability) === true;
 						owner.warmSpares = !!trust && named?.includes("warm-spares" satisfies Capability) === true;
