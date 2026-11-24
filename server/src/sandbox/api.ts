@@ -590,7 +590,8 @@ export interface RunTurnInput {
 	 * have left them in a file): each is taken out of everything the turn hands back, which is every
 	 * event, question, description of a server, `stderrTail` and `failure`. A value that streaming
 	 * output splits over two pieces is held back until it is whole. Nothing of this is kept by the
-	 * layer when the turn has ended.
+	 * layer when the turn has ended. ACP turns use the same protected process environment for
+	 * agent-scoped names the owner explicitly supplied to that session, with both env lists empty.
 	 */
 	secrets?: TurnSecrets;
 	/**
@@ -700,6 +701,8 @@ export interface RunTurnInput {
 	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	/** A work item's builder asks its person a question (`ask_person`); returns what the agent is told, at once. Given only with `onReport`. */
 	onAsk?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
+	/** Ask the owner for a missing environment variable. The agent only receives the receipt. */
+	onRequestSecret?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
 	onReview?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	reportScreenshots?: boolean;
 	/** The agent pushes the session's branch (`push`). Given with `onFetchBase`. */

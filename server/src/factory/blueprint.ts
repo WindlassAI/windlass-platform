@@ -43,6 +43,7 @@
  * that fires after the item moved on. No clock is read: every time is a fact's `at`.
  */
 
+import { secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
@@ -176,6 +177,7 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const unchanged: Outcome = { item, effects: [], events: [] };
 	const receipt = (fact.kind === "turn_ended" || fact.kind === "review_ended") && item.state === "cancelled"
 		&& (item.parent || item.mode === "orchestrate") && item.run?.step.turn && fact.key === currentKey(item);
+	if (item.claimedSecret && fact.kind !== "settle_secret") return unchanged;
 	if (FINAL.has(item.state) && fact.kind !== "child_notice" && fact.kind !== "finish_join" && !receipt) return unchanged;
 	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
 	if (receipt) spendTurn(change, fact.spend);
@@ -413,6 +415,24 @@ function apply(c: Change, fact: Fact): boolean {
 			}
 			cancel(c);
 			return true;
+		case "claim_secret": {
+			const q = item.question;
+			if (q?.kind !== "secret_needed" || q.id !== fact.question || q.secret?.name !== fact.name) return false;
+			item.claimedSecret = q;
+			item.question = null;
+			c.state("waiting", { reason: "person", sentence: `Saving ${fact.name}.`, retryAt: null });
+			return true;
+		}
+		case "settle_secret": {
+			const q = item.claimedSecret;
+			if (!q || q.id !== fact.question) return false;
+			delete item.claimedSecret;
+			item.question = q;
+			if (!fact.error) return answer(c, { kind: "answer", question: q.id, choice: "add_secret", by: fact.by, at: fact.at });
+			const text = [`A secret was requested for ${q.secret!.name}.`, q.secret?.notice, fact.error].filter(Boolean).join("\n");
+			ask(c, q.kind, text, q.choices, q.cause, q.resume, fact.error, { secret: q.secret });
+			return true;
+		}
 		case "answer":
 			return answer(c, fact);
 		case "integration_started":
@@ -439,7 +459,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null) return false;
 	const step = run.step;
@@ -938,7 +958,7 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		const asking = ASKING.has(plan.kind) ? { asksLeft: 1 } : {};
 		const untrusted = marked(plan.untrusted);
 		// The whole task goes with its own sources: the session sends one text or the other, with the sources of that one.
-		const freshPrompt = fresh && { fresh: { text: fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
+		const freshPrompt = fresh && { fresh: { text: plan.includeInFresh ? fresh.text + "\n\n" + plan.text : fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
 		c.effects.push({ ...delivery, agent: plan.kind === "run_checks" || plan.kind === "summary" ? plan.kind : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
@@ -1058,10 +1078,15 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	// The builder asked its person (`ask_person`) and was told the question is recorded: it is asked, even of a turn cut short.
 	// Nothing of the turn is judged: the workspace and any pushed head stay as they are, and the answer resumes this step.
+	if (fact.secret && ASKING.has(kind) && !secretRequestLimit(fact.secret.name, run.asks ?? 0, run.declinedSecrets ?? [], "run")) {
+		run.asks = (run.asks ?? 0) + 1;
+		const text = [`A secret was requested for ${fact.secret.name}.`, fact.secret.notice].filter(Boolean).join("\n");
+		return ask(c, "secret_needed", text, [choice("add_secret"), choice("without_secret"), choice("give_up")], null, { ...IMPLEMENT, kind, newStep: false }, text, { secret: fact.secret });
+	}
 	if (fact.asked && ASKING.has(kind)) {
 		run.asks = (run.asks ?? 0) + 1;
 		const resume: TurnPlan = { ...IMPLEMENT, kind, newStep: false };
-		return ask(c, "agent_ask", AGENT_ASKS, [choice("reply"), ...handOver(item), choice("give_up")], null, resume, AGENT_ASKS, { text: fact.asked.text, options: [...fact.asked.options] });
+		return ask(c, "agent_ask", AGENT_ASKS, [choice("reply"), ...handOver(item), choice("give_up")], null, resume, AGENT_ASKS, { asked: { text: fact.asked.text, options: [...fact.asked.options] } });
 	}
 	if (fact.stepLimit !== undefined) return stepLimitReached(c, { ...IMPLEMENT, kind }, fact.stepLimit, fact.verified);
 	if (CUT_SHORT.has(fact.outcome) || result === "incomplete") {
@@ -1182,8 +1207,8 @@ function askEnvironment(c: Change, kind: TurnStepKind, failed: Array<{ check: Ve
 		...IMPLEMENT, kind,
 		text: `The platform's checks could not run in your sandbox: ${failed.map(({ check }) => `${check.name} (\`${check.command}\`)`).join(", ")}. That was the environment, not your code, and the person has now fixed it. Run ${failed.length === 1 ? "that command" : "those commands"} yourself; if it fails because of the code, fix the code. Then end your turn.`,
 	};
-	ask(c, "check_environment", environmentQuestion(failed), [{ id: "again", label: "Run the step again" }, ...handOver(c.item), choice("give_up")], null, resume, undefined, undefined,
-		{ name: check.name, command: check.command, exitCode: check.exitCode, kind: failure.kind, line: failure.line, excerpt: outputExcerpt(check.output) });
+	ask(c, "check_environment", environmentQuestion(failed), [{ id: "again", label: "Run the step again" }, ...handOver(c.item), choice("give_up")], null, resume, undefined,
+		{ check: { name: check.name, command: check.command, exitCode: check.exitCode, kind: failure.kind, line: failure.line, excerpt: outputExcerpt(check.output) } });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2073,6 +2098,8 @@ const CHOICES: Record<ChoiceId, string> = {
 	run_checks: "Run the checks again",
 	ci_alone: "Integrate on CI alone",
 	give_up: "Give up",
+	add_secret: "Add it and continue",
+	without_secret: "Continue without it",
 	fix: "Have the agent change it",
 	reply: "Answer the agent",
 	run_anyway: "Run it anyway",
@@ -2156,14 +2183,14 @@ function askRemoved(c: Change): void {
 	ask(c, "machine_removed", "Your machine was removed. This item can no longer work on it.", [...handOver(c.item), choice("give_up")], null, null);
 }
 
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, asked?: Question["asked"], check?: Question["check"]): void {
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret"> = {}): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
-	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...(asked && { asked }), ...(check && { check }) };
+	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...details };
 	item.question = question;
 	c.state("waiting", { reason: kind === "budget" ? "budget" : "person", sentence, retryAt: null });
 	// The agent's own words stay in the log beside the platform's sentence, once the question is answered too.
-	c.say(`Asked: ${text}`, undefined, asked?.text);
+	c.say(`Asked: ${text}`, undefined, details.asked?.text);
 	c.effects.push({ kind: "ask", question });
 }
 
@@ -2173,6 +2200,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	if (question === null || question.id !== fact.question) return false;
 	const picked = question.choices.find((option) => option.id === fact.choice);
 	if (picked === undefined) return false;
+	if (question.kind === "secret_needed" && fact.note !== undefined) return false;
 	const note = fact.note?.trim() || null;
 	item.question = null;
 	c.say(answeredWords(picked, note));
@@ -2332,6 +2360,12 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			c.say("The sandbox is removed, and the step starts again in a new one.");
 			c.state(item.place.kind === "machine" ? "queued" : "working");
 			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: { ...resume, text: withNote(resume.text, note) }, ...(resume.to === "review" && { to: "review" as const }) });
+			break;
+		case "add_secret":
+		case "without_secret":
+			if (!question.secret || !resume) return false;
+			if (fact.choice === "without_secret") (run.declinedSecrets ??= []).push(question.secret.name);
+			nextTurn(c, { ...resume, includeInFresh: true, text: fact.choice === "add_secret" ? `${question.secret.name} is now set in your environment.` : `Continue without ${question.secret.name}.` });
 			break;
 		case "reply":
 			// An answer needs words: the page does not send one without them.

@@ -24,7 +24,9 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, CheckIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { SecretAsk, withoutValue } from "../components/SecretAsk";
+import { hasReason } from "../api/client";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
@@ -339,7 +341,45 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 		[api, explain],
 	);
 	const repositoryId = state.summary?.repository?.id ?? null;
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId]);
+	// The agent's open request for a secret, answered above the field. Hidden once answered here, before the turn it starts closes it.
+	const [answeredSecret, setAnsweredSecret] = useState<string | null>(null);
+	const [savedSecret, setSavedSecret] = useState<{ name: string; turnsEnded: number } | null>(null);
+	const secretRequest = state.secretRequest && state.secretRequest.id !== answeredSecret ? state.secretRequest : null;
+	const secretRequestId = secretRequest?.id ?? null;
+	const itemId = state.summary?.item?.id ?? null;
+	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId, secretRequestId, itemId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId, secretRequestId, itemId]);
+	// The last save's error, for the card of the same name should the session's snapshot bring the request back under a new id.
+	const [secretFailure, setSecretFailure] = useState<{ name: string; message: string } | null>(null);
+	const addSecret = useCallback(
+		async (request: { id: string; name: string }, value: string) => {
+			setSecretFailure(null);
+			try {
+				await api.setRequestedSecret({ requestId: request.id, name: request.name, value });
+			} catch (failure) {
+				const message = withoutValue(explain(failure), value);
+				setSecretFailure({ name: request.name, message });
+				// The name was saved under Secrets since it was asked (`secret_exists`), or the request moved on: read the session
+				// again, so that a retry answers the request it has now.
+				if (hasReason(failure, "secret_exists") || hasReason(failure, "no_question")) api.resync();
+				throw new Error(message);
+			}
+			setSecretFailure(null);
+			setAnsweredSecret(request.id);
+			setSavedSecret({ name: request.name, turnsEnded: state.turnsEnded });
+		},
+		[api, explain, state.turnsEnded],
+	);
+	const continueWithout = useCallback(
+		async (request: { id: string; name: string }) => {
+			try {
+				await api.prompt({ text: `Continue without ${request.name}.` });
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+			setAnsweredSecret(request.id);
+		},
+		[api, explain],
+	);
 
 	if (state.phase === "missing") {
 		return (
@@ -438,6 +478,32 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
+				{secretRequest ? (
+					<div className="q-dock-wrap">
+						<div className="q-dock secret-dock">
+							<SecretAsk
+								key={secretRequest.id}
+								compact
+								request={secretRequest}
+								repository={summary.repository ? `${summary.repository.owner}/${summary.repository.name}` : null}
+								shared={summary.harness !== undefined && summary.harness !== null && summary.harness !== "windlass"}
+								offline={!online}
+								failure={secretFailure?.name === secretRequest.name ? secretFailure.message : null}
+								onAdd={(value) => addSecret(secretRequest, value)}
+								onWithout={() => continueWithout(secretRequest)}
+							/>
+						</div>
+					</div>
+				) : savedSecret && savedSecret.turnsEnded === state.turnsEnded ? (
+					<div className="q-dock-wrap">
+						<p className="callout secret-ask-saved" role="status">
+							<CheckIcon size={14} className="tone-good" />
+							<span>
+								<code className="secret-ask-name">{savedSecret.name}</code> saved; the agent continues.
+							</span>
+						</p>
+					</div>
+				) : null}
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
 				) : (

@@ -15,7 +15,7 @@ import { allCodexModes, codexDefaultMode, codexModes, innerModesReason, refusesS
 
 function unsupported(input: RunTurnInput): string | undefined {
 	if (input.servers?.length) return "servers";
-	if (input.secrets && (Object.keys(input.secrets.env).length || input.secrets.withholdEnv.length || input.secrets.passEnv.length)) return "saved environment variables";
+	if (input.secrets && (input.secrets.withholdEnv.length || input.secrets.passEnv.length)) return "saved environment variables";
 	if (input.reportScreenshots) return "report screenshots";
 	// A tool that must not be served from inside the sandbox is refused, not left out: the turn would run without what its caller counts on.
 	return (["script", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPlan", "onReview"] as const)
@@ -396,7 +396,8 @@ export class AcpHarness implements Harness {
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			const lines = new LineSplitter(line => { lastHeard = Date.now(); rpc.receive(line); });
 			mark("process");
-			run = handle.start(profile.command, { cwd: handle.cwd, env: turnEnv(profile, input), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
+			const secretEnv = input.secrets?.env;
+			run = handle.start(profile.command, { cwd: handle.cwd, env: turnEnv(profile, input), ...(secretEnv && Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
 				rpc.end(end.error?.message || `${profile.name} exited before answering (exit ${end.code ?? end.signal}).`);

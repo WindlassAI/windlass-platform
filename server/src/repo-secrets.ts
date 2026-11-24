@@ -134,6 +134,30 @@ export function isReservedName(name: string): boolean {
 	return RESERVED_NAMES.includes(upper) || RESERVED_PREFIXES.some((prefix) => upper.startsWith(prefix));
 }
 
+/** These variables configure the agent adapters, model relays and Git credentials. */
+const REQUEST_RESERVED_NAMES = [
+	"GITHUB_TOKEN", "GH_TOKEN", "INITIAL_AGENT_MODE", "DISABLE_MCP_CONFIG_FILTERING", "MCP_TOOL_TIMEOUT",
+	"GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND", "GIT_CONFIG",
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE", "PIP_CERT",
+	"PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONINSPECT", "PYTHONUSERBASE", "PYTHONWARNINGS",
+	"PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_HOME", "GEM_PATH",
+	"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "DOTNET_STARTUP_HOOKS", "GCONV_PATH", "SSLKEYLOGFILE", "CURL_HOME",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+];
+const REQUEST_RESERVED_PREFIXES = ["CODEX_", "CLAUDE_", "OPENCODE_", "GIT_CONFIG_", "GIT_SSL_", "DYLD_", "OPENSSL_", "NPM_CONFIG_"];
+
+/** A request may name an ordinary environment variable, never one owned by the platform or its harness. */
+export function validRequestedSecretName(name: unknown): name is string {
+	return typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && !isReservedName(name)
+		&& !name.endsWith("_PROXY") && !REQUEST_RESERVED_NAMES.includes(name) && !REQUEST_RESERVED_PREFIXES.some(prefix => name.startsWith(prefix));
+}
+
+/** Ordinary questions count toward the point at which a builder must stop requesting secrets. */
+export function secretRequestLimit(name: string, asks: number, declined: readonly string[], period: "run" | "session"): string | null {
+	if (declined.includes(name)) return `Your person chose to continue without ${name}. Do not request it again in this ${period}.`;
+	return asks >= 3 ? `No more secret requests are allowed in this ${period}; three questions have already been recorded.` : null;
+}
+
 /** The name as it is saved: an environment variable's. Throws SecretProblem. */
 export function cleanSecretName(raw: unknown): string {
 	if (typeof raw !== "string" || raw === "") throw new SecretProblem("A secret needs a name.");

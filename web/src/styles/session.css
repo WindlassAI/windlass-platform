@@ -1244,6 +1244,30 @@ button.output-more:hover {
 	min-width: 0;
 	overflow-wrap: anywhere;
 }
+/* Under the line of the agent's request for a secret: the name, its reason quoted, and where it is answered. */
+.system-secret {
+	display: grid;
+	gap: 6px;
+	margin: 4px 0 10px 24px;
+	max-width: 74ch;
+	font-size: var(--size-small);
+}
+.system-secret-name {
+	overflow-wrap: anywhere;
+}
+.system-secret .item-asked-text {
+	font-size: var(--size-small);
+}
+.system-secret-where {
+	color: var(--ink-dim);
+}
+/* The request above the field: the dock's frame, room for the form inside. */
+.secret-dock {
+	padding: 12px 14px 14px;
+}
+.secret-dock .input {
+	background: var(--bg);
+}
 /* Under a line about a blocked host: the way to allow it, and to the repository's list. */
 .system-actions {
 	display: flex;

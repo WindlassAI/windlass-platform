@@ -2,6 +2,7 @@
 import type { Verified } from "@contract";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { FOLD_WORDS, FoldToggle, LongText } from "./Fold";
+import { SecretNotice } from "./SecretAsk";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
@@ -13,6 +14,7 @@ import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { summarizeWork, turnRows, type WorkBlock } from "../lib/workGroups";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
+import { linkProps } from "../lib/router";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
 import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, PauseIcon, RefusedIcon, ResumeIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
@@ -846,19 +848,70 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 			</p>
 		);
 	}
+	// A request for a secret: its notice is shown under the line, apart from the agent's reason, so it is not said twice.
+	const text = block.kind === "platform" && block.secret?.notice ? withoutNotice(block.text, block.secret.notice) : block.text;
 	const line = (
 		<p className={`system tone-${tone}`}>
 			<span className="system-rule" aria-hidden="true" />
 			<span className="system-source">{block.kind === "platform" ? "platform" : "windlass"}</span>
-			<span className="system-text">{block.kind === "platform" ? withLinks(block.text) : block.text}</span>
+			<span className="system-text">{block.kind === "platform" ? withLinks(text) : text}</span>
 		</p>
 	);
+	if (block.kind === "platform" && block.secret) {
+		return (
+			<>
+				{line}
+				<SecretRequested secret={block.secret} />
+			</>
+		);
+	}
 	if (block.kind !== "platform" || !block.blocked) return line;
 	return (
 		<>
 			{line}
 			<BlockedHost host={block.blocked.host} repository={block.blocked.repository} />
 		</>
+	);
+}
+
+/** The platform's line of a request for a secret without the notice it ends with (`A secret was requested for NAME.\n…`). */
+function withoutNotice(text: string, notice: string): string {
+	const tail = "\n" + notice;
+	return text.endsWith(tail) ? text.slice(0, -tail.length) : text;
+}
+
+/**
+ * Under the line of the agent's `request_secret`: the name, and its reason quoted as the agent's own words, in plain text.
+ * The value is never asked for here: an open request is answered above the field, an item's on the item's page.
+ */
+function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret"]> }) {
+	const interactive = useInteractive();
+	const open = interactive?.secretRequestId === secret.id;
+	const itemId = interactive?.itemId ?? null;
+	// A person's own session with no repository saves it for the account: every agent of theirs would have it.
+	const account = interactive !== null && !itemId && interactive.repositoryId === null;
+	return (
+		<section className="system-secret" aria-label={`The agent asks for the secret ${secret.name}`}>
+			<p className="system-secret-name">
+				The agent asks for a secret: <code className="secret-ask-name">{secret.name}</code>
+			</p>
+			<figure className="item-asked secret-ask-why">
+				<figcaption className="item-asked-who">Its reason, in the agent's own words.</figcaption>
+				<LongText lines={3} as="blockquote" className="item-asked-text">
+					{secret.why}
+				</LongText>
+			</figure>
+			{secret.notice ? <SecretNotice notice={secret.notice} account={account} /> : null}
+			{open ? (
+				<p className="system-secret-where">Add it or go on without it above the field below.</p>
+			) : itemId ? (
+				<p className="system-secret-where">
+					<a className="link" {...linkProps({ name: "item", id: itemId })}>
+						Answer on the item's page
+					</a>
+				</p>
+			) : null}
+		</section>
 	);
 }
 

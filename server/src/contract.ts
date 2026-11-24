@@ -296,7 +296,7 @@ export type TurnOutcome =
 export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
-export type PlatformToolName = "publish" | "report" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan";
+export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan";
 
 /**
  * What a session's agent can do, as the screens need it: a read-only part of its agent's capability record
@@ -1824,7 +1824,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
+export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1839,7 +1839,22 @@ export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "f
  *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
  *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone";
+
+/** Render the reason as quoted plain text, separately from the platform's own notice. */
+export interface SecretRequest {
+	name: string;
+	why: string;
+	/** Platform-authored provenance and save destination, one line each. Absent on older requests. */
+	notice?: string;
+}
+
+export interface SetRequestedSecretInput {
+	/** The open item question's id or SessionSnapshot.secretRequest.id, on the requesting session. */
+	requestId: string;
+	name: string;
+	value: string;
+}
 
 /** What an item asks its person ("Needs you"). It waits until answered, for days if need be. */
 export interface ItemQuestion {
@@ -1849,6 +1864,7 @@ export interface ItemQuestion {
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
 	askedAt: number;
+	secret?: SecretRequest;
 	/**
 	 * An `agent_ask` question's own words, as the builder wrote them (`ask_person`): untrusted text, which
 	 * the agent may have been steered to write by what it read. Shown quoted, as the agent's, in plain
@@ -2873,6 +2889,8 @@ export type TimelineItem =
 			at: number;
 			turn: number;
 			kind: "platform";
+			/** The agent’s request, with its reason as quoted plain text. */
+			secretRequest?: SecretRequest & { id: string };
 			level: "info" | "warn" | "error";
 			text: string;
 			/**
@@ -3132,6 +3150,8 @@ export interface SessionServers {
 }
 
 export interface SessionSnapshot {
+	/** The open request in a person’s session. Item requests live on the item question. */
+	secretRequest?: SecretRequest & { id: string };
 	summary: SessionSummary;
 	profile: SandboxProfile;
 	/** The harness's conversation id, once the first turn created it. */
@@ -3185,6 +3205,9 @@ export interface AgentSessionActions {
 	/** Select the mode for the next prompt. An unavailable choice or item session returns bad_input. */
 	setMode(input: { mode: string }): Promise<SessionSummary>;
 	snapshot(): Promise<SessionSnapshot>;
+	/** Create the missing secret at agent scope and continue. A name saved since the request returns secret_exists.
+	 * A failed item save reopens the question with its error and a new id. */
+	setRequestedSecret(input: SetRequestedSecretInput): Promise<void>;
 	/**
 	 * Starts a turn and returns as soon as it is accepted; the work arrives as events. While a turn is
 	 * running it steers that turn instead: the message is stored as a `user` item with `steer: true`,

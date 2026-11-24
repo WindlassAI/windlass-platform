@@ -37,8 +37,8 @@
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
-import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
-import type { CommandSandbox, Redactor } from "./repo-secrets.js";
+import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type SecretRequest, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
+import { validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
 
 /**
  * A name no MCP server of a user's may have (personal-servers.ts), and that the platform takes out of
@@ -71,6 +71,7 @@ export const FETCH_BASE_TOOL = "fetch_base";
  * is the next turn's message. Offered with `report`, and only to a builder (never the planner, the
  * summary or the reviewer).
  */
+export const SECRET_TOOL = "request_secret";
 export const ASK_TOOL = "ask_person";
 
 /** The longest commit message a request may carry. */
@@ -192,6 +193,7 @@ export interface PlatformToolOffer {
 	screenshots?: boolean;
 	/** `ask_person`: a work item's builder only. */
 	ask?: boolean;
+	secret?: boolean;
 	/** A cross-repo feature's planning turn: `file_plan` also takes the plan's repositories, merge order and combined run. */
 	crossRepo?: boolean;
 	/** Served over MCP: how many pushes and fetches a turn may make there (platform-tools.ts, `MCP_LIMITS`), which the tools say. */
@@ -277,6 +279,10 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		...(offer.publish ? [tool(PUBLISH_TOOL, DESCRIPTION, INPUT_SCHEMA, publishSeconds)] : []),
 		...(offer.report ? [tool(REPORT_TOOL, reportDescription(offer.screenshots !== false, offer.push), offer.screenshots === false ? { ...REPORT_SCHEMA, properties: textFields } : REPORT_SCHEMA, 180)] : []),
 		...(offer.report && offer.ask ? [tool(ASK_TOOL, ASK_DESCRIPTION, ASK_SCHEMA, 30)] : []),
+		...(offer.secret ? [tool(SECRET_TOOL, "Ask your person to set a missing environment variable. Give its name and a short reason. Never include a value. Stop after the request is recorded.",
+			{ type: "object", required: ["name", "why"], additionalProperties: false, properties: {
+				name: { type: "string", minLength: 2, maxLength: 64 }, why: { type: "string", minLength: 1, maxLength: 240 },
+			} }, 30)] : []),
 		...(offer.push ? [tool(PUSH_TOOL, pushDescription(offer.mcp?.pushes), PUSH_SCHEMA, PUBLISHING_SECONDS), tool(FETCH_BASE_TOOL, fetchBaseDescription(offer.mcp?.fetches), { type: "object", properties: {} }, PUBLISHING_SECONDS)] : []),
 	];
 }
@@ -372,6 +378,23 @@ export function askPerson(given: Record<string, unknown>, state: { already: bool
 	if (options.length > ASK_LIMITS.options) return refuse(`Not recorded. Give at most ${ASK_LIMITS.options} options. Call ${ASK_TOOL} again.`, `The agent asked with ${options.length} options, and the limit is ${ASK_LIMITS.options}, so the question was not recorded.`);
 	// The line is the platform's, which the session's timeline labels so and turns addresses into links: the agent's words are not in it. Its call, beside it, has them as the agent's.
 	return { asked: { text, options }, told: ASK_TAKEN, said: "The agent asked you a question. It waits under Needs you, on the item's page, until you answer." };
+}
+
+export function secretRequestNotice(sandbox: boolean, account: boolean): string {
+	const source = sandbox ? "This request came from inside the agent's sandbox; a program there, not only the agent, could have made it." : "This request came through the agent's host tool connection.";
+	const scope = account ? "If supplied, this will be saved for your account: every agent of yours will have it." : "If supplied, this will be saved for this repository with agent scope.";
+	return source + "\n" + scope;
+}
+
+export function requestSecret(given: Record<string, unknown>, already: boolean, untrusted: boolean, redactor: Redactor): { request?: SecretRequest; told: string } {
+	if (untrusted) return { told: "A request coming from third-party text was not shown as a secret prompt." };
+	if (already) return { told: ASK_AGAIN };
+	const { name, why } = given;
+	if (!validRequestedSecretName(name) || redactor.text(name) !== name) return { told: "Use an available uppercase environment variable name of 2 to 64 characters." };
+	if (typeof why !== "string" || Object.keys(given).some(key => key !== "name" && key !== "why")) return { told: "Supply only a name and a short reason." };
+	const reason = redactor.text(why.replace(CONTROL, "").replace(HIDDEN, "").replace(/\s+/g, " ").trim());
+	if (!reason || reason.length > 240) return { told: "Give a reason of 1 to 240 characters." };
+	return { request: { name, why: reason }, told: `Asked your person for ${name}; stop here and say what you will do once it is set.` };
 }
 
 export type PublishRequest =

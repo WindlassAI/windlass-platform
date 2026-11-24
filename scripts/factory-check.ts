@@ -901,6 +901,31 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 	// 6
 	drive("ask_person 6: a run's questions are not capped: a fourth is asked like the first", newItem(), [start, turn, asks(1), replies(1), turn, asks(2), replies(2), turn, asks(3), replies(3), turn, asks(4), replies(4)]);
 
+	const secretEnd = (name: string): Row["fact"] => k => ({
+		...(ended("succeeded", PASSED)(k) as Extract<Fact, {kind: "turn_ended"}>), secret: { name, why: "Run the test." },
+	});
+	const secret = (name: string, n: number): Row => ({
+		fact: secretEnd(name), state: "waiting", wait: "person", effects: ["ask"],
+		also: o => holds(o.item.question?.secret?.name === name && o.item.run?.asks === n, "secret question or count missing"),
+	});
+	const skip: Row = { fact: answer("without_secret"), state: "working", effects: ["deliver", "check_turn"] };
+	drive("secret requests share the run count and the fourth question cannot request a secret", newItem(), [
+		start, turn, asks(1), replies(1), turn, secret("FIRST_TOKEN", 2), skip, turn, secret("SECOND_TOKEN", 3), skip,
+		turn, { fact: secretEnd("LAST_TOKEN"), state: "working", effects: ["publish"] },
+	]);
+	drive("a skipped name cannot open another question in this run", newItem(), [
+		start, turn, secret("SERVICE_TOKEN", 1), skip, turn, { fact: secretEnd("SERVICE_TOKEN"), state: "working", effects: ["publish"] },
+	]);
+	let claimed = "";
+	drive("a claimed secret prevents cancellation and delivery until the save settles", newItem(), [
+		start, turn, secret("SERVICE_TOKEN", 1),
+		{ fact: k => ({ kind: "claim_secret", question: (claimed = k.question), name: "SERVICE_TOKEN", by: "person:u1" }), state: "waiting", wait: "person", effects: [],
+			also: o => holds(o.item.question === null && o.item.claimedSecret?.id === claimed, "question was not claimed") },
+		{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "waiting", wait: "person", effects: [], unchanged: true },
+		{ fact: () => ({ kind: "settle_secret", question: claimed, by: "person:u1", error: "The name is already saved." }), state: "waiting", wait: "person", effects: ["ask"],
+			also: o => holds(o.item.question?.secret?.name === "SERVICE_TOKEN" && o.item.question.id !== claimed && o.item.question.text.includes("already saved"), "failed save did not reopen with its error") },
+	]);
+
 	// 7
 	drive("ask_person 7: a turn cut short after asking is the question, not the interruption's retry", newItem(), [start, turn,
 		{ fact: askedEnd("interrupted", null), state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.kind === "agent_ask" && o.item.run?.step.interruptions === 0, `asked ${o.item.question?.kind}, ${o.item.run?.step.interruptions} interruptions`) },

@@ -82,8 +82,9 @@ export interface Run extends ItemRun {
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: RunReview | null;
-	/** Questions the builder asked the person in this run (`ask_person`), shown in its log. Absent on runs stored before the tool: none. */
+	/** Questions the builder asked the person in this run (`ask_person` and `request_secret`), shown in its log. Absent on runs stored before the tool: none. */
 	asks?: number;
+	declinedSecrets?: string[];
 }
 
 /** A blocking finding of a review, as the next round's reviewer must answer it (`earlier` blocks). */
@@ -201,6 +202,8 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
+	claimedSecret?: Question;
 	/** One rerun request per commit. Keep the original job ids to distinguish a fresh attempt from a delayed listing. */
 	ciReruns?: Record<string, { jobs: CancelledJob[]; reported?: boolean }>;
 	/**
@@ -321,6 +324,8 @@ export type HandoffReview = { review: string; reviewNone: null; assessment?: Che
 
 /** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
+	/** Include this continuation’s instructions when the agent needs the whole task again. */
+	includeInFresh?: boolean;
 	kind: TurnStepKind;
 	/** Absent on builder plans, including resume plans saved before reviewer sessions. */
 	to?: "work" | "review";
@@ -422,6 +427,8 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
+	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
+	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
@@ -451,6 +458,7 @@ export type Fact =
 			report: AgentReport | string | null;
 			/** The question the builder asked its person in the turn (`ask_person`), cleaned by the session. */
 			asked?: AgentAsk | null;
+			secret?: Question["secret"];
 			/** A push made by the host tool can precede the item's publish step. */
 			pushedHead?: string | null;
 			/**

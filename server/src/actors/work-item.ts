@@ -62,17 +62,20 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
+import { secretRequestLimit } from "../repo-secrets.js";
 import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { readCi, rerunCancelled } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
-import { grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
+import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
+	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
+	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
 	blockedSessions?: Record<string, NetworkReceipt>;
 	github?: IssueBinding;
@@ -114,6 +117,7 @@ interface Stored {
 }
 
 interface ItemVars {
+	savingSecret?: Promise<void>;
 	/** Null for an actor `user` did not create. */
 	stored: Stored | null;
 	/** The tail of the write queue: every transaction runs after the one before it. */
@@ -191,7 +195,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -349,7 +353,9 @@ type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckE
  * was decided from, and then performed. Resolves once it is stored, with whether the fact changed
  * anything: an action that answers after this has answered for what is durable.
  */
-async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number } | { kind: "network_reported"; at: number }, { baseSha, nudged, issue, overflow }: { overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
+async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at: number } | { kind: "network_reported"; at: number }, { baseSha, nudged, issue, overflow, secret }: { secret?: RequestedSecretSave; overflow?: string[]; baseSha?: string | null; nudged?: boolean; issue?: Pick<ObservedIssue, "subject" | "by" | "said"> } = {}): Promise<boolean> {
+	// Order outside facts (including cancellation and GitHub events) after a claimed answer.
+	if (fact.kind !== "claim_secret" && fact.kind !== "settle_secret" && c.vars.savingSecret) await c.vars.savingSecret.catch(() => {});
 	const stored = c.vars.stored;
 	if (!stored) return false;
 	// From here to the write being queued nothing is awaited: the decision is one step.
@@ -358,6 +364,8 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
+	if (fact.kind === "claim_secret") stored.meta.pendingSecret = secret;
+	if (fact.kind === "settle_secret") delete stored.meta.pendingSecret;
 	stored.meta.updatedAt = fact.at;
 	const handoff = outcome.effects.find((effect): effect is Extract<Effect, { kind: "handoff" }> => effect.kind === "handoff");
 	const strip = handoff ?? outcome.storeVerdict;
@@ -470,6 +478,33 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	await armDue(c);
 	void c.keepAwake(performDue(c));
 	return true;
+}
+
+/** Serialize all item transitions behind the durable claim, including a replay after a restart. */
+function saveClaimedSecret(c: Ctx, input: RequestedSecretSave, recover = false): Promise<void> {
+	if (c.vars.savingSecret) throw new UserError("The secret is being saved.", { code: "item_conflict" });
+	const save = async () => {
+		const { uid, sessionId } = c.vars.stored!.meta;
+		const by = `person:${uid}`;
+		if (!recover && !await take(c, { kind: "claim_secret", at: Date.now(), by, question: input.requestId, name: input.name }, { secret: input }))
+			throw new UserError("That secret request is no longer open.", { code: "item_conflict" });
+		let failure: string | null = null;
+		let code = "bad_secret";
+		try {
+			await secretsActor(c, uid, sessionId).internalSaveRequestedSecret(sessionId, input);
+		} catch (error) {
+			const received = (error as { code?: unknown })?.code;
+			if (error instanceof Error && typeof received === "string" && ["secret_exists", "secrets_disabled", "bad_secret", "too_many_secrets"].includes(received)) {
+				failure = error.message;
+				code = received;
+			} else failure = "The platform could not confirm the secret was saved. Check Secrets before retrying.";
+		}
+		if (!await take(c, { kind: "settle_secret", at: Date.now(), by, question: input.requestId, error: failure }))
+			throw new Error("The claimed secret question could not be settled.");
+		if (failure) throw new UserError(failure, { code });
+	};
+	c.vars.savingSecret = save().finally(() => { delete c.vars.savingSecret; });
+	return c.vars.savingSecret;
 }
 
 async function load(db: RawAccess): Promise<Stored | null> {
@@ -1592,6 +1627,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 		case "send_back":
 			return { kind: "send_back", at, by, note: note(action.note, true) as string };
 		case "answer": {
+			if (action.choice === "add_secret") throw bad("Use the dedicated secret action to set the value.");
 			if (typeof action.question !== "string" || typeof action.choice !== "string") throw bad("Say which question this answers, and which choice.");
 			const budget: Record<string, number> = {};
 			for (const [name, most] of Object.entries(MAX_RAISE)) {
@@ -1705,6 +1741,9 @@ export const workItem = actor({
 			c.destroy();
 			return;
 		}
+		// A claimed answer resumes with the same sealed input and request id.
+		const pending = c.vars.stored.meta.pendingSecret;
+		if (pending) void c.keepAwake(saveClaimedSecret(c, pending, true).catch(() => {}));
 		// What a deploy cut off is performed again, under the keys it was stored with.
 		void c.keepAwake(performDue(c));
 	},
@@ -1813,11 +1852,27 @@ export const workItem = actor({
 			return await viewOf(c);
 		},
 
+		internalSecretRequestLimit: (c, key: string, name: string): string | null => {
+			requireServiceFor(c, "call");
+			const item = c.vars.stored?.item;
+			// The turn can reach the tool before the item's turn_started receipt arrives.
+			if (!item?.run || currentKey(item) !== key || item.question || item.claimedSecret || !["queued", "working"].includes(item.state)
+				|| !item.run.step.turn) return "This turn can no longer request a secret.";
+			return secretRequestLimit(name, item.run.asks ?? 0, item.run.declinedSecrets ?? [], "run");
+		},
+
+		internalSetRequestedSecret: async (c, input: RequestedSecretSave): Promise<void> => {
+			requireServiceFor(c, "call");
+			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
+			await saveClaimedSecret(c, input);
+		},
+
 		/** A person's action (`UserActions.actOnItem`), by `by` ("person:<uid>"). Refused with `item_conflict` when it changes nothing. */
 		internalAct: async (c, input: { action: ItemAction; by: string }): Promise<ItemView> => {
 			requireService(c);
 			const stored = c.vars.stored;
 			if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
+			if (c.vars.savingSecret) throw new UserError("The secret is being saved.", { code: "item_conflict" });
 			const fact = factOf(input?.action, String(input?.by), Date.now());
 			let changed: boolean;
 			try {

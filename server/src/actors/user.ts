@@ -154,7 +154,7 @@ import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManyS
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { refreshSecretRows } from "../signin/secret-rows.js";
-import { MAX_SECRETS_PER_USER, SecretProblem, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
+import { MAX_SECRETS_PER_USER, SecretProblem, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
@@ -182,7 +182,7 @@ import { sessionWeight } from "../billing/meter.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 import type { BillingEvent } from "../billing/provider.js";
 import type { BillingPeriod, BillingView } from "../contract.js";
-import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
+import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
@@ -585,6 +585,18 @@ async function secretProfile(id: unknown): Promise<SandboxProfile> {
 	return profile;
 }
 
+/** Check both stores by name alone, including secrets withheld from this session. */
+async function requestedSecretConflict(db: Pick<RawAccess, "execute">, project: string | null, name: string, reader: "agent" | "person" = "agent"): Promise<string | null> {
+	const [row] = await db.execute<{ source: string }>(
+		"SELECT 'repository' AS source FROM repo_secret WHERE project = ? AND name = ? UNION ALL SELECT 'account' FROM account_secret WHERE name = ? LIMIT 1",
+		project, name, name,
+	);
+	if (!row) return null;
+	return reader === "agent"
+		? `${name} already exists for this ${row.source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.`
+		: `${name} already exists for this ${row.source}, so nothing was saved. To let agents use it, change its scope under Secrets.`;
+}
+
 /**
  * A repository's secrets as a client may see them: name, scope, when each was last changed, and what
  * it reaches in a sandbox of `profile`. The value's column is not read, so no value can be in the answer.
@@ -595,6 +607,11 @@ async function listSecrets(db: RawAccess, project: string, profile: SandboxProfi
 	// A secret of the account under the same name is not used in this repository's sessions: the list says where that is so.
 	const account = rows.length === 0 ? new Set<string>() : await accountSecretNames(db);
 	return account.size === 0 ? listed : { ...listed, secrets: listed.secrets.map((secret) => (account.has(secret.name) ? { ...secret, account: true } : secret)) };
+}
+
+function checkSecretLimit(result: Awaited<ReturnType<typeof saveRepoSecret>>): void {
+	if (result === "repository_full") throw new UserError(`A repository can have at most ${MAX_SECRETS_PER_REPOSITORY} secrets. Delete one first.`, { code: "too_many_secrets" });
+	if (result === "account_full") throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
 }
 
 /**
@@ -611,8 +628,7 @@ async function saveSecret(c: UserCtx, uid: string, project: string, label: strin
 	} else {
 		// The limits and the write are one conditional statement: saves at the same moment cannot pass a limit together.
 		const result = await saveRepoSecret(c.db, { uid, project, label, name, sealed: sealSecret(serverSealer(), uid, project, name, value), scope, now: Date.now() });
-		if (result === "repository_full") throw new UserError(`A repository can have at most ${MAX_SECRETS_PER_REPOSITORY} secrets. Delete one first.`, { code: "too_many_secrets" });
-		if (result === "account_full") throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
+		checkSecretLimit(result);
 		saved = result === "replaced" ? "replaced" : "new";
 	}
 	// The name, never anything of the value: not its length either.
@@ -1333,6 +1349,8 @@ interface EnvironmentCtx extends CreateCtx {
 
 /** Forget the durable index and its launch and submission keys after the actor is gone. */
 async function forgetSession(c: UserCtx, id: string): Promise<void> {
+	await c.db.execute("DELETE FROM session_secret_grant WHERE session_id = ?", id);
+	await c.db.execute("DELETE FROM requested_secret_receipt WHERE session_id = ?", id);
 	await c.db.execute("DELETE FROM sessions WHERE id = ?", id);
 	c.vars.sessions.delete(id);
 	c.vars.launchUntil.delete(id);
@@ -1586,6 +1604,8 @@ export const user = actor({
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
+			await db.execute("CREATE TABLE IF NOT EXISTS requested_secret_receipt (session_id TEXT PRIMARY KEY, request_id TEXT NOT NULL)");
+			await db.execute("CREATE TABLE IF NOT EXISTS session_secret_grant (session_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(session_id, name))");
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
 			for (const [table, column, definition] of [
@@ -2489,6 +2509,51 @@ export const user = actor({
 			}
 		},
 
+		internalRequestedSecretConflict: async (c, sessionId: string, name: string): Promise<string | null> => {
+			requireServiceFor(c, secretsCaller(c.key[0]!, sessionId));
+			const session = c.vars.sessions.get(sessionId);
+			if (!session || !validRequestedSecretName(name)) throw new UserError("That secret request is unavailable.", { code: "bad_secret" });
+			return requestedSecretConflict(c.db, setupProjectKey(session.repository?.id), name);
+		},
+
+		internalSaveRequestedSecret: async (c, sessionId: string, input: RequestedSecretSave): Promise<void> => {
+			const uid = c.key[0]!;
+			requireServiceFor(c, secretsCaller(uid, sessionId));
+			const session = c.vars.sessions.get(sessionId);
+			if (!session || !validRequestedSecretName(input.name)) throw new UserError("That secret request is unavailable.", { code: "bad_secret" });
+			const project = setupProjectKey(session.repository?.id) ?? ACCOUNT_SECRET_PROJECT;
+			if (project !== input.project) throw new UserError("The requested secret’s scope has changed.", { code: "bad_secret" });
+			if (session.place.kind === "machine" && !await machineSecrets(c.db, session.place.machineId))
+				throw new UserError("Enable sending secrets to this machine before continuing.", { code: "secrets_disabled" });
+			const { name, sealed } = input;
+			try {
+				await c.db.transaction(async tx => {
+					const [receipt] = await tx.execute("SELECT 1 FROM requested_secret_receipt WHERE session_id = ? AND request_id = ?", sessionId, input.requestId);
+					if (receipt) {
+						// An item recovering after a restart replays the exact ciphertext it already saved.
+						const same = project === ACCOUNT_SECRET_PROJECT
+							? await tx.execute("SELECT 1 FROM account_secret WHERE name = ? AND sealed = ? AND scope = 'agent'", name, sealed)
+							: await tx.execute("SELECT 1 FROM repo_secret WHERE project = ? AND name = ? AND sealed = ? AND scope = 'agent'", project, name, sealed);
+						if (same.length) return;
+						throw new UserError("The saved secret was changed under Secrets.", { code: "bad_secret" });
+					}
+					const conflict = await requestedSecretConflict(tx, project, name, "person");
+					if (conflict) throw new UserError(conflict, { code: "secret_exists" });
+					if (project === ACCOUNT_SECRET_PROJECT) await saveAccountSecret(tx, name, "agent", sealed, Date.now());
+					else {
+						const repo = session.repository!;
+						checkSecretLimit(await saveRepoSecret(tx, { uid, project, label: `${repo.owner}/${repo.name}`, name, scope: "agent", sealed, now: Date.now() }));
+					}
+					await tx.execute("INSERT OR REPLACE INTO requested_secret_receipt VALUES (?, ?)", sessionId, input.requestId);
+					if (session.harness && session.harness !== "windlass")
+						await tx.execute("INSERT OR IGNORE INTO session_secret_grant VALUES (?, ?)", sessionId, name);
+				});
+			} catch (error) {
+				if (error instanceof TooManySecrets) throw new UserError(error.message, { code: "too_many_secrets" });
+				throw clientError(c.log, error, "The requested secret could not be saved.");
+			}
+		},
+
 		/**
 		 * The secrets of a session's repository, each value still sealed, for that session's turn, and with
 		 * them what its user keeps for the account: the account's secrets, sealed too, and the user's own
@@ -2504,6 +2569,8 @@ export const user = actor({
 			const session = c.vars.sessions.get(id);
 			if (!session) return { project: null, secrets: [], checks: [], account: { secrets: [], servers: [] } };
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
+			const requestedNames = send && session.harness && session.harness !== "windlass"
+				? (await c.db.execute<{ name: string }>("SELECT name FROM session_secret_grant WHERE session_id = ?", id)).map(row => row.name) : undefined;
 			const redactOnly = !send && !!session.harness && session.harness !== "windlass";
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], ACCOUNT_SECRET_PROJECT, kept);
@@ -2512,7 +2579,7 @@ export const user = actor({
 				servers: (await readServers(c.db)).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
 			};
 			const project = setupProjectKey(session.repository?.id);
-			if (project === null) return { project: null, secrets: [], checks: [], account, ...(redactOnly && { redactOnly }) };
+			if (project === null) return { project: null, secrets: [], checks: [], account, requestedNames, ...(redactOnly && { redactOnly }) };
 			// The hosts its repository's list allows, for a hosted sandbox. A cross-repo feature's own session reads every
 			// repository of the feature, and is given the hosts of each one's list (`unionHosts`).
 			const feature = session.item?.role === "builder" ? c.vars.items.items.get(session.item.id) : undefined;
@@ -2528,7 +2595,7 @@ export const user = actor({
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
 			const environment = snapshotSetup?.command ? await sessionEnvironment(c, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, snapshotSetup.command, checks, session.hostedSize) : undefined;
-			return { project, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			return { project, requestedNames, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		// --- a repository's page ----------------------------------------------------------------------

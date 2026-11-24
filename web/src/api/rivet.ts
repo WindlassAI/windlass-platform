@@ -463,6 +463,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			approveServer: (name, fingerprint) => act("approveServer", { name, fingerprint }),
 			forgetServer: (name) => act("forgetServer", { name }),
 			allowHost: (host) => act("allowHost", { host }),
+			setRequestedSecret: (input) => act("setRequestedSecret", input),
 			resync() {
 				for (const reload of reloads) reload();
 			},

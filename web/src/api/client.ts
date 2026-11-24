@@ -24,6 +24,7 @@ import type {
 	GithubRepositoryList,
 	GithubStatus,
 	HostAllowed,
+	SetRequestedSecretInput,
 	ItemAction,
 	ItemFeed,
 	ItemListPage,
@@ -318,6 +319,11 @@ export interface SessionApi {
 	forgetServer(name: string): Promise<SessionServers>;
 	/** "Allow for this repository": adds a blocked host to the network list of the session's repository, and lets its running sandbox reach it at once. */
 	allowHost(host: string): Promise<HostAllowed>;
+	/**
+	 * The value for the agent's open `request_secret` (an item's `secret_needed` question, or `SessionSnapshot.secretRequest`):
+	 * saved for the session's repository, or for the account, and the requesting work goes on. The value goes only here.
+	 */
+	setRequestedSecret(input: SetRequestedSecretInput): Promise<void>;
 }
 
 export interface PlatformClient {
