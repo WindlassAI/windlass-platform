@@ -14,7 +14,8 @@
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -35,7 +36,7 @@ mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 const { advance, createItem, currentKey, singlePlanAlternative, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
-const { CI_POLLING, readCi, rerunCancelled, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
+const { CI_POLLING, readCi, rerunJobs, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
 const { GithubApp, GithubError } = await import("../server/src/github/app.js");
 
 const output: string[] = [];
@@ -1173,7 +1174,7 @@ drive("the machine coming back answers the question about waiting", newItem(), [
 }
 
 // The live case: a turn cut off by a deploy, then a sandbox that could not be prepared on every later turn. Those are no
-// cut-offs (the agent never ran): one is tried again, the next asks, and the person can start the step on a fresh sandbox.
+// cut-offs (the agent never ran). Retry in place, then start the step on a fresh sandbox.
 const unprepared: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, sandboxFailed: "could not set the sandbox's network: the sandbox does not answer", spend: { tokens: 0, hostedSeconds: 0 } });
 let freshPlan: TurnPlan | undefined;
 drive("a sandbox that cannot be prepared is not a cut-off", newItem(), [
@@ -1181,11 +1182,9 @@ drive("a sandbox that cannot be prepared is not a cut-off", newItem(), [
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: interrupted, state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: unprepared, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.run?.step.interruptions === 1 && o.item.run.autoSteps === 1 && o.events.some(e => e.said.includes("Retried automatically (1 of 2)")), `interruptions ${o.item.run?.step.interruptions}, sandbox failures ${o.item.run?.step.sandboxFailures}: ${o.events.map(e => e.said).join(" | ")}`) },
-	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "sandbox_failed" && o.item.question.cause === null && o.item.run?.step.interruptions === 1
-		&& o.item.question.text.includes("does not answer") && o.item.question.text.includes("fresh sandbox") && ["again", "fresh_sandbox", "give_up"].every(id => o.item.question!.choices.some(c => c.id === id)), `asked ${o.item.question?.kind} (${o.item.question?.cause}): ${o.item.question?.text}; interruptions ${o.item.run?.step.interruptions}`) },
-	{ fact: answer("fresh_sandbox"), state: "working", effects: ["fresh_sandbox"], also: (o) => {
+	{ fact: unprepared, state: "waiting", wait: "capacity", effects: ["fresh_sandbox"], also: (o) => {
 		freshPlan = effect(o, "fresh_sandbox")?.plan;
-		return holds(freshPlan?.newStep === false && /could not start/.test(freshPlan.text), `plan ${JSON.stringify(freshPlan)}`);
+		return holds(o.item.run?.step.interruptions === 1 && freshPlan?.newStep === false && /could not start/.test(freshPlan.text), `plan ${JSON.stringify(freshPlan)}`);
 	} },
 	{ fact: (k) => ({ kind: "sandbox_freed", key: k.key, plan: freshPlan! }), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(/Carry on with the task/.test(effect(o, "deliver")?.text ?? ""), "the step is delivered again, in full") },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
@@ -1195,6 +1194,11 @@ drive("manually retrying does not reset the automatic allowance", newItem(), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	// No turn of it started, so it stays queued for its place.
 	{ fact: unprepared, state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: unprepared, state: "waiting", wait: "capacity", effects: ["fresh_sandbox"], also: o => {
+		freshPlan = effect(o, "fresh_sandbox")!.plan;
+		return holds(o.item.run?.autoSteps === 2, "the second identical failure takes the other choice");
+	} },
+	{ fact: k => ({ kind: "sandbox_freed", key: k.key, plan: freshPlan! }), after: 2 * MINUTE, state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"] },
 	{ fact: answer("again"), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "sandbox_failed" && o.item.run?.step.interruptions === 0, `${o.item.question?.kind}, ${o.item.run?.step.interruptions} interruptions`) },
@@ -2753,6 +2757,81 @@ try {
 	expect("every job skipped: skipped", ciState(await readCi(app, target)) === "skipped");
 
 	{
+		const { checkBaseFailures } = await import("../server/src/github/ci-base.js");
+		const { runBaseTests } = await import("../server/src/factory/base-tests.js");
+		const base = standin.commit(repo, "base-ci", {}, "Base for the CI comparison", "main");
+		const job = checkRun(5360, "unit", "failure");
+		ciData.runs = [job];
+		repo.jobLogs.set(String(job.id), "not ok 1 - adds two numbers");
+		const item = walk(newItem(), pushedRun(HEAD)).item;
+		const check = async (ahead = 0, probe: Parameters<typeof checkBaseFailures>[3] = async () => { throw new Error("unexpected base test"); }) => {
+			const reading = await readCi(app, target);
+			assert.ok(reading.kind === "read");
+			await checkBaseFailures(app, { ...target, head: base }, reading, probe);
+			return walk(item, [{ ...ciFact(reading, HEAD), baseAhead: ahead, baseTip: base }]);
+		};
+		const baseCi = { runs: [checkRun(5361, "unit", "failure")], statuses: [] };
+		repo.ci.set(base, baseCi);
+		const inherited = await check();
+		expect("matching failed check on the current base asks with the cause and offers handover", inherited.item.question?.text === "This check also fails on main; it is not caused by this change." &&
+			!!inherited.item.question.choices.some(c => c.id === "hand_over") && !inherited.item.question.resume && !effect(inherited.last, "deliver"));
+		const update = await check(2);
+		expect("an inherited check automatically updates from a newer base", !!effect(update.last, "publish") && update.item.run?.updatedBaseTip === base && update.item.run.rounds.ci === 0);
+		baseCi.runs = [checkRun(5361, "unit", "failure"), checkRun(5362, "unit", "success")];
+		expect("a successful latest base attempt leaves the item failure eligible for a fix", (await check()).item.run?.step.kind === "ci_fix");
+		baseCi.runs = [checkRun(5363, "unit", null)];
+		expect("a running base check is polled before the fix", !!effect((await check()).last, "poll_ci"));
+
+		// No matching result from this reporter. Run the named test on an immutable tree distinct from the working copy.
+		baseCi.runs = [{ ...job, app: { slug: "another-app" } }];
+		const cwd = mkdtempSync(join(scratch, "base-tests-"));
+		const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+		git("init", "-q");
+		const testFile = join(cwd, "add.test.cjs");
+		const test = (n: number) => `require('node:test')('adds two numbers', () => require('node:assert').equal(2 + 2, ${n}));`;
+		writeFileSync(testFile, test(5));
+		git("add", ".");
+		git("-c", "user.name=Fixture", "-c", "user.email=test@invalid", "commit", "-qm", "Base");
+		const sha = git("rev-parse", "HEAD");
+		writeFileSync(testFile, test(4));
+		let probes = 0;
+		const local = await check(0, async tests => {
+			probes++;
+			assert.deepEqual(tests, { runner: "node", names: ["adds two numbers"] });
+			return runBaseTests({ async run(command, options) {
+				const r = spawnSync("bash", ["-c", command], { cwd: options?.cwd ?? cwd, encoding: "utf8", timeout: options?.timeoutMs });
+				return { stdout: r.stdout, stderr: r.stderr, exitCode: r.status, timedOut: !!r.error, aborted: false };
+			} }, cwd, sha, tests, false);
+		});
+		expect("without the base check the named test reproduces once on the base copy and preserves the working tree", probes === 1 &&
+			local.item.question?.text === inherited.item.question?.text && git("status", "--porcelain") === "M add.test.cjs");
+
+		ciData.runs = [job, checkRun(5364, "lint", "failure")];
+		baseCi.runs = [checkRun(5365, "unit", "failure"), checkRun(5366, "lint", "success")];
+		const mixed = effect((await check()).last, "deliver")?.text ?? "";
+		expect("a mixed CI fix receives only the independent failing check and its log", mixed.includes("lint") && !mixed.includes("adds two numbers") && !mixed.includes("- unit"));
+	}
+
+	{
+		const job = checkRun(5370, "install", "failure");
+		ciData.runs = [job];
+		repo.jobs.set(String(job.id), { run_id: 5371, head_sha: HEAD, status: "completed", conclusion: "failure" });
+		const item = walk(newItem(), pushedRun(HEAD)).item;
+		for (const diagnostic of ["npm ERR! getaddrinfo EAI_AGAIN registry.npmjs.org", "ERR_PNPM_FETCH_503 GET https://registry.npmjs.org/example: Service Unavailable"]) {
+			repo.jobLogs.set(String(job.id), diagnostic);
+			const read = await readCi(app, target);
+			const first = walk(item, [ciFact(read, HEAD)]);
+			const retry = effect(first.last, "rerun_ci");
+			assert.ok(retry && retry.jobs[0]?.environment);
+			const claimed = walk(first.item, [{ ...retry, kind: "ci_rerun_started" }]);
+			const refused = walk(claimed.item, [{ kind: "ci_rerun_result", head: HEAD, accepted: [], said: "write unavailable" }]);
+			const next = walk(refused.item, [ciFact(read, HEAD)]);
+			expect(`an install outage requests a bounded rerun and never offers a code fix: ${diagnostic}`, !effect(first.last, "deliver") &&
+				!effect(next.last, "deliver") && !effect(next.last, "rerun_ci") && !next.item.question?.resume && next.item.run?.rounds.ci === 0);
+		}
+	}
+
+	{
 		const names = ["darwin-arm64", "darwin-x64", "macOS tests"];
 		const cancelled = names.map((name, i) => checkRun(5400 + i, name, "cancelled"));
 		const linux = checkRun(5390, "linux", "success");
@@ -2776,21 +2855,22 @@ try {
 		const claim = { ...retry, kind: "ci_rerun_started" };
 		const claimed = walk(initial.item, [claim]);
 		expect("the rerun claim survives replay and schedules the next poll", !!effect(claimed.last, "poll_ci") && walk(claimed.item, [claim]).item === claimed.item);
-		const denied = await rerunCancelled(app, target, retry.jobs);
+		const denied = await rerunJobs(app, target, retry.jobs);
 		const receipt = (result: typeof denied) => ({ kind: "ci_rerun_result", head: HEAD, ...result });
 		const refused = walk(claimed.item, [receipt(denied)]);
 		const unavailable = walk(refused.item, [{ ...ciFact(await readCi(app, target), HEAD), baseAhead: 1 }]);
-		expect("read-only installation explains the skipped rerun and offers a base update", !denied.accepted.length && refused.last.events.some(e => e.said.includes("Actions: write")) && !!unavailable.item.question?.choices.some(choice => choice.id === "update_from_base") && !effect(unavailable.last, "rerun_ci"));
+		expect("read-only installation explains the skipped rerun and automatically updates from base", !denied.accepted.length && refused.last.events.some(e => e.said.includes("Actions: write")) && !!effect(unavailable.last, "publish") && unavailable.item.run?.updateFromBase?.head === HEAD && !effect(unavailable.last, "rerun_ci"));
 
 		// The stand-in supplies the installation token and job records. Capture only the workflow POST.
 		const posts: string[] = [];
 		const original = globalThis.fetch;
 		standin.appPermissions = { ...granted, actions: "write" };
+		let listed = cancelled;
 		let sibling = false;
 		globalThis.fetch = (input, init) => {
 			const path = new URL(String(input)).pathname;
 			if (path.endsWith(`/runs/${workflow}/jobs`)) {
-				const jobs = cancelled.map(job => ({ ...job, head_sha: HEAD }));
+				const jobs = listed.map(job => ({ ...job, head_sha: HEAD }));
 				if (sibling) jobs.push({ ...checkRun(7000, "manual sibling", "cancelled"), head_sha: HEAD });
 				return Promise.resolve(Response.json({ jobs }));
 			}
@@ -2802,11 +2882,20 @@ try {
 		};
 		let result;
 		try {
+			const failedInstall = checkRun(5398, "install", "failure");
+			listed = [failedInstall];
+			const install = { name: "install", jobId: String(failedInstall.id), retryRunId: workflow };
+			const unclassified = await rerunJobs(app, target, [install]);
+			assert.ok(!unclassified.accepted.length && !posts.length);
+			const requested = await rerunJobs(app, target, [{ ...install, environment: true }]);
+			expect("the confirmed failed install job can be rerun through Actions", requested.accepted.join() === install.jobId &&
+				posts.pop() === `POST /api/v3/repos/ada/harbor/actions/runs/${workflow}/rerun-failed-jobs`);
+			listed = cancelled;
 			sibling = true;
-			const mixed = await rerunCancelled(app, target, retry.jobs);
+			const mixed = await rerunJobs(app, target, retry.jobs);
 			expect("a workflow containing an additional stopped job cannot restart it as a sibling", !mixed.accepted.length && !posts.length);
 			sibling = false;
-			result = await rerunCancelled(app, target, retry.jobs);
+			result = await rerunJobs(app, target, retry.jobs);
 		} finally {
 			globalThis.fetch = original;
 			standin.appPermissions = granted;

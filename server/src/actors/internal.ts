@@ -227,6 +227,7 @@ export interface SessionInternal {
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
+	internalBaseTests(input: { head: string; base: string; tests: import("../factory/base-tests.js").NamedTests }): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
 	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer>;
 }
 

@@ -60,6 +60,7 @@ export const INBOX_TABLES = [
 	"CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL)",
 	// What a push for the item answered, by the item's effect key: the same push asked again (its answer was lost) is answered from here.
 	"CREATE TABLE IF NOT EXISTS publish_receipt (key TEXT PRIMARY KEY, answer TEXT NOT NULL)",
+	"CREATE TABLE IF NOT EXISTS base_test (key TEXT PRIMARY KEY, result TEXT NOT NULL)",
 	// The one schedule that sends the outbox again: replaced, never added to.
 	"CREATE TABLE IF NOT EXISTS outbox_schedule (id INTEGER PRIMARY KEY CHECK (id = 1), schedule TEXT NOT NULL, at INTEGER NOT NULL)",
 ];

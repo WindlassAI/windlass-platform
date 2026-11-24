@@ -17,7 +17,7 @@ import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import type { OutOfMemory } from "../sandbox/api.js";
 import type { ChoiceId, HostedSize, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
-import type { CancelledJob, CiReading, CiState } from "../github/ci.js";
+import type { RerunnableJob, CiReading, CiState } from "../github/ci.js";
 
 // What the web sees of these is in the contract; they are named here as the factory's modules use them.
 export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
@@ -222,7 +222,7 @@ export interface FactoryItem {
 	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
 	claimedSecret?: Question;
 	/** One rerun request per commit. Keep the original job ids to distinguish a fresh attempt from a delayed listing. */
-	ciReruns?: Record<string, { jobs: CancelledJob[]; reported?: boolean }>;
+	ciReruns?: Record<string, { jobs: RerunnableJob[]; reported?: boolean }>;
 	/**
 	 * The person's own words to the work since it was filed, oldest first, the newest kept (`RULES.personDecisions`): their
 	 * send-back notes, their answers' notes and their own feedback on GitHub. The second reviewer is given them as the person's
@@ -526,7 +526,7 @@ export type Fact =
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	| { kind: "secret_attempt"; at: number; key: string; previous: number }
-	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: CancelledJob[]; openItems: number }
+	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
 	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
@@ -581,7 +581,7 @@ export type Effect =
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
-	| { kind: "rerun_ci"; key: string; head: string; jobs: CancelledJob[]; openItems: number }
+	| { kind: "rerun_ci"; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "poll_ci"; key: string; head: string; at: number; notBefore?: number }
 	| { kind: "poll_pr"; key: string; pr: number; at: number }
 	/** Record the question and show it ("Needs you"). */

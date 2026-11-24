@@ -222,6 +222,7 @@ import { agentTurn, turnTokens } from "../factory/budget.js";
 import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type HoldReport, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, foundStoppedAt, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
+import { runBaseTests, type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
 import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
@@ -688,6 +689,8 @@ interface SessionVars {
 	 * operation goes with the instance, and so does its count.
 	 */
 	sandboxOps: number;
+	/** The one check of named tests on the item’s base running in this sandbox. */
+	baseTest?: string;
 	/** The copy of the workspace taken when the last turn ended; undefined until it is read from SQLite. */
 	workspace: WorkspaceCopy | null | undefined;
 	/** The tail of the queue that sets the idle check, so two of them cannot cross. */
@@ -2567,6 +2570,33 @@ async function evidenceOf(c: Ctx, meta: SessionMeta, during: number | null): Pro
 /** For a session on one of the user's machines, that machine as a question or a pull request names it: by the name kept at launch. */
 function machineOf(meta: SessionMeta): { name: string | null } | null {
 	return meta.place.kind === "machine" ? { name: meta.machineName } : null;
+}
+
+/** Test a copy of the pinned base in the builder's existing sandbox, under its ordinary usage hold. */
+async function testSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository, input: { base: string; tests: NamedTests }): Promise<BaseTestResult> {
+	const release = takeSandbox(c);
+	try {
+		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		if (!meta.sandboxId || c.vars.turn || c.vars.publishing) return "unknown";
+		const { sandboxes } = await layerOf(c, meta);
+		if (!meta.meter || carriedOver(c, meta)) await holdSandbox(c, meta, true);
+		const sandbox = await sandboxes.connect(meta.sandboxId, connectOptions(meta));
+		sandboxChanged(c);
+		if (!sandbox) return "unknown";
+		noteSandbox(c, meta, "running");
+		markUsed(c, meta);
+		const cwd = meta.cloneDirectory && meta.cloneDirectory !== "." ? sandbox.cwd + "/" + meta.cloneDirectory : sandbox.cwd;
+		if ((await sandbox.run(`GIT_NO_REPLACE_OBJECTS=1 git cat-file -e ${input.base}^{commit}`, { cwd, timeoutMs: 10_000 })).exitCode !== 0) {
+			const app = githubApp();
+			if (!app) return "unknown";
+			await fetchBase(app, await githubConnection(c, meta), { ...repo }, sandbox);
+		}
+		const isolated = sandboxes.profile(meta.profile).approval !== "full" || !!meta.tainted || !!machineHarness(meta.harness)?.sandboxedOn.includes(meta.profile);
+		return await runBaseTests(sandbox, cwd, input.base, input.tests, isolated);
+	} finally {
+		release();
+		markUsed(c, meta);
+	}
 }
 
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
@@ -6651,6 +6681,28 @@ export const agentSession = actor({
 			if ((meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn) || c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
 			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
+		},
+
+		internalBaseTests: async (c, input: { head: string; base: string; tests: NamedTests }): Promise<BaseTestResult | "pending"> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			const repo = meta.repo;
+			if (meta.origin?.role !== "builder" || !repo || meta.pushedHead !== input.head || !/^[0-9a-f]{40}$/.test(input.base)) return "unknown";
+			const key = digest([input.head, input.base, input.tests.runner, ...input.tests.names]);
+			const [known] = await c.db.execute<{ result: BaseTestResult }>("SELECT result FROM base_test WHERE key=?", key);
+			if (c.vars.baseTest === key) return "pending";
+			if (known) return known.result;
+			if (c.vars.baseTest) return "pending";
+			c.vars.baseTest = key;
+			// A sandbox check can outlast an actor RPC. The CI poll collects its receipt on the next reading.
+			const check = async () => {
+				const claimed = await c.db.execute("INSERT OR IGNORE INTO base_test VALUES (?, 'unknown') RETURNING key", key);
+				if (!claimed.length) return;
+				const result = await testSessionBase(c, meta, repo, input);
+				await c.db.execute("UPDATE base_test SET result=? WHERE key=?", result, key);
+			};
+			void c.keepAwake(check().catch(() => { /* A lost attempt keeps its inconclusive receipt. */ }).finally(() => { delete c.vars.baseTest; }));
+			return "pending";
 		},
 
 		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer> => {

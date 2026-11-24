@@ -62,7 +62,7 @@ import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spell
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, FeatureJob, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
-import { PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
+import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { REVIEW_OFF_REASON, openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
@@ -777,7 +777,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
 			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
 			step.attempt++;
-			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the cancelled checks.");
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the interrupted checks.");
 			return true;
 		case "ci_read":
 			if ((step.kind !== "ci" && step.kind !== "handoff") || fact.key !== key || fact.head !== run.ci?.head) return false;
@@ -825,8 +825,9 @@ function firstPlan(item: FactoryItem, note: string | null): TurnPlan {
 }
 
 function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, note: string | null): TurnPlan {
-	const text = withNote(taskText(task), note);
-	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${text}`, ...marked(untrusted) };
+	const taskWithNote = withNote(taskText(task), note);
+	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${taskWithNote}`, ...marked(untrusted) };
+	const text = `${taskWithNote}\n\n${BUILDER_ASSUMPTIONS} ${ASK_WHEN_BLOCKED}`;
 	if (featurePlan?.status === "approved") {
 		const { goal, requirements, acceptance, outOfScope } = featurePlan.spec;
 		const spec = [
@@ -1497,7 +1498,8 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return handoff(c, review);
 	}
 
-	if (c.item.mode === "orchestrate" && (fact.mergeable === false || state === "failed" || ci.moved)) {
+	const environmentOnly = state === "failed" && reading.kind === "read" && reading.runs.every(check => check.state !== "failed" || check.environment);
+	if (c.item.mode === "orchestrate" && (fact.mergeable === false || (state === "failed" && !environmentOnly) || ci.moved)) {
 		const reason = ci.moved ? "The feature PR moved after the last verified commit." : fact.mergeable === false ? "The feature PR conflicts with its base." : "CI failed on the complete feature.";
 		const retry = ci.moved ? [] : [{ id: "wait" as const, label: "Check the feature PR again" }];
 		return ask(c, "rounds", reason, [...retry, ...handOver(c.item), choice("give_up")], null, null);
@@ -1524,27 +1526,26 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		return nextTurn(c, conflictPlan(c.item.task.base));
 	}
+	if (reading.kind === "read" && (state === "cancelled" || (state === "failed" && reading.runs.some(check => check.environment)))) {
+		const interrupted = reading.runs.filter(check => check.state === "cancelled" || check.environment);
+		const eligible = interrupted.filter(check => check.retryRunId);
+		const sentence = state === "cancelled" ? ciSentence(verdictCi(ci)) : "CI reported an environment failure in " + interrupted.map(check => check.name).join(", ") + ".";
+		if (eligible.length && !rerun && isSha(reading.head) && automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"])) {
+			c.say(sentence);
+			c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
+				jobs: eligible.map(({ name, jobId, retryRunId, environment }) => ({ name, jobId, retryRunId, ...(environment && { environment }) })) });
+			return;
+		}
+		if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
+			(job.jobId && interrupted.some(check => check.jobId === job.jobId)))) {
+			return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the interrupted checks.");
+		}
+		if (state === "cancelled" || environmentOnly) return question(sentence, null, true);
+	}
 	switch (state) {
 		case "passed":
 			c.say("CI passed.");
 			return afterCi(c, ci);
-		case "cancelled": {
-			if (reading.kind !== "read") return;
-			const cancelled = reading.runs.filter(check => check.state === "cancelled");
-			const sentence = ciSentence(verdictCi(ci));
-			const eligible = cancelled.filter(check => check.retryRunId);
-			if (eligible.length && !rerun && isSha(reading.head) && automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"])) {
-				c.say(sentence);
-				c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
-					jobs: eligible.map(({ name, jobId, retryRunId }) => ({ name, jobId, retryRunId })) });
-				return;
-			}
-			if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
-				(job.jobId && cancelled.some(check => check.jobId === job.jobId)))) {
-				return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the cancelled checks.");
-			}
-			return question(sentence, null, true);
-		}
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
 			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read on this subtask.");
@@ -1555,7 +1556,19 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
-			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, reading), charge: "ci", fingerprint: ciFingerprint(reading), ...marked([untrustedWords.ci(ci.head)]) };
+			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
+			if (failed.some(check => check.baseResult === "pending") && since < CI_POLLING.timeoutMs)
+				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
+			const actionable = failed.filter(check => !check.baseResult);
+			if (!actionable.length) {
+				const inherited = failed.every(check => check.baseResult === "failed");
+				const sentence = inherited ? `This check also fails on ${c.item.task.base}; it is not caused by this change.`
+					: `The platform could not confirm whether this check fails on ${c.item.task.base}.`;
+				return ask(c, "ci_timeout", sentence, [...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("wait"), choice("give_up")],
+					null, null, undefined, canUpdate ? { policy: "ci_timeout", evidence: ciEvidence } : {});
+			}
+			const fixes = { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
+			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, fixes), charge: "ci", fingerprint: ciFingerprint(fixes), ...marked([untrustedWords.ci(ci.head)]) };
 			const sentence = ciSentence(verdictCi(ci));
 			if (canUpdate || fact.featureTarget) return question(sentence, plan);
 			c.say(sentence);

@@ -129,7 +129,7 @@ function needsForcedChecks(verified: Verified, saved: readonly RepositoryCheck[]
 }
 
 /** Run only in the workspace and image toolchain. No network, inherited environment, token directory or agent home. */
-function isolatedCommand(cwd: string, command: string): string {
+export function isolatedCommand(cwd: string, command: string): string {
 	// The image's pnpm wrapper can use the pinned package manager installed during repository setup.
 	const cache = "/home/agent/.cache/node/corepack/v1/pnpm";
 	const args = ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
