@@ -49,7 +49,7 @@ import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
-import { CI_POLLING, type CiReading, ciPollEvery, ciState } from "../github/ci.js";
+import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, choosePlacement, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
@@ -1618,7 +1618,7 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 				jobs: eligible.map(({ name, jobId, retryRunId, environment }) => ({ name, jobId, retryRunId, ...(environment && { environment }) })) });
 			return;
 		}
-		if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
+		if (rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
 			(job.jobId && interrupted.some(check => check.jobId === job.jobId)))) {
 			return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the interrupted checks.");
 		}
@@ -1633,13 +1633,13 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read on this subtask.");
 			return afterCi(c, ci);
 		case "incomplete":
-			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub cut its list of CI's checks short before any could be read." : "CI has more checks than the platform reads; none of those it read failed.");
+			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub reported CI but supplied no readable check results." : "CI has more checks than the platform reads; none of those it read failed.");
 			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read in full on this subtask.");
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
 			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
-			if (failed.some(check => check.baseResult === "pending") && since < CI_POLLING.timeoutMs)
+			if (failed.some(check => check.baseResult === "pending"))
 				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
 			const inherited = failed.filter(check => check.baseResult === "failed");
 			const actionable = failed.filter(check => !check.baseResult);
@@ -1673,12 +1673,12 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			break;
 		case "not_run": {
 			const sentence = ciSentence(verdictCi(ci));
-			if (since >= CI_POLLING.timeoutMs) return question(sentence);
 			return pollCi(c, fact.openItems, null, sentence);
 		}
 		case "pending":
+			if (workflowOverdue(reading, c.at)) return question("A GitHub Actions workflow has been in progress for more than six hours.", null, true);
+			break;
 		case "retry":
-			if (since >= CI_POLLING.timeoutMs) return question(`CI has not finished ${spellSeconds(since / 1000)} after the push.`, null, state === "pending");
 			break;
 	}
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));

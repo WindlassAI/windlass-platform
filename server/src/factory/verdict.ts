@@ -82,7 +82,7 @@ export function verdictCi(progress: CiProgress | null): Verdict["ci"] {
 	// Never read at all (GitHub did not answer): unknown, which is not "no CI".
 	if (last === null) return { state: "unread", runs: [], said: null };
 	if (last.state === "incomplete")
-		return { state: "unread", runs: last.runs, said: last.runs.length === 0 ? "GitHub cut its list of the checks short before any of them could be read" : "GitHub listed more checks than the platform reads, and none of those it read failed" };
+		return { state: "unread", runs: last.runs, said: last.runs.length === 0 ? "GitHub reported CI but supplied no readable check results" : "GitHub listed more checks than the platform reads, and none of those it read failed" };
 	return { state: last.state === "pending" ? "timed_out" : last.state, runs: last.runs, said: last.said };
 }
 
